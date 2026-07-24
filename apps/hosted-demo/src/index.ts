@@ -1,7 +1,7 @@
 /**
  * apps/hosted-demo/src/index.ts — Nimbus live-demo embedder.
  *
- * This file is the live demo at https://nimbus.ashishkumarsingh.com
+ * This file is the live demo at https://nimbus-os.dev
  * and the canonical reference embedder for `@nimbus-sh/sdk/worker`.
  * It also mounts SDK smoke routes that prove the deployed app can use
  * Nimbus through the same SDK surface external applications use.

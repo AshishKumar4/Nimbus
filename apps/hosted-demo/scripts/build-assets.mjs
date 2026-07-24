@@ -10,7 +10,7 @@
  * that directory — wrangler.jsonc points its assets binding here, and the
  * predev/predeploy hooks run it, so every deploy carries fresh docs.
  *
- * NIMBUS_DOCS_ORIGIN (default https://nimbus.ashishkumarsingh.com) selects
+ * NIMBUS_DOCS_ORIGIN (default https://nimbus-os.dev) selects
  * the deploy target's origin. The docs live terminal needs an absolute
  * endpoint URL at build time (NimbusSandbox resolves the returned wsUrl
  * against it), so staging probes must rebuild with their own origin.
@@ -26,7 +26,7 @@ const docsDir = join(repoRoot, 'apps', 'docs');
 const workerPublicDir = join(hostedDemoDir, 'node_modules', '@nimbus-sh', 'worker', 'public');
 const outDir = join(hostedDemoDir, 'dist', 'assets');
 
-const origin = process.env.NIMBUS_DOCS_ORIGIN?.trim() || 'https://nimbus.ashishkumarsingh.com';
+const origin = process.env.NIMBUS_DOCS_ORIGIN?.trim() || 'https://nimbus-os.dev';
 if (!/^https?:\/\/[^/]+$/.test(origin)) {
   throw new Error(`NIMBUS_DOCS_ORIGIN must be a bare http(s) origin, got: ${origin}`);
 }

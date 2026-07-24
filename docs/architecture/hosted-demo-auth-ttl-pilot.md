@@ -579,7 +579,7 @@ No cleanup route should accept arbitrary public session ids.
 Before deploy:
 
 - Cloudflare OAuth redirect URI is exact:
-  `https://nimbus.ashishkumarsingh.com/api/demo/oauth/callback`.
+  `https://nimbus-os.dev/api/demo/oauth/callback`.
 - Demo OAuth uses PKCE.
 - Demo OAuth state includes a nonce and return path.
 - Demo auth cookie is sealed, HttpOnly, Secure, SameSite=Lax, Path=/.

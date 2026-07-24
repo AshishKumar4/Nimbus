@@ -1,7 +1,7 @@
 {
   "name": "@nimbus-sh/hosted-demo",
   "version": "0.1.0",
-  "description": "Nimbus live demo — the canonical SDK embedder. This is what runs at nimbus.ashishkumarsingh.com.",
+  "description": "Nimbus live demo — the canonical SDK embedder. This is what runs at nimbus-os.dev.",
   "private": true,
   "type": "module",
   "scripts": {

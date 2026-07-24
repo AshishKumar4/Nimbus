@@ -47,8 +47,8 @@ The behavioral suite drives real Nimbus sessions through HTTP and WebSocket.
 Good probes assert observable behavior, not just status codes or static HTML.
 
 ```bash
-BASE=https://nimbus.ashishkumarsingh.com bun test:behavioral
-BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/sdk/new/live-sdk-smoke.mjs
+BASE=https://nimbus-os.dev bun test:behavioral
+BASE=https://nimbus-os.dev bun tests/behavioral/sdk/new/live-sdk-smoke.mjs
 ```
 
 For probe quality rules, read

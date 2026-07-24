@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "nimbus",
-  // The hosted-demo embedder is the live demo at nimbus.ashishkumarsingh.com
+  // The hosted-demo embedder is the live demo at nimbus-os.dev
   // and serves as the canonical reference embedder for the SDK.
   // The small src/index.ts here re-exports from @nimbus-sh/sdk/worker
   // — exactly the shape a third-party embedder ships.
@@ -60,7 +60,7 @@
   // [astro-node-v22] Enable versioned-preview URLs. Each
   // `wrangler versions upload` (and `wrangler deploy`) generates a
   // per-version URL of the form
-  //   <VERSION_PREFIX>-nimbus.ashishkumarsingh.com
+  //   <VERSION_PREFIX>-nimbus-os.dev
   // (VERSION_PREFIX = first 8 hex chars of the version ID) which routes
   // to that specific version without affecting prod traffic. Used by
   // probes to verify a fix when sibling agents are racing deploys to
@@ -101,7 +101,7 @@
 	    "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
 	    "NIMBUS_AGENT_GATEWAY_ID": "default",
 	    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
-	    "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",
+	    "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
 	    "NIMBUS_CF_OAUTH_SCOPES": "user-details.read account-settings.read ai.write aig.run",
 	    "DEMO_SESSION_IDLE_TTL_DAYS": "3",
 	    "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
@@ -253,14 +253,14 @@
       "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
       "routes": [
-        { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true }
+        { "pattern": "nimbus-os.dev", "custom_domain": true }
       ],
 	      "vars": {
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
 	        "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
 	        "NIMBUS_AGENT_GATEWAY_ID": "default",
 	        "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
-	        "NIMBUS_CF_OAUTH_CLIENT_ID": "90292e4e44b1ab6ddcfe94859ed3ef6d",
+	        "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
 	        "NIMBUS_CF_OAUTH_SCOPES": "user-details.read account-settings.read ai.write aig.run",
 	        "DEMO_SESSION_IDLE_TTL_DAYS": "3",
 	        "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",

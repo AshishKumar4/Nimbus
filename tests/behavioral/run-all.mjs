@@ -4,7 +4,7 @@
 //
 // Usage:
 //   BASE=http://127.0.0.1:8792 bun tests/behavioral/run-all.mjs
-//   BASE=https://nimbus.ashishkumarsingh.com bun tests/behavioral/run-all.mjs
+//   BASE=https://nimbus-os.dev bun tests/behavioral/run-all.mjs
 //
 // Flags:
 //   --no-retry     Disable retry-on-banner (CI-strict mode). Default
