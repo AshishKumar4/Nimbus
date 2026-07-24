@@ -29,6 +29,7 @@ import {
   NimbusDOStub,
   CirrusHmrRPC,
   createNimbusHandler,
+  isPreviewHostRequest,
 } from '@nimbus-sh/sdk/worker';
 import { Nimbus, type NimbusConfig } from '@nimbus-sh/sdk';
 import {
@@ -113,6 +114,12 @@ async function handleHostedDemoRequest(
   const url = new URL(request.url);
   const legacy = legacyHostRedirect(url, request.method);
   if (legacy) return legacy;
+
+  // A port preview serves untrusted user code at this origin's root and owns
+  // its whole path space. Hand it straight to Nimbus — none of the demo's
+  // own routes may answer there, or the previewed app's `/login` breaks and
+  // the demo's OAuth entrypoint becomes same-origin with the previewed code.
+  if (isPreviewHostRequest(url, env)) return nimbus.fetch(request, env, ctx);
 
   if (url.pathname === '/login') return startDemoLogin(request, env);
   if (url.pathname === '/logout') return logoutDemo(request);

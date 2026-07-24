@@ -30,6 +30,7 @@ export {
   generateSessionId,
   isNimbusCloudflareAccountId,
   isNimbusTenantSegment,
+  isPreviewHostRequest,
   isValidSessionId,
   issueNimbusToken,
   loadNimbusAgentOAuthFromRequest,

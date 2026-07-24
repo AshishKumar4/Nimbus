@@ -11,10 +11,11 @@ import {
   sanitizeUntrustedHeaders,
   sanitizeUntrustedRequest,
 } from '../../packages/worker/dist/_shared/untrusted-request.js';
+import { NIMBUS_TOKEN_COOKIE } from '../../packages/worker/dist/auth/middleware.js';
 
 // ── every platform cookie in the codebase is recognised ───────────────────
 for (const name of [
-  'nimbus_token',                      // auth/middleware.ts
+  '__Host-nimbus_token',               // auth/middleware.ts
   'nimbus_agent_oauth',                // session/agent-oauth.ts  (sealed CF OAuth)
   '__Host-nimbus_demo_auth',           // apps/hosted-demo        (sealed CF OAuth)
   '__Host-nimbus_demo_state',
@@ -23,6 +24,11 @@ for (const name of [
 ]) {
   assert.equal(isPlatformCookie(name), true, `${name} must be treated as a platform cookie`);
 }
+// ...and the session cookie stays inside the namespace whatever it is named.
+assert.equal(isPlatformCookie(NIMBUS_TOKEN_COOKIE), true);
+// Its `__Host-` prefix is what stops untrusted preview code on a subdomain
+// from setting a shadowing copy for the parent domain.
+assert.equal(NIMBUS_TOKEN_COOKIE.startsWith('__Host-'), true, NIMBUS_TOKEN_COOKIE);
 // ...and a user's own cookies are not
 for (const name of ['theme', 'session', 'my_app_sid', 'connect.sid', 'nimbusish']) {
   assert.equal(isPlatformCookie(name), false, `${name} is the user's cookie and must survive`);

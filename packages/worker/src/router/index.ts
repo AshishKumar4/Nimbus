@@ -40,6 +40,7 @@ import {
   buildPreviewHost,
   isPreviewHostSafeSid,
   parsePreviewHost,
+  readPreviewHostSuffix,
 } from '../_shared/preview-host.js';
 import {
   parseSessionRoute,
@@ -225,45 +226,19 @@ export function createNimbusHandler(
   const explicitMode = authConfig.mode
     ?? (authConfig.legacyPublic ? 'legacy' : undefined);
 
-  return {
-    async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+  async function route(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
       // Capture ctx.exports on first call (loopback bindings for facets).
       if ((ctx as any)?.exports) setCtxExports((ctx as any).exports);
 
-      // Embedder custom routes run first.
-      if (customRoutes) {
-        try {
-          const r = await customRoutes(request, env, ctx);
-          if (r) return r;
-        } catch (e: any) {
-          console.error('[nimbus] custom route threw:', e?.stack || e);
-          return new Response('Internal error in embedder route', { status: 500 });
-        }
-      }
-
       const url = new URL(request.url);
+      const previewSuffix = readPreviewHostSuffix(env);
 
-      const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
-      if (sdkResponse) return sdkResponse;
-
-      if (url.pathname === '/api/nimbus/oauth/callback') {
-        const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
-        if (!payload || !isValidSessionId(payload.sessionId)) {
-          return new Response('Invalid OAuth state', { status: 400 });
-        }
-        return forwardToSession(
-          request,
-          {
-            sessionId: payload.sessionId,
-            innerPath: '/api/agent/oauth/callback',
-            basePath: `${SESSION_ROUTE_PREFIX}/${payload.sessionId}`,
-          },
-          env,
-          { tenantSegment: payload.tenantSegment },
-        );
-      }
-
-      const previewSuffix = env?.NIMBUS_PREVIEW_HOST_SUFFIX as string | undefined;
+      // ── <port>--<sid>.<suffix> — port preview ───────────────────────
+      // FIRST, ahead of embedder routes and every control-plane path: the
+      // previewed app is untrusted code mounted at this origin's root and
+      // owns the whole path space. A Nimbus route answering here would both
+      // shadow the app's own `/login` or `/new` and put a control-plane
+      // endpoint same-origin with attacker-authored JavaScript.
       const preview = parsePreviewHost(url.host, previewSuffix);
       if (preview) {
         if (!isValidSessionId(preview.sid)) {
@@ -282,9 +257,12 @@ export function createNimbusHandler(
           && url.searchParams.get(NIMBUS_TOKEN_QUERY)
           && resolveAuthMode(env, explicitMode) === 'enforce'
         ) {
+          // Land on the path that was actually requested — the app owns it;
+          // the exchange only strips the token from the query.
           return handleAttachExchange(url, preview.sid, env, {
-            redirectPath: '/',
-            cookiePath: '/',
+            redirectPath: url.pathname,
+            singleUseScope: 'session:preview',
+            reusableScope: null,
           });
         }
 
@@ -303,6 +281,37 @@ export function createNimbusHandler(
           },
           env,
           { tenantSegment: auth.tenantSegment },
+        );
+      }
+
+      // Embedder custom routes run first among the control-plane routes.
+      if (customRoutes) {
+        try {
+          const r = await customRoutes(request, env, ctx);
+          if (r) return r;
+        } catch (e: any) {
+          console.error('[nimbus] custom route threw:', e?.stack || e);
+          return new Response('Internal error in embedder route', { status: 500 });
+        }
+      }
+
+      const sdkResponse = await handleNimbusRemoteApi(request, env, options.sdk);
+      if (sdkResponse) return sdkResponse;
+
+      if (url.pathname === '/api/nimbus/oauth/callback') {
+        const payload = parseAgentOAuthStateParam(url.searchParams.get('state'));
+        if (!payload || !isValidSessionId(payload.sessionId)) {
+          return new Response('Invalid OAuth state', { status: 400 });
+        }
+        return forwardToSession(
+          request,
+          {
+            sessionId: payload.sessionId,
+            innerPath: '/api/agent/oauth/callback',
+            basePath: `${SESSION_ROUTE_PREFIX}/${payload.sessionId}`,
+          },
+          env,
+          { tenantSegment: payload.tenantSegment },
         );
       }
 
@@ -368,7 +377,8 @@ export function createNimbusHandler(
         ) {
           return handleAttachExchange(url, route.sessionId, env, {
             redirectPath: `${SESSION_ROUTE_PREFIX}/${route.sessionId}/`,
-            cookiePath: '/s',
+            singleUseScope: 'session:bootstrap',
+            reusableScope: 'session:attach',
           });
         }
 
@@ -409,11 +419,17 @@ export function createNimbusHandler(
 
           let previewUrl = `https://${buildPreviewHost(route.sessionId, port, previewSuffix)}/`;
           if (auth.verified) {
+            // Same shape as the `POST /new` bootstrap: short-lived,
+            // sid-pinned, single-use (`jti`), and scoped to the preview
+            // exchange alone. A preview URL is a link — it lands in history,
+            // referrers and chat logs — so it must not be replayable, and it
+            // must not authenticate anything but this one exchange.
             const token = await issueNimbusToken(env as NimbusAuthEnv, {
               tn: auth.verified.claims.tn,
               ...(auth.verified.claims.sub !== undefined && { sub: auth.verified.claims.sub }),
-              scopes: ['session:attach'],
+              scopes: ['session:preview'],
               sid: route.sessionId,
+              jti: crypto.randomUUID(),
             }, { ttlMs: ATTACH_BOOTSTRAP_TTL_MS });
             previewUrl += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: token })}`;
           }
@@ -476,6 +492,22 @@ export function createNimbusHandler(
       if (env.ASSETS) return env.ASSETS.fetch(request);
 
       return new Response('Not found', { status: 404 });
+  }
+
+  return {
+    async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
+      try {
+        return await route(request, env, ctx);
+      } catch (e: any) {
+        // With `run_worker_first`, this handler is the entry point for the
+        // marketing site and the docs as well as the app, so an uncaught
+        // throw would take the whole public surface down.
+        console.error('[nimbus] unhandled router error:', e?.stack || e);
+        return new Response('Internal error', {
+          status: 500,
+          headers: { 'Cache-Control': 'no-store' },
+        });
+      }
     },
   };
 }
@@ -572,19 +604,23 @@ async function resolveNimbusRouteAuth(
 }
 
 /**
- * Exchange a `?nimbus_token=` query token for a host-scoped session cookie,
- * then redirect to the configured clean path on the same host.
+ * Exchange a `?nimbus_token=` query token for the session cookie, then
+ * redirect to `redirectPath` on the same host with the token stripped.
  *
- * Accepts two token kinds:
- *   - Server-minted bootstrap tokens (`jti` present, `session:bootstrap`
- *     scope) from `POST /new`. The `jti` is consumed set-if-absent in the
- *     session DO's storage — a replayed attach URL gets a 401.
- *   - Embedder iframe tokens (no `jti`, `session:attach` scope) from
- *     `<NimbusTerminal>` / `sessionAttachUrl`.
+ * Two token kinds exist, and each entry point declares which it accepts:
+ *   - Single-use, server-minted tokens (`jti` present). The `jti` is
+ *     consumed set-if-absent in the session DO's storage, so a replayed URL
+ *     gets a 401. `POST /new` mints `session:bootstrap`; `/api/preview-url`
+ *     mints `session:preview`. Neither scope grants anything else, so the
+ *     link in the browser's history is not a session credential.
+ *   - Reusable embedder iframe tokens (no `jti`, `session:attach` scope)
+ *     from `<NimbusTerminal>` / `sessionAttachUrl`. Only the `/s/` shell
+ *     accepts these; on a preview host `reusableScope` is null and they are
+ *     rejected.
  *
  * Either way the cookie holds a FRESHLY minted sid-pinned `session:attach`
  * token — the presented token (and whatever extra scopes it carried) is
- * never persisted browser-side. Bootstrap exchanges get the default session
+ * never persisted browser-side. Single-use exchanges get the default session
  * cookie lifetime; embedder tokens keep their own remaining lifetime.
  */
 async function handleAttachExchange(
@@ -593,7 +629,10 @@ async function handleAttachExchange(
   env: any,
   options: {
     redirectPath: string;
-    cookiePath: string;
+    /** Scope a single-use (`jti`) token must carry at this entry point. */
+    singleUseScope: string;
+    /** Scope a reusable token must carry, or null to reject reusable tokens. */
+    reusableScope: string | null;
   },
 ): Promise<Response> {
   const token = url.searchParams.get(NIMBUS_TOKEN_QUERY)!;
@@ -602,18 +641,21 @@ async function handleAttachExchange(
     requireSessionPin(verified, sessionId);
     let cookieTtlMs: number;
     if (verified.claims.jti !== undefined) {
-      requireScopes(verified, ['session:bootstrap']);
-      // Server-minted bootstraps are always sid-pinned. A jti without a
-      // sid would consume independently in every session DO it is tried
-      // against, so reject it outright instead of trusting the mint site.
+      requireScopes(verified, [options.singleUseScope]);
+      // Single-use tokens are always sid-pinned. A jti without a sid would
+      // consume independently in every session DO it is tried against, so
+      // reject it outright instead of trusting the mint site.
       if (verified.claims.sid === undefined) {
-        throw new NimbusTokenClaimsError('bootstrap token missing sid');
+        throw new NimbusTokenClaimsError('single-use attach token missing sid');
       }
       const fresh = await consumeAttachBootstrap(env, verified.doInstanceName, sessionId, verified.claims.jti);
       if (!fresh) throw new NimbusBootstrapConsumedError();
       cookieTtlMs = DEFAULT_TOKEN_TTL_MS;
     } else {
-      requireScopes(verified, ['session:attach']);
+      if (options.reusableScope === null) {
+        throw new NimbusTokenClaimsError('attach token must be single-use here');
+      }
+      requireScopes(verified, [options.reusableScope]);
       cookieTtlMs = Math.max(1000, verified.claims.exp * 1000 - Date.now());
     }
     const cookieToken = await issueNimbusToken(env as NimbusAuthEnv, {
@@ -631,9 +673,7 @@ async function handleAttachExchange(
       status: 302,
       headers: {
         Location: clean.pathname + clean.search,
-        'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec, {
-          path: options.cookiePath,
-        }),
+        'Set-Cookie': setNimbusTokenCookie(cookieToken, cookieExpSec),
         'Cache-Control': 'no-store',
       },
     });
