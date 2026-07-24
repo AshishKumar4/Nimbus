@@ -252,9 +252,28 @@
       "name": "nimbus",
       "compatibility_flags": ["nodejs_compat"],
       "preview_urls": true,
+      // Per-port app previews: each exposed session port is served at its own
+      // hostname `<port>--<sid>.nimbus-os.dev` so apps that assume a ROOT asset
+      // path (`/style.css`, `fetch('/api/..')`) resolve with zero rewriting.
+      // custom_domain cannot be a wildcard, so this is a zone route. The worker
+      // treats ONLY `^(\d+)--(.+)$` hosts as previews (see
+      // src/_shared/preview-host.ts) — the apex, the legacy custom domain, the
+      // versioned preview_urls host, and any other subdomain fall through to
+      // normal handling. Dormant until the feature is turned on:
+      //   OWNER STEP 1 (dashboard): add a proxied wildcard DNS record — Type
+      //     AAAA, Name `*`, Content `100::`, Proxied (orange-cloud). Our
+      //     Workers-scoped API token can't create DNS records.
+      //   OWNER STEP 2 (after DNS is live): set the worker var
+      //     NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev. Until it is set the code
+      //     is fully off (shell/SDK keep using the `/s/<sid>/port/<n>/` form),
+      //     so deploying this route before the DNS record + var is harmless —
+      //     the route simply never fires.
+      // Universal SSL already covers `*.nimbus-os.dev` (first-level wildcard),
+      // so no certificate step is needed for this scheme.
       "routes": [
         { "pattern": "nimbus-os.dev", "custom_domain": true },
-        { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true }
+        { "pattern": "nimbus.ashishkumarsingh.com", "custom_domain": true },
+        { "pattern": "*.nimbus-os.dev/*", "zone_name": "nimbus-os.dev" }
       ],
 	      "vars": {
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
