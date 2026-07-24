@@ -170,6 +170,16 @@ const appUrl = 'https://nimbus.ashishkumarsingh.com';
 	.nsx-screen :global(.xterm) {
 		height: 100%;
 	}
+	/* The embed lives inside Starlight prose, whose flow spacing injects
+	   margin-top and line-height onto xterm's own block rows, inflating the
+	   row band so the live prompt renders below the fixed-height viewport.
+	   Reset prose typography across the terminal subtree; xterm sets its own
+	   per-row height/line-height inline, which these rules do not override. */
+	.nsx-screen :global(.xterm *) {
+		margin: 0;
+		padding: 0;
+		line-height: normal;
+	}
 	.nsx-status {
 		position: absolute;
 		inset: 0;
