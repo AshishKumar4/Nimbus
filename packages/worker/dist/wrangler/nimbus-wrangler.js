@@ -509,23 +509,27 @@ export class NimbusWrangler {
             }
         }
         // ── services ──
-        // Honor a service binding only if the outer env has a field with the
-        // same NAME as the declared binding. In wrangler the `binding` field
-        // is the variable name inside the worker, while `service` is the name
-        // of the target deployed worker; in dev we only have the outer env's
-        // existing bindings to forward. Warn on every other case so the user
-        // knows not to expect real-wrangler passthrough.
+        // Not supported in Nimbus's dev emulator: there is no second deployed
+        // Worker in a session to bind to.
+        //
+        // This previously forwarded `loaderEnv[binding]` whenever the outer env
+        // happened to have a field of the same name. `loaderEnv` is the
+        // supervisor DO's real env, and `binding` comes from the user's own
+        // wrangler.jsonc inside their sandbox — so declaring
+        // `services: [{ binding: 'NIMBUS_SESSION' }]` handed the inner Worker
+        // the Durable Object namespace (`.get(idFromName(<any sid>))` = another
+        // tenant's session, no token required), and `JWT_SECRET` handed it the
+        // signing key to mint tokens for any session. Cross-tenant compromise
+        // from an attacker-chosen string.
+        //
+        // The invariant now: the inner env is synthesized ENTIRELY from the
+        // user's own config plus Nimbus emulators. No outer binding is ever
+        // forwarded by name.
         if (this.config?.services?.length) {
             for (const s of this.config.services) {
-                const name = s.binding;
-                if (!name)
+                if (!s.binding)
                     continue;
-                if (this.loaderEnv && name in this.loaderEnv) {
-                    env[name] = this.loaderEnv[name];
-                }
-                else {
-                    this.onLog(`  \x1b[33mwarning: services binding '${name}' not present in outer env; env.${name} will be undefined\x1b[0m\n`);
-                }
+                this.onLog(`  \x1b[33mwarning: services binding '${s.binding}' is not supported in nimbus wrangler dev; env.${s.binding} will be undefined. Deploy with real wrangler for service bindings.\x1b[0m\n`);
             }
         }
         // ── assets ──
