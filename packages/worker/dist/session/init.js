@@ -2200,6 +2200,8 @@ export function initSession(self, ws) {
                 ? resolveNpmPrefix(installInvocation.prefix ?? String(ctx.env?.npm_config_prefix || '/usr/local'), ctx.cwd || '/home/user')
                 : null;
             self.ensureSqliteFs();
+            if (globalPrefix)
+                self.ensureGlobalPrefixDirs(globalPrefix);
             const installCwd = globalPrefix ? `${globalPrefix}/lib` : cwdKey;
             // Ensure package.json exists for bare `npm install`
             if (!globalPrefix && explicitPkgs.length === 0) {

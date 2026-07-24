@@ -501,6 +501,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      */
     _envFlagDefaultOn(name: string): boolean;
     initSession(ws: WebSocket): void;
+    ensureGlobalPrefixDirs(prefix: string): void;
     seedFilesystem(): void;
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
     webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void>;
