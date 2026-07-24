@@ -237,6 +237,21 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // Mutex: only one flush runs at a time. Concurrent installs awaiting
   // flush() will line up behind this promise and resolve in arrival
   // order — the W7 frame is opaque to ordering so this is safe.
+  // A wave RPC that workerd shed rather than ran is re-sendable: the
+  // coordinator's input gate rejected it because its queue was too deep or
+  // the object was reset mid-request, so none of the wave's writes landed.
+  // Re-sending is safe even if some did — writeBatchStream is keyed by path
+  // and the bytes are identical. Without this the first shed permanently
+  // failed every package that contributed to the wave, which is how a
+  // 119-package install came back with 88 packages.
+  const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000];
+  const isSheddableWaveError = (message: string): boolean => {
+    const m = message.toLowerCase();
+    return m.includes('overloaded')
+      || m.includes('reset because its code was updated')
+      || m.includes('starting up durable object storage')
+      || (m.includes('storage operation') && m.includes('reset'));
+  };
   let sharedFlushInFlight: Promise<void> | null = null;
   let sharedMutationInFlight: Promise<void> = Promise.resolve();
   const withSharedMutation = async <T>(action: () => Promise<T>): Promise<T> => {
@@ -264,26 +279,33 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // cannot report success while another package happens to be the caller
     // that triggered its shared flush.
     const wave = (async (): Promise<SharedWaveOutcome> => {
-      try {
-        // @ts-ignore — preamble symbol.
-        const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-        return await __nimbusUseRpcResult(
-          env.SUPERVISOR.writeBatchStream(stream),
-          (result): SharedWaveOutcome => {
-            if (result.ok) return { ok: true };
-            return {
-              ok: false,
-              message:
-                `writeBatchStream failed after group ${result.committedGroupSequence} ` +
-                `(${result.committedPathCount} committed paths): ${result.error.message}`,
-            };
-          },
-        );
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : String(error),
-        };
+      for (let attempt = 0; ; attempt++) {
+        try {
+          // @ts-ignore — preamble symbol.
+          const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
+          // A typed non-ok result is the storage layer's verdict on these
+          // exact bytes, so it is returned as-is: only a shed RPC retries.
+          return await __nimbusUseRpcResult(
+            env.SUPERVISOR.writeBatchStream(stream),
+            (result): SharedWaveOutcome => {
+              if (result.ok) return { ok: true };
+              return {
+                ok: false,
+                message:
+                  `writeBatchStream failed after group ${result.committedGroupSequence} ` +
+                  `(${result.committedPathCount} committed paths): ${result.error.message}`,
+              };
+            },
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (attempt >= WAVE_RETRY_BACKOFF_MS.length || !isSheddableWaveError(message)) {
+            return { ok: false, message };
+          }
+          const base = WAVE_RETRY_BACKOFF_MS[attempt];
+          const delayMs = Math.max(0, Math.round(base + (Math.random() * 2 - 1) * base * 0.25));
+          await new Promise<void>((rs) => setTimeout(rs, delayMs));
+        }
       }
     })();
     for (const owner of ownersNow) {
