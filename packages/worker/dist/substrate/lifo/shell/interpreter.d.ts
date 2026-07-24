@@ -180,8 +180,16 @@ export declare class Interpreter {
     private dupInputFd;
     private openOutputTarget;
     private openInputTarget;
+    /**
+     * A file-backed descriptor: an open file plus a write offset.
+     *
+     * Each write lands at the offset and advances it, the way write(2) does.
+     * Restating the whole file per write — which is what this used to do —
+     * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
+     * line-at-a-time filter) persist only its final write and silently drop
+     * everything before it.
+     */
     private createFileWriter;
-    private createFileAppender;
     private createFileReader;
     private createStringReader;
     private resolveOutputFd;

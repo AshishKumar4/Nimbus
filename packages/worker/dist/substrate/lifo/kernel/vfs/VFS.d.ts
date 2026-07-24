@@ -47,6 +47,28 @@ export declare class VFS {
      * Store file content -- inline for small files, chunked for large files.
      */
     private applyFileContent;
+    /**
+     * Read at most `length` bytes at `offset`. Short reads are legal; an empty
+     * result means EOF. Streams (`/dev/*`) and chunked backing stores serve the
+     * slice directly, so bounded readers never materialise a whole file.
+     */
+    readRange(path: string, offset: number, length: number): Uint8Array;
+    /**
+     * Write `bytes` at `offset`, growing the file (zero-filling any gap) as
+     * needed. This is the single write primitive behind sequential writers —
+     * shell redirections, `dd`, and appends all advance an offset through it
+     * instead of rewriting the file per chunk.
+     */
+    writeRange(path: string, offset: number, bytes: Uint8Array): void;
+    /** Shrink or zero-extend a file to exactly `size` bytes. */
+    truncate(path: string, size: number): void;
+    private mountProvider;
+    /**
+     * Replace a file's bytes with `transform(current)`. The read-modify-write
+     * shape is what a backing store without positional writes forces; providers
+     * that do have them never reach here.
+     */
+    private rewriteFile;
     appendFile(path: string, content: string | Uint8Array): void;
     exists(path: string): boolean;
     access(path: string, mode: number): void;
