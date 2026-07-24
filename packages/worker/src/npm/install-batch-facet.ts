@@ -116,27 +116,20 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // cap by sending the batch as a type:'bytes' ReadableStream<Uint8Array>
       // (W7 wire protocol — see src/_shared/w7-frame.ts).
       writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<WriteBatchStreamResult>;
-      // [W4 + cache-obs-2] Optional R2-cache RPC. Return shape evolved:
-      //   v1 (deployed): Uint8Array | null
-      //   cache-obs-2:   { bytes: Uint8Array | null, events: ... }
-      // The facet adapts to BOTH shapes via runtime check (older
-      // supervisor deployments still return the v1 bare bytes shape).
-      // Once main has cache-obs-2 for >7d we can drop the v1 branch.
+      // [W4] Optional R2-cache RPC, addressed by the tarball's npm
+      // integrity digest. The supervisor re-hashes whatever the shared
+      // bucket returned before handing it back, so `bytes` need no
+      // further verification here.
       getCachedTarball?: (
-        name: string,
-        version: string,
-      ) => Promise<
-        | Uint8Array
-        | null
-        | {
-            bytes: Uint8Array | null;
-            events: Array<
-              | { kind: 'hit'; tier: string; cacheKind: string; bytes: number }
-              | { kind: 'miss'; tier: string; cacheKind: string }
-            >;
-          }
-      >;
-      putCachedTarball?: (name: string, version: string, bytes: Uint8Array | ArrayBuffer) => Promise<boolean>;
+        integrity: string,
+      ) => Promise<{
+        bytes: Uint8Array | null;
+        events: Array<
+          | { kind: 'hit'; tier: string; cacheKind: string; bytes: number }
+          | { kind: 'miss'; tier: string; cacheKind: string }
+        >;
+      }>;
+      putCachedTarball?: (integrity: string, bytes: Uint8Array | ArrayBuffer) => Promise<boolean>;
     };
   },
 ): Promise<InstallBatchResult> {
@@ -457,19 +450,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // (older supervisor deployment), the R2 leg becomes a noop and
       // we go straight to the network path with no overhead.
       const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
-      // cache-obs-2: supervisor return shape evolved from `Uint8Array
-      // | null` to `{ bytes, events }`. The race wrapper handles both:
-      // a v1 supervisor returns bare bytes (or null); a v2 supervisor
-      // returns the envelope. The downstream code only needs `bytes`
-      // — the envelope's events are spliced into cacheStatEvents.
-      const r2P: Promise<
-        | Uint8Array
-        | null
-        | { bytes: Uint8Array | null; events: any[] }
-      > = r2Available
+      const r2P: Promise<{ bytes: Uint8Array | null; events: any[] } | null> = r2Available
         ? Promise.race([
             __nimbusUseRpcResult(
-              env.SUPERVISOR.getCachedTarball!(spec.name, spec.version),
+              env.SUPERVISOR.getCachedTarball!(spec.integrity),
               (result) => result,
             ),
             new Promise<null>((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
@@ -488,18 +472,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       if (r2Available) {
         try {
           const r2Result = await r2P;
-          // Adapt to BOTH supervisor return shapes:
-          //   v1: Uint8Array | null
-          //   v2: { bytes: Uint8Array | null, events: [...] }
-          if (r2Result && typeof r2Result === 'object' && !(r2Result instanceof Uint8Array)) {
-            const env2 = r2Result as { bytes: Uint8Array | null; events: any[] };
-            r2HitBytes = env2.bytes;
+          if (r2Result) {
+            r2HitBytes = r2Result.bytes;
             // cache-obs-2: splice supervisor's per-tier events into
             // the facet's accumulator. Filter to known tiers/kinds
             // so a future supervisor schema change doesn't poison
             // the result.
-            if (Array.isArray(env2.events)) {
-              for (const e of env2.events) {
+            if (Array.isArray(r2Result.events)) {
+              for (const e of r2Result.events) {
                 if (!e || (e.kind !== 'hit' && e.kind !== 'miss')) continue;
                 if (e.tier !== 'L2' && e.tier !== 'L3') continue;
                 if (e.cacheKind !== 'tarball') continue;
@@ -515,8 +495,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(
                 }
               }
             }
-          } else {
-            r2HitBytes = r2Result as Uint8Array | null;
           }
         } catch {
           r2HitBytes = null;
@@ -524,9 +502,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       }
 
       // ── R2 HIT path ──────────────────────────────────────────────
-      // We have bytes from R2. Verify integrity if supplied; on
-      // mismatch fall through to network. On success, synthesize a
-      // body stream and skip network entirely.
+      // We have bytes from the shared cache. They were re-hashed
+      // against spec.integrity at the storage boundary, so synthesize
+      // a body stream and skip the network entirely.
       let resp: Response | undefined;
       // Definitely-assigned by either the R2-hit branch OR the network
       // branch below; explicit `!` keeps TS happy without runtime cost.
@@ -534,15 +512,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       let integrityPromise: Promise<void> = Promise.resolve();
 
       if (r2HitBytes && r2HitBytes.length > 0) {
-        // Cache HIT: use the bytes without re-hashing. The tarball was
-        // integrity-verified on the cold registry-fetch path (below) BEFORE
-        // it was written to R2/L2 (putCachedTarball's documented contract),
-        // R2 + Cache API guarantee stored-byte integrity, and `name@version`
-        // is an immutable npm coordinate — so the digest the store already
-        // matched still holds. Re-hashing every hit was pure per-install CPU
-        // with no correctness value: any real corruption surfaces loudly in
-        // the gunzip + tar + package.json-marker pipeline below, never
-        // silently. The cold registry-fetch verification stays intact.
+        // Cache HIT. The cross-tenant store is content-addressed and
+        // re-hashes on every read, so bytes that come back are already
+        // proven to be spec.integrity's tarball — there is exactly one
+        // verification point and it is not here.
         pipelinedTarballRaceWins++;
         tarballsCompleted++;
         cumulativeBytesDecoded += r2HitBytes.length;
@@ -789,7 +762,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         if (capturedTgzBytes && typeof env.SUPERVISOR.putCachedTarball === 'function') {
           try {
             await __nimbusUseRpcResult(
-              env.SUPERVISOR.putCachedTarball(spec.name, spec.version, capturedTgzBytes),
+              env.SUPERVISOR.putCachedTarball(spec.integrity, capturedTgzBytes),
               () => undefined,
             );
           } catch {
