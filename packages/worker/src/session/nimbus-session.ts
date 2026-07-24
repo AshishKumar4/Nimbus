@@ -245,6 +245,22 @@ Cloud-native development environment on Cloudflare Workers.
 | Start the starter app | \`cd app && npm install && npm run dev\` |
 | Run a Cloudflare Worker locally | \`nimbus-wrangler dev\` |
 
+## AI Models
+
+This session exposes your Cloudflare Workers AI account as an OpenAI-compatible
+endpoint on loopback. \`OPENAI_BASE_URL\`, \`OPENAI_API_BASE\` and
+\`OPENAI_API_KEY\` are already set, so coding agents and OpenAI SDK clients work
+without configuration:
+
+\`\`\`bash
+env | grep -i openai              # how to reach it
+curl $OPENAI_BASE_URL/models      # models available to your account
+\`\`\`
+
+Connect Cloudflare from the agent panel if the endpoint reports that no account
+is connected. No API key is stored in the session — the endpoint is reachable
+only from inside it.
+
 ## Install More Runtimes
 
 Nimbus installs language runtimes on demand:

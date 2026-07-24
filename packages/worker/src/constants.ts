@@ -127,6 +127,15 @@ export const DEFAULT_PREVIEW_BASE = '/preview';
 export const DEFAULT_WORKER_BASE = '/worker';
 export const WRANGLER_DEBOUNCE_MS = 250;
 
+// ── Session AI gateway ──────────────────────────────────────────────────
+//
+// The loopback port on which the supervisor serves the session's
+// OpenAI-compatible inference endpoint (src/session/ai.ts). Deliberately
+// outside the range users reach for when starting a dev server, and served
+// only on loopback — it is never registered in the PortRegistry, so it is
+// unreachable through /port/<n> or a shareable preview hostname.
+export const NIMBUS_AI_GATEWAY_PORT = 8790;
+
 // ── Compatibility ───────────────────────────────────────────────────────
 export const CF_COMPAT_DATE = '2026-04-01';
 
