@@ -56,9 +56,10 @@ const failingLoader = {
   get(_key, _cb) { throw new Error('no session DO may load the facet directly'); },
 };
 
-// `opencode serve` is resident, so it declares heavy and the facet is hosted on
-// a sibling DO — through the REAL peer legs, so the readiness gate is exercised
-// over the routed-HTTP path a peer-hosted server actually uses.
+// `opencode serve` SERVES — the readiness gate below polls /doc back through
+// PortRegistry — so it declares light and the facet stays in the coordinator's
+// own process. The peer namespace is wired to the REAL peer legs regardless, so
+// a regression that sent a serving facet to a peer would show up here.
 const peerSelf = {
   _hostedProcesses: new Map(),
   _hostedProcessWaiters: new Map(),
