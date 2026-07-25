@@ -16,7 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS, VfsStat } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
@@ -94,6 +94,98 @@ export declare const ONE_SHOT_ENTRY_DEADLINE_MS: number;
  */
 export declare const RESIDENT_BOOT_SETTLE_MS = 1000;
 export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPromiseTracker() {\n  const __tracked = new Set();\n  const __origThen = Promise.prototype.then;\n  const __origCatch = Promise.prototype.catch;\n  const __origFinally = Promise.prototype.finally;\n  let __active = false;\n  const __track = (p) => {\n    if (!p || typeof p.then !== \"function\") return p;\n    __tracked.add(p);\n    try {\n      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });\n    } catch {\n      __tracked.delete(p);\n    }\n    return p;\n  };\n  return {\n    start() {\n      __active = true;\n      try {\n        Promise.prototype.then = function(...args) {\n          const __next = __origThen.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.catch = function(...args) {\n          const __next = __origCatch.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.finally = function(...args) {\n          const __next = __origFinally.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n      } catch {\n        __active = false;\n      }\n    },\n    stop() {\n      __active = false;\n      try {\n        Promise.prototype.then = __origThen;\n        Promise.prototype.catch = __origCatch;\n        Promise.prototype.finally = __origFinally;\n      } catch {}\n    },\n    track: __track,\n    // Drain floating entry work until it settles, the process exits, or the\n    // deadline passes. Three kinds of pending work, mirroring Node's loop:\n    //\n    //   - Unsettled tracked PROMISES are microtask chains (create-vite's\n    //     clack scaffold, c3 / create-astro streaming a project to the live\n    //     VFS). Per Node a pending promise does not by itself keep a process\n    //     alive, but a floating `.then` chain is the only handle we have on\n    //     an entrypoint that has not returned its work, so it counts.\n    //   - Pending macrotask TIMERS/intervals (`__nimbusPendingTimers`).\n    //   - In-flight ASYNC OPERATIONS (`__nimbusPendingOps`): a fetch, a\n    //     response body read, an fs/child_process RPC. `await` never calls\n    //     the patched Promise.prototype.then, so a floating async entrypoint\n    //     is invisible to promise tracking \u2014 this counter is how awaited work\n    //     is seen at all. See the shim's __nimbusTrackOp.\n    //\n    // The bound is a REAL wall-clock deadline, armed as a timer rather than\n    // compared against `Date.now()`: a `setTimeout(0)` turn in workerd costs\n    // ~5\u00B5s, so the pass budget this loop used to carry (50k) expired after\n    // ~150ms and silently overrode every longer deadline the callers declared\n    // \u2014 anything slower than that, including an ordinary network fetch, was\n    // abandoned mid-flight and reported as a clean exit.\n    //\n    // The yield gap follows what is being waited on: a settling promise chain\n    // advances once per event-loop turn, so it is yielded at 0ms; a timer or\n    // an in-flight I/O op is wall-clock bound, so spinning at 0ms would just\n    // burn the isolate's CPU for the whole deadline.\n    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {\n      const __count = (name) => (typeof globalThis[name] === \"number\" ? globalThis[name] : 0);\n      const __pending = () => __tracked.size + __count(\"__nimbusPendingTimers\") + __count(\"__nimbusPendingOps\");\n      let __exited = false;\n      if (exitPromise && typeof exitPromise.then === \"function\") {\n        exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n      }\n      const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n        ? globalThis.__nimbusRawSetTimeout\n        : globalThis.setTimeout;\n      const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n        ? globalThis.__nimbusRawClearTimeout\n        : globalThis.clearTimeout;\n      let __expired = false;\n      const __deadline = __rawSetTimeout(() => { __expired = true; }, deadlineMs);\n      let __pass = 0;\n      while (!__exited && !__expired && (__pass < minPasses || __pending() > 0)) {\n        await new Promise((resolve) => __rawSetTimeout(resolve, __tracked.size > 0 ? 0 : 1));\n        __pass++;\n      }\n      try { __rawClearTimeout(__deadline); } catch {}\n      // `pending` is what the caller reports when it gives up: a one-shot\n      // program that still has work in flight did NOT finish, and exiting 0\n      // would claim it did.\n      return { passes: __pass, pending: __exited ? 0 : __pending() };\n    },\n  };\n}\n";
+/**
+ * Result of preparing facet VFS state.
+ *   - bundle:   path → content for the complete static require closure
+ *               plus bounded optional snapshot enrichment for dynamic
+ *               requires and synchronous filesystem reads. Required files
+ *               are never removed to satisfy an enrichment budget.
+ *
+ *   - manifest: path → child names map for directory listings (uncapped,
+ *               unchanged from W2.5b). Walks the SqliteVFS regardless of
+ *               the content cap so that fs.readdirSync / fs.statSync(dir)
+ *               inside the facet see the *true* directory shape rather
+ *               than just the subset that fit in the content bundle.
+ *
+ * Sizing: a manifest entry is one short string per file/dir name. For
+ * 1928 files / 319 dirs (fastify install) total manifest JSON is ~50 KiB
+ * — three orders of magnitude smaller than the content bundle.
+ */
+type FacetVfsDenial = {
+    error: 'EACCES';
+};
+type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
+type FacetVfsMetadata = Pick<VfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid'>;
+interface FacetVfsState {
+    bundle: FacetVfsBundle;
+    manifest: Record<string, string[]>;
+    metadata: Record<string, FacetVfsMetadata>;
+    /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
+    reachableCount: number;
+    /** Diagnostics: was the bundle truncated by the encoded-size cap? */
+    truncated: boolean;
+    /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
+    cacheHit?: boolean;
+    /**
+     * Memoized Worker Loader source for the bundle. Oversized bundles are
+     * split across bounded side modules so the complete require closure does
+     * not exceed the main module's text-size ceiling.
+     */
+    bundleSource?: FacetVfsBundleSource;
+    /** Memoized `JSON.stringify(manifest)`, cached for the same reason. */
+    serializedManifest?: string;
+    serializedMetadata?: string;
+    /** Move the bundle out of the main module when combined state exceeds its ceiling. */
+    bundleSideModulesRequired?: boolean;
+}
+interface FacetVfsBundleSource {
+    expression: string;
+    imports: string;
+    modules: Record<string, string>;
+}
+/**
+ * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
+ * accumulated one cell at a time.
+ *
+ * Measuring it by materializing the payload — `encode(stringify(...))`,
+ * which the eviction loop used to redo after every single eviction — puts
+ * several full copies of a multi-megabyte bundle in the supervisor DO at
+ * once. On a working tree carrying one large data file that is enough to
+ * reset the DO, which drops the shell's WebSocket server-side without
+ * closing it and wedges the user's terminal with no error anywhere.
+ *
+ * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
+ * the total is a sum of independent per-cell terms: exact, incremental, and
+ * never holding more than one cell's worth of scratch.
+ */
+export declare function encodedBundleSize(bundle: FacetVfsBundle, manifest: Record<string, string[]>): {
+    add(path: string, cell: FacetVfsBundle[string]): void;
+    remove(path: string): void;
+    readonly bytes: number;
+};
+/**
+ * Serialize a VFS bundle for Worker Loader without dropping required files.
+ *
+ * Small bundles remain inline. Large bundles are partitioned into side
+ * modules below the existing per-module encoded ceiling and merged during
+ * module evaluation. A single oversized cell is split into ordered fragments;
+ * the merge expression concatenates those fragments back to the original
+ * string or Uint8Array before module precompilation begins.
+ */
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean): FacetVfsBundleSource;
+/**
+ * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
+ * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
+ * ceiling, not a policy knob that can be raised. Base64-reviving binary
+ * cells inflates the serialized form ~4/3 over the raw bytes the encoded-size
+ * pass measured, so the payload can clear that pass and still not fit.
+ *
+ * Fail here, naming the cells that dominate the snapshot. Shipping a
+ * shortened one instead would surface inside the facet as an
+ * unattributable ENOENT or "Cannot find module" — neither require() nor
+ * readFileSync can go back to the supervisor for what was left out.
+ */
+export declare function assertStagedBundleFitsRpcPayload(serialized: string, bundle: FacetVfsBundle): void;
 /**
  * Greedy-oversample every installed package's main entry. The static
  * prefetch via require-resolver covers the require() chain literally
@@ -208,6 +300,23 @@ export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVf
     added: number;
 };
 /**
+ * W2.6a: build the prefetch bundle for FacetManager.exec.
+ *
+ * The static walker supplies the complete known require closure. Separate
+ * file and byte budgets bound optional enrichment for dynamic require and
+ * synchronous filesystem patterns without removing required files.
+ *
+ * Optional files are evicted against the exact JSON-encoded payload size.
+ * If required content still exceeds the per-module encoded ceiling, Worker
+ * Loader side modules carry the bundle without truncating the closure.
+ *
+ * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
+ * If `esbuild` is not provided, the pass is skipped (preserves prior
+ * behaviour for code paths that don't have esbuild handy).
+ *
+ */
+export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile): Promise<FacetVfsState>;
+/**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
  */
@@ -294,13 +403,12 @@ export declare class FacetManager {
     /**
      * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
      * (same key AND the VFS hasn't been mutated since) it returns the memoized
-     * bundle + pre-serialized facet source, skipping the full VFS walk +
-     * esbuild pass + re-serialization. See `prefetchBundleCache` for the
+     * bundle + pre-built facet source, skipping the full VFS walk + esbuild
+     * pass + source construction. See `prefetchBundleCache` for the
      * correctness argument behind the conservative global-revision watermark.
      *
-     * The serialized bundle/manifest are computed once on the miss path (the
-     * caller would build them anyway via generateEntrypointCode) and stored so
-     * subsequent hits skip re-serialization too.
+     * The bundle source and manifest are computed once on the miss path and
+     * stored so subsequent hits skip rebuilding them too.
      */
     private _buildPrefetchBundleCached;
     /**
@@ -525,4 +633,5 @@ export declare class FacetManager {
         nextPid: number;
     };
 }
+export {};
 //# sourceMappingURL=manager.d.ts.map
