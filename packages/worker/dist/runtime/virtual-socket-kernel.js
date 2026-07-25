@@ -467,6 +467,10 @@ class VirtualConnection {
     readAsync(maxBytes) {
         return Promise.resolve(this.read(maxBytes));
     }
+    /** Same reason: an empty read on an accepted connection is always genuine EOF. */
+    atEof() {
+        return true;
+    }
     write(bytesLike) {
         const bytes = toBytes(bytesLike);
         if (bytes.byteLength === 0 || this.settled || this.closed)
@@ -598,6 +602,9 @@ class LoopbackClientConnection {
             waiter.resolve();
         }
         return out;
+    }
+    atEof() {
+        return (this.eof || this.closed) && this.inbound.pendingBytes === 0;
     }
     /** Blocks the guest until response bytes arrive; an empty result is EOF. */
     async readAsync(maxBytes) {
@@ -895,6 +902,15 @@ export class VirtualSocketKernel {
         if (!conn)
             return [];
         return conn.readAsync(Number(maxBytes));
+    }
+    /**
+     * Whether an empty recv() means end-of-response rather than "not yet".
+     * Guests that poll instead of suspending (ruby.wasm, whose JS bridge is
+     * synchronous) need the two apart to avoid truncating a response.
+     */
+    atEof(id) {
+        const conn = this.connections.get(Number(id));
+        return conn ? conn.atEof() : true;
     }
     send(id, bytesLike) {
         const conn = this.connections.get(Number(id));

@@ -635,7 +635,7 @@ async function spawnPythonSocketProcess(facetMgr, assetPaths, sideModules, args,
         spawnedPid: spawned.pid,
     };
 }
-function buildPythonSocketProcessWorker(preamble, sideModules) {
+export function buildPythonSocketProcessWorker(preamble, sideModules) {
     const sideModuleImports = [];
     for (const mod of sideModules.modules) {
         const id = wasmImportIdentifier(mod.moduleKey);

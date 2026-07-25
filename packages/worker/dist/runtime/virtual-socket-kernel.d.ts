@@ -112,6 +112,8 @@ interface VirtualSocketConnection {
     readonly id: number;
     read(maxBytes: number): number[];
     readAsync(maxBytes: number): Promise<number[]>;
+    /** True once no further bytes can arrive, so an empty read means EOF, not "not yet". */
+    atEof(): boolean;
     write(bytesLike: VirtualSocketBytesLike): number;
     close(): void;
 }
@@ -129,6 +131,8 @@ declare class VirtualConnection implements VirtualSocketConnection {
     read(maxBytes: number): number[];
     /** The whole request is buffered before the connection is accepted, so nothing is ever awaited. */
     readAsync(maxBytes: number): Promise<number[]>;
+    /** Same reason: an empty read on an accepted connection is always genuine EOF. */
+    atEof(): boolean;
     write(bytesLike: VirtualSocketBytesLike): number;
     /** EOF from the server side (or request teardown); completes until-close bodies. */
     close(): void;
@@ -184,6 +188,12 @@ export declare class VirtualSocketKernel {
      * spinning on recv(). An empty result is EOF.
      */
     recvAsync(id: number, maxBytes: number): Promise<number[]>;
+    /**
+     * Whether an empty recv() means end-of-response rather than "not yet".
+     * Guests that poll instead of suspending (ruby.wasm, whose JS bridge is
+     * synchronous) need the two apart to avoid truncating a response.
+     */
+    atEof(id: number): boolean;
     send(id: number, bytesLike: VirtualSocketBytesLike): number;
     close(id: number): void;
     pending(port: number): number;
