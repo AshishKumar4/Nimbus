@@ -7,6 +7,9 @@
  *     reach an OpenAI-compatible endpoint on session loopback,
  *     `http://127.0.0.1:<NIMBUS_AI_GATEWAY_PORT>/v1`, seeded into the session
  *     environment as OPENAI_BASE_URL / OPENAI_API_BASE / OPENAI_API_KEY.
+ *     A tool that ignores OPENAI_BASE_URL and calls its own vendor host still
+ *     lands here: the seeded key is a session capability token, and egress
+ *     carrying it is mediated back to this endpoint (_shared/ai-egress.ts).
  *   • The Nimbus agent (session/agent.ts) builds its AI-SDK provider with a
  *     `fetch` that calls straight into `handleSessionAiRequest`. Same code,
  *     no network hop.
@@ -19,9 +22,14 @@
  * ───────────────────────────────────────────
  * The user's Cloudflare OAuth access token NEVER enters the sandbox. It lives
  * in Durable Object storage (`nimbus:ai:credential`), is attached to the
- * upstream request here in the supervisor, and the endpoint the session sees
- * needs no credential at all: loopback is already session-private, so
- * OPENAI_API_KEY is a fixed placeholder the gateway ignores.
+ * upstream request here in the supervisor, and never travels the other way:
+ * `proxyUpstream` builds its headers from scratch, so nothing the caller sent
+ * — including the session token — reaches Cloudflare, and nothing Cloudflare
+ * was sent reaches the caller.
+ *
+ * What the sandbox holds instead is the session token: it names this session's
+ * gateway and nothing else, and every path that honours it (loopback, mediated
+ * egress) ends up in this module, where the real credential is substituted.
  *
  * Why DO storage rather than the browser cookie the agent used to read: a
  * request originating inside the sandbox carries no cookie. The supervisor
@@ -45,12 +53,6 @@ export interface SessionAiHost {
 }
 /** DO storage key holding this session's Cloudflare credential of record. */
 export declare const SESSION_AI_CREDENTIAL_KEY = "nimbus:ai:credential";
-/**
- * The value seeded as OPENAI_API_KEY. Not a secret and not checked: the
- * endpoint is loopback-only, so possession of it proves nothing. It exists
- * because OpenAI clients refuse to start with an empty key.
- */
-export declare const SESSION_AI_PLACEHOLDER_KEY = "nimbus-session";
 export declare const DEFAULT_SESSION_AI_MODEL = "@cf/zai-org/glm-5.2";
 export declare const DEFAULT_SESSION_AI_GATEWAY_ID = "default";
 export interface SessionAiConfig {
@@ -87,7 +89,13 @@ type StoredCredential = z.infer<typeof StoredCredentialSchema>;
 export declare function sessionAiBaseUrl(): string;
 /**
  * The environment every session is seeded with, so any OpenAI-compatible tool
- * discovers the gateway without being told about it.
+ * reaches the gateway without being told about it — by the base URL if it reads
+ * one, and otherwise by the token, which mediates its egress back here.
+ *
+ * The token is minted per session rather than fixed, and is published under
+ * NIMBUS_AI_TOKEN as well so that mediation still has something to compare
+ * against after a user exports their own OPENAI_API_KEY (whose request must
+ * then go to the real provider, untouched).
  */
 export declare function sessionAiEnv(): Record<string, string>;
 export declare function readSessionAiConfig(env: Record<string, unknown>): SessionAiConfig;
