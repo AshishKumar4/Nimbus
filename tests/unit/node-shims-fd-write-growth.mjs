@@ -98,6 +98,32 @@ assert.ok(
   `doubling the write count multiplied the copied bytes by ${(copied / half).toFixed(1)} — expected ~2 (linear), got quadratic growth`,
 );
 
+// The cell's BACKING BUFFER is what structured clone puts on the wire when the
+// facet flushes it, and that payload is capped (MAX_RPC_SAFE_PAYLOAD_BYTES,
+// 28 MiB). Growth reserve therefore cannot be unbounded: a 26 MiB file in a
+// doubled 32 MiB buffer silently lost its write on a deployed worker.
+{
+  const writes = {};
+  const { fs, Buffer } = factory(
+    {}, {}, writes, { 'home/user': true }, {}, null,
+    { uid: 0, gid: 0, groups: [0], umask: 0o022 },
+    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+  );
+  const fd = fs.openSync('/home/user/big.bin', 'w');
+  const chunk = Buffer.alloc(1024 * 1024, 0x42);
+  for (let i = 0; i < 20; i++) fs.writeSync(fd, chunk);
+  fs.closeSync(fd);
+
+  const cell = writes['home/user/big.bin'];
+  assert.equal(cell.byteLength, 20 * 1024 * 1024, 'the 20 MiB cell holds every byte');
+  const reserve = cell.buffer.byteLength - cell.byteOffset - cell.byteLength;
+  assert.ok(
+    reserve <= 4 * 1024 * 1024,
+    `a ${(cell.byteLength / 1048576).toFixed(0)} MiB cell carries ${(reserve / 1048576).toFixed(1)} MiB of ` +
+      'growth reserve — the write RPC serialises the whole backing buffer, so the reserve is payload',
+  );
+}
+
 console.log(
   `ok - node-shims-fd-write-growth (${WRITES} x ${CHUNK}B moved ${(copied / TOTAL).toFixed(1)}x the data)`,
 );

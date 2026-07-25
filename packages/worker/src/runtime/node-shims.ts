@@ -42,6 +42,7 @@ import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
 import {
   FACET_PROVIDED_PACKAGES,
+  MAX_RPC_SAFE_PAYLOAD_BYTES,
   NIMBUS_AI_GATEWAY_PORT,
   NODE_VERSION,
   NODE_VERSIONS,
@@ -619,7 +620,7 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await _fsRpc(supervisor.writeFile(absPath, _exactCell(__vfsWrites[k])), "write", absPath, () => undefined);
+      await _fsRpc(supervisor.writeFile(absPath, __vfsWrites[k]), "write", absPath, () => undefined);
       delete __vfsWrites[k];
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
@@ -661,6 +662,20 @@ const __fsMod = (() => {
   // cell per call made a write loop quadratic and OOMed the facet on a 26 MiB
   // file. A write that lands on bytes already in the cell still copies, so a
   // view handed out earlier is never mutated underneath its holder.
+  //
+  // The result is an exactly-sized VIEW over a buffer that may carry reserve.
+  // Everything that reads a cell goes through its byteLength — readFileSync
+  // copies, statSync sizes it, the supervisor write RPC takes a Uint8Array —
+  // with one exception: structured clone carries the whole BACKING BUFFER
+  // across that RPC, so the reserve is part of the write payload — and that
+  // payload is capped. Measured on a deployed worker: a 26 MiB cell in a
+  // doubled 32 MiB buffer silently lost its flush, and normalising it to an
+  // exact copy first cost a third copy of the file and killed the write
+  // outright. So the reserve doubles while it is cheap, then grows in fixed
+  // steps, and stops entirely rather than push a cell past the RPC ceiling —
+  // a file that would fit exactly must never be made not to fit.
+  const _CELL_RESERVE_CAP = 2 * 1024 * 1024;
+  const _CELL_PAYLOAD_CAP = ${MAX_RPC_SAFE_PAYLOAD_BYTES};
   function _spliceCell(base, pos, bytes) {
     const size = Math.max(base.byteLength, pos + bytes.byteLength);
     const capacity = base.buffer.byteLength - base.byteOffset;
@@ -670,24 +685,18 @@ const __fsMod = (() => {
       grown.set(bytes, pos);
       return grown;
     }
-    const reserve = size > capacity ? Math.max(size, capacity * 2) : capacity;
-    const next = new Uint8Array(new ArrayBuffer(reserve), 0, size);
+    if (size <= capacity) {
+      const next = new Uint8Array(new ArrayBuffer(capacity), 0, size);
+      next.set(base, 0);
+      next.set(bytes, pos);
+      return next;
+    }
+    const wanted = Math.min(Math.max(size, capacity * 2), size + _CELL_RESERVE_CAP);
+    const next = new Uint8Array(new ArrayBuffer(wanted < _CELL_PAYLOAD_CAP ? wanted : size), 0, size);
     next.set(base, 0);
     next.set(bytes, pos);
     return next;
   }
-
-  // A cell grown in place shares an over-reserved buffer, and structured clone
-  // copies the WHOLE backing buffer — so anything crossing the supervisor RPC
-  // boundary is handed an exactly-sized view instead.
-  function _exactCell(cell) {
-    if (!_isBytes(cell)) return cell;
-    if (cell.byteOffset === 0 && cell.byteLength === cell.buffer.byteLength) return cell;
-    return cell.slice();
-  }
-  // The facet's exit-time flush of __vfsWrites lives in the generated runner,
-  // outside this module, and pushes the same cells over the same RPC.
-  globalThis.__nimbusExactCell = _exactCell;
 
   // Overlay \`bytes\` at \`pos\` into the local sync-view cell so sync reads
   // stay coherent after a live ranged write. No-op when there is no cell.
@@ -909,7 +918,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.writeFile === "function") {
       const cell = _writtenCell(absPath);
       if (cell !== undefined) {
-        await _fsRpc(supervisor.writeFile(absPath, _exactCell(cell)), "write", p, () => undefined);
+        await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
         if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
         _markVfsStale();
       }
@@ -952,7 +961,7 @@ const __fsMod = (() => {
     // Creation (no live file) or pending local writes: flush the merged cell.
     const cell = _writtenCell(absPath);
     if (cell !== undefined) {
-      await _fsRpc(supervisor.writeFile(absPath, _exactCell(cell)), "write", p, () => undefined);
+      await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
       if (__vfsWrites) delete __vfsWrites[k];
       _markVfsStale();
     }
