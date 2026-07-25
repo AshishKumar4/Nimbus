@@ -37,12 +37,20 @@
  */
 import { generateStreamsCode } from './streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
+import { generateUndiciShimCode } from './undici-shim.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
-import { NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS } from '../constants.js';
+import {
+  FACET_PROVIDED_PACKAGES,
+  NIMBUS_AI_GATEWAY_PORT,
+  NODE_VERSION,
+  NODE_VERSIONS,
+} from '../constants.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
+const UNDICI_SHIM_CODE = generateUndiciShimCode();
+const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
 const EXPORTS_RESOLVER_JS = getExportsResolverJS();
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
@@ -2472,6 +2480,11 @@ ${STREAMS_CODE}
 ${SQLITE_SHIM_CODE}
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  undici (npm) — mapped onto the platform HTTP stack ─────────────
+// ═══════════════════════════════════════════════════════════════════════
+${UNDICI_SHIM_CODE}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 const __utilMod = {
@@ -4505,7 +4518,12 @@ builtins.tty = {
     getWindowSize() { return [this.columns, this.rows]; }
   },
 };
-	builtins.module = { get builtinModules() { return Object.keys(builtins); }, createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)), _resolveFilename: (id) => id, _cache: {} };
+// builtinModules is the node CORE list. The table also carries the npm
+// packages the facet provides itself (FACET_PROVIDED_PACKAGES), which are not
+// core and must not be reported as such — a package that sniffs this list
+// would otherwise conclude e.g. undici ships with node.
+const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL});
+	builtins.module = { get builtinModules() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); }, createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)), _resolveFilename: (id) => id, _cache: {} };
 // Bind to globalThis: workerd's timer globals throw "Illegal invocation"
 // when called with a receiver other than globalThis (i.e. as
 // timers.setInterval(...)), which clack's spinner — used by
@@ -4880,6 +4898,14 @@ builtins["node:dns/promises"] = builtins["dns/promises"];
 // (see line 707), sufficient for undici@7.25.0 + undici@8.2.0.
 builtins["util/types"] = builtins.util.types;
 builtins["node:util/types"] = builtins["util/types"];
+
+// undici (npm, not node core) — Nimbus provides it instead of node_modules.
+// __requireFrom checks this table BEFORE resolving, so this wins over any
+// installed copy, and esbuild lowers every ESM import of "undici" into the
+// same require. Rationale for shadowing it at all: runtime/undici-shim.ts.
+// No "node:undici" alias — it is not a node builtin, and the prefetch walker
+// skips it via the same FACET_PROVIDED_PACKAGES list.
+builtins.undici = __undiciMod;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
