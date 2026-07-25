@@ -16,7 +16,43 @@ function __nimbusDisposeRpcResult(value) {
   const dispose = value[Symbol.dispose];
   if (typeof dispose === "function") { try { dispose.call(value); } catch {} }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  in-flight async operations ─────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// Node keeps a process alive for its ACTIVE REQUESTS — a pending fetch, a
+// pending fs call, a running child — not for pending promises. The facet's
+// entry drain cannot learn that by watching promises: `await` resolves
+// through PerformPromiseThen, which never calls the patched
+// Promise.prototype.then, so a floating `(async () => { await fetch(u);
+// console.log(x); })()` looks finished the instant its synchronous part
+// returns and the rest of the program is dropped on the floor.
+//
+// Every external operation a facet can start crosses one of two seams:
+// globalThis.fetch (network, in-session loopback, AI egress — plus reading
+// the body of the Response it returns) and the supervisor RPC helper below
+// (fs, child_process, ports, stdio). Counting there is the honest liveness
+// signal, and it is what globalThis.__nimbusPendingOps reports.
+const __nimbusOrigThen = Promise.prototype.then;
+if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+function __nimbusTrackOp(promise) {
+  if (!promise || typeof promise.then !== "function") return promise;
+  globalThis.__nimbusPendingOps++;
+  const settled = () => { globalThis.__nimbusPendingOps--; };
+  try { __nimbusOrigThen.call(promise, settled, settled); }
+  catch { settled(); }
+  return promise;
+}
+
 async function __nimbusUseRpcResult(promise, use) {
+  globalThis.__nimbusPendingOps++;
+  try { return await __nimbusUseRpcResultUnref(promise, use); }
+  finally { globalThis.__nimbusPendingOps--; }
+}
+// Facet infrastructure that long-polls the supervisor for as long as the
+// facet lives — the attached-process stdin pump — is the analogue of an
+// unref'd handle: real I/O, but never a reason to keep the program alive.
+async function __nimbusUseRpcResultUnref(promise, use) {
   const value = await promise;
   try { return await use(value); }
   finally { __nimbusDisposeRpcResult(value); }
@@ -110,7 +146,7 @@ async function __nimbusUseRpcResult(promise, use) {
     }
     return null;
   };
-  globalThis.fetch = function fetch(input, init) {
+  const __dispatch = (input, init) => {
     try {
       if (__supervisor && typeof __supervisor.routeLoopback === "function") {
         const url = __fetchUrl(input);
@@ -124,6 +160,21 @@ async function __nimbusUseRpcResult(promise, use) {
     headers.set("user-agent", "node");
     return __origFetch(input, { ...(init || {}), headers });
   };
+  globalThis.fetch = function fetch(input, init) {
+    return __nimbusTrackOp(__dispatch(input, init));
+  };
+  // A fetch settles once the headers arrive; reading the body is a SECOND
+  // in-flight operation on the same connection, and `const r = await
+  // fetch(u); const j = await r.json()` is the shape most programs use.
+  for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
+    const __orig = Response.prototype[__name];
+    if (typeof __orig !== "function") continue;
+    try {
+      Response.prototype[__name] = function(...args) {
+        return __nimbusTrackOp(__orig.apply(this, args));
+      };
+    } catch { /* host object is sealed — the drain still sees the fetch itself */ }
+  }
 })();
 
 let __nimbusLiveStdinPump = null;
@@ -5140,7 +5191,10 @@ function __makeProcessStdin() {
     while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       let packet;
       try {
-        packet = await __nimbusUseRpcResult(
+        // Unref'd: this long-poll runs for the whole life of an attached
+        // facet, so counting it as in-flight work would mean the entry drain
+        // never sees the program finish.
+        packet = await __nimbusUseRpcResultUnref(
           __supervisor.cpReadStdin(liveChildPid, 1000),
           (result) => result,
         );
