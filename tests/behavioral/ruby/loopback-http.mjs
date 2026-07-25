@@ -178,36 +178,35 @@ try {
       JSON.stringify(stripped.slice(-800)));
   }
 
-  // 6. The accept side: a plain TCPServer, no WEBrick. A Nimbus server is
-  //    driven by the cooperative pump (a runtime with no background thread
-  //    cannot block in accept), so the script supplies the pump entrypoint and
-  //    the accepted socket is read and written like any other IO.
+  // 6. The accept side: a plain stdlib TCPServer with an ordinary blocking
+  //    accept loop. No Nimbus-specific entrypoint, no adapter, nothing that
+  //    knows it is running in Nimbus.
   await t.run(heredocCommand('rb_tcpserver.rb', [
     'require "socket"',
-    '$server = TCPServer.new("0.0.0.0", 8322)',
-    'def __nimbus_handle_virtual_socket_request(port)',
-    '  sock = $server.accept_nonblock(exception: false)',
-    '  return false if sock == :wait_readable || sock.nil?',
+    'server = TCPServer.new("0.0.0.0", 8322)',
+    'served = 0',
+    'loop do',
+    '  sock = server.accept',
+    '  served += 1',
     '  head = sock.gets("\\r\\n\\r\\n").to_s',
-    '  body = "RUBY_TCP_OK " + head.lines.first.to_s.split(" ")[1].to_s',
+    '  body = "RUBY_TCP_OK n=#{served} " + head.lines.first.to_s.split(" ")[1].to_s',
     '  sock.write("HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nContent-Length: #{body.bytesize}\\r\\n\\r\\n#{body}")',
     '  sock.close',
-    '  true',
-    'rescue Exception => e',
-    '  $stderr.write("#{e.class}: #{e.message}\\n")',
-    '  false',
     'end',
-    'sleep 3600',
   ].join('\n')), 10_000);
   let tcpPid = 0;
   {
     const { output } = await t.run('ruby rb_tcpserver.rb', 120_000);
     const m = stripAnsi(output).match(/pid=(\d+)/);
     tcpPid = m ? Number(m[1]) : 0;
-    const proxied = await fetchPort(sid, 8322, 'ping');
+    const first = await fetchPort(sid, 8322, 'ping');
+    const second = await fetchPort(sid, 8322, 'pong');
     a.check('a plain Ruby TCPServer accepts a connection and serves it',
-      proxied.status === 200 && proxied.body === 'RUBY_TCP_OK /ping',
-      `pid=${tcpPid} status=${proxied.status} body=${JSON.stringify(proxied.body.slice(0, 200))} ${JSON.stringify(stripAnsi(output).slice(-400))}`);
+      first.status === 200 && first.body === 'RUBY_TCP_OK n=1 /ping',
+      `pid=${tcpPid} status=${first.status} body=${JSON.stringify(first.body.slice(0, 200))} ${JSON.stringify(stripAnsi(output).slice(-400))}`);
+    a.check('and keeps serving: the accept loop resumes rather than restarting',
+      second.status === 200 && second.body === 'RUBY_TCP_OK n=2 /pong',
+      `status=${second.status} body=${JSON.stringify(second.body.slice(0, 200))}`);
   }
   if (tcpPid > 0) await t.run(`kill ${tcpPid}`, 10_000).catch(() => {});
 

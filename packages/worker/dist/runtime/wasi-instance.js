@@ -147,6 +147,7 @@ const __WASI_O_TRUNC     = 8;
 const __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW = 1;
 // fdflags (fd_write / path_open) — bit 0 is O_APPEND.
 const __WASI_FDFLAGS_APPEND = 1;
+const __WASI_FDFLAGS_NONBLOCK = 4;
 // fstflags (filestat_set_times)
 const __WASI_FSTFLAGS_ATIM     = 1;
 const __WASI_FSTFLAGS_ATIM_NOW = 2;
@@ -187,6 +188,11 @@ const __WASI_TCP_PATH_PREFIX = '/dev/tcp/';
 // (ruby.wasm) resolve descriptors through their own fd table, so a descriptor
 // handed to them out of band is not one they can use.
 const __WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
+// A listening socket, as a descriptor. Reading it is accept(2): the read
+// suspends until a connection is queued and yields that connection's id, so a
+// server's accept loop is an ordinary blocking read and needs no cooperative
+// pump driving it from outside.
+const __WASI_LISTEN_PATH_PREFIX = '/dev/nimbus/listen/';
 
 // WASI socket and polling support B7: resolved at preamble module-init via dynamic import.
 // CF docs: "TCP sockets cannot be created in global scope and shared
@@ -437,6 +443,68 @@ function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
   if (opened.errno !== __WASI_ESUCCESS) return opened.errno;
   writeU32LE(fdOutPtr, __wasiAdoptSocket(opened.socket, fdflags));
   return __WASI_ESUCCESS;
+}
+
+function __wasiKernelOrNull(what) {
+  const kernel = globalThis.__nimbusVirtualSockets;
+  if (kernel) return kernel;
+  globalThis.__nimbusWasiLastSocketError =
+    'this process has no Nimbus virtual socket kernel, so ' + what;
+  return null;
+}
+
+// Open a listening socket as a descriptor. The port must already be bound; the
+// descriptor is the accept queue, not the bind.
+function __wasiOpenListener(pathArg, fdflags, fdOutPtr, writeU32LE) {
+  const port = parseInt(pathArg.substring(__WASI_LISTEN_PATH_PREFIX.length), 10);
+  if (!Number.isInteger(port) || port <= 0 || port >= 65536) return __WASI_EINVAL;
+  const kernel = __wasiKernelOrNull('ports cannot be listened on');
+  if (!kernel) return __WASI_ENOSYS;
+  if (!kernel.listeners.has(port)) {
+    globalThis.__nimbusWasiLastSocketError = 'port ' + port + ' is not bound';
+    return __WASI_ENOTCONN;
+  }
+  const fd = nextFd++;
+  fdTable.set(fd, { kind: 'listener', port, fdflags: fdflags | 0 });
+  writeU32LE(fdOutPtr, fd);
+  return __WASI_ESUCCESS;
+}
+
+// accept(2) over a listening descriptor. Blocking by default (the read parks
+// until a connection arrives); O_NONBLOCK yields EAGAIN on an empty queue.
+// Either way the bytes handed back are the accepted connection's id, which the
+// guest then opens as a socket descriptor.
+async function __wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8) {
+  const kernel = __wasiKernelOrNull('connections cannot be accepted');
+  if (!kernel) return __WASI_ENOSYS;
+  try {
+    let accepted;
+    if ((entry.fdflags & __WASI_FDFLAGS_NONBLOCK) !== 0) {
+      accepted = kernel.acceptNow(entry.port);
+      if (!accepted) { writeU32LE(nreadPtr, 0); return __WASI_EAGAIN; }
+    } else {
+      accepted = await kernel.accept(entry.port);
+    }
+    const bytes = new TextEncoder().encode(String(accepted.id) + '\\n');
+    const dv = view();
+    const memU8 = u8();
+    let total = 0;
+    for (let i = 0; i < iovsLen && total < bytes.length; i++) {
+      const iov = iovsPtr + i * 8;
+      const bufPtr = dv.getUint32(iov, true);
+      const bufLen = dv.getUint32(iov + 4, true);
+      const n = Math.min(bufLen, bytes.length - total);
+      memU8.set(bytes.subarray(total, total + n), bufPtr);
+      total += n;
+    }
+    writeU32LE(nreadPtr, total);
+    return __WASI_ESUCCESS;
+  } catch (e) {
+    // A rejected Suspending import traps in the guest with no diagnosis, so
+    // failures become an errno plus a recorded reason instead.
+    globalThis.__nimbusWasiLastSocketError = (e && e.message) ? e.message : String(e);
+    return __WASI_ENOTCONN;
+  }
 }
 
 // Bind an already-accepted kernel connection to a file descriptor, so a
@@ -907,6 +975,11 @@ function __wasiMakeImports(opts) {
       // reads via the JSPI socket body (returns a Promise the Suspending
       // wrapper awaits); a directory fd is EISDIR per POSIX, not EBADF.
       if (entry.kind === 'socket') return __rawSockRecv(fd, iovsPtr, iovsLen, 0, nreadPtr, 0);
+      // Reading a listening socket is accept(2); the Suspending wrapper awaits
+      // the returned Promise, so the guest's accept loop simply blocks.
+      if (entry.kind === 'listener') {
+        return __wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8);
+      }
       if (entry.kind === 'dir' || entry.kind === 'preopen') return __WASI_EISDIR;
       if (entry.kind !== 'file') return __WASI_EBADF;
       const file = getFile(entry.vfsPath);
@@ -990,7 +1063,7 @@ function __wasiMakeImports(opts) {
       }
       const entry = fdTable.get(fd);
       // A socket is a non-seekable stream, same as stdio: ESPIPE, not EBADF.
-      if (entry && entry.kind === 'socket') return __WASI_ESPIPE;
+      if (entry && (entry.kind === 'socket' || entry.kind === 'listener')) return __WASI_ESPIPE;
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       const delta = typeof offsetArg === 'bigint' ? offsetArg : BigInt(offsetArg | 0);
       const cur = BigInt(entry.offset);
@@ -1013,7 +1086,7 @@ function __wasiMakeImports(opts) {
         return __WASI_ESPIPE;
       }
       const entry = fdTable.get(fd);
-      if (entry && entry.kind === 'socket') return __WASI_ESPIPE;
+      if (entry && (entry.kind === 'socket' || entry.kind === 'listener')) return __WASI_ESPIPE;
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       writeU64LE(offsetPtr, BigInt(entry.offset));
       return __WASI_ESUCCESS;
@@ -1030,7 +1103,7 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_DIRECTORY;
       } else if (entry.kind === 'file') {
         ftype = __WASI_FT_REGULAR_FILE;
-      } else if (entry.kind === 'socket') {
+      } else if (entry.kind === 'socket' || entry.kind === 'listener') {
         ftype = __WASI_FT_SOCKET_STREAM;  // WASI socket and polling support B7
       }
       dv.setUint8(statPtr, ftype);
@@ -1053,7 +1126,7 @@ function __wasiMakeImports(opts) {
       if (!entry) return __WASI_EBADF;
       // Sockets track the mask too: guests set O_NONBLOCK on a socket and
       // then read it back through fd_fdstat_get.
-      if (entry.kind === 'file' || entry.kind === 'socket') entry.fdflags = flags;
+      if (entry.kind === 'file' || entry.kind === 'socket' || entry.kind === 'listener') entry.fdflags = flags;
       return __WASI_ESUCCESS;
     },
 
@@ -1113,6 +1186,9 @@ function __wasiMakeImports(opts) {
       }
       if (guestPath.startsWith(__WASI_ACCEPTED_PATH_PREFIX)) {
         return __wasiOpenAcceptedSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
+      }
+      if (guestPath.startsWith(__WASI_LISTEN_PATH_PREFIX)) {
+        return __wasiOpenListener(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
       // Honor LOOKUPFLAGS_SYMLINK_FOLLOW strictly: bit 0 set → follow.
       // wasi-libc clears this bit for O_NOFOLLOW, so dirflags === 0 IS
@@ -1485,7 +1561,7 @@ function __wasiMakeImports(opts) {
         timesPath = entry.vfsPath;
       } else if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
         ftype = __WASI_FT_CHARACTER_DEVICE;
-      } else if (entry.kind === 'socket') {
+      } else if (entry.kind === 'socket' || entry.kind === 'listener') {
         // Guests fstat a socket fd to learn it is not a regular file (Ruby's
         // IO layer keys buffering and seekability off exactly this).
         ftype = __WASI_FT_SOCKET_STREAM;
@@ -1865,6 +1941,22 @@ function __wasiMakeImports(opts) {
           return Promise.resolve({
             idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes, flags: 0,
           });
+        }
+        // Listening socket: readable exactly when a connection is queued.
+        if (entry.kind === 'listener') {
+          if (s.tag === __WASI_EVENTTYPE_FD_WRITE) {
+            return Promise.resolve({ idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: 0n, flags: 0 });
+          }
+          const kernel = globalThis.__nimbusVirtualSockets;
+          if (!kernel) {
+            return Promise.resolve({ idx: s.idx, error: __WASI_ENOSYS, type: s.tag, nbytes: 0n, flags: 0 });
+          }
+          const ready = () => ({
+            idx: s.idx, error: __WASI_ESUCCESS, type: s.tag,
+            nbytes: BigInt(kernel.pending(entry.port)), flags: 0,
+          });
+          if (kernel.pending(entry.port) > 0) return Promise.resolve(ready());
+          return kernel.waitReadable([entry.port], null).then(ready);
         }
         // Socket fd.
         if (entry.kind === 'socket') {
@@ -2256,7 +2348,15 @@ async function __wasiRunStartAsync(instance, ctx) {
 }
 // ── END: wasi-instance preamble ─────────────────────────────────────────
 `;
-/** Names of the WASI imports implemented by this shim. */
+/**
+ * Names of the WASI imports implemented by this shim.
+ *
+ * `wasm-runner --help` prints this to users, so under-reporting sends a caller
+ * away from a syscall that is right there. The shim is a source string the
+ * Worker cannot eval at runtime, so the list is written by hand and
+ * `tests/unit/wasi-implemented-fns.mjs` holds it to what the shim actually
+ * exports.
+ */
 export const WASI_IMPLEMENTED_FNS = Object.freeze([
     // core WASI
     'args_get', 'args_sizes_get',
@@ -2278,6 +2378,7 @@ export const WASI_IMPLEMENTED_FNS = Object.freeze([
     'fd_pread', 'fd_pwrite',
     'fd_readdir',
     'fd_renumber',
+    'fd_advise', 'fd_datasync', 'fd_sync',
     // symlinks, rights, sockets, and polling
     'path_symlink', 'path_readlink', 'path_link',
     'fd_allocate',
