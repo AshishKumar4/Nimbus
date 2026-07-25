@@ -58,6 +58,18 @@ try {
       `status=${r.status} body=${JSON.stringify(r.body)} contentLength=${r.headers.get('content-length')} elapsed=${r.elapsed}ms`);
   }
 
+  {
+    // WEBrick keeps a timeout watcher on a second thread, and a server that
+    // only serves once looks healthy on the first request and is dead on the
+    // second. So the load-bearing assertion is that it keeps serving.
+    const paths = ['/one', '/two', '/three', '/four', '/five'];
+    const results = [];
+    for (const path of paths) results.push(await fetchPort(sid, 8125, path));
+    a.check('WEBrick keeps serving request after request',
+      results.every((r, i) => r.status === 200 && r.body === `webrick ok ${paths[i]}`),
+      results.map((r, i) => `${paths[i]}=${r.status}/${r.elapsed}ms/${JSON.stringify(r.body.slice(0, 60))}`).join(' '));
+  }
+
   if (pid > 0) await t.run(`kill ${pid}`, 10_000).catch(() => {});
 } finally {
   await t.close();

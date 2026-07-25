@@ -46,6 +46,7 @@ import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
+import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
 import {
   defaultGemHome,
   installRubyBundle,
@@ -616,7 +617,8 @@ async function spawnRubySocketProcess(
       progName: args.progName,
       cwd: args.cwd,
       fsSnapshot: args.fsSnapshot,
-      rubyPrelude: RUBY_SOCKET_SHIM,
+      // Threads first: the socket shim parks through the scheduler.
+    rubyPrelude: `${RUBY_GREEN_THREADS}\n${RUBY_SOCKET_SHIM}`,
     },
   }).catch(() => null);
   if (!spawned) {
@@ -735,26 +737,70 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     '',
     preamble,
     '',
-    'globalThis.__nimbusRubySocketQueue = globalThis.__nimbusRubySocketQueue || Promise.resolve();',
-    'function __nimbusRunRubySocketCall(fnName, port) {',
-    '  const run = async () => {',
-    '    const args = globalThis.__nimbusRubyProcessArgs;',
-    '    if (!args) return false;',
-    '    const n = Number(port);',
-    '    if (!Number.isInteger(n) || n <= 0 || n >= 65536) return false;',
-    '    const code = "exit((" + fnName + "(" + n + ")) ? 0 : 70)";',
-    '    const result = await globalThis.__rubyRun({ ...args, userCode: code, rubyPrelude: "" });',
-    '    if (result && result.stderr) (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push(result.stderr);',
-    '    const ok = !!(result && Number(result.exitCode || 0) === 0);',
-    '    if (!ok) globalThis.__nimbusVirtualSocketLastError = (result && result.stderr) ? String(result.stderr).trim() : "runtime handler did not accept the request";',
-    '    return ok;',
-    '  };',
-    '  const task = globalThis.__nimbusRubySocketQueue.then(run, run);',
-    '  globalThis.__nimbusRubySocketQueue = task.then(() => {}, () => {});',
+    // Drive the process when a connection is queued. This is the whole of the
+    // runtime's involvement in serving: it knows nothing about what is
+    // listening, only that the process should run until it parks.
+    //
+    // The VM lock is held only while Ruby is actually running, so a handler
+    // that parks does not stall other connections, and it is released only
+    // when Ruby returns - never on a timeout, which would let a second resume
+    // enter a live fiber.
+    'globalThis.__nimbusRubyResumeQueue = globalThis.__nimbusRubyResumeQueue || Promise.resolve();',
+    'function __nimbusRubyStep() {',
+    '  const run = () => globalThis.__nimbusRubyResumeMain();',
+    '  const task = globalThis.__nimbusRubyResumeQueue.then(run, run);',
+    '  globalThis.__nimbusRubyResumeQueue = task.then(() => {}, () => {});',
     '  return task;',
     '}',
-    'globalThis.__nimbusVirtualSocketRequestQueued = function __nimbusVirtualSocketRequestQueued(port) {',
-    '  return __nimbusRunRubySocketCall("__nimbus_handle_virtual_socket_request", port);',
+    // Timed work the process still owes: the wall-clock moment its earliest
+    // sleeper is due. It lives on the global rather than in one driver's
+    // closure because no single request may own it. A timer belongs to the
+    // request context that created it, and workerd cancels that timer without
+    // a word when the request ends - so a driver anchored to the first
+    // connection stops dead the moment that connection answers, and every
+    // other connection waits out the response timeout instead.
+    'globalThis.__nimbusRubyWakeAt = globalThis.__nimbusRubyWakeAt || null;',
+    'globalThis.__nimbusRubyIdleDrivers = globalThis.__nimbusRubyIdleDrivers || new Set();',
+    'function __nimbusRubyNoteWake(wakeAfter) {',
+    '  globalThis.__nimbusRubyWakeAt = (wakeAfter === null || wakeAfter === undefined)',
+    '    ? null',
+    '    : Date.now() + Math.max(0, wakeAfter) * 1000;',
+    '  if (globalThis.__nimbusRubyWakeAt === null) return;',
+    '  const waiting = Array.from(globalThis.__nimbusRubyIdleDrivers);',
+    '  globalThis.__nimbusRubyIdleDrivers.clear();',
+    '  for (const wake of waiting) wake();',
+    '}',
+    // So instead every live request drives, for as long as it is live, and the
+    // moment one of them answers the others are already carrying the work.
+    // Steps are serialized by the resume queue, and a driver that wakes to
+    // find the deadline already moved knows another one got there first.
+    'async function __nimbusRubyDrive() {',
+    '  for (;;) {',
+    '    const due = globalThis.__nimbusRubyWakeAt;',
+    '    if (due === null) {',
+    '      // Nothing is due yet. Stay available anyway: this request holds a',
+    '      // live context, and whichever request discovers the next piece of',
+    '      // timed work may answer and be gone before that work comes due.',
+    '      await new Promise((resolve) => globalThis.__nimbusRubyIdleDrivers.add(resolve));',
+    '      continue;',
+    '    }',
+    '    const delay = due - Date.now();',
+    '    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));',
+    '    if (globalThis.__nimbusRubyWakeAt !== due) continue;',
+    '    const step = await __nimbusRubyStep();',
+    '    if (!step || !step.resumed) { globalThis.__nimbusRubyWakeAt = null; return; }',
+    '    __nimbusRubyNoteWake(step.wakeAfter);',
+    '  }',
+    '}',
+    'globalThis.__nimbusVirtualSocketRequestQueued = async function __nimbusVirtualSocketRequestQueued(port) {',
+    '  const step = await __nimbusRubyStep();',
+    '  if (!step || !step.resumed) return false;',
+    '  __nimbusRubyNoteWake(step.wakeAfter);',
+    '  __nimbusRubyDrive().catch((e) => {',
+    '    (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push(',
+    '      "[ruby-runner] driving the process failed: " + ((e && e.message) || e) + "\\n");',
+    '  });',
+    '  return true;',
     '};',
     '',
     'async function __nimbusStartRubyProcess(args) {',
@@ -1264,6 +1310,54 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
 //   2. Wrap the user code in a begin/rescue SystemExit/StandardError
 //      handler so we can extract exit code without losing stdout
 //   3. Read stdout/stderr buffers and slice from the per-call start
+// Evaluate Ruby source in the booted VM. Hoisted out of __rubyRun so a
+// process can also be DRIVEN (resumed) without re-running the whole
+// per-invocation wrapper.
+async function __nimbusRubyEval(boot, rubyCode) {
+  const memory = boot.instance.exports.memory;
+  const bytes = new TextEncoder().encode(rubyCode);
+  const codePtr = boot.instance.exports.cabi_realloc(0, 0, 1, bytes.length);
+  new Uint8Array(memory.buffer).set(bytes, codePtr);
+  const retPtr = boot.rbEvalStringProtectPromising
+    ? await boot.rbEvalStringProtectPromising(codePtr, bytes.length)
+    : boot.rbEvalStringProtect(codePtr, bytes.length);
+  // Return is a tuple: (rb-abi-value handle u32, status s32) — 8 bytes
+  const dv = new DataView(memory.buffer);
+  return { handle: dv.getUint32(retPtr + 0, true), status: dv.getInt32(retPtr + 4, true) };
+}
+
+// Resume the process's main fiber.
+//
+// A workerd request context cannot resume a wasm stack suspended by a
+// DIFFERENT request, so a server cannot simply block in accept across
+// requests. A Ruby fiber can: its state lives in the VM's own memory, so it
+// survives the context boundary. The process body therefore runs in a fiber
+// that parks when its accept queue is empty, and each inbound request resumes
+// it. Returns false when there is no live process to drive, which the kernel
+// reports as "nothing accepted the request".
+globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
+  const boot = await globalThis.__rubyBootstrap;
+  if (!boot.ok) return { resumed: false, wakeAfter: null };
+  const stderrStart = globalThis.__nimbusRubyStderr.length;
+  await __nimbusRubyEval(boot, [
+    '$__nimbus_resumed = ($__nimbus_main && $__nimbus_main.alive?) ? (begin; $__nimbus_main.resume; true; ' +
+      'rescue Exception => e; $stderr.write(e.full_message(highlight: false, order: :top)); false; end) : false',
+    '$stderr.write("__NIMBUS_RESUMED_" + $__nimbus_resumed.to_s + "_" + ($__nimbus_wake_after ? $__nimbus_wake_after.to_s : "nil") + "\\n")',
+  ].join("\\n"));
+  // Scrub the marker so it never reaches the user's stderr, keeping whatever
+  // the resumed program itself wrote.
+  const written = globalThis.__nimbusRubyStderr.slice(stderrStart).join('');
+  globalThis.__nimbusRubyStderr.length = stderrStart;
+  const scrubbed = written.replace(/__NIMBUS_RESUMED_(true|false)_[^\\n]*\\n?/g, '');
+  if (scrubbed) globalThis.__nimbusRubyStderr.push(scrubbed);
+  const marker = /__NIMBUS_RESUMED_(true|false)_([^\\n]*)/.exec(written);
+  const wake = marker && marker[2] !== 'nil' ? Number(marker[2]) : NaN;
+  return {
+    resumed: !!marker && marker[1] === 'true',
+    wakeAfter: Number.isFinite(wake) ? wake : null,
+  };
+};
+
 globalThis.__rubyRun = async function __rubyRun(args) {
   const stdoutStart = globalThis.__nimbusRubyStdout.length;
   const stderrStart = globalThis.__nimbusRubyStderr.length;
@@ -1370,37 +1464,35 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     'begin; (ENV["NIMBUS_GEM_LIBS"] || "").split(":").reverse_each { |p| $LOAD_PATH.unshift(p) if p && p != "" && !$LOAD_PATH.include?(p) }; rescue Exception; end',
   ].join('; ');
 
+  // The body runs in a fiber, and this call runs it up to its first park.
+  // A server parks in accept when its queue is empty; __nimbusRubyResumeMain
+  // drives it from there, one inbound request at a time. A program with no
+  // server never parks and simply runs to completion, so this is the single
+  // path for every Ruby invocation.
   const userWrapper = [
+    '$__nimbus_main = Fiber.new do',
+    '  begin',
+    '    ' + 'eval(' + userCodeRb + ', TOPLEVEL_BINDING, ' + progNameRb + ', 1)',
+    '  rescue SystemExit => e',
+    '    $__nimbus_exit = e.status',
+    '  rescue Exception => e',
+    '    $stderr.write(e.full_message(highlight: false, order: :top))',
+    '    $__nimbus_exit = 1',
+    '  ensure',
+    '    begin; Nimbus::Threading.shutdown if defined?(Nimbus::Threading); rescue Exception; end',
+    '    $stdout.flush rescue nil',
+    '    $stderr.flush rescue nil',
+    '  end',
+    'end',
     'begin',
-    '  ' + 'eval(' + userCodeRb + ', TOPLEVEL_BINDING, ' + progNameRb + ', 1)',
-    'rescue SystemExit => e',
-    '  $__nimbus_exit = e.status',
+    '  $__nimbus_main.resume',
     'rescue Exception => e',
     '  $stderr.write(e.full_message(highlight: false, order: :top))',
     '  $__nimbus_exit = 1',
-    'ensure',
-    '  $stdout.flush rescue nil',
-    '  $stderr.flush rescue nil',
     'end',
   ].join("\\n");
 
-  const memory = boot.instance.exports.memory;
-
-  async function callEvalStringProtect(rubyCode) {
-    const enc = new TextEncoder();
-    const bytes = enc.encode(rubyCode);
-    const cabiRealloc = boot.instance.exports.cabi_realloc;
-    const codePtr = cabiRealloc(0, 0, 1, bytes.length);
-    new Uint8Array(memory.buffer).set(bytes, codePtr);
-    const retPtr = boot.rbEvalStringProtectPromising
-      ? await boot.rbEvalStringProtectPromising(codePtr, bytes.length)
-      : boot.rbEvalStringProtect(codePtr, bytes.length);
-    // Return is a tuple: (rb-abi-value handle u32, status s32) — 8 bytes
-    const dv = new DataView(memory.buffer);
-    const handle = dv.getUint32(retPtr + 0, true);
-    const status = dv.getInt32(retPtr + 4, true);
-    return { handle, status };
-  }
+  const callEvalStringProtect = (rubyCode) => __nimbusRubyEval(boot, rubyCode);
 
   // Stage 1: run the prelude (sync flags, ARGV, ENV, $0/$PROGRAM_NAME).
   let preludeStatus;
