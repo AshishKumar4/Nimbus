@@ -34,11 +34,19 @@ export declare const MAX_PEER_FANOUT = 32;
  * (packument resolution, tarball materialisation) is idempotent, so
  * re-running a shard is safe. Budget mirrors the resolve-facet's own
  * per-fetch retry policy so a single flaky cold start no longer fails a
- * whole install. Non-transient rejections (OOM, count mismatch, genuine
+ * whole install. The same budget covers an overloaded peer, on the longer
+ * schedule below. Non-transient rejections (OOM, count mismatch, genuine
  * task throw) are NOT retried — they propagate on the first hit.
  */
 export declare const PEER_TRANSIENT_RESET_RETRIES = 3;
 export declare const PEER_RETRY_BACKOFF_MS: number[];
+/**
+ * Backoff for a shard whose peer DO was shed as overloaded. The object is
+ * alive and the shard never ran; what it needs is time for the input-gate
+ * queue to drain, so the schedule is an order of magnitude longer than the
+ * reset schedule. A whole-batch abort here used to fail an entire install.
+ */
+export declare const PEER_OVERLOAD_BACKOFF_MS: number[];
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {
     /**

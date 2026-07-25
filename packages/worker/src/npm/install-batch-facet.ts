@@ -234,6 +234,24 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     mtime: number;
     chunkSize: number;
   }>();
+  // A wave RPC that workerd shed rather than ran is re-sendable: the
+  // coordinator's input gate rejected it because its queue was too deep or
+  // the object was reset mid-request, so none of the wave's writes landed.
+  // Re-sending is safe even if some did — writeBatchStream is keyed by path
+  // and the bytes are identical. Without this the first shed permanently
+  // failed every package that contributed to the wave, which is how a
+  // 119-package install came back with 88 packages.
+  // ~42s of absorption. The coordinator's own verdict is "requests queued
+  // for too long", so the schedule has to outlast a queue that deep; the
+  // whole-batch timeout is 10 minutes, which bounds it.
+  const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000, 12000, 20000];
+  const isSheddableWaveError = (message: string): boolean => {
+    const m = message.toLowerCase();
+    return m.includes('overloaded')
+      || m.includes('reset because its code was updated')
+      || m.includes('starting up durable object storage')
+      || (m.includes('storage operation') && m.includes('reset'));
+  };
   // Mutex: only one flush runs at a time. Concurrent installs awaiting
   // flush() will line up behind this promise and resolve in arrival
   // order — the W7 frame is opaque to ordering so this is safe.
@@ -264,26 +282,41 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // cannot report success while another package happens to be the caller
     // that triggered its shared flush.
     const wave = (async (): Promise<SharedWaveOutcome> => {
-      try {
-        // @ts-ignore — preamble symbol.
-        const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-        return await __nimbusUseRpcResult(
-          env.SUPERVISOR.writeBatchStream(stream),
-          (result): SharedWaveOutcome => {
-            if (result.ok) return { ok: true };
-            return {
-              ok: false,
-              message:
-                `writeBatchStream failed after group ${result.committedGroupSequence} ` +
-                `(${result.committedPathCount} committed paths): ${result.error.message}`,
-            };
-          },
-        );
-      } catch (error) {
-        return {
-          ok: false,
-          message: error instanceof Error ? error.message : String(error),
-        };
+      for (let attempt = 0; ; attempt++) {
+        try {
+          // Each attempt encodes its OWN bytes. The encoder hands chunk
+          // buffers straight to a byte stream and workerd transfers them on
+          // enqueue, so `chunksNow` would be detached after the first send —
+          // a retry re-encoding it fails validation ("chunk 0 must contain N
+          // bytes") instead of re-sending the wave.
+          // @ts-ignore — preamble symbol.
+          const stream = encodeWriteBatchStream({
+            inodes: inodesNow,
+            chunks: chunksNow.map((c) => ({ ...c, data: c.data.slice() })),
+          });
+          // A typed non-ok result is the storage layer's verdict on these
+          // exact bytes, so it is returned as-is: only a shed RPC retries.
+          return await __nimbusUseRpcResult(
+            env.SUPERVISOR.writeBatchStream(stream),
+            (result): SharedWaveOutcome => {
+              if (result.ok) return { ok: true };
+              return {
+                ok: false,
+                message:
+                  `writeBatchStream failed after group ${result.committedGroupSequence} ` +
+                  `(${result.committedPathCount} committed paths): ${result.error.message}`,
+              };
+            },
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (attempt >= WAVE_RETRY_BACKOFF_MS.length || !isSheddableWaveError(message)) {
+            return { ok: false, message };
+          }
+          const base = WAVE_RETRY_BACKOFF_MS[attempt];
+          const delayMs = Math.max(0, Math.round(base + (Math.random() * 2 - 1) * base * 0.25));
+          await new Promise<void>((rs) => setTimeout(rs, delayMs));
+        }
       }
     })();
     for (const owner of ownersNow) {

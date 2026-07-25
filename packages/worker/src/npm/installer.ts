@@ -117,6 +117,17 @@ export interface InstallProgress {
   elapsed: number;
 }
 
+/**
+ * Outcome of a dependency-graph walk. `unresolved` is part of the result
+ * rather than a log line because a dependency the walk could not resolve
+ * must reach the user as a failed install, not as a smaller tree.
+ */
+interface ResolvedTree {
+  resolved: Map<string, ResolvedPackage>;
+  /** Dependency name → why it could not be resolved. */
+  unresolved: Map<string, string>;
+}
+
 export interface NpmInstallResult {
   installed: string[];
   failed: string[];
@@ -257,13 +268,25 @@ export class NpmInstaller {
       phaseStart = Date.now();
       setInstallPhase('resolve');
       log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
-      resolved = await this.resolveTreeViaFanout(specs, log, { frameworkAware });
+      const tree = await this.resolveTreeViaFanout(specs, log, { frameworkAware });
+      resolved = tree.resolved;
       phases['resolve'] = Date.now() - phaseStart;
+
+      // A dependency the walk could not resolve is missing from the
+      // install and from every subtree beneath it. Name it and its
+      // reason, and carry it into `failed` so the command exits non-zero.
+      for (const [name, reason] of tree.unresolved) {
+        failed.push(name);
+        log(`npm ERR! could not resolve ${name}: ${reason}`);
+      }
 
       if (resolved.size === 0) {
         log('No packages resolved.');
+        for (const name of Object.keys(specs)) {
+          if (!tree.unresolved.has(name)) failed.push(name);
+        }
         return {
-          installed, failed: Object.keys(specs),
+          installed, failed,
           totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases,
         };
       }
@@ -283,7 +306,14 @@ export class NpmInstaller {
     const toFetch: ResolvedPackage[] = [];
 
     for (const [, pkg] of resolved) {
-      if (!pkg.tarballUrl) continue;
+      if (!pkg.tarballUrl) {
+        // Resolved metadata with no tarball cannot be installed. Silently
+        // dropping it here left the package absent from node_modules and
+        // absent from both outcome lists.
+        failed.push(`${pkg.name}@${pkg.version}`);
+        log(`npm ERR! ${pkg.name}@${pkg.version}: resolved metadata carries no tarball URL`);
+        continue;
+      }
       // Check if already installed at the correct path
       const pkgJsonPath = nmDir + '/' + pkg.name + '/package.json';
       if (this.vfs.exists(pkgJsonPath)) {
@@ -460,7 +490,16 @@ export class NpmInstaller {
 
     setInstallPhase('done');
     const elapsed = Date.now() - start;
-    log(`Done! ${installed.length} packages, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
+    if (failed.length > 0) {
+      // Never claim success for a partial install: the next command is
+      // where the missing package surfaces, as an unrelated-looking error.
+      log(
+        `npm ERR! install incomplete — ${installed.length} installed, ` +
+        `${failed.length} missing: ${failed.join(', ')}`,
+      );
+    } else {
+      log(`Done! ${installed.length} packages, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
+    }
     if (cachedHits > 0) {
       log(`  (${cachedHits} from cache)`);
     }
@@ -509,13 +548,17 @@ export class NpmInstaller {
     specs: Record<string, string>,
     log: (msg: string) => void,
     opts: { frameworkAware?: boolean } = {},
-  ): Promise<Map<string, ResolvedPackage>> {
+  ): Promise<ResolvedTree> {
     const t0 = Date.now();
     const frameworkAware = !!opts.frameworkAware;
     const __f2Diag = ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
 
     // Per-walk state — supervisor side.
     const resolved = new Map<string, ResolvedPackage>();
+    // Dependencies the walk asked for and could not resolve, name → reason.
+    // A name lands here at most once: the frontier marks it `seen` before
+    // dispatch, so no later parent re-enqueues it.
+    const unresolved = new Map<string, string>();
     const seen = new Set<string>();
     const topLevelNames = new Set<string>(Object.keys(specs));
     const optionalNames = new Set<string>();   // X.5-G G1
@@ -623,10 +666,16 @@ export class NpmInstaller {
         throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`);
       }
 
-      // Stitch per-package results into supervisor state.
-      for (let i = 0; i < results.length; i++) {
+      // Stitch per-package results into supervisor state. The dispatched
+      // layer — not the returned array — drives the loop, so a result the
+      // fanout failed to deliver is recorded instead of skipped.
+      for (let i = 0; i < layer.length; i++) {
         const res = results[i];
         const [taskName] = layer[i];
+        if (!res) {
+          unresolved.set(taskName, `resolver fanout returned no result at layer ${layerN}`);
+          continue;
+        }
 
         // Forward messages + events.
         for (const m of res.messages) log(m);
@@ -663,16 +712,32 @@ export class NpmInstaller {
           throw new RegistryRejectError([rejectEntry]);
         }
 
-        // Optional-dep fetch failure → silent-skip (X.5-G G1).
-        if (res.error && res.error.type === 'fetch-exhausted' && optionalNames.has(taskName)) {
-          const reason = `optional dep fetch failed: ${res.error.message}`;
-          log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
-          emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
+        // Resolution failure. Optional (X.5-G G1) and best-effort
+        // optional-peer (X.5-drizzle) edges are allowed to disappear;
+        // anything else is a dependency the project asked for and did
+        // not get, so it is recorded and surfaced as an install failure.
+        if (res.error && res.error.type === 'unresolved') {
+          if (optionalNames.has(taskName) || bestEffortNames.has(taskName)) {
+            const reason = `optional dep unresolved: ${res.error.reason}`;
+            log(`[resolve-fanout] [skip] ${taskName} — ${reason}`);
+            emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
+            continue;
+          }
+          unresolved.set(taskName, res.error.reason);
           continue;
         }
 
         const pkg = res.pkg;
-        if (!pkg) continue;
+        if (!pkg) {
+          // Every deliberate skip reports 'skipped'. Anything else that
+          // returns no package is a resolver bug, and dropping it here is
+          // how a required dependency plus its whole subtree used to
+          // vanish from an install that then reported success.
+          if (res.packumentSource !== 'skipped') {
+            unresolved.set(taskName, 'resolver returned no package and no reason');
+          }
+          continue;
+        }
 
         // X.5-G G1: silent-skip platform-native bindings sourced from
         // optionalDependencies. The task returns the pkg raw; the
@@ -774,10 +839,11 @@ export class NpmInstaller {
       `cache writes=${cacheWriteCount}` +
       r2WinSuffix +
       `, layers=${totalLayers}, ` +
-      `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s`,
+      `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
+      (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''),
     );
 
-    return resolved;
+    return { resolved, unresolved };
   }
 
   /**
@@ -816,8 +882,9 @@ export class NpmInstaller {
     let filesWritten = 0;
 
     const mtime = Date.now();
+    // Every entry in `toFetch` has a tarball URL — the diff phase fails
+    // the ones that don't rather than dropping them.
     const specs: FacetPackageSpec[] = toFetch
-      .filter((p) => !!p.tarballUrl)
       .map((p) => ({
         name: p.name,
         version: p.version,
@@ -929,7 +996,9 @@ export class NpmInstaller {
 
       let okCount = 0;
       let failCount = 0;
+      const reported = new Set<string>();
       for (const r of result.perPackage) {
+        reported.add(`${r.name}@${r.version}`);
         if (r.errorText) {
           failed.push(`${r.name}@${r.version}`);
           log(`  [warn] ${r.name}@${r.version}: ${r.errorText}`);
@@ -944,6 +1013,17 @@ export class NpmInstaller {
           }
         }
         okCount++;
+      }
+
+      // Every dispatched spec must come back with a verdict. A shard that
+      // returns short would otherwise leave its packages in neither list,
+      // which is the same silent partial one layer down.
+      for (const s of specs) {
+        const id = `${s.name}@${s.version}`;
+        if (reported.has(id)) continue;
+        failed.push(id);
+        failCount++;
+        log(`  [warn] ${id}: install shard returned no result for this package`);
       }
 
       // Fold facet counters into the supervisor's diagnostic state.
