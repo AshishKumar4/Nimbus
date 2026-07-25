@@ -8,20 +8,36 @@ end
 
 module Nimbus
   module VirtualSocket
-    Bridge = JS.global[:__nimbusRubySockets] unless const_defined?(:Bridge)
-
     class << self
+      # The listener bridge belongs to a process that outlives the command
+      # which started it. A one-liner is answered from the pooled VM and has no
+      # such process, so nothing could hold a port open once it returns. Saying
+      # that is far more use than whatever the JS bridge throws on a handle
+      # that is not there.
+      # JS::Object descends from BasicObject, so typeof is the only question it
+      # can be asked; a global that was never set answers 'undefined'.
+      def bridge
+        handle = JS.global[:__nimbusRubySockets]
+        if handle.typeof == 'undefined'
+          raise ::SocketError,
+                'listening sockets need a Nimbus process that outlives the command, ' +
+                'and a one-liner has none: put this in a script file and run it ' +
+                'as ruby <file>.rb'
+        end
+        handle
+      end
+
       def listen(port)
-        Bridge.call(:listen, port.to_i).to_i
+        bridge.call(:listen, port.to_i).to_i
       end
 
       def close_listener(port)
-        Bridge.call(:closeListener, port.to_i)
+        bridge.call(:closeListener, port.to_i)
         nil
       end
 
       def pending(port)
-        Bridge.call(:pending, port.to_i).to_i
+        bridge.call(:pending, port.to_i).to_i
       end
 
       # Why the last socket call failed. A WASI errno cannot distinguish
