@@ -7,6 +7,9 @@
  *     reach an OpenAI-compatible endpoint on session loopback,
  *     `http://127.0.0.1:<NIMBUS_AI_GATEWAY_PORT>/v1`, seeded into the session
  *     environment as OPENAI_BASE_URL / OPENAI_API_BASE / OPENAI_API_KEY.
+ *     A tool that ignores OPENAI_BASE_URL and calls its own vendor host still
+ *     lands here: the seeded key is a session capability token, and egress
+ *     carrying it is mediated back to this endpoint (_shared/ai-egress.ts).
  *   • The Nimbus agent (session/agent.ts) builds its AI-SDK provider with a
  *     `fetch` that calls straight into `handleSessionAiRequest`. Same code,
  *     no network hop.
@@ -19,9 +22,14 @@
  * ───────────────────────────────────────────
  * The user's Cloudflare OAuth access token NEVER enters the sandbox. It lives
  * in Durable Object storage (`nimbus:ai:credential`), is attached to the
- * upstream request here in the supervisor, and the endpoint the session sees
- * needs no credential at all: loopback is already session-private, so
- * OPENAI_API_KEY is a fixed placeholder the gateway ignores.
+ * upstream request here in the supervisor, and never travels the other way:
+ * `proxyUpstream` builds its headers from scratch, so nothing the caller sent
+ * — including the session token — reaches Cloudflare, and nothing Cloudflare
+ * was sent reaches the caller.
+ *
+ * What the sandbox holds instead is the session token: it names this session's
+ * gateway and nothing else, and every path that honours it (loopback, mediated
+ * egress) ends up in this module, where the real credential is substituted.
  *
  * Why DO storage rather than the browser cookie the agent used to read: a
  * request originating inside the sandbox carries no cookie. The supervisor
@@ -33,15 +41,16 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { z } from 'zod/v4';
 import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
+import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '../_shared/ai-egress.js';
 import { NIMBUS_AGENT_AUTH_COOKIE, NIMBUS_CLOUDFLARE_API, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, loadNimbusAgentOAuthFromRequest, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, readNimbusCookie, requestNimbusCloudflareOAuthToken, } from './agent-oauth.js';
 /** DO storage key holding this session's Cloudflare credential of record. */
 export const SESSION_AI_CREDENTIAL_KEY = 'nimbus:ai:credential';
 /**
- * The value seeded as OPENAI_API_KEY. Not a secret and not checked: the
- * endpoint is loopback-only, so possession of it proves nothing. It exists
- * because OpenAI clients refuse to start with an empty key.
+ * The key the in-DO agent provider is constructed with. Never sent anywhere:
+ * `createSessionAiModel` hands the provider a `fetch` that calls this module
+ * directly, and the AI SDK refuses to build a provider with an empty key.
  */
-export const SESSION_AI_PLACEHOLDER_KEY = 'nimbus-session';
+const AGENT_PROVIDER_KEY = 'nimbus-agent';
 export const DEFAULT_SESSION_AI_MODEL = '@cf/zai-org/glm-5.2';
 export const DEFAULT_SESSION_AI_GATEWAY_ID = 'default';
 /**
@@ -113,14 +122,22 @@ export function sessionAiBaseUrl() {
 }
 /**
  * The environment every session is seeded with, so any OpenAI-compatible tool
- * discovers the gateway without being told about it.
+ * reaches the gateway without being told about it — by the base URL if it reads
+ * one, and otherwise by the token, which mediates its egress back here.
+ *
+ * The token is minted per session rather than fixed, and is published under
+ * NIMBUS_AI_TOKEN as well so that mediation still has something to compare
+ * against after a user exports their own OPENAI_API_KEY (whose request must
+ * then go to the real provider, untouched).
  */
 export function sessionAiEnv() {
     const baseUrl = sessionAiBaseUrl();
+    const token = mintSessionAiToken();
     return {
         OPENAI_BASE_URL: baseUrl,
         OPENAI_API_BASE: baseUrl,
-        OPENAI_API_KEY: SESSION_AI_PLACEHOLDER_KEY,
+        OPENAI_API_KEY: token,
+        [NIMBUS_AI_TOKEN_ENV]: token,
     };
 }
 export function readSessionAiConfig(env) {
@@ -252,7 +269,7 @@ export async function sessionAiAccountIsAvailable(self, accountId) {
 export function createSessionAiModel(self) {
     const provider = createOpenAICompatible({
         name: 'nimbus',
-        apiKey: SESSION_AI_PLACEHOLDER_KEY,
+        apiKey: AGENT_PROVIDER_KEY,
         baseURL: sessionAiBaseUrl(),
         fetch: (input, init) => handleSessionAiRequest(self, new Request(input, init)),
     });
@@ -282,11 +299,22 @@ export async function readSessionAiCredential(self) {
  * the Nimbus agent.
  */
 export async function handleSessionAiRequest(self, request) {
-    const path = normalizeAiPath(new URL(request.url).pathname);
+    const requested = new URL(request.url).pathname;
+    const path = normalizeAiPath(requested);
     const method = request.method.toUpperCase();
     const route = matchRoute(path, method);
     if (!route) {
-        return openAiError(`Nimbus AI gateway: no such endpoint ${method} ${path}. Supported: GET /v1/models, POST /v1/chat/completions, POST /v1/embeddings.`, 404, 'invalid_request_error', 'unknown_endpoint');
+        // Reachable from a tool that never meant to talk to Nimbus — a request
+        // addressed to a vendor host is mediated here whenever it carries the
+        // session key (_shared/ai-egress.ts). Say so, or a client calling an API
+        // this gateway does not speak (OpenAI's Responses API, Anthropic's
+        // /v1/messages) gets a 404 it cannot account for.
+        return openAiError(`Nimbus AI gateway: no such endpoint ${method} ${requested}. This session's ` +
+            'gateway is OpenAI-compatible and implements GET /v1/models, POST ' +
+            '/v1/chat/completions, POST /v1/responses and POST /v1/embeddings; every ' +
+            'request made with the session key is served here, whatever host it was ' +
+            'addressed to. Use one of those APIs, or export a real provider key to ' +
+            'reach that provider directly.', 404, 'invalid_request_error', 'unknown_endpoint');
     }
     const resolution = await resolveSessionAiCredential(self);
     if (!resolution.ok) {
@@ -297,26 +325,51 @@ export async function handleSessionAiRequest(self, request) {
         ? listModels(resolution.credential, config, request.signal)
         : proxyUpstream(resolution.credential, config, route, request);
 }
-function matchRoute(path, method) {
-    if (path === '/models' && (method === 'GET' || method === 'HEAD'))
-        return 'models';
-    if (path === '/chat/completions' && method === 'POST')
-        return '/chat/completions';
-    if (path === '/embeddings' && method === 'POST')
-        return '/embeddings';
-    return null;
+/**
+ * The upstream path is one this module builds, so the only thing Workers AI can
+ * fail to find at it is the model the caller asked for. A tool that was
+ * mediated here holds a catalogue of some other provider's model names, so say
+ * where the real catalogue is rather than repeating Cloudflare's bare sentence.
+ */
+function modelNotFoundMessage(detail, config) {
+    return `Nimbus AI gateway: ${detail || 'model not found'}. This session serves the ` +
+        `models its Cloudflare account can run — list them with GET /v1/models; the ` +
+        `configured default is ${config.model}.`;
 }
 /**
- * Clients disagree about whether the `/v1` lives in the base URL or in the
- * path, and a base URL that already ends in `/v1` plus a client that adds its
- * own yields `/v1/v1/models`. Strip every leading `/v1` and route on what is
- * left, so both conventions land on the same handler.
+ * The operations this gateway serves. `/responses` is OpenAI's Responses API,
+ * which Workers AI implements on the same compat surface for the models that
+ * support it (gpt-oss); it is here because it is what a growing number of
+ * clients speak by default, and proxying it is the same hop as
+ * `/chat/completions`, not a translation layer.
+ */
+const AI_OPERATIONS = ['/chat/completions', '/responses', '/embeddings', '/models'];
+function matchRoute(path, method) {
+    if (path === '/models')
+        return method === 'GET' || method === 'HEAD' ? 'models' : null;
+    if (method !== 'POST')
+        return null;
+    return AI_OPERATIONS.includes(path) && path !== '/models' ? path : null;
+}
+/**
+ * Which operation a request is asking for, given whatever path it arrived with.
+ *
+ * A request that reached this gateway by mediation (_shared/ai-egress.ts) was
+ * addressed to a vendor the caller believed in, and every vendor prefixes its
+ * operations differently: `/v1/chat/completions` for OpenAI,
+ * `/client/v4/accounts/<id>/ai/v1/chat/completions` for Workers AI,
+ * `/v1/<account>/<gateway>/compat/chat/completions` for AI Gateway. Clients
+ * also disagree about whether the `/v1` belongs to the base URL or the path, so
+ * even the loopback endpoint sees both `/v1/models` and `/v1/v1/models`.
+ *
+ * The operation is always the tail, so that is what is matched — one rule
+ * covering every caller, rather than a list of vendor prefixes to keep current.
+ * A path whose tail is not an operation is returned unchanged, so the 404 names
+ * what the caller actually asked for.
  */
 function normalizeAiPath(pathname) {
-    let path = pathname || '/';
-    while (path === '/v1' || path.startsWith('/v1/'))
-        path = path.slice(3) || '/';
-    return path;
+    const path = pathname || '/';
+    return AI_OPERATIONS.find((operation) => path === operation || path.endsWith(operation)) ?? path;
 }
 /**
  * `GET /v1/models`, the endpoint tools use to discover what they can run.
@@ -344,7 +397,7 @@ async function listModels(credential, config, signal) {
             signal,
         });
         if (!response.ok)
-            return translateUpstreamError(response);
+            return translateUpstreamError(response, config);
         const parsed = ModelSearchResponseSchema.safeParse(await response.json().catch(() => null));
         // A page we cannot read is not an empty page: answering 200 with a short
         // list would hide a catalogue change behind a plausible-looking result.
@@ -415,7 +468,7 @@ async function proxyUpstream(credential, config, path, request) {
     // instead of leaving it running and billing against the account.
     { method: request.method, headers, body: request.body, duplex: 'half', signal: request.signal });
     if (!upstream.ok)
-        return translateUpstreamError(upstream);
+        return translateUpstreamError(upstream, config);
     // Body is handed back as a stream so `"stream": true` SSE reaches the caller
     // token by token instead of arriving all at once at end of turn.
     const out = new Headers({
@@ -431,12 +484,19 @@ async function proxyUpstream(credential, config, path, request) {
  * something unhelpful instead. Translate at the boundary so failures arrive as
  * a sentence the user can act on.
  */
-async function translateUpstreamError(response) {
+async function translateUpstreamError(response, config) {
     const body = await response.text().catch(() => '');
     const detail = extractUpstreamMessage(safeJsonParse(body));
-    const message = response.status === 401 || response.status === 403
-        ? `Nimbus AI gateway: Cloudflare rejected the session credential (${detail || response.statusText || response.status}). Reconnect Cloudflare from the agent panel in your browser.`
-        : `Nimbus AI gateway: Cloudflare returned ${response.status} ${detail || response.statusText}`.trim();
+    let message;
+    if (response.status === 401 || response.status === 403) {
+        message = `Nimbus AI gateway: Cloudflare rejected the session credential (${detail || response.statusText || response.status}). Reconnect Cloudflare from the agent panel in your browser.`;
+    }
+    else if (response.status === 404) {
+        message = modelNotFoundMessage(detail, config);
+    }
+    else {
+        message = `Nimbus AI gateway: Cloudflare returned ${response.status} ${detail || response.statusText}`.trim();
+    }
     return openAiError(message, response.status, 'nimbus_gateway_error', `cf_${response.status}`);
 }
 function openAiError(message, status, type, code) {
