@@ -57,6 +57,42 @@ export interface StagedArtifactExecResult extends FacetExecResult {
     /** For the resident server path: the loopback port the facet is bound to. */
     port?: number;
 }
+/**
+ * Reserve held back from a one-shot facet's lifetime so a program that runs
+ * out of time is still alive to say so.
+ *
+ * A one-shot exec is ALREADY bounded: `_execWithTimeout` kills it at
+ * FACET_TIMEOUT_MS with exit 124 and "[process killed: timeout after 30s]".
+ * The entry drain must therefore not be a second, tighter, independent
+ * timeout. Measured against a deployed Worker, floating async work of 5s /
+ * 15s / 25s completes and 40s is killed by that outer bound at exactly 30s —
+ * so the fixed 8s budget this used to carry was abandoning programs 22
+ * seconds before anything actually required it.
+ *
+ * The drain therefore runs to the outer bound MINUS this reserve, which is
+ * what buys the facet time to flush and report the honest "still in flight"
+ * reason instead of the supervisor's generic kill. The reserve has to cover
+ * the longest tail a facet can have after the drain: settling pending RPC,
+ * writing back __vfsWrites (bounded by MAX_RPC_SAFE_PAYLOAD_BYTES; a 20 MiB
+ * write-back measures ~1.5s), draining children, then reportExit.
+ */
+export declare const ONE_SHOT_EXIT_RESERVE_MS = 3000;
+/**
+ * Budget used when the supervisor did not stamp an absolute deadline on the
+ * payload. The deadline is the real bound — see `entryDeadlineAt` — because
+ * it is measured from the supervisor's own timer rather than restarted when
+ * the drain begins, so a slow module init cannot push the drain past the kill
+ * and lose the honest message.
+ */
+export declare const ONE_SHOT_ENTRY_DEADLINE_MS: number;
+/**
+ * How long a RESIDENT facet settles its startup before answering its boot
+ * call. It keeps running afterwards, so this is not a lifetime decision: the
+ * budget only has to cover the entrypoint's own startup chain (binding a
+ * port, first render). `spawnNode` awaits the boot, so a server's idle
+ * keep-alive timer must not be allowed to hold the shell's prompt.
+ */
+export declare const RESIDENT_BOOT_SETTLE_MS = 1000;
 export declare const ENTRYPOINT_PROMISE_TRACKER = "\nfunction __makeEntrypointPromiseTracker() {\n  const __tracked = new Set();\n  const __origThen = Promise.prototype.then;\n  const __origCatch = Promise.prototype.catch;\n  const __origFinally = Promise.prototype.finally;\n  let __active = false;\n  const __track = (p) => {\n    if (!p || typeof p.then !== \"function\") return p;\n    __tracked.add(p);\n    try {\n      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });\n    } catch {\n      __tracked.delete(p);\n    }\n    return p;\n  };\n  return {\n    start() {\n      __active = true;\n      try {\n        Promise.prototype.then = function(...args) {\n          const __next = __origThen.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.catch = function(...args) {\n          const __next = __origCatch.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n        Promise.prototype.finally = function(...args) {\n          const __next = __origFinally.apply(this, args);\n          if (__active) __track(__next);\n          return __next;\n        };\n      } catch {\n        __active = false;\n      }\n    },\n    stop() {\n      __active = false;\n      try {\n        Promise.prototype.then = __origThen;\n        Promise.prototype.catch = __origCatch;\n        Promise.prototype.finally = __origFinally;\n      } catch {}\n    },\n    track: __track,\n    // Drain floating entry work until it settles, the process exits, or the\n    // deadline passes. Three kinds of pending work, mirroring Node's loop:\n    //\n    //   - Unsettled tracked PROMISES are microtask chains (create-vite's\n    //     clack scaffold, c3 / create-astro streaming a project to the live\n    //     VFS). Per Node a pending promise does not by itself keep a process\n    //     alive, but a floating `.then` chain is the only handle we have on\n    //     an entrypoint that has not returned its work, so it counts.\n    //   - Pending macrotask TIMERS/intervals (`__nimbusPendingTimers`).\n    //   - In-flight ASYNC OPERATIONS (`__nimbusPendingOps`): a fetch, a\n    //     response body read, an fs/child_process RPC. `await` never calls\n    //     the patched Promise.prototype.then, so a floating async entrypoint\n    //     is invisible to promise tracking \u2014 this counter is how awaited work\n    //     is seen at all. See the shim's __nimbusTrackOp.\n    //\n    // The bound is a REAL wall-clock deadline, armed as a timer rather than\n    // compared against `Date.now()`: a `setTimeout(0)` turn in workerd costs\n    // ~5\u00B5s, so the pass budget this loop used to carry (50k) expired after\n    // ~150ms and silently overrode every longer deadline the callers declared\n    // \u2014 anything slower than that, including an ordinary network fetch, was\n    // abandoned mid-flight and reported as a clean exit.\n    //\n    // The yield gap follows what is being waited on: a settling promise chain\n    // advances once per event-loop turn, so it is yielded at 0ms; a timer or\n    // an in-flight I/O op is wall-clock bound, so spinning at 0ms would just\n    // burn the isolate's CPU for the whole deadline.\n    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {\n      const __count = (name) => (typeof globalThis[name] === \"number\" ? globalThis[name] : 0);\n      const __pending = () => __tracked.size + __count(\"__nimbusPendingTimers\") + __count(\"__nimbusPendingOps\");\n      let __exited = false;\n      if (exitPromise && typeof exitPromise.then === \"function\") {\n        exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n      }\n      const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n        ? globalThis.__nimbusRawSetTimeout\n        : globalThis.setTimeout;\n      const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n        ? globalThis.__nimbusRawClearTimeout\n        : globalThis.clearTimeout;\n      let __expired = false;\n      const __deadline = __rawSetTimeout(() => { __expired = true; }, deadlineMs);\n      let __pass = 0;\n      while (!__exited && !__expired && (__pass < minPasses || __pending() > 0)) {\n        await new Promise((resolve) => __rawSetTimeout(resolve, __tracked.size > 0 ? 0 : 1));\n        __pass++;\n      }\n      try { __rawClearTimeout(__deadline); } catch {}\n      // `pending` is what the caller reports when it gives up: a one-shot\n      // program that still has work in flight did NOT finish, and exiting 0\n      // would claim it did.\n      return { passes: __pass, pending: __exited ? 0 : __pending() };\n    },\n  };\n}\n";
 /**
  * Greedy-oversample every installed package's main entry. The static
