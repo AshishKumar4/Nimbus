@@ -272,6 +272,65 @@ function parseWire(wire) {
   console.log('  ok  an accepted connection is the same kind of fd as a dialed one, and carries the exchange');
 }
 
+// ── Accept is a read on a listening descriptor ──────────────────────────────
+// The listening socket is a descriptor whose read yields the next connection.
+// That is the only way to accept, which is what keeps a server's socket and a
+// client's socket from drifting into two implementations.
+{
+  const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  kernel.listen(8080);
+
+  const listener = h.open('dev/nimbus/listen/8080');
+  assert.equal(listener.errno, ESUCCESS, 'a bound port opens as a listening descriptor');
+
+  assert.equal(h.wasiImport.fd_fdstat_get(listener.fd, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM, 'a listening socket is a socket');
+
+  // Reading before anything connects must not resolve...
+  let resolved = false;
+  const pending = h.read(listener.fd).then((errno) => { resolved = true; return errno; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(resolved, false, 'accept blocks until a connection arrives');
+
+  // ...and resolves with the connection once one is queued.
+  const served = kernel.handleHttpRequest(8080, new Request('http://127.0.0.1:8080/x'));
+  assert.equal(await pending, ESUCCESS);
+  const acceptedId = Number(h.lastRead().trim());
+  assert.ok(acceptedId > 0, `accept yields a connection id, got ${JSON.stringify(h.lastRead())}`);
+
+  // The id opens as a socket descriptor and carries the exchange.
+  const conn = h.open(`dev/nimbus/socket/${acceptedId}`);
+  assert.equal(conn.errno, ESUCCESS);
+  assert.equal(await h.read(conn.fd), ESUCCESS);
+  assert.match(h.lastRead(), /^GET \/x HTTP\/1\.1/);
+  await h.write(conn.fd, 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi');
+  const response = await served;
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'hi');
+  console.log('  ok  accept is a blocking read on a listening descriptor');
+}
+
+// ── A non-blocking listening descriptor reports EAGAIN, not a stall ─────────
+{
+  const h = host(async () => new Response('unused'));
+  globalThis.__nimbusVirtualSockets.listen(9100);
+  const listener = h.open('dev/nimbus/listen/9100');
+  assert.equal(listener.errno, ESUCCESS);
+  assert.equal(h.wasiImport.fd_fdstat_set_flags(listener.fd, 4), ESUCCESS, 'set O_NONBLOCK');
+  assert.equal(await h.read(listener.fd), 6, 'an empty accept queue is EAGAIN');
+  console.log('  ok  a non-blocking listening descriptor reports EAGAIN on an empty queue');
+}
+
+// ── Listening on a port nothing bound is a clear error, not a hang ──────────
+{
+  const h = host(async () => new Response('unused'));
+  const opened = h.open('dev/nimbus/listen/9999');
+  assert.equal(opened.errno, 53, 'ENOTCONN for an unbound port');
+  assert.match(String(globalThis.__nimbusWasiLastSocketError), /not bound/);
+  console.log('  ok  opening an unbound port fails with a reason');
+}
+
 // ── A loopback socket fd looks like a socket, not a file ────────────────────
 {
   const h = host(async () => new Response('x'));

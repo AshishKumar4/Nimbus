@@ -9,7 +9,6 @@ end
 module Nimbus
   module VirtualSocket
     Bridge = JS.global[:__nimbusRubySockets] unless const_defined?(:Bridge)
-    @webrick_servers ||= {}
 
     class << self
       def listen(port)
@@ -25,12 +24,6 @@ module Nimbus
         Bridge.call(:pending, port.to_i).to_i
       end
 
-      def accept_now(port)
-        raw = Bridge.call(:acceptNowJson, port.to_i).to_s
-        return nil if raw.empty?
-        JSON.parse(raw)
-      end
-
       # Why the last socket call failed. A WASI errno cannot distinguish
       # "nothing is listening" from "this process cannot route loopback at
       # all", and the difference is the whole diagnosis.
@@ -40,48 +33,14 @@ module Nimbus
         ''
       end
 
-      def register_webrick(server)
-        listener = server.listeners.find { |socket| socket.respond_to?(:__nimbus_virtual_port) }
-        raise "Nimbus WEBrick adapter could not find a virtual TCPServer listener" unless listener
-        port = listener.__nimbus_virtual_port
-        @webrick_servers[port] = server
-        server.instance_variable_set(:@status, :Running)
-        server.send(:call_callback, :StartCallback) if server.respond_to?(:call_callback, true)
-        port
-      end
-
-      def handle_webrick_request(port)
-        @last_error = nil
-        server = @webrick_servers[port.to_i]
-        unless server
-          registered = @webrick_servers.keys.sort.join(', ')
-          @last_error = "no WEBrick server registered on port #{port}; registered ports: #{registered.empty? ? '(none)' : registered}"
-          return false
-        end
-        listener = server.listeners.find { |socket| socket.respond_to?(:__nimbus_virtual_port) && socket.__nimbus_virtual_port == port.to_i }
-        unless listener
-          listeners = server.listeners.map { |socket| socket.respond_to?(:__nimbus_virtual_port) ? socket.__nimbus_virtual_port : socket.class.name }.join(', ')
-          @last_error = "WEBrick server on port #{port} has no matching virtual listener; listeners: #{listeners.empty? ? '(none)' : listeners}"
-          return false
-        end
-        sock = listener.accept_nonblock(exception: false)
-        if sock == :wait_readable || sock.nil?
-          @last_error = "WEBrick virtual listener on port #{port} had no pending connection"
-          return false
-        end
-        begin
-          server.run(sock)
-        ensure
-          sock.close unless sock.closed?
-        end
-        true
-      rescue Exception => e
-        @last_error = "#{e.class}: #{e.message}"
-        false
-      end
-
-      def last_error
-        @last_error
+      # Park the process until the next inbound request resumes it. This is
+      # what "blocking" means here: a wasm-stack suspension cannot outlive the
+      # request context that created it, so waiting has to happen in a fiber,
+      # whose state is Ruby's own memory.
+      def park(condition = nil)
+        Nimbus::Threading.park(condition)
+      rescue FiberError
+        raise IOError, 'Nimbus sockets can only block inside a Nimbus process'
       end
 
       # ruby.wasm has no threads, so Timeout.timeout's watchdog Thread.new
@@ -101,35 +60,103 @@ module Nimbus
         end
       end
 
-      def install_webrick_adapter
-        return unless defined?(::WEBrick::GenericServer)
-        return if ::WEBrick::GenericServer.method_defined?(:__nimbus_original_start)
+    end
+  end
+end
 
-        ::WEBrick::Utils.singleton_class.class_eval do
-          define_method(:create_listeners) do |address, port|
-            [::TCPServer.new(address || '0.0.0.0', port)]
-          end
+# ── In-memory pipe ─────────────────────────────────────────────────────────
+#
+# Real threads live in ruby-green-threads.rb, which this file relies on for
+# parking. What is left here is the other thing WASI preview1 simply does not
+# have: pipe(2). Both ends share a byte buffer, and a read with nothing in it
+# parks the caller the same way every other wait here does.
+class NimbusPipe
+  def initialize(shared)
+    @shared = shared
+    @closed = false
+  end
 
-          unless method_defined?(:__nimbus_original_timeout)
-            alias_method :__nimbus_original_timeout, :timeout
-            define_method(:timeout) do |_seconds, _exception = ::Timeout::Error, &block|
-              block ? block.call : nil
-            end
-          end
-        end
+  def write(data)
+    bytes = data.to_s.b
+    @shared << bytes
+    bytes.bytesize
+  end
+  alias syswrite write
+  alias write_nonblock write
+  alias print write
 
-        ::WEBrick::GenericServer.class_eval do
-          alias_method :__nimbus_original_start, :start
-          def start(&block)
-            if @listeners.any? { |socket| socket.respond_to?(:__nimbus_virtual_port) }
-              raise WEBrick::ServerError, "already started." if @status != :Stop
-              Nimbus::VirtualSocket.register_webrick(self)
-              nil
-            else
-              __nimbus_original_start(&block)
-            end
-          end
-        end
+  def read_nonblock(maxlen = 4096, outbuf = nil, exception: true)
+    if @shared.empty?
+      return nil unless exception
+      raise IO::EAGAINWaitReadable
+    end
+    take = @shared.byteslice(0, maxlen)
+    @shared.replace(@shared.byteslice(take.bytesize, @shared.bytesize - take.bytesize) || ''.b)
+    outbuf ? outbuf.replace(take) : take
+  end
+
+  # Blocking read: an empty pipe means "not yet", so park until a writer
+  # arrives rather than reporting a false EOF or spinning.
+  def read(maxlen = nil, outbuf = nil)
+    loop do
+      chunk = read_nonblock(maxlen || @shared.bytesize, outbuf, exception: false)
+      return chunk if chunk
+      return ''.b if @closed
+      Nimbus::Threading.park(-> { !@shared.empty? || @closed })
+    end
+  end
+  alias sysread read
+  alias readpartial read
+
+  def gets(_sep = $/, _limit = nil)
+    read(@shared.bytesize)
+  end
+
+  def __nimbus_socket_ready?
+    !@shared.empty?
+  end
+
+  def to_io
+    self
+  end
+
+  def fileno
+    -1
+  end
+
+  def flush
+    self
+  end
+
+  def sync
+    true
+  end
+
+  def sync=(value)
+    value
+  end
+
+  def close
+    @closed = true
+    nil
+  end
+
+  def closed?
+    @closed
+  end
+end
+
+class << IO
+  unless method_defined?(:__nimbus_original_pipe)
+    alias_method :__nimbus_original_pipe, :pipe
+    def pipe(*)
+      shared = ''.b
+      ends = [NimbusPipe.new(shared), NimbusPipe.new(shared)]
+      return ends unless block_given?
+      begin
+        yield(*ends)
+      ensure
+        ends.each(&:close)
       end
     end
   end
@@ -190,6 +217,14 @@ class IPSocket < BasicSocket
   def peeraddr
     ['AF_INET', @remote_port || 0, @remote_host || '127.0.0.1', @remote_host || '127.0.0.1']
   end
+
+  def local_address
+    Addrinfo.new(@local_host || '0.0.0.0', @local_port || 0)
+  end
+
+  def remote_address
+    Addrinfo.new(@remote_host || '127.0.0.1', @remote_port || 0)
+  end
 end unless defined?(::IPSocket)
 
 class Socket < BasicSocket
@@ -215,23 +250,67 @@ class Socket < BasicSocket
   end
 end unless defined?(::Socket)
 
+# Ruby's socket API hands addresses back as Addrinfo, and callers print them.
+class Addrinfo
+  attr_reader :ip_address, :ip_port
+
+  def initialize(host, port)
+    @ip_address = host.to_s
+    @ip_port = port.to_i
+  end
+
+  def inspect_sockaddr
+    @ip_address.include?(':') ? "[#{@ip_address}]:#{@ip_port}" : "#{@ip_address}:#{@ip_port}"
+  end
+  alias to_s inspect_sockaddr
+
+  def afamily
+    Socket::AF_INET
+  end
+  alias pfamily afamily
+
+  def ip?
+    true
+  end
+
+  def ipv4?
+    true
+  end
+
+  def ipv6?
+    false
+  end
+
+  def getnameinfo(*)
+    [@ip_address, @ip_port.to_s]
+  end
+end unless defined?(::Addrinfo)
+
+# A listening socket is a descriptor whose read is accept(2): it parks until a
+# connection is queued and yields that connection. So an ordinary stdlib accept
+# loop works, and every server - a hand-written TCPServer, Rack, WEBrick - runs
+# on the same code with no adapter and no knowledge of any particular library.
 class TCPServer < IPSocket
-  @@__nimbus_next_fd = 10_000
-  @@__nimbus_servers_by_fd = {}
+  # for_fd is standard Ruby: reconstruct a listening socket from a descriptor.
+  # The descriptor is the identity, so the same object is handed back.
+  @@__nimbus_by_fd = {}
 
   def self.for_fd(fd)
-    server = @@__nimbus_servers_by_fd[fd.to_i]
-    raise IOError, "Nimbus virtual TCPServer fd #{fd} is not open" unless server
+    server = @@__nimbus_by_fd[fd.to_i]
+    raise Errno::EBADF, "not a Nimbus listening socket: #{fd}" unless server
     server
   end
 
   def initialize(host_or_port, port = nil)
     @local_host = port.nil? ? '0.0.0.0' : host_or_port.to_s
+    # Bind first: port 0 means "pick one", and only the kernel knows which.
     @local_port = Nimbus::VirtualSocket.listen((port || host_or_port).to_i)
-    @closed = false
-    @autoclose = true
-    @fd = (@@__nimbus_next_fd += 1)
-    @@__nimbus_servers_by_fd[@fd] = self
+    @io = File.open("/dev/nimbus/listen/#{@local_port}", File::RDONLY)
+    # Listening is what makes this process host-driven: from here on inbound
+    # requests are what resume it, so the scheduler waits on the host's clock
+    # rather than stopping the world in a wall-clock sleep.
+    Nimbus::Threading.host_driven = true
+    @@__nimbus_by_fd[@io.fileno] = self
   end
 
   def __nimbus_virtual_port
@@ -239,39 +318,73 @@ class TCPServer < IPSocket
   end
 
   def fileno
-    @fd
+    @io.fileno
   end
 
+  # Ruby servers reach for to_io to get at the "real" socket; this IS the real
+  # socket, and handing back the bare descriptor would lose accept.
+  def to_io
+    self
+  end
+
+  def addr
+    ['AF_INET', @local_port, @local_host, @local_host]
+  end
+
+  def local_address
+    Addrinfo.new(@local_host, @local_port)
+  end
+  alias connect_address local_address
+
+  # Blocks until a connection arrives, by parking the process rather than the
+  # wasm stack. A workerd request context cannot resume a stack another request
+  # suspended, so a JSPI-level block here would serve exactly one request and
+  # then hang; a fiber park survives, because its state is Ruby's own.
   def accept
-    sock = accept_nonblock(exception: false)
-    raise IOError, "Nimbus virtual TCPServer has no pending connection" if sock == :wait_readable
-    sock
+    loop do
+      return connect_accepted(@io.gets) if __nimbus_socket_ready?
+      raise IOError, 'closed stream' if closed?
+      Nimbus::VirtualSocket.park(-> { __nimbus_socket_ready? })
+    end
   end
 
   def accept_nonblock(exception: true)
-    raise IOError, 'closed stream' if @closed
-    conn = Nimbus::VirtualSocket.accept_now(@local_port)
-    unless conn
+    unless __nimbus_socket_ready?
       return :wait_readable unless exception
-      raise Errno::EAGAIN
+      raise IO::EAGAINWaitReadable
     end
-    TCPSocket.__nimbus_from_connection(conn['id'], @local_host, @local_port, conn['host'] || '127.0.0.1', conn['port'] || 0)
+    connect_accepted(@io.gets)
   end
 
   def __nimbus_socket_ready?
-    !@closed && Nimbus::VirtualSocket.pending(@local_port) > 0
+    !closed? && Nimbus::VirtualSocket.pending(@local_port) > 0
   end
 
+  def listen(_backlog = nil)
+    0
+  end
+
+  # POSIX autoclose: with it cleared the descriptor - and so the listener -
+  # outlives this object. Servers rely on that when they re-wrap a listening
+  # socket with for_fd and drop the original.
   def close
-    return nil if @closed
-    @closed = true
-    @@__nimbus_servers_by_fd.delete(@fd)
+    return nil if closed? || @autoclose == false
+    @@__nimbus_by_fd.delete(@io.fileno)
     Nimbus::VirtualSocket.close_listener(@local_port)
+    @io.close
     nil
   end
 
   def closed?
-    @closed
+    @io.closed?
+  end
+
+  private
+
+  def connect_accepted(line)
+    id = line.to_s.strip
+    raise IOError, 'closed stream' if id.empty?
+    TCPSocket.__nimbus_from_connection(id.to_i, @local_host, @local_port, '127.0.0.1', 0)
   end
 end unless defined?(::TCPServer)
 
@@ -382,9 +495,11 @@ class << IO
     virtual_reads = read_list.select { |io| io.respond_to?(:__nimbus_socket_ready?) }
     if virtual_reads.any?
       ready = virtual_reads.select { |io| io.__nimbus_socket_ready? }
-      return [ready, write_list, []] if ready.any? || write_list.any?
+      return [ready, write_list, []] if ready.any?
       return nil if timeout == 0
-      return nil
+      Nimbus::VirtualSocket.park(-> { virtual_reads.any? { |io| io.__nimbus_socket_ready? } })
+      ready = virtual_reads.select { |io| io.__nimbus_socket_ready? }
+      return ready.any? ? [ready, write_list, []] : nil
     end
     __nimbus_original_select(reads, writes, errors, timeout)
   end
@@ -413,21 +528,10 @@ module Kernel
     end
     loaded = __nimbus_original_require(path)
     Nimbus::VirtualSocket.install_timeout_shim if path == 'timeout' || path.start_with?('net/')
-    Nimbus::VirtualSocket.install_webrick_adapter if path == 'webrick' || path.start_with?('webrick/')
     loaded
   end
 end
 
 $LOADED_FEATURES << 'socket.rb' unless $LOADED_FEATURES.include?('socket.rb')
 Nimbus::VirtualSocket.install_timeout_shim
-Nimbus::VirtualSocket.install_webrick_adapter
-
-def __nimbus_handle_virtual_socket_request(port)
-  ok = Nimbus::VirtualSocket.handle_webrick_request(port.to_i)
-  unless ok
-    error = Nimbus::VirtualSocket.last_error
-    $stderr.write("#{error}\n") if error && error != ''
-  end
-  ok
-end
 `;
