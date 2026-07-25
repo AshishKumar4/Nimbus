@@ -2241,9 +2241,13 @@
     })();
 
     // ── Status ──
-    function setStatus(s) {
+    // `label` overrides the text for states the three dot colours already
+    // cover — "Reconnecting..." and "Session gone" reuse the amber and red
+    // dots rather than introducing a fourth class to keep in sync.
+    function setStatus(s, label) {
       dot.className = 'status-dot ' + s;
-      stText.textContent = s === 'connected' ? 'Connected' : s === 'connecting' ? 'Connecting...' : 'Disconnected';
+      stText.textContent = label ||
+        (s === 'connected' ? 'Connected' : s === 'connecting' ? 'Connecting...' : 'Disconnected');
     }
     function fmtB(b) {
       if (b >= 1e9) return (b/1e9).toFixed(1)+' GB';
@@ -2251,8 +2255,207 @@
       if (b >= 1e3) return (b/1e3).toFixed(1)+' KB';
       return b+' B';
     }
+    // ── Connection liveness ───────────────────────────────────────────
+    // A supervisor DO reset drops this socket SERVER-side without closing
+    // it: `ctx.getWebSockets()` comes back empty while the browser still
+    // reports readyState === OPEN and fires neither 'close' nor 'error'.
+    // ws.onclose — and the reconnect hanging off it — therefore never
+    // runs, and the terminal stays open, accepts keystrokes and answers
+    // nothing. Measured at 85s and counting.
+    //
+    // Finding that needs a round trip THE ACTOR answers, which rules out
+    // the obvious candidate. `ping` is the socket's configured
+    // auto-response (see the worker's ws-hibernation-config.ts), handled
+    // by the runtime WITHOUT waking the actor and never delivered to it.
+    // On a dead socket, measured on a deployed Worker, a `ping` produces
+    // no `pong` AND no close — it is swallowed, so it can neither confirm
+    // life nor reveal death. We probe with `fs-watch-unsubscribe`, which
+    // session/ws.ts handles at the top of wsMessage — ahead of every
+    // terminal lookup, replying on all three paths (ok / not-ok / throw)
+    // and touching nothing but an in-memory Map, so it cannot wedge
+    // behind session work.
+    //
+    // Silence is not a verdict: a busy actor is silent too. The
+    // discriminator is a second, independent route to the same actor —
+    // the /api/stats poll this shell already runs. A FRESH HTTP answer
+    // while the socket has gone quiet proves the actor is up and this
+    // socket is not. When both channels are quiet we cannot tell dead
+    // from slow, so we report that instead of guessing.
+    const Conn = (function () {
+      // Probe once the socket has been quiet this long...
+      const PROBE_AFTER_MS = 4_000;
+      // ...and treat the quiet as suspect at this point.
+      const SUSPECT_AFTER_MS = 12_000;
+      // HTTP evidence older than this says nothing about *now*.
+      const HTTP_FRESH_MS = 8_000;
+      // Real subscription ids are `sub-<rand>-<ts>`, so this matches none
+      // of them and the unsubscribe removes nothing. Omitting subId would
+      // drop every subscription on the socket, including FileTree's.
+      const PROBE_SUB_ID = 'nimbus-liveness-probe';
+      // Statuses the edge uses for a session that is really gone. A
+      // network error or a 5xx is indistinguishable from slow and never
+      // produces a verdict.
+      const GONE_CODES = { 401: 'E_TOKEN_INVALID', 403: 'E_TOKEN_INVALID', 404: 'E_SESSION_404', 410: 'E_SESSION_404' };
+      const TICK_MS = 5_000;
+      const NAG_MS = 30_000;
+
+      let lastInboundAt = 0;
+      let lastHttpOkAt = 0;
+      let probeSeq = 0;
+      let goneCode = null;
+      let everOpened = false;
+      let downSince = 0;
+      let lastNagAt = 0;
+      let lastInputNoticeAt = 0;
+      let unresponsive = false;
+
+      const isOpen = () => !!ws && ws.readyState === WebSocket.OPEN;
+      const notice = (text, sgr) => term.write('\r\n\x1b[' + sgr + 'm[nimbus] ' + text + '\x1b[0m\r\n');
+
+      /** Any frame at all proves this socket still reaches the actor. */
+      function noteInbound() {
+        lastInboundAt = Date.now();
+        if (!unresponsive) return;
+        unresponsive = false;
+        setStatus('connected');
+      }
+
+      /** Outcome of an /api/stats poll — the independent second channel. */
+      function noteHttp(ok, status) {
+        if (ok) { lastHttpOkAt = Date.now(); return; }
+        const code = GONE_CODES[status];
+        if (code) declareGone(code, status);
+      }
+
+      function probe() {
+        try {
+          ws.send(JSON.stringify({
+            type: 'fs-watch-unsubscribe',
+            subId: PROBE_SUB_ID,
+            reqId: 'liveness-' + (++probeSeq),
+          }));
+        } catch { /* send only throws on a socket already tearing down */ }
+      }
+
+      /**
+       * Claim the probe's reply. Editor/FileTree ignore it already (both
+       * require a numeric reqId); returning true keeps the frame out of
+       * the shell dispatch and documents where it lands.
+       */
+      function tryHandleProbeResult(msg) {
+        return msg && msg.type === 'fs-watch-unsubscribe-result' &&
+          typeof msg.reqId === 'string' && msg.reqId.startsWith('liveness-');
+      }
+
+      function declareDead() {
+        downSince = Date.now();
+        lastNagAt = downSince;
+        notice('connection lost — reconnecting...', '33');
+        // Abandon the socket instead of waiting on ws.onclose. A socket
+        // the server has already dropped never completes the closing
+        // handshake, so close() leaves it CLOSING and the close event
+        // arrives ~60s later (measured on a deployed Worker) — long after
+        // we already know the answer. Clearing `ws` first makes that late
+        // event inert via the generation check in connect(), so
+        // reconnecting immediately cannot collide with it.
+        const dead = ws;
+        ws = null;
+        try { dead.close(); } catch { /* already closing */ }
+        connect();
+      }
+
+      function declareGone(code, status) {
+        if (goneCode) return;
+        goneCode = code;
+        downSince = 0;
+        const message = code === 'E_TOKEN_INVALID'
+          ? 'This session refused the connection (HTTP ' + status + '). Reload the page to sign in again.'
+          : 'This session no longer exists (HTTP ' + status + '). Open a new one to keep working.';
+        setStatus('disconnected', 'Session gone');
+        notice(message, '31');
+        clearNimbusDisconnectError();
+        postNimbusEvent('nimbus:error', { code, message });
+        try { if (ws) ws.close(); } catch { /* already closing */ }
+      }
+
+      function nag(t) {
+        if (!downSince || t - lastNagAt < NAG_MS) return;
+        lastNagAt = t;
+        notice('still reconnecting — ' + Math.round((t - downSince) / 1000) + 's without a connection.', '33');
+      }
+
+      function tick() {
+        if (goneCode) return;
+        const t = Date.now();
+        // While the socket is down nothing else polls, so this tick owns
+        // the HTTP channel: it keeps the stats panel current and is what
+        // classifies a session that is gone rather than merely away.
+        if (!isOpen()) { refreshStats(); nag(t); return; }
+        // An outage already ruled on is already being handled; re-running
+        // the rule below would re-announce and re-dial on every tick.
+        if (downSince) { nag(t); return; }
+        const quiet = t - lastInboundAt;
+        if (quiet >= PROBE_AFTER_MS) probe();
+        if (quiet < SUSPECT_AFTER_MS) return;
+        if (t - lastHttpOkAt <= HTTP_FRESH_MS) { declareDead(); return; }
+        // Both channels quiet. This is the one case we cannot resolve —
+        // a wedged socket and a session busy enough to stall an HTTP poll
+        // look identical from here — so report the observation, not a
+        // verdict, and keep probing. The header carries it immediately
+        // because it is the at-a-glance channel and must never read
+        // "Connected" while we are saying otherwise; the terminal line
+        // waits for NAG_MS so a busy session does not spam the scrollback.
+        if (!unresponsive) {
+          unresponsive = true;
+          setStatus('connecting', 'Not responding');
+        }
+        if (quiet >= NAG_MS && t - lastNagAt >= NAG_MS) {
+          lastNagAt = t;
+          notice('no response from the session for ' + Math.round(quiet / 1000) + 's — still waiting.', '33');
+        }
+      }
+
+      function onOpen() {
+        everOpened = true;
+        unresponsive = false;   // connect()'s onopen restores the status
+        lastInboundAt = Date.now();
+        if (!downSince) return;
+        downSince = 0;
+        notice('reconnected. A command that was running may have been interrupted.', '32');
+      }
+
+      function onClose() {
+        if (goneCode || downSince || !everOpened) return;
+        downSince = Date.now();
+        lastNagAt = downSince;
+        notice('connection lost — reconnecting...', '33');
+      }
+
+      /** Typing into a socket that is not open must not look accepted. */
+      function noteInput() {
+        if (isOpen() || !everOpened) return;
+        const t = Date.now();
+        if (t - lastInputNoticeAt < NAG_MS) return;
+        lastInputNoticeAt = t;
+        notice(goneCode
+          ? 'this session is gone — your input is going nowhere.'
+          : 'not connected — your input is not reaching the session.', '33');
+      }
+
+      setInterval(tick, TICK_MS);
+      return {
+        noteInbound, noteHttp, noteInput, onOpen, onClose, tryHandleProbeResult,
+        isGone: () => goneCode !== null,
+        hasConnected: () => everOpened,
+      };
+    })();
+
     function refreshStats() {
-      fetch(STATS_URL).then(r => r.json()).then(async s => {
+      fetch(STATS_URL).then(r => {
+        Conn.noteHttp(r.ok, r.status);
+        if (!r.ok) throw new Error('stats HTTP ' + r.status);
+        return r.json();
+      }).then(async s => {
         document.getElementById('stFiles').textContent = s.files + ' files, ' + s.directories + ' dirs';
         document.getElementById('stSize').textContent = fmtB(s.usedBytes);
         if (s.cache) {
@@ -2284,10 +2487,20 @@
 
     // ── WebSocket ──
     function connect() {
-      setStatus('connecting');
-      ws = new WebSocket(WS_URL);
+      // A session the server has disowned is not worth redialling; Conn
+      // has already told the user why.
+      if (Conn.isGone()) return;
+      setStatus('connecting', Conn.hasConnected() ? 'Reconnecting...' : null);
+      // Every handler below is gated on `sock === ws`, so a socket this
+      // one supersedes can no longer write to the terminal, restart the
+      // stats poll, or schedule a second reconnect when its own events
+      // finally land.
+      const sock = new WebSocket(WS_URL);
+      ws = sock;
       ws.onopen = () => {
+        if (sock !== ws) return;
         clearNimbusDisconnectError();
+        Conn.onOpen();
         setStatus('connected'); rd = 1000;
         ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
         // Drain any fs-* frames that Editor / FileTree queued before WS
@@ -2310,8 +2523,13 @@
         if (typeof ProcSidebar !== 'undefined') ProcSidebar.hydrate();
       };
       ws.onmessage = (e) => {
+        if (sock !== ws) return;
+        // Before any parsing: a frame arriving at all — even a malformed
+        // one — is proof this socket still reaches the actor.
+        Conn.noteInbound();
         try {
           const msg = JSON.parse(e.data);
+          if (Conn.tryHandleProbeResult(msg)) return;
           // fs-*-result frames route to the editor's pending-request
           // resolver. Return early so shell dispatch does not see them
           // as unknown types.
@@ -2369,15 +2587,20 @@
         } catch {}
       };
       ws.onclose = () => {
-        setStatus('disconnected');
+        if (sock !== ws) return;
+        Conn.onClose();
+        if (!Conn.isGone()) setStatus('disconnected');
         scheduleNimbusDisconnectError();
         if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
         setTimeout(() => { rd = Math.min(rd*1.5, 10000); connect(); }, rd);
       };
-      ws.onerror = () => ws.close();
+      ws.onerror = () => { if (sock === ws) sock.close(); };
     }
 
-    term.onData(d => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'input',data:d})); });
+    term.onData(d => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'input',data:d}));
+      else Conn.noteInput();
+    });
     window.addEventListener('resize', () => {
       // fit() can throw while the shell view is hidden behind a process
       // view (display:none container); the resize frame still matters.
