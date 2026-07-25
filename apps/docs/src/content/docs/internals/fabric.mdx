@@ -85,7 +85,7 @@ Peers are session DOs in the same `NIMBUS_SESSION` namespace as the
 coordinator, named `${coordinatorDoId}:proc:${slot}`, so they need no
 extra Worker, binding, or configuration. A heavy spawn fails loudly when
 that namespace is missing. The npm resolve fan-out uses the same pattern
-for short-lived batch work: a fan-out wider than five shards runs on
+for short-lived batch work: a fan-out of five or more shards runs on
 `nbf:`-prefixed siblings, up to 32 of them.
 
 Eight peers hold about 150 MiB each at the same time, 1.2 GiB across one

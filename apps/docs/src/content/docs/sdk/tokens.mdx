@@ -20,9 +20,11 @@ token header, as required by RFC 8725 §3.1. The server enforces scopes,
 tenant and session pins, and destroy permissions; client checks are only
 a convenience.
 
-The six scopes are `session:create`, `session:attach`,
-`session:bootstrap`, `session:destroy`, `session:admin`, `sandbox:use`.
-The default TTL is 1 hour and the maximum is 30 days; a larger value
+The seven scopes are `session:create`, `session:attach`,
+`session:bootstrap`, `session:preview`, `session:destroy`,
+`session:admin`, `sandbox:use`. Nimbus mints `session:bootstrap` and
+`session:preview` itself; each is single-use and grants nothing beyond
+its own exchange. The default TTL is 1 hour and the maximum is 30 days; a larger value
 throws `E_TOKEN_TTL_TOO_LARGE`. For rotation, set `JWT_SECRET_PREVIOUS`
 next to the new `JWT_SECRET`. Verification accepts either secret, but
 issuing uses the primary. Drop the old one after the longest TTL passes.
