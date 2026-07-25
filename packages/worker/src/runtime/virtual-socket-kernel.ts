@@ -233,11 +233,16 @@ const CHUNKED_TERMINATOR = new TextEncoder().encode('0\r\n\r\n');
 /** Response bytes buffered ahead of a slow guest reader before the body pump pauses. */
 const LOOPBACK_READ_HIGH_WATER_BYTES = 1024 * 1024;
 
+/** Largest slice `connectStream`'s readable hands to one stream read. */
+const LOOPBACK_STREAM_CHUNK_BYTES = 64 * 1024;
+
 /** What the kernel's recv/send/close operate on, in either direction. */
 interface VirtualSocketConnection {
   readonly id: number;
   read(maxBytes: number): number[];
   readAsync(maxBytes: number): Promise<number[]>;
+  /** Byte-array read. Runtimes that own file descriptors read through this. */
+  readBytesAsync(maxBytes: number): Promise<Uint8Array>;
   /** True once no further bytes can arrive, so an empty read means EOF, not "not yet". */
   atEof(): boolean;
   write(bytesLike: VirtualSocketBytesLike): number;
@@ -637,6 +642,10 @@ class VirtualConnection implements VirtualSocketConnection {
     return Promise.resolve(this.read(maxBytes));
   }
 
+  readBytesAsync(maxBytes: number): Promise<Uint8Array> {
+    return Promise.resolve(this.inbound.readUpTo(Math.max(1, maxBytes | 0)));
+  }
+
   /** Same reason: an empty read on an accepted connection is always genuine EOF. */
   atEof(): boolean {
     return true;
@@ -763,7 +772,12 @@ class LoopbackClientConnection implements VirtualSocketConnection {
   }
 
   read(maxBytes: number): number[] {
-    const out = Array.from(this.inbound.readUpTo(Math.max(1, maxBytes | 0)));
+    return Array.from(this.readBytes(maxBytes));
+  }
+
+  /** Byte-array read. The fd-backed path uses this so a stream never round-trips through number[]. */
+  readBytes(maxBytes: number): Uint8Array {
+    const out = this.inbound.readUpTo(Math.max(1, maxBytes | 0));
     if (this.drained && this.inbound.pendingBytes <= LOOPBACK_READ_HIGH_WATER_BYTES) {
       const waiter = this.drained;
       this.drained = null;
@@ -778,10 +792,14 @@ class LoopbackClientConnection implements VirtualSocketConnection {
 
   /** Blocks the guest until response bytes arrive; an empty result is EOF. */
   async readAsync(maxBytes: number): Promise<number[]> {
+    return Array.from(await this.readBytesAsync(maxBytes));
+  }
+
+  async readBytesAsync(maxBytes: number): Promise<Uint8Array> {
     for (;;) {
-      const chunk = this.read(maxBytes);
-      if (chunk.length > 0) return chunk;
-      if (this.eof || this.closed) return [];
+      const chunk = this.readBytes(maxBytes);
+      if (chunk.byteLength > 0) return chunk;
+      if (this.eof || this.closed) return EMPTY_BYTES;
       if (!this.dispatched) {
         throw new Error(
           'Nimbus loopback socket: read before a complete HTTP request was written ' +
@@ -933,6 +951,58 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The subset of Cloudflare's `Socket` that a WASI socket file descriptor needs.
+ *
+ * Every connection the kernel owns can be handed back in this shape, which is
+ * what lets a runtime with real file descriptors keep ONE socket fd kind:
+ * `fd_read`/`fd_write`/`poll_oneoff`/`sock_shutdown`/`fd_close` never learn
+ * whether the peer is a remote host reached through `cloudflare:sockets`, an
+ * in-session port this process dialed, or a connection it accepted.
+ */
+export interface VirtualSocketStream {
+  readonly opened: Promise<void>;
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+  close(): Promise<void>;
+}
+
+function socketStreamFor(conn: VirtualSocketConnection): VirtualSocketStream {
+  return {
+    // Neither direction has a handshake: an accepted connection already holds
+    // the request, and a dialed one starts its exchange on the first write.
+    opened: Promise.resolve(),
+    readable: new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          const bytes = await conn.readBytesAsync(LOOPBACK_STREAM_CHUNK_BYTES);
+          if (bytes.byteLength === 0) controller.close();
+          else controller.enqueue(bytes);
+        },
+        cancel() {
+          conn.close();
+        },
+      },
+      // highWaterMark 0 so the stream never pulls speculatively. A default
+      // strategy pulls once at construction, which on a client connection
+      // means reading before the guest has written its request.
+      { highWaterMark: 0 },
+    ),
+    writable: new WritableStream<Uint8Array>({
+      write(chunk) {
+        conn.write(chunk);
+      },
+      abort() {
+        conn.close();
+      },
+    }),
+    close() {
+      conn.close();
+      return Promise.resolve();
+    },
+  };
+}
+
 class VirtualListener {
   private readonly queue: VirtualConnection[] = [];
   private readonly acceptWaiters: Deferred<VirtualConnection>[] = [];
@@ -1050,15 +1120,45 @@ export class VirtualSocketKernel {
    * request/response exchange.
    */
   connect(port: number): number {
+    const conn = this.openLoopbackClient(port);
+    this.connections.set(conn.id, conn);
+    return conn.id;
+  }
+
+  /**
+   * The same client connection as `connect`, handed back in Cloudflare's
+   * `Socket` shape.
+   *
+   * Guests whose sockets are real WASI file descriptors (ruby.wasm, and any
+   * future wasm32-wasi program) reach loopback through this: the WASI shim
+   * stores it in exactly the fd slot a `cloudflare:sockets` connection would
+   * occupy, so `fd_read` on an in-session port is the same suspending read as
+   * `fd_read` on a remote host.
+   */
+  connectStream(port: number): VirtualSocketStream {
+    return socketStreamFor(this.openLoopbackClient(port));
+  }
+
+  /**
+   * An already-accepted connection in the same `Socket` shape, so a server's
+   * accepted socket is the same kind of file descriptor as a client's dialed
+   * one. `accept`/`acceptNow` still hand out the connection id, because accept
+   * itself stays on the cooperative pump - this only binds the result.
+   */
+  streamFor(id: number): VirtualSocketStream {
+    const conn = this.connections.get(Number(id));
+    if (!conn) throw new Error(`connection is closed: ${id}`);
+    return socketStreamFor(conn);
+  }
+
+  private openLoopbackClient(port: number): LoopbackClientConnection {
     const n = Number(port);
     if (!Number.isInteger(n) || n <= 0 || n >= 65536) throw new Error(`invalid port: ${port}`);
     const route = this.host.__nimbusVirtualSocketRouteLoopback;
     if (typeof route !== 'function') {
       throw new Error('Nimbus loopback sockets are unavailable in this runtime');
     }
-    const id = this.nextConnectionId++;
-    this.connections.set(id, new LoopbackClientConnection(id, n, route, this.limits));
-    return id;
+    return new LoopbackClientConnection(this.nextConnectionId++, n, route, this.limits);
   }
 
   /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */

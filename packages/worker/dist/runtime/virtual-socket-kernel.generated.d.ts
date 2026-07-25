@@ -8,7 +8,7 @@
  * Consumed by python-runner.ts and ruby-runner.ts: spliced into the
  * socket process worker module source passed to NimbusLoaderPool.
  *
- * Size: 30.63 KiB
+ * Size: 33.31 KiB
  */
 export declare const VIRTUAL_SOCKET_KERNEL_SRC: string;
 //# sourceMappingURL=virtual-socket-kernel.generated.d.ts.map
