@@ -2,8 +2,67 @@ import { resolveNpmBin, resolveNpmBinFromPath, isStagedArtifactTarget, stagedArt
 import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { DEFAULT_PATH } from '../constants.js';
+import { DEFAULT_PATH, FACET_TIMEOUT_MS } from '../constants.js';
 import { z } from 'zod/v4';
+/**
+ * How long a bin invocation may take before the shell stops waiting for it.
+ *
+ * The program itself is already bounded: FACET_TIMEOUT_MS kills a one-shot
+ * facet and the session reports exit 124 with a reason. Nothing bounds the
+ * supervisor-side work AROUND that run — the prefetch-bundle walk, the ESM
+ * transform, staging a bundled artifact, the loader hop — and nothing bounds
+ * the staged-artifact dispatch at all. A dispatch that never settles leaves
+ * `running` stuck true on this connection's shell: every later keystroke is
+ * swallowed, no prompt returns, and nothing says why. A terminal that goes
+ * silent forever is worse than a command that fails.
+ *
+ * So the invocation gets the program's lifetime twice over: the program keeps
+ * its full FACET_TIMEOUT_MS and the supervisor-side work gets the same again.
+ * Derived rather than chosen, so it cannot drift from the bound it exists to
+ * sit outside. Measured against a deployed Worker, the heaviest bins we run
+ * sit far inside it: `pi --version` (a 17.4 MiB module map, the largest
+ * observed) returns in 16s, and every staged-opencode one-shot in 2-4s.
+ */
+export const BIN_DISPATCH_TIMEOUT_MS = 2 * FACET_TIMEOUT_MS;
+const DISPATCH_EXPIRED = Symbol('nimbus.bin-dispatch-expired');
+/**
+ * Await a bin dispatch under a bound. Reports expiry instead of hanging.
+ *
+ * The abandoned work keeps running — there is nothing to cancel it with, and a
+ * facet that eventually finishes still lands its own exit and its write-back.
+ * It just no longer holds the shell open, and it can never surface as an
+ * unhandled rejection once we have stopped listening.
+ */
+export async function awaitBinDispatch(work, budgetMs) {
+    let timer;
+    const deadline = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(DISPATCH_EXPIRED), budgetMs);
+    });
+    try {
+        return { expired: false, value: await Promise.race([work, deadline]) };
+    }
+    catch (e) {
+        if (e !== DISPATCH_EXPIRED)
+            throw e;
+        work.catch(() => { });
+        return { expired: true };
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
+}
+/**
+ * The reason a bin invocation is being abandoned. Names the limit and both
+ * numbers it is derived from so the text cannot drift from the code, and says
+ * where anything the program still produces will go.
+ */
+function dispatchExpiredReason(shellLine, pid) {
+    return `${shellLine}: did not come back after ${BIN_DISPATCH_TIMEOUT_MS / 1000}s — the ` +
+        `${FACET_TIMEOUT_MS / 1000}s a program is given to run, and the same again for the work ` +
+        'around it. The shell is no longer waiting on it' +
+        (pid === null ? '.' : `; anything it still produces goes to the log for pid ${pid}.`);
+}
 const NpmBinPackageMetadataSchema = z.object({
     name: z.string().optional(),
     keywords: z.array(z.string()).optional(),
@@ -76,12 +135,18 @@ export function installNpmBinFallbackResolver(registry, deps) {
             const label = longRunning ? 'started (long-running)' : 'started';
             deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
             deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning, attachedTty });
+            // Once the invocation is abandoned the terminal has moved on to the next
+            // prompt, so late output must not be interleaved into it. The pid's log
+            // still takes everything — that is where the rest of the run shows up.
+            let abandoned = false;
             const writeThrough = (stream, target) => (data) => {
                 const text = String(data);
                 try {
                     deps.processes.appendOutput(pid, stream, text);
                 }
                 catch { }
+                if (abandoned)
+                    return;
                 try {
                     target.write(text);
                 }
@@ -89,7 +154,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             };
             let exitCode = 1;
             try {
-                exitCode = await runRuntime({
+                const dispatched = await awaitBinDispatch(Promise.resolve(runRuntime({
                     ...ctx,
                     args: ['/' + bin.targetPath, ...argv],
                     stdout: { write: writeThrough('stdout', ctx.stdout) },
@@ -102,7 +167,15 @@ export function installNpmBinFallbackResolver(registry, deps) {
                         attachedTty,
                     },
                     __nimbusBundleProfile: bundleProfile,
-                });
+                })), BIN_DISPATCH_TIMEOUT_MS);
+                if (dispatched.expired) {
+                    writeThrough('stderr', ctx.stderr)(`${dispatchExpiredReason(shellLine, pid)}\n`);
+                    abandoned = true;
+                    exitCode = 124;
+                }
+                else {
+                    exitCode = dispatched.value;
+                }
             }
             catch (e) {
                 writeThrough('stderr', ctx.stderr)(`bin error: ${formatError(e)}\n`);
@@ -139,31 +212,21 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, dispositi
     // Piped stdin is not yet wired for staged artifacts; the interactive TUI reads
     // keystrokes from the live ProcessInputStore via the attached-TTY stdin pump.
     const base = { argv, env: ctx.env ?? {}, cwd, command: shellLine };
-    let result;
+    let dispatched;
     try {
-        switch (disposition) {
-            case 'dual':
-                result = await fm.execStagedArtifactDual(artifact, base);
-                break;
-            case 'server':
-                result = await fm.execStagedArtifactServer(artifact, base);
-                break;
-            case 'attached':
-                result = await fm.execStagedArtifact(artifact, { ...base, stdin: '', attachedTty: true });
-                break;
-            case 'oneshot':
-                result = await fm.execStagedArtifact(artifact, { ...base, stdin: '', attachedTty: false });
-                break;
-            default: {
-                const _exhaustive = disposition;
-                throw new Error(`unknown staged-artifact disposition: ${String(_exhaustive)}`);
-            }
-        }
+        dispatched = await awaitBinDispatch(stagedArtifactWork(fm, artifact, base, disposition), BIN_DISPATCH_TIMEOUT_MS);
     }
     catch (e) {
         ctx.stderr.write(`${name}: ${formatError(e)}\n`);
         return 1;
     }
+    // A staged artifact owns its own process-table entry and only tells us the
+    // pid on the way out, so an abandoned dispatch has no pid to point at.
+    if (dispatched.expired) {
+        ctx.stderr.write(`${dispatchExpiredReason(shellLine, null)}\n`);
+        return 124;
+    }
+    const result = dispatched.value;
     // Resident dispositions (dual / server / attached): the facet(s) are now
     // resident, streaming live and reporting their own exit through the
     // supervisor. Surface the long-running spawn and hand off — the same
@@ -186,6 +249,22 @@ async function runStagedArtifact(deps, name, artifact, argv, cwd, ctx, dispositi
     deps.notifyTerminalEvent({ type: 'exit', pid: result.pid, code: result.exitCode, command: shellLine });
     deps.emitShellExecDone(result.pid, shellLine, result.exitCode, Date.now() - startedAt);
     return result.exitCode;
+}
+function stagedArtifactWork(fm, artifact, base, disposition) {
+    switch (disposition) {
+        case 'dual':
+            return fm.execStagedArtifactDual(artifact, base);
+        case 'server':
+            return fm.execStagedArtifactServer(artifact, base);
+        case 'attached':
+            return fm.execStagedArtifact(artifact, { ...base, stdin: '', attachedTty: true });
+        case 'oneshot':
+            return fm.execStagedArtifact(artifact, { ...base, stdin: '', attachedTty: false });
+        default: {
+            const _exhaustive = disposition;
+            throw new Error(`unknown staged-artifact disposition: ${String(_exhaustive)}`);
+        }
+    }
 }
 export function classifyStagedArtifact(artifact, argv) {
     if (artifact !== 'opencode')
