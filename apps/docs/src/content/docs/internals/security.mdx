@@ -6,27 +6,23 @@ description: The isolate boundary, enforced Unix permissions, session isolation,
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro';
 
-This page covers the isolation boundary, permission enforcement, session
-isolation, and the token model. The last section lists what is not
-enforced yet.
-
 ## The isolation boundary
 
 Each process runs in its own V8 isolate, spawned by Cloudflare's Worker
-Loader — the same isolation Cloudflare uses for untrusted code. There is
+Loader, the same isolation Cloudflare uses for untrusted code. There is
 no extra Nimbus sandbox underneath; the isolate is the boundary.
 
 One session is one supervisor Durable Object plus the facet isolates it
 spawns. A facet receives one capability when it starts: an RPC stub
 pointing at its own session's supervisor. Generated facet code cannot
 import supervisor modules, cannot reach another session's DO, and cannot
-mint stubs it wasn't given. The RPC surface is the only interface it has.
+mint stubs it wasn't given.
 
 ## No runtime code generation
 
 workerd's content security policy forbids `eval` and `new Function` at
 request time, and forbids compiling WASM from raw bytes at request time.
-Nimbus runs everything — including compilers and interpreters — inside
+Nimbus runs everything, including compilers and interpreters, inside
 that constraint: WASM modules enter a facet pre-compiled through the
 module map, and nothing in a session can generate and execute new
 machine code.

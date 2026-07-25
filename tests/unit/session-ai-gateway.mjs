@@ -9,7 +9,9 @@
 //   2. The raw access token is never in a response the sandbox can see; it only
 //      ever appears in the upstream Authorization header.
 //   3. GET /v1/models is synthesised from the account's catalogue (Cloudflare
-//      has no models endpoint), paginated, never hardcoded, default first.
+//      has no models endpoint), paginated, never hardcoded, chat models only,
+//      and the configured default is always listed first — even when the
+//      catalogue never named it, and an unreadable catalogue says so loudly.
 //   4. Streaming bodies pass through un-buffered.
 //   5. Cloudflare's error envelope is translated into OpenAI's, in all three
 //      shapes Cloudflare can emit.
@@ -30,11 +32,12 @@ import {
   sessionAiBaseUrl,
   setSessionAiAccount,
   storeSessionAiCredential,
+  DEFAULT_SESSION_AI_MODEL,
   SESSION_AI_CREDENTIAL_KEY,
-  SESSION_AI_PLACEHOLDER_KEY,
 } from '../../packages/worker/src/session/ai.ts';
 import { createNimbusAgentOAuthCookie } from '../../packages/worker/src/session/agent-oauth.ts';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
+import { NIMBUS_AI_TOKEN_ENV } from '../../packages/worker/src/_shared/ai-egress.ts';
 
 const ACCOUNT = 'f44999d1ddda7012e9a87729eba250f1';
 const OTHER_ACCOUNT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -70,14 +73,14 @@ function stubFetch(handler) {
   };
 }
 
-function modelsPayload(names) {
+function modelsPayload(names, taskName = 'Text Generation') {
   return {
     success: true,
     result: names.map((name, i) => ({
       id: `id-${i}`,
       name,
       description: 'a model',
-      task: { name: 'Text Generation' },
+      task: { name: taskName },
       created_at: '2025-08-05 10:27:29.131',
     })),
   };
@@ -188,11 +191,108 @@ const req = (path, init) => new Request(`http://127.0.0.1:${NIMBUS_AI_GATEWAY_PO
     // Enumerated from the account, with the credential attached upstream.
     assert.equal(stub.calls.length, 2);
     assert.ok(stub.calls[0].url.includes(`/accounts/${ACCOUNT}/ai/models/search`));
-    assert.ok(stub.calls[0].url.includes('task=Text+Generation'));
+    // No `task=` filter upstream: the catalogue's own label is exact-match and
+    // answers an empty success when it drifts, so chat models are picked here.
+    assert.equal(new URL(stub.calls[0].url).searchParams.get('task'), null);
     assert.equal(stub.calls[0].init.headers.Authorization, 'Bearer session-token');
 
     // Serialized body must not carry the token anywhere.
     assert.ok(!JSON.stringify(body).includes('session-token'));
+  } finally {
+    stub.restore();
+  }
+}
+
+{
+  // The configured default is listed even when the account's catalogue never
+  // named it — sorting alone cannot add a missing model, and a client that
+  // takes data[0] must still get the model this deployment actually uses.
+  const host = makeHost({ NIMBUS_AGENT_MODEL: '@cf/vendor/configured' });
+  await storeSessionAiCredential(host, {
+    accessToken: 'session-token', accountId: 'ac1e0000000000000000000000000001', expiresAt: null,
+  });
+  const stub = stubFetch(async () => Response.json(modelsPayload(['@cf/vendor/other'])));
+  try {
+    const body = await (await handleSessionAiRequest(host, req('/v1/models'))).json();
+    assert.equal(body.data[0].id, '@cf/vendor/configured');
+    assert.equal(body.data[0].object, 'model');
+    assert.equal(body.data[0].owned_by, 'cloudflare');
+    // Listed once, and the enumerated models are still there behind it.
+    assert.equal(body.data.filter((m) => m.id === '@cf/vendor/configured').length, 1);
+    assert.deepEqual(body.data.map((m) => m.id), ['@cf/vendor/configured', '@cf/vendor/other']);
+  } finally {
+    stub.restore();
+  }
+}
+
+{
+  // Chat models are selected by task, tolerating the catalogue's casing and
+  // separators; models of other tasks (embeddings, image, speech) are not chat
+  // models and are not offered as ones.
+  const host = makeHost({ NIMBUS_AGENT_MODEL: '@cf/vendor/chat' });
+  await storeSessionAiCredential(host, {
+    accessToken: 'session-token', accountId: 'ac1e0000000000000000000000000002', expiresAt: null,
+  });
+  const stub = stubFetch(async (url) => {
+    const page = new URL(url).searchParams.get('page');
+    return Response.json(page === '1'
+      ? { success: true, result: [
+          ...modelsPayload(['@cf/vendor/chat']).result,
+          ...modelsPayload(['@cf/vendor/recased'], 'text-generation').result,
+          ...modelsPayload(['@cf/vendor/embed'], 'Text Embeddings').result,
+          ...modelsPayload(['@cf/vendor/image'], 'Text-to-Image').result,
+        ] }
+      : { success: true, result: [] });
+  });
+  try {
+    const body = await (await handleSessionAiRequest(host, req('/v1/models'))).json();
+    assert.deepEqual(body.data.map((m) => m.id), ['@cf/vendor/chat', '@cf/vendor/recased']);
+    // created_at has no zone and a space where ISO wants a T; read as UTC.
+    assert.equal(body.data[1].created, Math.floor(Date.parse('2025-08-05T10:27:29.131Z') / 1000));
+  } finally {
+    stub.restore();
+  }
+}
+
+{
+  // A catalogue page we cannot parse is an error, not an empty page: answering
+  // 200 with a short list would hide an upstream change behind a plausible one.
+  const host = makeHost();
+  await storeSessionAiCredential(host, {
+    accessToken: 'session-token', accountId: 'ac1e0000000000000000000000000003', expiresAt: null,
+  });
+  const stub = stubFetch(async () => Response.json({ success: true, result: [{ nope: true }] }));
+  try {
+    const response = await handleSessionAiRequest(host, req('/v1/models'));
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.error.code, 'cf_catalogue_unreadable');
+    assert.match(body.error.message, /unreadable shape/i);
+    assert.equal(body.data, undefined);
+  } finally {
+    stub.restore();
+  }
+}
+
+{
+  // An upstream failure while enumerating reaches the client in OpenAI's error
+  // shape, not Cloudflare's envelope, and not as an empty catalogue.
+  const host = makeHost();
+  await storeSessionAiCredential(host, {
+    accessToken: 'session-token', accountId: 'ac1e0000000000000000000000000004', expiresAt: null,
+  });
+  const stub = stubFetch(async () => Response.json(
+    { success: false, errors: [{ code: 10000, message: 'Authentication error' }] },
+    { status: 403 },
+  ));
+  try {
+    const response = await handleSessionAiRequest(host, req('/v1/models'));
+    assert.equal(response.status, 403);
+    const body = await response.json();
+    assert.equal(body.success, undefined);
+    assert.equal(body.error.type, 'nimbus_gateway_error');
+    assert.match(body.error.message, /Authentication error/);
+    assert.match(body.error.message, /Reconnect Cloudflare/i);
   } finally {
     stub.restore();
   }
@@ -211,7 +311,8 @@ const req = (path, init) => new Request(`http://127.0.0.1:${NIMBUS_AI_GATEWAY_PO
   try {
     const response = await handleSessionAiRequest(host, req('/v1/v1/models'));
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).data.length, 1);
+    // The default this host did not configure, then the enumerated model.
+    assert.deepEqual((await response.json()).data.map((m) => m.id), [DEFAULT_SESSION_AI_MODEL, '@cf/a/b']);
     assert.equal(stub.calls.length, 1);
   } finally {
     stub.restore();
@@ -229,7 +330,7 @@ const req = (path, init) => new Request(`http://127.0.0.1:${NIMBUS_AI_GATEWAY_PO
   try {
     const response = await handleSessionAiRequest(host, req('/v1/models'));
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).data[0].id, '@cf/a/b');
+    assert.deepEqual((await response.json()).data.map((m) => m.id), [DEFAULT_SESSION_AI_MODEL, '@cf/a/b']);
     assert.equal(stub.calls.length, 0);
   } finally {
     stub.restore();
@@ -261,7 +362,7 @@ const req = (path, init) => new Request(`http://127.0.0.1:${NIMBUS_AI_GATEWAY_PO
     const response = await handleSessionAiRequest(host, req('/v1/chat/completions', {
       method: 'POST',
       // A client-supplied Authorization must never reach Cloudflare.
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SESSION_AI_PLACEHOLDER_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sk-nimbus-deadbeef' },
       body: JSON.stringify({ model: '@cf/a/b', messages: [{ role: 'user', content: 'hi' }] }),
     }));
     assert.equal(response.status, 200);
@@ -551,9 +652,13 @@ const baseAuth = {
   assert.equal(env.OPENAI_BASE_URL, `http://127.0.0.1:${NIMBUS_AI_GATEWAY_PORT}/v1`);
   assert.equal(env.OPENAI_BASE_URL, sessionAiBaseUrl());
   assert.equal(env.OPENAI_API_BASE, env.OPENAI_BASE_URL);
-  // A placeholder, so an env dump inside the sandbox reveals nothing.
-  assert.equal(env.OPENAI_API_KEY, SESSION_AI_PLACEHOLDER_KEY);
-  assert.ok(!/[A-Za-z0-9_-]{40,}/.test(env.OPENAI_API_KEY));
+  // The seeded key is this session's capability token: it names this gateway
+  // and nothing else, so an env dump inside the sandbox still reveals nothing
+  // about the Cloudflare credential the supervisor holds.
+  assert.match(env.OPENAI_API_KEY, /^sk-nimbus-[0-9a-f]{32}$/);
+  assert.equal(env[NIMBUS_AI_TOKEN_ENV], env.OPENAI_API_KEY);
+  // Minted per session, never a shared constant.
+  assert.notEqual(sessionAiEnv().OPENAI_API_KEY, env.OPENAI_API_KEY);
 }
 
 console.log('session-ai-gateway: all assertions passed');
