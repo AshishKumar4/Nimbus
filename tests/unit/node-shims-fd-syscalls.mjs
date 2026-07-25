@@ -214,6 +214,13 @@ assert.equal(fs.fstatSync(1).isCharacterDevice(), true);
 assert.equal(fs.fstatSync(1).isFile(), false);
 fs.closeSync(1); // closing stdio is legal and a no-op
 
+// ── a failure with nowhere to go must be raised, not swallowed ──
+assert.throws(() => fs.close(9999), (e) => e.code === 'EBADF',
+  'close without a callback must surface EBADF');
+assert.throws(() => fs.fsync(9999), (e) => e.code === 'EBADF');
+const closeErr = await new Promise((res) => fs.close(9999, (e) => res(e)));
+assert.equal(closeErr.code, 'EBADF', 'with a callback it arrives there instead');
+
 // ── O_APPEND must never pre-create ──
 // `exists` is only as good as the sync view, so a file that lives only in
 // SQLite looks absent. Zeroing it at open time would destroy the very
