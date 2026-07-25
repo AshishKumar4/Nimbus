@@ -34,6 +34,7 @@ import {
   DEFAULT_CJS_CONDITIONS,
   DEFAULT_ESM_CONDITIONS,
 } from '../_shared/exports-resolver.js';
+import { FACET_PROVIDED_PACKAGES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 
@@ -649,7 +650,7 @@ export function prefetchForRequire(
     let match;
     while ((match = REQUIRE_RE.exec(stripped)) !== null) {
       const specifier = match[2];
-      if (isBuiltin(specifier)) continue;
+      if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
       if (r) {
         addFile(r.resolved);
@@ -665,7 +666,7 @@ export function prefetchForRequire(
     IMPORT_RE.lastIndex = 0;
     while ((match = IMPORT_RE.exec(stripped)) !== null) {
       const specifier = match[2];
-      if (isBuiltin(specifier)) continue;
+      if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
       if (r) {
         addFile(r.resolved);
@@ -677,7 +678,7 @@ export function prefetchForRequire(
     DYNIMPORT_RE.lastIndex = 0;
     while ((match = DYNIMPORT_RE.exec(stripped)) !== null) {
       const specifier = match[2];
-      if (isBuiltin(specifier)) continue;
+      if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
       if (r) {
         addFile(r.resolved);
@@ -791,9 +792,15 @@ const BUILTINS = new Set([
   'trace_events', 'dgram', 'sqlite', 'repl',
 ]);
 
-function isBuiltin(id: string): boolean {
+/**
+ * Specifiers the walker must not follow: the facet resolves them from its own
+ * `builtins` table, never from the bundle. That is node core plus the npm
+ * packages the facet provides itself — walking those would spend the bundle's
+ * file and byte budget shipping sources that `require()` can never reach.
+ */
+function isFacetProvided(id: string): boolean {
   if (id.startsWith('node:')) return true;
-  return BUILTINS.has(id);
+  return BUILTINS.has(id) || FACET_PROVIDED_PACKAGES.includes(id);
 }
 
 // Note: the shared resolver helpers are imported directly from
