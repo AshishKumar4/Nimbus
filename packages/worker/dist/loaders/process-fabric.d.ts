@@ -11,9 +11,13 @@
  *            memory envelope with the DO and every other local facet.
  *   peer   — the facet is minted from a sibling DO's loader
  *            (`${coordinatorDoId}:proc:${slot}`), so it gets an INDEPENDENT
- *            workerd memory budget. Proven live on the prod shape: 8 peers ×
- *            ~150 MiB held concurrently, blast radius contained 12/12
- *            (scratchpad/ARCHITECTURE-NEXTGEN.md §1).
+ *            workerd memory budget. Measured once on the prod shape under
+ *            synthetic load: 8 peers × ~150 MiB held concurrently, and a peer
+ *            OOM left its siblings and the coordinator running in 12 of 12
+ *            checks. The live opencode gate that followed was weaker — 1 of
+ *            its 12 runs reset the session, unattributed. Both numbers come
+ *            from probe deployments since deleted; neither report is in the
+ *            repo.
  *
  * In BOTH cases the facet's SUPERVISOR binding is minted for the COORDINATOR's
  * doId, so every syscall — VFS read/write, stdout/stderr frames, stdin pump,

@@ -15,6 +15,17 @@ with their pid. Loopback exists only inside the session: the DNS shim
 resolves `localhost` and nothing else, and a connection to
 `127.0.0.1:<port>` is a lookup in this registry, not a network hop.
 
+A browser reaches a port on a hostname of its own,
+`<port>--<id>.<suffix>`, built from the deployment's
+`NIMBUS_PREVIEW_HOST_SUFFIX` binding. The router resolves that host to the
+same `/port/<n>/` lookup with the app mounted at the host's root, so
+root-absolute paths resolve without rewriting. Only the canonical form
+parses: a leading zero in the port, a second dot in the label, or a session
+id that is not a DNS label is not a preview host. Deployments with no suffix
+bound reach the registry at `/s/<id>/port/<n>/` instead. The preview host is
+also a trust boundary ([security](/docs/internals/security/) covers what is
+stripped at it).
+
 No registry entry returns `502`: no process is listening. A registered port
 whose stub isn't attached returns `501`. That state exists during the boot
 window between registration and a serving isolate. A dead port and a booting
