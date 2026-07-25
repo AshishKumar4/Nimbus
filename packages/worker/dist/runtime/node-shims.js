@@ -39,7 +39,7 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { generateUndiciShimCode } from './undici-shim.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
-import { FACET_PROVIDED_PACKAGES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, } from '../constants.js';
+import { FACET_PROVIDED_PACKAGES, MAX_RPC_SAFE_PAYLOAD_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, } from '../constants.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -74,7 +74,43 @@ function __nimbusDisposeRpcResult(value) {
   const dispose = value[Symbol.dispose];
   if (typeof dispose === "function") { try { dispose.call(value); } catch {} }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  in-flight async operations ─────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// Node keeps a process alive for its ACTIVE REQUESTS — a pending fetch, a
+// pending fs call, a running child — not for pending promises. The facet's
+// entry drain cannot learn that by watching promises: \`await\` resolves
+// through PerformPromiseThen, which never calls the patched
+// Promise.prototype.then, so a floating \`(async () => { await fetch(u);
+// console.log(x); })()\` looks finished the instant its synchronous part
+// returns and the rest of the program is dropped on the floor.
+//
+// Every external operation a facet can start crosses one of two seams:
+// globalThis.fetch (network, in-session loopback, AI egress — plus reading
+// the body of the Response it returns) and the supervisor RPC helper below
+// (fs, child_process, ports, stdio). Counting there is the honest liveness
+// signal, and it is what globalThis.__nimbusPendingOps reports.
+const __nimbusOrigThen = Promise.prototype.then;
+if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+function __nimbusTrackOp(promise) {
+  if (!promise || typeof promise.then !== "function") return promise;
+  globalThis.__nimbusPendingOps++;
+  const settled = () => { globalThis.__nimbusPendingOps--; };
+  try { __nimbusOrigThen.call(promise, settled, settled); }
+  catch { settled(); }
+  return promise;
+}
+
 async function __nimbusUseRpcResult(promise, use) {
+  globalThis.__nimbusPendingOps++;
+  try { return await __nimbusUseRpcResultUnref(promise, use); }
+  finally { globalThis.__nimbusPendingOps--; }
+}
+// Facet infrastructure that long-polls the supervisor for as long as the
+// facet lives — the attached-process stdin pump — is the analogue of an
+// unref'd handle: real I/O, but never a reason to keep the program alive.
+async function __nimbusUseRpcResultUnref(promise, use) {
   const value = await promise;
   try { return await use(value); }
   finally { __nimbusDisposeRpcResult(value); }
@@ -168,7 +204,7 @@ async function __nimbusUseRpcResult(promise, use) {
     }
     return null;
   };
-  globalThis.fetch = function fetch(input, init) {
+  const __dispatch = (input, init) => {
     try {
       if (__supervisor && typeof __supervisor.routeLoopback === "function") {
         const url = __fetchUrl(input);
@@ -182,6 +218,21 @@ async function __nimbusUseRpcResult(promise, use) {
     headers.set("user-agent", "node");
     return __origFetch(input, { ...(init || {}), headers });
   };
+  globalThis.fetch = function fetch(input, init) {
+    return __nimbusTrackOp(__dispatch(input, init));
+  };
+  // A fetch settles once the headers arrive; reading the body is a SECOND
+  // in-flight operation on the same connection, and \`const r = await
+  // fetch(u); const j = await r.json()\` is the shape most programs use.
+  for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
+    const __orig = Response.prototype[__name];
+    if (typeof __orig !== "function") continue;
+    try {
+      Response.prototype[__name] = function(...args) {
+        return __nimbusTrackOp(__orig.apply(this, args));
+      };
+    } catch { /* host object is sealed — the drain still sees the fetch itself */ }
+  }
 })();
 
 let __nimbusLiveStdinPump = null;
@@ -262,6 +313,11 @@ __pathMod.win32 = __pathMod;
 const __BufferMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
+  // The unwrapped view helper. Buffer methods are installed as own
+  // properties on each instance, so \`this.subarray\` is the Buffer-returning
+  // override — internal slicing must reach past it to avoid re-wrapping
+  // throwaway views.
+  const _view = Uint8Array.prototype.subarray;
 
   function from(d, encoding) {
     if (typeof d === "string") {
@@ -289,7 +345,7 @@ const __BufferMod = (() => {
   function concat(bufs, len) {
     const total = len ?? bufs.reduce((s, b) => s + b.length, 0);
     const r = new Uint8Array(total); let off = 0;
-    for (const b of bufs) { r.set(b.subarray(0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
+    for (const b of bufs) { r.set(_view.call(b, 0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
     return _wrap(r);
   }
   function byteLength(value, encoding) {
@@ -326,9 +382,14 @@ const __BufferMod = (() => {
       if (encoding === "hex") { let s = ""; for (const b of this) s += b.toString(16).padStart(2, "0"); return s; }
       return _dec.decode(this);
     };
-    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(b.subarray(0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
-    u8.slice = function(s, e) { return _wrap(this.subarray(s, e)); };
-    u8.copy = function(t, tOff, sOff, sEnd) { t.set(this.subarray(sOff || 0, sEnd), tOff || 0); };
+    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(_view.call(b, 0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
+    // Node's Buffer#subarray returns a Buffer over the same memory, and
+    // Buffer#slice is documented as its alias. Without the override a slice
+    // came back as a bare Uint8Array whose toString() is the comma-joined
+    // byte list — silent corruption for anything that slices then stringifies.
+    u8.subarray = function(s, e) { return _wrap(_view.call(this, s, e)); };
+    u8.slice = u8.subarray;
+    u8.copy = function(t, tOff, sOff, sEnd) { t.set(_view.call(this, sOff || 0, sEnd), tOff || 0); };
     u8.equals = function(o) { if (this.length !== o.length) return false; for (let i = 0; i < this.length; i++) if (this[i] !== o[i]) return false; return true; };
     u8.toJSON = function() { return { type: "Buffer", data: Array.from(this) }; };
     u8.indexOf = function(v) { if (typeof v === "number") return Uint8Array.prototype.indexOf.call(this, v); const b = typeof v === "string" ? _enc.encode(v) : v; outer: for (let i = 0; i <= this.length - b.length; i++) { for (let j = 0; j < b.length; j++) if (this[i+j] !== b[j]) continue outer; return i; } return -1; };
@@ -583,16 +644,58 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
+  // Positional write into a local cell: return \`base\` with \`bytes\` placed at
+  // \`pos\`. The single implementation behind every fd-style write (async
+  // FileHandle.write, sync writeSync, and the post-RPC local overlay).
+  //
+  // A descriptor write loop appends at the current end, so that case grows the
+  // cell IN PLACE inside a geometrically reserved buffer — rebuilding the whole
+  // cell per call made a write loop quadratic and OOMed the facet on a 26 MiB
+  // file. A write that lands on bytes already in the cell still copies, so a
+  // view handed out earlier is never mutated underneath its holder.
+  //
+  // The result is an exactly-sized VIEW over a buffer that may carry reserve.
+  // Everything that reads a cell goes through its byteLength — readFileSync
+  // copies, statSync sizes it, the supervisor write RPC takes a Uint8Array —
+  // with one exception: structured clone carries the whole BACKING BUFFER
+  // across that RPC, so the reserve is part of the write payload — and that
+  // payload is capped. Measured on a deployed worker: a 26 MiB cell in a
+  // doubled 32 MiB buffer silently lost its flush, and normalising it to an
+  // exact copy first cost a third copy of the file and killed the write
+  // outright. So the reserve doubles while it is cheap, then grows in fixed
+  // steps, and stops entirely rather than push a cell past the RPC ceiling —
+  // a file that would fit exactly must never be made not to fit.
+  const _CELL_RESERVE_CAP = 2 * 1024 * 1024;
+  const _CELL_PAYLOAD_CAP = ${MAX_RPC_SAFE_PAYLOAD_BYTES};
+  function _spliceCell(base, pos, bytes) {
+    const size = Math.max(base.byteLength, pos + bytes.byteLength);
+    const capacity = base.buffer.byteLength - base.byteOffset;
+    if (pos >= base.byteLength && size <= capacity) {
+      const grown = new Uint8Array(base.buffer, base.byteOffset, size);
+      grown.fill(0, base.byteLength, pos);
+      grown.set(bytes, pos);
+      return grown;
+    }
+    if (size <= capacity) {
+      const next = new Uint8Array(new ArrayBuffer(capacity), 0, size);
+      next.set(base, 0);
+      next.set(bytes, pos);
+      return next;
+    }
+    const wanted = Math.min(Math.max(size, capacity * 2), size + _CELL_RESERVE_CAP);
+    const next = new Uint8Array(new ArrayBuffer(wanted < _CELL_PAYLOAD_CAP ? wanted : size), 0, size);
+    next.set(base, 0);
+    next.set(bytes, pos);
+    return next;
+  }
+
   // Overlay \`bytes\` at \`pos\` into the local sync-view cell so sync reads
   // stay coherent after a live ranged write. No-op when there is no cell.
   function _overlayLocalCell(absPath, pos, bytes) {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
-    const buf = _asBytes(cell);
-    const next = new Uint8Array(Math.max(buf.byteLength, pos + bytes.byteLength));
-    next.set(buf, 0);
-    next.set(bytes, pos);
+    const next = _spliceCell(_asBytes(cell), pos, bytes);
     if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
@@ -1511,14 +1614,8 @@ const __fsMod = (() => {
         _overlayLocalCell(this._abs, at, bytes);
         _markVfsStale();
       } else {
-        const k = _strip(this._abs);
         const cell = _writtenCell(this._abs);
-        const buf = cell === undefined ? new Uint8Array(0) : _asBytes(cell);
-        const next = new Uint8Array(Math.max(buf.byteLength, at + bytes.byteLength));
-        next.set(buf, 0);
-        next.set(bytes, at);
-        __vfsWrites[k] = next;
-        if (__vfsBundle) __vfsBundle[k] = next;
+        this._commit(_spliceCell(cell === undefined ? new Uint8Array(0) : _asBytes(cell), at, bytes));
       }
       this._size = Math.max(this._size, at + bytes.byteLength);
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
@@ -1618,10 +1715,7 @@ const __fsMod = (() => {
       const at = this._flags.append
         ? base.byteLength
         : (pos === null ? this._position : pos);
-      const next = new Uint8Array(Math.max(base.byteLength, at + bytes.byteLength));
-      next.set(base, 0);
-      next.set(bytes, at);
-      this._commit(next);
+      this._commit(_spliceCell(base, at, bytes));
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
       return bytes.byteLength;
     }
@@ -3036,11 +3130,13 @@ const __stringDecoderMod = {
 //      Phase 1 limit: messages are JSON, NOT v8.serialize. Buffer/Date
 //      project to their JSON shapes ({type:'Buffer',data:[...]} and
 //      ISO strings respectively). Documented in cp-fork-ipc.mjs probe.
-//   4. spawnSync/execSync are FAKE-SYNC: they kick off the async spawn
-//      and return a sentinel that resolves under a normal microtask
-//      drain. The facet's existing __pendingIO drain handles the rest.
-//      cross-spawn.sync uses execSync; husky uses spawnSync for git
-//      config queries — both rely on this fake-sync working.
+//   4. spawnSync returns a result object that FILLS IN LATER: the spawn is
+//      async and the fields land as the child's events fire, so a caller
+//      reads status=null until it settles. \`__deferred\` resolves with the
+//      completed result and is the contract Nimbus consumers await.
+//      execSync/execFileSync cannot offer that — their Node contract is to
+//      RETURN the child's stdout — so they refuse instead of lying; see
+//      _refuseSyncExec below.
 //   5. Live children are tracked in __cpChildren so the facet's exit-
 //      time drain (see __cpDrainAllChildren below) can issue a
 //      cpDrainOutput RPC for each before reportExit fires. This is
@@ -3516,16 +3612,43 @@ const __childProcessMod = (() => {
     return result;
   }
 
+  /**
+   * execSync/execFileSync return the child's stdout and throw when it exits
+   * non-zero — a contract that is only meaningful once the child has run to
+   * completion. A facet has no synchronous I/O primitive: every path to a
+   * child process is an async supervisor RPC, and JS in workerd cannot block
+   * on one. readFileSync answers the same constraint by serving content that
+   * was already staged into the facet, but a command's output cannot exist
+   * before the command runs, so there is nothing to pre-stage.
+   *
+   * The pre-fix shim kicked off an async spawn and returned an empty,
+   * not-yet-populated result object. Callers — which shell out precisely
+   * because they need the result NOW — read a blank stdout, or run their next
+   * step before the child has started, and report success. Refusing is the
+   * only honest answer left.
+   */
+  function _refuseSyncExec(api, command) {
+    const err = new Error(
+      "child_process." + api + " is not supported in a Nimbus node facet: a facet " +
+      "has no synchronous I/O primitive, so a child process cannot be run to completion " +
+      "without yielding to the event loop. Returning early would report success for a " +
+      "command that has not run. Use the asynchronous form instead — exec/execFile/spawn, " +
+      "or await util.promisify(child_process.exec)(...). Command: " + command,
+    );
+    err.code = "ERR_NIMBUS_SYNC_CHILD_PROCESS";
+    err.command = command;
+    throw err;
+  }
+
   function execSync(cmd, opts) {
-    opts = opts || {};
-    const r = spawnSync("sh", ["-c", cmd], { ...opts, shell: true });
-    // Caller awaits __deferred under normal drain.
-    return r;
+    _refuseSyncExec("execSync", String(cmd));
   }
 
   function execFileSync(file, args, opts) {
-    args = args || []; opts = opts || {};
-    return spawnSync(file, args, opts);
+    _refuseSyncExec(
+      "execFileSync",
+      [String(file), ...(Array.isArray(args) ? args.map(String) : [])].join(" "),
+    );
   }
 
   /**
@@ -3781,7 +3904,10 @@ function __makeProcessStdin() {
     while (liveChildPid && __supervisor && typeof __supervisor.cpReadStdin === "function") {
       let packet;
       try {
-        packet = await __nimbusUseRpcResult(
+        // Unref'd: this long-poll runs for the whole life of an attached
+        // facet, so counting it as in-flight work would mean the entry drain
+        // never sees the program finish.
+        packet = await __nimbusUseRpcResultUnref(
           __supervisor.cpReadStdin(liveChildPid, 1000),
           (result) => result,
         );
