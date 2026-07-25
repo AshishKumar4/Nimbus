@@ -24,8 +24,13 @@ import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts'
 import { stagedProcessClass } from '../../packages/worker/src/facets/opencode-staging.ts';
 
 // ── Runtime-spec policy declaration (the ONLY placement input) ──────────
+// Heavy = resident AND non-serving. The attach TUI is the only mode that is
+// both: it talks over the terminal RPC and the stdin pump and binds no port.
+// `server` binds its route target into PortRegistry (and its readiness gate
+// polls /doc back through that router), and a peer-hosted facet cannot serve
+// inbound HTTP, so it stays local alongside the buffered one-shot run.
 assert.equal(stagedProcessClass('attached'), 'heavy', 'the resident attach TUI declares heavy');
-assert.equal(stagedProcessClass('server'), 'heavy', 'the resident opencode server declares heavy');
+assert.equal(stagedProcessClass('server'), 'light', 'a serving opencode server stays local');
 assert.equal(stagedProcessClass('oneshot'), 'light', 'a buffered one-shot run stays local');
 
 const STAGE = {
@@ -215,8 +220,13 @@ function makePeerNs(peerFor, log) {
     'the image travels as a path — the coordinator never reads or ships its bytes');
   assert.equal(hosted.boot.code.modules['ruby+stdlib.wasm'], undefined);
   assert.deepEqual(await handle.booted(), { ok: true, hostedBy: 'coord-do-id:proc:0', workerKey: 'k44' });
+  // The fabric's own routing wire — coordinator → _rpcRouteHostedHttp on the
+  // hosting peer. It stops at the peer: re-entering the peer's OWN facet to
+  // serve the request is what workerd refuses (DataCloneError), which is why
+  // no heavy-class primitive binds a port. Asserted here so the wire stays
+  // intact for whenever that boundary is lifted.
   const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/doc'));
-  assert.equal(await routed.text(), 'peer coord-do-id:proc:0 /doc', 'inbound HTTP reaches the peer-hosted facet');
+  assert.equal(await routed.text(), 'peer coord-do-id:proc:0 /doc', 'the request reaches the hosting peer');
   releaseHost({ ok: true });
   await handle.done;
   console.log('  case4: a peer-hosted process exposes the identical handle surface');

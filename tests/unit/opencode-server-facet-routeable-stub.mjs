@@ -1,23 +1,29 @@
 #!/usr/bin/env bun
-// Route binding for the staged opencode SERVE facet, end to end through the
-// process fabric's PEER placement.
+// Route binding for the staged opencode SERVE facet, through the process
+// fabric's LOCAL placement.
 //
-// `opencode serve` is a resident server, so it declares `heavy` and its facet
-// is hosted on a sibling DO. Nothing above the fabric may notice: the pid still
-// owns one re-resolvable route target bound BEFORE boot, so when the http
-// shim's listen() fires SUPERVISOR.registerPort the reserved port resolves to a
-// handler a later routing request can re-enter. This pins that:
+// `opencode serve` SERVES: it binds a route target into PortRegistry and its
+// own readiness gate polls /doc back through that router. A peer-hosted facet
+// cannot be re-entered to serve inbound HTTP, so the serve mode declares
+// `light` and its facet must stay in the coordinator's own workerd process.
+// The pid still owns one re-resolvable route target bound BEFORE boot, so when
+// the http shim's listen() fires SUPERVISOR.registerPort the reserved port
+// resolves to a handler a later routing request can re-enter. This pins that:
 //
 //   1. the coordinator DO never materializes the facet config or touches its
-//      own Worker Loader — the hosting peer boots the facet.
-//   2. the pid's port resolves through the routed-HTTP peer leg (loopback +
-//      /port/<n>), byte-identically to a local facet.
-//   3. _awaitOpencodeServerReady resolves once /doc answers 200 through the
+//      own Worker Loader — the module map is assembled inside the stateless
+//      NimbusLoadedEntrypoint isolate.
+//   2. the facet is hosted LOCALLY: a serving process never reaches a peer.
+//   3. the pid's port resolves through the bound route target (loopback +
+//      /port/<n>).
+//   4. _awaitOpencodeServerReady resolves once /doc answers 200 through the
 //      loopback router, and fails loud (with the log tail) if the facet exits.
 //
 // Mirrors tests/unit/port-registry-routeable-stub.mjs + node-runner-server-
-// promotion.mjs: it exercises the REAL PortRegistry, the REAL binding logic in
-// FacetManager and the REAL peer-leg RPCs, not a mock that trivially passes.
+// promotion.mjs: it exercises the REAL PortRegistry and the REAL binding logic
+// in FacetManager, not a mock that trivially passes. The peer namespace is
+// wired to the REAL peer-leg RPCs so "never reached a peer" is a live
+// observation, not an absence of plumbing.
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
@@ -109,17 +115,12 @@ const staged = {
 };
 
 const result = await fm._runOpencodeServerFacet(staged, port);
-// Peer placement returns as soon as the process is scheduled; the host leg
-// boots the facet on the sibling. Settle it before inspecting the peer.
-for (let i = 0; i < 100 && nleProps.length < 2; i++) {
-  await new Promise((r) => setTimeout(r, 1));
-}
 
 // ── 1. keyed NLE stubs; no session DO touches the Worker Loader itself ───────
 assert.equal(loaderLoadCalled, false, 'server facet must not use the one-shot LOADER.load');
 assert.equal(loaderGetCalled, false, 'no session DO may materialize the facet config');
 assert.equal(nleProps.length, 2, 'one stage-carrying start stub + one code-free route stub');
-assert.equal(peerSelf._hostedProcesses.size, 1, 'the facet is hosted on the sibling peer');
+assert.equal(peerSelf._hostedProcesses.size, 0, 'a serving facet is never hosted on a peer');
 for (const props of nleProps) {
   assert.equal(props.key, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
 }
@@ -137,7 +138,7 @@ assert.deepEqual(portRegistry.getRouteablePortsByPid(pid), [port], 'pid owns a r
 const res = await portRegistry.routeRequest(
   port, new Request(`http://127.0.0.1:${port}/doc`), '/doc',
 );
-assert.equal(res.status, 200, 'loopback/`/port/<n>` reaches the peer-hosted serve facet');
+assert.equal(res.status, 200, 'loopback/`/port/<n>` reaches the locally hosted serve facet');
 assert.equal(res.headers.get('X-Served-By'), 'opencode-serve');
 assert.equal(routeStub.seen.at(-1).port, String(port), 'X-Nimbus-Port threaded to the facet');
 assert.equal(new URL(routeStub.seen.at(-1).url).pathname, '/doc');
