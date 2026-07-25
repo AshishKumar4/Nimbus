@@ -802,7 +802,7 @@ async function spawnPythonSocketProcess(
   };
 }
 
-function buildPythonSocketProcessWorker(preamble: string, sideModules: PythonSideModuleSet): string {
+export function buildPythonSocketProcessWorker(preamble: string, sideModules: PythonSideModuleSet): string {
   const sideModuleImports: string[] = [];
   for (const mod of sideModules.modules) {
     const id = wasmImportIdentifier(mod.moduleKey);
