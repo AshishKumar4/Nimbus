@@ -9,7 +9,7 @@ import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro'
 ## The isolation boundary
 
 Each process runs in its own V8 isolate, spawned by Cloudflare's Worker
-Loader — the same isolation Cloudflare uses for untrusted code. There is
+Loader, the same isolation Cloudflare uses for untrusted code. There is
 no extra Nimbus sandbox underneath; the isolate is the boundary.
 
 One session is one supervisor Durable Object plus the facet isolates it
@@ -22,7 +22,7 @@ mint stubs it wasn't given.
 
 workerd's content security policy forbids `eval` and `new Function` at
 request time, and forbids compiling WASM from raw bytes at request time.
-Nimbus runs everything — including compilers and interpreters — inside
+Nimbus runs everything, including compilers and interpreters, inside
 that constraint: WASM modules enter a facet pre-compiled through the
 module map, and nothing in a session can generate and execute new
 machine code.
