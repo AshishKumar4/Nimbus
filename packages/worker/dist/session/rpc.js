@@ -30,8 +30,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, isolateToken, } from '../loaders/process-fabric.js';
-import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, hostResidentProcess, isolateToken, ResidentBootSpecSchema, } from '../loaders/process-fabric.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { acquireSupervisorAllocation, } from '../observability/heavy-alloc-coord.js';
@@ -731,7 +730,7 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
 export async function _rpcRegisterPort(self, pid, port) {
     // Port registration stores the facet association
     // The actual facet stub is stored by FacetManager separately
-    self.portRegistry.register(port, pid, null);
+    self.portRegistry.register(port, pid);
 }
 export async function _rpcUnregisterPort(self, port) {
     self.portRegistry.unregister(port);
@@ -981,7 +980,50 @@ const HostProcessOptsSchema = z.object({
     pid: z.number().int().positive(),
     /** Keyed dynamic-worker identity on THIS peer's loader. */
     workerKey: z.string().min(1),
+    /** Runner contract: does startProcess hold for the process's life? */
+    startContract: z.enum(['lifetime', 'boot']),
+    /** Opaque arguments forwarded to the runner's startProcess. */
+    startArgs: z.unknown().optional(),
 });
+/**
+ * How long a boot-payload or routed-HTTP leg waits for its process's host
+ * record. Normally zero: the coordinator issues `_rpcHostProcess` first and it
+ * registers before its first await. The wait exists so neither leg can lose a
+ * race with a respawn or with RPC delivery order.
+ */
+const HOSTED_RECORD_WAIT_MS = 30_000;
+function hostedRecords(self) {
+    return self._hostedProcesses;
+}
+function hostedWaiters(self) {
+    return self._hostedProcessWaiters;
+}
+function registerHostedRecord(self, workerKey, record) {
+    hostedRecords(self).set(workerKey, record);
+    const waiters = hostedWaiters(self).get(workerKey);
+    if (!waiters)
+        return;
+    hostedWaiters(self).delete(workerKey);
+    for (const notify of waiters)
+        notify(record);
+}
+function awaitHostedRecord(self, workerKey) {
+    const existing = hostedRecords(self).get(workerKey);
+    if (existing)
+        return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+        const waiters = hostedWaiters(self).get(workerKey) ?? new Set();
+        const notify = (record) => { clearTimeout(timer); resolve(record); };
+        const timer = setTimeout(() => {
+            waiters.delete(notify);
+            if (waiters.size === 0)
+                hostedWaiters(self).delete(workerKey);
+            reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
+        }, HOSTED_RECORD_WAIT_MS);
+        waiters.add(notify);
+        hostedWaiters(self).set(workerKey, waiters);
+    });
+}
 /**
  * RPC: placement probe. Returns this peer's module-scope isolate token so
  * the coordinator's scheduler can verify the peer landed in a distinct
@@ -1002,40 +1044,141 @@ export function _rpcHostProcessProbe(_self) {
  * startProcess context below collapses and the facet dies with it — a
  * process-hosting peer never outlives its parent session.
  */
-export async function _rpcHostProcess(self, stage, opts) {
+export async function _rpcHostProcess(self, boot, opts) {
     const hostOpts = HostProcessOptsSchema.parse(opts);
-    const spec = OpencodeStageSpecSchema.parse(stage);
-    const ctxExports = getNimbusCtxExports();
-    const startStub = await createLoadedWorkerEntrypoint(ctxExports, undefined, { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid }, null, hostOpts.workerKey, spec);
-    if (typeof startStub.startProcess !== 'function') {
-        disposeRpcResource(startStub);
-        throw new Error('Nimbus: hosted process entrypoint has no startProcess method');
-    }
-    const cancels = self._hostedProcessCancels;
-    cancels.set(hostOpts.workerKey, () => disposeRpcResource(startStub));
+    const spec = ResidentBootSpecSchema.parse(boot);
+    const { workerKey } = hostOpts;
+    let cancel = () => { };
+    const cancelled = new Promise((resolve) => { cancel = resolve; });
+    let settleHosted = () => { };
+    let failHosted = () => { };
+    const hosted = new Promise((resolve, reject) => {
+        settleHosted = resolve;
+        failHosted = reject;
+    });
+    let settleBooted = () => { };
+    let failBooted = () => { };
+    const booted = new Promise((resolve, reject) => {
+        settleBooted = resolve;
+        failBooted = reject;
+    });
+    // Nothing awaits these two promises unless a leg asks for them; keep the
+    // runtime from reporting them as unhandled while the process is healthy.
+    hosted.catch(() => { });
+    booted.catch(() => { });
+    registerHostedRecord(self, workerKey, {
+        supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+        hosted, booted, cancelled, cancel,
+    });
+    let facet;
     try {
-        await startStub.startProcess();
+        facet = await hostResidentProcess({
+            ctxExports: getNimbusCtxExports(),
+            supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+            workerKey,
+        }, spec);
+        settleHosted(facet);
+        const live = facet;
+        // Cancellation releases the facet's resources — the identical teardown a
+        // local placement applies — so each contract settles exactly as it would
+        // have locally: a `lifetime` runner's held call rejects, a `boot` runner's
+        // residency simply ends.
+        cancelled.then(() => live.dispose());
+        const started = facet.start(hostOpts.startArgs);
+        started.then(settleBooted, failBooted);
+        if (hostOpts.startContract === 'lifetime') {
+            // The runner's startProcess IS the process: this call is the lifetime.
+            await started;
+            return { ok: true };
+        }
+        // A `boot` runner returns once it is up; the facet then stays resident
+        // behind the resources this call holds, so keep holding until the
+        // coordinator cancels — or dies, which workerd surfaces by cancelling
+        // this inbound call. A hosting peer never outlives its coordinator.
+        await started;
+        await cancelled;
         return { ok: true };
     }
+    catch (e) {
+        failHosted(e);
+        failBooted(e);
+        throw e;
+    }
     finally {
-        cancels.delete(hostOpts.workerKey);
-        disposeRpcResource(startStub);
+        hostedRecords(self).delete(workerKey);
+        facet?.dispose();
     }
 }
 /**
- * RPC: deterministic kill of a hosted process. Disposes the peer-side
- * startProcess stub — the same teardown FacetManager.kill applies to local
- * facets — which severs the facet's held-open context and settles the
- * coordinator's `_rpcHostProcess` call.
+ * RPC: read back the boot payload of a process this peer hosts. The runner was
+ * started by `_rpcHostProcess`; this never starts anything, so a coordinator
+ * asking twice — or asking after a respawn — gets the same answer the local
+ * placement would have returned inline.
+ */
+export async function _rpcAwaitHostedBoot(self, workerKey) {
+    const record = await awaitHostedRecord(self, workerKey);
+    return { payload: await record.booted };
+}
+/**
+ * RPC: inbound HTTP for a port owned by a process this peer hosts. The
+ * coordinator's PortRegistry holds one route target per pid and cannot tell
+ * this apart from a local facet: the same code-free NimbusLoadedEntrypoint
+ * resolves the running facet, here on the PEER's loader.
+ *
+ * KNOWN BROKEN (local workerd, 2026-07-24). Calling the resolved facet's
+ * handler throws DataCloneError — "Entrypoints to dynamically-loaded workers
+ * cannot be transferred to other Workers" — but ONLY when the entrypoint is
+ * driven from a sibling DO. The identical build with the identical code path
+ * serves the same request, byte-exact at 200 KB, when the process is placed
+ * locally. Ruled out by experiment, not by reasoning: it is not the
+ * Request/Response objects (this leg carries their parts), not the response
+ * body's provenance (fully buffering into peer-owned bytes fails the same
+ * way), and not a stale held route stub (minting one per routing call fails
+ * the same way). The throw is inside the peer's own
+ * NimbusLoadedEntrypoint.handleHttpRequest, before anything crosses back.
+ * Whatever workerd treats as the dynamic worker's owning Worker is therefore
+ * tied to the DO that loaded it, so a peer-hosted port cannot be served this
+ * way. Next: have the COORDINATOR's NimbusLoadedEntrypoint resolve a facet
+ * the peer loaded, or give the peer a forwarding entrypoint of its own.
+ */
+export async function _rpcRouteHostedHttp(self, workerKey, wire) {
+    const record = await awaitHostedRecord(self, workerKey);
+    await record.hosted; // the facet must be loaded before it can be re-entered
+    // A route target must be minted in the context that USES it: a
+    // NimbusLoadedEntrypoint stub held from the host call belongs to that call's
+    // I/O context, and re-entering it from here reads as transferring a
+    // dynamically-loaded worker's entrypoint, which workerd refuses.
+    const route = await createLoadedWorkerEntrypoint(getNimbusCtxExports(), undefined, record.supervisor, null, workerKey);
+    const headers = new Headers();
+    for (const [k, v] of wire.headers)
+        headers.append(k, v);
+    const init = { method: wire.method, headers };
+    if (wire.body) {
+        init.body = wire.body;
+        init.duplex = 'half';
+    }
+    const response = await route.handleHttpRequest(new Request(wire.url, init));
+    const responseHeaders = [];
+    response.headers.forEach((v, k) => { responseHeaders.push([k, v]); });
+    return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+        body: response.body,
+    };
+}
+/**
+ * RPC: deterministic kill of a hosted process. Releases the resources pinning
+ * the facet — the same teardown FacetManager.kill applies to a local facet —
+ * which settles the coordinator's held-open `_rpcHostProcess` call.
  */
 export function _rpcCancelHostProcess(self, workerKey) {
-    const cancels = self._hostedProcessCancels;
-    const cancel = cancels.get(workerKey);
-    if (!cancel)
+    const record = hostedRecords(self).get(workerKey);
+    if (!record)
         return { cancelled: false };
-    cancels.delete(workerKey);
+    hostedRecords(self).delete(workerKey);
     try {
-        cancel();
+        record.cancel();
     }
     catch { /* best-effort */ }
     return { cancelled: true };

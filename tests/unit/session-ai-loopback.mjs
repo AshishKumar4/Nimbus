@@ -35,11 +35,12 @@ function makeHost(portRegistry) {
 }
 
 const registry = new PortRegistry();
-registry.register(5173, 42, {
+registry.bindFacetStub(42, {
   async handleHttpRequest() {
     return new Response('vite dev server', { status: 200 });
   },
 });
+registry.register(5173, 42);
 const host = makeHost(registry);
 
 // 1. The AI gateway answers on its own port. This session has no credential,

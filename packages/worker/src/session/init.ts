@@ -1156,7 +1156,8 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         self.viteDevServer.start();
         try {
           const previewStub = makeLongRunningPortStub(self.viteDevServer);
-          self.portRegistry.register(previewPort, previewProcEntry.pid, previewStub);
+          self.portRegistry.bindFacetStub(previewProcEntry.pid, previewStub);
+          self.portRegistry.register(previewPort, previewProcEntry.pid);
           self._viteShimPid = previewProcEntry.pid;
           self._viteShimPort = previewPort;
         } catch {}
@@ -1356,7 +1357,8 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           // difference is which handler.handleRequest the stub forwards
           // into.
           const cirrusStub = makeLongRunningPortStub(cirrusReal);
-          self.portRegistry.register(vitePort, entry.pid, cirrusStub);
+          self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
+          self.portRegistry.register(vitePort, entry.pid);
           self._viteShimPid = entry.pid;
           self._viteShimPort = vitePort;
 
@@ -1459,7 +1461,8 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // long-running adapter — same hook every future long-running
       // facet uses (Express, Bun.serve, http.createServer().listen()).
       const viteStub = makeLongRunningPortStub(self.viteDevServer);
-      self.portRegistry.register(resolvedPort, viteProcEntry.pid, viteStub);
+      self.portRegistry.bindFacetStub(viteProcEntry.pid, viteStub);
+      self.portRegistry.register(resolvedPort, viteProcEntry.pid);
       // Track the wiring so `vite stop` and crash-handlers can tear it
       // down without searching the registry.
       self._viteShimPid = viteProcEntry.pid;

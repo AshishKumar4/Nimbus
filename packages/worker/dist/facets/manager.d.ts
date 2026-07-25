@@ -188,8 +188,19 @@ export interface FacetManagerHooks {
 }
 export interface LongRunningWorkerSpawnOptions {
     port?: number;
-    modules?: Record<string, any>;
+    /** Inline modules: source text, or small wasm carried by value. */
+    modules?: Record<string, string | {
+        wasm: ArrayBuffer;
+    }>;
+    /**
+     * Module name → VFS path of a wasm image the process's host materializes
+     * for itself. Runtime images belong here, not in `modules`: ruby's is
+     * 34.3 MiB, past what any single RPC value may carry.
+     */
+    vfsWasmModules?: Record<string, string>;
     compatibilityFlags?: string[];
+    /** Forwarded verbatim to the runner's startProcess. */
+    startArgs?: unknown;
 }
 export declare class FacetManager {
     private ctx;
@@ -199,10 +210,10 @@ export declare class FacetManager {
     private vfs;
     private hooks;
     /**
-     * The heavy/light process scheduler (loaders/process-fabric.ts). Owns the
-     * single placement policy point for resident staged processes: `light`
-     * boots the local facet exactly as before; `heavy` hosts the facet on a
-     * sibling peer DO with its own workerd process memory budget.
+     * The resident-process scheduler (loaders/process-fabric.ts). Every
+     * long-lived process — staged opencode, node servers, python/ruby socket
+     * servers — is booted through it, and it is the only code that knows which
+     * workerd process a facet landed in.
      */
     private processFabric;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
@@ -379,6 +390,26 @@ export declare class FacetManager {
         command?: string;
     }): Promise<StagedArtifactExecResult>;
     private _runOpencodeServerFacet;
+    /**
+     * NIMBUS_DEBUG live evidence (log-tail channel) of where a resident process
+     * was scheduled. The manager logs an opaque description; only the fabric
+     * knows what a placement is.
+     */
+    private _noteProcessPlacement;
+    /**
+     * The one way this manager boots a resident process. Both spawn primitives
+     * declare `light`: every process they launch (node servers, vite, wrangler,
+     * python/ruby servers) binds its facet into PortRegistry and serves inbound
+     * HTTP, and a peer-hosted facet cannot serve inbound HTTP (see the placement
+     * constraint in `loaders/process-fabric.ts`). Everything after this call
+     * treats the returned handle identically regardless of where it landed.
+     */
+    private _startResidentProcess;
+    /**
+     * A host death that the fabric recovered from is never silent: it lands in
+     * the process log the user reads with `logs <pid>`.
+     */
+    private _noteHostRespawn;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     private _allocateLoopbackPort;
     /**
@@ -411,6 +442,11 @@ export declare class FacetManager {
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
+     *
+     * A resident primitive: the process outlives the call, may bind a port, and
+     * accumulates memory for as long as it runs — so it declares `heavy` and the
+     * fabric gives it its own workerd process. Where it lands is the fabric's
+     * business; nothing below this line knows or asks.
      */
     spawnNode(code: string, opts?: {
         argv?: string[];
@@ -426,22 +462,22 @@ export declare class FacetManager {
         bundleProfile?: FacetBundleProfile;
     }): Promise<{
         pid: number;
-        facetStub: any;
     }>;
     /**
-     * Spawn a long-running dynamic Worker and register its routeable port.
+     * Spawn a long-running dynamic Worker, boot it, and return its boot payload.
      *
-     * This is the shared primitive for any runtime that exposes
-     * handleHttpRequest(Request): Node facets, Vite adapters, Python virtual
-     * sockets, and future WASI socket servers should use
-     * this path instead of each owning process-table and PortRegistry plumbing.
+     * The shared primitive for any runtime that serves over
+     * handleHttpRequest(Request) — the python and ruby socket servers today.
+     * Like every resident primitive it declares `heavy`: the runtime image it
+     * carries is exactly the memory that should not sit in the coordinator's
+     * workerd process.
      */
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<{
         pid: number;
-        facetStub: any;
+        boot: unknown;
     }>;
-    registerPort(pid: number, port: number, facetStub: unknown): void;
-    waitForRouteablePorts(pid: number, facetStub: unknown, timeoutMs?: number): Promise<number[]>;
+    registerPort(pid: number, port: number): void;
+    waitForRouteablePorts(pid: number, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
     kill(pid: number): boolean;
