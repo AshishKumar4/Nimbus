@@ -445,6 +445,24 @@ class HttpRequestParser extends HttpMessageParser {
         return { method: this.method, target: this.target, headerPairs: this.headerPairs, body };
     }
 }
+function errorResponse(status, message) {
+    return {
+        status,
+        statusText: '',
+        headerPairs: [['content-type', 'text/plain; charset=utf-8']],
+        body: new TextEncoder().encode(`Nimbus virtual socket: ${message}`),
+    };
+}
+function toResponse(settled) {
+    const headers = new Headers();
+    for (const [key, value] of settled.headerPairs)
+        headers.append(key, value);
+    return new Response(settled.body, {
+        status: settled.status,
+        statusText: settled.statusText,
+        headers,
+    });
+}
 class VirtualConnection {
     id;
     /** Request bytes the guest server reads; filled in one shot in stage 1. */
@@ -498,14 +516,14 @@ class VirtualConnection {
     /** Abort propagation: settle the pending preview request with a terminal status. */
     abort(message, status) {
         this.closed = true;
-        this.settle(new Response(`Nimbus virtual socket: ${message}`, { status }));
+        this.settle(errorResponse(status, message));
     }
     async response(timeoutMs) {
         const timer = setTimeout(() => {
-            this.settle(new Response('Nimbus virtual socket: timed out waiting for response', { status: 504 }));
+            this.settle(errorResponse(504, 'timed out waiting for response'));
         }, Math.max(1, timeoutMs));
         try {
-            return await this.responseReady.promise;
+            return toResponse(await this.responseReady.promise);
         }
         finally {
             clearTimeout(timer);
@@ -522,18 +540,17 @@ class VirtualConnection {
         if (!outcome)
             return;
         if (outcome.kind === 'failed') {
-            this.settle(new Response(`Nimbus virtual socket: ${outcome.message}`, { status: 502 }));
+            this.settle(errorResponse(502, outcome.message));
             return;
         }
         const { status, statusText, headerPairs, body } = outcome.message;
-        const headers = new Headers();
-        for (const [key, value] of headerPairs) {
+        this.settle({
+            status,
+            statusText,
             // The framing is consumed here; the Worker Response re-frames the body itself.
-            if (/^transfer-encoding$/i.test(key))
-                continue;
-            headers.append(key, value);
-        }
-        this.settle(new Response(body, { status, statusText, headers }));
+            headerPairs: headerPairs.filter(([key]) => !/^transfer-encoding$/i.test(key)),
+            body,
+        });
     }
     settle(response) {
         if (this.settled)
