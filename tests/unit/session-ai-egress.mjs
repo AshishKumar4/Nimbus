@@ -217,14 +217,14 @@ function aiHost(env = {}) {
 
   // An API this gateway does not speak must fail with a sentence that accounts
   // for where the answer came from — the client believed it was calling OpenAI.
-  const unsupported = await handleSessionAiRequest(host, new Request('https://api.openai.com/v1/responses', {
+  const unsupported = await handleSessionAiRequest(host, new Request('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${TOKEN}` },
+    headers: { 'x-api-key': TOKEN },
     body: '{}',
   }));
   assert.equal(unsupported.status, 404);
   const error = (await unsupported.json()).error.message;
-  assert.match(error, /\/v1\/responses/, 'the endpoint the client actually asked for is named');
+  assert.match(error, /\/v1\/messages/, 'the endpoint the client actually asked for is named');
   assert.match(error, /chat\/completions/, 'and what this gateway does speak');
   assert.match(error, /whatever host it was addressed to/, 'and why it landed here at all');
   assert.doesNotMatch(error, /cf-real-credential/);
@@ -254,6 +254,45 @@ function aiHost(env = {}) {
       'the session token is never forwarded upstream');
     const seen = JSON.stringify([...response.headers]) + await response.text();
     assert.doesNotMatch(seen, /cf-real-credential/, 'the real credential is not observable from the sandbox');
+
+    // The Responses API is the same upstream hop, not a translation: a client
+    // that speaks it (pi's built-in OpenAI models all do) is proxied through.
+    calls.length = 0;
+    const responses = await handleSessionAiRequest(host, new Request('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: '@cf/openai/gpt-oss-120b', input: 'hi' }),
+    }));
+    assert.equal(responses.status, 200);
+    assert.ok(calls[0].url.endsWith('/ai/v1/responses'), 'proxied to the Workers AI responses endpoint');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  // A model this session cannot run: the tool that was mediated here is holding
+  // some other provider's catalogue, so the error has to say where ours is.
+  const host = aiHost();
+  await storeSessionAiCredential(host, {
+    accessToken: 'cf', accountId: 'f44999d1ddda7012e9a87729eba250f1', expiresAt: null,
+  });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve(Response.json(
+    { errors: [{ message: 'Model not found: gpt-5.5', code: 7003 }], success: false },
+    { status: 404 },
+  ));
+  try {
+    const response = await handleSessionAiRequest(host, new Request('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.5', messages: [] }),
+    }));
+    assert.equal(response.status, 404);
+    const message = (await response.json()).error.message;
+    assert.match(message, /Model not found: gpt-5\.5/, "Cloudflare's own sentence is kept");
+    assert.match(message, /GET \/v1\/models/, 'and the caller is told where this session\'s catalogue is');
+    assert.match(message, /@cf\/zai-org\/glm-5\.2/, 'and what this deployment would run by default');
   } finally {
     globalThis.fetch = realFetch;
   }
