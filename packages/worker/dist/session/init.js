@@ -1667,10 +1667,13 @@ export function initSession(self, ws) {
         HOST: '0.0.0.0',
         NIMBUS_SESSION_ID: '', // patched after Shell ctor — see below.
         // The session AI gateway (session/ai.ts). Any OpenAI-compatible tool —
-        // pi, opencode, a user's own script, curl — discovers the session's
-        // models from these without being configured. The key is a placeholder,
-        // not a secret: the endpoint is loopback-only and ignores it. A user who
-        // exports their own OPENAI_BASE_URL still wins, via the persisted spread.
+        // pi, opencode, a user's own script, curl — reaches the session's models
+        // from these without being configured: by OPENAI_BASE_URL if it reads
+        // one, and otherwise by the key, which is this session's capability token
+        // and mediates the tool's own egress back to the gateway
+        // (_shared/ai-egress.ts). A user who exports their own OPENAI_BASE_URL or
+        // OPENAI_API_KEY still wins, via the persisted spread — their key is not
+        // this session's token, so their request goes to their provider.
         ...sessionAiEnv(),
         // Persisted env keys win over defaults — the user's `export FOO=bar`
         // survives reconnect.

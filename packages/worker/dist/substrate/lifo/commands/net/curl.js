@@ -1,6 +1,8 @@
 import { resolve } from '../../utils/path.js';
 import { isLoopbackHost } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
+import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
+import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
 const SHORT_VALUE_OPTIONS = new Set(['X', 'H', 'd', 'o', 'w']);
 const MAX_REDIRECTS = 20;
 function createCurlImpl(kernel) {
@@ -319,6 +321,34 @@ async function resolveVirtualCurlResponse(kernel, ctx, options, startUrl) {
     ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
     return { kind: 'error', exitCode: 47 };
 }
+/**
+ * Hand one curl request to the supervisor's loopback router and shape the
+ * answer as curl sees it. Null when nothing is listening on `port`.
+ */
+async function routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port) {
+    if (!kernel.routeLoopback)
+        return null;
+    const hasBody = options.method !== 'GET' && options.method !== 'HEAD' && options.data !== undefined;
+    const response = await kernel.routeLoopback(port, new Request(requestUrl, {
+        method: options.method,
+        headers: options.headers,
+        body: hasBody ? options.data : undefined,
+        signal: ctx.signal,
+    }));
+    if (!response)
+        return null;
+    return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headersToRecord(response.headers),
+        // Stream to stdout as bytes arrive (a facet's SSE flows live);
+        // an -o file needs the whole payload for a single VFS write.
+        body: options.outputFile
+            ? new Uint8Array(await response.arrayBuffer())
+            : response.body ?? '',
+        url: response.url || url,
+    };
+}
 async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
     let requestUrl;
     try {
@@ -332,8 +362,17 @@ async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
     if (kernel.networkStack && !isLoopbackHost(host)) {
         host = kernel.networkStack.getDNS().lookup(host)?.value ?? host;
     }
+    // Off-box, but possibly still ours: a request that presents this session's
+    // AI capability token is inference the session owns, and is served by the
+    // session's gateway wherever it was addressed — which is how `curl
+    // https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
+    // answers with the session's models. Anything carrying a different
+    // credential is not ours and goes to the network. See _shared/ai-egress.ts.
     if (!isLoopbackHost(host)) {
-        return null;
+        if (!requestCarriesSessionAiToken(new Headers(options.headers), ctx.env[NIMBUS_AI_TOKEN_ENV] || '')) {
+            return null;
+        }
+        return routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, NIMBUS_AI_GATEWAY_PORT);
     }
     const handler = kernel.portRegistry.get(port);
     if (handler) {
@@ -367,29 +406,9 @@ async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
             url,
         };
     }
-    if (kernel.routeLoopback) {
-        const hasBody = options.method !== 'GET' && options.method !== 'HEAD' && options.data !== undefined;
-        const request = new Request(requestUrl, {
-            method: options.method,
-            headers: options.headers,
-            body: hasBody ? options.data : undefined,
-            signal: ctx.signal,
-        });
-        const response = await kernel.routeLoopback(port, request);
-        if (response) {
-            return {
-                status: response.status,
-                statusText: response.statusText,
-                headers: headersToRecord(response.headers),
-                // Stream to stdout as bytes arrive (a facet's SSE flows live);
-                // an -o file needs the whole payload for a single VFS write.
-                body: options.outputFile
-                    ? new Uint8Array(await response.arrayBuffer())
-                    : response.body ?? '',
-                url: response.url || url,
-            };
-        }
-    }
+    const routed = await routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port);
+    if (routed)
+        return routed;
     ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
     return { exitCode: 7 };
 }
