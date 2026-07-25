@@ -560,7 +560,7 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await _fsRpc(supervisor.writeFile(absPath, __vfsWrites[k]), "write", absPath, () => undefined);
+      await _fsRpc(supervisor.writeFile(absPath, _exactCell(__vfsWrites[k])), "write", absPath, () => undefined);
       delete __vfsWrites[k];
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
@@ -593,16 +593,50 @@ const __fsMod = (() => {
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
+  // Positional write into a local cell: return \`base\` with \`bytes\` placed at
+  // \`pos\`. The single implementation behind every fd-style write (async
+  // FileHandle.write, sync writeSync, and the post-RPC local overlay).
+  //
+  // A descriptor write loop appends at the current end, so that case grows the
+  // cell IN PLACE inside a geometrically reserved buffer — rebuilding the whole
+  // cell per call made a write loop quadratic and OOMed the facet on a 26 MiB
+  // file. A write that lands on bytes already in the cell still copies, so a
+  // view handed out earlier is never mutated underneath its holder.
+  function _spliceCell(base, pos, bytes) {
+    const size = Math.max(base.byteLength, pos + bytes.byteLength);
+    const capacity = base.buffer.byteLength - base.byteOffset;
+    if (pos >= base.byteLength && size <= capacity) {
+      const grown = new Uint8Array(base.buffer, base.byteOffset, size);
+      grown.fill(0, base.byteLength, pos);
+      grown.set(bytes, pos);
+      return grown;
+    }
+    const reserve = size > capacity ? Math.max(size, capacity * 2) : capacity;
+    const next = new Uint8Array(new ArrayBuffer(reserve), 0, size);
+    next.set(base, 0);
+    next.set(bytes, pos);
+    return next;
+  }
+
+  // A cell grown in place shares an over-reserved buffer, and structured clone
+  // copies the WHOLE backing buffer — so anything crossing the supervisor RPC
+  // boundary is handed an exactly-sized view instead.
+  function _exactCell(cell) {
+    if (!_isBytes(cell)) return cell;
+    if (cell.byteOffset === 0 && cell.byteLength === cell.buffer.byteLength) return cell;
+    return cell.slice();
+  }
+  // The facet's exit-time flush of __vfsWrites lives in the generated runner,
+  // outside this module, and pushes the same cells over the same RPC.
+  globalThis.__nimbusExactCell = _exactCell;
+
   // Overlay \`bytes\` at \`pos\` into the local sync-view cell so sync reads
   // stay coherent after a live ranged write. No-op when there is no cell.
   function _overlayLocalCell(absPath, pos, bytes) {
     const k = _strip(absPath);
     const cell = _writtenCell(absPath);
     if (cell === undefined) return;
-    const buf = _asBytes(cell);
-    const next = new Uint8Array(Math.max(buf.byteLength, pos + bytes.byteLength));
-    next.set(buf, 0);
-    next.set(bytes, pos);
+    const next = _spliceCell(_asBytes(cell), pos, bytes);
     if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
@@ -816,7 +850,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.writeFile === "function") {
       const cell = _writtenCell(absPath);
       if (cell !== undefined) {
-        await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
+        await _fsRpc(supervisor.writeFile(absPath, _exactCell(cell)), "write", p, () => undefined);
         if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
         _markVfsStale();
       }
@@ -859,7 +893,7 @@ const __fsMod = (() => {
     // Creation (no live file) or pending local writes: flush the merged cell.
     const cell = _writtenCell(absPath);
     if (cell !== undefined) {
-      await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
+      await _fsRpc(supervisor.writeFile(absPath, _exactCell(cell)), "write", p, () => undefined);
       if (__vfsWrites) delete __vfsWrites[k];
       _markVfsStale();
     }
@@ -1521,14 +1555,8 @@ const __fsMod = (() => {
         _overlayLocalCell(this._abs, at, bytes);
         _markVfsStale();
       } else {
-        const k = _strip(this._abs);
         const cell = _writtenCell(this._abs);
-        const buf = cell === undefined ? new Uint8Array(0) : _asBytes(cell);
-        const next = new Uint8Array(Math.max(buf.byteLength, at + bytes.byteLength));
-        next.set(buf, 0);
-        next.set(bytes, at);
-        __vfsWrites[k] = next;
-        if (__vfsBundle) __vfsBundle[k] = next;
+        this._commit(_spliceCell(cell === undefined ? new Uint8Array(0) : _asBytes(cell), at, bytes));
       }
       this._size = Math.max(this._size, at + bytes.byteLength);
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
@@ -1628,10 +1656,7 @@ const __fsMod = (() => {
       const at = this._flags.append
         ? base.byteLength
         : (pos === null ? this._position : pos);
-      const next = new Uint8Array(Math.max(base.byteLength, at + bytes.byteLength));
-      next.set(base, 0);
-      next.set(bytes, at);
-      this._commit(next);
+      this._commit(_spliceCell(base, at, bytes));
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
       return bytes.byteLength;
     }
