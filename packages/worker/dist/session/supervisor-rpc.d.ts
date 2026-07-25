@@ -26,6 +26,7 @@
  *   prefetch(cwd, entryCode) → Record<string, string>
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
 /**
@@ -164,76 +165,52 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     private _r2;
     /**
-     * Look up a tarball in the R2 cross-tenant cache. Returns
+     * Look up a tarball in the R2 cross-tenant cache by its content
+     * address (the resolved npm integrity string). Returns
      * { bytes, events } where:
      *   - bytes: Uint8Array on hit, null on miss/oversize/no-binding
      *   - events: L2/L3 hit/miss tuples captured during this lookup
      *
-     * cache-obs-2: return-shape change from `Uint8Array | null` to
-     * `{ bytes, events }`. Facets propagate events into their result
-     * for installer.ts to fold into the DO singleton (mirroring the
-     * recordR2RaceCounters pattern). Without this enrichment the
-     * L2/L3 distinction is supervisor-side knowledge only.
+     * Facets propagate events into their result for installer.ts to fold
+     * into the DO singleton (mirroring the recordR2RaceCounters pattern).
+     * Without this enrichment the L2/L3 distinction is supervisor-side
+     * knowledge only. The events list is structured-clone-safe (plain
+     * objects + strings + numbers).
      *
-     * The caller is responsible for integrity-verifying bytes before
-     * unpacking — same posture as the network-fetch path. The events
-     * list is structured-clone-safe (plain objects + strings + numbers).
+     * Returned bytes have already been re-hashed against `integrity` by
+     * R2CacheClient — the cross-tenant bucket is untrusted storage, so
+     * verification happens at the storage boundary and nowhere else.
      */
-    getCachedTarball(name: string, version: string): Promise<{
+    getCachedTarball(integrity: string): Promise<{
         bytes: Uint8Array | null;
         events: SupervisorCacheStatEvent[];
     }>;
     /**
-     * Store a tarball in the R2 cross-tenant cache. Best-effort: on R2
-     * write failure, returns false but the install pipeline continues
-     * unaffected. Caller passes the bytes already verified against the
-     * resolver's integrity hash.
+     * Store a tarball in the R2 cross-tenant cache under its content
+     * address. Best-effort: on R2 write failure, returns false but the
+     * install pipeline continues unaffected. Bytes that do not hash to
+     * `integrity` are rejected by R2CacheClient.
      */
-    putCachedTarball(name: string, version: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean>;
+    putCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean>;
     /**
-     * Look up a packument in the R2 cross-tenant cache. Returns
-     * { json, ageMs, expired } or null on miss / missing binding.
+     * Resolve one package's corgi packument: cross-tenant cache read, and
+     * on a miss the registry fetch plus the cache fill.
      *
-     * Caller MUST honour the `expired` flag: only treat as a hot-path
-     * hit when expired === false. Stale data is returned only for
-     * stale-while-error fallback semantics.
+     * Fetch and fill live inside R2CacheClient, not in the resolve facet,
+     * and that is a security boundary rather than a layering preference.
+     * The packument bucket is shared by every tenant and a packument
+     * dictates the tarball URL and integrity digest for everyone who reads
+     * it, so a caller-supplied `put` would be a cross-tenant
+     * code-execution primitive for anyone holding a supervisor stub. No
+     * such RPC exists: the only bytes that reach `pc/<name>.json` are the
+     * ones registry.npmjs.org served for that exact name.
      */
-    /**
-     * Look up a packument in the R2 cross-tenant cache. Returns
-     * { cached, events } where:
-     *   - cached: { json, ageMs, expired } on hit, null on miss/no-binding
-     *   - events: L2/L3 hit/miss tuples captured during this lookup
-     *
-     * cache-obs-2: return-shape change from
-     *   `{json, ageMs, expired} | null` to
-     *   `{ cached: {json,ageMs,expired} | null, events: ... }`.
-     *
-     * Caller MUST honour the `cached.expired` flag the same as v1
-     * (only treat as hot-path hit when expired === false). Events are
-     * recorded regardless of expiration — an expired L2 hit is still
-     * recorded as 'hit' at the L2 tier; the staleness is a separate axis.
-     */
-    getCachedPackument(name: string): Promise<{
-        cached: {
-            json: string;
-            ageMs: number;
-            expired: boolean;
-        } | null;
+    getPackument(name: string, options?: {
+        retries?: number;
+        timeoutMs?: number;
+    }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    /**
-     * Store a packument in the R2 cross-tenant cache with a TTL stamp.
-     * Best-effort. Returns true on success.
-     */
-    putCachedPackument(name: string, json: string): Promise<boolean>;
-    /**
-     * Admin: purge a single tarball from R2. Used in incident response.
-     */
-    purgeCachedTarball(name: string, version: string): Promise<boolean>;
-    /**
-     * Admin: purge a single packument from R2.
-     */
-    purgeCachedPackument(name: string): Promise<boolean>;
     stdout(data: string): Promise<void>;
     stderr(data: string): Promise<void>;
     /**

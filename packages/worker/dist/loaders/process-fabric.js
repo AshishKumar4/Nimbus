@@ -22,20 +22,41 @@
  * runs the compute and holds the resident memory.
  *
  * Placement is INVISIBLE above this module. A `ResidentProcessHandle` exposes
- * the same three things for either placement — `start()` to boot the runner,
- * `routeTarget` for inbound HTTP, `done` for death, `kill()` for teardown — so
- * PortRegistry, the process table, stdio, the shell and the SDK never learn
- * where a process runs.
+ * the same lifecycle for either placement — `booted()` for the boot payload,
+ * `done` for death, `kill()` for teardown — so the process table, stdio, the
+ * shell and the SDK never learn where a process runs.
+ *
+ * Placement constraint: a peer cannot serve inbound HTTP
+ * ─────────────────────────────────────────────────────
+ * `routeTarget` is the ONE part of the handle that placement is not invisible
+ * to. A dynamically-loaded facet cannot be re-entered to serve an inbound
+ * request when it lives on a peer: the peer calling into its own facet's HTTP
+ * handler throws `DataCloneError: Entrypoints to dynamically-loaded workers
+ * cannot be transferred to other Workers` (raised in
+ * `NimbusLoadedEntrypoint.handleHttpRequest`, `session/bindings.ts`). A clean
+ * same-build A/B pins it to placement alone: the same server declared `light`
+ * returns 200 byte-exact, declared `heavy` returns 502. Buffering the response
+ * into peer-owned bytes, transferring native Request/Response, delivering the
+ * request from inside the owning `_rpcHostProcess` invocation, and minting the
+ * route stub together with the boot spec were each eliminated by experiment —
+ * the underlying workerd mechanism is still unexplained.
+ *
+ * So: a process that serves inbound HTTP must be `light`. `routeThroughPeer`
+ * below is the mechanism a fix would restore; until then no heavy-class
+ * primitive may bind into PortRegistry.
  *
  * Policy
  * ──────
  * One field, one policy point. Each launch primitive DECLARES a
  * `processClass` where it is defined, and `startResidentProcess` is the only
- * consumer. There is no command-name or argv matching anywhere in this file:
- * the classification follows the primitive's intrinsic residency (a resident
- * process accumulates memory over its lifetime and is worth a whole workerd
- * process; a one-shot command returns promptly and never reaches this module
- * at all).
+ * consumer. There is no command-name or argv matching anywhere in this file.
+ * A primitive is `heavy` when it is both RESIDENT (it accumulates memory over
+ * its lifetime and is worth a whole workerd process) and NON-SERVING (nothing
+ * routes inbound HTTP into it). Exactly one primitive qualifies today: the
+ * opencode attach TUI, which talks to the user over the terminal RPC and the
+ * stdin pump and binds no port. Everything else is `light` — node/vite/
+ * wrangler/python/ruby servers and opencode `server` mode all bind ports, and
+ * a one-shot command returns promptly and never reaches this module at all.
  *
  * Boot specs
  * ──────────
@@ -278,9 +299,10 @@ function describePlacement(placement) {
 }
 /**
  * Resource handle for one resident process — the whole surface the kernel
- * above this module sees. It is deliberately placement-free: `start`,
- * `routeTarget`, `done` and `kill` behave identically whether the facet runs
- * in the coordinator's workerd process or a sibling's.
+ * above this module sees. Its lifecycle is placement-free: `booted`, `done`
+ * and `kill` behave identically whether the facet runs in the coordinator's
+ * workerd process or a sibling's. `routeTarget` is the exception — see the
+ * placement constraint at the top of this file.
  *
  * `done` settles when the process's HOST context ends: for a `lifetime`
  * runner that is the process exiting (resolve) or dying (reject); for a
@@ -293,7 +315,12 @@ function describePlacement(placement) {
 export class ResidentProcessHandle {
     done;
     processClass;
-    /** Inbound-HTTP target for PortRegistry; follows the process across respawns. */
+    /**
+     * Inbound-HTTP target for PortRegistry; follows the process across respawns.
+     * Usable only on a `light` handle — a peer-hosted facet cannot be re-entered
+     * to serve an inbound request (placement constraint, top of this file), so
+     * no heavy-class primitive may bind this into PortRegistry.
+     */
     routeTarget;
     /** Peer respawns consumed (heavy only). */
     respawns = 0;

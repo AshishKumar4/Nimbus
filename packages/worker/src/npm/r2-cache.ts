@@ -14,20 +14,34 @@
  *   L4 — registry.npmjs.org origin (~100-300 ms cross-region)
  *
  * Two buckets, two key shapes:
- *   tarball:    `${R2_CACHE_PREFIX}/t/<name>/<version>.tgz`
+ *   tarball:    `${R2_CACHE_PREFIX}/t/<sri-algo>/<sri-digest-hex>.tgz`
  *   packument:  `${R2_CACHE_PREFIX}/pc/<name>.json  (corgi/abbreviated format)`
  *
  * Why two buckets:
- *   Tarballs are immutable (npm name@version is content-fixed since 2018).
- *   Packuments must expire (5-min TTL). Different eviction policies →
- *   different buckets, so storage / quota / monitoring stay clean.
+ *   Tarballs are content-addressed and never expire. Packuments must
+ *   expire (TTL). Different eviction policies → different buckets, so
+ *   storage / quota / monitoring stay clean.
+ *
+ * Why tarballs are keyed by digest, not by `name@version`:
+ *   The bucket is shared by every tenant, so a tenant that can choose a
+ *   key can choose whose install it poisons. `name@version` is NOT a
+ *   safe key: npm alias syntax (`npm i react@npm:evil@1.0.0`) lets the
+ *   install name be picked independently of the registry package, so
+ *   evil's bytes would land on react's key and pass evil's own integrity
+ *   check. Keyed by the resolved integrity digest instead, a writer can
+ *   only ever address its own bytes, and every read re-hashes what the
+ *   store returned before handing it back. The store's contract is
+ *   therefore absolute: an object at key K hashes to K, or it is not
+ *   served. Shared storage is treated as untrusted.
  *
  * Cache invalidation:
  *   1. Time-based, packuments only — TTL encoded in customMetadata.expiresAt
  *   2. Schema bump — bump R2_CACHE_PREFIX to invalidate everything atomically.
  *      Stale data is left in place; bucket lifecycle policy can sweep it.
- *   3. Manual delete — deleteTarball / deletePackument; useful in incident
- *      response (a poisoned cache key needs purging).
+ *   3. Out-of-band delete (wrangler / the R2 dashboard). Nothing inside
+ *      the worker deletes cache entries: a delete reachable from a
+ *      session would be a cross-tenant eviction primitive, and content
+ *      addressing means a poisoned key cannot exist to need purging.
  *
  * Graceful degrade:
  *   If env.NPM_TARBALL_CACHE / NPM_PACKUMENT_CACHE bindings are missing
@@ -60,8 +74,14 @@ export type R2CacheStatEvent =
 
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
- *  poisoned a class of keys). */
-export const R2_CACHE_PREFIX = 'v1';
+ *  poisoned a class of keys).
+ *
+ *  v1 → v2: tarball keys moved from `name@version` to the content
+ *  address. Every `v1/` object is abandoned — the old keyspace was
+ *  tenant-writable under an attacker-chosen name and may contain
+ *  planted bytes. `v1/` objects are orphaned and safe to delete
+ *  out-of-band. */
+export const R2_CACHE_PREFIX = 'v2';
 
 /** Packument TTL — 60 min (cache metrics support; was 5 min pre-wave).
  *
@@ -95,6 +115,12 @@ export const R2_CACHE_PREFIX = 'v1';
  *  .expiresAt stamps remain valid against either TTL. */
 export const PACKUMENT_TTL_MS = 60 * 60_000;
 
+/** npm registry origin. The only host the packument cache is filled from. */
+const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
+
+/** Jittered backoff between packument fetch attempts. */
+const PACKUMENT_BACKOFF_MS = [500, 1500, 4500];
+
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
  *  framing + the call's own arg bytes. Tarballs above this size skip
@@ -103,6 +129,18 @@ export const PACKUMENT_TTL_MS = 60 * 60_000;
 export const MAX_R2_TARBALL_BYTES = 30 * 1024 * 1024;
 
 // ── Types ───────────────────────────────────────────────────────────────
+
+/** Outcome of `R2CacheClient.readThroughPackument`. */
+export interface PackumentReadThrough {
+  /** Corgi packument JSON text, or null when `status`/`failure` is set. */
+  json: string | null;
+  /** Which tier answered. */
+  source: 'r2-cache' | 'network';
+  /** Registry 4xx — no such package. */
+  status?: number;
+  /** Every fetch attempt failed; this is the last error's message. */
+  failure?: string;
+}
 
 export interface CachedPackument {
   /** Raw packument JSON text. JSON.parse at call-site (caller already
@@ -151,38 +189,23 @@ type R2BucketLike = {
 //   - `nimbus-cache.invalid.` is reserved per RFC 6761 (`.invalid.`
 //     TLD) so it can never resolve and never escapes the worker.
 
+/** Synthetic L2 cache-key host. RFC-6761 reserved TLD. */
+const L2_KEY_HOST = 'https://nimbus-cache.invalid';
+
 /**
- * Synthetic L2 cache-key host. RFC-6761 reserved TLD.
- *
- * CLN-1 (2026-05-11): exported so `session/routes.ts` cache-purge helpers
- * can use the same constant instead of hardcoding the literal. Bumping
- * the schema (e.g. `nimbus-cache-v2.invalid`) now only requires editing
- * one line.
+ * L2 cache-key URL for a packument name. The L2 and L3 keyspaces are
+ * derived from the same string so a schema bump moves both at once.
+ * encodeURIComponent on the name so '@scope/pkg' becomes a single path
+ * segment (R2 keys allow any UTF-8, but URL paths need encoding).
  */
-export const L2_KEY_HOST = 'https://nimbus-cache.invalid';
-
-/** Build the L2 cache-key Request for a packument name. */
-function packumentL2Key(name: string): Request {
-  // encodeURIComponent on the name so '@scope/pkg' becomes a single
-  // path segment — matches our R2 key shape's `${name}.json` (R2 keys
-  // allow any UTF-8, but URL paths need encoding).
-  return new Request(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/pc/${encodeURIComponent(name)}.json`);
+export function packumentL2Url(name: string): string {
+  return `${L2_KEY_HOST}/${R2_CACHE_PREFIX}/pc/${encodeURIComponent(name)}.json`;
 }
 
-/** Build the L2 cache-key Request for a tarball name+version. */
-function tarballL2Key(name: string, version: string): Request {
-  return new Request(
-    `${L2_KEY_HOST}/${R2_CACHE_PREFIX}/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`,
-  );
-}
-
-/** Build the L2 cache-key Request for an asset (e.g. esbuild-wasm). */
-function assetL2Key(assetPath: string): Request {
-  // Caller passes an already-encoded path (e.g. "esbuild-0.24.2.wasm").
-  // Sanitize defensively in case a future caller passes a raw path
-  // with leading slashes or query strings.
-  const clean = assetPath.replace(/^\/+/, '').split('?')[0];
-  return new Request(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/a/${clean}`);
+/** L2 cache-key URL for a tarball content address. Hex + the SRI algo
+ *  name are already URL-safe, so the R2 key doubles as the URL path. */
+export function tarballL2Url(address: TarballAddress): string {
+  return `${L2_KEY_HOST}/${tarballKey(address)}`;
 }
 
 /**
@@ -224,25 +247,86 @@ async function l2Put(key: Request, body: Response): Promise<boolean> {
   }
 }
 
+// ── Content addressing ──────────────────────────────────────────────────
+
+/** Web-Crypto digest name per npm subresource-integrity algorithm. */
+const SRI_DIGEST_ALGOS: Record<string, string> = {
+  sha512: 'SHA-512',
+  sha384: 'SHA-384',
+  sha256: 'SHA-256',
+  sha1: 'SHA-1',
+};
+
+/**
+ * A tarball's content address: the resolved integrity digest, parsed.
+ * Holding the parsed form (rather than the raw SRI string) is what makes
+ * it impossible to build a cache key out of something unverifiable —
+ * the only way to get one is through `parseTarballAddress`.
+ */
+export interface TarballAddress {
+  /** SRI algorithm prefix, lowercase (e.g. 'sha512'). */
+  algo: string;
+  /** Web-Crypto digest identifier (e.g. 'SHA-512'). */
+  digestAlgo: string;
+  /** Lowercase hex digest. */
+  hex: string;
+}
+
+/**
+ * Parse an npm subresource-integrity string ("sha512-<base64>") into a
+ * content address.
+ *
+ * Returns null for anything we cannot verify: an empty string, a bare
+ * legacy `dist.shasum` (hex, no algorithm prefix), a multi-entry SRI, an
+ * unknown algorithm, or malformed base64. A null address means the
+ * tarball does not participate in the shared cache at all — we neither
+ * read nor write it. Refusing to cache what we cannot verify is the
+ * whole point; there is no "trust the name instead" fallback.
+ */
+export function parseTarballAddress(integrity: string): TarballAddress | null {
+  if (typeof integrity !== 'string') return null;
+  const dash = integrity.indexOf('-');
+  if (dash <= 0) return null;
+  const algo = integrity.slice(0, dash).toLowerCase();
+  const digestAlgo = SRI_DIGEST_ALGOS[algo];
+  if (!digestAlgo) return null;
+  const b64 = integrity.slice(dash + 1);
+  // A single SRI entry only. Whitespace means a multi-hash string, which
+  // the install facet's verifier does not understand either.
+  if (!b64 || /\s/.test(b64)) return null;
+  let raw: string;
+  try {
+    raw = atob(b64);
+  } catch {
+    return null;
+  }
+  let hex = '';
+  for (let i = 0; i < raw.length; i++) {
+    hex += raw.charCodeAt(i).toString(16).padStart(2, '0');
+  }
+  return { algo, digestAlgo, hex };
+}
+
+/** Whether `bytes` hash to `address` under its own algorithm. */
+async function bytesMatchAddress(bytes: Uint8Array, address: TarballAddress): Promise<boolean> {
+  const digest = new Uint8Array(await crypto.subtle.digest(address.digestAlgo, bytes));
+  let hex = '';
+  for (let i = 0; i < digest.length; i++) hex += digest[i].toString(16).padStart(2, '0');
+  return hex === address.hex;
+}
+
 // ── Key helpers ─────────────────────────────────────────────────────────
 
 /**
- * Compose the R2 object key for a tarball.
+ * Compose the R2 object key for a tarball from its content address.
  *
- * Tarball keys use `t/<name>/<version>.tgz`. Scope-prefixed
- * names (`@scope/pkg`) keep their `@` and `/` because R2 keys allow any
- * UTF-8; we don't URL-encode them. Examples:
+ *   sha512-A9c/... → `v2/t/sha512/6b86b273ff34fce1…9d9d.tgz`
  *
- *   react@19.0.0                  → `v1/t/react/19.0.0.tgz`
- *   @vitejs/plugin-react@4.3.4    → `v1/t/@vitejs/plugin-react/4.3.4.tgz`
- *
- * The integrity digest is not in the key; reads validate integrity
- * post-fetch. This shape enables pipelining: as soon as the resolver yields
- * {name, version}, the install facet can speculatively kick off getTarball()
- * in parallel with the network fetch.
+ * The key IS the digest, so a writer can only ever address its own
+ * bytes. Package name and version appear nowhere in the keyspace.
  */
-export function tarballKey(name: string, version: string): string {
-  return `${R2_CACHE_PREFIX}/t/${name}/${version}.tgz`;
+export function tarballKey(address: TarballAddress): string {
+  return `${R2_CACHE_PREFIX}/t/${address.algo}/${address.hex}.tgz`;
 }
 
 /** Compose the R2 object key for a packument. */
@@ -322,35 +406,45 @@ export class R2CacheClient {
   }
 
   /**
-   * Get a cached tarball, or null if absent / oversize-bypassed.
+   * Get the tarball stored at `integrity`'s content address, or null if
+   * absent / unverifiable / oversize-bypassed.
    *
-   * Returns the gzipped tar bytes as Uint8Array. Caller is responsible
-   * for integrity verification before consuming — we do NOT verify here
-   * because the caller (batch-facet) has the integrity hash from the
-   * resolver's packument.
+   * The returned bytes are ALWAYS re-hashed against the address first.
+   * The bucket is shared by every tenant, so it is treated as untrusted
+   * storage: whatever it hands back is only served on if it hashes to
+   * the key it was asked for. A caller can therefore consume the bytes
+   * directly — no second verification anywhere downstream.
    *
-   * L2 (cache-and-scrub W-B): we wrap the R2 read in `caches.default`
-   * with `Cache-Control: public, max-age=31536000, immutable` because
-   * `name@version` is content-addressed (immutable npm contract since
-   * 2018). On miss, fall through to R2 and write through to L2.
+   * L2 (`caches.default`) fronts the R2 read with an eternal-immutable
+   * TTL, which a content-addressed keyspace makes trivially correct.
+   * An L2 entry that fails verification is ignored and the read falls
+   * through to L3.
    */
-  async getTarball(name: string, version: string): Promise<Uint8Array | null> {
+  async getTarball(integrity: string): Promise<Uint8Array | null> {
+    const address = parseTarballAddress(integrity);
+    if (!address) {
+      // Nothing verifiable to look up. Report the same miss pair as an
+      // unconfigured binding: the caller goes to L4 either way.
+      this._recordMiss('L2', 'tarball');
+      this._recordMiss('L3', 'tarball');
+      return null;
+    }
     // ── L2 fast path (per-colo) ───────────────────────────────────
-    const l2Key = tarballL2Key(name, version);
+    const l2Key = new Request(tarballL2Url(address));
     const l2Hit = await l2Get(l2Key);
     if (l2Hit) {
       this._l2HitsTarball++;
       const ab = await l2Hit.arrayBuffer();
-      if (ab.byteLength > MAX_R2_TARBALL_BYTES) {
-        // Defensive bypass — record as miss (callable returns null,
-        // caller MUST fall through to L4). The L2 entry technically
-        // existed but is unusable; the consumer's POV is "L2 didn't
-        // give me usable bytes" → miss.
-        this._recordMiss('L2', 'tarball');
-        return null;
+      // Oversize entries would blow the structured-clone cap on the way
+      // back to the facet; from the consumer's POV "L2 gave me no usable
+      // bytes" → miss, and they go to L4.
+      if (ab.byteLength <= MAX_R2_TARBALL_BYTES) {
+        const bytes = new Uint8Array(ab);
+        if (await bytesMatchAddress(bytes, address)) {
+          this._recordHit('L2', 'tarball', ab.byteLength);
+          return bytes;
+        }
       }
-      this._recordHit('L2', 'tarball', ab.byteLength);
-      return new Uint8Array(ab);
     }
     this._recordMiss('L2', 'tarball');
     // ── L3 path (cross-tenant) ────────────────────────────────────
@@ -363,35 +457,28 @@ export class R2CacheClient {
       return null;
     }
     this._l3GetsTarball++;
-    const key = tarballKey(name, version);
-    const obj = await this.tarballBucket.get(key);
+    const obj = await this.tarballBucket.get(tarballKey(address));
     if (!obj) {
       this._recordMiss('L3', 'tarball');
       return null;
     }
     const ab = await obj.arrayBuffer();
     if (ab.byteLength > MAX_R2_TARBALL_BYTES) {
-      // Defense-in-depth: a bug or admin-uploaded oversized tarball
-      // shouldn't blow the structured-clone cap on the way back to
-      // the facet. Treat as miss; original install path will handle it.
-      // (Counter perspective: tier-3 said "yes, I have it" but the
-      // payload is unusable here, so from the caller's POV it's a miss
-      // — they go to L4.)
       this._recordMiss('L3', 'tarball');
       return null;
     }
-    this._recordHit('L3', 'tarball', ab.byteLength);
-    // Write through to L2. Eternal TTL is correct: the npm registry
-    // enforces immutability — `name@version` is content-fixed since
-    // 2018 (the unpublish window only allows hard-delete, never
-    // overwrite). Same posture R2 uses (no TTL on the bucket). Best-
-    // effort write: failure is silent.
-    const wb = new Uint8Array(ab);
     // Pass a fresh Uint8Array to Response so the underlying buffer
     // is not detached when the original ArrayBuffer is consumed by
     // the caller. The caller receives `wb` (the same view), and the
     // cache writes a copy — workerd serializes through structured
     // clone for `caches.default.put`.
+    const wb = new Uint8Array(ab);
+    if (!await bytesMatchAddress(wb, address)) {
+      this._recordMiss('L3', 'tarball');
+      return null;
+    }
+    this._recordHit('L3', 'tarball', ab.byteLength);
+    // Write through to L2. Best-effort: failure is silent.
     const writeBack = new Response(wb, {
       headers: {
         'Content-Type': 'application/gzip',
@@ -406,24 +493,24 @@ export class R2CacheClient {
   }
 
   /**
-   * Write a tarball to R2. Bytes are stored as-is (gzipped tar). No-op
-   * if the bucket binding is missing.
+   * Store a tarball at `integrity`'s content address. Bytes are stored
+   * as-is (gzipped tar). No-op if the bucket binding is missing, if the
+   * integrity string is not a verifiable SRI, or if the bytes do not
+   * hash to the address — a caller cannot place bytes under someone
+   * else's key, which keeps the store's contract absolute.
    *
-   * Caller must ensure bytes have already passed integrity verification.
-   * We accept ArrayBuffer or Uint8Array. Returns true on success, false
-   * on failure (the cache is best-effort; failure must not break the
-   * install).
+   * Returns true on success, false otherwise (the cache is best-effort;
+   * failure must not break the install).
    */
-  async putTarball(
-    name: string,
-    version: string,
-    bytes: Uint8Array | ArrayBuffer,
-  ): Promise<boolean> {
+  async putTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<boolean> {
     if (!this.tarballBucket) return false;
-    const size = bytes instanceof ArrayBuffer ? bytes.byteLength : bytes.length;
-    if (size > MAX_R2_TARBALL_BYTES) return false;
+    const address = parseTarballAddress(integrity);
+    if (!address) return false;
+    const view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+    if (view.length > MAX_R2_TARBALL_BYTES) return false;
+    if (!await bytesMatchAddress(view, address)) return false;
     try {
-      await this.tarballBucket.put(tarballKey(name, version), bytes, {
+      await this.tarballBucket.put(tarballKey(address), view, {
         httpMetadata: { contentType: 'application/gzip' },
       });
       return true;
@@ -432,16 +519,6 @@ export class R2CacheClient {
     }
   }
 
-  /** Delete a single tarball cache entry. Idempotent. */
-  async deleteTarball(name: string, version: string): Promise<boolean> {
-    if (!this.tarballBucket) return false;
-    try {
-      await this.tarballBucket.delete(tarballKey(name, version));
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   /**
    * Get a cached packument with its TTL state.
@@ -462,7 +539,7 @@ export class R2CacheClient {
    */
   async getPackument(name: string): Promise<CachedPackument | null> {
     // ── L2 fast path (per-colo) ───────────────────────────────────
-    const l2Key = packumentL2Key(name);
+    const l2Key = new Request(packumentL2Url(name));
     const l2Hit = await l2Get(l2Key);
     if (l2Hit) {
       this._l2HitsPackument++;
@@ -539,8 +616,96 @@ export class R2CacheClient {
   }
 
   /**
+   * Resolve a packument through the whole stack: cache read, and on a
+   * miss (or an expired entry) the registry fetch plus the cache fill.
+   *
+   * This is the ONLY thing that fills the cross-tenant packument cache,
+   * and that is a security property, not a layering preference. A
+   * packument dictates the tarball URL and integrity digest for every
+   * tenant that later reads it, so accepting caller-supplied bytes would
+   * hand anyone who can reach this client the ability to redirect other
+   * tenants' installs at an arbitrary URL with a matching digest — the
+   * content-addressed tarball store cannot catch that, because the
+   * attacker would be choosing the address too. Here, the only bytes
+   * that reach `pc/<name>.json` are the ones registry.npmjs.org served
+   * for that exact name, one line below the fetch that produced them.
+   *
+   * `status` is set when the registry answered 4xx (no such package);
+   * `failure` when every attempt failed. Both leave `json` null.
+   */
+  async readThroughPackument(
+    name: string,
+    options?: { retries?: number; timeoutMs?: number },
+  ): Promise<PackumentReadThrough> {
+    const cached = await this.getPackument(name);
+    if (cached && !cached.expired && cached.json) {
+      return { json: cached.json, source: 'r2-cache' };
+    }
+
+    const safeName = name.startsWith('@')
+      ? '@' + encodeURIComponent(name.slice(1))
+      : encodeURIComponent(name);
+    const url = `${NPM_REGISTRY_ORIGIN}/${safeName}`;
+    const retries = Math.max(0, options?.retries ?? 3);
+    const timeoutMs = options?.timeoutMs ?? 15_000;
+    let lastErr: unknown;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), timeoutMs);
+        let resp: Response;
+        try {
+          // Corgi (abbreviated) packument — up to ~17x smaller than the
+          // full doc (vite: 38MB→2.2MB). Carries every field the resolver
+          // reads (dependencies/peer/peerMeta/optional/dist/bin/os/cpu/
+          // libc). It omits `exports`; that is read from the tarball's
+          // package.json in the VFS at require time, where the resolver's
+          // packument copy is `?? null` anyway.
+          resp = await fetch(url, {
+            headers: { Accept: 'application/vnd.npm.install-v1+json' },
+            signal: ctl.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (resp.ok) {
+          const json = await resp.text();
+          this._recordHit('L4', 'packument', json.length);
+          // Best-effort fill, awaited so a follow-up read in the same
+          // install sees it.
+          await this.putPackument(name, json);
+          return { json, source: 'network' };
+        }
+        if (resp.status >= 400 && resp.status < 500) {
+          // No such package. Not retryable, and not an error.
+          return { json: null, source: 'network', status: resp.status };
+        }
+        try { await resp.body?.cancel(); } catch { /* best-effort */ }
+        lastErr = new Error(`HTTP ${resp.status}`);
+      } catch (e) {
+        lastErr = e;
+      }
+      if (attempt < retries) {
+        const base = PACKUMENT_BACKOFF_MS[Math.min(attempt, PACKUMENT_BACKOFF_MS.length - 1)];
+        const jitter = Math.round(base + (Math.random() * 2 - 1) * base * 0.25);
+        await new Promise<void>((rs) => setTimeout(rs, Math.max(0, jitter)));
+      }
+    }
+    return {
+      json: null,
+      source: 'network',
+      failure: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    };
+  }
+
+  /**
    * Write a packument JSON to R2 with a TTL stamp in customMetadata.
    * No-op if the bucket binding is missing.
+   *
+   * Only `readThroughPackument` (and the debug bench seeder) call this:
+   * it is a storage primitive, never an RPC. See readThroughPackument
+   * for why that matters.
    *
    * Returns true on success, false on failure (same best-effort posture
    * as putTarball).
@@ -559,16 +724,6 @@ export class R2CacheClient {
     }
   }
 
-  /** Delete a single packument cache entry. Idempotent. */
-  async deletePackument(name: string): Promise<boolean> {
-    if (!this.packumentBucket) return false;
-    try {
-      await this.packumentBucket.delete(packumentKey(name));
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   /** Lightweight feature-detection for callers that want to log path. */
   hasTarballBucket(): boolean {

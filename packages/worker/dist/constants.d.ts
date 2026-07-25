@@ -38,6 +38,7 @@ export declare const WRANGLER_DEBOUNCE_MS = 250;
 export declare const NIMBUS_AI_GATEWAY_PORT = 8790;
 export declare const CF_COMPAT_DATE = "2026-04-01";
 export declare const SUPERVISOR_HEAP_CEILING_BYTES: number;
+export declare const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES: number;
 export declare const DEFAULT_HOSTNAME = "nimbus";
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";

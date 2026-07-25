@@ -180,8 +180,30 @@ export declare class Interpreter {
     private dupInputFd;
     private openOutputTarget;
     private openInputTarget;
+    /**
+     * A file-backed descriptor: an open file plus a write offset.
+     *
+     * Each write lands at the offset and advances it, the way write(2) does.
+     * Restating the whole file per write — which is what this used to do —
+     * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
+     * line-at-a-time filter) persist only its final write and silently drop
+     * everything before it.
+     *
+     * Writes buffer to a block, as stdio does, so a line-at-a-time producer
+     * costs one store write per block rather than one per line. `mode`
+     * distinguishes `>` (a plain offset from the truncation point) from `>>`,
+     * which is O_APPEND: every block lands at whatever the current end is, so
+     * two descriptors appending to one file cannot overwrite each other.
+     */
     private createFileWriter;
-    private createFileAppender;
+    /**
+     * Run `body` and commit every file-backed descriptor it wrote through,
+     * whether it returned or threw. This is the close(2) side of the buffering
+     * in createFileWriter: buffered bytes must reach the store before the next
+     * command can read the file.
+     */
+    private withFdFlush;
+    private flushFds;
     private createFileReader;
     private createStringReader;
     private resolveOutputFd;
