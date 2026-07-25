@@ -1654,7 +1654,7 @@ const __fsMod = (() => {
 
   // ── fd table ──
   // fds 0/1/2 are the process stdio triple and deliberately live OUTSIDE
-  // __fileHandles (which allocates from 3 up), so `fs.writeSync(1, …)` —
+  // __fileHandles (which allocates from 3 up), so fs.writeSync(1, ...) —
   // how a lot of bundled CLI output actually reaches the terminal — lands
   // on the real process streams instead of failing EBADF.
   function _fdHandle(fd, syscall) {
