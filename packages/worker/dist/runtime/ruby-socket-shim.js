@@ -48,6 +48,21 @@ module Nimbus
         nil
       end
 
+      # Why the last socket call failed. A WASI errno cannot distinguish
+      # "nothing is listening" from "this process cannot route loopback at
+      # all", and the difference is the whole diagnosis.
+      def last_socket_error
+        JS.global[:__nimbusWasiLastSocketError].to_s
+      rescue StandardError
+        ''
+      end
+
+      def describe_io_error(action, error)
+        detail = last_socket_error
+        message = "Nimbus could not #{action} the socket: #{error.message}"
+        detail.empty? ? message : "#{message} (#{detail})"
+      end
+
       def register_webrick(server)
         listener = server.listeners.find { |socket| socket.respond_to?(:__nimbus_virtual_port) }
         raise "Nimbus WEBrick adapter could not find a virtual TCPServer listener" unless listener
@@ -283,26 +298,84 @@ class TCPServer < IPSocket
   end
 end unless defined?(::TCPServer)
 
+# The two ways a stream socket's bytes move, behind one interface so TCPSocket
+# has a single buffering implementation.
+#
+# An ACCEPTED connection is handed over by the kernel as a connection id: the
+# whole request is already buffered when the listener is pumped, so the
+# synchronous JS bridge is exactly right and nothing ever needs to block.
+#
+# A DIALED connection is a real WASI file descriptor. fd_read/fd_write are
+# WebAssembly.Suspending imports and Ruby's eval entrypoint runs under
+# WebAssembly.promising, so a read genuinely parks the wasm stack until the
+# response arrives and then resumes - which is the only way an outbound
+# request/response exchange can work in this runtime.
+module Nimbus
+  module VirtualSocket
+    class AcceptedTransport
+      def initialize(id)
+        @id = id.to_i
+      end
+
+      def read_chunk(size)
+        Nimbus::VirtualSocket.recv(@id, size)
+      end
+
+      def write_bytes(data)
+        Nimbus::VirtualSocket.send(@id, data)
+      end
+
+      def close_transport
+        Nimbus::VirtualSocket.close(@id)
+      end
+    end
+
+    class DialedTransport
+      def initialize(host, port)
+        @io = File.open("/dev/tcp/#{host}/#{port}", File::RDWR)
+      rescue SystemCallError => e
+        detail = Nimbus::VirtualSocket.last_socket_error
+        message = "Nimbus could not dial #{host}:#{port}: #{e.message}"
+        message += " (#{detail})" unless detail.empty?
+        raise ::SocketError, message
+      end
+
+      def read_chunk(size)
+        @io.sysread(size)
+      rescue EOFError
+        ''.b
+      rescue SystemCallError => e
+        raise ::SocketError, Nimbus::VirtualSocket.describe_io_error('read from', e)
+      end
+
+      def write_bytes(data)
+        @io.syswrite(data)
+      rescue SystemCallError => e
+        raise ::SocketError, Nimbus::VirtualSocket.describe_io_error('write to', e)
+      end
+
+      def close_transport
+        @io.close unless @io.closed?
+      end
+    end
+  end
+end
+
 class TCPSocket < IPSocket
   def self.__nimbus_from_connection(id, local_host, local_port, remote_host, remote_port)
     socket = allocate
-    socket.send(:initialize_nimbus, id, local_host, local_port, remote_host, remote_port)
+    socket.send(:initialize_nimbus,
+                Nimbus::VirtualSocket::AcceptedTransport.new(id),
+                local_host, local_port, remote_host, remote_port)
     socket
   end
 
-  # Outbound loopback is plumbed all the way through the shared virtual socket
-  # kernel (connect, write and the supervisor's routeLoopback all work), but
-  # reading the response needs Ruby to park until the JS event loop delivers
-  # it, and ruby.wasm has no primitive that does. sleep never returns in this
-  # runtime - a bare sleep 0.3 hangs until the process is reaped - and the
-  # js-abi-host bridge is synchronous, so there is nothing to await. Fail here,
-  # where the message can explain, rather than after the write succeeds and the
-  # first read hangs the process.
   def initialize(host = nil, port = nil, local_host = nil, local_port = nil)
-    raise ::SocketError,
-          "Nimbus cannot yet dial loopback ports from Ruby: ruby.wasm has no way to " \
-          "wait for the response. Reach #{host}:#{port} from node, or run the " \
-          "request as a subprocess."
+    remote_host = (host || '127.0.0.1').to_s
+    remote_port = port.to_i
+    initialize_nimbus(Nimbus::VirtualSocket::DialedTransport.new(remote_host, remote_port),
+                      local_host ? local_host.to_s : '0.0.0.0', local_port.to_i,
+                      remote_host, remote_port)
   end
 
   # Without this, TCPSocket.open — which is how Net::HTTP opens a connection —
@@ -318,8 +391,8 @@ class TCPSocket < IPSocket
     end
   end
 
-  def initialize_nimbus(id, local_host, local_port, remote_host, remote_port)
-    @id = id.to_i
+  def initialize_nimbus(transport, local_host, local_port, remote_host, remote_port)
+    @transport = transport
     @local_host = local_host
     @local_port = local_port.to_i
     @remote_host = remote_host
@@ -338,14 +411,13 @@ class TCPSocket < IPSocket
     @eof && @read_buffer.empty?
   end
 
-  def readpartial(size, outbuf = ''.b)
+  def readpartial(size, outbuf = nil)
     raise IOError, 'closed stream' if @closed
     fill_read_buffer(size.to_i) if @read_buffer.empty?
     raise EOFError, 'end of file reached' if @read_buffer.empty?
     chunk = @read_buffer.byteslice(0, size.to_i)
     @read_buffer = @read_buffer.byteslice(chunk.bytesize, @read_buffer.bytesize - chunk.bytesize) || ''.b
-    outbuf.replace(chunk)
-    outbuf
+    outbuf ? outbuf.replace(chunk) : chunk
   end
 
   def read(length = nil, outbuf = nil)
@@ -366,10 +438,15 @@ class TCPSocket < IPSocket
     end
   end
 
-  def read_nonblock(size, outbuf = ''.b, exception: true)
+  # A read here always completes (the fd read suspends until the response
+  # arrives), so the only non-String outcome is end-of-response. Ruby's
+  # contract for that under "exception: false" is nil, NOT :wait_readable -
+  # Net::BufferedIO turns nil into EOFError and loops forever on
+  # :wait_readable.
+  def read_nonblock(size, outbuf = nil, exception: true)
     readpartial(size, outbuf)
   rescue EOFError
-    return :wait_readable unless exception
+    return nil unless exception
     raise
   end
 
@@ -396,7 +473,7 @@ class TCPSocket < IPSocket
 
   def write(data)
     raise IOError, 'closed stream' if @closed
-    Nimbus::VirtualSocket.send(@id, data)
+    @transport.write_bytes(data)
   end
 
   def write_nonblock(data, exception: true)
@@ -418,7 +495,7 @@ class TCPSocket < IPSocket
   def close
     return nil if @closed
     @closed = true
-    Nimbus::VirtualSocket.close(@id)
+    @transport.close_transport
     nil
   end
 
@@ -430,7 +507,7 @@ class TCPSocket < IPSocket
 
   def fill_read_buffer(size)
     return if @eof
-    chunk = Nimbus::VirtualSocket.recv(@id, [size, 16_384].max)
+    chunk = @transport.read_chunk([size, 16_384].max)
     if chunk.empty?
       @eof = true
     else
@@ -460,7 +537,10 @@ class << IO
 end
 
 module Kernel
-  unless method_defined?(:__nimbus_original_require)
+  # Kernel#require is PRIVATE, so method_defined? is always false here and a
+  # second application of this shim would alias the override onto itself and
+  # recurse until SystemStackError.
+  unless private_method_defined?(:__nimbus_original_require)
     alias_method :__nimbus_original_require, :require
   end
 

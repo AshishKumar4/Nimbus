@@ -132,6 +132,8 @@ function encodeChunkedFrame(bytes) {
 const CHUNKED_TERMINATOR = new TextEncoder().encode('0\r\n\r\n');
 /** Response bytes buffered ahead of a slow guest reader before the body pump pauses. */
 const LOOPBACK_READ_HIGH_WATER_BYTES = 1024 * 1024;
+/** Largest slice `connectStream`'s readable hands to one stream read. */
+const LOOPBACK_STREAM_CHUNK_BYTES = 64 * 1024;
 /**
  * Bounded FIFO of byte chunks. One instance carries request bytes from
  * handleHttpRequest to recv() (inbound) and one carries response bytes
@@ -595,7 +597,11 @@ class LoopbackClientConnection {
         return bytes.byteLength;
     }
     read(maxBytes) {
-        const out = Array.from(this.inbound.readUpTo(Math.max(1, maxBytes | 0)));
+        return Array.from(this.readBytes(maxBytes));
+    }
+    /** Byte-array read. The fd-backed path uses this so a stream never round-trips through number[]. */
+    readBytes(maxBytes) {
+        const out = this.inbound.readUpTo(Math.max(1, maxBytes | 0));
         if (this.drained && this.inbound.pendingBytes <= LOOPBACK_READ_HIGH_WATER_BYTES) {
             const waiter = this.drained;
             this.drained = null;
@@ -608,12 +614,15 @@ class LoopbackClientConnection {
     }
     /** Blocks the guest until response bytes arrive; an empty result is EOF. */
     async readAsync(maxBytes) {
+        return Array.from(await this.readBytesAsync(maxBytes));
+    }
+    async readBytesAsync(maxBytes) {
         for (;;) {
-            const chunk = this.read(maxBytes);
-            if (chunk.length > 0)
+            const chunk = this.readBytes(maxBytes);
+            if (chunk.byteLength > 0)
                 return chunk;
             if (this.eof || this.closed)
-                return [];
+                return EMPTY_BYTES;
             if (!this.dispatched) {
                 throw new Error('Nimbus loopback socket: read before a complete HTTP request was written ' +
                     '(loopback sockets carry HTTP requests, not arbitrary byte streams)');
@@ -762,6 +771,41 @@ class LoopbackClientConnection {
 function describeError(error) {
     return error instanceof Error ? error.message : String(error);
 }
+function loopbackSocketStream(conn) {
+    return {
+        // A loopback connection has no handshake: the exchange starts when the
+        // guest's request parses, which is the first write.
+        opened: Promise.resolve(),
+        readable: new ReadableStream({
+            async pull(controller) {
+                const bytes = await conn.readBytesAsync(LOOPBACK_STREAM_CHUNK_BYTES);
+                if (bytes.byteLength === 0)
+                    controller.close();
+                else
+                    controller.enqueue(bytes);
+            },
+            cancel() {
+                conn.close();
+            },
+        }, 
+        // highWaterMark 0 so the stream never pulls speculatively. A default
+        // strategy pulls once at construction, which on a client connection
+        // means reading before the guest has written its request.
+        { highWaterMark: 0 }),
+        writable: new WritableStream({
+            write(chunk) {
+                conn.write(chunk);
+            },
+            abort() {
+                conn.close();
+            },
+        }),
+        close() {
+            conn.close();
+            return Promise.resolve();
+        },
+    };
+}
 class VirtualListener {
     port;
     queue = [];
@@ -873,6 +917,24 @@ export class VirtualSocketKernel {
      * request/response exchange.
      */
     connect(port) {
+        const conn = this.openLoopbackClient(port);
+        this.connections.set(conn.id, conn);
+        return conn.id;
+    }
+    /**
+     * The same client connection as `connect`, handed back in Cloudflare's
+     * `Socket` shape.
+     *
+     * Guests whose sockets are real WASI file descriptors (ruby.wasm, and any
+     * future wasm32-wasi program) reach loopback through this: the WASI shim
+     * stores it in exactly the fd slot a `cloudflare:sockets` connection would
+     * occupy, so `fd_read` on an in-session port is the same suspending read as
+     * `fd_read` on a remote host.
+     */
+    connectStream(port) {
+        return loopbackSocketStream(this.openLoopbackClient(port));
+    }
+    openLoopbackClient(port) {
         const n = Number(port);
         if (!Number.isInteger(n) || n <= 0 || n >= 65536)
             throw new Error(`invalid port: ${port}`);
@@ -880,9 +942,7 @@ export class VirtualSocketKernel {
         if (typeof route !== 'function') {
             throw new Error('Nimbus loopback sockets are unavailable in this runtime');
         }
-        const id = this.nextConnectionId++;
-        this.connections.set(id, new LoopbackClientConnection(id, n, route, this.limits));
-        return id;
+        return new LoopbackClientConnection(this.nextConnectionId++, n, route, this.limits);
     }
     /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */
     recv(id, maxBytes) {

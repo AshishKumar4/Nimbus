@@ -339,25 +339,52 @@ function __wasiInitFS(opts) {
   }
 }
 
-// WASI socket and polling support B7 helper: open a TCP socket via cloudflare:sockets when
-// path_open is invoked on a /dev/tcp/<host>/<port> synthetic path.
-// Returns a WASI errno. Allocates a new fd of kind:'socket' on success
-// and writes it to fdOutPtr.
-function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
+// The guest-visible absolute path a path_* call names. wasi-libc resolves an
+// absolute path against its longest matching preopen and passes the REMAINDER
+// (e.g. 'dev/tcp/127.0.0.1/8790' under the '/' preopen), so a raw prefix test
+// on pathArg only ever matches hand-written wasm that skips libc.
+function __wasiGuestPath(baseFd, pathArg) {
+  if (pathArg.startsWith('/')) return pathArg;
+  const base = fdTable.get(baseFd);
+  if (!base || base.kind !== 'preopen') return pathArg;
+  return base.wasiPath.endsWith('/') ? base.wasiPath + pathArg : base.wasiPath + '/' + pathArg;
+}
+
+// Loopback names resolve to the session itself, which Cloudflare gives a
+// Worker no outbound TCP route to. They go to the virtual socket kernel
+// instead — the same loopback the shell's curl and node's patched fetch use.
+function __wasiIsLoopbackHost(host) {
+  const h = host.toLowerCase().replace(/^\\[|\\]$/g, '');
+  return h === 'localhost' || h === '::1' || h === '::' || h === '0.0.0.0' || /^127\\.\\d+\\.\\d+\\.\\d+$/.test(h);
+}
+
+// Why a socket open failed, for guests whose errno alone is too coarse to
+// explain it (e.g. a facet with no supervisor binding for loopback routing).
+// Adapters read it off globalThis and append it to the raised error.
+globalThis.__nimbusWasiLastSocketError = '';
+
+function __wasiConnectLoopback(port) {
+  const kernel = globalThis.__nimbusVirtualSockets;
+  if (!kernel || typeof kernel.connectStream !== 'function') {
+    globalThis.__nimbusWasiLastSocketError =
+      'this process has no Nimbus virtual socket kernel, so in-session ports cannot be dialed';
+    return { errno: __WASI_ENOSYS, socket: null };
+  }
+  try {
+    return { errno: __WASI_ESUCCESS, socket: kernel.connectStream(port) };
+  } catch (e) {
+    globalThis.__nimbusWasiLastSocketError = (e && e.message) ? e.message : String(e);
+    return { errno: __WASI_ECONNREFUSED, socket: null };
+  }
+}
+
+function __wasiConnectRemote(host, port) {
   if (typeof __cfSocketConnect !== 'function') {
     // cloudflare:sockets unavailable in this runtime. Report ENOSYS so
     // the user program sees a clear errno rather than a hang.
-    return __WASI_ENOSYS;
+    globalThis.__nimbusWasiLastSocketError = 'outbound TCP is unavailable in this runtime';
+    return { errno: __WASI_ENOSYS, socket: null };
   }
-  // pathArg shape: "/dev/tcp/<host>/<port>".
-  const tail = pathArg.substring(__WASI_TCP_PATH_PREFIX.length);
-  const slashIdx = tail.lastIndexOf('/');
-  if (slashIdx <= 0 || slashIdx === tail.length - 1) return __WASI_EINVAL;
-  const host = tail.substring(0, slashIdx);
-  const portStr = tail.substring(slashIdx + 1);
-  const port = parseInt(portStr, 10);
-  if (!host || !(port > 0 && port < 65536)) return __WASI_EINVAL;
-  let socket;
   try {
     // Per CF docs: connect() is sync (returns Socket immediately); the
     // socket.opened promise resolves when the TCP handshake completes.
@@ -374,12 +401,35 @@ function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
     // request/response protocols) rely on this — client signals EOF
     // via half-close, server completes its echo, client reads it.
     // See https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/#socketoptions
-    socket = __cfSocketConnect({ hostname: host, port }, { allowHalfOpen: true });
+    return { errno: __WASI_ESUCCESS, socket: __cfSocketConnect({ hostname: host, port }, { allowHalfOpen: true }) };
   } catch (e) {
     // Synchronous errors from connect() (e.g. invalid address). Surface
     // as ECONNREFUSED since the user-observable behavior is the same.
-    return __WASI_ECONNREFUSED;
+    globalThis.__nimbusWasiLastSocketError = (e && e.message) ? e.message : String(e);
+    return { errno: __WASI_ECONNREFUSED, socket: null };
   }
+}
+
+// WASI socket and polling support B7 helper: open a TCP socket when path_open
+// is invoked on a /dev/tcp/<host>/<port> synthetic path. Remote hosts go
+// through cloudflare:sockets; loopback goes through the virtual socket kernel.
+// Both produce the SAME kind:'socket' fd — everything downstream (fd_read,
+// fd_write, sock_*, poll_oneoff, fd_close) is identical for either peer.
+// Returns a WASI errno and writes the new fd to fdOutPtr.
+function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
+  // pathArg shape: "/dev/tcp/<host>/<port>".
+  const tail = pathArg.substring(__WASI_TCP_PATH_PREFIX.length);
+  const slashIdx = tail.lastIndexOf('/');
+  if (slashIdx <= 0 || slashIdx === tail.length - 1) return __WASI_EINVAL;
+  const host = tail.substring(0, slashIdx);
+  const portStr = tail.substring(slashIdx + 1);
+  const port = parseInt(portStr, 10);
+  if (!host || !(port > 0 && port < 65536)) return __WASI_EINVAL;
+  const opened = __wasiIsLoopbackHost(host)
+    ? __wasiConnectLoopback(port)
+    : __wasiConnectRemote(host, port);
+  if (opened.errno !== __WASI_ESUCCESS) return opened.errno;
+  const socket = opened.socket;
   const fd = nextFd++;
   fdTable.set(fd, {
     kind: 'socket',
@@ -904,6 +954,8 @@ function __wasiMakeImports(opts) {
         return __WASI_ESPIPE;
       }
       const entry = fdTable.get(fd);
+      // A socket is a non-seekable stream, same as stdio: ESPIPE, not EBADF.
+      if (entry && entry.kind === 'socket') return __WASI_ESPIPE;
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       const delta = typeof offsetArg === 'bigint' ? offsetArg : BigInt(offsetArg | 0);
       const cur = BigInt(entry.offset);
@@ -926,6 +978,7 @@ function __wasiMakeImports(opts) {
         return __WASI_ESPIPE;
       }
       const entry = fdTable.get(fd);
+      if (entry && entry.kind === 'socket') return __WASI_ESPIPE;
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       writeU64LE(offsetPtr, BigInt(entry.offset));
       return __WASI_ESUCCESS;
@@ -963,7 +1016,9 @@ function __wasiMakeImports(opts) {
     fd_fdstat_set_flags(fd, flags) {
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
-      if (entry.kind === 'file') entry.fdflags = flags;
+      // Sockets track the mask too: guests set O_NONBLOCK on a socket and
+      // then read it back through fd_fdstat_get.
+      if (entry.kind === 'file' || entry.kind === 'socket') entry.fdflags = flags;
       return __WASI_ESUCCESS;
     },
 
@@ -1012,12 +1067,14 @@ function __wasiMakeImports(opts) {
       const pathArg = readPath(pathPtr, pathLen);
 
       // WASI socket and polling support B7: synthetic /dev/tcp/<host>/<port> path — open a TCP
-      // socket via cloudflare:sockets. Bash-like convention; matches
+      // socket (remote via cloudflare:sockets, loopback via the virtual
+      // socket kernel). Bash-like convention.
       // Intercept BEFORE resolution because /dev/tcp/* doesn't exist in
       // the in-memory FS — __wasiResolvePath would canonicalize it but
       // not find any entry.
-      if (pathArg.startsWith(__WASI_TCP_PATH_PREFIX)) {
-        return __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE);
+      const guestPath = __wasiGuestPath(baseFd, pathArg);
+      if (guestPath.startsWith(__WASI_TCP_PATH_PREFIX)) {
+        return __wasiOpenTcpSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
       // Honor LOOKUPFLAGS_SYMLINK_FOLLOW strictly: bit 0 set → follow.
       // wasi-libc clears this bit for O_NOFOLLOW, so dirflags === 0 IS
@@ -1390,6 +1447,10 @@ function __wasiMakeImports(opts) {
         timesPath = entry.vfsPath;
       } else if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
         ftype = __WASI_FT_CHARACTER_DEVICE;
+      } else if (entry.kind === 'socket') {
+        // Guests fstat a socket fd to learn it is not a regular file (Ruby's
+        // IO layer keys buffering and seekability off exactly this).
+        ftype = __WASI_FT_SOCKET_STREAM;
       }
       const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
       writeU64LE(statPtr,      0n);
@@ -1938,6 +1999,7 @@ function __wasiMakeImports(opts) {
       } catch (e) {
         // Map common errors to spec errnos.
         const msg = (e && e.message) ? e.message : String(e);
+        globalThis.__nimbusWasiLastSocketError = msg;
         if (/refused|ECONNREFUSED/i.test(msg)) return __WASI_ECONNREFUSED;
         if (/unreach|EHOSTUNREACH/i.test(msg)) return __WASI_EHOSTUNREACH;
         return __WASI_EIO;
