@@ -84,15 +84,23 @@ for await (const chunk of attachment) {
 
 ## Ports
 
-Expose an app through a path on the Nimbus deployment.
+Expose an app on its own preview origin.
 
 ```ts
-const port = await box.ports.expose(3000);   // → { …, url: '/s/<id>/port/3000/' }
+const port = await box.ports.expose(3000);   // → { …, url: 'https://3000--<id>.<suffix>/' }
 await box.ports.list();
 await box.ports.unexpose(3000);
 ```
 
-The caller can use the URL directly with browser or session auth.
+Each `(session, port)` gets one host, `<port>--<id>.<suffix>`, where the
+suffix is the deployment's `NIMBUS_PREVIEW_HOST_SUFFIX` binding. The app
+is mounted at that host's root, so root-absolute paths resolve without
+rewriting. A deployment with no suffix bound falls back to
+`/s/<id>/port/<port>/` on the endpoint.
+
+The URL carries no credential. Where auth is enforced,
+`GET /s/<id>/api/preview-url?port=<n>` mints a single-use
+`session:preview` token for it ([tokens & auth](/docs/sdk/tokens/)).
 
 ## Agent tools
 
