@@ -32,7 +32,7 @@ import { createLoadedWorkerEntrypoint, getNimbusCtxExports, ProcessFabric, } fro
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '../runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, } from '../constants.js';
+import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
 /**
  * Detect & restore a Uint8Array that's been JSON-mangled to a
  * {"0":n,"1":n,...} object during the result-envelope round-trip.
@@ -359,10 +359,13 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
  */
 function generateEntrypointCode(userCode, vfsState, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
-    const safeBundle = vfsState.serializedBundle ?? _serializeBundleForFacet(vfsState.bundle);
+    const bundleSource = vfsState.bundleSource
+        ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
     const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
     const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
-    return `
+    return {
+        code: `
+${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 const USER_CODE = ${safeCode};
@@ -397,7 +400,7 @@ try {
 }
 
 // VFS bundle + manifest + pre-compiled modules — all at module level (startup time).
-const __MODULE_VFS_BUNDLE = ${safeBundle};
+const __MODULE_VFS_BUNDLE = ${bundleSource.expression};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
@@ -598,7 +601,9 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     });
   }
 };
-`;
+`,
+        modules: bundleSource.modules,
+    };
 }
 /**
  * Generate a long-running Node entrypoint.
@@ -619,10 +624,13 @@ function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims
         attachedTty: opts.attachedTty === true,
         cred: opts.cred,
     });
-    const safeBundle = _serializeBundleForFacet(vfsState.bundle);
+    const bundleSource = vfsState.bundleSource
+        ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
     const safeManifest = JSON.stringify(vfsState.manifest);
     const safeMetadata = JSON.stringify(vfsState.metadata);
-    return `
+    return {
+        code: `
+${bundleSource.imports}
 import { WorkerEntrypoint } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
@@ -651,7 +659,7 @@ try {
   __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
 }
 
-const __MODULE_VFS_BUNDLE = ${safeBundle};
+const __MODULE_VFS_BUNDLE = ${bundleSource.expression};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
@@ -889,7 +897,9 @@ export class NimbusNodeProcess extends WorkerEntrypoint {
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
 }
 export default NimbusNodeProcess;
-`;
+`,
+        modules: bundleSource.modules,
+    };
 }
 /**
  * hardening-r5: read a file from the VFS and decide whether to keep it
@@ -921,6 +931,18 @@ function _readBundleCell(vfs, path) {
  */
 function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
+}
+/**
+ * Bounded `path (N bytes)` listing, largest first. A snapshot diagnostic has
+ * to name the files it is talking about — the facet's own error for a missing
+ * one is an unattributable "Cannot find module" — without printing a bundle
+ * that can run to thousands of entries.
+ */
+function describeBundleCells(cells, limit = 8) {
+    const shown = [...cells].sort((a, b) => b[1] - a[1]).slice(0, limit);
+    const rest = cells.length - shown.length;
+    return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ')
+        + (rest > 0 ? `, +${rest} more` : '');
 }
 /**
  * hardening-r5: emit a JS expression that revives binary cells from base64
@@ -958,6 +980,148 @@ function _serializeBundleForFacet(bundle) {
     // source code is all text) the IIFE collapses to a JSON literal,
     // costing only the IIFE wrapper bytes (~30) per facet boot.
     return `(function(){const __b=${JSON.stringify(strCells)};const __x=${JSON.stringify(binCells)};const __d=${JSON.stringify(deniedPaths)};for(const __k in __x){__b[__k]=Uint8Array.from(atob(__x[__k]),__c=>__c.charCodeAt(0));}for(const __k of __d){__b[__k]={error:"EACCES"};}return __b;})()`;
+}
+const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
+const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
+function _encodedSourceBytes(source) {
+    return new TextEncoder().encode(source).length;
+}
+function _facetBundleModuleSource(bundle) {
+    return `export default ${_serializeBundleForFacet(bundle)};`;
+}
+/**
+ * Serialize a VFS bundle for Worker Loader without dropping required files.
+ *
+ * Small bundles remain inline. Large bundles are partitioned into side
+ * modules below the existing per-module encoded ceiling and merged during
+ * module evaluation. A single oversized cell is split into ordered fragments;
+ * the merge expression concatenates those fragments back to the original
+ * string or Uint8Array before module precompilation begins.
+ */
+export function buildFacetVfsBundleSource(bundle, forceSideModules = false) {
+    const inlineExpression = _serializeBundleForFacet(bundle);
+    if (!forceSideModules
+        && _encodedSourceBytes(inlineExpression) <= BUNDLE_MAX_ENCODED_BYTES) {
+        return { expression: inlineExpression, imports: '', modules: {} };
+    }
+    if (Object.keys(bundle).length === 0) {
+        return { expression: inlineExpression, imports: '', modules: {} };
+    }
+    const maxModuleBytes = BUNDLE_MAX_ENCODED_BYTES - FACET_VFS_MODULE_SOURCE_MARGIN;
+    function sourceBytes(path, cell) {
+        return _encodedSourceBytes(_facetBundleModuleSource({ [path]: cell }));
+    }
+    function splitCell(path, cell) {
+        if (sourceBytes(path, cell) <= maxModuleBytes)
+            return [[path, cell]];
+        if (typeof cell !== 'string' && !(cell instanceof Uint8Array)) {
+            throw new Error(`Nimbus: VFS denial cell path exceeds facet module limit: ${path}`);
+        }
+        const pieces = [];
+        let offset = 0;
+        while (offset < cell.length) {
+            let low = 1;
+            let high = cell.length - offset;
+            let fittingLength = 0;
+            while (low <= high) {
+                const middle = low + Math.floor((high - low) / 2);
+                const candidate = typeof cell === 'string'
+                    ? cell.slice(offset, offset + middle)
+                    : cell.subarray(offset, offset + middle);
+                if (sourceBytes(path, candidate) <= maxModuleBytes) {
+                    fittingLength = middle;
+                    low = middle + 1;
+                }
+                else {
+                    high = middle - 1;
+                }
+            }
+            if (fittingLength === 0) {
+                throw new Error(`Nimbus: VFS bundle path exceeds facet module limit: ${path}`);
+            }
+            const fragment = typeof cell === 'string'
+                ? cell.slice(offset, offset + fittingLength)
+                : cell.subarray(offset, offset + fittingLength);
+            pieces.push([path, fragment]);
+            offset += fittingLength;
+        }
+        return pieces;
+    }
+    const chunks = [];
+    let chunk = {};
+    let estimatedBytes = 0;
+    function flushChunk() {
+        if (Object.keys(chunk).length === 0)
+            return;
+        chunks.push(chunk);
+        chunk = {};
+        estimatedBytes = 0;
+    }
+    for (const [path, cell] of Object.entries(bundle)) {
+        for (const [piecePath, pieceCell] of splitCell(path, cell)) {
+            const pieceBytes = sourceBytes(piecePath, pieceCell);
+            if (piecePath in chunk
+                || (estimatedBytes > 0 && estimatedBytes + pieceBytes > maxModuleBytes)) {
+                flushChunk();
+            }
+            chunk[piecePath] = pieceCell;
+            estimatedBytes += pieceBytes;
+        }
+    }
+    flushChunk();
+    const modules = {};
+    const imports = [];
+    const aliases = [];
+    for (let index = 0; index < chunks.length; index++) {
+        const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
+        const alias = `__nimbusVfsBundle${index}`;
+        const source = _facetBundleModuleSource(chunks[index]);
+        if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
+            throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
+        }
+        modules[moduleName] = source;
+        imports.push(`import ${alias} from "${moduleName}";`);
+        aliases.push(alias);
+    }
+    const expression = `(function(__parts){const __out={};for(const __part of __parts){` +
+        `for(const [__k,__v] of Object.entries(__part)){const __prev=__out[__k];` +
+        `if(__prev===undefined){__out[__k]=__v;}` +
+        `else if(typeof __prev==="string"&&typeof __v==="string"){__out[__k]=__prev+__v;}` +
+        `else if(__prev instanceof Uint8Array&&__v instanceof Uint8Array){` +
+        `const __joined=new Uint8Array(__prev.length+__v.length);__joined.set(__prev);` +
+        `__joined.set(__v,__prev.length);__out[__k]=__joined;}` +
+        `else{throw new Error("Nimbus: invalid split VFS bundle cell: "+__k);}}}` +
+        `return __out;})([${aliases.join(',')}])`;
+    return {
+        expression,
+        imports: imports.join('\n'),
+        modules,
+    };
+}
+/**
+ * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
+ * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
+ * ceiling, not a policy knob that can be raised. Base64-reviving binary
+ * cells inflates the serialized form ~4/3 over the raw bytes the encoded-size
+ * pass measured, so the payload can clear that pass and still not fit.
+ *
+ * Fail here, naming the cells that dominate the snapshot. Shipping a
+ * shortened one instead would surface inside the facet as an
+ * unattributable ENOENT or "Cannot find module" — neither require() nor
+ * readFileSync can go back to the supervisor for what was left out.
+ */
+export function assertStagedBundleFitsRpcPayload(serialized, bundle) {
+    const bytes = new TextEncoder().encode(serialized).length;
+    if (bytes <= MAX_RPC_SAFE_PAYLOAD_BYTES)
+        return;
+    const cells = Object.entries(bundle)
+        .map(([path, cell]) => [
+        path,
+        typeof cell === 'string' || cell instanceof Uint8Array ? _bundleCellLength(cell) : 0,
+    ]);
+    throw new Error(`Nimbus: staged facet VFS snapshot serializes to ${bytes} bytes, over the `
+        + `${MAX_RPC_SAFE_PAYLOAD_BYTES}-byte RPC payload ceiling. Largest members: `
+        + `${describeBundleCells(cells)}`);
 }
 /**
  * FNV-1a 32-bit hash, returned as an unsigned hex string. Used only to
@@ -1008,7 +1172,7 @@ function buildManifest(vfs, cwd, scriptPath) {
     if (vfs.exists(nmDir) && vfs.isDirectory(nmDir)) {
         walk(nmDir, 0);
     }
-    // ── Bin-target package root (e.g. /tmp/.npx-cache/node_modules/<pkg>/) ──
+    // ── Bin-target package + hoisted dependency roots ─────────────────────
     //
     // When the entry script lives in a node_modules outside cwd (npx-cache
     // packages, globally-installed bins, etc.), buildManifest's cwd walk
@@ -1019,8 +1183,10 @@ function buildManifest(vfs, cwd, scriptPath) {
     // returned [] and `create-vite` scaffolded zero files.
     //
     // Walk the innermost `node_modules/<pkg>/` of `scriptPath` so its
-    // entire package tree is enumerable via readdir. Bounded by
-    // MANIFEST_MAX_DEPTH; same depth budget as the cwd walk.
+    // entire package tree is enumerable via readdir. Also walk that
+    // `node_modules` directory itself: global npm bins resolve hoisted
+    // transitive dependencies as siblings of the bin's own package.
+    // Bounded by MANIFEST_MAX_DEPTH; same depth budget as the cwd walk.
     if (scriptPath) {
         const sp = scriptPath.replace(/^\/+/, '');
         const segs = sp.split('/');
@@ -1039,6 +1205,10 @@ function buildManifest(vfs, cwd, scriptPath) {
                 if (vfs.exists(pkgRoot) && vfs.isDirectory(pkgRoot)) {
                     walk(pkgRoot, 0);
                 }
+            }
+            const nodeModulesRoot = segs.slice(0, nmIdx + 1).join('/');
+            if (vfs.exists(nodeModulesRoot) && vfs.isDirectory(nodeModulesRoot)) {
+                walk(nodeModulesRoot, 0);
             }
         }
     }
@@ -1206,11 +1376,8 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState) {
                 //   dist/index.cjs        (entry)
                 //   dist/shared/<base>.<hash>.cjs  (chunk required by entry)
                 //
-                // Without this, even when Fix #1 lets the prefetch walker reach
-                // the entry, the package's required chunks land OUTSIDE the
-                // walker's MAX_FILES/MAX_BYTES budget on big trees (nuxt 516
-                // pkgs / 10k+ files). The greedy oversample is the defensive
-                // safety net for hash-chunk reachability.
+                // The static walker cannot discover computed hash-chunk imports, so
+                // the greedy oversample is the safety net for their reachability.
                 const entryDir = base.replace(/\/[^/]+$/, '');
                 try {
                     const sibs = vfs.readdir(entryDir);
@@ -1655,10 +1822,9 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfil
     // `npm create vite@latest test-vite -- --template vanilla`).
     //
     // 1000 covers the documented create-* family (create-vite ~316, create-
-    // nuxt ~700, create-react-router ~400). Still well below the global
-    // VFS_BUNDLE_MAX_FILES = 4000 (constants.ts:74) and the
-    // VFS_BUNDLE_MAX_BYTES = 24 MiB content cap, both of which retain the
-    // defense against pathological 4000+ file barrel packages.
+    // nuxt ~700, create-react-router ~400). Still well below the optional
+    // enrichment budget of 4000 files / 24 MiB, which retains the defense
+    // against pathological package trees.
     //
     // for the prior wave's empirical investigation (243 manifest entries,
     // only 140/243 readable pre-bump on prod 11df6ca).
@@ -2088,41 +2254,31 @@ async function transformEsmInBundle(bundle, esbuild) {
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
- * Replaces the legacy whole-tree-with-cap walk that pre-W2.5b shipped
- * up to 500 files / 4 MiB of node_modules content (whichever ran out
- * first) with a static reachable-set walk via require-resolver.ts. The
- * shipped bundle is now bounded by what the user's require() chain
- * actually reaches PLUS a greedy oversample of every installed pkg's
- * package.json + main entry (dynamic-require survival).
+ * The static walker supplies the complete known require closure. Separate
+ * file and byte budgets bound optional enrichment for dynamic require and
+ * synchronous filesystem patterns without removing required files.
  *
- * Cap is on the JSON-encoded size of the final payload, not on raw
- * content byte sum. The dynamic worker module embeds the bundle as
- * `const __MODULE_VFS_BUNDLE = ${JSON.stringify(bundle)}`, so workerd's
- * per-module text-size limit applies to the encoded form.
+ * Optional files are evicted against the exact JSON-encoded payload size.
+ * If required content still exceeds the per-module encoded ceiling, Worker
+ * Loader side modules carry the bundle without truncating the closure.
  *
  * W3.5: now async to allow the optional ESM→CJS pre-pass via esbuild.
  * If `esbuild` is not provided, the pass is skipped (preserves prior
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE) {
+export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE) {
     // 1. Static reachable-set walk from entry.
     const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
     const bundle = { ...prefetch.bundle };
-    let totalBytes = 0;
-    let fileCount = 0;
-    for (const k of Object.keys(bundle)) {
-        totalBytes += bundle[k].length;
-        fileCount++;
-    }
-    let truncated = prefetch.truncated;
+    const requiredPaths = new Set(Object.keys(prefetch.bundle));
+    let truncated = false;
     // 2. Greedy oversample — every installed pkg's pkg.json + main.
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
-    //    regex prefetch misses. Bounded by VFS_BUNDLE_MAX_BYTES.
-    const budgetState = { totalBytes, fileCount };
+    //    regex prefetch misses. Its budget is independent from the complete
+    //    static require closure, which is correctness-critical.
+    const budgetState = { totalBytes: 0, fileCount: 0 };
     const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState);
-    totalBytes = budgetState.totalBytes;
-    fileCount = budgetState.fileCount;
     // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
     //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
     //
@@ -2134,8 +2290,6 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
     //      at facet runtime even though the file is on VFS-disk + in
     const assetAdd = addStaticReadFileAssets(vfs, cwd, bundle, budgetState);
     void assetAdd;
-    totalBytes = budgetState.totalBytes;
-    fileCount = budgetState.fileCount;
     // 2.27 X.5-U: dotfile + SWC-shape readFileSync sentinel prefetch.
     //      Sibling of `addStaticReadFileAssets` (X.5-Z3) — same call shape,
     //      different match space. Covers the SWC/TS-compiled
@@ -2145,8 +2299,6 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
     //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
     const dotAdd = addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState);
     void dotAdd;
-    totalBytes = budgetState.totalBytes;
-    fileCount = budgetState.fileCount;
     // 2.30 G3 (runtime-pkg wave): bin-target sibling oversample. Pulls
     //      ALL files under the entry's package root (capped at 200) so
     //      bins like cowsay that readFileSync('cows/X.cow') at runtime
@@ -2157,8 +2309,6 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
     //      No-op when entry isn't inside node_modules.
     const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile);
     void binSiblingAdd;
-    totalBytes = budgetState.totalBytes;
-    fileCount = budgetState.fileCount;
     // 2.34 project-data snapshot: sync Node fs cannot await the
     // supervisor. Include a bounded snapshot of the current working tree
     // for common relative project-file reads while skipping dependency
@@ -2166,8 +2316,6 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
     // reads and child-process staleness fallback.
     const cwdProjectAdd = addCwdProjectFiles(vfs, cwd, bundle, budgetState);
     void cwdProjectAdd;
-    totalBytes = budgetState.totalBytes;
-    fileCount = budgetState.fileCount;
     // 2.35 shell compatibility: absolute-path readFileSync scanner.
     //
     // Pre-fix `node -e 'fs.readFileSync("/home/user/er.txt")'` returned
@@ -2194,8 +2342,6 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
     //     `/dev` — we don't have these mounts; they'd never resolve).
     const absScanAdd = addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState);
     void absScanAdd;
-    totalBytes = budgetState.totalBytes;
-    fileCount = budgetState.fileCount;
     // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
     //     .js/.mjs for top-level import/export, runs esbuild's CJS transform
     //     on the matches, and replaces the value in-place. Without this,
@@ -2234,32 +2380,56 @@ async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bun
     const manifest = buildManifest(vfs, cwd, scriptPath);
     // 4. JSON-encoded-size guard. Pre-check via TextEncoder.encode().length
     //    so we measure UTF-8 bytes (not UTF-16 code units), matching what
-    //    workerd accounts against the per-module text-size budget. If the
-    //    bundle exceeds the encoded ceiling, evict largest non-manifest
-    //    files first (manifest stays — it's needed for readdirSync) and
-    //    RECOMPUTE the encoded size after every eviction (sub-agent S2:
-    //    naïve `encoded -= len(file) + len(key) + 6` accumulates 2-5% drift
-    //    on JS-source-heavy bundles; recomputing is O(n) per eviction but
-    //    bundles past the budget are rare and the count of evictions is
-    //    bounded by the size of a few large files).
+    //    workerd accounts against the per-module text-size budget. Only
+    //    OPTIONAL enrichment is evictable, largest first; the manifest and
+    //    the static require closure stay. RECOMPUTE the encoded size after
+    //    every eviction (sub-agent S2: naïve `encoded -= len(file) +
+    //    len(key) + 6` accumulates 2-5% drift on JS-source-heavy bundles;
+    //    recomputing is O(n) per eviction but bundles past the budget are
+    //    rare and the count of evictions is bounded by the size of a few
+    //    large files).
+    //
+    //    Evicting an enrichment file is a real loss — the sync fs reads it
+    //    exists for cannot fall back to the supervisor — so the paths that
+    //    went are named rather than silently dropped.
     const encoder = new TextEncoder();
     let encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
     if (encoded > BUNDLE_MAX_ENCODED_BYTES) {
-        truncated = true;
-        const keysBySize = Object.keys(bundle).sort((a, b) => bundle[b].length - bundle[a].length);
-        for (const k of keysBySize) {
+        const evictable = Object.keys(bundle)
+            .filter((path) => !requiredPaths.has(path))
+            .sort((a, b) => _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]));
+        const evicted = [];
+        for (const k of evictable) {
             if (encoded <= BUNDLE_MAX_ENCODED_BYTES)
                 break;
+            evicted.push([k, _bundleCellLength(bundle[k])]);
             delete bundle[k];
-            fileCount--;
             encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
         }
+        if (evicted.length > 0) {
+            truncated = true;
+            console.warn(`[facet-manager] prefetch snapshot exceeded ${BUNDLE_MAX_ENCODED_BYTES} encoded `
+                + `bytes; evicted ${evicted.length} optional file(s). Synchronous reads of `
+                + `these raise ENOENT: ${describeBundleCells(evicted)}`);
+        }
     }
+    const fileCount = Object.keys(bundle).length;
     const metadata = buildVfsMetadata(vfs, manifest, bundle);
     addUnreadableDenialCells(vfs, bundle, metadata);
+    // Denial cells land after the eviction pass, so re-measure what the facet
+    // actually receives before deciding where the bundle has to live.
+    encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
+    const bundleSideModulesRequired = encoded > BUNDLE_MAX_ENCODED_BYTES;
     // Suppress lint: `greedy.added` is observed only via diagnostics.
     void greedy;
-    return { bundle, manifest, metadata, reachableCount: fileCount, truncated };
+    return {
+        bundle,
+        manifest,
+        metadata,
+        reachableCount: fileCount,
+        truncated,
+        bundleSideModulesRequired,
+    };
 }
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 export class FacetManager {
@@ -2339,13 +2509,12 @@ export class FacetManager {
     /**
      * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
      * (same key AND the VFS hasn't been mutated since) it returns the memoized
-     * bundle + pre-serialized facet source, skipping the full VFS walk +
-     * esbuild pass + re-serialization. See `prefetchBundleCache` for the
+     * bundle + pre-built facet source, skipping the full VFS walk + esbuild
+     * pass + source construction. See `prefetchBundleCache` for the
      * correctness argument behind the conservative global-revision watermark.
      *
-     * The serialized bundle/manifest are computed once on the miss path (the
-     * caller would build them anyway via generateEntrypointCode) and stored so
-     * subsequent hits skip re-serialization too.
+     * The bundle source and manifest are computed once on the miss path and
+     * stored so subsequent hits skip rebuilding them too.
      */
     async _buildPrefetchBundleCached(vfs, scriptPath, cwd, entryCode, credKey, bundleProfile) {
         const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
@@ -2359,7 +2528,7 @@ export class FacetManager {
             return { ...cached.vfsState, cacheHit: true };
         }
         const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile);
-        vfsState.serializedBundle = _serializeBundleForFacet(vfsState.bundle);
+        vfsState.bundleSource = buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
         vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
         vfsState.cacheHit = false;
@@ -2567,7 +2736,8 @@ export class FacetManager {
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
         ]);
-        const workerCode = generateEntrypointCode(code, vfsState, usesSqlite, shims);
+        const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
+        const workerCode = generatedWorker.code;
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
@@ -2593,6 +2763,9 @@ export class FacetManager {
         });
         if (diagSink) {
             diagSink.moduleMapBytes = new TextEncoder().encode(workerCode).length;
+            for (const source of Object.values(generatedWorker.modules)) {
+                diagSink.moduleMapBytes += new TextEncoder().encode(source).length;
+            }
             for (const m of Object.values(sqliteModules)) {
                 diagSink.moduleMapBytes += m.wasm.byteLength;
             }
@@ -2605,7 +2778,7 @@ export class FacetManager {
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
                 mainModule: 'runner.js',
-                modules: { 'runner.js': workerCode, ...sqliteModules },
+                modules: { 'runner.js': workerCode, ...generatedWorker.modules, ...sqliteModules },
                 ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
             });
             entrypoint = worker.getEntrypoint();
@@ -2740,6 +2913,8 @@ export class FacetManager {
         const vfsState = processVfs
             ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+        const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
+        assertStagedBundleFitsRpcPayload(vfsBundle, vfsState.bundle);
         const stageSpec = {
             mode,
             argv: opts.argv,
@@ -2747,7 +2922,7 @@ export class FacetManager {
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
             cwd: opts.cwd,
             stdin: opts.stdin ?? '',
-            vfsBundle: _serializeBundleForFacet(vfsState.bundle),
+            vfsBundle,
             vfsManifest: JSON.stringify(vfsState.manifest),
             vfsMetadata: JSON.stringify(vfsState.metadata),
         };
@@ -3234,7 +3409,8 @@ export class FacetManager {
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
         ]);
-        const workerCode = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
+        const generatedWorker = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
+        const workerCode = generatedWorker.code;
         let handle;
         let resourcesTracked = false;
         try {
@@ -3248,7 +3424,11 @@ export class FacetManager {
                         compatibilityDate: CF_COMPAT_DATE,
                         compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
                         mainModule: 'worker.js',
-                        modules: { 'worker.js': workerCode, ...sqliteModules },
+                        modules: {
+                            'worker.js': workerCode,
+                            ...generatedWorker.modules,
+                            ...sqliteModules,
+                        },
                     },
                 },
             });
