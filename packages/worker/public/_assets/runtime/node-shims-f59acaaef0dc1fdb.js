@@ -204,6 +204,11 @@ __pathMod.win32 = __pathMod;
 const __BufferMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
+  // The unwrapped view helper. Buffer methods are installed as own
+  // properties on each instance, so `this.subarray` is the Buffer-returning
+  // override — internal slicing must reach past it to avoid re-wrapping
+  // throwaway views.
+  const _view = Uint8Array.prototype.subarray;
 
   function from(d, encoding) {
     if (typeof d === "string") {
@@ -231,7 +236,7 @@ const __BufferMod = (() => {
   function concat(bufs, len) {
     const total = len ?? bufs.reduce((s, b) => s + b.length, 0);
     const r = new Uint8Array(total); let off = 0;
-    for (const b of bufs) { r.set(b.subarray(0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
+    for (const b of bufs) { r.set(_view.call(b, 0, Math.min(b.length, total - off)), off); off += b.length; if (off >= total) break; }
     return _wrap(r);
   }
   function byteLength(value, encoding) {
@@ -268,9 +273,14 @@ const __BufferMod = (() => {
       if (encoding === "hex") { let s = ""; for (const b of this) s += b.toString(16).padStart(2, "0"); return s; }
       return _dec.decode(this);
     };
-    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(b.subarray(0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
-    u8.slice = function(s, e) { return _wrap(this.subarray(s, e)); };
-    u8.copy = function(t, tOff, sOff, sEnd) { t.set(this.subarray(sOff || 0, sEnd), tOff || 0); };
+    u8.write = function(str, off, len, enc) { const b = _enc.encode(str); this.set(_view.call(b, 0, len || b.length), off || 0); return Math.min(b.length, len || b.length); };
+    // Node's Buffer#subarray returns a Buffer over the same memory, and
+    // Buffer#slice is documented as its alias. Without the override a slice
+    // came back as a bare Uint8Array whose toString() is the comma-joined
+    // byte list — silent corruption for anything that slices then stringifies.
+    u8.subarray = function(s, e) { return _wrap(_view.call(this, s, e)); };
+    u8.slice = u8.subarray;
+    u8.copy = function(t, tOff, sOff, sEnd) { t.set(_view.call(this, sOff || 0, sEnd), tOff || 0); };
     u8.equals = function(o) { if (this.length !== o.length) return false; for (let i = 0; i < this.length; i++) if (this[i] !== o[i]) return false; return true; };
     u8.toJSON = function() { return { type: "Buffer", data: Array.from(this) }; };
     u8.indexOf = function(v) { if (typeof v === "number") return Uint8Array.prototype.indexOf.call(this, v); const b = typeof v === "string" ? _enc.encode(v) : v; outer: for (let i = 0; i <= this.length - b.length; i++) { for (let j = 0; j < b.length; j++) if (this[i+j] !== b[j]) continue outer; return i; } return -1; };
