@@ -112,6 +112,8 @@ interface VirtualSocketConnection {
     readonly id: number;
     read(maxBytes: number): number[];
     readAsync(maxBytes: number): Promise<number[]>;
+    /** Byte-array read. Runtimes that own file descriptors read through this. */
+    readBytesAsync(maxBytes: number): Promise<Uint8Array>;
     /** True once no further bytes can arrive, so an empty read means EOF, not "not yet". */
     atEof(): boolean;
     write(bytesLike: VirtualSocketBytesLike): number;
@@ -131,6 +133,7 @@ declare class VirtualConnection implements VirtualSocketConnection {
     read(maxBytes: number): number[];
     /** The whole request is buffered before the connection is accepted, so nothing is ever awaited. */
     readAsync(maxBytes: number): Promise<number[]>;
+    readBytesAsync(maxBytes: number): Promise<Uint8Array>;
     /** Same reason: an empty read on an accepted connection is always genuine EOF. */
     atEof(): boolean;
     write(bytesLike: VirtualSocketBytesLike): number;
@@ -141,6 +144,21 @@ declare class VirtualConnection implements VirtualSocketConnection {
     response(timeoutMs: number): Promise<Response>;
     private pumpParser;
     private settle;
+}
+/**
+ * The subset of Cloudflare's `Socket` that a WASI socket file descriptor needs.
+ *
+ * Every connection the kernel owns can be handed back in this shape, which is
+ * what lets a runtime with real file descriptors keep ONE socket fd kind:
+ * `fd_read`/`fd_write`/`poll_oneoff`/`sock_shutdown`/`fd_close` never learn
+ * whether the peer is a remote host reached through `cloudflare:sockets`, an
+ * in-session port this process dialed, or a connection it accepted.
+ */
+export interface VirtualSocketStream {
+    readonly opened: Promise<void>;
+    readonly readable: ReadableStream<Uint8Array>;
+    readonly writable: WritableStream<Uint8Array>;
+    close(): Promise<void>;
 }
 declare class VirtualListener {
     readonly port: number;
@@ -179,6 +197,25 @@ export declare class VirtualSocketKernel {
      * request/response exchange.
      */
     connect(port: number): number;
+    /**
+     * The same client connection as `connect`, handed back in Cloudflare's
+     * `Socket` shape.
+     *
+     * Guests whose sockets are real WASI file descriptors (ruby.wasm, and any
+     * future wasm32-wasi program) reach loopback through this: the WASI shim
+     * stores it in exactly the fd slot a `cloudflare:sockets` connection would
+     * occupy, so `fd_read` on an in-session port is the same suspending read as
+     * `fd_read` on a remote host.
+     */
+    connectStream(port: number): VirtualSocketStream;
+    /**
+     * An already-accepted connection in the same `Socket` shape, so a server's
+     * accepted socket is the same kind of file descriptor as a client's dialed
+     * one. `accept`/`acceptNow` still hand out the connection id, because accept
+     * itself stays on the cooperative pump - this only binds the result.
+     */
+    streamFor(id: number): VirtualSocketStream;
+    private openLoopbackClient;
     /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */
     recv(id: number, maxBytes: number): number[];
     /**

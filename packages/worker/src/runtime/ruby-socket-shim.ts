@@ -2,7 +2,6 @@ export const RUBY_SOCKET_SHIM = String.raw`
 begin
   require 'js'
   require 'json'
-  require 'base64'
 rescue LoadError => e
   raise LoadError, "Nimbus Ruby virtual sockets require the ruby.wasm JS bridge: #{e.message}"
 end
@@ -32,20 +31,13 @@ module Nimbus
         JSON.parse(raw)
       end
 
-      def recv(id, max_bytes)
-        encoded = Bridge.call(:recvBase64, id.to_i, max_bytes.to_i).to_s
-        return ''.b if encoded.empty?
-        Base64.decode64(encoded).b
-      end
-
-      def send(id, data)
-        bytes = data.to_s.b
-        Bridge.call(:sendBase64, id.to_i, Base64.strict_encode64(bytes)).to_i
-      end
-
-      def close(id)
-        Bridge.call(:close, id.to_i)
-        nil
+      # Why the last socket call failed. A WASI errno cannot distinguish
+      # "nothing is listening" from "this process cannot route loopback at
+      # all", and the difference is the whole diagnosis.
+      def last_socket_error
+        JS.global[:__nimbusWasiLastSocketError].to_s
+      rescue StandardError
+        ''
       end
 
       def register_webrick(server)
@@ -283,29 +275,55 @@ class TCPServer < IPSocket
   end
 end unless defined?(::TCPServer)
 
+# One socket class, one transport: a WASI file descriptor.
+#
+# fd_read and fd_write are WebAssembly.Suspending imports and Ruby's eval
+# entrypoint runs under WebAssembly.promising, so a read genuinely parks the
+# wasm stack until bytes arrive and then resumes. That makes a Nimbus socket an
+# ordinary IO, which is why there is no buffering, framing or blocking logic
+# here - Ruby's own IO layer supplies all of it.
+#
+# A DIALED socket opens /dev/tcp/<host>/<port>. An ACCEPTED one is bound to a
+# descriptor by the kernel when the cooperative pump hands the connection over.
+# Both are the same kind of fd, so both are the same code below.
 class TCPSocket < IPSocket
+  # Everything a stream socket does IS what an IO does. Delegating rather than
+  # reimplementing is what keeps this class from growing a second, subtly
+  # different set of socket semantics.
+  IO_METHODS = %i[
+    read readpartial read_nonblock readline readlines readchar readbyte
+    write write_nonblock print printf putc puts
+    gets each_line getc getbyte ungetbyte ungetc
+    eof eof? flush fsync sync sync= fileno binmode
+    close_read close_write external_encoding set_encoding
+  ].freeze
+
+  IO_METHODS.each do |name|
+    define_method(name) { |*args, **kwargs, &block| @io.public_send(name, *args, **kwargs, &block) }
+  end
+
   def self.__nimbus_from_connection(id, local_host, local_port, remote_host, remote_port)
     socket = allocate
-    socket.send(:initialize_nimbus, id, local_host, local_port, remote_host, remote_port)
+    socket.send(:initialize_nimbus, File.open("/dev/nimbus/socket/#{id.to_i}", File::RDWR),
+                local_host, local_port, remote_host, remote_port)
     socket
   end
 
-  # Outbound loopback is plumbed all the way through the shared virtual socket
-  # kernel (connect, write and the supervisor's routeLoopback all work), but
-  # reading the response needs Ruby to park until the JS event loop delivers
-  # it, and ruby.wasm has no primitive that does. sleep never returns in this
-  # runtime - a bare sleep 0.3 hangs until the process is reaped - and the
-  # js-abi-host bridge is synchronous, so there is nothing to await. Fail here,
-  # where the message can explain, rather than after the write succeeds and the
-  # first read hangs the process.
   def initialize(host = nil, port = nil, local_host = nil, local_port = nil)
-    raise ::SocketError,
-          "Nimbus cannot yet dial loopback ports from Ruby: ruby.wasm has no way to " \
-          "wait for the response. Reach #{host}:#{port} from node, or run the " \
-          "request as a subprocess."
+    remote_host = (host || '127.0.0.1').to_s
+    remote_port = port.to_i
+    begin
+      io = File.open("/dev/tcp/#{remote_host}/#{remote_port}", File::RDWR)
+    rescue SystemCallError => e
+      detail = Nimbus::VirtualSocket.last_socket_error
+      message = "Nimbus could not dial #{remote_host}:#{remote_port}: #{e.message}"
+      message += " (#{detail})" unless detail.empty?
+      raise ::SocketError, message
+    end
+    initialize_nimbus(io, local_host ? local_host.to_s : '0.0.0.0', local_port.to_i, remote_host, remote_port)
   end
 
-  # Without this, TCPSocket.open — which is how Net::HTTP opens a connection —
+  # Without this, TCPSocket.open - which is how Net::HTTP opens a connection -
   # falls through to the private Kernel#open and reports that instead of
   # anything about sockets.
   def self.open(*args, &block)
@@ -318,124 +336,37 @@ class TCPSocket < IPSocket
     end
   end
 
-  def initialize_nimbus(id, local_host, local_port, remote_host, remote_port)
-    @id = id.to_i
+  def initialize_nimbus(io, local_host, local_port, remote_host, remote_port)
+    @io = io
+    # Unbuffered writes: a request that sits in Ruby's write buffer never
+    # reaches the peer, and this socket has no separate flush point.
+    @io.sync = true
     @local_host = local_host
     @local_port = local_port.to_i
     @remote_host = remote_host
     @remote_port = remote_port.to_i
-    @read_buffer = ''.b
-    @eof = false
-    @closed = false
-    @sync = true
+  end
+
+  def to_io
+    @io
   end
 
   def __nimbus_socket_ready?
-    !@closed && !@eof
-  end
-
-  def eof?
-    @eof && @read_buffer.empty?
-  end
-
-  def readpartial(size, outbuf = ''.b)
-    raise IOError, 'closed stream' if @closed
-    fill_read_buffer(size.to_i) if @read_buffer.empty?
-    raise EOFError, 'end of file reached' if @read_buffer.empty?
-    chunk = @read_buffer.byteslice(0, size.to_i)
-    @read_buffer = @read_buffer.byteslice(chunk.bytesize, @read_buffer.bytesize - chunk.bytesize) || ''.b
-    outbuf.replace(chunk)
-    outbuf
-  end
-
-  def read(length = nil, outbuf = nil)
-    if length
-      data = ''.b
-      data << readpartial(length - data.bytesize) while data.bytesize < length
-      outbuf ? outbuf.replace(data) : data
-    else
-      data = @read_buffer
-      @read_buffer = ''.b
-      loop do
-        fill_read_buffer(16_384)
-        break if @read_buffer.empty?
-        data << @read_buffer
-        @read_buffer = ''.b
-      end
-      outbuf ? outbuf.replace(data) : data
-    end
-  end
-
-  def read_nonblock(size, outbuf = ''.b, exception: true)
-    readpartial(size, outbuf)
-  rescue EOFError
-    return :wait_readable unless exception
-    raise
-  end
-
-  def gets(separator = $/, limit = nil)
-    separator = "\n" if separator.nil?
-    loop do
-      idx = @read_buffer.index(separator)
-      if idx
-        take = idx + separator.bytesize
-        take = [take, limit].min if limit
-        line = @read_buffer.byteslice(0, take)
-        @read_buffer = @read_buffer.byteslice(take, @read_buffer.bytesize - take) || ''.b
-        return line
-      end
-      fill_read_buffer(16_384)
-      if @eof
-        return nil if @read_buffer.empty?
-        line = @read_buffer
-        @read_buffer = ''.b
-        return line
-      end
-    end
-  end
-
-  def write(data)
-    raise IOError, 'closed stream' if @closed
-    Nimbus::VirtualSocket.send(@id, data)
-  end
-
-  def write_nonblock(data, exception: true)
-    write(data)
-  rescue IOError
-    return :wait_writable unless exception
-    raise
+    !@io.closed?
   end
 
   def <<(data)
-    write(data)
-    self
-  end
-
-  def flush
+    @io.write(data)
     self
   end
 
   def close
-    return nil if @closed
-    @closed = true
-    Nimbus::VirtualSocket.close(@id)
+    @io.close unless @io.closed?
     nil
   end
 
   def closed?
-    @closed
-  end
-
-  private
-
-  def fill_read_buffer(size)
-    return if @eof
-    chunk = Nimbus::VirtualSocket.recv(@id, [size, 16_384].max)
-    if chunk.empty?
-      @eof = true
-    else
-      @read_buffer << chunk
-    end
+    @io.closed?
   end
 end unless defined?(::TCPSocket)
 
@@ -460,7 +391,10 @@ class << IO
 end
 
 module Kernel
-  unless method_defined?(:__nimbus_original_require)
+  # Kernel#require is PRIVATE, so method_defined? is always false here and a
+  # second application of this shim would alias the override onto itself and
+  # recurse until SystemStackError.
+  unless private_method_defined?(:__nimbus_original_require)
     alias_method :__nimbus_original_require, :require
   end
 
