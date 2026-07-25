@@ -386,10 +386,10 @@ export async function handleSessionAiRequest(self: SessionAiHost, request: Reque
     return openAiError(
       `Nimbus AI gateway: no such endpoint ${method} ${requested}. This session's ` +
         'gateway is OpenAI-compatible and implements GET /v1/models, POST ' +
-        '/v1/chat/completions and POST /v1/embeddings; every request made with the ' +
-        'session key is served here, whatever host it was addressed to. Use a ' +
-        'chat-completions model, or export a real provider key to reach that ' +
-        'provider directly.',
+        '/v1/chat/completions, POST /v1/responses and POST /v1/embeddings; every ' +
+        'request made with the session key is served here, whatever host it was ' +
+        'addressed to. Use one of those APIs, or export a real provider key to ' +
+        'reach that provider directly.',
       404,
       'invalid_request_error',
       'unknown_endpoint',
@@ -407,9 +407,29 @@ export async function handleSessionAiRequest(self: SessionAiHost, request: Reque
     : proxyUpstream(resolution.credential, config, route, request);
 }
 
-function matchRoute(path: string, method: string): 'models' | '/chat/completions' | '/embeddings' | null {
+/**
+ * The upstream path is one this module builds, so the only thing Workers AI can
+ * fail to find at it is the model the caller asked for. A tool that was
+ * mediated here holds a catalogue of some other provider's model names, so say
+ * where the real catalogue is rather than repeating Cloudflare's bare sentence.
+ */
+function modelNotFoundMessage(detail: string, config: SessionAiConfig): string {
+  return `Nimbus AI gateway: ${detail || 'model not found'}. This session serves the ` +
+    `models its Cloudflare account can run — list them with GET /v1/models; the ` +
+    `configured default is ${config.model}.`;
+}
+
+/**
+ * `/responses` is OpenAI's Responses API, which Workers AI implements on the
+ * same compat surface for the models that support it (gpt-oss). It is here
+ * because it is what a growing number of clients speak by default — pi's
+ * built-in OpenAI models are all Responses-API models — and proxying it is the
+ * same hop as `/chat/completions`, not a translation layer.
+ */
+function matchRoute(path: string, method: string): 'models' | '/chat/completions' | '/responses' | '/embeddings' | null {
   if (path === '/models' && (method === 'GET' || method === 'HEAD')) return 'models';
   if (path === '/chat/completions' && method === 'POST') return '/chat/completions';
+  if (path === '/responses' && method === 'POST') return '/responses';
   if (path === '/embeddings' && method === 'POST') return '/embeddings';
   return null;
 }
@@ -455,7 +475,7 @@ async function listModels(
       headers: { Authorization: `Bearer ${credential.accessToken}`, Accept: 'application/json' },
       signal,
     });
-    if (!response.ok) return translateUpstreamError(response);
+    if (!response.ok) return translateUpstreamError(response, config);
     const parsed = ModelSearchResponseSchema.safeParse(await response.json().catch(() => null));
     // A page we cannot read is not an empty page: answering 200 with a short
     // list would hide a catalogue change behind a plausible-looking result.
@@ -547,7 +567,7 @@ async function proxyUpstream(
     // instead of leaving it running and billing against the account.
     { method: request.method, headers, body: request.body, duplex: 'half', signal: request.signal } as RequestInit,
   );
-  if (!upstream.ok) return translateUpstreamError(upstream);
+  if (!upstream.ok) return translateUpstreamError(upstream, config);
 
   // Body is handed back as a stream so `"stream": true` SSE reaches the caller
   // token by token instead of arriving all at once at end of turn.
@@ -565,12 +585,17 @@ async function proxyUpstream(
  * something unhelpful instead. Translate at the boundary so failures arrive as
  * a sentence the user can act on.
  */
-async function translateUpstreamError(response: Response): Promise<Response> {
+async function translateUpstreamError(response: Response, config: SessionAiConfig): Promise<Response> {
   const body = await response.text().catch(() => '');
   const detail = extractUpstreamMessage(safeJsonParse(body));
-  const message = response.status === 401 || response.status === 403
-    ? `Nimbus AI gateway: Cloudflare rejected the session credential (${detail || response.statusText || response.status}). Reconnect Cloudflare from the agent panel in your browser.`
-    : `Nimbus AI gateway: Cloudflare returned ${response.status} ${detail || response.statusText}`.trim();
+  let message: string;
+  if (response.status === 401 || response.status === 403) {
+    message = `Nimbus AI gateway: Cloudflare rejected the session credential (${detail || response.statusText || response.status}). Reconnect Cloudflare from the agent panel in your browser.`;
+  } else if (response.status === 404) {
+    message = modelNotFoundMessage(detail, config);
+  } else {
+    message = `Nimbus AI gateway: Cloudflare returned ${response.status} ${detail || response.statusText}`.trim();
+  }
   return openAiError(message, response.status, 'nimbus_gateway_error', `cf_${response.status}`);
 }
 
