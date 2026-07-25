@@ -142,6 +142,20 @@ declare class VirtualConnection implements VirtualSocketConnection {
     private pumpParser;
     private settle;
 }
+/**
+ * The subset of Cloudflare's `Socket` that the WASI shim's socket fd needs.
+ *
+ * `connectStream` returns a loopback connection in exactly this shape so the
+ * shim keeps ONE socket fd kind: `fd_read`/`fd_write`/`poll_oneoff`/
+ * `sock_shutdown` never learn whether the peer is a real host reached through
+ * `cloudflare:sockets` or an in-session port reached through this kernel.
+ */
+export interface VirtualSocketStream {
+    readonly opened: Promise<void>;
+    readonly readable: ReadableStream<Uint8Array>;
+    readonly writable: WritableStream<Uint8Array>;
+    close(): Promise<void>;
+}
 declare class VirtualListener {
     readonly port: number;
     private readonly queue;
@@ -179,6 +193,18 @@ export declare class VirtualSocketKernel {
      * request/response exchange.
      */
     connect(port: number): number;
+    /**
+     * The same client connection as `connect`, handed back in Cloudflare's
+     * `Socket` shape.
+     *
+     * Guests whose sockets are real WASI file descriptors (ruby.wasm, and any
+     * future wasm32-wasi program) reach loopback through this: the WASI shim
+     * stores it in exactly the fd slot a `cloudflare:sockets` connection would
+     * occupy, so `fd_read` on an in-session port is the same suspending read as
+     * `fd_read` on a remote host.
+     */
+    connectStream(port: number): VirtualSocketStream;
+    private openLoopbackClient;
     /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */
     recv(id: number, maxBytes: number): number[];
     /**
