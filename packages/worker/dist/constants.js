@@ -154,3 +154,19 @@ export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';
 export const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin';
 export const DEFAULT_MOUNT_POINTS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 'opt'];
+// ── npm packages the facet runtime provides itself ──────────────────────
+//
+// A package listed here is registered in node-shims' `builtins` table, so a
+// facet's `require()` (and every `import` esbuild lowers into one) resolves
+// to the Nimbus implementation and never reaches node_modules. Three call
+// sites read this list and would otherwise drift: the shim registration, the
+// `module.builtinModules` view (these are npm packages, not node core, and
+// must not be reported as core), and the prefetch walker, which must not
+// spend bundle bytes shipping a package it has just shadowed.
+//
+// undici — Node's reference fetch implementation, and a very common
+// transitive dependency. It speaks HTTP over raw TCP through Node internals
+// a facet does not have, and its `install()` replaces globalThis.fetch with
+// an implementation that throws on first use AND drops Nimbus's in-session
+// loopback routing and AI-egress mediation. See runtime/undici-shim.ts.
+export const FACET_PROVIDED_PACKAGES = ['undici'];
