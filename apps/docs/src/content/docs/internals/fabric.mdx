@@ -81,14 +81,17 @@ facet comes from the coordinator session DO's own loader and shares its
 workerd memory envelope. A peer facet comes from a sibling DO's loader
 and gets a budget of its own.
 
-Peers are NimbusSession DOs in the same namespace binding as the
+Peers are session DOs in the same `NIMBUS_SESSION` namespace as the
 coordinator, named `${coordinatorDoId}:proc:${slot}`. No second Worker,
-no second binding, no configuration. The npm resolve fan-out already used
-the pattern for short batch work, with `nbf:`-prefixed siblings.
+no second binding, no configuration. Without that namespace a heavy spawn
+fails loudly; it never falls back to local. The npm resolve fan-out
+already used the pattern for short-lived batch work: a fan-out wider than
+five shards runs on `nbf:`-prefixed siblings, up to 32 of them.
 
-Measured on the full production shape: eight peers held 150 MiB each at
-once, 1.2 GiB across one session. A peer OOM never disturbed a sibling
-and never reset the coordinator; the blast radius ends at the process.
+Measured on the full production shape: eight peers held about 150 MiB
+each at the same time, 1.2 GiB across one session. A peer OOM never
+disturbed a sibling and never reset the coordinator. The blast radius
+ends at the process.
 
 One process class is heavy today — the opencode attach TUI, which is
 resident, memory-growing, and serves no inbound HTTP. Everything that

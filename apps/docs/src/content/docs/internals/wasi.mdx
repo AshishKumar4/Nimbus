@@ -16,6 +16,16 @@ Outbound TCP uses `path_open('/dev/tcp/<host>/<port>')` to open a real
 `cloudflare:sockets` connection. `poll_oneoff` can mix fd, clock, and
 socket subscriptions.
 
+A suspension belongs to the request that created it. A workerd request
+context will not resume a wasm stack that a different request suspended:
+three requests served inside one context take about 6 ms each, while the
+first request in a new context times out at 30 s. A wasm program cannot
+park in `accept` and be woken by the next inbound request. Servers on the
+virtual-socket kernel are driven the other way round — the kernel queues
+the connection and asks the runtime to service it on one dedicated
+cooperative pump, the only place a JSPI suspension is legal. Pyodide and
+ruby.wasm serve loopback ports this way.
+
 JSPI suspends a call; it cannot snapshot a stack. Programs that need
 `fork` or `setjmp` — bash above all — are additionally instrumented with
 Asyncify, which can unwind a running program's call stack to memory and
@@ -37,10 +47,28 @@ arrive pre-compiled in the module map. Pyodide extension packages must
 therefore be declared startup modules, while arbitrary dynamic loading
 fails with a clear diagnostic.
 
-The remaining gaps are [tracked with designs](/docs/fine-print/research/).
+## Threads
+
+`wasi-threads` is not implemented, and `thread_spawn` is left out of the
+import table, so a program that links pthreads stops at wasm-ld with
+`undefined symbol: thread_spawn` instead of running with wrong memory
+semantics. The refusal is at link time by choice. The reason is
+structural. `wasi-threads` asks the host to instantiate a second copy of
+the same module against the same shared linear memory and start
+`wasi_thread_start` in it. Worker Loader isolates cannot share a
+`WebAssembly.Memory`, no `SharedArrayBuffer` crosses between them, and
+`Atomics.wait` on isolate-local memory has nothing to wait on. A thread is
+defined by the memory it shares, so an isolate can back a process and
+cannot back a thread.
+
+Parallelism exists one level up, at the process boundary: a facet per
+process, and an independent memory budget when the facet runs on a [peer
+DO](/docs/internals/fabric/). In-language threading is not available.
+[The design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
+lists what the Workers runtime would have to expose for that to change.
+
+## Remaining gaps
+
+The gaps are [tracked with designs](/docs/fine-print/research/).
 WASI files still use snapshot-plus-diff-flush, which fits one-shots but
 not long-running processes. stdin is EOF. There are no inbound sockets.
-`wasi-threads` is refused at link time: a partial version could corrupt
-data, and
-[the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
-explains why.
