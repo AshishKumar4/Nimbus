@@ -1,12 +1,23 @@
 /**
  * virtual-socket-kernel.ts - shared in-facet loopback socket substrate.
  *
- * The supervisor-facing surface stays the existing PortRegistry:
- * /port/<n>/ and /preview/?port=<n> route a real Worker Request to a
- * facet's handleHttpRequest(Request). Inside the facet this kernel
- * converts that Request into an accepted HTTP/1.1 byte stream so guest
- * runtimes can implement normal socket APIs without Cloudflare inbound
- * TCP support.
+ * The kernel has two halves, and they are mirror images of each other.
+ *
+ * Inbound (a guest server accepting a connection). The supervisor-facing
+ * surface stays the existing PortRegistry: /port/<n>/ and
+ * /preview/?port=<n> route a real Worker Request to a facet's
+ * handleHttpRequest(Request). Inside the facet this kernel converts that
+ * Request into an accepted HTTP/1.1 byte stream so guest runtimes can
+ * implement normal socket APIs without Cloudflare inbound TCP support.
+ *
+ * Outbound (a guest client dialing 127.0.0.1:<port>). connect() hands back
+ * a connection whose write side parses the HTTP/1.1 request the guest
+ * emits, hands it to the host's loopback router - the same
+ * SUPERVISOR.routeLoopback the shell's curl and node's patched fetch use -
+ * and streams the Response back as HTTP/1.1 response bytes on the read
+ * side. Cloudflare has no outbound TCP to 127.0.0.1, so a loopback client
+ * socket can only ever be HTTP-shaped; see the connect() doc comment for
+ * exactly what that does and does not support.
  *
  * Runtime adapters (Python socket.py, Ruby socket.rb, future
  * wasm32-wasi-nimbus syscalls) call this shared kernel instead of each
@@ -34,6 +45,13 @@ export interface VirtualSocketHost {
     __nimbusVirtualSocketRequestQueued?: (port: number) => Promise<boolean | undefined> | boolean | undefined;
     /** Detail string surfaced when the request pump returns false. */
     __nimbusVirtualSocketLastError?: string;
+    /**
+     * Routes an outbound loopback request to whatever is listening on the
+     * port, by delegating to the supervisor's `routeLoopback` RPC. Absent
+     * when the runtime has no supervisor binding, which makes connect()
+     * fail with a clear diagnostic instead of hanging.
+     */
+    __nimbusVirtualSocketRouteLoopback?: (port: number, request: Request) => Promise<Response>;
 }
 /** Facet global scope once the kernel is installed. */
 export interface VirtualSocketGlobalScope extends VirtualSocketHost {
@@ -89,7 +107,17 @@ export interface VirtualSocketStreamingStage2 {
      */
     streamHttpResponse(port: number, request: Request): Promise<Response>;
 }
-declare class VirtualConnection {
+/** What the kernel's recv/send/close operate on, in either direction. */
+interface VirtualSocketConnection {
+    readonly id: number;
+    read(maxBytes: number): number[];
+    readAsync(maxBytes: number): Promise<number[]>;
+    /** True once no further bytes can arrive, so an empty read means EOF, not "not yet". */
+    atEof(): boolean;
+    write(bytesLike: VirtualSocketBytesLike): number;
+    close(): void;
+}
+declare class VirtualConnection implements VirtualSocketConnection {
     readonly id: number;
     /** Request bytes the guest server reads; filled in one shot in stage 1. */
     private readonly inbound;
@@ -101,6 +129,10 @@ declare class VirtualConnection {
     private closed;
     constructor(id: number, requestMethod: string, requestBytes: Uint8Array, limits: VirtualSocketKernelLimits);
     read(maxBytes: number): number[];
+    /** The whole request is buffered before the connection is accepted, so nothing is ever awaited. */
+    readAsync(maxBytes: number): Promise<number[]>;
+    /** Same reason: an empty read on an accepted connection is always genuine EOF. */
+    atEof(): boolean;
     write(bytesLike: VirtualSocketBytesLike): number;
     /** EOF from the server side (or request teardown); completes until-close bodies. */
     close(): void;
@@ -137,8 +169,31 @@ export declare class VirtualSocketKernel {
     closeListener(port: number): void;
     accept(port: number): Promise<AcceptedVirtualConnection>;
     acceptNow(port: number): AcceptedVirtualConnection | null;
+    /**
+     * Open a client connection to `port` on the session's loopback.
+     *
+     * The returned id is an ordinary connection id: send() writes the
+     * request, recv()/recvAsync() read the response, close() releases it.
+     * Only HTTP/1.1 crosses a loopback connection - see
+     * LoopbackClientConnection for why - and each one carries a single
+     * request/response exchange.
+     */
+    connect(port: number): number;
     /** Plain number array: Pyodide bytes() and the ruby.wasm base64 bridge both consume it. */
     recv(id: number, maxBytes: number): number[];
+    /**
+     * Suspending read. A client connection has nothing to hand back until
+     * the loopback response arrives, so guests that can suspend (Pyodide
+     * `run_sync`, a JSPI-suspending WASI call) await this instead of
+     * spinning on recv(). An empty result is EOF.
+     */
+    recvAsync(id: number, maxBytes: number): Promise<number[]>;
+    /**
+     * Whether an empty recv() means end-of-response rather than "not yet".
+     * Guests that poll instead of suspending (ruby.wasm, whose JS bridge is
+     * synchronous) need the two apart to avoid truncating a response.
+     */
+    atEof(id: number): boolean;
     send(id: number, bytesLike: VirtualSocketBytesLike): number;
     close(id: number): void;
     pending(port: number): number;

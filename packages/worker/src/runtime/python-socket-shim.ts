@@ -98,6 +98,38 @@ def _port_from_address(address):
         return int(address[1])
     return int(address)
 
+_LOOPBACK_HOSTS = frozenset((
+    "127.0.0.1", "localhost", "0.0.0.0", "::1", "[::1]", "::ffff:127.0.0.1", "",
+))
+
+def _host_from_address(address):
+    if isinstance(address, tuple) and address:
+        return str(address[0])
+    return str(address)
+
+def _connect_loopback(address):
+    host = _host_from_address(address)
+    port = _port_from_address(address)
+    if host not in _LOOPBACK_HOSTS:
+        raise OSError(
+            111,
+            "Nimbus sockets reach in-session loopback ports only (127.0.0.1/localhost); "
+            "cannot connect to %s:%d" % (host, port),
+        )
+    # The kernel side of this is complete — connect(), send() and the loopback
+    # routing all work — but reading the response requires Python to block on a
+    # JS promise, and this Pyodide build cannot: pyodide.ffi.run_sync aborts the
+    # interpreter with "trying to suspend JS frames" even under
+    # PyCallable.callPromising (callSyncifying is not available either). Fail
+    # here, where the message can say so, rather than after connect() succeeds
+    # and the first recv() takes the whole interpreter down.
+    raise OSError(
+        111,
+        "Nimbus cannot yet dial loopback ports from Python: this Pyodide build "
+        "has no working JSPI suspension, so a socket read cannot block. "
+        "Reach %s:%d from node, or run the request as a subprocess." % (host, port),
+    )
+
 def _cooperative_sleep(seconds):
     if seconds is None:
         seconds = 0.01
@@ -131,8 +163,12 @@ def setdefaulttimeout(value):
     global _default_timeout
     _default_timeout = value
 
-def create_connection(address, timeout=None, source_address=None):
-    raise OSError("Nimbus Python virtual sockets currently support loopback server sockets only")
+def create_connection(address, timeout=_GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, all_errors=False):
+    sock = socket(AF_INET, SOCK_STREAM)
+    if timeout is not _GLOBAL_DEFAULT_TIMEOUT:
+        sock.settimeout(timeout)
+    sock.connect(address)
+    return sock
 
 class socket:
     family = AF_INET
@@ -196,7 +232,15 @@ class socket:
         if self.type == SOCK_DGRAM:
             self._address = address if isinstance(address, tuple) else (str(address), 0)
             return None
-        raise OSError("Nimbus Python virtual sockets currently support loopback server sockets only")
+        _connect_loopback(address)
+        return None
+
+    def connect_ex(self, address):
+        try:
+            self.connect(address)
+        except OSError as exc:
+            return exc.errno or 111
+        return 0
 
     def fileno(self):
         return self._fd
