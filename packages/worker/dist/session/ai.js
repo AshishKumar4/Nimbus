@@ -44,8 +44,18 @@ export const SESSION_AI_CREDENTIAL_KEY = 'nimbus:ai:credential';
 export const SESSION_AI_PLACEHOLDER_KEY = 'nimbus-session';
 export const DEFAULT_SESSION_AI_MODEL = '@cf/zai-org/glm-5.2';
 export const DEFAULT_SESSION_AI_GATEWAY_ID = 'default';
-/** Cloudflare's model catalogue task name for chat/completion models. */
-const TEXT_GENERATION_TASK = 'Text Generation';
+/**
+ * Cloudflare's catalogue task for chat/completion models, in normalized form.
+ *
+ * Matched here rather than passed as the API's `task=` filter on purpose: that
+ * filter is an exact match on a human-facing English label, and a label that no
+ * longer matches answers `success: true` with an empty result — so a re-casing
+ * or rename upstream would turn `/v1/models` into a silent empty list rather
+ * than an error anyone could see. Comparing normalized names locally survives
+ * casing and separator churn, and a taxonomy change that defeats it still
+ * leaves the configured default listed (see `modelListResponse`).
+ */
+const CHAT_TASK = 'text generation';
 const MODEL_PAGE_SIZE = 50;
 const MODEL_PAGE_LIMIT = 10;
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -61,6 +71,7 @@ const ModelSearchResponseSchema = z.object({
         name: z.string().min(1),
         description: z.string().nullish(),
         created_at: z.string().nullish(),
+        task: z.object({ name: z.string().nullish() }).passthrough().nullish(),
     }).passthrough()).nullish(),
 });
 /**
@@ -313,6 +324,10 @@ function normalizeAiPath(pathname) {
  * `/ai/v1` answers 405 "GET not supported for requested URI"), so the account's
  * catalogue is enumerated from the Workers AI model search API and mapped into
  * OpenAI's shape. The list is the account's, never a hardcoded one.
+ *
+ * The whole catalogue is paged and the chat models are picked out here, because
+ * the search API's own `task=` filter is exact-match on a display label and
+ * answers an empty success — not an error — when the label drifts.
  */
 async function listModels(credential, config, signal) {
     const cached = modelCache.get(credential.accountId);
@@ -322,7 +337,6 @@ async function listModels(credential, config, signal) {
     const models = [];
     for (let page = 1; page <= MODEL_PAGE_LIMIT; page++) {
         const url = new URL(`${NIMBUS_CLOUDFLARE_API}/accounts/${encodeURIComponent(credential.accountId)}/ai/models/search`);
-        url.searchParams.set('task', TEXT_GENERATION_TASK);
         url.searchParams.set('per_page', String(MODEL_PAGE_SIZE));
         url.searchParams.set('page', String(page));
         const response = await fetch(url, {
@@ -332,12 +346,19 @@ async function listModels(credential, config, signal) {
         if (!response.ok)
             return translateUpstreamError(response);
         const parsed = ModelSearchResponseSchema.safeParse(await response.json().catch(() => null));
-        const batch = parsed.success ? (parsed.data.result ?? []) : [];
+        // A page we cannot read is not an empty page: answering 200 with a short
+        // list would hide a catalogue change behind a plausible-looking result.
+        if (!parsed.success) {
+            return openAiError(`Nimbus AI gateway: Cloudflare's model catalogue came back in an unreadable shape (page ${page}).`, 502, 'nimbus_gateway_error', 'cf_catalogue_unreadable');
+        }
+        const batch = parsed.data.result ?? [];
         for (const entry of batch) {
+            if (normalizeTaskName(entry.task?.name) !== CHAT_TASK)
+                continue;
             models.push({
                 id: entry.name,
                 object: 'model',
-                created: Math.floor(Date.parse(entry.created_at || '') / 1000) || 0,
+                created: catalogueTimestamp(entry.created_at),
                 owned_by: 'cloudflare',
             });
         }
@@ -347,13 +368,34 @@ async function listModels(credential, config, signal) {
     modelCache.set(credential.accountId, { models, expiresAt: now + MODEL_CACHE_TTL_MS });
     return modelListResponse(models, config);
 }
+function normalizeTaskName(name) {
+    return (name ?? '').toLowerCase().replace(/[\s_-]+/g, ' ').trim();
+}
 /**
- * The configured default is listed first: clients that pick `data[0]` when the
- * user has not chosen a model then get the model Nimbus would have chosen.
+ * Cloudflare stamps `created_at` as `2026-06-15 09:51:05.921` — no zone, and a
+ * space where ISO 8601 wants a `T`, which `Date.parse` is free to read as local
+ * time. Read it as the UTC it is, and fall back to 0 when it is missing.
+ */
+function catalogueTimestamp(createdAt) {
+    const iso = (createdAt ?? '').trim().replace(' ', 'T');
+    if (!iso)
+        return 0;
+    return Math.floor(Date.parse(/[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`) / 1000) || 0;
+}
+/**
+ * The configured default leads the list, and is listed even when the account's
+ * catalogue did not name it. Clients that take `data[0]` for "whatever this
+ * endpoint recommends" get the model Nimbus itself would use, which is the only
+ * model this deployment can promise; sorting alone could not keep that promise,
+ * since a default the enumeration missed would leave some arbitrary model
+ * first. Nothing here knows *which* model that is — it is whatever the
+ * deployment configured.
  */
 function modelListResponse(models, config) {
-    const ordered = [...models].sort((a, b) => Number(b.id === config.model) - Number(a.id === config.model));
-    return Response.json({ object: 'list', data: ordered }, {
+    const configured = models.find((model) => model.id === config.model)
+        ?? { id: config.model, object: 'model', created: 0, owned_by: 'cloudflare' };
+    const data = [configured, ...models.filter((model) => model.id !== config.model)];
+    return Response.json({ object: 'list', data }, {
         headers: { 'Cache-Control': 'no-store' },
     });
 }
