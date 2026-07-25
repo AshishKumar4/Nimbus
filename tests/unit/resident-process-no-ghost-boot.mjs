@@ -24,6 +24,13 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import {
+  _rpcHostProcessProbe,
+  _rpcHostProcess,
+  _rpcAwaitHostedBoot,
+  _rpcRouteHostedHttp,
+  _rpcCancelHostProcess,
+} from '../../packages/worker/src/session/rpc.ts';
 import { readFileSync } from 'node:fs';
 
 /**
@@ -48,6 +55,13 @@ function makeLoaderWorld() {
   return world;
 }
 
+/**
+ * Whatever form the program arrives in — an inline config, a resident-code
+ * spec, a staged artifact — carrying it means this stub can BOOT the program.
+ * Carrying nothing means it must find the one already running.
+ */
+const bootSpecOf = (props) => props.code ?? props.residentCode ?? props.stage;
+
 const world = makeLoaderWorld();
 const nleProps = [];
 setCtxExports({
@@ -59,11 +73,11 @@ setCtxExports({
       // Both methods resolve in the CALLER's context, as the real entrypoint
       // does — a code-free stub reaches the running program or throws.
       async startProcess() {
-        world.resolve(props.key, props.code);
+        world.resolve(props.key, bootSpecOf(props));
         return { ok: true };
       },
       async handleHttpRequest(request) {
-        const boot = world.resolve(props.key, props.code);
+        const boot = world.resolve(props.key, bootSpecOf(props));
         boot.served++;
         return Response.json({ boot: boot.id, served: boot.served, url: new URL(request.url).pathname });
       },
@@ -71,7 +85,21 @@ setCtxExports({
   },
 });
 
+// The node/python/ruby spawn primitives all bind a port, and a peer-hosted
+// facet cannot be re-entered to serve inbound HTTP, so they declare `light`.
+// The peer namespace is wired to the REAL peer legs anyway, so "this never
+// reached a peer" is a live observation rather than absent plumbing.
+const peerSelf = { _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
+const peerStub = {
+  _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
+  _rpcHostProcess: (boot, opts) => _rpcHostProcess(peerSelf, boot, opts),
+  _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peerSelf, key),
+  _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peerSelf, key, wire),
+  _rpcCancelHostProcess: async (key) => _rpcCancelHostProcess(peerSelf, key),
+};
+
 const env = {
+  NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => peerStub },
   LOADER: {
     load() { throw new Error('a resident process must not be loaded by the DO'); },
     get() { throw new Error('a resident process must not be loaded by the DO'); },
@@ -100,9 +128,13 @@ const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
 assert.equal(world.boots.length, 1, "spawn evaluates the user's program exactly once");
 const firstBoot = world.boots[0].id;
 
+// A server must stay in the coordinator's own process: a peer cannot serve it.
+assert.equal(peerSelf._hostedProcesses.size, 0,
+  'a port-binding resident process is hosted locally, never on a peer');
+
 // The route stub must be code-free — this is the property that makes a ghost
 // boot impossible rather than merely unlikely.
-const routeProps = nleProps.filter((p) => p.code === undefined);
+const routeProps = nleProps.filter((p) => bootSpecOf(p) === undefined);
 assert.ok(routeProps.length >= 1, 'a code-free route stub is bound for the process');
 assert.ok(
   routeProps.some((p) => p.key === `nimbus-process:do-test:${spawned.pid}`),

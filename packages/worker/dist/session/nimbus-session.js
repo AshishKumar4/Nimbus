@@ -634,13 +634,21 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFanoutExecute(fnSource, args, poolOpts) {
         return _rpc._rpcFanoutExecute(this, fnSource, args, poolOpts);
     }
-    // process fabric: peer-DO host leg of the heavy-class process scheduler.
-    // Cancel registry: workerKey → disposer of the held-open startProcess stub
-    // for processes THIS DO hosts on behalf of a coordinator sibling.
-    _hostedProcessCancels = new Map();
+    // process fabric: peer-DO host leg of the resident-process scheduler —
+    // processes THIS DO hosts on behalf of a coordinator sibling, keyed by
+    // workerKey. `_hostedProcessWaiters` lets the boot-payload and routed-HTTP
+    // legs arrive before the host leg has registered without racing it.
+    _hostedProcesses = new Map();
+    _hostedProcessWaiters = new Map();
     _rpcHostProcessProbe() { return _rpc._rpcHostProcessProbe(this); }
-    async _rpcHostProcess(stage, opts) {
-        return _rpc._rpcHostProcess(this, stage, opts);
+    async _rpcHostProcess(boot, opts) {
+        return _rpc._rpcHostProcess(this, boot, opts);
+    }
+    async _rpcAwaitHostedBoot(workerKey) {
+        return _rpc._rpcAwaitHostedBoot(this, workerKey);
+    }
+    async _rpcRouteHostedHttp(workerKey, request) {
+        return _rpc._rpcRouteHostedHttp(this, workerKey, request);
     }
     _rpcCancelHostProcess(workerKey) {
         return _rpc._rpcCancelHostProcess(this, workerKey);

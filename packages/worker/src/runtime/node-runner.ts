@@ -16,8 +16,8 @@
  *           awaits and returns the consolidated {exitCode, stdout,
  *           stderr}. The facet is deleted at completion.
  *
- *   long  — `facetMgr.spawnNode(code, opts)`. Fire-and-
- *           forget LOADER.load(). Returns {pid, facetStub} immediately;
+ *   long  — `facetMgr.spawnNode(code, opts)`. Boots a resident
+ *           process through the fabric. Returns {pid} immediately;
  *           the shell prints a `[started (long-running): pid=N
  *           cmd=...]` notice and returns. The facet outlives the
  *           supervisor RPC until killed or evicted.
@@ -151,12 +151,12 @@ export async function runFresh(
 
   // Long path: an argv flag (--watch/--inspect/--inspect-brk) or a server-bind
   // in the source opted in. Fork to a keyed long-lived facet via
-  // facetMgr.spawnNode — its NimbusLoadedEntrypoint route stub is re-resolvable
-  // across requests, so a bound port is reachable. Returns immediately with
-  // {pid, facetStub}.
+  // facetMgr.spawnNode — the fabric binds a re-resolvable route target for the
+  // pid, so a bound port is reachable from any later request. Returns
+  // immediately with {pid}.
   const command = opts.command || `node ${opts.filename || '<script>'}`;
   const cwd = opts.cwd || '/home/user';
-  let spawned: { pid: number; facetStub: any };
+  let spawned: { pid: number };
   // Pre-reserve ONLY a port this invocation named on argv. $PORT does not
   // qualify: the session exports PORT=3000 by default so Express-style scripts
   // find it, which meant every long-running `node x.js` reserved 3000 whatever

@@ -4,11 +4,12 @@ import assert from 'node:assert/strict';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 
 const registry = new PortRegistry();
-registry.register(3000, 42, {
+registry.bindFacetStub(42, {
   async handleHttpRequest(request) {
     return Response.json(Object.fromEntries(request.headers));
   },
 });
+registry.register(3000, 42);
 
 const response = await registry.routeRequest(
   3000,

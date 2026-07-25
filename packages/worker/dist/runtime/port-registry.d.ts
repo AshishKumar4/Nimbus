@@ -46,8 +46,13 @@ export declare class PortRegistry {
     private portWaitersByPid;
     /** Remember the available facet capabilities for a running process. */
     bindFacetStub(pid: number, facetStub: unknown): void;
-    /** Register a facet as listening on a port. */
-    register(port: number, pid: number, facetStub: unknown): void;
+    /**
+     * Register a process as listening on a port. The route target comes from
+     * the pid's binding — one target per process, owned by whoever started it —
+     * so a port announced by the facet itself and one reserved by the spawn
+     * resolve to the same handler.
+     */
+    register(port: number, pid: number): void;
     /** Unregister a port. */
     unregister(port: number): boolean;
     /** Unregister all ports owned by a specific PID. */
@@ -57,7 +62,7 @@ export declare class PortRegistry {
     /** Attach a normalized route target to ports previously reserved by a PID. */
     private attachFacetStubByPid;
     getRouteablePortsByPid(pid: number): number[];
-    waitForRouteablePortsByPid(pid: number, facetStub: unknown, timeoutMs: number): Promise<number[]>;
+    waitForRouteablePortsByPid(pid: number, timeoutMs: number): Promise<number[]>;
     /** Check if a port is registered. */
     has(port: number): boolean;
     /** Get all registered ports. */
