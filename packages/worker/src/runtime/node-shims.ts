@@ -1558,19 +1558,10 @@ const __fsMod = (() => {
     _writeSync(data, a, b, c) {
       this._assertOpen("write");
       if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
-      let bytes;
-      let pos;
-      if (typeof data === "string") {
-        // writeSync(fd, string[, position[, encoding]])
-        bytes = _asBytes(__BufferMod.from(data, typeof c === "string" ? c : "utf8"));
-        pos = a === undefined || a === null ? null : Math.max(0, Number(a));
-      } else {
-        // writeSync(fd, buffer[, offset[, length[, position]]])
-        const off = a === undefined || a === null ? 0 : Number(a);
-        const len = b === undefined || b === null ? data.length - off : Number(b);
-        bytes = _asBytes(data).subarray(off, off + len);
-        pos = c === undefined || c === null ? null : Math.max(0, Number(c));
-      }
+      const bytes = _writeBytesFrom(data, a, b, c);
+      // The string form carries position 3rd; the buffer form carries it 5th.
+      const rawPos = typeof data === "string" ? a : c;
+      const pos = rawPos === undefined || rawPos === null ? null : Math.max(0, Number(rawPos));
       _ensureWritable(this._abs, "write", this._path);
       const base = this._writeBase("write");
       const at = this._flags.append
@@ -1679,9 +1670,11 @@ const __fsMod = (() => {
       atime: now, mtime: now, ctime: now, birthtime: now,
     };
   }
+  // write(fd, string[, position[, encoding]]) — encoding is the 4th arg;
+  // write(fd, buffer[, offset[, length[, position]]]) — offset/length 3rd/4th.
   function _writeBytesFrom(data, a, b, c) {
     if (typeof data === "string") {
-      return _asBytes(__BufferMod.from(data, typeof c === "string" ? c : "utf8"));
+      return _asBytes(__BufferMod.from(data, typeof b === "string" ? b : "utf8"));
     }
     const off = a === undefined || a === null ? 0 : Number(a);
     const len = b === undefined || b === null ? data.length - off : Number(b);
@@ -1780,7 +1773,9 @@ const __fsMod = (() => {
     }
     const handle = _fdFor(fd, "write", cb);
     if (!handle) return;
-    const args = typeof data === "string" ? [data, a, c] : [data, a, b, c];
+    // The string form carries only a position; FileHandle.write reads it
+    // from the second argument.
+    const args = typeof data === "string" ? [data, a] : [data, a, b, c];
     handle.write(...args)
       .then((r) => cb(null, r.bytesWritten, r.buffer))
       .catch((e) => cb(e));
