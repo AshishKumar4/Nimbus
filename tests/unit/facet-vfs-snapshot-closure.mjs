@@ -251,6 +251,11 @@ assert.deepEqual(
     [{ 'ü/né.js': 'héllo "quoted"\n\tand\\slashes', x: ' \u{1F600}' }, { 'ü': ['né.js'] }],
     [{ 'bin.dat': new Uint8Array([0, 1, 255]), 't.js': 'ok' }, { '.': ['bin.dat', 't.js'] }],
     [{ 'd.txt': { error: 'EACCES' } }, {}],
+    // Every escape class JSON.stringify distinguishes: two-character escapes,
+    // \u00XX controls, multi-byte code points, a surrogate pair, and a lone
+    // surrogate — the string length is computed, not measured, so each one
+    // has to be counted right.
+    [{ 'esc.js': '\b\t\n\f\r\v\0\x1f "q" \\ é € \u{1F600} \ud800 \udfff' }, { '.': ['esc.js'] }],
   ];
   for (const [bundle, manifest] of cases) {
     assert.equal(
