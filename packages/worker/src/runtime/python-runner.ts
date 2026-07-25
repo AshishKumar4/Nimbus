@@ -717,30 +717,33 @@ async function spawnPythonSocketProcess(
   args: PythonFacetArgs,
   command: string,
 ): Promise<PythonSocketProcessResult> {
-  const toAB = (u8: Uint8Array): ArrayBuffer =>
-    u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
   const assets = buildPythonRuntimeAssets(assetPaths, sideModules);
   const workerCode = buildPythonSocketProcessWorker(assets.preamble, sideModules);
-  const modules: Record<string, { wasm: ArrayBuffer }> = {
-    'pyodide.asm.wasm': { wasm: toAB(assets.asmWasmBytes) },
-  };
+  // Side modules are small and were sha256-verified as they were read, so
+  // they ride by value; the interpreter image is the big one and goes by path
+  // for whichever host ends up running this process to resolve for itself.
+  const modules: Record<string, { wasm: ArrayBuffer }> = {};
   for (const [moduleKey, bytes] of Object.entries(sideModules.wasmModules)) {
     modules[moduleKey] = { wasm: bytes };
   }
+  if (!assetPaths.asmWasmVfs) throw new Error('installed Pyodide manifest is missing pyodide.asm.wasm');
   const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
     compatibilityFlags: ['nodejs_compat'],
     modules,
-  });
-
-  const bootPayload = await spawned.facetStub.startProcess({
-    userCode: args.userCode,
-    pyArgv: args.pyArgv,
-    userEnv: args.userEnv,
-    progName: args.progName,
-    cwd: args.cwd,
-    fsSnapshot: args.fsSnapshot,
+    vfsWasmModules: { 'pyodide.asm.wasm': assetPaths.asmWasmVfs },
+    startArgs: {
+      userCode: args.userCode,
+      pyArgv: args.pyArgv,
+      userEnv: args.userEnv,
+      progName: args.progName,
+      cwd: args.cwd,
+      fsSnapshot: args.fsSnapshot,
+    },
   }).catch(() => null);
-  const bootParsed = PythonSocketProcessBootResponseSchema.safeParse(bootPayload);
+  if (!spawned) {
+    return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };
+  }
+  const bootParsed = PythonSocketProcessBootResponseSchema.safeParse(spawned.boot);
   if (!bootParsed.success) {
     facetMgr.finishProcess(spawned.pid, 1, 'python process boot failed');
     return {
@@ -752,8 +755,8 @@ async function spawnPythonSocketProcess(
   const boot = bootParsed.data;
 
   if (boot.state === 'listening' && typeof boot.port === 'number' && boot.port > 0) {
-    facetMgr.registerPort(spawned.pid, Number(boot.port), spawned.facetStub);
-    const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid, spawned.facetStub);
+    facetMgr.registerPort(spawned.pid, Number(boot.port));
+    const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid);
     const routeablePort = routeablePorts.includes(Number(boot.port)) ? Number(boot.port) : routeablePorts[0];
     if (!routeablePort) {
       facetMgr.kill(spawned.pid);
@@ -772,7 +775,7 @@ async function spawnPythonSocketProcess(
     };
   }
 
-  const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid, spawned.facetStub);
+  const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid);
   if (reservedPorts.length > 0) {
     return {
       exitCode: 0,

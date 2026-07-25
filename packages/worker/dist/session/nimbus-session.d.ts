@@ -20,6 +20,7 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
+import * as _rpc from './rpc.js';
 import * as _programmatic from './programmatic.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
 export { detectCloudflareWorkersProject } from '../runtime/project-detect.js';
@@ -290,13 +291,18 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }): Promise<{
         results: unknown[];
     }>;
-    _hostedProcessCancels: Map<string, () => void>;
+    _hostedProcesses: Map<string, _rpc.HostedProcessRecord>;
+    _hostedProcessWaiters: Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>;
     _rpcHostProcessProbe(): {
         isolateToken: string;
     };
-    _rpcHostProcess(stage: unknown, opts: unknown): Promise<{
+    _rpcHostProcess(boot: unknown, opts: unknown): Promise<{
         ok: boolean;
     }>;
+    _rpcAwaitHostedBoot(workerKey: string): Promise<{
+        payload: unknown;
+    }>;
+    _rpcRouteHostedHttp(workerKey: string, request: _rpc.HostedHttpRequest): Promise<_rpc.HostedHttpResponse>;
     _rpcCancelHostProcess(workerKey: string): {
         cancelled: boolean;
     };

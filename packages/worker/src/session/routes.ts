@@ -832,7 +832,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         self.viteDevServer.start();
         try {
           const apiViteStub = makeLongRunningPortStub(self.viteDevServer);
-          self.portRegistry.register(apiVitePort, apiViteEntry.pid, apiViteStub);
+          self.portRegistry.bindFacetStub(apiViteEntry.pid, apiViteStub);
+          self.portRegistry.register(apiVitePort, apiViteEntry.pid);
           self._viteShimPid = apiViteEntry.pid;
           self._viteShimPort = apiVitePort;
         } catch {}
@@ -991,7 +992,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
             // across hibernation cycles.
             try {
               const rehydratedStub = makeLongRunningPortStub(self.viteDevServer);
-              self.portRegistry.register(rehydratedPort, rehydratedEntry.pid, rehydratedStub);
+              self.portRegistry.bindFacetStub(rehydratedEntry.pid, rehydratedStub);
+              self.portRegistry.register(rehydratedPort, rehydratedEntry.pid);
               self._viteShimPid = rehydratedEntry.pid;
               self._viteShimPort = rehydratedPort;
             } catch { /* registry full / unavailable — fall through */ }
