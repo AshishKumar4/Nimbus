@@ -17,10 +17,8 @@ Outbound TCP uses `path_open('/dev/tcp/<host>/<port>')` to open a real
 socket subscriptions.
 
 A suspension does not outlive its request. A workerd request context will
-not resume a wasm stack that a different request suspended: three
-requests served inside one context take about 6 ms each, while the first
-request in a new context times out at 30 s. A wasm program cannot
-park in `accept` and be woken by the next inbound request. Servers on the
+not resume a wasm stack that a different request suspended, so a program
+cannot park in `accept` and be woken by the next inbound request. Servers on the
 virtual-socket kernel are driven the other way round — the kernel queues
 the connection and asks the runtime to service it on one dedicated
 cooperative pump, the only place a JSPI suspension is legal. Pyodide and
