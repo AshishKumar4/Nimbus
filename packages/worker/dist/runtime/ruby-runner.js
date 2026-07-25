@@ -631,12 +631,10 @@ export function buildRubySocketProcessWorker(preamble) {
         // runtime's involvement in serving: it knows nothing about what is
         // listening, only that the process should run until it parks.
         //
-        // Two rules make concurrent connections work. The VM lock is held only
-        // while Ruby is actually running, so a handler that parks does not stall
-        // other connections. And the caller waits for exactly one step - just
-        // enough to decide whether anything accepted the connection - while any
-        // remaining timed work continues on a background driver, because the
-        // caller still has its own response to await.
+        // The VM lock is held only while Ruby is actually running, so a handler
+        // that parks does not stall other connections, and it is released only
+        // when Ruby returns - never on a timeout, which would let a second resume
+        // enter a live fiber.
         'globalThis.__nimbusRubyResumeQueue = globalThis.__nimbusRubyResumeQueue || Promise.resolve();',
         'function __nimbusRubyStep() {',
         '  const run = () => globalThis.__nimbusRubyResumeMain();',
@@ -644,28 +642,54 @@ export function buildRubySocketProcessWorker(preamble) {
         '  globalThis.__nimbusRubyResumeQueue = task.then(() => {}, () => {});',
         '  return task;',
         '}',
-        // Single-flight: one driver, however many connections ask for one.
-        'function __nimbusRubyDrive(wakeAfter) {',
-        '  if (globalThis.__nimbusRubyDriving) return;',
-        '  globalThis.__nimbusRubyDriving = (async () => {',
-        '    try {',
-        '      let wait = wakeAfter;',
-        '      const giveUpAt = Date.now() + 300000;',
-        '      while (wait !== null && Date.now() < giveUpAt) {',
-        '        await new Promise((resolve) => setTimeout(resolve, Math.max(1, wait * 1000)));',
-        '        const step = await __nimbusRubyStep();',
-        '        if (!step || !step.resumed) break;',
-        '        wait = step.wakeAfter;',
-        '      }',
-        '    } finally {',
-        '      globalThis.__nimbusRubyDriving = null;',
+        // Timed work the process still owes: the wall-clock moment its earliest
+        // sleeper is due. It lives on the global rather than in one driver's
+        // closure because no single request may own it. A timer belongs to the
+        // request context that created it, and workerd cancels that timer without
+        // a word when the request ends - so a driver anchored to the first
+        // connection stops dead the moment that connection answers, and every
+        // other connection waits out the response timeout instead.
+        'globalThis.__nimbusRubyWakeAt = globalThis.__nimbusRubyWakeAt || null;',
+        'globalThis.__nimbusRubyIdleDrivers = globalThis.__nimbusRubyIdleDrivers || new Set();',
+        'function __nimbusRubyNoteWake(wakeAfter) {',
+        '  globalThis.__nimbusRubyWakeAt = (wakeAfter === null || wakeAfter === undefined)',
+        '    ? null',
+        '    : Date.now() + Math.max(0, wakeAfter) * 1000;',
+        '  if (globalThis.__nimbusRubyWakeAt === null) return;',
+        '  const waiting = Array.from(globalThis.__nimbusRubyIdleDrivers);',
+        '  globalThis.__nimbusRubyIdleDrivers.clear();',
+        '  for (const wake of waiting) wake();',
+        '}',
+        // So instead every live request drives, for as long as it is live, and the
+        // moment one of them answers the others are already carrying the work.
+        // Steps are serialized by the resume queue, and a driver that wakes to
+        // find the deadline already moved knows another one got there first.
+        'async function __nimbusRubyDrive() {',
+        '  for (;;) {',
+        '    const due = globalThis.__nimbusRubyWakeAt;',
+        '    if (due === null) {',
+        '      // Nothing is due yet. Stay available anyway: this request holds a',
+        '      // live context, and whichever request discovers the next piece of',
+        '      // timed work may answer and be gone before that work comes due.',
+        '      await new Promise((resolve) => globalThis.__nimbusRubyIdleDrivers.add(resolve));',
+        '      continue;',
         '    }',
-        '  })();',
+        '    const delay = due - Date.now();',
+        '    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));',
+        '    if (globalThis.__nimbusRubyWakeAt !== due) continue;',
+        '    const step = await __nimbusRubyStep();',
+        '    if (!step || !step.resumed) { globalThis.__nimbusRubyWakeAt = null; return; }',
+        '    __nimbusRubyNoteWake(step.wakeAfter);',
+        '  }',
         '}',
         'globalThis.__nimbusVirtualSocketRequestQueued = async function __nimbusVirtualSocketRequestQueued(port) {',
         '  const step = await __nimbusRubyStep();',
         '  if (!step || !step.resumed) return false;',
-        '  if (step.wakeAfter !== null) __nimbusRubyDrive(step.wakeAfter);',
+        '  __nimbusRubyNoteWake(step.wakeAfter);',
+        '  __nimbusRubyDrive().catch((e) => {',
+        '    (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push(',
+        '      "[ruby-runner] driving the process failed: " + ((e && e.message) || e) + "\\n");',
+        '  });',
         '  return true;',
         '};',
         '',
