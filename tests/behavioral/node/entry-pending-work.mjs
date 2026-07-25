@@ -72,20 +72,37 @@ try {
     JSON.stringify(fsRun.slice(-600)),
   );
 
-  // 4. Work that never completes is a failure, not a silent success. The
-  //    program must be told what was dropped, and must not exit 0.
-  const stuck = stripAnsi((await t.run(
-    `node -e 'setInterval(() => {}, 1000); console.log("STUCK-START");' ; echo "EXIT=$?"`,
-    60_000,
+  // 4. A program slower than the drain used to allow must simply RUN. 25s of
+  //    floating async work is well inside the facet's real lifetime
+  //    (FACET_TIMEOUT_MS); the fixed 8s entry budget cut it at ~8s, and every
+  //    sequential-fetch script with it.
+  const longRun = stripAnsi((await t.run(
+    `node -e '(async () => { const t0 = Date.now(); for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 1000)); console.log("LONG-OK", Date.now() - t0 >= 25000); })();' ; echo "EXIT=$?"`,
+    90_000,
   )).output);
   a.check(
-    'a program abandoned with work in flight reports why',
-    /pending operation\(s\) still in flight/.test(stuck),
+    '25s of floating async work is inside the facet lifetime and completes',
+    /LONG-OK true/.test(longRun) && /EXIT=0/.test(longRun),
+    JSON.stringify(longRun.slice(-600)),
+  );
+
+  // 5. Work that never completes is a failure, not a silent success — and the
+  //    message must name the limit that was hit, not merely that something was
+  //    dropped. It must also be the FACET's own exit: if the drain overran, the
+  //    supervisor's generic "[process killed: timeout after 30s]" would replace
+  //    it and the user would lose the reason.
+  const stuck = stripAnsi((await t.run(
+    `node -e 'setInterval(() => {}, 1000); console.log("STUCK-START");' ; echo "EXIT=$?"`,
+    90_000,
+  )).output);
+  a.check(
+    'a program abandoned with work in flight names the limit it hit',
+    /facet lifetime limit/.test(stuck) && /still in flight/.test(stuck),
     JSON.stringify(stuck.slice(-600)),
   );
   a.check(
-    'a program abandoned with work in flight does not exit 0',
-    /EXIT=[1-9]/.test(stuck),
+    "that failure is the facet's own honest exit, not the supervisor kill",
+    /EXIT=1\b/.test(stuck) && !/timeout after \d+s/.test(stuck),
     JSON.stringify(stuck.slice(-600)),
   );
 
