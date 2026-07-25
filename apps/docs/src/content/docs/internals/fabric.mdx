@@ -65,7 +65,7 @@ The supervisor describes a big app with a small spec — argv, env, a
 bounded VFS snapshot — and the full module map is assembled outside the
 DO, in a stateless isolate on the loader's cache-miss path. opencode's map
 is roughly 20 MB. Assembling it inside the supervisor crossed the memory
-cap and reset the session in testing, so assembly runs outside the DO.
+cap and reset the session, so assembly runs outside the DO.
 
 <RequestLifecycle caption="A preview request and an in-session curl take the same path through the registry, and the response streams the whole way." />
 
