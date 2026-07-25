@@ -7,9 +7,15 @@
 // its code was updated.` / `Internal error while starting up Durable
 // Object storage caused object to be reset`.
 
+//
+// The same budget covers a peer that workerd SHED as overloaded — the
+// object is alive and the shard never ran, so re-dispatching it after a
+// longer backoff is what turns `[batch-fanout] aborted: Durable Object is
+// overloaded` from a whole-install abort into a completed install.
+
 import assert from 'node:assert/strict';
 import { NimbusFanoutPool } from '../../packages/worker/src/loaders/fanout-pool.ts';
-import { isTransientDoReset } from '../../packages/worker/src/observability/oom-classify.ts';
+import { isDoOverloaded, isTransientDoReset } from '../../packages/worker/src/observability/oom-classify.ts';
 
 // ── Classifier: transient resets are retryable, resource resets are not ──
 assert.equal(isTransientDoReset(new Error('Durable Object reset because its code was updated.')), true);
@@ -19,6 +25,11 @@ assert.equal(isTransientDoReset('Durable Object storage operation exceeded timeo
 // Must NOT treat memory/CPU resets as transient — those recur on retry.
 assert.equal(isTransientDoReset(new Error("Durable Object's isolate exceeded its memory limit and was reset")), false);
 assert.equal(isTransientDoReset(new Error('some unrelated failure')), false);
+// Overload is its own class: the object is alive, the call was shed.
+assert.equal(isDoOverloaded(new Error('Durable Object is overloaded.')), true);
+assert.equal(isTransientDoReset(new Error('Durable Object is overloaded.')), false);
+assert.equal(isDoOverloaded(new Error("Durable Object's isolate exceeded its memory limit and was reset")), false);
+assert.equal(isDoOverloaded(new Error('some unrelated failure')), false);
 
 function makeEnv(stubFactory) {
   return {
@@ -85,6 +96,24 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   // each throws exactly once (no retry). No shard is retried.
   assert.ok(attempts >= 1 && attempts <= 8, `non-transient not retried (attempts=${attempts})`);
   console.log(`  case3: non-transient propagated without retry (attempts=${attempts})`);
+}
+
+// ── Case 4: an overloaded peer is re-dispatched, not surfaced as an abort.
+{
+  const calls = new Map();
+  const env = makeEnv((name) => ({
+    async _rpcFanoutExecute(_fnSource, args) {
+      const n = (calls.get(name) ?? 0) + 1;
+      calls.set(name, n);
+      if (n === 1) throw new Error('Durable Object is overloaded.');
+      return { results: args };
+    },
+  }));
+  const pool = new NimbusFanoutPool(env, ctx, { tag: 'overload-retry-test', omitSupervisor: true });
+  const results = await pool.submitMany(TASKS, (x) => x);
+  assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after the shed');
+  for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
+  console.log(`  case4: recovered from overload across ${calls.size} shards`);
 }
 
 console.log('fanout-peer-reset-retry: ok');

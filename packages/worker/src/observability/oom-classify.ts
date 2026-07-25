@@ -133,6 +133,20 @@ export function isTransientDoReset(input: unknown): boolean {
   return false;
 }
 
+/**
+ * Workerd shed the call because the target Durable Object's input-gate
+ * queue was too deep or too old: "Durable Object is overloaded."
+ *
+ * Distinct from `isTransientDoReset` on purpose. The object is alive and
+ * the work never started, so the call is safe to re-attempt — but the
+ * cause is queue pressure, so the only useful retry is one that backs off
+ * long enough for the queue to drain. Callers pair this with a longer
+ * backoff than a reset retry uses.
+ */
+export function isDoOverloaded(input: unknown): boolean {
+  return readMessage(input).toLowerCase().includes('durable object is overloaded');
+}
+
 function readMessage(input: unknown): string {
   if (input == null) return '';
   if (typeof input === 'string') return input;
