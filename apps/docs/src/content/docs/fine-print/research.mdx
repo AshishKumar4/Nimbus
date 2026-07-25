@@ -12,9 +12,9 @@ proves them live.
 
 Workers has no `fork()` primitive, so Nimbus built the mechanism and
 proved it live on production Cloudflare infrastructure on 2026-07-16.
-Asyncify unwinds the running WASM program. A sibling instance of the same module starts at
-request time; that is legal because workerd blocks only raw-byte
-compilation. The parent's linear memory is copied, every exported global
+Asyncify unwinds the running WASM program. A sibling instance of the same
+module starts at request time; that is legal because workerd blocks only
+raw-byte compilation. The parent's linear memory is copied, every exported global
 including `__stack_pointer` is restored, and both sides rewind. The
 parent resumes with the child pid. The child resumes with 0.
 
@@ -35,10 +35,10 @@ installable program.
 
 ## True Unix permissions — shipped
 
-Permission enforcement shipped in July 2026. `uid`, `gid`, and `mode` are durable
-inode columns; one credential passes through a single VFS seam; denials
-are real `EACCES`/`EPERM` through every runtime, with a root bypass and
-durable `chmod`/`chown`. [Security](/docs/internals/security/) documents
+Permission enforcement shipped in July 2026. `uid`, `gid`, and `mode` are
+durable inode columns; one credential passes through a single VFS seam;
+denials are real `EACCES`/`EPERM` through every runtime, with a root
+bypass and durable `chmod`/`chown`. [Security](/docs/internals/security/) documents
 the model and proves a denial in a live sandbox. What remains open is
 maturity, not mechanism: enforcement coverage is weeks old, and some
 subsystems (package installation, runtime staging) run as a system
