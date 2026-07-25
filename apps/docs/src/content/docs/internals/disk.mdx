@@ -28,10 +28,9 @@ governed by a weighted credit pool: 8 MiB of retained payload bytes,
 shared across every writer in the session. A sender acquires credit
 sized to each 64 KiB chunk *before* the supervisor reads its payload;
 with no credit, the RPC body itself stops being read, so backpressure
-reaches the sender through the stream, not through a convention. Waiters
-are served in FIFO order, so a 52,500-file `npm install` and an
-84,000-file checkout can run in parallel inside 128 MiB isolates without
-either starving the other.
+reaches the sender through the stream. Waiters are served in FIFO order,
+so a 52,500-file `npm install` and an 84,000-file checkout can run in
+parallel inside 128 MiB isolates without either starving the other.
 
 Publication is path-atomic. A bulk write stages its chunks into a fresh
 content generation under bounded transactions (at most 1 MiB of blob

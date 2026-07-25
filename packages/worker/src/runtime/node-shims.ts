@@ -38,7 +38,8 @@
 import { generateStreamsCode } from './streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
-import { NODE_VERSION, NODE_VERSIONS } from '../constants.js';
+import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
+import { NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS } from '../constants.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -48,6 +49,11 @@ const EXPORTS_RESOLVER_JS = getExportsResolverJS();
 // constants.ts for the rationale (create-astro preflight, etc.).
 const NODE_VERSION_LITERAL = JSON.stringify(NODE_VERSION);
 const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
+// AI-egress mediation policy, interpolated for the same reason: the emitted
+// shim is a string and cannot import, so the constants it decides with come
+// from _shared/ai-egress.ts at build time rather than being written twice.
+const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
+const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
 
 export function generateShimsCode(): string {
   return `
@@ -94,37 +100,81 @@ async function __nimbusUseRpcResult(promise, use) {
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
   const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  const __fetchUrl = (input) => {
+    try {
+      const href = typeof input === "string" ? input
+        : (input && typeof input === "object" && input.url) ? input.url : String(input);
+      return new URL(href);
+    } catch { return null; }
+  };
+  // Read one header off whatever the caller passed without constructing a
+  // Request: \`new Request(existing)\` marks the original's body disturbed, and a
+  // request we inspect but do not claim must still be sendable by real fetch.
+  // \`init.headers\` replaces a Request's own headers, so it is consulted first.
+  const __headerOf = (input, init, name) => {
+    const h = (init && init.headers) || (typeof Request !== "undefined" && input instanceof Request ? input.headers : null);
+    if (!h) return null;
+    if (typeof h.get === "function") return h.get(name);
+    if (Array.isArray(h)) {
+      for (const pair of h) if (String(pair?.[0]).toLowerCase() === name) return String(pair?.[1]);
+      return null;
+    }
+    for (const key of Object.keys(h)) if (key.toLowerCase() === name) return String(h[key]);
+    return null;
+  };
+  // Strip the caller's AbortSignal before the RPC hop: workerd JSRPC does not
+  // serialize Request.signal ("AbortSignal serialization is not enabled"), and
+  // the opencode SDK stamps timeout signals on its startup requests — which
+  // made 4/5 attach boot calls fail. Cancellation across the hop is advisory;
+  // an aborted caller simply drops the response.
+  const __supervisorRequest = (url, input, init) => (
+    (typeof Request !== "undefined" && input instanceof Request)
+      ? new Request(input, { ...(init || {}), signal: null })
+      : new Request(url.href, { ...(init || {}), signal: null })
+  );
   // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
   // to the facet that owns <port> through the supervisor's port registry (the
   // same routing the shell curl/node loopback uses), so a facet can reach another
   // facet's server in-session (opencode attach reaching opencode serve). Returns
   // the target's Response (streamed over RPC, so SSE flows). Anything non-
   // loopback, or when no supervisor is bound, falls through to real fetch.
-  const __maybeRouteLoopback = (input, init) => {
-    if (!__supervisor || typeof __supervisor.routeLoopback !== "function") return null;
-    let url;
-    try {
-      const href = typeof input === "string" ? input
-        : (input && typeof input === "object" && input.url) ? input.url : String(input);
-      url = new URL(href);
-    } catch { return null; }
+  const __maybeRouteLoopback = (url, input, init) => {
     if (!__loopbackHosts.has(url.hostname)) return null;
     const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
     if (!Number.isFinite(port) || port <= 0) return null;
-    // Strip the caller's AbortSignal before the RPC hop: workerd JSRPC does
-    // not serialize Request.signal ("AbortSignal serialization is not
-    // enabled"), and the opencode SDK stamps timeout signals on its startup
-    // requests — which made 4/5 attach boot calls fail. Cancellation across
-    // the loopback is advisory; an aborted caller simply drops the response.
-    const request = (typeof Request !== "undefined" && input instanceof Request)
-      ? new Request(input, { ...(init || {}), signal: null })
-      : new Request(url.href, { ...(init || {}), signal: null });
-    return Promise.resolve(__supervisor.routeLoopback(port, request));
+    return Promise.resolve(__supervisor.routeLoopback(port, __supervisorRequest(url, input, init)));
+  };
+  // AI-egress mediation: a request addressed anywhere on the network that
+  // presents this session's AI capability token is inference the session owns,
+  // so it is served by the session's own gateway (supervisor loopback port
+  // ${NIMBUS_AI_GATEWAY_PORT}) instead of being sent out. That is how a tool holding a baked-in
+  // vendor base URL — one that never reads OPENAI_BASE_URL — still reaches the
+  // session's models with no configuration of its own.
+  //
+  // The match is on the credential, never on the destination: a request
+  // carrying anything else (the user's own real provider key) is not ours, is
+  // left alone, and goes to that provider. See _shared/ai-egress.ts.
+  const __aiCredentialHeaders = ${AI_CREDENTIAL_HEADERS_LITERAL};
+  const __maybeRouteAiEgress = (url, input, init) => {
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    let token = "";
+    try { token = (env && env[${AI_TOKEN_ENV_LITERAL}]) || ""; } catch { return null; }
+    if (!token) return null;
+    for (const name of __aiCredentialHeaders) {
+      const raw = __headerOf(input, init, name);
+      if (!raw) continue;
+      if (String(raw).trim().replace(/^bearer\\s+/i, "") !== token) continue;
+      return Promise.resolve(__supervisor.routeLoopback(${NIMBUS_AI_GATEWAY_PORT}, __supervisorRequest(url, input, init)));
+    }
+    return null;
   };
   globalThis.fetch = function fetch(input, init) {
     try {
-      const routed = __maybeRouteLoopback(input, init);
-      if (routed) return routed;
+      if (__supervisor && typeof __supervisor.routeLoopback === "function") {
+        const url = __fetchUrl(input);
+        const routed = url && (__maybeRouteLoopback(url, input, init) || __maybeRouteAiEgress(url, input, init));
+        if (routed) return routed;
+      }
     } catch { /* fall through to real fetch */ }
     const reqHasUa = typeof Request !== "undefined" && input instanceof Request && __hasUa(input.headers);
     if (reqHasUa || __hasUa(init && init.headers)) return __origFetch(input, init);
@@ -459,6 +509,10 @@ const __fsMod = (() => {
       isFile: () => !isDir && !isSymlink,
       isDirectory: () => isDir,
       isSymbolicLink: () => isSymlink,
+      isBlockDevice: () => false,
+      isCharacterDevice: () => false,
+      isFIFO: () => false,
+      isSocket: () => false,
       size,
       atime,
       mtime,
@@ -1137,6 +1191,21 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     _ensureAncestorsTraversable(absPath, "stat", p);
     const k = _strip(absPath);
+    // Content written this exec session is newer than the spawn-time
+    // metadata snapshot, so it — not __vfsMetadata — is authoritative for
+    // size. Without this, fstatSync/statSync on a file we just wrote report
+    // the pre-write length.
+    if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
+      const meta = _metadata(absPath);
+      const size = _byteLen(__vfsWrites[k]);
+      // Correct only the size — reusing the metadata record keeps the type
+      // and the recorded timestamps stable, so mtime-based change detection
+      // (make, tsc --build, watchers) does not see every call as a change.
+      if (meta) return _statObject({ ...meta, size }, k);
+      return _localStatObject(
+        k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid,
+      );
+    }
     const metadata = _metadata(absPath);
     if (metadata) return _statObject(metadata, k);
     // Check if it's a known directory written this exec session
@@ -1472,6 +1541,101 @@ const __fsMod = (() => {
       await _truncateAsync(this._path, size);
       this._size = size;
     }
+    // ── Synchronous descriptor I/O ──
+    // A node facet has NO synchronous I/O primitive (no JSPI suspension, as
+    // the WASI runtimes have), so sync fd ops are served from exactly the
+    // resident view readFileSync/writeFileSync use — __vfsWrites overlaid on
+    // __vfsBundle. Content that is not resident cannot be fetched without
+    // blocking, so those calls raise EAGAIN rather than invent bytes.
+    // Writes buffer into __vfsWrites and are drained by the existing
+    // write-back path (_flushLocalPathToSupervisor), identical to
+    // writeFileSync; closeSync/fsyncSync therefore cannot block on
+    // durability and only mark the VFS stale.
+    _residentBytes(syscall) {
+      const cell = _writtenCell(this._abs);
+      if (cell === undefined) return undefined;
+      const denial = _denialCode(cell);
+      if (denial) throw _fsErr(denial, syscall, this._path);
+      return _asBytes(cell);
+    }
+    _notResident(syscall) {
+      // Distinguish "gone" from "never prefetched" so the caller gets a
+      // truthful errno instead of a plausible-looking wrong answer.
+      if (statSync(this._path, { throwIfNoEntry: false }) === undefined) {
+        return _fsErr("ENOENT", syscall, this._path);
+      }
+      const err = _fsErr("EAGAIN", syscall, this._path);
+      err.message += " — content is not resident in this facet and synchronous " +
+        "I/O cannot block; use the async fs." + syscall + "/fs.promises form instead";
+      return err;
+    }
+    _readBase(syscall) {
+      const bytes = this._residentBytes(syscall);
+      if (bytes === undefined) throw this._notResident(syscall);
+      return bytes;
+    }
+    _writeBase(syscall) {
+      const bytes = this._residentBytes(syscall);
+      if (bytes !== undefined) return bytes;
+      const st = statSync(this._path, { throwIfNoEntry: false });
+      // Absent or empty — an empty base IS the true prior content.
+      if (st === undefined || st.size === 0) return new Uint8Array(0);
+      // Non-resident and non-empty: writing onto a zero-filled base would
+      // silently destroy the bytes we cannot see. Refuse instead.
+      throw this._notResident(syscall);
+    }
+    _commit(next) {
+      const k = _strip(this._abs);
+      __vfsWrites[k] = next;
+      if (__vfsBundle) __vfsBundle[k] = next;
+      _markVfsStale();
+      this._size = next.byteLength;
+    }
+    _readSync(buffer, offset, length, position) {
+      this._assertOpen("read");
+      if (!this._flags.read) throw _fsErr("EBADF", "read", this._path);
+      const off = offset === undefined || offset === null ? 0 : Number(offset);
+      const want = length === undefined || length === null
+        ? buffer.length - off
+        : Math.max(0, Number(length));
+      const useCurrent = _isCurrentPos(position);
+      const pos = useCurrent ? this._position : Number(position);
+      const buf = this._readBase("read");
+      const from = Math.min(pos, buf.byteLength);
+      const slice = buf.subarray(from, Math.min(buf.byteLength, from + want));
+      buffer.set(slice, off);
+      if (useCurrent) this._position = pos + slice.byteLength;
+      return slice.byteLength;
+    }
+    _writeSync(data, a, b, c) {
+      this._assertOpen("write");
+      if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
+      const norm = _normWriteArgs(data, a, b, c);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Number(norm.pos);
+      _ensureWritable(this._abs, "write", this._path);
+      const base = this._writeBase("write");
+      const at = this._flags.append
+        ? base.byteLength
+        : (pos === null ? this._position : pos);
+      const next = new Uint8Array(Math.max(base.byteLength, at + bytes.byteLength));
+      next.set(base, 0);
+      next.set(bytes, at);
+      this._commit(next);
+      if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      return bytes.byteLength;
+    }
+    _truncateSync(len) {
+      this._assertOpen("ftruncate");
+      if (!this._flags.write) throw _fsErr("EBADF", "ftruncate", this._path);
+      const size = Math.max(0, Math.trunc(Number(len) || 0));
+      _ensureWritable(this._abs, "ftruncate", this._path);
+      const base = this._writeBase("ftruncate");
+      const next = new Uint8Array(size);
+      next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
+      this._commit(next);
+      if (this._position > size) this._position = size;
+    }
     async chmod(mode) { this._assertOpen("fchmod"); await _chmodAsync(this._path, mode); }
     async chown(uid, gid) { this._assertOpen("fchown"); await _chownAsync(this._path, uid, gid, undefined, "fchown"); }
     async utimes(atime, mtime) { this._assertOpen("futimes"); await _utimesAsync(this._path, atime, mtime); }
@@ -1481,7 +1645,7 @@ const __fsMod = (() => {
     [Symbol.asyncDispose]() { return this.close(); }
   }
 
-  async function _openAsync(path, flags) {
+  async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
     const absPath = _resolve(path);
     const supervisor = _supervisor();
@@ -1501,6 +1665,9 @@ const __fsMod = (() => {
     let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
     if (!exists) {
       await _writeFileAsync(path, new Uint8Array(0));
+      if (mode !== undefined && mode !== null) {
+        await _chmodAsync(path, Number(mode) & ~__processUmask);
+      }
       size = 0;
     } else if (fl.truncate) {
       await _truncateAsync(path, 0);
@@ -1509,12 +1676,238 @@ const __fsMod = (() => {
     return new __FileHandle(path, fl, size);
   }
 
-  function fchown(fd, uid, gid, cb) {
+  function openSync(path, flags, mode) {
+    const fl = _parseOpenFlags(flags);
+    const absPath = _resolve(path);
+    _ensureAncestorsTraversable(absPath, "open", path);
+    const st = statSync(path, { throwIfNoEntry: false });
+    if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
+    const exists = st !== undefined;
+    if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
+    if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
+    if (fl.write || !exists) _ensureWritable(absPath, "open", path);
+    let size = exists ? st.size : 0;
+    // O_TRUNC means "make it empty", so zeroing is the requested semantic,
+    // and creating a genuinely absent file is too. O_APPEND must NEVER
+    // pre-create: "exists" is only as good as the sync view, so a file
+    // created after this facet booted looks absent, and zeroing it at open
+    // time would destroy exactly the content the caller asked to preserve.
+    if (fl.truncate || (!exists && !fl.append)) {
+      // Creating or truncating also makes the file resident, which is what
+      // lets the sync read/write path serve it without blocking.
+      writeFileSync(path, new Uint8Array(0));
+      if (!exists && mode !== undefined && mode !== null) {
+        chmodSync(path, Number(mode) & ~__processUmask);
+      }
+      size = 0;
+    }
+    return new __FileHandle(path, fl, size).fd;
+  }
+
+  // ── fd table ──
+  // fds 0/1/2 are the process stdio triple and deliberately live OUTSIDE
+  // __fileHandles (which allocates from 3 up), so fs.writeSync(1, ...) —
+  // how a lot of bundled CLI output actually reaches the terminal — lands
+  // on the real process streams instead of failing EBADF.
+  function _fdHandle(fd, syscall) {
     const handle = __fileHandles.get(Number(fd));
-    if (!handle || handle._closed) {
-      queueMicrotask(() => cb(_fsErr("EBADF", "fchown", fd)));
+    if (!handle || handle._closed) throw _fsErr("EBADF", syscall, fd);
+    return handle;
+  }
+  // Resolve an fd for a callback-style syscall, delivering EBADF via cb.
+  function _fdFor(fd, syscall, cb) {
+    try { return _fdHandle(fd, syscall); }
+    catch (e) { queueMicrotask(() => cb(e)); return null; }
+  }
+  function _isStdioFd(fd) { const n = Number(fd); return n === 0 || n === 1 || n === 2; }
+  // stdio descriptors are character devices, not VFS files.
+  function _stdioStat() {
+    const now = new Date();
+    return {
+      isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false,
+      isBlockDevice: () => false, isCharacterDevice: () => true,
+      isFIFO: () => false, isSocket: () => false,
+      size: 0, mode: 0o020620, uid: Number(cred.uid), gid: Number(cred.gid),
+      atime: now, mtime: now, ctime: now, birthtime: now,
+    };
+  }
+  // Node treats a null position — and a negative one, which libuv maps to
+  // the same thing — as "use and advance the file position".
+  function _isCurrentPos(p) {
+    return p === undefined || p === null || Number(p) < 0;
+  }
+  // Normalizes every documented fs.write/writeSync argument shape:
+  //   (fd, buffer[, offset[, length[, position]]])
+  //   (fd, buffer[, options])   where options = { offset, length, position }
+  //   (fd, string[, position[, encoding]])
+  function _normWriteArgs(data, a, b, c) {
+    if (typeof data === "string") {
+      return {
+        bytes: _asBytes(__BufferMod.from(data, typeof b === "string" ? b : "utf8")),
+        pos: a,
+      };
+    }
+    let off = a, len = b, pos = c;
+    if (a !== null && typeof a === "object" && !(a instanceof Uint8Array)) {
+      off = a.offset; len = a.length; pos = a.position;
+    }
+    off = off === undefined || off === null ? 0 : Number(off);
+    len = len === undefined || len === null ? data.length - off : Number(len);
+    return { bytes: _asBytes(data).subarray(off, off + len), pos };
+  }
+
+  function closeSync(fd) {
+    if (_isStdioFd(fd)) return;
+    const handle = _fdHandle(fd, "close");
+    handle._closed = true;
+    __fileHandles.delete(handle.fd);
+  }
+
+  function readSync(fd, buffer, offsetOrOptions, length, position) {
+    let offset = offsetOrOptions;
+    if (offsetOrOptions !== null && typeof offsetOrOptions === "object") {
+      offset = offsetOrOptions.offset;
+      length = offsetOrOptions.length;
+      position = offsetOrOptions.position;
+    }
+    // Sync stdin cannot block, so stdin always reads as EOF here — an
+    // attached tty with buffered input is NOT distinguished.
+    if (_isStdioFd(fd)) return 0;
+    return _fdHandle(fd, "read")._readSync(buffer, offset, length, position);
+  }
+
+  function writeSync(fd, data, a, b, c) {
+    const n = Number(fd);
+    if (n === 1 || n === 2) {
+      // The stream shim stringifies whatever it is given, so decode first.
+      const bytes = _normWriteArgs(data, a, b, c).bytes;
+      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(bytes));
+      return bytes.byteLength;
+    }
+    if (n === 0) throw _fsErr("EBADF", "write", fd);
+    return _fdHandle(fd, "write")._writeSync(data, a, b, c);
+  }
+
+  function fstatSync(fd, opts) {
+    if (_isStdioFd(fd)) return _stdioStat();
+    return statSync(_fdHandle(fd, "fstat")._path, opts);
+  }
+
+  function ftruncateSync(fd, len) {
+    if (_isStdioFd(fd)) throw _fsErr("EINVAL", "ftruncate", fd);
+    _fdHandle(fd, "ftruncate")._truncateSync(len);
+  }
+
+  // Sync writes buffer into __vfsWrites and are drained by the existing
+  // VFS write-back path — a facet cannot block on durability, so these
+  // validate the fd and mark the VFS stale rather than pretending to sync.
+  function fsyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fsync"); _markVfsStale(); }
+  function fdatasyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fdatasync"); _markVfsStale(); }
+
+  // ── callback forms (live I/O — these CAN reach the supervisor) ──
+  function open(path, flags, mode, cb) {
+    if (typeof flags === "function") { cb = flags; flags = undefined; mode = undefined; }
+    else if (typeof mode === "function") { cb = mode; mode = undefined; }
+    _openAsync(path, flags, mode).then((h) => cb(null, h.fd)).catch((e) => cb(e));
+  }
+  function close(fd, cb) {
+    let err = null;
+    try { closeSync(fd); } catch (e) { err = e; }
+    // Without a callback there is nowhere to deliver the failure, so raise
+    // it here rather than let an EBADF vanish.
+    if (typeof cb !== "function") { if (err) throw err; return; }
+    queueMicrotask(() => cb(err));
+  }
+  function read(fd, buffer, offset, length, position, cb) {
+    if (typeof buffer === "function") {
+      // read(fd, callback)
+      cb = buffer; buffer = undefined; offset = undefined; length = undefined; position = undefined;
+    } else if (typeof offset === "function") {
+      // read(fd, options, callback) — the buffer rides inside options
+      cb = offset;
+      const o = buffer !== null && typeof buffer === "object" && !(buffer instanceof Uint8Array) ? buffer : {};
+      buffer = o.buffer instanceof Uint8Array ? o.buffer : undefined;
+      offset = o.offset; length = o.length; position = o.position;
+    } else if (typeof length === "function") {
+      // read(fd, buffer, options, callback)
+      cb = length;
+      const o = offset !== null && typeof offset === "object" ? offset : {};
+      offset = o.offset; length = o.length; position = o.position;
+    } else if (typeof position === "function") {
+      // read(fd, buffer, offset, length, callback)
+      cb = position; position = undefined;
+    }
+    if (!(buffer instanceof Uint8Array)) buffer = __BufferMod.alloc(16384);
+    if (_isStdioFd(fd)) { queueMicrotask(() => cb(null, 0, buffer)); return; }
+    const handle = _fdFor(fd, "read", cb);
+    if (!handle) return;
+    handle.read(buffer, offset, length, position)
+      .then((r) => cb(null, r.bytesRead, r.buffer))
+      .catch((e) => cb(e));
+  }
+  function write(fd, data, a, b, c, d) {
+    // write(fd, buffer[, offset[, length[, position]]], cb)
+    // write(fd, string[, position[, encoding]], cb)
+    let cb = d;
+    if (typeof a === "function") { cb = a; a = undefined; b = undefined; c = undefined; }
+    else if (typeof b === "function") { cb = b; b = undefined; c = undefined; }
+    else if (typeof c === "function") { cb = c; c = undefined; }
+    let norm;
+    try { norm = _normWriteArgs(data, a, b, c); }
+    catch (e) { queueMicrotask(() => cb(e)); return; }
+    const n = Number(fd);
+    if (n === 1 || n === 2) {
+      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(norm.bytes));
+      queueMicrotask(() => cb(null, norm.bytes.byteLength, data));
       return;
     }
+    const handle = _fdFor(fd, "write", cb);
+    if (!handle) return;
+    // Hand over already-decoded bytes so the async path applies the same
+    // encoding rules as writeSync instead of FileHandle.write's UTF-8-only
+    // string branch.
+    handle.write(norm.bytes, 0, norm.bytes.byteLength, _isCurrentPos(norm.pos) ? null : Number(norm.pos))
+      .then((r) => cb(null, r.bytesWritten, data))
+      .catch((e) => cb(e));
+  }
+  function fstat(fd, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = undefined; }
+    let stats = null;
+    let err = null;
+    try { stats = fstatSync(fd, opts); } catch (e) { err = e; }
+    queueMicrotask(() => cb(err, stats));
+  }
+  function ftruncate(fd, len, cb) {
+    if (typeof len === "function") { cb = len; len = 0; }
+    if (_isStdioFd(fd)) { queueMicrotask(() => cb(_fsErr("EINVAL", "ftruncate", fd))); return; }
+    const handle = _fdFor(fd, "ftruncate", cb);
+    if (!handle) return;
+    handle.truncate(len).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function fsync(fd, cb) {
+    let err = null;
+    try { fsyncSync(fd); } catch (e) { err = e; }
+    // Without a callback there is nowhere to deliver the failure, so raise
+    // it here rather than let an EBADF vanish.
+    if (typeof cb !== "function") { if (err) throw err; return; }
+    queueMicrotask(() => cb(err));
+  }
+  function fdatasync(fd, cb) {
+    let err = null;
+    try { fdatasyncSync(fd); } catch (e) { err = e; }
+    // Without a callback there is nowhere to deliver the failure, so raise
+    // it here rather than let an EBADF vanish.
+    if (typeof cb !== "function") { if (err) throw err; return; }
+    queueMicrotask(() => cb(err));
+  }
+  function fchmod(fd, mode, cb) {
+    const handle = _fdFor(fd, "fchmod", cb);
+    if (!handle) return;
+    handle.chmod(mode).then(() => cb(null)).catch((e) => cb(e));
+  }
+  function fchown(fd, uid, gid, cb) {
+    const handle = _fdFor(fd, "fchown", cb);
+    if (!handle) return;
     handle.chown(uid, gid).then(() => cb(null)).catch((error) => cb(error));
   }
 
@@ -1601,7 +1994,7 @@ const __fsMod = (() => {
       mkdirSync(name, { recursive: true });
       return name;
     },
-    open: async (path, flags, mode) => _openAsync(path, flags),
+    open: async (path, flags, mode) => _openAsync(path, flags, mode),
     watch: async function* (filename, opts) {
       // Minimal async iter — polls _bundleLookup every 500ms and yields
       // a single \`change\` event when content differs. Adequate for
@@ -1736,6 +2129,8 @@ const __fsMod = (() => {
     readFileSync, writeFileSync, appendFileSync, existsSync, statSync, lstatSync,
     readdirSync, mkdirSync, unlinkSync, rmdirSync, renameSync, copyFileSync,
     realpathSync, utimesSync, lutimesSync, chmodSync, accessSync,
+    openSync, closeSync, readSync, writeSync, fstatSync, ftruncateSync, fsyncSync, fdatasyncSync,
+    open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod,
     readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rename, utimes, lutimes, chmod, chown, lchown, fchown, access,
     promises, constants,
     createReadStream: (p, opts) => new (__getReadStream())(p, opts),
