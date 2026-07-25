@@ -205,12 +205,34 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
 // spin on until OOM) and yields via the untracked raw setTimeout so its own
 // ticks don't inflate the pending-timer count it watches.
 /**
- * How long a one-shot exec facet keeps yielding to work its entrypoint left
- * in flight. The facet's lifetime is exactly this drain, so the budget has to
- * cover an ordinary program's slowest step — a network fetch, an npm-scale
- * scaffold — and running out is reported as a failure, never as exit 0.
+ * Reserve held back from a one-shot facet's lifetime so a program that runs
+ * out of time is still alive to say so.
+ *
+ * A one-shot exec is ALREADY bounded: `_execWithTimeout` kills it at
+ * FACET_TIMEOUT_MS with exit 124 and "[process killed: timeout after 30s]".
+ * The entry drain must therefore not be a second, tighter, independent
+ * timeout. Measured against a deployed Worker, floating async work of 5s /
+ * 15s / 25s completes and 40s is killed by that outer bound at exactly 30s —
+ * so the fixed 8s budget this used to carry was abandoning programs 22
+ * seconds before anything actually required it.
+ *
+ * The drain therefore runs to the outer bound MINUS this reserve, which is
+ * what buys the facet time to flush and report the honest "still in flight"
+ * reason instead of the supervisor's generic kill. The reserve has to cover
+ * the longest tail a facet can have after the drain: settling pending RPC,
+ * writing back __vfsWrites (bounded by MAX_RPC_SAFE_PAYLOAD_BYTES; a 20 MiB
+ * write-back measures ~1.5s), draining children, then reportExit.
  */
-const ONE_SHOT_ENTRY_DEADLINE_MS = 8000;
+export const ONE_SHOT_EXIT_RESERVE_MS = 3_000;
+
+/**
+ * Budget used when the supervisor did not stamp an absolute deadline on the
+ * payload. The deadline is the real bound — see `entryDeadlineAt` — because
+ * it is measured from the supervisor's own timer rather than restarted when
+ * the drain begins, so a slow module init cannot push the drain past the kill
+ * and lose the honest message.
+ */
+export const ONE_SHOT_ENTRY_DEADLINE_MS = FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESERVE_MS;
 
 /**
  * How long a RESIDENT facet settles its startup before answering its boot
@@ -219,7 +241,7 @@ const ONE_SHOT_ENTRY_DEADLINE_MS = 8000;
  * port, first render). `spawnNode` awaits the boot, so a server's idle
  * keep-alive timer must not be allowed to hold the shell's prompt.
  */
-const RESIDENT_BOOT_SETTLE_MS = 1000;
+export const RESIDENT_BOOT_SETTLE_MS = 1000;
 
 export const ENTRYPOINT_PROMISE_TRACKER = `
 function __makeEntrypointPromiseTracker() {
@@ -513,7 +535,15 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt } = args;
+    // What is left of this facet's lifetime, measured from the supervisor's
+    // own timeout timer rather than from whenever the drain happens to start
+    // — a slow module init must not be able to push the drain past the kill
+    // and lose the honest reason. Same shape as the git network facet's
+    // phaseDeadline.
+    const __entryBudgetMs = Number.isFinite(entryDeadlineAt)
+      ? Math.max(0, Number(entryDeadlineAt) - Date.now())
+      : ${ONE_SHOT_ENTRY_DEADLINE_MS};
     let __drainPasses = 0;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
@@ -597,16 +627,18 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       }
       __entryPromises.track(__entryResult);
       const __drain = await __nimbusDrainEntrypointStartup(
-        __entryResult, __entryPromises, ${ONE_SHOT_ENTRY_DEADLINE_MS},
+        __entryResult, __entryPromises, __entryBudgetMs,
       );
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       // This facet's lifetime IS the drain, so work still in flight when the
       // deadline passes is work that will never run. Reporting exit 0 there
-      // is the silent-truncation failure: say what was dropped and fail.
+      // is the silent-truncation failure: name the limit that was hit and fail.
       else if (__drain.pending > 0) {
-        const __why = "node: exited with " + __drain.pending + " pending operation(s) still " +
-          "in flight after ${ONE_SHOT_ENTRY_DEADLINE_MS}ms; the rest of the program did not run\\n";
+        const __why = "node: reached the ${FACET_TIMEOUT_MS / 1000}s facet lifetime limit with " +
+          __drain.pending + " operation(s) still in flight; the rest of the program did not run. " +
+          "A program that needs longer than ${FACET_TIMEOUT_MS / 1000}s has to run as a " +
+          "long-running process (node --watch, or a server), which is not bound by it.\\n";
         stderr += __why;
         exitCode = 1;
         if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __why);
@@ -2838,6 +2870,13 @@ export class FacetManager {
       stdin: opts.stdin || '',
       captureOutput: !!opts.captureOutput,
       cred: { ...entry.cred, groups: [...entry.cred.groups] },
+      // Absolute wall-clock instant the entry drain must stop at, derived
+      // from the same FACET_TIMEOUT_MS the supervisor's kill timer uses. It
+      // is stamped here rather than computed facet-side so the budget tracks
+      // the real remaining lifetime; everything still to happen before the
+      // facet runs (module map build, LOADER.load, the RPC hop) only makes
+      // this earlier than the kill, which is the safe direction.
+      entryDeadlineAt: Date.now() + FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESERVE_MS,
       ...(diagSink ? { diag: true } : {}),
     });
 
