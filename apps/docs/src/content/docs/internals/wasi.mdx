@@ -16,10 +16,10 @@ Outbound TCP uses `path_open('/dev/tcp/<host>/<port>')` to open a real
 `cloudflare:sockets` connection. `poll_oneoff` can mix fd, clock, and
 socket subscriptions.
 
-A suspension belongs to the request that created it. A workerd request
-context will not resume a wasm stack that a different request suspended:
-three requests served inside one context take about 6 ms each, while the
-first request in a new context times out at 30 s. A wasm program cannot
+A suspension does not outlive its request. A workerd request context will
+not resume a wasm stack that a different request suspended: three
+requests served inside one context take about 6 ms each, while the first
+request in a new context times out at 30 s. A wasm program cannot
 park in `accept` and be woken by the next inbound request. Servers on the
 virtual-socket kernel are driven the other way round — the kernel queues
 the connection and asks the runtime to service it on one dedicated
@@ -47,6 +47,10 @@ arrive pre-compiled in the module map. Pyodide extension packages must
 therefore be declared startup modules, while arbitrary dynamic loading
 fails with a clear diagnostic.
 
+The remaining gaps are [tracked with designs](/docs/fine-print/research/).
+WASI files still use snapshot-plus-diff-flush, which fits one-shots but
+not long-running processes. stdin is EOF. There are no inbound sockets.
+
 ## Threads
 
 `wasi-threads` is not implemented, and `thread_spawn` is left out of the
@@ -66,9 +70,3 @@ process, and an independent memory budget when the facet runs on a [peer
 DO](/docs/internals/fabric/). In-language threading is not available.
 [The design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
 lists what the Workers runtime would have to expose for that to change.
-
-## Remaining gaps
-
-The gaps are [tracked with designs](/docs/fine-print/research/).
-WASI files still use snapshot-plus-diff-flush, which fits one-shots but
-not long-running processes. stdin is EOF. There are no inbound sockets.

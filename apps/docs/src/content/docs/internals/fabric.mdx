@@ -1,6 +1,6 @@
 ---
 title: The fabric
-description: One supervisor Durable Object, a fabric of evictable facets, and the two platform facts the design follows from.
+description: One supervisor Durable Object, a fabric of evictable facets, peer DOs for a second memory envelope, and the platform facts the design follows from.
 ---
 
 import SessionAnatomy from '../../../components/diagrams/SessionAnatomy.astro';
@@ -95,8 +95,8 @@ ends at the process.
 
 One process class is heavy today — the opencode attach TUI, which is
 resident, memory-growing, and serves no inbound HTTP. Everything that
-binds a port stays local, for the reason two sections down. A heavy spawn
-pays about 0.5 s of peer cold-create.
+binds a port stays local, for the reason below. A heavy spawn pays about
+0.5 s of peer cold-create.
 
 <PeerFacet caption="A peer facet is minted with the coordinator's doId in its SUPERVISOR props, so its filesystem, terminal, and port calls land on the coordinator, not on the DO it runs in." />
 
@@ -135,7 +135,7 @@ follows from the A/B rather than from a theory of why workerd refuses.
 
 | Constraint | Cloudflare's figure | What it produced |
 |---|---|---|
-| Isolate memory | 128 MiB each | multi-isolate processes; staged module maps |
+| Isolate memory | 128 MiB each | multi-isolate processes; staged module maps; peer DOs for heavy residents |
 | DO SQLite storage | 10 GB per object | the session disk |
 | CPU per invocation | 30 s default, 5 min via `limits.cpu_ms` | phased git clone, sliced checkout, fan-out installs |
 
