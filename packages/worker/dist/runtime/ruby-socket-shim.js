@@ -143,6 +143,10 @@ module Nimbus
   end
 end
 
+# Normally defined by the socket extension, which ruby.wasm does not ship, so
+# raising it from this shim would fail with "uninitialized constant" instead.
+class SocketError < StandardError; end unless defined?(::SocketError)
+
 class BasicSocket
   attr_accessor :do_not_reverse_lookup, :sync, :autoclose
 
@@ -295,10 +299,23 @@ class TCPSocket < IPSocket
   # where the message can explain, rather than after the write succeeds and the
   # first read hangs the process.
   def initialize(host = nil, port = nil, local_host = nil, local_port = nil)
-    raise SocketError,
+    raise ::SocketError,
           "Nimbus cannot yet dial loopback ports from Ruby: ruby.wasm has no way to " \
           "wait for the response. Reach #{host}:#{port} from node, or run the " \
           "request as a subprocess."
+  end
+
+  # Without this, TCPSocket.open — which is how Net::HTTP opens a connection —
+  # falls through to the private Kernel#open and reports that instead of
+  # anything about sockets.
+  def self.open(*args, &block)
+    socket = new(*args)
+    return socket unless block
+    begin
+      block.call(socket)
+    ensure
+      socket.close
+    end
   end
 
   def initialize_nimbus(id, local_host, local_port, remote_host, remote_port)
