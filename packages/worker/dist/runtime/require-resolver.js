@@ -27,6 +27,7 @@
  * de-quarantines it as the primary content-bundle source.
  */
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
+import { FACET_PROVIDED_PACKAGES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 // Match literal-string require/require.resolve with single, double, or
@@ -577,7 +578,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         let match;
         while ((match = REQUIRE_RE.exec(stripped)) !== null) {
             const specifier = match[2];
-            if (isBuiltin(specifier))
+            if (isFacetProvided(specifier))
                 continue;
             const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
@@ -595,7 +596,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         IMPORT_RE.lastIndex = 0;
         while ((match = IMPORT_RE.exec(stripped)) !== null) {
             const specifier = match[2];
-            if (isBuiltin(specifier))
+            if (isFacetProvided(specifier))
                 continue;
             const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
@@ -609,7 +610,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         DYNIMPORT_RE.lastIndex = 0;
         while ((match = DYNIMPORT_RE.exec(stripped)) !== null) {
             const specifier = match[2];
-            if (isBuiltin(specifier))
+            if (isFacetProvided(specifier))
                 continue;
             const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
@@ -733,10 +734,16 @@ const BUILTINS = new Set([
     'vm', 'v8', 'inspector', 'cluster', 'domain', 'punycode', 'wasi',
     'trace_events', 'dgram', 'sqlite', 'repl',
 ]);
-function isBuiltin(id) {
+/**
+ * Specifiers the walker must not follow: the facet resolves them from its own
+ * `builtins` table, never from the bundle. That is node core plus the npm
+ * packages the facet provides itself — walking those would spend the bundle's
+ * file and byte budget shipping sources that `require()` can never reach.
+ */
+function isFacetProvided(id) {
     if (id.startsWith('node:'))
         return true;
-    return BUILTINS.has(id);
+    return BUILTINS.has(id) || FACET_PROVIDED_PACKAGES.includes(id);
 }
 // Note: the shared resolver helpers are imported directly from
 // src/_shared/exports-resolver.js by every caller (W2.6a D6 — single
