@@ -2419,7 +2419,15 @@ export interface WasiFsDiff {
   modesChanged?: Record<string, number>;
 }
 
-/** Names of the WASI imports implemented by this shim. */
+/**
+ * Names of the WASI imports implemented by this shim.
+ *
+ * `wasm-runner --help` prints this to users, so under-reporting sends a caller
+ * away from a syscall that is right there. The shim is a source string the
+ * Worker cannot eval at runtime, so the list is written by hand and
+ * `tests/unit/wasi-implemented-fns.mjs` holds it to what the shim actually
+ * exports.
+ */
 export const WASI_IMPLEMENTED_FNS: readonly string[] = Object.freeze([
   // core WASI
   'args_get', 'args_sizes_get',
@@ -2441,6 +2449,7 @@ export const WASI_IMPLEMENTED_FNS: readonly string[] = Object.freeze([
   'fd_pread', 'fd_pwrite',
   'fd_readdir',
   'fd_renumber',
+  'fd_advise', 'fd_datasync', 'fd_sync',
   // symlinks, rights, sockets, and polling
   'path_symlink', 'path_readlink', 'path_link',
   'fd_allocate',
