@@ -373,6 +373,47 @@ globalThis.__nimbusOpenTUIClock = {
 };
 `;
 
+/** OpenTUI's cross-copy singleton registry key (@opentui/core, public). */
+export const OPENTUI_SINGLETON_SYMBOL = '@opentui/core/singleton';
+
+/** The registry entry holding the live CliRenderer set. */
+export const OPENTUI_RENDERER_TRACKER = 'RendererTracker';
+
+/**
+ * Terminal-geometry bridge: SIGWINCH → the live renderers' resize().
+ *
+ * OpenTUI's CliRenderer subscribes to SIGWINCH itself ONLY when its stdout is
+ * process.stdout (`_usesProcessStdout`); with a custom stdout the embedding host
+ * owns the terminal and drives `renderer.resize(columns, rows)` — the same public
+ * geometry API createTestRenderer exposes. Seam 7 hands the renderer the facet
+ * TTY stdout (a distinct object, so the span feed gets allocated), which puts
+ * Nimbus on exactly that host path. But that stdout IS the process terminal:
+ * without this bridge a resize travels the whole way in — WS frame →
+ * ProcessInputStore → cpReadStdin → node-shims updates __nimbusTtyColumns/Rows
+ * and emits SIGWINCH — and then dies unheard, so the frame never reflows.
+ *
+ * Live renderers come from OpenTUI's own cross-copy registry (the same one that
+ * enforces one renderer per stream). resize() runs the reflow immediately rather
+ * than through handleResize's 100ms debounce, a facet timer that only fires on
+ * the next I/O yield anyway.
+ */
+export const OPENTUI_RESIZE_BRIDGE_SRC: string = `
+process.on("SIGWINCH", () => {
+  const __otuiRegistry = globalThis[Symbol.for(${JSON.stringify(OPENTUI_SINGLETON_SYMBOL)})];
+  const __otuiTracker = __otuiRegistry && __otuiRegistry[${JSON.stringify(OPENTUI_RENDERER_TRACKER)}];
+  // No tracker yet: SIGWINCH before @opentui/core's module init (the TUI has not
+  // mounted), and the renderer reads the new geometry when it does.
+  if (!__otuiTracker) return;
+  for (const __renderer of __otuiTracker.renderers) {
+    try {
+      __renderer.resize(__nimbusTtyColumns, __nimbusTtyRows);
+    } catch (e) {
+      process.stderr.write("[nimbus] OpenTUI resize failed: " + ((e && e.stack) || e) + "\\n");
+    }
+  }
+});
+`;
+
 /**
  * In-isolate Web Worker polyfill for the opencode TUI client/server split.
  *
@@ -949,11 +990,13 @@ console.info = console.log;
 console.debug = console.log;
 console.warn = console.error;
 
-// Park the OpenTUI span-feed stdout + render clock for bundle seam 7. Only in
-// attachedTty mode — the one-shot path never reaches createCliRenderer.
+// Park the OpenTUI span-feed stdout + render clock for bundle seam 7, and bridge
+// terminal resizes into the renderer that stdout belongs to. Only in attachedTty
+// mode — the one-shot path never reaches createCliRenderer.
 if (__ocAttachedTty) {
 ${OPENTUI_TTY_STDOUT_SRC}
 ${OPENTUI_CLOCK_SRC}
+${OPENTUI_RESIZE_BRIDGE_SRC}
 }
 
 async function __drainPendingIO(maxPasses = 12) {
