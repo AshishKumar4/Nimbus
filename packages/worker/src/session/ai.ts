@@ -7,6 +7,9 @@
  *     reach an OpenAI-compatible endpoint on session loopback,
  *     `http://127.0.0.1:<NIMBUS_AI_GATEWAY_PORT>/v1`, seeded into the session
  *     environment as OPENAI_BASE_URL / OPENAI_API_BASE / OPENAI_API_KEY.
+ *     A tool that ignores OPENAI_BASE_URL and calls its own vendor host still
+ *     lands here: the seeded key is a session capability token, and egress
+ *     carrying it is mediated back to this endpoint (_shared/ai-egress.ts).
  *   • The Nimbus agent (session/agent.ts) builds its AI-SDK provider with a
  *     `fetch` that calls straight into `handleSessionAiRequest`. Same code,
  *     no network hop.
@@ -19,9 +22,14 @@
  * ───────────────────────────────────────────
  * The user's Cloudflare OAuth access token NEVER enters the sandbox. It lives
  * in Durable Object storage (`nimbus:ai:credential`), is attached to the
- * upstream request here in the supervisor, and the endpoint the session sees
- * needs no credential at all: loopback is already session-private, so
- * OPENAI_API_KEY is a fixed placeholder the gateway ignores.
+ * upstream request here in the supervisor, and never travels the other way:
+ * `proxyUpstream` builds its headers from scratch, so nothing the caller sent
+ * — including the session token — reaches Cloudflare, and nothing Cloudflare
+ * was sent reaches the caller.
+ *
+ * What the sandbox holds instead is the session token: it names this session's
+ * gateway and nothing else, and every path that honours it (loopback, mediated
+ * egress) ends up in this module, where the real credential is substituted.
  *
  * Why DO storage rather than the browser cookie the agent used to read: a
  * request originating inside the sandbox carries no cookie. The supervisor
@@ -35,6 +43,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 import { z } from 'zod/v4';
 import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
+import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '../_shared/ai-egress.js';
 import {
   NIMBUS_AGENT_AUTH_COOKIE,
   NIMBUS_CLOUDFLARE_API,
@@ -63,11 +72,11 @@ export interface SessionAiHost {
 export const SESSION_AI_CREDENTIAL_KEY = 'nimbus:ai:credential';
 
 /**
- * The value seeded as OPENAI_API_KEY. Not a secret and not checked: the
- * endpoint is loopback-only, so possession of it proves nothing. It exists
- * because OpenAI clients refuse to start with an empty key.
+ * The key the in-DO agent provider is constructed with. Never sent anywhere:
+ * `createSessionAiModel` hands the provider a `fetch` that calls this module
+ * directly, and the AI SDK refuses to build a provider with an empty key.
  */
-export const SESSION_AI_PLACEHOLDER_KEY = 'nimbus-session';
+const AGENT_PROVIDER_KEY = 'nimbus-agent';
 
 export const DEFAULT_SESSION_AI_MODEL = '@cf/zai-org/glm-5.2';
 export const DEFAULT_SESSION_AI_GATEWAY_ID = 'default';
@@ -167,14 +176,22 @@ export function sessionAiBaseUrl(): string {
 
 /**
  * The environment every session is seeded with, so any OpenAI-compatible tool
- * discovers the gateway without being told about it.
+ * reaches the gateway without being told about it — by the base URL if it reads
+ * one, and otherwise by the token, which mediates its egress back here.
+ *
+ * The token is minted per session rather than fixed, and is published under
+ * NIMBUS_AI_TOKEN as well so that mediation still has something to compare
+ * against after a user exports their own OPENAI_API_KEY (whose request must
+ * then go to the real provider, untouched).
  */
 export function sessionAiEnv(): Record<string, string> {
   const baseUrl = sessionAiBaseUrl();
+  const token = mintSessionAiToken();
   return {
     OPENAI_BASE_URL: baseUrl,
     OPENAI_API_BASE: baseUrl,
-    OPENAI_API_KEY: SESSION_AI_PLACEHOLDER_KEY,
+    OPENAI_API_KEY: token,
+    [NIMBUS_AI_TOKEN_ENV]: token,
   };
 }
 
@@ -321,7 +338,7 @@ export async function sessionAiAccountIsAvailable(self: SessionAiHost, accountId
 export function createSessionAiModel(self: SessionAiHost): LanguageModel {
   const provider = createOpenAICompatible({
     name: 'nimbus',
-    apiKey: SESSION_AI_PLACEHOLDER_KEY,
+    apiKey: AGENT_PROVIDER_KEY,
     baseURL: sessionAiBaseUrl(),
     fetch: (input, init) => handleSessionAiRequest(self, new Request(input as RequestInfo, init)),
   });
@@ -355,13 +372,24 @@ export async function readSessionAiCredential(self: SessionAiHost): Promise<Stor
  * the Nimbus agent.
  */
 export async function handleSessionAiRequest(self: SessionAiHost, request: Request): Promise<Response> {
-  const path = normalizeAiPath(new URL(request.url).pathname);
+  const requested = new URL(request.url).pathname;
+  const path = normalizeAiPath(requested);
   const method = request.method.toUpperCase();
 
   const route = matchRoute(path, method);
   if (!route) {
+    // Reachable from a tool that never meant to talk to Nimbus — a request
+    // addressed to a vendor host is mediated here whenever it carries the
+    // session key (_shared/ai-egress.ts). Say so, or a client calling an API
+    // this gateway does not speak (OpenAI's Responses API, Anthropic's
+    // /v1/messages) gets a 404 it cannot account for.
     return openAiError(
-      `Nimbus AI gateway: no such endpoint ${method} ${path}. Supported: GET /v1/models, POST /v1/chat/completions, POST /v1/embeddings.`,
+      `Nimbus AI gateway: no such endpoint ${method} ${requested}. This session's ` +
+        'gateway is OpenAI-compatible and implements GET /v1/models, POST ' +
+        '/v1/chat/completions and POST /v1/embeddings; every request made with the ' +
+        'session key is served here, whatever host it was addressed to. Use a ' +
+        'chat-completions model, or export a real provider key to reach that ' +
+        'provider directly.',
       404,
       'invalid_request_error',
       'unknown_endpoint',

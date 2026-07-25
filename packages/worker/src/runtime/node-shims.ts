@@ -38,7 +38,8 @@
 import { generateStreamsCode } from './streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
-import { NODE_VERSION, NODE_VERSIONS } from '../constants.js';
+import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
+import { NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS } from '../constants.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -48,6 +49,11 @@ const EXPORTS_RESOLVER_JS = getExportsResolverJS();
 // constants.ts for the rationale (create-astro preflight, etc.).
 const NODE_VERSION_LITERAL = JSON.stringify(NODE_VERSION);
 const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
+// AI-egress mediation policy, interpolated for the same reason: the emitted
+// shim is a string and cannot import, so the constants it decides with come
+// from _shared/ai-egress.ts at build time rather than being written twice.
+const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
+const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
 
 export function generateShimsCode(): string {
   return `
@@ -94,37 +100,81 @@ async function __nimbusUseRpcResult(promise, use) {
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
   const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  const __fetchUrl = (input) => {
+    try {
+      const href = typeof input === "string" ? input
+        : (input && typeof input === "object" && input.url) ? input.url : String(input);
+      return new URL(href);
+    } catch { return null; }
+  };
+  // Read one header off whatever the caller passed without constructing a
+  // Request: \`new Request(existing)\` marks the original's body disturbed, and a
+  // request we inspect but do not claim must still be sendable by real fetch.
+  // \`init.headers\` replaces a Request's own headers, so it is consulted first.
+  const __headerOf = (input, init, name) => {
+    const h = (init && init.headers) || (typeof Request !== "undefined" && input instanceof Request ? input.headers : null);
+    if (!h) return null;
+    if (typeof h.get === "function") return h.get(name);
+    if (Array.isArray(h)) {
+      for (const pair of h) if (String(pair?.[0]).toLowerCase() === name) return String(pair?.[1]);
+      return null;
+    }
+    for (const key of Object.keys(h)) if (key.toLowerCase() === name) return String(h[key]);
+    return null;
+  };
+  // Strip the caller's AbortSignal before the RPC hop: workerd JSRPC does not
+  // serialize Request.signal ("AbortSignal serialization is not enabled"), and
+  // the opencode SDK stamps timeout signals on its startup requests — which
+  // made 4/5 attach boot calls fail. Cancellation across the hop is advisory;
+  // an aborted caller simply drops the response.
+  const __supervisorRequest = (url, input, init) => (
+    (typeof Request !== "undefined" && input instanceof Request)
+      ? new Request(input, { ...(init || {}), signal: null })
+      : new Request(url.href, { ...(init || {}), signal: null })
+  );
   // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
   // to the facet that owns <port> through the supervisor's port registry (the
   // same routing the shell curl/node loopback uses), so a facet can reach another
   // facet's server in-session (opencode attach reaching opencode serve). Returns
   // the target's Response (streamed over RPC, so SSE flows). Anything non-
   // loopback, or when no supervisor is bound, falls through to real fetch.
-  const __maybeRouteLoopback = (input, init) => {
-    if (!__supervisor || typeof __supervisor.routeLoopback !== "function") return null;
-    let url;
-    try {
-      const href = typeof input === "string" ? input
-        : (input && typeof input === "object" && input.url) ? input.url : String(input);
-      url = new URL(href);
-    } catch { return null; }
+  const __maybeRouteLoopback = (url, input, init) => {
     if (!__loopbackHosts.has(url.hostname)) return null;
     const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
     if (!Number.isFinite(port) || port <= 0) return null;
-    // Strip the caller's AbortSignal before the RPC hop: workerd JSRPC does
-    // not serialize Request.signal ("AbortSignal serialization is not
-    // enabled"), and the opencode SDK stamps timeout signals on its startup
-    // requests — which made 4/5 attach boot calls fail. Cancellation across
-    // the loopback is advisory; an aborted caller simply drops the response.
-    const request = (typeof Request !== "undefined" && input instanceof Request)
-      ? new Request(input, { ...(init || {}), signal: null })
-      : new Request(url.href, { ...(init || {}), signal: null });
-    return Promise.resolve(__supervisor.routeLoopback(port, request));
+    return Promise.resolve(__supervisor.routeLoopback(port, __supervisorRequest(url, input, init)));
+  };
+  // AI-egress mediation: a request addressed anywhere on the network that
+  // presents this session's AI capability token is inference the session owns,
+  // so it is served by the session's own gateway (supervisor loopback port
+  // ${NIMBUS_AI_GATEWAY_PORT}) instead of being sent out. That is how a tool holding a baked-in
+  // vendor base URL — one that never reads OPENAI_BASE_URL — still reaches the
+  // session's models with no configuration of its own.
+  //
+  // The match is on the credential, never on the destination: a request
+  // carrying anything else (the user's own real provider key) is not ours, is
+  // left alone, and goes to that provider. See _shared/ai-egress.ts.
+  const __aiCredentialHeaders = ${AI_CREDENTIAL_HEADERS_LITERAL};
+  const __maybeRouteAiEgress = (url, input, init) => {
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    let token = "";
+    try { token = (env && env[${AI_TOKEN_ENV_LITERAL}]) || ""; } catch { return null; }
+    if (!token) return null;
+    for (const name of __aiCredentialHeaders) {
+      const raw = __headerOf(input, init, name);
+      if (!raw) continue;
+      if (String(raw).trim().replace(/^bearer\\s+/i, "") !== token) continue;
+      return Promise.resolve(__supervisor.routeLoopback(${NIMBUS_AI_GATEWAY_PORT}, __supervisorRequest(url, input, init)));
+    }
+    return null;
   };
   globalThis.fetch = function fetch(input, init) {
     try {
-      const routed = __maybeRouteLoopback(input, init);
-      if (routed) return routed;
+      if (__supervisor && typeof __supervisor.routeLoopback === "function") {
+        const url = __fetchUrl(input);
+        const routed = url && (__maybeRouteLoopback(url, input, init) || __maybeRouteAiEgress(url, input, init));
+        if (routed) return routed;
+      }
     } catch { /* fall through to real fetch */ }
     const reqHasUa = typeof Request !== "undefined" && input instanceof Request && __hasUa(input.headers);
     if (reqHasUa || __hasUa(init && init.headers)) return __origFetch(input, init);
