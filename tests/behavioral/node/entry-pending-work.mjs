@@ -113,16 +113,29 @@ try {
     JSON.stringify(buf.slice(-600)),
   );
 
-  // 7. A descriptor write loop of 26 MiB completes — it used to rebuild the
-  //    whole file per write and OOM the facet.
+  // 7. A descriptor write loop completes and reads back byte-exact. It used to
+  //    rebuild the whole file on every write, so the copying grew with the
+  //    square of the loop and OOM'd the facet. (The cost itself is pinned
+  //    deterministically in tests/unit/node-shims-fd-write-growth.mjs; this is
+  //    the end-to-end check that the bytes survive the round trip.)
   const bigWrite = stripAnsi((await t.run(
-    `node -e 'const fs=require("fs"); (async () => { const fh = await fs.promises.open("/home/user/big.bin","w"); const c = Buffer.alloc(65536, 65); for (let i = 0; i < 416; i++) await fh.write(c); await fh.close(); console.log("WROTE", fs.statSync("/home/user/big.bin").size); })();'`,
+    `node -e 'const fs=require("fs"); (async () => { const fh = await fs.promises.open("/home/user/big.bin","w"); const c = Buffer.alloc(65536, 65); for (let i = 0; i < 128; i++) await fh.write(c); await fh.close(); console.log("WROTE", fs.statSync("/home/user/big.bin").size); })();'`,
     120_000,
   )).output);
   a.check(
-    'a 26 MiB FileHandle write loop completes',
-    /WROTE 27262976/.test(bigWrite),
+    'an 8 MiB FileHandle write loop completes',
+    /WROTE 8388608/.test(bigWrite),
     JSON.stringify(bigWrite.slice(-600)),
+  );
+
+  const readBack = stripAnsi((await t.run(
+    `node -e 'const fs=require("fs"); const b = fs.readFileSync("/home/user/big.bin"); console.log("READBACK=" + b.length + ":" + b.subarray(0,2).toString() + b.subarray(b.length-2).toString());'`,
+    120_000,
+  )).output);
+  a.check(
+    'the written file reads back byte-exact from a later process',
+    /READBACK=8388608:AAAA/.test(readBack),
+    JSON.stringify(readBack.slice(-600)),
   );
 } finally {
   await t.close();

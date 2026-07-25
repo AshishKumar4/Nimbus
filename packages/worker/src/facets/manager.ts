@@ -640,7 +640,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     const __failedWrites = {};
     if (__supervisor && Object.keys(__vfsWrites).length > 0) {
       for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(__supervisor.writeFile(path, __nimbusExactCell(content)).catch(() => { __failedWrites[path] = content; }));
+        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
       }
     }
     await __drainPendingIO();
@@ -772,7 +772,7 @@ async function __nimbusFlushRuntime() {
   if (!rt) return;
   if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
     for (const [path, content] of Object.entries(rt.vfsWrites)) {
-      rt.pendingIO.push(rt.supervisor.writeFile(path, __nimbusExactCell(content)).catch(() => {}));
+      rt.pendingIO.push(rt.supervisor.writeFile(path, content).catch(() => {}));
     }
   }
   for (let pass = 0; pass < 12; pass++) {
