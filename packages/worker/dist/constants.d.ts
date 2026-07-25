@@ -45,4 +45,5 @@ export declare const DEFAULT_USER = "user";
 export declare const DEFAULT_SHELL = "/bin/sh";
 export declare const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/home/user/.local/bin:/home/user/.gem/bin";
 export declare const DEFAULT_MOUNT_POINTS: string[];
+export declare const FACET_PROVIDED_PACKAGES: readonly string[];
 //# sourceMappingURL=constants.d.ts.map
