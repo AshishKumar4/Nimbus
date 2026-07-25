@@ -1095,10 +1095,13 @@ const __fsMod = (() => {
     // the pre-write length.
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const meta = _metadata(absPath);
+      const size = _byteLen(__vfsWrites[k]);
+      // Correct only the size — reusing the metadata record keeps the type
+      // and the recorded timestamps stable, so mtime-based change detection
+      // (make, tsc --build, watchers) does not see every call as a change.
+      if (meta) return _statObject({ ...meta, size }, k);
       return _localStatObject(
-        k, false, false, _byteLen(__vfsWrites[k]),
-        meta?.mode ?? (0o666 & ~__processUmask),
-        meta?.uid ?? cred.uid, meta?.gid ?? cred.gid,
+        k, false, false, size, 0o666 & ~__processUmask, cred.uid, cred.gid,
       );
     }
     const metadata = _metadata(absPath);
@@ -1493,23 +1496,21 @@ const __fsMod = (() => {
       const want = length === undefined || length === null
         ? buffer.length - off
         : Math.max(0, Number(length));
-      const pos = position === undefined || position === null
-        ? this._position
-        : Math.max(0, Number(position));
+      const useCurrent = _isCurrentPos(position);
+      const pos = useCurrent ? this._position : Number(position);
       const buf = this._readBase("read");
       const from = Math.min(pos, buf.byteLength);
       const slice = buf.subarray(from, Math.min(buf.byteLength, from + want));
       buffer.set(slice, off);
-      if (position === undefined || position === null) this._position = pos + slice.byteLength;
+      if (useCurrent) this._position = pos + slice.byteLength;
       return slice.byteLength;
     }
     _writeSync(data, a, b, c) {
       this._assertOpen("write");
       if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
-      const bytes = _writeBytesFrom(data, a, b, c);
-      // The string form carries position 3rd; the buffer form carries it 5th.
-      const rawPos = typeof data === "string" ? a : c;
-      const pos = rawPos === undefined || rawPos === null ? null : Math.max(0, Number(rawPos));
+      const norm = _normWriteArgs(data, a, b, c);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Number(norm.pos);
       _ensureWritable(this._abs, "write", this._path);
       const base = this._writeBase("write");
       const at = this._flags.append
@@ -1542,7 +1543,7 @@ const __fsMod = (() => {
     [Symbol.asyncDispose]() { return this.close(); }
   }
 
-  async function _openAsync(path, flags) {
+  async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
     const absPath = _resolve(path);
     const supervisor = _supervisor();
@@ -1562,6 +1563,9 @@ const __fsMod = (() => {
     let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
     if (!exists) {
       await _writeFileAsync(path, new Uint8Array(0));
+      if (mode !== undefined && mode !== null) {
+        await _chmodAsync(path, Number(mode) & ~__processUmask);
+      }
       size = 0;
     } else if (fl.truncate) {
       await _truncateAsync(path, 0);
@@ -1581,11 +1585,18 @@ const __fsMod = (() => {
     if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
     let size = exists ? st.size : 0;
-    if (!exists || fl.truncate) {
+    // O_TRUNC means "make it empty", so zeroing is the requested semantic,
+    // and creating a genuinely absent file is too. O_APPEND must NEVER
+    // pre-create: "exists" is only as good as the sync view, so a file
+    // created after this facet booted looks absent, and zeroing it at open
+    // time would destroy exactly the content the caller asked to preserve.
+    if (fl.truncate || (!exists && !fl.append)) {
       // Creating or truncating also makes the file resident, which is what
       // lets the sync read/write path serve it without blocking.
       writeFileSync(path, new Uint8Array(0));
-      if (!exists && mode !== undefined && mode !== null) chmodSync(path, mode);
+      if (!exists && mode !== undefined && mode !== null) {
+        chmodSync(path, Number(mode) & ~__processUmask);
+      }
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
@@ -1618,15 +1629,29 @@ const __fsMod = (() => {
       atime: now, mtime: now, ctime: now, birthtime: now,
     };
   }
-  // write(fd, string[, position[, encoding]]) — encoding is the 4th arg;
-  // write(fd, buffer[, offset[, length[, position]]]) — offset/length 3rd/4th.
-  function _writeBytesFrom(data, a, b, c) {
+  // Node treats a null position — and a negative one, which libuv maps to
+  // the same thing — as "use and advance the file position".
+  function _isCurrentPos(p) {
+    return p === undefined || p === null || Number(p) < 0;
+  }
+  // Normalizes every documented fs.write/writeSync argument shape:
+  //   (fd, buffer[, offset[, length[, position]]])
+  //   (fd, buffer[, options])   where options = { offset, length, position }
+  //   (fd, string[, position[, encoding]])
+  function _normWriteArgs(data, a, b, c) {
     if (typeof data === "string") {
-      return _asBytes(__BufferMod.from(data, typeof b === "string" ? b : "utf8"));
+      return {
+        bytes: _asBytes(__BufferMod.from(data, typeof b === "string" ? b : "utf8")),
+        pos: a,
+      };
     }
-    const off = a === undefined || a === null ? 0 : Number(a);
-    const len = b === undefined || b === null ? data.length - off : Number(b);
-    return _asBytes(data).subarray(off, off + len);
+    let off = a, len = b, pos = c;
+    if (a !== null && typeof a === "object" && !(a instanceof Uint8Array)) {
+      off = a.offset; len = a.length; pos = a.position;
+    }
+    off = off === undefined || off === null ? 0 : Number(off);
+    len = len === undefined || len === null ? data.length - off : Number(len);
+    return { bytes: _asBytes(data).subarray(off, off + len), pos };
   }
 
   function closeSync(fd) {
@@ -1651,7 +1676,8 @@ const __fsMod = (() => {
   function writeSync(fd, data, a, b, c) {
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      const bytes = _writeBytesFrom(data, a, b, c);
+      // The stream shim stringifies whatever it is given, so decode first.
+      const bytes = _normWriteArgs(data, a, b, c).bytes;
       (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(bytes));
       return bytes.byteLength;
     }
@@ -1679,7 +1705,7 @@ const __fsMod = (() => {
   function open(path, flags, mode, cb) {
     if (typeof flags === "function") { cb = flags; flags = undefined; mode = undefined; }
     else if (typeof mode === "function") { cb = mode; mode = undefined; }
-    _openAsync(path, flags).then((h) => cb(null, h.fd)).catch((e) => cb(e));
+    _openAsync(path, flags, mode).then((h) => cb(null, h.fd)).catch((e) => cb(e));
   }
   function close(fd, cb) {
     let err = null;
@@ -1687,13 +1713,23 @@ const __fsMod = (() => {
     if (typeof cb === "function") queueMicrotask(() => cb(err));
   }
   function read(fd, buffer, offset, length, position, cb) {
-    if (typeof buffer === "function") { cb = buffer; buffer = undefined; }
-    else if (typeof offset === "function") {
-      // read(fd, options, callback)
+    if (typeof buffer === "function") {
+      // read(fd, callback)
+      cb = buffer; buffer = undefined; offset = undefined; length = undefined; position = undefined;
+    } else if (typeof offset === "function") {
+      // read(fd, options, callback) — the buffer rides inside options
       cb = offset;
       const o = buffer !== null && typeof buffer === "object" && !(buffer instanceof Uint8Array) ? buffer : {};
-      buffer = o.buffer instanceof Uint8Array ? o.buffer : buffer;
+      buffer = o.buffer instanceof Uint8Array ? o.buffer : undefined;
       offset = o.offset; length = o.length; position = o.position;
+    } else if (typeof length === "function") {
+      // read(fd, buffer, options, callback)
+      cb = length;
+      const o = offset !== null && typeof offset === "object" ? offset : {};
+      offset = o.offset; length = o.length; position = o.position;
+    } else if (typeof position === "function") {
+      // read(fd, buffer, offset, length, callback)
+      cb = position; position = undefined;
     }
     if (!(buffer instanceof Uint8Array)) buffer = __BufferMod.alloc(16384);
     if (_isStdioFd(fd)) { queueMicrotask(() => cb(null, 0, buffer)); return; }
@@ -1710,22 +1746,22 @@ const __fsMod = (() => {
     if (typeof a === "function") { cb = a; a = undefined; b = undefined; c = undefined; }
     else if (typeof b === "function") { cb = b; b = undefined; c = undefined; }
     else if (typeof c === "function") { cb = c; c = undefined; }
+    let norm;
+    try { norm = _normWriteArgs(data, a, b, c); }
+    catch (e) { queueMicrotask(() => cb(e)); return; }
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      let bytes;
-      try { bytes = _writeBytesFrom(data, a, b, c); }
-      catch (e) { queueMicrotask(() => cb(e)); return; }
-      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(bytes));
-      queueMicrotask(() => cb(null, bytes.byteLength, data));
+      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(norm.bytes));
+      queueMicrotask(() => cb(null, norm.bytes.byteLength, data));
       return;
     }
     const handle = _fdFor(fd, "write", cb);
     if (!handle) return;
-    // The string form carries only a position; FileHandle.write reads it
-    // from the second argument.
-    const args = typeof data === "string" ? [data, a] : [data, a, b, c];
-    handle.write(...args)
-      .then((r) => cb(null, r.bytesWritten, r.buffer))
+    // Hand over already-decoded bytes so the async path applies the same
+    // encoding rules as writeSync instead of FileHandle.write's UTF-8-only
+    // string branch.
+    handle.write(norm.bytes, 0, norm.bytes.byteLength, _isCurrentPos(norm.pos) ? null : Number(norm.pos))
+      .then((r) => cb(null, r.bytesWritten, data))
       .catch((e) => cb(e));
   }
   function fstat(fd, opts, cb) {
@@ -1846,7 +1882,7 @@ const __fsMod = (() => {
       mkdirSync(name, { recursive: true });
       return name;
     },
-    open: async (path, flags, mode) => _openAsync(path, flags),
+    open: async (path, flags, mode) => _openAsync(path, flags, mode),
     watch: async function* (filename, opts) {
       // Minimal async iter — polls _bundleLookup every 500ms and yields
       // a single `change` event when content differs. Adequate for

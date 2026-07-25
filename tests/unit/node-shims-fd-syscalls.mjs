@@ -214,6 +214,81 @@ assert.equal(fs.fstatSync(1).isCharacterDevice(), true);
 assert.equal(fs.fstatSync(1).isFile(), false);
 fs.closeSync(1); // closing stdio is legal and a no-op
 
+// ── O_APPEND must never pre-create ──
+// `exists` is only as good as the sync view, so a file that lives only in
+// SQLite looks absent. Zeroing it at open time would destroy the very
+// content an append was asked to preserve.
+vfs.writeFile('home/user/live-append.log', enc.encode('PRIOR'));
+const preFd = fs.openSync('/home/user/live-append.log', 'a');
+fs.closeSync(preFd);
+assert.equal(dec.decode(await bridge.readFile('/home/user/live-append.log')), 'PRIOR',
+  'opening for append with no write must not truncate');
+// The async form stats live, so it appends correctly.
+const liveAppend = await fs.promises.open('/home/user/live-append.log', 'a');
+await liveAppend.write('-more');
+await liveAppend.close();
+assert.equal(dec.decode(await bridge.readFile('/home/user/live-append.log')), 'PRIOR-more');
+
+// ── position -1 means "current position", not offset 0 ──
+fs.writeFileSync('/home/user/neg.bin', '0123456789');
+const nfd = fs.openSync('/home/user/neg.bin', 'r+');
+assert.equal(fs.readSync(nfd, buf, 0, 3, null), 3);
+assert.equal(dec.decode(buf.subarray(0, 3)), '012');
+assert.equal(fs.readSync(nfd, buf, 0, 3, -1), 3, 'a negative position reads from the cursor');
+assert.equal(dec.decode(buf.subarray(0, 3)), '345', 'not a re-read of byte 0');
+fs.closeSync(nfd);
+const wnfd = fs.openSync('/home/user/neg2.bin', 'w');
+fs.writeSync(wnfd, Buffer.from('AB'), 0, 2, null);
+fs.writeSync(wnfd, Buffer.from('CD'), 0, 2, -1);
+fs.closeSync(wnfd);
+assert.equal(fs.readFileSync('/home/user/neg2.bin', 'utf8'), 'ABCD',
+  'a negative position appends at the cursor instead of overwriting from 0');
+
+// ── the options form of write/writeSync must not silently write 0 bytes ──
+const ofd = fs.openSync('/home/user/opts.bin', 'w');
+assert.equal(fs.writeSync(ofd, Buffer.from('XYZ!'), { offset: 1, length: 2, position: 0 }), 2);
+fs.closeSync(ofd);
+assert.equal(fs.readFileSync('/home/user/opts.bin', 'utf8'), 'YZ');
+
+// ── the options forms of fs.read must invoke the callback ──
+fs.writeFileSync('/home/user/ropts.bin', 'abcdef');
+const rofd2 = fs.openSync('/home/user/ropts.bin', 'r');
+const viaBufOpts = await new Promise((res, rej) => {
+  const b = Buffer.alloc(8);
+  fs.read(rofd2, b, { offset: 0, length: 3, position: 2 }, (e, n, bb) => (e ? rej(e) : res({ n, bb })));
+});
+assert.equal(dec.decode(viaBufOpts.bb.subarray(0, viaBufOpts.n)), 'cde');
+const viaOpts = await new Promise((res, rej) => {
+  fs.read(rofd2, { buffer: Buffer.alloc(8), offset: 0, length: 2, position: 0 },
+    (e, n, bb) => (e ? rej(e) : res({ n, bb })));
+});
+assert.equal(dec.decode(viaOpts.bb.subarray(0, viaOpts.n)), 'ab');
+// read(fd, buffer, offset, length, callback) — no position
+const noPos = await new Promise((res, rej) => {
+  fs.read(rofd2, Buffer.alloc(8), 0, 3, (e, n, bb) => (e ? rej(e) : res({ n, bb })));
+});
+assert.equal(noPos.n, 3);
+fs.closeSync(rofd2);
+
+// ── async write must apply the same encoding rules as writeSync ──
+const aefd = fs.openSync('/home/user/asyncenc.bin', 'w');
+const aeWrote = await new Promise((res, rej) =>
+  fs.write(aefd, 'aGVsbG8=', 0, 'base64', (e, n) => (e ? rej(e) : res(n))));
+assert.equal(aeWrote, 5, 'base64 decodes to 5 bytes, not the 8 source characters');
+fs.closeSync(aefd);
+assert.equal(fs.readFileSync('/home/user/asyncenc.bin', 'utf8'), 'hello');
+
+// ── statSync must not invent a new mtime on every call ──
+metadata['home/user/stable.txt'] = {
+  type: 'file', size: 4, mode: 0o644, uid: 1000, gid: 1000, mtime: 1_700_000_000_000,
+};
+fs.writeFileSync('/home/user/stable.txt', 'abcdefg');
+const s1 = fs.statSync('/home/user/stable.txt');
+const s2 = fs.statSync('/home/user/stable.txt');
+assert.equal(s1.size, 7, 'size reflects the write');
+assert.equal(s1.mtime.getTime(), s2.mtime.getTime(), 'mtime is stable across calls');
+assert.equal(s1.mtime.getTime(), 1_700_000_000_000, 'mtime comes from the metadata record');
+
 // ── the resident/live boundary ──
 // Documented limit: a file that appeared in SQLite AFTER the facet booted is
 // invisible to the sync view (learning about it needs an RPC, which cannot
