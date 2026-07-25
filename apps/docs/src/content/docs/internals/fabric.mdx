@@ -65,7 +65,7 @@ The supervisor describes a big app with a small spec — argv, env, a
 bounded VFS snapshot — and the full module map is assembled outside the
 DO, in a stateless isolate on the loader's cache-miss path. opencode's map
 is roughly 20 MB. Assembling it inside the supervisor crossed the memory
-cap and reset the session in testing, so assembly runs outside the DO.
+cap and reset the session, so assembly runs outside the DO.
 
 <RequestLifecycle caption="A preview request and an in-session curl take the same path through the registry, and the response streams the whole way." />
 
@@ -85,7 +85,7 @@ Peers are session DOs in the same `NIMBUS_SESSION` namespace as the
 coordinator, named `${coordinatorDoId}:proc:${slot}`, so they need no
 extra Worker, binding, or configuration. A heavy spawn fails loudly when
 that namespace is missing. The npm resolve fan-out uses the same pattern
-for short-lived batch work: a fan-out wider than five shards runs on
+for short-lived batch work: a fan-out of five or more shards runs on
 `nbf:`-prefixed siblings, up to 32 of them.
 
 Eight peers hold about 150 MiB each at the same time, 1.2 GiB across one

@@ -5,7 +5,7 @@ description: A 10 GB SQLite-backed disk that survives the session lifecycle.
 
 Each session has a 10 GB SQLite-backed disk owned by its Durable Object.
 It survives WebSocket drops, browser restarts, hibernation, and DO
-eviction. Facets can be evicted and sockets can drop; the disk persists.
+eviction.
 
 ```bash
 $ echo "still here tomorrow" > /home/user/note.txt
