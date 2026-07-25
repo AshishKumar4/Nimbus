@@ -181,6 +181,12 @@ const __WASI_SUBCLOCKFLAGS_ABSTIME = 1;  // SUBSCRIPTION_CLOCK_ABSTIME
 // to open a TCP socket. Mirrors bash's /dev/tcp/<host>/<port> convention
 // (https://www.gnu.org/software/bash/manual/html_node/Redirections.html).
 const __WASI_TCP_PATH_PREFIX = '/dev/tcp/';
+// The accept half of the same synthetic-socket family: binds a connection the
+// virtual socket kernel has already accepted to a file descriptor. It has to go
+// through path_open like the dial half - guests layered over wasi-vfs
+// (ruby.wasm) resolve descriptors through their own fd table, so a descriptor
+// handed to them out of band is not one they can use.
+const __WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
 
 // WASI socket and polling support B7: resolved at preamble module-init via dynamic import.
 // CF docs: "TCP sockets cannot be created in global scope and shared
@@ -429,7 +435,37 @@ function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
     ? __wasiConnectLoopback(port)
     : __wasiConnectRemote(host, port);
   if (opened.errno !== __WASI_ESUCCESS) return opened.errno;
-  const socket = opened.socket;
+  writeU32LE(fdOutPtr, __wasiAdoptSocket(opened.socket, fdflags));
+  return __WASI_ESUCCESS;
+}
+
+// Bind an already-accepted kernel connection to a file descriptor, so a
+// server's accepted socket is the same kind of fd as a client's dialed one.
+function __wasiOpenAcceptedSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
+  const id = parseInt(pathArg.substring(__WASI_ACCEPTED_PATH_PREFIX.length), 10);
+  if (!Number.isInteger(id) || id <= 0) return __WASI_EINVAL;
+  const kernel = globalThis.__nimbusVirtualSockets;
+  if (!kernel || typeof kernel.streamFor !== 'function') {
+    globalThis.__nimbusWasiLastSocketError =
+      'this process has no Nimbus virtual socket kernel, so accepted connections cannot be bound';
+    return __WASI_ENOSYS;
+  }
+  let socket;
+  try {
+    socket = kernel.streamFor(id);
+  } catch (e) {
+    globalThis.__nimbusWasiLastSocketError = (e && e.message) ? e.message : String(e);
+    return __WASI_ENOTCONN;
+  }
+  writeU32LE(fdOutPtr, __wasiAdoptSocket(socket, fdflags));
+  return __WASI_ESUCCESS;
+}
+
+// The one place a socket becomes a file descriptor. Anything in Cloudflare's
+// Socket shape qualifies: a cloudflare:sockets connection, a dialed loopback
+// connection, or an accepted one. Every socket fd in the table comes from here,
+// which is why nothing downstream has to tell them apart.
+function __wasiAdoptSocket(socket, fdflags) {
   const fd = nextFd++;
   fdTable.set(fd, {
     kind: 'socket',
@@ -443,8 +479,7 @@ function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
     halfClosedWr: false,
     fdflags: fdflags | 0,
   });
-  writeU32LE(fdOutPtr, fd);
-  return __WASI_ESUCCESS;
+  return fd;
 }
 
 // WASI socket and polling support B1+B2 helpers: update tracked timestamps for a path. Idempotent.
@@ -1075,6 +1110,9 @@ function __wasiMakeImports(opts) {
       const guestPath = __wasiGuestPath(baseFd, pathArg);
       if (guestPath.startsWith(__WASI_TCP_PATH_PREFIX)) {
         return __wasiOpenTcpSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
+      }
+      if (guestPath.startsWith(__WASI_ACCEPTED_PATH_PREFIX)) {
+        return __wasiOpenAcceptedSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
       // Honor LOOKUPFLAGS_SYMLINK_FOLLOW strictly: bit 0 set → follow.
       // wasi-libc clears this bit for O_NOFOLLOW, so dirflags === 0 IS
