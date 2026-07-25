@@ -1,10 +1,11 @@
 ---
 title: The fabric
-description: One supervisor Durable Object, a fabric of evictable facets, and the two platform facts the design follows from.
+description: One supervisor Durable Object, a fabric of evictable facets, peer DOs for a second memory envelope, and the platform facts the design follows from.
 ---
 
 import SessionAnatomy from '../../../components/diagrams/SessionAnatomy.astro';
 import RequestLifecycle from '../../../components/diagrams/RequestLifecycle.astro';
+import PeerFacet from '../../../components/diagrams/PeerFacet.astro';
 
 <SessionAnatomy caption="The supervisor holds the state that must survive a crash. Everything else runs in facets and can be evicted." />
 
@@ -72,11 +73,54 @@ Writes flow one way. Facets never own files. Every mutation streams to the
 supervisor through a credit pool, so a parallel `npm install` can't flood the
 DO ([inside the disk](/docs/internals/disk/) has the numbers).
 
+## Peers: a second memory envelope
+
+Every process runs in a facet, minted by some DO's `env.LOADER`. A local
+facet comes from the coordinator session DO and shares its workerd memory
+envelope. A peer facet comes from a sibling DO and gets its own 128 MiB
+budget, so it runs in parallel with the coordinator and with every other
+peer.
+
+Peers are session DOs in the same `NIMBUS_SESSION` namespace as the
+coordinator, named `${coordinatorDoId}:proc:${slot}`, so they need no
+extra Worker, binding, or configuration. A heavy spawn fails loudly when
+that namespace is missing. The npm resolve fan-out uses the same pattern
+for short-lived batch work: a fan-out wider than five shards runs on
+`nbf:`-prefixed siblings, up to 32 of them.
+
+Eight peers hold about 150 MiB each at the same time, 1.2 GiB across one
+session. A peer that runs out of memory takes down its own process,
+leaving the siblings and the coordinator running.
+
+One process class is heavy today: the opencode attach TUI, which is
+resident, memory-growing, and serves no inbound HTTP. A heavy spawn pays
+about 0.5 s of peer cold-create. Everything that binds a port stays
+local.
+
+<PeerFacet caption="A peer facet is minted with the coordinator's doId in its SUPERVISOR props, so its filesystem, terminal, and port calls land on the coordinator, not on the DO it runs in." />
+
+The `SUPERVISOR` binding a facet receives carries a `doId` in its props,
+and the RPC layer resolves that doId to a stub on every call. A facet
+booted on a peer is minted with the *coordinator's* doId, so `readFile`,
+`writeFile`, stdout and stderr frames, the stdin pump, and `registerPort`
+all land on the coordinator, exactly as they do for a local facet. The
+peer lends a loader and a memory budget; the disk, the terminal, and the
+ports stay where they are.
+
+## Inbound HTTP stays local
+
+The Workers runtime will not re-enter a peer-hosted facet to serve an
+inbound request. Processes that bind a port therefore run on the
+coordinator: `node`, `vite`, `wrangler`, Python, Ruby, and opencode in
+server mode, whose readiness gate polls `/doc` back through the same
+router. Each launch primitive declares its class, and one policy point
+reads it.
+
 ## Design constraints
 
 | Constraint | Cloudflare's figure | What it produced |
 |---|---|---|
-| Isolate memory | 128 MiB each | multi-isolate processes; staged module maps |
+| Isolate memory | 128 MiB each | multi-isolate processes; staged module maps; peer DOs for heavy residents |
 | DO SQLite storage | 10 GB per object | the session disk |
 | CPU per invocation | 30 s default, 5 min via `limits.cpu_ms` | phased git clone, sliced checkout, fan-out installs |
 
