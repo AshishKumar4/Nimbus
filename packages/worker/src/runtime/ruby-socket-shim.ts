@@ -92,6 +92,23 @@ module Nimbus
         @last_error
       end
 
+      # ruby.wasm has no threads, so Timeout.timeout's watchdog Thread.new
+      # raises NotImplementedError on every call — which is what actually
+      # stopped Net::HTTP, before it reached a socket at all. Nothing in this
+      # runtime can interrupt a running block, so run it directly. Every
+      # loopback request is still bounded by the kernel's own response timer,
+      # so an unresponsive port cannot wedge the process.
+      def install_timeout_shim
+        return unless defined?(::Timeout)
+        return if ::Timeout.respond_to?(:__nimbus_threadless_timeout)
+        ::Timeout.singleton_class.class_eval do
+          define_method(:__nimbus_threadless_timeout) { true }
+          define_method(:timeout) do |sec = nil, _klass = nil, _message = nil, &block|
+            block ? block.call(sec) : nil
+          end
+        end
+      end
+
       def install_webrick_adapter
         return unless defined?(::WEBrick::GenericServer)
         return if ::WEBrick::GenericServer.method_defined?(:__nimbus_original_start)
@@ -125,6 +142,10 @@ module Nimbus
     end
   end
 end
+
+# Normally defined by the socket extension, which ruby.wasm does not ship, so
+# raising it from this shim would fail with "uninitialized constant" instead.
+class SocketError < StandardError; end unless defined?(::SocketError)
 
 class BasicSocket
   attr_accessor :do_not_reverse_lookup, :sync, :autoclose
@@ -269,8 +290,32 @@ class TCPSocket < IPSocket
     socket
   end
 
-  def initialize(host = nil, port = nil)
-    raise SocketError, "Nimbus Ruby currently supports accepted virtual sockets only; outbound TCPSocket is not available"
+  # Outbound loopback is plumbed all the way through the shared virtual socket
+  # kernel (connect, write and the supervisor's routeLoopback all work), but
+  # reading the response needs Ruby to park until the JS event loop delivers
+  # it, and ruby.wasm has no primitive that does. sleep never returns in this
+  # runtime - a bare sleep 0.3 hangs until the process is reaped - and the
+  # js-abi-host bridge is synchronous, so there is nothing to await. Fail here,
+  # where the message can explain, rather than after the write succeeds and the
+  # first read hangs the process.
+  def initialize(host = nil, port = nil, local_host = nil, local_port = nil)
+    raise ::SocketError,
+          "Nimbus cannot yet dial loopback ports from Ruby: ruby.wasm has no way to " \
+          "wait for the response. Reach #{host}:#{port} from node, or run the " \
+          "request as a subprocess."
+  end
+
+  # Without this, TCPSocket.open — which is how Net::HTTP opens a connection —
+  # falls through to the private Kernel#open and reports that instead of
+  # anything about sockets.
+  def self.open(*args, &block)
+    socket = new(*args)
+    return socket unless block
+    begin
+      block.call(socket)
+    ensure
+      socket.close
+    end
   end
 
   def initialize_nimbus(id, local_host, local_port, remote_host, remote_port)
@@ -433,12 +478,14 @@ module Kernel
       return false
     end
     loaded = __nimbus_original_require(path)
+    Nimbus::VirtualSocket.install_timeout_shim if path == 'timeout' || path.start_with?('net/')
     Nimbus::VirtualSocket.install_webrick_adapter if path == 'webrick' || path.start_with?('webrick/')
     loaded
   end
 end
 
 $LOADED_FEATURES << 'socket.rb' unless $LOADED_FEATURES.include?('socket.rb')
+Nimbus::VirtualSocket.install_timeout_shim
 Nimbus::VirtualSocket.install_webrick_adapter
 
 def __nimbus_handle_virtual_socket_request(port)

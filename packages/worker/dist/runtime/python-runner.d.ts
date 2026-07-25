@@ -68,6 +68,7 @@ interface PythonSideModuleSet {
         moduleKey: string;
     }>;
 }
+export declare function buildPythonSocketProcessWorker(preamble: string, sideModules: PythonSideModuleSet): string;
 /**
  * Compose the per-call preamble by splicing the workerd-adapted
  * pyodide.asm.js source ahead of the __pyodideRun helper. Workerd compiles this
