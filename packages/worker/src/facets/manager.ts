@@ -3196,8 +3196,10 @@ export class FacetManager {
 
   /**
    * The one way this manager boots a resident process. Both spawn primitives
-   * declare `heavy` — they exist precisely to run something that stays
-   * resident, binds ports and grows memory — and everything after this call
+   * declare `light`: every process they launch (node servers, vite, wrangler,
+   * python/ruby servers) binds its facet into PortRegistry and serves inbound
+   * HTTP, and a peer-hosted facet cannot serve inbound HTTP (see the placement
+   * constraint in `loaders/process-fabric.ts`). Everything after this call
    * treats the returned handle identically regardless of where it landed.
    */
   private async _startResidentProcess(
@@ -3205,7 +3207,7 @@ export class FacetManager {
     spec: { startContract: StartContract; boot: ResidentBootSpec; startArgs?: unknown },
   ): Promise<ResidentProcessHandle> {
     const handle = await this.processFabric.startResidentProcess({
-      processClass: 'heavy',
+      processClass: 'light',
       pid,
       workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
       shouldRespawn: () => this.processes.get(pid)?.state === 'running',
