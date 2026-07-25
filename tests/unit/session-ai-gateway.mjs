@@ -34,10 +34,10 @@ import {
   storeSessionAiCredential,
   DEFAULT_SESSION_AI_MODEL,
   SESSION_AI_CREDENTIAL_KEY,
-  SESSION_AI_PLACEHOLDER_KEY,
 } from '../../packages/worker/src/session/ai.ts';
 import { createNimbusAgentOAuthCookie } from '../../packages/worker/src/session/agent-oauth.ts';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
+import { NIMBUS_AI_TOKEN_ENV } from '../../packages/worker/src/_shared/ai-egress.ts';
 
 const ACCOUNT = 'f44999d1ddda7012e9a87729eba250f1';
 const OTHER_ACCOUNT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -362,7 +362,7 @@ const req = (path, init) => new Request(`http://127.0.0.1:${NIMBUS_AI_GATEWAY_PO
     const response = await handleSessionAiRequest(host, req('/v1/chat/completions', {
       method: 'POST',
       // A client-supplied Authorization must never reach Cloudflare.
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SESSION_AI_PLACEHOLDER_KEY}` },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sk-nimbus-deadbeef' },
       body: JSON.stringify({ model: '@cf/a/b', messages: [{ role: 'user', content: 'hi' }] }),
     }));
     assert.equal(response.status, 200);
@@ -652,9 +652,13 @@ const baseAuth = {
   assert.equal(env.OPENAI_BASE_URL, `http://127.0.0.1:${NIMBUS_AI_GATEWAY_PORT}/v1`);
   assert.equal(env.OPENAI_BASE_URL, sessionAiBaseUrl());
   assert.equal(env.OPENAI_API_BASE, env.OPENAI_BASE_URL);
-  // A placeholder, so an env dump inside the sandbox reveals nothing.
-  assert.equal(env.OPENAI_API_KEY, SESSION_AI_PLACEHOLDER_KEY);
-  assert.ok(!/[A-Za-z0-9_-]{40,}/.test(env.OPENAI_API_KEY));
+  // The seeded key is this session's capability token: it names this gateway
+  // and nothing else, so an env dump inside the sandbox still reveals nothing
+  // about the Cloudflare credential the supervisor holds.
+  assert.match(env.OPENAI_API_KEY, /^sk-nimbus-[0-9a-f]{32}$/);
+  assert.equal(env[NIMBUS_AI_TOKEN_ENV], env.OPENAI_API_KEY);
+  // Minted per session, never a shared constant.
+  assert.notEqual(sessionAiEnv().OPENAI_API_KEY, env.OPENAI_API_KEY);
 }
 
 console.log('session-ai-gateway: all assertions passed');
