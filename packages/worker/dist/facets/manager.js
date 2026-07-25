@@ -32,7 +32,7 @@ import { createLoadedWorkerEntrypoint, getNimbusCtxExports, ProcessFabric, } fro
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '../runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
+import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
 /**
  * Detect & restore a Uint8Array that's been JSON-mangled to a
  * {"0":n,"1":n,...} object during the result-envelope round-trip.
@@ -931,6 +931,54 @@ function _readBundleCell(vfs, path) {
  */
 function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
+}
+function _jsonEncodedBytes(value) {
+    return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+/** `{"bundle":` + `,"manifest":` + `}` — the frame around the two members. */
+const ENCODED_PAYLOAD_FRAME_BYTES = 23;
+/**
+ * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
+ * accumulated one cell at a time.
+ *
+ * Measuring it by materializing the payload — `encode(stringify(...))`,
+ * which the eviction loop used to redo after every single eviction — puts
+ * several full copies of a multi-megabyte bundle in the supervisor DO at
+ * once. On a working tree carrying one large data file that is enough to
+ * reset the DO, which drops the shell's WebSocket server-side without
+ * closing it and wedges the user's terminal with no error anywhere.
+ *
+ * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
+ * the total is a sum of independent per-cell terms: exact, incremental, and
+ * never holding more than one cell's worth of scratch.
+ */
+export function encodedBundleSize(bundle, manifest) {
+    const cells = new Map();
+    let cellSum = 0;
+    const manifestBytes = _jsonEncodedBytes(manifest);
+    const self = {
+        add(path, cell) {
+            if (cells.has(path))
+                return;
+            const bytes = _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
+            cells.set(path, bytes);
+            cellSum += bytes;
+        },
+        remove(path) {
+            const bytes = cells.get(path);
+            if (bytes === undefined)
+                return;
+            cells.delete(path);
+            cellSum -= bytes;
+        },
+        get bytes() {
+            const separators = Math.max(0, cells.size - 1);
+            return ENCODED_PAYLOAD_FRAME_BYTES + 2 + cellSum + separators + manifestBytes;
+        },
+    };
+    for (const [path, cell] of Object.entries(bundle))
+        self.add(path, cell);
+    return self;
 }
 /**
  * Bounded `path (N bytes)` listing, largest first. A snapshot diagnostic has
@@ -1977,6 +2025,16 @@ function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
                 return { added };
             if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
                 return { added };
+            // Skip an oversized file before reading it: this walk guesses at what
+            // the program might read, and one guess must not spend the budget (or
+            // the supervisor's headroom) that every later invocation then carries.
+            try {
+                if (vfs.lstat(child).size > CWD_SNAPSHOT_MAX_FILE_BYTES)
+                    continue;
+            }
+            catch {
+                continue;
+            }
             let content;
             try {
                 content = _readBundleCell(vfs, child);
@@ -1985,6 +2043,8 @@ function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
                 continue;
             }
             const cellLen = _bundleCellLength(content);
+            if (cellLen > CWD_SNAPSHOT_MAX_FILE_BYTES)
+                continue;
             if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
                 return { added };
             bundle[child] = content;
@@ -2378,33 +2438,26 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     //    from content cap so fs.readdirSync remains honest even if the
     //    content for a given file was capped out.
     const manifest = buildManifest(vfs, cwd, scriptPath);
-    // 4. JSON-encoded-size guard. Pre-check via TextEncoder.encode().length
-    //    so we measure UTF-8 bytes (not UTF-16 code units), matching what
-    //    workerd accounts against the per-module text-size budget. Only
-    //    OPTIONAL enrichment is evictable, largest first; the manifest and
-    //    the static require closure stay. RECOMPUTE the encoded size after
-    //    every eviction (sub-agent S2: naïve `encoded -= len(file) +
-    //    len(key) + 6` accumulates 2-5% drift on JS-source-heavy bundles;
-    //    recomputing is O(n) per eviction but bundles past the budget are
-    //    rare and the count of evictions is bounded by the size of a few
-    //    large files).
+    // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
+    //    units) because that is what workerd charges against the per-module
+    //    text-size budget. Only OPTIONAL enrichment is evictable, largest
+    //    first; the manifest and the static require closure stay.
     //
     //    Evicting an enrichment file is a real loss — the sync fs reads it
     //    exists for cannot fall back to the supervisor — so the paths that
     //    went are named rather than silently dropped.
-    const encoder = new TextEncoder();
-    let encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
-    if (encoded > BUNDLE_MAX_ENCODED_BYTES) {
+    const size = encodedBundleSize(bundle, manifest);
+    if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
         const evictable = Object.keys(bundle)
             .filter((path) => !requiredPaths.has(path))
             .sort((a, b) => _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]));
         const evicted = [];
         for (const k of evictable) {
-            if (encoded <= BUNDLE_MAX_ENCODED_BYTES)
+            if (size.bytes <= BUNDLE_MAX_ENCODED_BYTES)
                 break;
             evicted.push([k, _bundleCellLength(bundle[k])]);
             delete bundle[k];
-            encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
+            size.remove(k);
         }
         if (evicted.length > 0) {
             truncated = true;
@@ -2416,10 +2469,11 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     const fileCount = Object.keys(bundle).length;
     const metadata = buildVfsMetadata(vfs, manifest, bundle);
     addUnreadableDenialCells(vfs, bundle, metadata);
-    // Denial cells land after the eviction pass, so re-measure what the facet
-    // actually receives before deciding where the bundle has to live.
-    encoded = encoder.encode(JSON.stringify({ bundle, manifest })).length;
-    const bundleSideModulesRequired = encoded > BUNDLE_MAX_ENCODED_BYTES;
+    // Denial cells land after the eviction pass, so account for them before
+    // deciding where the bundle has to live.
+    for (const [path, cell] of Object.entries(bundle))
+        size.add(path, cell);
+    const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
     // Suppress lint: `greedy.added` is observed only via diagnostics.
     void greedy;
     return {

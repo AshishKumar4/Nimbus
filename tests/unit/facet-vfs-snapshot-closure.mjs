@@ -5,9 +5,11 @@ import assert from 'node:assert/strict';
 import {
   assertStagedBundleFitsRpcPayload,
   buildPrefetchBundle,
+  encodedBundleSize,
   greedyAddMainEntries,
 } from '../../packages/worker/src/facets/manager.ts';
 import {
+  CWD_SNAPSHOT_MAX_FILE_BYTES,
   MAX_RPC_SAFE_PAYLOAD_BYTES,
   VFS_BUNDLE_MAX_BYTES,
   VFS_BUNDLE_MAX_FILES,
@@ -234,6 +236,72 @@ assert.deepEqual(
 
   const fits = { 'home/user/index.js': 'module.exports = true;' };
   assert.doesNotThrow(() => assertStagedBundleFitsRpcPayload(JSON.stringify(fits), fits));
+}
+
+// The encoded-size guard is accounted incrementally so no second copy of the
+// payload exists; the number it reports has to stay exactly the number the
+// materializing form reported.
+{
+  const exact = (bundle, manifest) =>
+    new TextEncoder().encode(JSON.stringify({ bundle, manifest })).length;
+  const cases = [
+    [{}, {}],
+    [{ 'a.js': 'x' }, {}],
+    [{ 'a.js': 'x', 'b/c.js': 'yy' }, { b: ['c.js'] }],
+    [{ 'ü/né.js': 'héllo "quoted"\n\tand\\slashes', x: ' \u{1F600}' }, { 'ü': ['né.js'] }],
+    [{ 'bin.dat': new Uint8Array([0, 1, 255]), 't.js': 'ok' }, { '.': ['bin.dat', 't.js'] }],
+    [{ 'd.txt': { error: 'EACCES' } }, {}],
+  ];
+  for (const [bundle, manifest] of cases) {
+    assert.equal(
+      encodedBundleSize(bundle, manifest).bytes,
+      exact(bundle, manifest),
+      `incremental encoded size is exact for ${JSON.stringify(Object.keys(bundle))}`,
+    );
+  }
+
+  const bundle = { a: 'aaa', b: 'bbbb', c: 'cc' };
+  const manifest = { '.': ['a', 'b', 'c'] };
+  const size = encodedBundleSize(bundle, manifest);
+  for (const key of ['b', 'a', 'c']) {
+    delete bundle[key];
+    size.remove(key);
+    assert.equal(
+      size.bytes,
+      exact(bundle, manifest),
+      `incremental encoded size stays exact after evicting ${key}`,
+    );
+  }
+}
+
+// The working-tree sweep guesses at what a program might read. One guessed
+// file must not take the whole budget: that is what every later invocation
+// then carries while the supervisor still holds the cached copy.
+{
+  const cwd = 'home/user';
+  const files = {
+    [`${cwd}/index.js`]: 'module.exports = 1;',
+    [`${cwd}/small.json`]: '{"a":1}',
+    [`${cwd}/data.bin`]: 'D'.repeat(CWD_SNAPSHOT_MAX_FILE_BYTES + 1),
+  };
+  const snapshot = await buildPrefetchBundle(
+    new FakeVfs(files),
+    undefined,
+    cwd,
+    '',
+    identityEsbuild,
+  );
+
+  assert.equal(
+    snapshot.bundle[`${cwd}/data.bin`],
+    undefined,
+    'the working-tree sweep skips a file past the per-file ceiling',
+  );
+  assert.equal(
+    snapshot.bundle[`${cwd}/small.json`],
+    files[`${cwd}/small.json`],
+    'ordinary project files still ride along',
+  );
 }
 
 console.log('facet VFS snapshot closure: ok');

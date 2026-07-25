@@ -144,6 +144,26 @@ interface FacetVfsBundleSource {
     modules: Record<string, string>;
 }
 /**
+ * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
+ * accumulated one cell at a time.
+ *
+ * Measuring it by materializing the payload — `encode(stringify(...))`,
+ * which the eviction loop used to redo after every single eviction — puts
+ * several full copies of a multi-megabyte bundle in the supervisor DO at
+ * once. On a working tree carrying one large data file that is enough to
+ * reset the DO, which drops the shell's WebSocket server-side without
+ * closing it and wedges the user's terminal with no error anywhere.
+ *
+ * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
+ * the total is a sum of independent per-cell terms: exact, incremental, and
+ * never holding more than one cell's worth of scratch.
+ */
+export declare function encodedBundleSize(bundle: FacetVfsBundle, manifest: Record<string, string[]>): {
+    add(path: string, cell: FacetVfsBundle[string]): void;
+    remove(path: string): void;
+    readonly bytes: number;
+};
+/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Small bundles remain inline. Large bundles are partitioned into side
