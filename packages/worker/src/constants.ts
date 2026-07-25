@@ -111,6 +111,20 @@ export const VFS_BUNDLE_MAX_FILES = 4000;
 export const VFS_BUNDLE_MAX_BYTES = 24 * 1024 * 1024;          // 24 MiB raw
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-encoded UTF-8
 
+// Per-file ceiling for the blind working-tree sweep (facet-manager.ts
+// addCwdProjectFiles). That pass names no file the program asked for — it
+// guesses, so a relative `readFileSync` of a project file resolves — and a
+// guess has no claim on the whole budget. Without it one data file consumes
+// all 24 MiB, every later invocation carries it, and the supervisor holds
+// the cached copy while building the next one beside it.
+//
+// 2 MiB clears real project content (sources, configs, fixtures, ordinary
+// assets) by a wide margin. Past it the file is data, and data has two
+// honest routes that need no residency: async fs, which reads live from the
+// supervisor in 64 KiB ranges, and the entry-code path scan, which admits
+// any size once the program names the path itself.
+export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+
 // ── npm Constants ───────────────────────────────────────────────────────
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_CONCURRENCY = 12;
