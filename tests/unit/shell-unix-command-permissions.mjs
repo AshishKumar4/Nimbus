@@ -74,8 +74,13 @@ assert.equal(elevatedCat.stdout, 'TOPSECRET\n');
 assert.equal(elevatedCat.stderr, '');
 
 const userVfs = rawVfs.as(USER);
+// Stands in for a mount the caller VFS resolves but the closure-captured
+// SqliteVFS does not — /dev/null, a zero-length character device.
 const mountedVfs = {
   ...userVfs,
+  stat: (path) => path === '/dev/null'
+    ? { type: 'file', size: 0, mode: 0o020666, atime: 0, ctime: 0, mtime: 0, uid: 0, gid: 0 }
+    : userVfs.stat(path),
   readFile: (path) => path === '/dev/null' ? new Uint8Array() : userVfs.readFile(path),
 };
 assert.deepEqual(await run('cat', ['/dev/null'], USER, mountedVfs), {

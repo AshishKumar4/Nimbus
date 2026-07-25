@@ -6,6 +6,8 @@ import { waitForSignalOrTimeout } from '../signal.js';
 type CurlOptions = {
   method: string;
   headers: Record<string, string>;
+  /** Request-body operands in argument order, resolved just before the request. */
+  dataParts: CurlDataPart[];
   data?: string;
   outputFile?: string;
   silent: boolean;
@@ -18,6 +20,18 @@ type CurlOptions = {
   progressBar: boolean;
   maxTimeSeconds?: number;
   url?: string;
+};
+
+/**
+ * One `-d` / `--data*` operand. curl reads `@path` from a file (`@-` from
+ * stdin) and only `--data-raw` takes the `@` literally; `--data`/`--data-ascii`
+ * additionally strip newlines, while `--data-binary` keeps the bytes as they
+ * are. Sending the literal string `@/path/to/file` is never correct.
+ */
+type CurlDataPart = {
+  readonly value: string;
+  readonly fromFile: boolean;
+  readonly stripNewlines: boolean;
 };
 
 type CurlBody = string | Uint8Array | ReadableStream<Uint8Array>;
@@ -59,6 +73,13 @@ function createCurlImpl(kernel?: Kernel): Command {
     // Ensure URL has protocol
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       url = 'https://' + url;
+    }
+
+    try {
+      options.data = await resolveCurlData(ctx, options.dataParts);
+    } catch (error) {
+      ctx.stderr.write(`curl: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 26;
     }
 
     if (kernel?.portRegistry) {
@@ -123,6 +144,7 @@ function parseCurlArgs(args: string[]): CurlOptions {
   const options: CurlOptions = {
     method: 'GET',
     headers: {},
+    dataParts: [],
     silent: false,
     showError: false,
     followRedirects: false,
@@ -177,11 +199,14 @@ function parseLongOption(options: CurlOptions, arg: string, args: string[], inde
       return consumed;
     }
     case '--data':
+    case '--data-ascii':
     case '--data-raw':
     case '--data-binary': {
       const { value, consumed } = readValue();
-      options.data = value;
-      if (options.method === 'GET') options.method = 'POST';
+      addDataPart(options, value, {
+        allowFile: name !== '--data-raw',
+        stripNewlines: name === '--data' || name === '--data-ascii',
+      });
       return consumed;
     }
     case '--output': {
@@ -280,8 +305,7 @@ function applyShortValueOption(options: CurlOptions, flag: string, value: string
       addHeader(options, value);
       break;
     case 'd':
-      options.data = value;
-      if (options.method === 'GET') options.method = 'POST';
+      addDataPart(options, value, { allowFile: true, stripNewlines: true });
       break;
     case 'o':
       options.outputFile = value;
@@ -290,6 +314,50 @@ function applyShortValueOption(options: CurlOptions, flag: string, value: string
       options.writeOut = value;
       break;
   }
+}
+
+/**
+ * Turns `-d` operands into the request body: `@path` becomes that file's
+ * contents, `@-` becomes stdin, and multiple operands join with `&` the way
+ * curl assembles a form body. Returns undefined when no body was requested.
+ */
+async function resolveCurlData(
+  ctx: Parameters<Command>[0],
+  parts: CurlDataPart[],
+): Promise<string | undefined> {
+  if (parts.length === 0) return undefined;
+
+  const resolved: string[] = [];
+  for (const part of parts) {
+    let value = part.value;
+    if (part.fromFile) {
+      if (value === '-') {
+        value = ctx.stdin ? await ctx.stdin.readAll() : '';
+      } else {
+        try {
+          value = ctx.vfs.readFileString(resolve(ctx.cwd, value));
+        } catch (error) {
+          throw new Error(`Failed to open ${part.value}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    resolved.push(part.stripNewlines ? value.replace(/[\r\n]/g, '') : value);
+  }
+  return resolved.join('&');
+}
+
+function addDataPart(
+  options: CurlOptions,
+  value: string,
+  spec: { allowFile: boolean; stripNewlines: boolean },
+): void {
+  const fromFile = spec.allowFile && value.startsWith('@');
+  options.dataParts.push({
+    value: fromFile ? value.slice(1) : value,
+    fromFile,
+    stripNewlines: spec.stripNewlines,
+  });
+  if (options.method === 'GET') options.method = 'POST';
 }
 
 function addHeader(options: CurlOptions, header: string): void {

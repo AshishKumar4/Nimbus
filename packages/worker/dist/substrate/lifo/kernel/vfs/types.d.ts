@@ -25,6 +25,21 @@ export interface INode {
     chunks?: ChunkRef[];
     storedSize?: number;
 }
+/**
+ * `st_mode` file-type bits. `Stat.type` only distinguishes file from
+ * directory, so anything finer — a character device, a symlink — is carried
+ * in the mode, exactly as Unix does it. `ls -l` and `stat` read the leading
+ * type character from here.
+ */
+export declare const S_IFMT = 61440;
+export declare const S_IFREG = 32768;
+export declare const S_IFDIR = 16384;
+export declare const S_IFCHR = 8192;
+export declare const S_IFLNK = 40960;
+/** True for a character device such as `/dev/zero`, which streams rather than stores. */
+export declare function isCharacterDevice(mode: number): boolean;
+/** The `ls -l` type character for a mode, falling back to the coarse `Stat.type`. */
+export declare function fileTypeChar(mode: number, type: FileType): string;
 export interface Stat {
     type: FileType;
     size: number;
@@ -51,6 +66,14 @@ export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
 export interface VirtualProvider {
     readFile(subpath: string): Uint8Array;
     readFileString(subpath: string): string;
+    /**
+     * Read at most `length` bytes at `offset` without materialising the whole
+     * file. Short reads are legal (read(2) semantics) — callers must loop until
+     * they get what they need or an empty result signals EOF. Providers that
+     * cannot serve a slice cheaply omit this; `VFS.readRange` then slices a
+     * whole-file read for them.
+     */
+    readRange?(subpath: string, offset: number, length: number): Uint8Array;
     writeFile?(subpath: string, content: string | Uint8Array): void;
     exists(subpath: string): boolean;
     stat(subpath: string): Stat;
@@ -60,6 +83,13 @@ export interface VirtualProvider {
 }
 export interface MountProvider extends VirtualProvider {
     writeFile(subpath: string, content: string | Uint8Array): void;
+    /**
+     * Write `bytes` at `offset`, growing the file as needed, without rewriting
+     * the parts of it the range does not touch. Providers that cannot do this
+     * omit it; `VFS.writeRange` then splices via a whole-file read/write.
+     */
+    writeRange?(subpath: string, offset: number, bytes: Uint8Array): void;
+    truncate?(subpath: string, size: number): void;
     unlink(subpath: string): void;
     mkdir(subpath: string, options?: {
         recursive?: boolean;

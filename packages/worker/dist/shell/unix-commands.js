@@ -12,7 +12,9 @@
  */
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { requireVfsCred } from '../runtime/os-contracts.js';
-import { enc } from '../_shared/bytes.js';
+import { dec, enc } from '../_shared/bytes.js';
+import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
+import { fileTypeChar, isCharacterDevice } from '../substrate/lifo/kernel/vfs/index.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
@@ -1190,13 +1192,16 @@ function mkGrep(vfs) {
  * Backward compat: file-args (head FILE) and the string-stdin case
  * (when wrap already coalesced) still work via the same code path.
  */
-function mkHead(vfs) {
+function mkHead(_vfs) {
     return async (ctx) => {
-        let n = 10;
-        const nIdx = ctx.args.indexOf('-n');
-        if (nIdx >= 0)
-            n = parseInt(ctx.args[nIdx + 1]) || 10;
-        const files = ctx.args.filter((a) => !a.startsWith('-') && (ctx.args.indexOf(a) !== nIdx + 1));
+        const parsed = parseHeadArgs(ctx.args);
+        if (parsed.error) {
+            ctx.stderr.write(`head: ${parsed.error}\n`);
+            return 1;
+        }
+        const { lines: n, bytes, files } = parsed;
+        if (bytes !== undefined)
+            return headBytes(ctx, files, bytes);
         if (files.length === 0) {
             // Pipe / stdin case.
             const stdin = ctx.stdin;
@@ -1238,20 +1243,146 @@ function mkHead(vfs) {
             return 0;
         }
         for (const f of files) {
-            const fp = resolvePath(ctx.cwd, f);
+            const path = absolutePath(ctx.cwd, f);
             try {
-                const content = vfs.readFileString(fp);
+                const content = readWholeFileString(ctx, path);
                 if (files.length > 1)
                     ctx.stdout.write(`==> ${f} <==\n`);
                 ctx.stdout.write(content.split('\n').slice(0, n).join('\n') + '\n');
             }
-            catch {
-                ctx.stderr.write(`head: ${f}: No such file\n`);
+            catch (error) {
+                ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`);
                 return 1;
             }
         }
         return 0;
     };
+}
+/** `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`. */
+function parseHeadArgs(args) {
+    const result = { lines: 10, files: [] };
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        const option = matchCountOption(arg, args[i + 1], 'c', 'bytes')
+            ?? matchCountOption(arg, args[i + 1], 'n', 'lines');
+        if (option) {
+            i += option.consumed;
+            const count = parseByteCount(option.value);
+            if (count === null) {
+                const what = option.flag === 'c' ? 'bytes' : 'lines';
+                return { ...result, error: `invalid number of ${what}: '${option.value}'` };
+            }
+            if (option.flag === 'c')
+                result.bytes = count;
+            else
+                result.lines = count;
+        }
+        else if (/^-\d+$/.test(arg)) {
+            result.lines = Number.parseInt(arg.slice(1), 10);
+        }
+        else if (arg === '-q' || arg === '--quiet' || arg === '-v' || arg === '--verbose') {
+            continue;
+        }
+        else if (arg !== '-' && arg.startsWith('-') && arg.length > 1) {
+            return { ...result, error: `unrecognized option '${arg}'` };
+        }
+        else {
+            result.files.push(arg);
+        }
+    }
+    return result;
+}
+function matchCountOption(arg, next, flag, long) {
+    if (arg === `-${flag}`)
+        return { flag, value: next ?? '', consumed: 1 };
+    if (arg.startsWith(`-${flag}`) && arg.length > 2)
+        return { flag, value: arg.slice(2), consumed: 0 };
+    if (arg === `--${long}`)
+        return { flag, value: next ?? '', consumed: 1 };
+    if (arg.startsWith(`--${long}=`))
+        return { flag, value: arg.slice(long.length + 3), consumed: 0 };
+    return null;
+}
+/** `head`/`dd`-style counts: plain digits with an optional binary/SI suffix. */
+function parseByteCount(value) {
+    const match = /^(\d+)([bkKmMgG]?[Bb]?)$/.exec(value.trim());
+    if (!match)
+        return null;
+    const scale = {
+        '': 1, b: 512, k: 1024, K: 1024, kB: 1000, KB: 1000,
+        m: 1024 ** 2, M: 1024 ** 2, mB: 1000 ** 2, MB: 1000 ** 2,
+        g: 1024 ** 3, G: 1024 ** 3, gB: 1000 ** 3, GB: 1000 ** 3,
+    };
+    const factor = scale[match[2]];
+    if (factor === undefined)
+        return null;
+    return Number.parseInt(match[1], 10) * factor;
+}
+/**
+ * `head -c N` — emit the first N bytes. Streams through the positional read
+ * so byte counts hold for any N and character devices such as /dev/zero,
+ * which have no stored content to read whole, work like they do on Unix.
+ */
+async function headBytes(ctx, files, limit) {
+    const writer = new SinkWriter(ctx.stdout);
+    if (files.length === 0 || (files.length === 1 && files[0] === '-')) {
+        await streamStdinBytes(ctx, writer, limit);
+        writer.end();
+        return 0;
+    }
+    let exit = 0;
+    for (const f of files) {
+        const path = absolutePath(ctx.cwd, f);
+        try {
+            if (files.length > 1)
+                ctx.stdout.write(`==> ${f} <==\n`);
+            streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+                length: limit,
+                signal: ctx.signal,
+            });
+        }
+        catch (error) {
+            ctx.stderr.write(`head: ${f}: ${fsErrorMessage(error)}\n`);
+            exit = 1;
+        }
+    }
+    writer.end();
+    return exit;
+}
+/**
+ * Pull at most `limit` bytes from stdin, whether the shell handed us an
+ * already-drained string or a live pipe reader. Reading only the string form
+ * would make `producer | head -c N` emit nothing at all.
+ */
+async function streamStdinBytes(ctx, writer, limit) {
+    const stdin = ctx.stdin;
+    if (typeof stdin === 'string') {
+        writer.write(enc.encode(stdin).subarray(0, limit));
+        return;
+    }
+    const reader = stdin;
+    if (typeof reader?.read !== 'function')
+        return;
+    let copied = 0;
+    while (copied < limit) {
+        const want = limit - copied;
+        const chunk = reader.readBytes ? await reader.readBytes(want) : await reader.read();
+        if (chunk === null)
+            break;
+        const bytes = enc.encode(chunk).subarray(0, want);
+        writer.write(bytes);
+        copied += bytes.length;
+    }
+}
+/** Absolute, mount-aware path — `ctx.vfs` resolves virtual mounts like /dev. */
+function absolutePath(cwd, target) {
+    return '/' + resolvePath(cwd, target);
+}
+function readWholeFileString(ctx, path) {
+    if (ctx.vfs.stat(path).type === 'directory') {
+        throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
+    }
+    return dec.decode(ctx.vfs.readFile(path));
 }
 function mkTail(vfs) {
     return (ctx) => {
@@ -2566,7 +2697,7 @@ function mkLs(vfs) {
         function modeStr(mode, isDir, isLink) {
             if (isLink)
                 return 'lrwxrwxrwx';
-            const prefix = isDir ? 'd' : '-';
+            const prefix = fileTypeChar(mode, isDir ? 'directory' : 'file');
             const bits = [
                 mode & 0o400 ? 'r' : '-',
                 mode & 0o200 ? 'w' : '-',
@@ -2771,6 +2902,9 @@ function mkLs(vfs) {
  * shell compatibilityc (2026-05-11): registry-level cat (for xargs cross-
  * command dispatch). Behaves like the shell cat command: reads files (or
  * stdin if none), concatenates to stdout.
+ *
+ * Operands stream through one shared writer, so concatenating six 1 MB files
+ * emits 6 MB in 64 KiB steps rather than materialising each file whole.
  */
 function mkCat(vfs) {
     return (ctx) => {
@@ -2782,6 +2916,7 @@ function mkCat(vfs) {
         }
         // Resolve both native VFS symlinks and the legacy registry before reads.
         let exit = 0;
+        const writer = new SinkWriter(ctx.stdout);
         for (const fOrig of files) {
             const f = (() => {
                 const fp = resolvePath(ctx.cwd, fOrig);
@@ -2799,13 +2934,28 @@ function mkCat(vfs) {
             }
             try {
                 const path = f.startsWith('/') ? f : `${ctx.cwd}/${f}`;
-                ctx.stdout.write(new TextDecoder().decode(ctx.vfs.readFile(path)));
+                const stat = ctx.vfs.stat(path);
+                if (stat.type === 'directory')
+                    throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
+                if (stat.size > 0) {
+                    // A regular file's size is its exact extent — read precisely that.
+                    streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+                        length: stat.size,
+                        signal: ctx.signal,
+                    });
+                }
+                else {
+                    // Size 0 covers empty files, /dev/null and synthesised /proc entries.
+                    // Endless character devices reject this unbounded read by design.
+                    writer.write(ctx.vfs.readFile(path));
+                }
             }
             catch (error) {
                 ctx.stderr.write(`cat: ${fOrig}: ${fsErrorMessage(error)}\n`);
                 exit = 1;
             }
         }
+        writer.end();
         return exit;
     };
 }
@@ -2945,7 +3095,8 @@ function mkStat(vfs) {
                 }
             }
             ctx.stdout.write(`  File: ${displayPath}\n`);
-            ctx.stdout.write(`  Size: ${st.size}\tType: ${st.type}\n`);
+            const kind = isCharacterDevice(st.mode) ? 'character special file' : st.type;
+            ctx.stdout.write(`  Size: ${st.size}\tType: ${kind}\n`);
             const uid = st.uid ?? ctx.cred.uid;
             const gid = st.gid ?? ctx.cred.gid;
             const user = unixUserLabel(vfs, uid);

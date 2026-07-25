@@ -1,5 +1,6 @@
 export { VFS } from './VFS.js';
 export { VFSError, ErrorCode } from './types.js';
+export { S_IFMT, S_IFREG, S_IFDIR, S_IFCHR, S_IFLNK, isCharacterDevice, fileTypeChar, } from './types.js';
 export type { INode, ChunkRef, Stat, Dirent, FileType, ErrorCodeType, VirtualProvider, MountProvider, VFSWatchEvent, VFSWatchListener, VFSEventType } from './types.js';
 export { NativeFsProvider } from './providers/NativeFsProvider.js';
 export type { NativeFsModule } from './providers/NativeFsProvider.js';

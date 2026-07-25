@@ -16,6 +16,13 @@ function createCurlImpl(kernel) {
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
             url = 'https://' + url;
         }
+        try {
+            options.data = await resolveCurlData(ctx, options.dataParts);
+        }
+        catch (error) {
+            ctx.stderr.write(`curl: ${error instanceof Error ? error.message : String(error)}\n`);
+            return 26;
+        }
         if (kernel?.portRegistry) {
             const virtual = await resolveVirtualCurlResponse(kernel, ctx, options, url);
             if (virtual?.kind === 'response') {
@@ -78,6 +85,7 @@ function parseCurlArgs(args) {
     const options = {
         method: 'GET',
         headers: {},
+        dataParts: [],
         silent: false,
         showError: false,
         followRedirects: false,
@@ -127,12 +135,14 @@ function parseLongOption(options, arg, args, index) {
             return consumed;
         }
         case '--data':
+        case '--data-ascii':
         case '--data-raw':
         case '--data-binary': {
             const { value, consumed } = readValue();
-            options.data = value;
-            if (options.method === 'GET')
-                options.method = 'POST';
+            addDataPart(options, value, {
+                allowFile: name !== '--data-raw',
+                stripNewlines: name === '--data' || name === '--data-ascii',
+            });
             return consumed;
         }
         case '--output': {
@@ -227,9 +237,7 @@ function applyShortValueOption(options, flag, value) {
             addHeader(options, value);
             break;
         case 'd':
-            options.data = value;
-            if (options.method === 'GET')
-                options.method = 'POST';
+            addDataPart(options, value, { allowFile: true, stripNewlines: true });
             break;
         case 'o':
             options.outputFile = value;
@@ -238,6 +246,44 @@ function applyShortValueOption(options, flag, value) {
             options.writeOut = value;
             break;
     }
+}
+/**
+ * Turns `-d` operands into the request body: `@path` becomes that file's
+ * contents, `@-` becomes stdin, and multiple operands join with `&` the way
+ * curl assembles a form body. Returns undefined when no body was requested.
+ */
+async function resolveCurlData(ctx, parts) {
+    if (parts.length === 0)
+        return undefined;
+    const resolved = [];
+    for (const part of parts) {
+        let value = part.value;
+        if (part.fromFile) {
+            if (value === '-') {
+                value = ctx.stdin ? await ctx.stdin.readAll() : '';
+            }
+            else {
+                try {
+                    value = ctx.vfs.readFileString(resolve(ctx.cwd, value));
+                }
+                catch (error) {
+                    throw new Error(`Failed to open ${part.value}: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            }
+        }
+        resolved.push(part.stripNewlines ? value.replace(/[\r\n]/g, '') : value);
+    }
+    return resolved.join('&');
+}
+function addDataPart(options, value, spec) {
+    const fromFile = spec.allowFile && value.startsWith('@');
+    options.dataParts.push({
+        value: fromFile ? value.slice(1) : value,
+        fromFile,
+        stripNewlines: spec.stripNewlines,
+    });
+    if (options.method === 'GET')
+        options.method = 'POST';
 }
 function addHeader(options, header) {
     const colonIdx = header.indexOf(':');
