@@ -5,6 +5,7 @@ description: One supervisor Durable Object, a fabric of evictable facets, and th
 
 import SessionAnatomy from '../../../components/diagrams/SessionAnatomy.astro';
 import RequestLifecycle from '../../../components/diagrams/RequestLifecycle.astro';
+import PeerFacet from '../../../components/diagrams/PeerFacet.astro';
 
 <SessionAnatomy caption="The supervisor holds the state that must survive a crash. Everything else runs in facets and can be evicted." />
 
@@ -71,6 +72,61 @@ cap and reset the session in testing, so assembly runs outside the DO.
 Writes flow one way. Facets never own files. Every mutation streams to the
 supervisor through a credit pool, so a parallel `npm install` can't flood the
 DO ([inside the disk](/docs/internals/disk/) has the numbers).
+
+## Peers: a second memory envelope
+
+Every process runs in a facet, and a peer Durable Object does not change
+that. What changes is which DO's `env.LOADER` minted the facet. A local
+facet comes from the coordinator session DO's own loader and shares its
+workerd memory envelope. A peer facet comes from a sibling DO's loader
+and gets a budget of its own.
+
+Peers are NimbusSession DOs in the same namespace binding as the
+coordinator, named `${coordinatorDoId}:proc:${slot}`. No second Worker,
+no second binding, no configuration. The npm resolve fan-out already used
+the pattern for short batch work, with `nbf:`-prefixed siblings.
+
+Measured on the full production shape: eight peers held 150 MiB each at
+once, 1.2 GiB across one session. A peer OOM never disturbed a sibling
+and never reset the coordinator; the blast radius ends at the process.
+
+One process class is heavy today — the opencode attach TUI, which is
+resident, memory-growing, and serves no inbound HTTP. Everything that
+binds a port stays local, for the reason two sections down. A heavy spawn
+pays about 0.5 s of peer cold-create.
+
+<PeerFacet caption="A peer facet is minted with the coordinator's doId in its SUPERVISOR props, so its filesystem, terminal, and port calls land on the coordinator, not on the DO it runs in." />
+
+The `SUPERVISOR` binding a facet receives carries a `doId` in its props,
+and the RPC layer resolves that doId to a stub on every call. A facet
+booted on a peer is minted with the *coordinator's* doId. So `readFile`,
+`writeFile`, stdout and stderr frames, the stdin pump, and `registerPort`
+all land on the coordinator exactly as they do for a local facet. The
+peer never touches the disk; it lends a loader and a memory budget and
+nothing else. The disk, the terminal, and the ports have one home and
+never move.
+
+## Inbound HTTP stays local
+
+A dynamically-loaded facet cannot be re-entered to serve inbound HTTP
+once it lives on a peer. The call fails with `DataCloneError: Entrypoints
+to dynamically-loaded workers cannot be transferred to other Workers`.
+Six hypotheses were eliminated by experiment, among them delivering the
+request from inside the same invocation that loaded the facet, and
+buffering the response into peer-owned bytes. A same-build A/B settles
+the question: the same server declared heavy returns `502`, declared
+light returns `200` with a byte-exact body. Placement is the only
+variable.
+
+So a process that binds a port declares itself light and runs on the
+coordinator: `node`, `vite`, `wrangler`, Python, Ruby, and opencode in
+server mode, whose readiness gate polls `/doc` back through the same
+router. The class is a declared property of each launch primitive, read
+at one policy point — there is no argv matching and no second spawn path.
+
+The underlying mechanism is not fully explained. A structurally
+equivalent synthetic passes in the same workerd build, so the rule
+follows from the A/B rather than from a theory of why workerd refuses.
 
 ## Design constraints
 
