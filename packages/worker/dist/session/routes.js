@@ -42,11 +42,10 @@ import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
-// CLN-1 (2026-05-11): also import R2_CACHE_PREFIX + L2_KEY_HOST so the
-// cache-purge helpers below don't hardcode the synthetic key shape.
-// Bumping R2_CACHE_PREFIX 'v1' → 'v2' now invalidates the L2 cache key
-// shape used here automatically.
-import { R2CacheClient, R2_CACHE_PREFIX, L2_KEY_HOST } from '../npm/r2-cache.js';
+// The L2 key builders are imported rather than re-derived so the bench
+// endpoints below can never drift from the key shape the cache actually
+// uses (they did: the packument purge used a stale `/p/` segment).
+import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
 import { z } from 'zod/v4';
@@ -97,8 +96,6 @@ const CachePackumentSeedBodySchema = z.object({
     payload: z.unknown().optional(),
 }).passthrough();
 const CacheTarballSeedBodySchema = z.object({
-    name: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
-    version: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
     sizeKb: z.coerce.number().optional(),
 }).passthrough();
 const FanoutBenchBodySchema = z.object({
@@ -1152,9 +1149,11 @@ export async function handleFetch(self, request) {
 //          read is guaranteed L3-only).
 //   GET  /api/_test/cache/packument/bench?name=X&n=N
 //        → run N sequential getPackument(X) calls, return latencies[].
-//   POST /api/_test/cache/tarball/seed       {name, version, sizeKb}
+//   POST /api/_test/cache/tarball/seed       {sizeKb}
 //        → similar; payload is a synthetic Uint8Array of sizeKb*1024.
-//   GET  /api/_test/cache/tarball/bench?name=X&version=Y&n=N
+//          Tarballs are content-addressed, so the seed returns the
+//          integrity string to bench against.
+//   GET  /api/_test/cache/tarball/bench?integrity=sha512-...&n=N
 //        → similar.
 //   GET  /api/_test/cache/wasm/bench?n=N
 //        → run N sequential fetchEsbuildWasmBytes() calls. The first
@@ -1180,7 +1179,7 @@ async function handleCacheTestEndpoint(self, url, request) {
         if (!name)
             return Response.json({ error: 'missing name' }, { status: 400 });
         // Purge L2 first so the next bench read starts from L3 cold.
-        await purgeL2(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/p/${encodeURIComponent(name)}.json`);
+        await purgeL2(packumentL2Url(name));
         const ok = await r2.putPackument(name, payload);
         return Response.json({ seeded: ok, name, payloadBytes: payload.length });
     }
@@ -1209,32 +1208,35 @@ async function handleCacheTestEndpoint(self, url, request) {
     }
     if (path === '/api/_test/cache/tarball/seed' && request.method === 'POST') {
         const body = await parseJsonBody(request, CacheTarballSeedBodySchema);
-        const name = body.name;
-        const version = body.version;
         const sizeKb = Math.max(1, Math.min(15360, body.sizeKb || 16)); // up to 15 MiB (under MAX_R2_TARBALL_BYTES = 30 MiB)
-        if (!name || !version)
-            return Response.json({ error: 'missing name/version' }, { status: 400 });
-        await purgeL2(`${L2_KEY_HOST}/${R2_CACHE_PREFIX}/t/${encodeURIComponent(name)}/${encodeURIComponent(version)}.tgz`);
-        // Synthetic payload — bytes are arbitrary; the cache layer doesn't
-        // care about content. Probe just measures fetch latency.
+        // Synthetic payload — content is arbitrary but must be addressed by
+        // its own digest, same as a real tarball. Deterministic in sizeKb so
+        // a bench run can be repeated against the same address.
         const bytes = new Uint8Array(sizeKb * 1024);
         for (let i = 0; i < bytes.length; i++)
             bytes[i] = i & 0xff;
-        const ok = await r2.putTarball(name, version, bytes);
-        return Response.json({ seeded: ok, name, version, sizeBytes: bytes.length });
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-512', bytes));
+        let bin = '';
+        for (let i = 0; i < digest.length; i++)
+            bin += String.fromCharCode(digest[i]);
+        const integrity = `sha512-${btoa(bin)}`;
+        const address = parseTarballAddress(integrity);
+        await purgeL2(tarballL2Url(address));
+        const ok = await r2.putTarball(integrity, bytes);
+        return Response.json({ seeded: ok, integrity, sizeBytes: bytes.length });
     }
     if (path === '/api/_test/cache/tarball/bench' && request.method === 'GET') {
-        const name = url.searchParams.get('name') ?? '';
-        const version = url.searchParams.get('version') ?? '';
+        const integrity = url.searchParams.get('integrity') ?? '';
         const n = Math.max(1, Math.min(20, parseInt(url.searchParams.get('n') || '5', 10)));
-        if (!name || !version)
-            return Response.json({ error: 'missing name/version' }, { status: 400 });
+        if (!parseTarballAddress(integrity)) {
+            return Response.json({ error: 'missing/unparseable integrity' }, { status: 400 });
+        }
         const latencies = [];
         let lastBytes = 0;
         let nullCount = 0;
         for (let i = 0; i < n; i++) {
             const t0 = performance.now();
-            const got = await r2.getTarball(name, version);
+            const got = await r2.getTarball(integrity);
             const t1 = performance.now();
             latencies.push(t1 - t0);
             if (!got)
@@ -1243,7 +1245,7 @@ async function handleCacheTestEndpoint(self, url, request) {
                 lastBytes = got.length;
         }
         const stats = r2.stats();
-        return Response.json({ name, version, n, latencies, lastBytes, nullCount, stats });
+        return Response.json({ integrity, n, latencies, lastBytes, nullCount, stats });
     }
     if (path === '/api/_test/cache/wasm/reset' && request.method === 'POST') {
         // Purge the L2 entry so the next bench call goes cold (re-runs

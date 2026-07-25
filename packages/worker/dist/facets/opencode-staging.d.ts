@@ -60,13 +60,20 @@ export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
  * Memory class each staged mode declares to the process fabric — the
  * runtime-spec side of its single placement policy point.
  *
- * `attached` and `server` are RESIDENT: they hold a facet open for as long as
- * the user's session lasts, and their memory grows with the conversation and
- * the project they have loaded. Those are exactly the processes worth a
- * workerd process of their own, and the ones whose OOM must not be able to
- * reset the session. `oneshot` buffers a single run and returns, so it stays
- * local — it would pay the ~0.5 s peer-DO cold-create for nothing (and it
- * takes the one-shot fetch path, which never reaches the fabric at all).
+ * `attached` is the ONE heavy tenant in Nimbus. It is resident (its memory
+ * grows with the conversation and the project loaded) and it never serves
+ * inbound HTTP: the TUI streams ANSI frames out over the terminal RPC and
+ * takes keystrokes in over the stdin pump, so nothing routes into it. That
+ * makes it the only process eligible for a peer's independent memory budget,
+ * and its OOM kills the process instead of resetting the session.
+ *
+ * `server` is equally resident but SERVES: it binds its route target into
+ * PortRegistry and its own readiness gate polls `/doc` back through that
+ * router. A peer-hosted facet cannot serve inbound HTTP (see the placement
+ * constraint in `loaders/process-fabric.ts`), so it stays local. `oneshot`
+ * buffers a single run and returns — it would pay the ~0.5 s peer-DO
+ * cold-create for nothing (and it takes the one-shot fetch path, which never
+ * reaches the fabric at all).
  */
 export declare function stagedProcessClass(mode: OpencodeStageSpec['mode']): ProcessClass;
 /** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */

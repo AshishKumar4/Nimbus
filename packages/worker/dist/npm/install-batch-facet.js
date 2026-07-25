@@ -112,6 +112,24 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     const ownerWaves = new Map();
     const ownersWithCompletionMarker = new Set();
     const completionMarkers = new Map();
+    // A wave RPC that workerd shed rather than ran is re-sendable: the
+    // coordinator's input gate rejected it because its queue was too deep or
+    // the object was reset mid-request, so none of the wave's writes landed.
+    // Re-sending is safe even if some did — writeBatchStream is keyed by path
+    // and the bytes are identical. Without this the first shed permanently
+    // failed every package that contributed to the wave, which is how a
+    // 119-package install came back with 88 packages.
+    // ~42s of absorption. The coordinator's own verdict is "requests queued
+    // for too long", so the schedule has to outlast a queue that deep; the
+    // whole-batch timeout is 10 minutes, which bounds it.
+    const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000, 12000, 20000];
+    const isSheddableWaveError = (message) => {
+        const m = message.toLowerCase();
+        return m.includes('overloaded')
+            || m.includes('reset because its code was updated')
+            || m.includes('starting up durable object storage')
+            || (m.includes('storage operation') && m.includes('reset'));
+    };
     // Mutex: only one flush runs at a time. Concurrent installs awaiting
     // flush() will line up behind this promise and resolve in arrival
     // order — the W7 frame is opaque to ordering so this is safe.
@@ -146,24 +164,39 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         // cannot report success while another package happens to be the caller
         // that triggered its shared flush.
         const wave = (async () => {
-            try {
-                // @ts-ignore — preamble symbol.
-                const stream = encodeWriteBatchStream({ inodes: inodesNow, chunks: chunksNow });
-                return await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), (result) => {
-                    if (result.ok)
-                        return { ok: true };
-                    return {
-                        ok: false,
-                        message: `writeBatchStream failed after group ${result.committedGroupSequence} ` +
-                            `(${result.committedPathCount} committed paths): ${result.error.message}`,
-                    };
-                });
-            }
-            catch (error) {
-                return {
-                    ok: false,
-                    message: error instanceof Error ? error.message : String(error),
-                };
+            for (let attempt = 0;; attempt++) {
+                try {
+                    // Each attempt encodes its OWN bytes. The encoder hands chunk
+                    // buffers straight to a byte stream and workerd transfers them on
+                    // enqueue, so `chunksNow` would be detached after the first send —
+                    // a retry re-encoding it fails validation ("chunk 0 must contain N
+                    // bytes") instead of re-sending the wave.
+                    // @ts-ignore — preamble symbol.
+                    const stream = encodeWriteBatchStream({
+                        inodes: inodesNow,
+                        chunks: chunksNow.map((c) => ({ ...c, data: c.data.slice() })),
+                    });
+                    // A typed non-ok result is the storage layer's verdict on these
+                    // exact bytes, so it is returned as-is: only a shed RPC retries.
+                    return await __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), (result) => {
+                        if (result.ok)
+                            return { ok: true };
+                        return {
+                            ok: false,
+                            message: `writeBatchStream failed after group ${result.committedGroupSequence} ` +
+                                `(${result.committedPathCount} committed paths): ${result.error.message}`,
+                        };
+                    });
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    if (attempt >= WAVE_RETRY_BACKOFF_MS.length || !isSheddableWaveError(message)) {
+                        return { ok: false, message };
+                    }
+                    const base = WAVE_RETRY_BACKOFF_MS[attempt];
+                    const delayMs = Math.max(0, Math.round(base + (Math.random() * 2 - 1) * base * 0.25));
+                    await new Promise((rs) => setTimeout(rs, delayMs));
+                }
             }
         })();
         for (const owner of ownersNow) {
@@ -313,14 +346,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // (older supervisor deployment), the R2 leg becomes a noop and
             // we go straight to the network path with no overhead.
             const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
-            // cache-obs-2: supervisor return shape evolved from `Uint8Array
-            // | null` to `{ bytes, events }`. The race wrapper handles both:
-            // a v1 supervisor returns bare bytes (or null); a v2 supervisor
-            // returns the envelope. The downstream code only needs `bytes`
-            // — the envelope's events are spliced into cacheStatEvents.
             const r2P = r2Available
                 ? Promise.race([
-                    __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.name, spec.version), (result) => result),
+                    __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.integrity), (result) => result),
                     new Promise((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
                 ]).catch(() => null)
                 : Promise.resolve(null);
@@ -335,18 +363,14 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             if (r2Available) {
                 try {
                     const r2Result = await r2P;
-                    // Adapt to BOTH supervisor return shapes:
-                    //   v1: Uint8Array | null
-                    //   v2: { bytes: Uint8Array | null, events: [...] }
-                    if (r2Result && typeof r2Result === 'object' && !(r2Result instanceof Uint8Array)) {
-                        const env2 = r2Result;
-                        r2HitBytes = env2.bytes;
+                    if (r2Result) {
+                        r2HitBytes = r2Result.bytes;
                         // cache-obs-2: splice supervisor's per-tier events into
                         // the facet's accumulator. Filter to known tiers/kinds
                         // so a future supervisor schema change doesn't poison
                         // the result.
-                        if (Array.isArray(env2.events)) {
-                            for (const e of env2.events) {
+                        if (Array.isArray(r2Result.events)) {
+                            for (const e of r2Result.events) {
                                 if (!e || (e.kind !== 'hit' && e.kind !== 'miss'))
                                     continue;
                                 if (e.tier !== 'L2' && e.tier !== 'L3')
@@ -367,33 +391,25 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                             }
                         }
                     }
-                    else {
-                        r2HitBytes = r2Result;
-                    }
                 }
                 catch {
                     r2HitBytes = null;
                 }
             }
             // ── R2 HIT path ──────────────────────────────────────────────
-            // We have bytes from R2. Verify integrity if supplied; on
-            // mismatch fall through to network. On success, synthesize a
-            // body stream and skip network entirely.
+            // We have bytes from the shared cache. They were re-hashed
+            // against spec.integrity at the storage boundary, so synthesize
+            // a body stream and skip the network entirely.
             let resp;
             // Definitely-assigned by either the R2-hit branch OR the network
             // branch below; explicit `!` keeps TS happy without runtime cost.
             let bytesStream;
             let integrityPromise = Promise.resolve();
             if (r2HitBytes && r2HitBytes.length > 0) {
-                // Cache HIT: use the bytes without re-hashing. The tarball was
-                // integrity-verified on the cold registry-fetch path (below) BEFORE
-                // it was written to R2/L2 (putCachedTarball's documented contract),
-                // R2 + Cache API guarantee stored-byte integrity, and `name@version`
-                // is an immutable npm coordinate — so the digest the store already
-                // matched still holds. Re-hashing every hit was pure per-install CPU
-                // with no correctness value: any real corruption surfaces loudly in
-                // the gunzip + tar + package.json-marker pipeline below, never
-                // silently. The cold registry-fetch verification stays intact.
+                // Cache HIT. The cross-tenant store is content-addressed and
+                // re-hashes on every read, so bytes that come back are already
+                // proven to be spec.integrity's tarball — there is exactly one
+                // verification point and it is not here.
                 pipelinedTarballRaceWins++;
                 tarballsCompleted++;
                 cumulativeBytesDecoded += r2HitBytes.length;
@@ -644,7 +660,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 tarballsCompleted++;
                 if (capturedTgzBytes && typeof env.SUPERVISOR.putCachedTarball === 'function') {
                     try {
-                        await __nimbusUseRpcResult(env.SUPERVISOR.putCachedTarball(spec.name, spec.version, capturedTgzBytes), () => undefined);
+                        await __nimbusUseRpcResult(env.SUPERVISOR.putCachedTarball(spec.integrity, capturedTgzBytes), () => undefined);
                     }
                     catch {
                         // Best-effort cache write — never fail the install on R2 errors.

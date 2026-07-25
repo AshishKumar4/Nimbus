@@ -882,11 +882,9 @@ export class NimbusSession extends CloudflareDurableObject {
   ensureSqliteFs() {
     if (!this.sqliteFs) {
       this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-      // W5 Lever 8: shrinkForInstall() during heavy-alloc windows.
-      // The observer fires only on 0→1 / ≥1→0 edges (registerAllocObserver
-      // in heavy-alloc-coord.ts handles the refcount). Default shrink
-      // target 128 entries × 64 KB = 8 MiB; +24 MiB heap headroom
-      // during install / clone / pre-bundle. See W5-plan.md §2.
+      // Shrink the disposable LRU while the shared transient-allocation
+      // budget is active. Edge-triggered observer callbacks keep nested and
+      // concurrent reservations from restoring the cache prematurely.
       const vfs = this.sqliteFs;
       registerAllocObserver({
         onAcquire: () => {

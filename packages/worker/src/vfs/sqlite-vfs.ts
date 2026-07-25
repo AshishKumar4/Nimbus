@@ -53,6 +53,7 @@ import {
 } from '../constants.js';
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
 import {
   decodeWriteBatchStream,
@@ -61,7 +62,7 @@ import {
 import {
   WeightedCreditPool,
   type CreditLease,
-} from './write-stream-credit-pool.js';
+} from '../_shared/weighted-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { CRED_KERNEL, type VfsCred } from '../runtime/os-contracts.js';
 
@@ -2475,22 +2476,47 @@ export class SqliteVFS {
 
     const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
       if (stageBuilder.wouldExceedChunks(byteLength) !== null) flushStagedChunks();
-      let lease = this.writeStreamCredits.tryAcquire(byteLength);
-      if (!lease && !stageBuilder.empty) {
+      let writeLease = this.writeStreamCredits.tryAcquire(byteLength);
+      if (!writeLease && !stageBuilder.empty) {
         flushStagedChunks();
-        lease = this.writeStreamCredits.tryAcquire(byteLength);
+        writeLease = this.writeStreamCredits.tryAcquire(byteLength);
       }
-      if (lease) return lease;
+      if (!writeLease) {
+        const waitToken = {};
+        const waitStartedAt = performance.now();
+        this._creditWaitStarts.set(waitToken, waitStartedAt);
+        try {
+          writeLease = await this.writeStreamCredits.acquire(byteLength, signal);
+        } finally {
+          this._creditWaitStarts.delete(waitToken);
+          this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
+        }
+      }
 
+      let supervisorLease: CreditLease;
       const waitToken = {};
       const waitStartedAt = performance.now();
       this._creditWaitStarts.set(waitToken, waitStartedAt);
       try {
-        return await this.writeStreamCredits.acquire(byteLength, signal);
+        supervisorLease = await acquireSupervisorAllocation(byteLength, signal);
+      } catch (error) {
+        writeLease.release();
+        throw error;
       } finally {
         this._creditWaitStarts.delete(waitToken);
         this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
       }
+
+      let released = false;
+      return {
+        bytes: byteLength,
+        release: () => {
+          if (released) return;
+          released = true;
+          writeLease.release();
+          supervisorLease.release();
+        },
+      };
     };
 
     try {
@@ -3739,12 +3765,25 @@ export class SqliteVFSProvider {
   readFile(sub: string): Uint8Array { return this.vfs.readFile(this.resolve(sub)); }
   readFileString(sub: string): string { return this.vfs.readFileString(this.resolve(sub)); }
 
+  readRange(sub: string, offset: number, length: number): Uint8Array {
+    return this.vfs.readRange(this.resolve(sub), offset, length);
+  }
+
   writeFile(sub: string, content: string | Uint8Array): void {
     const fp = this.resolve(sub);
     const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
     if (pp && !this.vfs.exists(pp)) this.vfs.mkdir(pp, { recursive: true });
     this.vfs.writeFile(fp, content);
   }
+
+  writeRange(sub: string, offset: number, bytes: Uint8Array): void {
+    const fp = this.resolve(sub);
+    const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
+    if (pp && !this.vfs.exists(pp)) this.vfs.mkdir(pp, { recursive: true });
+    this.vfs.writeRange(fp, offset, bytes);
+  }
+
+  truncate(sub: string, size: number): void { this.vfs.truncate(this.resolve(sub), size); }
 
   exists(sub: string): boolean { return this.vfs.exists(this.resolve(sub)); }
   access(sub: string, mode: number): void { this.vfs.access(this.resolve(sub), mode); }

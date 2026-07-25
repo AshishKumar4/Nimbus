@@ -44,9 +44,10 @@ import { normalizeVfsPath } from './path.js';
 import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, } from '../constants.js';
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
 import { decodeWriteBatchStream, } from '../_shared/w7-frame.js';
-import { WeightedCreditPool, } from './write-stream-credit-pool.js';
+import { WeightedCreditPool, } from '../_shared/weighted-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
@@ -2041,23 +2042,49 @@ export class SqliteVFS {
         const retainChunk = async (byteLength, signal) => {
             if (stageBuilder.wouldExceedChunks(byteLength) !== null)
                 flushStagedChunks();
-            let lease = this.writeStreamCredits.tryAcquire(byteLength);
-            if (!lease && !stageBuilder.empty) {
+            let writeLease = this.writeStreamCredits.tryAcquire(byteLength);
+            if (!writeLease && !stageBuilder.empty) {
                 flushStagedChunks();
-                lease = this.writeStreamCredits.tryAcquire(byteLength);
+                writeLease = this.writeStreamCredits.tryAcquire(byteLength);
             }
-            if (lease)
-                return lease;
+            if (!writeLease) {
+                const waitToken = {};
+                const waitStartedAt = performance.now();
+                this._creditWaitStarts.set(waitToken, waitStartedAt);
+                try {
+                    writeLease = await this.writeStreamCredits.acquire(byteLength, signal);
+                }
+                finally {
+                    this._creditWaitStarts.delete(waitToken);
+                    this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
+                }
+            }
+            let supervisorLease;
             const waitToken = {};
             const waitStartedAt = performance.now();
             this._creditWaitStarts.set(waitToken, waitStartedAt);
             try {
-                return await this.writeStreamCredits.acquire(byteLength, signal);
+                supervisorLease = await acquireSupervisorAllocation(byteLength, signal);
+            }
+            catch (error) {
+                writeLease.release();
+                throw error;
             }
             finally {
                 this._creditWaitStarts.delete(waitToken);
                 this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
             }
+            let released = false;
+            return {
+                bytes: byteLength,
+                release: () => {
+                    if (released)
+                        return;
+                    released = true;
+                    writeLease.release();
+                    supervisorLease.release();
+                },
+            };
         };
         try {
             const decoded = await decodeWriteBatchStream(stream, {
@@ -3155,6 +3182,9 @@ export class SqliteVFSProvider {
     }
     readFile(sub) { return this.vfs.readFile(this.resolve(sub)); }
     readFileString(sub) { return this.vfs.readFileString(this.resolve(sub)); }
+    readRange(sub, offset, length) {
+        return this.vfs.readRange(this.resolve(sub), offset, length);
+    }
     writeFile(sub, content) {
         const fp = this.resolve(sub);
         const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
@@ -3162,6 +3192,14 @@ export class SqliteVFSProvider {
             this.vfs.mkdir(pp, { recursive: true });
         this.vfs.writeFile(fp, content);
     }
+    writeRange(sub, offset, bytes) {
+        const fp = this.resolve(sub);
+        const pp = fp.includes('/') ? fp.substring(0, fp.lastIndexOf('/')) : '';
+        if (pp && !this.vfs.exists(pp))
+            this.vfs.mkdir(pp, { recursive: true });
+        this.vfs.writeRange(fp, offset, bytes);
+    }
+    truncate(sub, size) { this.vfs.truncate(this.resolve(sub), size); }
     exists(sub) { return this.vfs.exists(this.resolve(sub)); }
     access(sub, mode) { this.vfs.access(this.resolve(sub), mode); }
     stat(sub) { return this.vfs.stat(this.resolve(sub)); }

@@ -641,7 +641,7 @@ async function spawnPythonSocketProcess(facetMgr, assetPaths, sideModules, args,
         spawnedPid: spawned.pid,
     };
 }
-function buildPythonSocketProcessWorker(preamble, sideModules) {
+export function buildPythonSocketProcessWorker(preamble, sideModules) {
     const sideModuleImports = [];
     for (const mod of sideModules.modules) {
         const id = wasmImportIdentifier(mod.moduleKey);
@@ -671,6 +671,17 @@ function buildPythonSocketProcessWorker(preamble, sideModules) {
         '    const msg = e && e.message ? e.message : String(e);',
         '    (globalThis.__nimbusPyStderr || (globalThis.__nimbusPyStderr = [])).push("[python-runner] port registration failed: " + msg + "\\n");',
         '  }',
+        '};',
+        '',
+        // Outbound half of the same loopback: a client socket opened by the guest
+        // routes through the supervisor's routeLoopback, which is the one path the
+        // shell's curl and node's patched fetch already use.
+        'globalThis.__nimbusVirtualSocketRouteLoopback = function __nimbusVirtualSocketRouteLoopback(port, request) {',
+        '  const supervisor = globalThis.__nimbusPythonSupervisor;',
+        '  if (!supervisor || typeof supervisor.routeLoopback !== "function") {',
+        '    return Promise.reject(new Error("this Python process has no supervisor binding for loopback routing"));',
+        '  }',
+        '  return Promise.resolve(supervisor.routeLoopback(Number(port), request));',
         '};',
         '',
         preamble,
@@ -736,16 +747,24 @@ function buildPythonSocketProcessWorker(preamble, sideModules) {
         '  return { state: "running", stdout, stderr };',
         '}',
         '',
+        // Only adopt a real binding: routed handleHttpRequest/fetch hops resolve
+        // the entrypoint without a supervisor, and overwriting with undefined
+        // would drop the live stub the process needs for its whole lifetime.
+        'function __nimbusAdoptPythonSupervisor(env) {',
+        '  const supervisor = env && env.SUPERVISOR;',
+        '  if (supervisor) globalThis.__nimbusPythonSupervisor = supervisor;',
+        '}',
         'export default class NimbusPythonProcess extends WorkerEntrypoint {',
         '  async startProcess(args) {',
-        '    globalThis.__nimbusPythonSupervisor = this.env?.SUPERVISOR;',
+        '    __nimbusAdoptPythonSupervisor(this.env);',
         '    return __nimbusStartPythonProcess(args || {});',
         '  }',
         '  async fetch(request) {',
-        '    globalThis.__nimbusPythonSupervisor = this.env?.SUPERVISOR;',
+        '    __nimbusAdoptPythonSupervisor(this.env);',
         '    return this.handleHttpRequest(request);',
         '  }',
         '  async handleHttpRequest(request) {',
+        '    __nimbusAdoptPythonSupervisor(this.env);',
         '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
         '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
         '    if (!port) return new Response("Nimbus Python process has no listening virtual socket", { status: 502 });',
@@ -985,7 +1004,9 @@ function __nimbusInstallPythonSocketModules(pyodide) {
       close_listener: (port) => kernel.closeListener(port),
       accept: async (port) => await kernel.accept(port),
       accept_now: (port) => kernel.acceptNow(port),
+      connect: (port) => kernel.connect(port),
       recv: (id, maxBytes) => kernel.recv(id, maxBytes),
+      recv_async: async (id, maxBytes) => await kernel.recvAsync(id, maxBytes),
       send: (id, bytes) => kernel.send(id, bytes),
       close: (id) => kernel.close(id),
       pending: (port) => kernel.pending(port),

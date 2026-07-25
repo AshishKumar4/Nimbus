@@ -607,7 +607,10 @@ export declare class SqliteVFSProvider {
     private resolve;
     readFile(sub: string): Uint8Array;
     readFileString(sub: string): string;
+    readRange(sub: string, offset: number, length: number): Uint8Array;
     writeFile(sub: string, content: string | Uint8Array): void;
+    writeRange(sub: string, offset: number, bytes: Uint8Array): void;
+    truncate(sub: string, size: number): void;
     exists(sub: string): boolean;
     access(sub: string, mode: number): void;
     stat(sub: string): VfsStat;

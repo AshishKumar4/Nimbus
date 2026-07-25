@@ -51,10 +51,18 @@ export declare function makeRubyRunnerFactory(deps: {
         resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
     };
 }): RubyRunnerFactory;
+export declare function buildRubySocketProcessWorker(preamble: string): string;
 export declare function getFacetManagerLoaderHost(facetMgr: FacetManager): {
     env: unknown;
     ctx: DurableObjectState;
 };
+/**
+ * Compose the per-call preamble. The preamble runs at child-facet
+ * module-init time; it instantiates ruby+stdlib.wasm via the LOADER-
+ * provided WebAssembly.Module and bootstraps the Ruby VM. Per-call
+ * __rubyRun then drives `rb-eval-string-protect` for each request.
+ */
+export declare function buildRubyPreamble(): string;
 /**
  * The Ruby-specific portion of the preamble. Wires the wasm imports
  * (wasi_snapshot_preview1 from __wasiMakeImports, canonical_abi from a

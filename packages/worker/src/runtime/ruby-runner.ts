@@ -688,7 +688,7 @@ async function spawnRubySocketProcess(
   };
 }
 
-function buildRubySocketProcessWorker(preamble: string): string {
+export function buildRubySocketProcessWorker(preamble: string): string {
   return [
     'import { WorkerEntrypoint } from "cloudflare:workers";',
     "import __NIMBUS_WASM_ruby_stdlib from './ruby+stdlib.wasm';",
@@ -718,7 +718,19 @@ function buildRubySocketProcessWorker(preamble: string): string {
     '  acceptNowJson(port) { const conn = globalThis.__nimbusVirtualSockets.acceptNow(Number(port)); return conn ? JSON.stringify(conn) : ""; },',
     '  recvBase64(id, maxBytes) { return __nimbusBase64FromBytes(Uint8Array.from(globalThis.__nimbusVirtualSockets.recv(Number(id), Number(maxBytes)))); },',
     '  sendBase64(id, encoded) { return globalThis.__nimbusVirtualSockets.send(Number(id), __nimbusBytesFromBase64(encoded)); },',
+    '  connect(port) { return globalThis.__nimbusVirtualSockets.connect(Number(port)); },',
+    '  atEof(id) { return globalThis.__nimbusVirtualSockets.atEof(Number(id)); },',
     '  close(id) { globalThis.__nimbusVirtualSockets.close(Number(id)); return true; },',
+    '};',
+    '',
+    // Outbound half of the same loopback the shell's curl and node's patched
+    // fetch use: one mechanism, reached here through the supervisor RPC.
+    'globalThis.__nimbusVirtualSocketRouteLoopback = function __nimbusVirtualSocketRouteLoopback(port, request) {',
+    '  const supervisor = globalThis.__nimbusRubySupervisor;',
+    '  if (!supervisor || typeof supervisor.routeLoopback !== "function") {',
+    '    return Promise.reject(new Error("this Ruby process has no supervisor binding for loopback routing"));',
+    '  }',
+    '  return Promise.resolve(supervisor.routeLoopback(Number(port), request));',
     '};',
     '',
     'globalThis.__nimbusVirtualPortRegistrationPromises = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
@@ -795,17 +807,24 @@ function buildRubySocketProcessWorker(preamble: string): string {
     '  return { state: "running", stdout, stderr };',
     '}',
     '',
+    // Only adopt a real binding: routed handleHttpRequest/fetch hops resolve
+    // the entrypoint without a supervisor, and overwriting with undefined
+    // would drop the live stub the process needs for its whole lifetime.
+    'function __nimbusAdoptRubySupervisor(env) {',
+    '  const supervisor = env && env.SUPERVISOR;',
+    '  if (supervisor) globalThis.__nimbusRubySupervisor = supervisor;',
+    '}',
     'export default class NimbusRubyProcess extends WorkerEntrypoint {',
     '  async startProcess(args) {',
-    '    globalThis.__nimbusRubySupervisor = this.env?.SUPERVISOR;',
+    '    __nimbusAdoptRubySupervisor(this.env);',
     '    return __nimbusStartRubyProcess(args || {});',
     '  }',
     '  async fetch(request) {',
-    '    globalThis.__nimbusRubySupervisor = this.env?.SUPERVISOR;',
+    '    __nimbusAdoptRubySupervisor(this.env);',
     '    return this.handleHttpRequest(request);',
     '  }',
     '  async handleHttpRequest(request) {',
-    '    globalThis.__nimbusRubySupervisor = this.env?.SUPERVISOR;',
+    '    __nimbusAdoptRubySupervisor(this.env);',
     '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
     '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
     '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
@@ -906,7 +925,7 @@ function isDurableObjectState(value: unknown): value is DurableObjectState {
  * provided WebAssembly.Module and bootstraps the Ruby VM. Per-call
  * __rubyRun then drives `rb-eval-string-protect` for each request.
  */
-function buildRubyPreamble(): string {
+export function buildRubyPreamble(): string {
   return [
     '// ── WASI shim preamble (wasi-instance.ts) ─────────────────────',
     WASI_INSTANCE_PREAMBLE_SRC,

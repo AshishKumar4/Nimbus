@@ -34,7 +34,22 @@ import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal } from './signals.js';
 import { resolve } from '../utils/path.js';
+import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
+
+/**
+ * Bytes a file-backed descriptor holds before committing. Matches the stream
+ * chunk size used elsewhere and keeps a line-at-a-time producer from paying a
+ * store write per line.
+ */
+const FILE_WRITE_BLOCK_BYTES = 64 * 1024;
+
+function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) { out.set(part, at); at += part.length; }
+  return out;
+}
 
 // ─── Signal classes for control flow ───
 
@@ -530,7 +545,7 @@ export class Interpreter {
       const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
       const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
       const builtinIo = this.createIoFromFds(redirIo, fds);
-      const exitCode = await evaluateDoubleBracketWords(
+      const exitCode = await this.withFdFlush(fds, () => evaluateDoubleBracketWords(
         node.words,
         this.createExpandContext(redirIo),
         redirIo.vfs ?? this.config.vfs,
@@ -552,7 +567,7 @@ export class Interpreter {
           setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
           executeInline: (input, options) => this.executeInline(input, builtinIo, options),
         },
-      );
+      ));
       this.lastExitCode = exitCode;
       return exitCode;
     });
@@ -964,6 +979,7 @@ export class Interpreter {
         }
       }
     } finally {
+      this.flushFds(fds);
       // Restore env from per-command assignments
       for (const [key, val] of Object.entries(savedEnv)) {
         if (val === undefined) {
@@ -1226,7 +1242,7 @@ export class Interpreter {
       return 1;
     }
 
-    return execute(this.createIoFromFds(io, fds));
+    return this.withFdFlush(fds, () => execute(this.createIoFromFds(io, fds)));
   }
 
   private async applyRedirections(
@@ -1249,22 +1265,22 @@ export class Interpreter {
       const target = await expandWord(redir.target, expandCtx);
       switch (redir.operator) {
         case 'write':
-          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'write', terminalStdin));
+          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'write', fds, terminalStdin));
           break;
         case 'append':
-          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', terminalStdin));
+          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', fds, terminalStdin));
           break;
         case 'read':
-          this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, terminalStdin));
+          this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, fds, terminalStdin));
           break;
         case 'readWrite': {
           const fd = redir.fd ?? 0;
-          this.setInputFd(fds, fd, this.openInputTarget(io, target, terminalStdin));
-          this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', terminalStdin));
+          this.setInputFd(fds, fd, this.openInputTarget(io, target, fds, terminalStdin));
+          this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', fds, terminalStdin));
           break;
         }
         case 'writeAll': {
-          const writer = this.openOutputTarget(io, target, 'write', terminalStdin);
+          const writer = this.openOutputTarget(io, target, 'write', fds, terminalStdin);
           this.setOutputFd(fds, 1, writer);
           this.setOutputFd(fds, 2, writer);
           break;
@@ -1339,6 +1355,7 @@ export class Interpreter {
     io: ExecutionIo,
     target: string,
     mode: 'write' | 'append',
+    fds: FdState,
     terminalStdin?: TerminalInputStream,
   ): OutputTarget {
     if (target === '/dev/null') return { stream: this.createNullWriter(), terminal: false };
@@ -1346,34 +1363,43 @@ export class Interpreter {
       if (!terminalStdin) throw new Error('/dev/tty: no controlling terminal');
       return { stream: this.terminalSink(io), terminal: true };
     }
+    // /dev/stdout and /dev/stderr name the process's own descriptors, not
+    // files. Writing them into the device provider would silently discard.
+    if (target === '/dev/stdout') return this.resolveOutputFd('1', fds.outputFds, fds.terminalOutputFds);
+    if (target === '/dev/stderr') return this.resolveOutputFd('2', fds.outputFds, fds.terminalOutputFds);
     const targetPath = resolve(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
       if (mode === 'write') {
         vfs.writeFile(targetPath, '');
-        return { stream: this.createFileWriter(vfs, targetPath), terminal: false };
+        return { stream: this.createFileWriter(vfs, targetPath, 'truncate'), terminal: false };
       }
       if (vfs.exists(targetPath)) {
-        const stat = vfs.stat(targetPath);
-        if (stat.type === 'directory') {
+        if (vfs.stat(targetPath).type === 'directory') {
           throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
         }
         vfs.access(targetPath, 0o2);
       } else {
         vfs.writeFile(targetPath, '');
       }
-      return { stream: this.createFileAppender(vfs, targetPath), terminal: false };
+      return { stream: this.createFileWriter(vfs, targetPath, 'append'), terminal: false };
     } catch (error) {
       throw new RedirectionOpenError(target, error);
     }
   }
 
-  private openInputTarget(io: ExecutionIo, target: string, terminalStdin?: TerminalInputStream): InputTarget {
+  private openInputTarget(
+    io: ExecutionIo,
+    target: string,
+    fds: FdState,
+    terminalStdin?: TerminalInputStream,
+  ): InputTarget {
     if (target === '/dev/null') return { stream: this.createEmptyReader(), terminal: false };
     if (target === '/dev/tty') {
       if (!terminalStdin) throw new Error('/dev/tty: no controlling terminal');
       return { stream: terminalStdin, terminal: true };
     }
+    if (target === '/dev/stdin') return this.resolveInputFd('0', fds.inputFds, fds.terminalInputFds);
     try {
       return {
         stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
@@ -1384,20 +1410,68 @@ export class Interpreter {
     }
   }
 
-  private createFileWriter(vfs: VFS, path: string): CommandOutputStream {
+  /**
+   * A file-backed descriptor: an open file plus a write offset.
+   *
+   * Each write lands at the offset and advances it, the way write(2) does.
+   * Restating the whole file per write — which is what this used to do —
+   * makes every multi-write producer (`cat a b c`, a streaming `curl`, any
+   * line-at-a-time filter) persist only its final write and silently drop
+   * everything before it.
+   *
+   * Writes buffer to a block, as stdio does, so a line-at-a-time producer
+   * costs one store write per block rather than one per line. `mode`
+   * distinguishes `>` (a plain offset from the truncation point) from `>>`,
+   * which is O_APPEND: every block lands at whatever the current end is, so
+   * two descriptors appending to one file cannot overwrite each other.
+   */
+  private createFileWriter(vfs: VFS, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
+    let offset = 0;
+    let pending: Uint8Array[] = [];
+    let pendingBytes = 0;
+
+    const endOfFile = (): number => (vfs.exists(path) ? vfs.stat(path).size : 0);
+
+    const flush = (): void => {
+      if (pendingBytes === 0) return;
+      const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
+      pending = [];
+      pendingBytes = 0;
+      const at = mode === 'append' ? endOfFile() : offset;
+      vfs.writeRange(path, at, block);
+      offset = at + block.length;
+    };
+
+    const push = (bytes: Uint8Array): void => {
+      if (bytes.length === 0) return;
+      pending.push(bytes);
+      pendingBytes += bytes.length;
+      if (pendingBytes >= FILE_WRITE_BLOCK_BYTES) flush();
+    };
+
     return {
-      write: (text: string) => {
-        vfs.writeFile(path, text);
-      },
+      write: (text: string) => push(encode(text)),
+      writeBytes: (bytes: Uint8Array) => push(bytes),
+      flush,
     };
   }
 
-  private createFileAppender(vfs: VFS, path: string): CommandOutputStream {
-    return {
-      write: (text: string) => {
-        vfs.appendFile(path, text);
-      },
-    };
+  /**
+   * Run `body` and commit every file-backed descriptor it wrote through,
+   * whether it returned or threw. This is the close(2) side of the buffering
+   * in createFileWriter: buffered bytes must reach the store before the next
+   * command can read the file.
+   */
+  private async withFdFlush<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
+    try {
+      return await body();
+    } finally {
+      this.flushFds(fds);
+    }
+  }
+
+  private flushFds(fds: FdState): void {
+    for (const stream of fds.outputFds.values()) stream.flush?.();
   }
 
   private createFileReader(vfs: VFS, path: string): CommandInputStream {
@@ -1464,7 +1538,7 @@ export class Interpreter {
   }
 
   private createNullWriter(): CommandOutputStream {
-    return { write: () => {} };
+    return { write: () => {}, writeBytes: () => {} };
   }
 
   private createEmptyReader(): CommandInputStream {

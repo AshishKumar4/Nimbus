@@ -28,7 +28,6 @@ import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenc
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { CRED_KERNEL, requireVfsCred } from '../runtime/os-contracts.js';
-import { DevProvider } from '../vfs/dev-provider.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -63,7 +62,6 @@ import { hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '../runtime/process-logs.js';
 import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, DEFAULT_PATH, } from '../constants.js';
-import { enc } from '../_shared/bytes.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
 import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
@@ -174,41 +172,6 @@ export function initSession(self, ws) {
         persistKernelMounts(self.ctx, mountPoints);
     }
     catch { /* fail-soft */ }
-    // shell compatibility (2026-05-11): mount a virtual /dev provider.
-    // Pre-fix `cmd > /dev/null` and `cmd 2>/dev/null` errored with
-    // `ENOENT: '/dev': no such file or directory`. This provider
-    // synthesizes /dev/null, /dev/zero, /dev/random, /dev/urandom,
-    // /dev/full, /dev/{stdin,stdout,stderr,tty}. Read/write surface
-    // matches MountProvider so the redirect machinery sees
-    // valid targets. Not persisted — recreated fresh each init.
-    try {
-        self.kernel.vfs.mount('/dev', new DevProvider());
-    }
-    catch (e) {
-        console.error('[init] /dev mount failed:', e?.message || e);
-    }
-    // ── Monkey-patch appendFile to go through mount provider ──
-    const vfs = self.kernel.vfs;
-    const originalAppendFile = vfs.appendFile.bind(vfs);
-    vfs.appendFile = (path, content) => {
-        const prov = vfs.getProvider?.(path);
-        if (prov) {
-            try {
-                const existing = prov.provider.readFile(prov.subpath);
-                const nc = typeof content === 'string' ? enc.encode(content) : content;
-                const combined = new Uint8Array(existing.length + nc.length);
-                combined.set(existing, 0);
-                combined.set(nc, existing.length);
-                prov.provider.writeFile(prov.subpath, combined);
-            }
-            catch {
-                prov.provider.writeFile(prov.subpath, content);
-            }
-        }
-        else {
-            originalAppendFile(path, content);
-        }
-    };
     // ── Create command registry ──
     const registry = createDefaultRegistry();
     const kernel = self.kernel;
@@ -1224,148 +1187,137 @@ export function initSession(self, ws) {
                 self.cirrusReal.stop(self.ctx);
             const vitePort = resolvedPort;
             const previewBasePath = self.viteBasePath;
-            // Acquire the heavy-alloc gate so the fire-and-forget pre-bundle
-            // phase (still in flight on a fresh `npm install && npm run dev`)
-            // pauses new dispatches while we allocate the cirrus-real boot
+            // Reserve the full supervisor allocation budget so a fire-and-forget
+            // pre-bundle or VFS payload cannot overlap the cirrus-real boot
             // payload (user-vite-config esbuild bundle ~few MiB, plugin-react
             // bundle, syntheticCode string with snapshotFiles inlined ~few
             // MiB, LOADER.load worker bundle). With concurrent allocations
             // and a shared isolate (Mini-PRD: DO shared isolate issues), peak
             // pressure is what kills us — not steady-state. Released right
             // after cirrusReal.start() in a finally so a throw in the boot
-            // path doesn't permanently pin the gate.
-            const heavyAllocRelease = acquireHeavyAlloc();
-            // Safety net: release the gate after a generous ceiling even
-            // if the release path is bypassed by an unexpected control
-            // flow (defensive — boot always reaches start() in well-tested
-            // code paths today). Without this, a future regression that
-            // exits the cirrus-real boot block without hitting our finally
-            // would leave pre-bundle blocked for 30 s on every later
-            // dispatch attempt — annoying but not fatal (waitForLowAllocPressure
-            // has its own 30 s ceiling).
-            const heavyAllocCeiling = setTimeout(() => heavyAllocRelease(), 60_000);
-            // Pre-bundle the user's vite.config.ts if present. Must handle
-            // plugin imports — @vitejs/plugin-react, vite-plugin-svgr, etc.
-            // — which live in the project's node_modules. esbuild resolves
-            // those against the VFS via our existing EsbuildService, then
-            // emits an ESM string the facet imports as user-vite-config.js.
-            let userConfigBundle = null;
-            // Extra synthetic files to seed into the facet's fs snapshot.
-            // Populated below when pre-bundling plugin-react — it does
-            // fs.readFileSync(_require.resolve('./refreshUtils.js')) at
-            // transform time and expects to find that file on disk.
-            const extraSyntheticFiles = {};
-            const cfgPath = [cwd + '/vite.config.ts', cwd + '/vite.config.js', cwd + '/vite.config.mjs']
-                .find(p => kernelFs.exists(p));
-            if (cfgPath) {
-                try {
-                    if (!self.esbuildService)
-                        self.esbuildService = new EsbuildService(self.sqliteFs);
-                    const bundleResult = await self.esbuildService.build([cfgPath], {
-                        bundle: true,
-                        format: 'esm',
-                        target: 'es2022',
-                        platform: 'neutral',
-                        // Path C externals:
-                        //   - vite: the facet provides vite-config-helper.js
-                        //     re-exporting the prebundled vite.bundle.js.
-                        //   - @vitejs/plugin-react: the facet provides a
-                        //     prebundled cirrus-plugin-react.js (built by
-                        //     scripts/bundle-plugin-react.mjs at build time;
-                        //     includes babel, react-refresh, inlined assets).
-                        //   - @vitejs/plugin-react/jsx-runtime: same bundle.
-                        // Any OTHER plugin the user imports (plugin-vue,
-                        // plugin-svgr, etc.) falls through to esbuild bundling,
-                        // which may or may not work depending on whether its
-                        // assets can be fully inlined.
-                        external: [
-                            'node:*', 'fs', 'path', 'url', 'util', 'os', 'crypto',
-                            'events', 'stream', 'buffer', 'module', 'perf_hooks',
-                            'esbuild', 'esbuild-wasm',
-                            'vite', 'vite/*',
-                            '@vitejs/plugin-react', '@vitejs/plugin-react/*',
-                        ],
-                        // Give bundled user config a stable module URL so plugins that
-                        // resolve files relative to import.meta.url can find their own
-                        // synthetic install location.
-                        define: {
-                            'import.meta.url': JSON.stringify('file:///user-vite-config.js'),
-                        },
-                        keepNames: true,
-                    });
-                    const out = bundleResult.outputFiles?.[0];
-                    if (out) {
-                        userConfigBundle = rewriteCirrusViteConfigBundle(String(out.contents));
-                        if (bundleResult.errors?.length) {
-                            console.warn('[vite-cmd] esbuild bundle errors:', bundleResult.errors);
+            // path doesn't permanently hold the shared byte budget.
+            const heavyAllocRelease = await acquireHeavyAlloc(ctx.signal);
+            try {
+                // Pre-bundle the user's vite.config.ts if present. Must handle
+                // plugin imports — @vitejs/plugin-react, vite-plugin-svgr, etc.
+                // — which live in the project's node_modules. esbuild resolves
+                // those against the VFS via our existing EsbuildService, then
+                // emits an ESM string the facet imports as user-vite-config.js.
+                let userConfigBundle = null;
+                // Extra synthetic files to seed into the facet's fs snapshot.
+                // Populated below when pre-bundling plugin-react — it does
+                // fs.readFileSync(_require.resolve('./refreshUtils.js')) at
+                // transform time and expects to find that file on disk.
+                const extraSyntheticFiles = {};
+                const cfgPath = [cwd + '/vite.config.ts', cwd + '/vite.config.js', cwd + '/vite.config.mjs']
+                    .find(p => kernelFs.exists(p));
+                if (cfgPath) {
+                    try {
+                        if (!self.esbuildService)
+                            self.esbuildService = new EsbuildService(self.sqliteFs);
+                        const bundleResult = await self.esbuildService.build([cfgPath], {
+                            bundle: true,
+                            format: 'esm',
+                            target: 'es2022',
+                            platform: 'neutral',
+                            // Path C externals:
+                            //   - vite: the facet provides vite-config-helper.js
+                            //     re-exporting the prebundled vite.bundle.js.
+                            //   - @vitejs/plugin-react: the facet provides a
+                            //     prebundled cirrus-plugin-react.js (built by
+                            //     scripts/bundle-plugin-react.mjs at build time;
+                            //     includes babel, react-refresh, inlined assets).
+                            //   - @vitejs/plugin-react/jsx-runtime: same bundle.
+                            // Any OTHER plugin the user imports (plugin-vue,
+                            // plugin-svgr, etc.) falls through to esbuild bundling,
+                            // which may or may not work depending on whether its
+                            // assets can be fully inlined.
+                            external: [
+                                'node:*', 'fs', 'path', 'url', 'util', 'os', 'crypto',
+                                'events', 'stream', 'buffer', 'module', 'perf_hooks',
+                                'esbuild', 'esbuild-wasm',
+                                'vite', 'vite/*',
+                                '@vitejs/plugin-react', '@vitejs/plugin-react/*',
+                            ],
+                            // Give bundled user config a stable module URL so plugins that
+                            // resolve files relative to import.meta.url can find their own
+                            // synthetic install location.
+                            define: {
+                                'import.meta.url': JSON.stringify('file:///user-vite-config.js'),
+                            },
+                            keepNames: true,
+                        });
+                        const out = bundleResult.outputFiles?.[0];
+                        if (out) {
+                            userConfigBundle = rewriteCirrusViteConfigBundle(String(out.contents));
+                            if (bundleResult.errors?.length) {
+                                console.warn('[vite-cmd] esbuild bundle errors:', bundleResult.errors);
+                            }
+                        }
+                        else {
+                            console.warn('[vite-cmd] esbuild.build produced no output');
                         }
                     }
-                    else {
-                        console.warn('[vite-cmd] esbuild.build produced no output');
+                    catch (e) {
+                        ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + (e?.message || e) + '\n');
+                        ctx.stderr.write('  Real-vite will run with default config.\n');
                     }
                 }
-                catch (e) {
-                    ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + (e?.message || e) + '\n');
-                    ctx.stderr.write('  Real-vite will run with default config.\n');
-                }
-            }
-            self.cirrusReal = new CirrusReal({
-                env: self.env,
-                port: vitePort,
-                root: vfsRoot,
-                basePath: previewBasePath,
-                vfs: self.sqliteFs,
-                vfsEvents: self.sqliteFs.events,
-                userConfigBundle,
-                extraSyntheticFiles,
-            });
-            // Reserve a PID so `ps`/logs show it like any other facet.
-            const entry = self.processes.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot, { longRunning: true });
-            try {
+                const cirrusReal = new CirrusReal({
+                    env: self.env,
+                    port: vitePort,
+                    root: vfsRoot,
+                    basePath: previewBasePath,
+                    vfs: self.sqliteFs,
+                    vfsEvents: self.sqliteFs.events,
+                    userConfigBundle,
+                    extraSyntheticFiles,
+                });
+                self.cirrusReal = cirrusReal;
+                // Reserve a PID so `ps`/logs show it like any other facet.
+                const entry = self.processes.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot, { longRunning: true });
                 // [sdk-phase-1] start() is now async because it ASSETS-fetches
                 // the large Vite/plugin-react bundles on first invocation
                 // (cached per-isolate after). The enclosing function is async.
-                await self.cirrusReal.start(self.ctx, entry.pid);
+                await cirrusReal.start(self.ctx, entry.pid);
+                // Primitive #3 — register the cirrus-real port the same way
+                // the default-Cirrus shim does. Same single hook; the only
+                // difference is which handler.handleRequest the stub forwards
+                // into.
+                const cirrusStub = makeLongRunningPortStub(cirrusReal);
+                self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
+                self.portRegistry.register(vitePort, entry.pid);
+                self._viteShimPid = entry.pid;
+                self._viteShimPort = vitePort;
+                // ── Boot banner (§4.3 of PHASE2-REAL-VITE-PLAN.md) ──────
+                const snap = cirrusReal.stats.snapshot;
+                ctx.stdout.write('\n\x1b[1;36m  Nimbus: real-vite mode\x1b[0m \x1b[2m(experimental, Phase 1-4)\x1b[0m\n\n');
+                ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Preview:    \x1b[36m' + previewBasePath + '/\x1b[0m\n');
+                ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Vite:       ' + cirrusReal.stats.viteVersion + ' (bundled)\n');
+                ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       ' + vfsRoot + '\n');
+                ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Port:       ' + vitePort + ' \x1b[2m(virtual routing key)\x1b[0m\n');
+                if (snap) {
+                    const kb = (snap.totalBytes / 1024).toFixed(1);
+                    const pkgJson = snap.packageJsonCount;
+                    ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Snapshot:   ' + snap.fileCount + ' files / ' +
+                        kb + ' KB ' +
+                        (pkgJson ? '\x1b[2m(incl. ' + pkgJson + ' package.json, rest lazy)\x1b[0m' : '') + '\n');
+                }
+                if (userConfigBundle) {
+                    ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Config:     ' + cfgPath + ' \x1b[2m(' +
+                        (userConfigBundle.length / 1024).toFixed(0) + ' KB bundled)\x1b[0m\n');
+                }
+                ctx.stdout.write('\n  \x1b[2mWorks:\x1b[0m @vitejs/plugin-react, JSX/TSX transforms, SPA fallback, HMR.\n');
+                ctx.stdout.write('  \x1b[2mPartial:\x1b[0m other plugins (Babel-family generally OK; SWC/Rolldown blocked).\n');
+                ctx.stdout.write('  \x1b[2mBlocked:\x1b[0m vite build (rolldown needs node:wasi). Use cirrus for build.\n');
+                ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mNIMBUS_REAL_VITE=0 vite\x1b[2m for Cirrus.\x1b[0m\n\n');
+                return 0;
             }
             finally {
-                // Cirrus-real boot allocation done (or threw). Pre-bundle is
-                // free to resume. If start() threw, the gate must still
-                // release so a future retry doesn't deadlock pre-bundle.
-                clearTimeout(heavyAllocCeiling);
+                // Cirrus-real boot allocation done (or threw). Always restore the
+                // shared capacity so queued allocators can resume.
                 heavyAllocRelease();
             }
-            // Primitive #3 — register the cirrus-real port the same way
-            // the default-Cirrus shim does. Same single hook; the only
-            // difference is which handler.handleRequest the stub forwards
-            // into.
-            const cirrusStub = makeLongRunningPortStub(self.cirrusReal);
-            self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
-            self.portRegistry.register(vitePort, entry.pid);
-            self._viteShimPid = entry.pid;
-            self._viteShimPort = vitePort;
-            // ── Boot banner (§4.3 of PHASE2-REAL-VITE-PLAN.md) ──────
-            const snap = self.cirrusReal.stats.snapshot;
-            ctx.stdout.write('\n\x1b[1;36m  Nimbus: real-vite mode\x1b[0m \x1b[2m(experimental, Phase 1-4)\x1b[0m\n\n');
-            ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Preview:    \x1b[36m' + previewBasePath + '/\x1b[0m\n');
-            ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Vite:       ' + self.cirrusReal.stats.viteVersion + ' (bundled)\n');
-            ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:       ' + vfsRoot + '\n');
-            ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Port:       ' + vitePort + ' \x1b[2m(virtual routing key)\x1b[0m\n');
-            if (snap) {
-                const kb = (snap.totalBytes / 1024).toFixed(1);
-                const pkgJson = snap.packageJsonCount;
-                ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Snapshot:   ' + snap.fileCount + ' files / ' +
-                    kb + ' KB ' +
-                    (pkgJson ? '\x1b[2m(incl. ' + pkgJson + ' package.json, rest lazy)\x1b[0m' : '') + '\n');
-            }
-            if (userConfigBundle) {
-                ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Config:     ' + cfgPath + ' \x1b[2m(' +
-                    (userConfigBundle.length / 1024).toFixed(0) + ' KB bundled)\x1b[0m\n');
-            }
-            ctx.stdout.write('\n  \x1b[2mWorks:\x1b[0m @vitejs/plugin-react, JSX/TSX transforms, SPA fallback, HMR.\n');
-            ctx.stdout.write('  \x1b[2mPartial:\x1b[0m other plugins (Babel-family generally OK; SWC/Rolldown blocked).\n');
-            ctx.stdout.write('  \x1b[2mBlocked:\x1b[0m vite build (rolldown needs node:wasi). Use cirrus for build.\n');
-            ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mNIMBUS_REAL_VITE=0 vite\x1b[2m for Cirrus.\x1b[0m\n\n');
-            return 0;
         }
         if (!self.esbuildService)
             self.esbuildService = new EsbuildService(self.sqliteFs);

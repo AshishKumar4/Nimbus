@@ -18,8 +18,20 @@ export function generateStreamsCode() {
 const __streamMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
+  const _Decoder = TextDecoder;
 
   // ── Readable ────────────────────────────────────────────────────────
+  //
+  // Node's read machinery is a PULL: the consumer's demand is what causes
+  // \`_read()\` to be called. Two consumer idioms create demand implicitly —
+  // attaching a 'data' listener and \`.pipe()\` — and both put the stream in
+  // flowing mode. Honouring that is not cosmetic: a source whose \`_read()\`
+  // is never called produces nothing at all, so
+  // \`fs.createReadStream(f).on('data', …)\` and \`.pipe(res)\` hang forever
+  // (every static file server, and the doom-web asset serve, are exactly
+  // this shape). \`_flow\` below is the single pump used by flowing mode,
+  // \`read()\`, and the async iterator, so a source that pushes
+  // ASYNCHRONOUSLY (a live VFS range read) works through all three.
   class Readable extends __eventsMod {
     constructor(opts) {
       super();
@@ -28,6 +40,11 @@ const __streamMod = (() => {
         ended: false,
         endEmitted: false,
         flowing: null,
+        // reading — a _read() call is outstanding: no push() and no EOF has
+        // landed since. Keeps the pump from stacking redundant _read calls
+        // while an async source is in flight.
+        reading: false,
+        pumping: false,
         highWaterMark: opts?.highWaterMark ?? 16384,
         encoding: opts?.encoding || null,
         objectMode: opts?.objectMode ?? false,
@@ -40,17 +57,70 @@ const __streamMod = (() => {
 
     _read(size) { /* override in subclass */ }
 
+    /** Ask the source for more, unless it already owes us a push or is done. */
+    _maybeRead() {
+      const state = this._readableState;
+      if (state.reading || state.ended || state.destroyed) return;
+      state.reading = true;
+      try { this._read(state.highWaterMark); }
+      catch (err) { state.reading = false; this.destroy(err); }
+    }
+
+    _shift() {
+      const state = this._readableState;
+      const chunk = state.buffer.shift();
+      state.readableLength -= (chunk?.length || 0);
+      return this._decode(chunk);
+    }
+
+    _decode(chunk) {
+      const enc = this._readableState.encoding;
+      if (!enc || enc === 'buffer' || !(chunk instanceof Uint8Array)) return chunk;
+      try { return new _Decoder(enc === 'binary' ? 'latin1' : enc).decode(chunk); }
+      catch { return chunk; }
+    }
+
+    _maybeEmitEnd() {
+      const state = this._readableState;
+      if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
+        state.endEmitted = true;
+        this.readable = false;
+        this.emit('end');
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * Drain buffered chunks to 'data' listeners while flowing, then ask the
+     * source for more. Deferred to a microtask so a synchronous \`push()\`
+     * from inside \`_read()\` cannot recurse into the stack.
+     */
+    _flow() {
+      const state = this._readableState;
+      if (state.pumping) return;
+      state.pumping = true;
+      queueMicrotask(() => {
+        state.pumping = false;
+        while (state.flowing && state.buffer.length > 0 && !state.destroyed) {
+          this.emit('data', this._shift());
+        }
+        if (this._maybeEmitEnd()) return;
+        if (state.flowing && !state.destroyed) this._maybeRead();
+      });
+    }
+
     read(size) {
       const state = this._readableState;
       if (state.buffer.length === 0) {
         if (state.ended) return null;
-        this._read(size || state.highWaterMark);
-        return state.buffer.length > 0 ? state.buffer.shift() : null;
+        this._maybeRead();
+        if (state.buffer.length === 0) return null;
       }
-      const chunk = state.buffer.shift();
-      state.readableLength -= (chunk?.length || 0);
+      const chunk = this._shift();
       if (state.buffer.length === 0 && state.ended && !state.endEmitted) {
         state.endEmitted = true;
+        this.readable = false;
         queueMicrotask(() => this.emit('end'));
       }
       return chunk;
@@ -58,10 +128,13 @@ const __streamMod = (() => {
 
     push(chunk, encoding) {
       const state = this._readableState;
+      state.reading = false;
       if (chunk === null) {
         state.ended = true;
-        if (state.buffer.length === 0 && !state.endEmitted) {
+        if (state.flowing) this._flow();
+        else if (state.buffer.length === 0 && !state.endEmitted) {
           state.endEmitted = true;
+          this.readable = false;
           queueMicrotask(() => this.emit('end'));
         }
         return false;
@@ -71,25 +144,18 @@ const __streamMod = (() => {
       }
       state.buffer.push(chunk);
       state.readableLength += (chunk?.length || 0);
-      if (state.flowing) {
-        queueMicrotask(() => {
-          while (state.buffer.length > 0 && state.flowing) {
-            const c = state.buffer.shift();
-            state.readableLength -= (c?.length || 0);
-            this.emit('data', c);
-          }
-          // After draining, fire 'end' if push(null) was queued but
-          // deferred because the buffer was non-empty at the time.
-          // Guarded by endEmitted so a concurrent .read() drain doesn't
-          // double-fire (W8 fix: real Node uses an endEmitted flag).
-          if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-            state.endEmitted = true;
-            this.emit('end');
-          }
-        });
-      }
+      if (state.flowing) this._flow();
       return state.readableLength < state.highWaterMark;
     }
+
+    // Node switches to flowing mode when a 'data' listener is attached,
+    // unless the consumer explicitly called pause().
+    on(event, listener) {
+      const result = super.on(event, listener);
+      if (event === 'data' && this._readableState.flowing !== false) this.resume();
+      return result;
+    }
+    addListener(event, listener) { return this.on(event, listener); }
 
     pipe(dest, opts) {
       this.on('data', (chunk) => {
@@ -113,19 +179,9 @@ const __streamMod = (() => {
 
     resume() {
       const state = this._readableState;
-      if (!state.flowing) {
+      if (state.flowing !== true) {
         state.flowing = true;
-        queueMicrotask(() => {
-          while (state.buffer.length > 0 && state.flowing) {
-            const chunk = state.buffer.shift();
-            state.readableLength -= (chunk?.length || 0);
-            this.emit('data', chunk);
-          }
-          if (state.ended && state.buffer.length === 0 && !state.endEmitted) {
-            state.endEmitted = true;
-            this.emit('end');
-          }
-        });
+        this._flow();
       }
       return this;
     }
@@ -143,30 +199,53 @@ const __streamMod = (() => {
     destroy(err) {
       if (this._readableState.destroyed) return this;
       this._readableState.destroyed = true;
+      this.readable = false;
       if (err) this.emit('error', err);
       this.emit('close');
       return this;
     }
 
-    get readableEnded() { return this._readableState.ended; }
+    get readableEnded() { return this._readableState.endEmitted; }
     get readableLength() { return this._readableState.readableLength; }
     get readableFlowing() { return this._readableState.flowing; }
 
+    // One chunk per tick: resume, take the next 'data', pause again. Uses
+    // the same pump as flowing mode, so an asynchronous source works here
+    // too (the old implementation called read() once and then waited for a
+    // 'data' event that nothing would ever emit in paused mode).
     [Symbol.asyncIterator]() {
       const self = this;
-      return {
+      const state = self._readableState;
+      const iterator = {
         next() {
-          return new Promise((resolve) => {
-            const chunk = self.read();
-            if (chunk !== null) return resolve({ value: chunk, done: false });
-            if (self._readableState.ended) return resolve({ value: undefined, done: true });
-            const onData = (c) => { self.off('end', onEnd); resolve({ value: c, done: false }); };
-            const onEnd = () => { self.off('data', onData); resolve({ value: undefined, done: true }); };
+          return new Promise((resolve, reject) => {
+            if (state.buffer.length > 0) {
+              const chunk = self._shift();
+              self._maybeEmitEnd();
+              return resolve({ value: chunk, done: false });
+            }
+            if (state.ended || state.destroyed) return resolve({ value: undefined, done: true });
+            const cleanup = () => {
+              self.off('data', onData);
+              self.off('end', onEnd);
+              self.off('error', onError);
+            };
+            const onData = (c) => { cleanup(); self.pause(); resolve({ value: c, done: false }); };
+            const onEnd = () => { cleanup(); resolve({ value: undefined, done: true }); };
+            const onError = (e) => { cleanup(); reject(e); };
             self.once('data', onData);
             self.once('end', onEnd);
+            self.once('error', onError);
+            self.resume();
           });
         },
+        return() {
+          self.destroy();
+          return Promise.resolve({ value: undefined, done: true });
+        },
+        [Symbol.asyncIterator]() { return iterator; },
       };
+      return iterator;
     }
   }
 
