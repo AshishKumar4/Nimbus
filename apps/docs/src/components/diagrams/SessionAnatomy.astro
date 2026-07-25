@@ -56,7 +56,9 @@ const nodes = {
 	peers: {
 		title: 'peer DOs',
 		facts: [
-			'Big npm installs shard across peer Durable Objects, so one isolate is never the bottleneck.',
+			'Sibling Durable Objects in the coordinator’s own namespace. Each one lends a Worker Loader and a memory budget independent of the coordinator’s.',
+			'Big npm installs shard across peers whenever the fan-out is wider than five. The opencode attach TUI is the one resident process hosted there.',
+			'A peer-hosted facet still sends readFile, writeFile, stdout, and registerPort to the coordinator, so the disk, terminal, and ports never move.',
 		],
 	},
 	cache: {
@@ -133,7 +135,7 @@ const nodes = {
 			<g data-node="peers" role="button" tabindex="0" aria-pressed="false">
 				<rect class="dgnode2" x="700" y="90" width="224" height="64" rx="9" />
 				<text class="dgt" x="714" y="116">peer DOs</text>
-				<text class="dgs" x="714" y="134">npm install shards</text>
+				<text class="dgs" x="714" y="134">install shards · heavy facets</text>
 			</g>
 			<g data-node="cache" role="button" tabindex="0" aria-pressed="false">
 				<rect class="dgnode2" x="700" y="190" width="224" height="78" rx="9" />
