@@ -440,12 +440,19 @@ export async function maybeBumpIsolateGen(host, ctx) {
     host._w9IsolateGenPersisted = true;
     try {
         const prev = (await ctx.storage.get(W9_ISOLATE_GEN_KEY));
-        // Adopt the persisted truth first; only adopt the bump after it is
-        // durably written. An unpersisted `next` would be re-read as `prev` by
-        // the NEXT boot and re-issued — two instances sharing one generation is
+        // Adopt the persisted truth first, and adopt the bump only after the
+        // put resolves. An unpersisted `next` would be re-read as `prev` by the
+        // NEXT boot and re-issued — two instances sharing one generation is
         // exactly the pid-aliasing this counter exists to prevent. Running on
         // the previous persisted generation is the lesser lapse, and the
         // put-failure case is replica-only in practice (replicas never spawn).
+        //
+        // What holds the guarantee is the output gate, not this await: measured,
+        // the block body resolves in 0 ms even with a confirmed put, because
+        // `await storage.put()` returns before durability. The gate is what
+        // keeps a pid from generation N from escaping before N is durable, which
+        // is why marking this put `allowUnconfirmed` is not a free speedup — see
+        // scratchpad/coldstart-s1.md.
         host._w9IsolateGen = typeof prev === 'number' ? prev : 0;
         const next = host._w9IsolateGen + 1;
         await ctx.storage.put(W9_ISOLATE_GEN_KEY, next);
