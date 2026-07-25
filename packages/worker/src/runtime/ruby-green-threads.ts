@@ -45,6 +45,13 @@
  *   IO.select over Nimbus sockets                ruby-socket-shim
  *   IO.pipe read on an empty pipe                ruby-socket-shim
  *
+ * Ruby exports the synchronisation primitives under two names each - ::Queue
+ * and Thread::Queue - and defines both itself. BOTH have to resolve to the
+ * implementations here: the real ones wait for an OS thread to wake them,
+ * which a fiber can never be, so the first green thread that reaches one stops
+ * the process for good. WEBrick's timeout watcher reaches Thread::Queue#pop on
+ * its second connection, which is exactly how that was found.
+ *
  * Deliberately NOT parked, and why it is safe: reads and writes on a CONNECTED
  * socket descriptor suspend the wasm stack through JSPI instead of yielding to
  * peers. An accepted connection's request is already buffered when it is
@@ -221,9 +228,22 @@ module Nimbus
           # Killed: unwound on purpose, not an error to re-raise at join.
         rescue Exception => e
           @error = e
+          __nimbus_report_exception(e)
         end
       end
       Nimbus::Threading.register(self)
+    end
+
+    # Ruby reports a thread that dies with an exception unless asked not to,
+    # and a thread nobody joins is exactly the case where that report is the
+    # only evidence there is. A green thread that reaches a primitive it cannot
+    # satisfy dies here, so staying silent turns a broken program into a
+    # program that merely does less than it was asked.
+    def __nimbus_report_exception(error)
+      report = @report_on_exception.nil? ? Thread.report_on_exception : @report_on_exception
+      return unless report
+      $stderr.write("#<Thread:#{object_id} #{@name || 'green'}> terminated with exception:\n")
+      $stderr.write(error.full_message(highlight: false, order: :top))
     end
 
     # Sleep without stopping the world: park with a deadline the scheduler can
@@ -480,6 +500,14 @@ class Thread
     def list
       [main] + Nimbus::Threading.threads.reject(&:finished?)
     end
+
+    # The default a thread inherits for reporting its own death. Ruby's is on,
+    # and a program that turns it off has to be able to.
+    attr_writer :report_on_exception
+
+    def report_on_exception
+      defined?(@report_on_exception) ? @report_on_exception : true
+    end
   end
 end
 
@@ -507,9 +535,6 @@ class NimbusThreadGroup
     false
   end
 end
-
-Object.send(:remove_const, :ThreadGroup) if defined?(::ThreadGroup)
-ThreadGroup = NimbusThreadGroup
 
 # A queue that blocks the way a queue should: popping an empty one parks the
 # caller until a push arrives. That hand-off is exactly what cannot work
@@ -584,13 +609,6 @@ class NimbusSizedQueue < NimbusQueue
   alias enq push
 end
 
-Object.send(:remove_const, :Queue) if defined?(::Queue)
-Queue = NimbusQueue
-Object.send(:remove_const, :SizedQueue) if defined?(::SizedQueue)
-SizedQueue = NimbusSizedQueue
-Thread.const_set(:Queue, NimbusQueue) unless Thread.const_defined?(:Queue, false)
-Thread.const_set(:SizedQueue, NimbusSizedQueue) unless Thread.const_defined?(:SizedQueue, false)
-
 # A mutex that parks rather than deadlocking. Ruby's own Mutex assumes real
 # threads: locking one already held raises on the single OS thread instead of
 # waiting, which is wrong once the waiter is a fiber that could yield.
@@ -643,10 +661,6 @@ class NimbusMutex
   end
 end
 
-Object.send(:remove_const, :Mutex) if defined?(::Mutex)
-Mutex = NimbusMutex
-Thread.const_set(:Mutex, NimbusMutex) unless Thread.const_defined?(:Mutex, false)
-
 class NimbusConditionVariable
   def initialize
     @signalled = 0
@@ -678,9 +692,30 @@ class NimbusConditionVariable
   end
 end
 
-Object.send(:remove_const, :ConditionVariable) if defined?(::ConditionVariable)
-ConditionVariable = NimbusConditionVariable
-Thread.const_set(:ConditionVariable, NimbusConditionVariable) unless Thread.const_defined?(:ConditionVariable, false)
+# Ruby's own Queue, SizedQueue, Mutex and ConditionVariable block the VM: they
+# wait for an OS thread to wake them, which a fiber can never be, so the first
+# green thread that touches one stops the whole process - and dies with a
+# fatal nobody sees. Ruby exports each of them under BOTH ::Queue and
+# Thread::Queue, and defines both itself, so these are replacements rather than
+# defaults: a guard that only fills in what is missing would never fire, and
+# leaving either spelling on the real class is worse than leaving both, because
+# a program then gets one parking primitive and one blocking one.
+{
+  Queue: NimbusQueue,
+  SizedQueue: NimbusSizedQueue,
+  Mutex: NimbusMutex,
+  ConditionVariable: NimbusConditionVariable,
+}.each_pair do |name, impl|
+  [Object, Thread].each do |scope|
+    scope.send(:remove_const, name) if scope.const_defined?(name, false)
+    scope.const_set(name, impl)
+  end
+end
+
+# ThreadGroup has no namespaced spelling; it only tracks threads, so a
+# green-thread group has nothing to isolate.
+Object.send(:remove_const, :ThreadGroup) if Object.const_defined?(:ThreadGroup, false)
+Object.const_set(:ThreadGroup, NimbusThreadGroup)
 
 module Kernel
   # The real sleep suspends the whole wasm stack, stopping every green thread

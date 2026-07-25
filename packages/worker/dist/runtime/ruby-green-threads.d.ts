@@ -45,6 +45,13 @@
  *   IO.select over Nimbus sockets                ruby-socket-shim
  *   IO.pipe read on an empty pipe                ruby-socket-shim
  *
+ * Ruby exports the synchronisation primitives under two names each - ::Queue
+ * and Thread::Queue - and defines both itself. BOTH have to resolve to the
+ * implementations here: the real ones wait for an OS thread to wake them,
+ * which a fiber can never be, so the first green thread that reaches one stops
+ * the process for good. WEBrick's timeout watcher reaches Thread::Queue#pop on
+ * its second connection, which is exactly how that was found.
+ *
  * Deliberately NOT parked, and why it is safe: reads and writes on a CONNECTED
  * socket descriptor suspend the wasm stack through JSPI instead of yielding to
  * peers. An accepted connection's request is already buffered when it is
