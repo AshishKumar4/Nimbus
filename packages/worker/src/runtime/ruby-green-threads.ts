@@ -264,7 +264,10 @@ module Nimbus
         return nil if deadline && Time.now >= deadline
         Nimbus::Threading.park(-> { finished? })
       end
-      raise @error if @error
+      # Kernel.raise, not Thread#raise: this class defines the latter, which
+      # would deliver the error back INTO the finished thread instead of
+      # re-raising it here.
+      Kernel.raise(@error) if @error
       self
     end
 
