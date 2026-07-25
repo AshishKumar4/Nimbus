@@ -6,10 +6,6 @@ description: The isolate boundary, enforced Unix permissions, session isolation,
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro';
 
-This page covers the isolation boundary, permission enforcement, session
-isolation, and the token model. The last section lists what is not
-enforced yet.
-
 ## The isolation boundary
 
 Each process runs in its own V8 isolate, spawned by Cloudflare's Worker
@@ -20,7 +16,7 @@ One session is one supervisor Durable Object plus the facet isolates it
 spawns. A facet receives one capability when it starts: an RPC stub
 pointing at its own session's supervisor. Generated facet code cannot
 import supervisor modules, cannot reach another session's DO, and cannot
-mint stubs it wasn't given. The RPC surface is the only interface it has.
+mint stubs it wasn't given.
 
 ## No runtime code generation
 
