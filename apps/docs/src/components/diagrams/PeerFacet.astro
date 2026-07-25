@@ -1,0 +1,60 @@
+---
+/**
+ * PeerFacet — where a facet runs versus where its syscalls land. A peer DO
+ * lends a loader and a memory budget; the SUPERVISOR binding it mints carries
+ * the coordinator's doId, so the disk, terminal, and port registry never move.
+ */
+import Diagram from './Diagram.astro';
+interface Props {
+	caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<Diagram
+	label="A facet hosted on a peer Durable Object routes its filesystem, terminal, and port calls back to the coordinator session DO, which holds the disk, terminal, and port registry"
+	caption={caption}
+>
+	<svg viewBox="0 0 940 330" xmlns="http://www.w3.org/2000/svg">
+		<defs>
+			<marker id="pf-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+			<marker id="pf-arr-accent" class="dgm-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+				<path d="M0,0.6 L7.4,4 L0,7.4 Z" />
+			</marker>
+		</defs>
+
+		<rect class="dgzone" x="14" y="18" width="380" height="296" rx="12" />
+		<text class="dgtag" x="34" y="42">coordinator do</text>
+
+		<rect class="dghero" x="34" y="54" width="340" height="98" rx="10" />
+		<text class="dgt" x="50" y="82">session DO</text>
+		<text class="dgs" x="50" y="102">sqlite disk · terminal · stdin</text>
+		<text class="dgs" x="50" y="122">port registry · process table</text>
+
+		<line class="dgedge" x1="204" y1="152" x2="204" y2="196" marker-end="url(#pf-arr)" marker-start="url(#pf-arr)" />
+
+		<rect class="dgnode" x="34" y="196" width="340" height="98" rx="9" />
+		<text class="dgt" x="50" y="224">local facet</text>
+		<text class="dgs" x="50" y="244">minted by this DO's env.LOADER</text>
+		<text class="dgs" x="50" y="264">shares its workerd memory envelope</text>
+		<text class="dgnote" x="50" y="284">everything that binds a port runs here</text>
+
+		<rect class="dgzone" x="560" y="186" width="366" height="128" rx="12" />
+		<text class="dgtag" x="580" y="210">peer do · &lt;coordinator&gt;:proc:0</text>
+
+		<rect class="dgnode2" x="580" y="222" width="326" height="80" rx="9" />
+		<text class="dgt" x="596" y="248">heavy facet</text>
+		<text class="dgs" x="596" y="268">minted by the peer's env.LOADER</text>
+		<text class="dgs" x="596" y="288">independent memory budget</text>
+
+		<path class="dgedge-accent" d="M 574,242 C 486,242 470,150 382,128" marker-end="url(#pf-arr-accent)" />
+
+		<text class="dgtag" x="560" y="42">what crosses back</text>
+		<text class="dgs dgaccent" x="560" y="70">SUPERVISOR binding · props.doId = coordinator</text>
+		<text class="dgs" x="560" y="94">readFile · writeFile · registerPort</text>
+		<text class="dgs" x="560" y="114">stdout · stderr frames · stdin pump</text>
+		<text class="dgnote" x="560" y="140">the peer lends a loader and a budget, nothing else</text>
+	</svg>
+</Diagram>
