@@ -195,7 +195,7 @@ export function makeRubyRunnerFactory(deps) {
                 fsSnapshot: fsSnapshot.snapshot,
             };
             const command = formatRubyCommand(binName, argv);
-            const result = shouldRunRubyAsSocketProcess(parsed)
+            const result = needsResidentProcess(parsed)
                 ? await spawnRubySocketProcess(facetMgr, facetArgs, command)
                 : await dispatchRubyFacet(facetMgr, facetArgs);
             if (result.stdout)
@@ -449,7 +449,21 @@ function parseRubyArgv(argv) {
     return { mode: 'inline', inlineCode: '', scriptPath: '', scriptArgs: [],
         requires, exitCode: 2, error: "REPL not supported in v1. Use 'ruby -e \"code\"' or 'ruby script.rb'." };
 }
-function shouldRunRubyAsSocketProcess(parsed) {
+/**
+ * Which process shape this invocation needs - and NOTHING else. Both shapes
+ * run the same language: threads, queues and the socket classes come from the
+ * VM preamble, so what is decided here is how long the process lives, not what
+ * Ruby the program gets.
+ *
+ * A script is a program and gets a process that can outlive the command. A
+ * one-liner is an expression and is answered from the pooled VM, which is an
+ * order of magnitude faster (measured: 101ms against 1355ms) and cannot hold a
+ * port open afterwards. The requires listed here are the ways a one-liner asks
+ * for a server anyway - `ruby -run -e httpd` is the built-in one. When the
+ * guess is wrong the program still gets a straight answer, because binding a
+ * port without a process to hold it says exactly that.
+ */
+function needsResidentProcess(parsed) {
     if (parsed.mode === 'script')
         return true;
     return parsed.requires.some((name) => {
@@ -512,8 +526,6 @@ async function spawnRubySocketProcess(facetMgr, args, command) {
             progName: args.progName,
             cwd: args.cwd,
             fsSnapshot: args.fsSnapshot,
-            // Threads first: the socket shim parks through the scheduler.
-            rubyPrelude: `${RUBY_GREEN_THREADS}\n${RUBY_SOCKET_SHIM}`,
         },
     }).catch(() => null);
     if (!spawned) {
@@ -705,7 +717,6 @@ export function buildRubySocketProcessWorker(preamble) {
         '      progName: args.progName || "ruby",',
         '      cwd: args.cwd || "/home/user",',
         '      fsSnapshot: args.fsSnapshot,',
-        '      rubyPrelude: args.rubyPrelude || "",',
         '    };',
         '    globalThis.__nimbusRubyProcessPromise = globalThis.__rubyRun(globalThis.__nimbusRubyProcessArgs).then((result) => {',
         '      globalThis.__nimbusRubyProcessResult = result;',
@@ -839,6 +850,13 @@ export function buildRubyPreamble() {
     return [
         '// ── WASI shim preamble (wasi-instance.ts) ─────────────────────',
         WASI_INSTANCE_PREAMBLE_SRC,
+        '',
+        '// ── Ruby language prelude ─────────────────────────────────────',
+        '// Green threads and the socket classes, evaluated once with the rest of',
+        '// VM startup. It lives in the shared preamble so BOTH process shapes get',
+        '// it from the same place: a resident server and a one-shot `ruby -e` are',
+        '// the same language, and only differ in how long the process lives.',
+        `const RUBY_LANGUAGE_PRELUDE = ${JSON.stringify(`${RUBY_GREEN_THREADS}\n${RUBY_SOCKET_SHIM}`)};`,
         '',
         '// ── FinalizationRegistry shim ─────────────────────────────────',
         '// Ruby ABI guest uses FinalizationRegistry for resource cleanup.',
@@ -1260,6 +1278,12 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   // First call into __rubyRun: complete Ruby VM init (ruby-init +
   // ruby-init-loadpath) now that we're in request-handler context
   // where crypto.getRandomValues is permitted. Subsequent calls skip.
+  //
+  // The language prelude goes in here, once, with the rest of VM startup.
+  // Threads, queues, mutexes and the socket classes are what Ruby IS on this
+  // runtime, so a program gets them because it is Ruby - not because the
+  // invocation was classified one way rather than another. The two process
+  // shapes differ in how long the process lives, and in nothing else.
   if (!boot.rubyInitialized) {
     try {
       const initArgs = boot.writeListString(['ruby', '-e_=0']);
@@ -1272,6 +1296,24 @@ globalThis.__rubyRun = async function __rubyRun(args) {
         stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
         stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
         error: 'ruby-init / ruby-init-loadpath failed at request time: ' + (e && e.message),
+      };
+    }
+    // A broken language prelude is a broken interpreter, so it fails the call
+    // rather than leaving the program to trip over whatever is missing.
+    let preludeStatus;
+    try {
+      preludeStatus = await __nimbusRubyEval(boot, RUBY_LANGUAGE_PRELUDE);
+    } catch (e) {
+      preludeStatus = { status: -1, error: (e && e.message) || String(e) };
+    }
+    if (!preludeStatus || preludeStatus.status !== 0) {
+      boot.rubyInitialized = false;
+      return {
+        exitCode: 1,
+        stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
+        stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
+        error: 'ruby language prelude failed to load: ' +
+          (preludeStatus && preludeStatus.error ? preludeStatus.error : 'eval status ' + (preludeStatus && preludeStatus.status)),
       };
     }
   }
@@ -1389,22 +1431,6 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] prelude returned non-zero status: ' + preludeStatus.status + '\\n');
   }
 
-  if (args.rubyPrelude) {
-    try {
-      const adapterStatus = await callEvalStringProtect(String(args.rubyPrelude));
-      if (adapterStatus && adapterStatus.status !== 0) {
-        globalThis.__nimbusRubyStderr.push('[ruby-runner-diag] adapter prelude returned non-zero status: ' + adapterStatus.status + '\\n');
-      }
-    } catch (e) {
-      return {
-        exitCode: 1,
-        stdout: globalThis.__nimbusRubyStdout.slice(stdoutStart).join(''),
-        stderr: globalThis.__nimbusRubyStderr.slice(stderrStart).join(''),
-        error: 'ruby adapter prelude threw: ' + (e && e.message),
-      };
-    }
-  }
-
   // Stage 2: run user code wrapped for SystemExit/Exception capture.
   let evalStatus;
   try {
@@ -1449,10 +1475,15 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     exitCode = 0;
   }
 
-  // Slice + scrub the marker from stderr output before returning.
+  // Scrub the marker out of the BUFFER, not just out of what this call
+  // returns. A process that parked instead of exiting - any server - leaves
+  // __rubyRun finished while the program is still live, and whoever reads the
+  // buffer next would otherwise hand the user our side channel.
   const stdoutOut = globalThis.__nimbusRubyStdout.slice(stdoutStart).join('');
-  let stderrOut = globalThis.__nimbusRubyStderr.slice(stderrStart).join('');
-  stderrOut = stderrOut.replace(new RegExp(NIMBUS_EXIT_MARKER + '-?\\\\d+\\\\n?', 'g'), '');
+  const markerLine = new RegExp(NIMBUS_EXIT_MARKER + '-?\\\\d+\\\\n?', 'g');
+  const stderrOut = globalThis.__nimbusRubyStderr.slice(stderrStart).join('').replace(markerLine, '');
+  globalThis.__nimbusRubyStderr.length = stderrStart;
+  if (stderrOut) globalThis.__nimbusRubyStderr.push(stderrOut);
 
   return {
     exitCode: exitCode,
