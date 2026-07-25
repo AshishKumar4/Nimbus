@@ -66,7 +66,7 @@ try {
   }
 
   // 1. GET returns the body byte-exact.
-  await t.run(heredocCommand('get.rb', [
+  await t.run(heredocCommand('rb_get.rb', [
     'require "net/http"',
     'require "uri"',
     `body = Net::HTTP.get(URI("http://127.0.0.1:${PORT}/hello"))`,
@@ -74,7 +74,7 @@ try {
     'puts "GET_BODY=#{body}"',
   ].join('\n')), 10_000);
   {
-    const { output } = await t.run('ruby get.rb', 120_000);
+    const { output } = await t.run('ruby rb_get.rb', 120_000);
     const stripped = stripAnsi(output);
     a.check('Net::HTTP.get returns the port body byte-exact',
       stripped.includes(`GET_LEN=${Buffer.byteLength(EXACT)}`) && stripped.includes(`GET_BODY=${EXACT}`),
@@ -82,7 +82,7 @@ try {
   }
 
   // 2. POST with a body.
-  await t.run(heredocCommand('post.rb', [
+  await t.run(heredocCommand('rb_post.rb', [
     'require "net/http"',
     'require "uri"',
     `res = Net::HTTP.post(URI("http://127.0.0.1:${PORT}/submit"), '{"hello":"ruby"}', "Content-Type" => "application/json")`,
@@ -90,7 +90,7 @@ try {
     'puts "POST_BODY=#{res.body}"',
   ].join('\n')), 10_000);
   {
-    const { output } = await t.run('ruby post.rb', 120_000);
+    const { output } = await t.run('ruby rb_post.rb', 120_000);
     const stripped = stripAnsi(output);
     a.check('Net::HTTP.post delivers the request body and reads the reply',
       /POST_CODE=200/.test(stripped) && /POST_BODY=echo:\{"hello":"ruby"\}/.test(stripped),
@@ -98,7 +98,7 @@ try {
   }
 
   // 3. The session AI gateway, reached exactly like any other port.
-  await t.run(heredocCommand('gateway.rb', [
+  await t.run(heredocCommand('rb_gateway.rb', [
     'require "net/http"',
     'require "uri"',
     'require "json"',
@@ -125,7 +125,7 @@ try {
     'puts "CHAT_RAW=#{res.body[0, 300]}" unless res.code == "200"',
   ].join('\n')), 10_000);
   {
-    const { output } = await t.run('ruby gateway.rb', 180_000);
+    const { output } = await t.run('ruby rb_gateway.rb', 180_000);
     const stripped = stripAnsi(output);
     const models = stripped.match(/MODELS=(\d+)/);
     a.check('ruby lists the session AI gateway models',
@@ -137,7 +137,7 @@ try {
   }
 
   // 4. A large response streams instead of materialising.
-  await t.run(heredocCommand('stream.rb', [
+  await t.run(heredocCommand('rb_stream.rb', [
     'require "net/http"',
     'total = 0',
     'chunks = 0',
@@ -154,7 +154,7 @@ try {
     'puts "STREAM_BYTES=#{total} STREAM_CHUNKS=#{chunks} STREAM_FIRST=#{first}"',
   ].join('\n')), 10_000);
   {
-    const { output } = await t.run('ruby stream.rb', 180_000);
+    const { output } = await t.run('ruby rb_stream.rb', 180_000);
     const stripped = stripAnsi(output);
     const m = stripped.match(/STREAM_BYTES=(\d+) STREAM_CHUNKS=(\d+) STREAM_FIRST=(\S+)/);
     a.check('a large response streams back in successive chunks',
@@ -163,7 +163,7 @@ try {
   }
 
   // 5. Timeout still runs its block (its watchdog Thread.new is unavailable here).
-  await t.run(heredocCommand('timeout.rb', [
+  await t.run(heredocCommand('rb_timeout.rb', [
     'require "timeout"',
     'puts "TIMEOUT_RESULT=#{Timeout.timeout(5) { 40 + 2 }}"',
     'started = Time.now',
@@ -171,12 +171,66 @@ try {
     'puts "SLEPT=#{(Time.now - started) >= 0.15}"',
   ].join('\n')), 10_000);
   {
-    const { output } = await t.run('ruby timeout.rb', 120_000);
+    const { output } = await t.run('ruby rb_timeout.rb', 120_000);
     const stripped = stripAnsi(output);
     a.check('Timeout.timeout still runs its block and sleep still returns',
       /TIMEOUT_RESULT=42/.test(stripped) && /SLEPT=true/.test(stripped),
       JSON.stringify(stripped.slice(-800)));
   }
+
+  // 6. The accept side: a plain TCPServer, no WEBrick. A Nimbus server is
+  //    driven by the cooperative pump (a runtime with no background thread
+  //    cannot block in accept), so the script supplies the pump entrypoint and
+  //    the accepted socket is read and written like any other IO.
+  await t.run(heredocCommand('rb_tcpserver.rb', [
+    'require "socket"',
+    '$server = TCPServer.new("0.0.0.0", 8322)',
+    'def __nimbus_handle_virtual_socket_request(port)',
+    '  sock = $server.accept_nonblock(exception: false)',
+    '  return false if sock == :wait_readable || sock.nil?',
+    '  head = sock.gets("\\r\\n\\r\\n").to_s',
+    '  body = "RUBY_TCP_OK " + head.lines.first.to_s.split(" ")[1].to_s',
+    '  sock.write("HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nContent-Length: #{body.bytesize}\\r\\n\\r\\n#{body}")',
+    '  sock.close',
+    '  true',
+    'rescue Exception => e',
+    '  $stderr.write("#{e.class}: #{e.message}\\n")',
+    '  false',
+    'end',
+    'sleep 3600',
+  ].join('\n')), 10_000);
+  let tcpPid = 0;
+  {
+    const { output } = await t.run('ruby rb_tcpserver.rb', 120_000);
+    const m = stripAnsi(output).match(/pid=(\d+)/);
+    tcpPid = m ? Number(m[1]) : 0;
+    const proxied = await fetchPort(sid, 8322, 'ping');
+    a.check('a plain Ruby TCPServer accepts a connection and serves it',
+      proxied.status === 200 && proxied.body === 'RUBY_TCP_OK /ping',
+      `pid=${tcpPid} status=${proxied.status} body=${JSON.stringify(proxied.body.slice(0, 200))} ${JSON.stringify(stripAnsi(output).slice(-400))}`);
+  }
+  if (tcpPid > 0) await t.run(`kill ${tcpPid}`, 10_000).catch(() => {});
+
+  // 7. WEBrick, the highest-level consumer of the accept path.
+  await t.run('gem install webrick', 180_000);
+  await t.run(heredocCommand('rb_webrick.rb', [
+    'require "webrick"',
+    'server = WEBrick::HTTPServer.new(Port: 8323, BindAddress: "0.0.0.0",',
+    '  Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN), AccessLog: [])',
+    'server.mount_proc("/") { |req, res| res["Content-Type"] = "text/plain"; res.body = "WEBRICK_OK #{req.path}" }',
+    'server.start',
+  ].join('\n')), 10_000);
+  let webrickPid = 0;
+  {
+    const { output } = await t.run('ruby rb_webrick.rb', 120_000);
+    const m = stripAnsi(output).match(/pid=(\d+)/);
+    webrickPid = m ? Number(m[1]) : 0;
+    const proxied = await fetchPort(sid, 8323, 'served');
+    a.check('WEBrick still serves a request byte-exact',
+      proxied.status === 200 && proxied.body === 'WEBRICK_OK /served',
+      `pid=${webrickPid} status=${proxied.status} body=${JSON.stringify(proxied.body.slice(0, 200))} ${JSON.stringify(stripAnsi(output).slice(-400))}`);
+  }
+  if (webrickPid > 0) await t.run(`kill ${webrickPid}`, 10_000).catch(() => {});
 
   if (serverPid > 0) await t.run(`kill ${serverPid}`, 10_000).catch(() => {});
 } finally {
