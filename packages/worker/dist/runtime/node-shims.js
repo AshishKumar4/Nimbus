@@ -3071,11 +3071,13 @@ const __stringDecoderMod = {
 //      Phase 1 limit: messages are JSON, NOT v8.serialize. Buffer/Date
 //      project to their JSON shapes ({type:'Buffer',data:[...]} and
 //      ISO strings respectively). Documented in cp-fork-ipc.mjs probe.
-//   4. spawnSync/execSync are FAKE-SYNC: they kick off the async spawn
-//      and return a sentinel that resolves under a normal microtask
-//      drain. The facet's existing __pendingIO drain handles the rest.
-//      cross-spawn.sync uses execSync; husky uses spawnSync for git
-//      config queries — both rely on this fake-sync working.
+//   4. spawnSync returns a result object that FILLS IN LATER: the spawn is
+//      async and the fields land as the child's events fire, so a caller
+//      reads status=null until it settles. \`__deferred\` resolves with the
+//      completed result and is the contract Nimbus consumers await.
+//      execSync/execFileSync cannot offer that — their Node contract is to
+//      RETURN the child's stdout — so they refuse instead of lying; see
+//      _refuseSyncExec below.
 //   5. Live children are tracked in __cpChildren so the facet's exit-
 //      time drain (see __cpDrainAllChildren below) can issue a
 //      cpDrainOutput RPC for each before reportExit fires. This is
@@ -3551,16 +3553,43 @@ const __childProcessMod = (() => {
     return result;
   }
 
+  /**
+   * execSync/execFileSync return the child's stdout and throw when it exits
+   * non-zero — a contract that is only meaningful once the child has run to
+   * completion. A facet has no synchronous I/O primitive: every path to a
+   * child process is an async supervisor RPC, and JS in workerd cannot block
+   * on one. readFileSync answers the same constraint by serving content that
+   * was already staged into the facet, but a command's output cannot exist
+   * before the command runs, so there is nothing to pre-stage.
+   *
+   * The pre-fix shim kicked off an async spawn and returned an empty,
+   * not-yet-populated result object. Callers — which shell out precisely
+   * because they need the result NOW — read a blank stdout, or run their next
+   * step before the child has started, and report success. Refusing is the
+   * only honest answer left.
+   */
+  function _refuseSyncExec(api, command) {
+    const err = new Error(
+      "child_process." + api + " is not supported in a Nimbus node facet: a facet " +
+      "has no synchronous I/O primitive, so a child process cannot be run to completion " +
+      "without yielding to the event loop. Returning early would report success for a " +
+      "command that has not run. Use the asynchronous form instead — exec/execFile/spawn, " +
+      "or await util.promisify(child_process.exec)(...). Command: " + command,
+    );
+    err.code = "ERR_NIMBUS_SYNC_CHILD_PROCESS";
+    err.command = command;
+    throw err;
+  }
+
   function execSync(cmd, opts) {
-    opts = opts || {};
-    const r = spawnSync("sh", ["-c", cmd], { ...opts, shell: true });
-    // Caller awaits __deferred under normal drain.
-    return r;
+    _refuseSyncExec("execSync", String(cmd));
   }
 
   function execFileSync(file, args, opts) {
-    args = args || []; opts = opts || {};
-    return spawnSync(file, args, opts);
+    _refuseSyncExec(
+      "execFileSync",
+      [String(file), ...(Array.isArray(args) ? args.map(String) : [])].join(" "),
+    );
   }
 
   /**
