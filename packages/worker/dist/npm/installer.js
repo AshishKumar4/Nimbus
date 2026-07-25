@@ -37,8 +37,8 @@ import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { prebundleOne, buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
 import { PRE_BUNDLE_PREAMBLE } from '../loaders/pre-bundle-preamble.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
-import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '../constants.js';
-import { waitForLowAllocPressure } from '../observability/heavy-alloc-coord.js';
+import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, } from '../constants.js';
+import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '../_shared/bytes.js';
@@ -1459,31 +1459,42 @@ export class NpmInstaller {
                 catch { }
             }
         };
-        // No fallback: a missing wasm asset is a deploy bug. Surface
-        // loudly via the thrown error from fetchEsbuildWasmBytes — the
-        // pre-bundle phase aborts cleanly and the install completes
-        // without pre-bundle (vite then serves modules un-pre-bundled).
-        const wasmBytes = await fetchEsbuildWasmBytes(this.env);
         let pool;
+        let retainedWasmRelease = null;
+        const setupAllocation = await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
         try {
-            pool = new NimbusLoaderPool(this.env, this.ctx, {
-                concurrency: PRE_BUNDLE_CONCURRENCY,
-                timeoutMs: 60_000,
-                retries: 0,
-                tag: 'pre-bundle',
-                preamble: PRE_BUNDLE_PREAMBLE,
-                wasmModules: { 'esbuild.wasm': wasmBytes },
-            });
+            // No fallback: a missing wasm asset is a deploy bug. Surface loudly via
+            // the thrown fetch error so this background phase aborts cleanly.
+            const wasmBytes = await fetchEsbuildWasmBytes(this.env);
+            const maxRetainedWasmBytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES - PRE_BUNDLE_SLICE_CAP_BYTES;
+            if (wasmBytes.byteLength > maxRetainedWasmBytes) {
+                throw new RangeError(`pre-bundle wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`);
+            }
+            // NimbusLoaderPool keeps the constructor-time module bytes until
+            // dispose(), so retain their exact credit rather than treating
+            // construction as a handoff that immediately frees the ArrayBuffer.
+            setupAllocation.shrinkTo(wasmBytes.byteLength);
+            try {
+                pool = new NimbusLoaderPool(this.env, this.ctx, {
+                    concurrency: PRE_BUNDLE_CONCURRENCY,
+                    timeoutMs: 60_000,
+                    retries: 0,
+                    tag: 'pre-bundle',
+                    preamble: PRE_BUNDLE_PREAMBLE,
+                    wasmModules: { 'esbuild.wasm': wasmBytes },
+                });
+                retainedWasmRelease = setupAllocation.release;
+            }
+            catch (e) {
+                // Pool construction failures remain best-effort pre-bundle failures,
+                // not npm install failures.
+                safeProgress(`Pre-bundle skipped: failed to construct facet pool: ${e?.message || e}`);
+                return;
+            }
         }
-        catch (e) {
-            // Pool construction can throw if env bindings are missing or
-            // wasm modules registration fails. Without this guard, the
-            // throw escapes prebundleUsedModules's caller-side .catch
-            // (npm-installer.ts:389) — which IS still safe but loses the
-            // chance to record diag counters for the partial run. Bail
-            // cleanly instead.
-            safeProgress(`Pre-bundle skipped: failed to construct facet pool: ${e?.message || e}`);
-            return;
+        finally {
+            if (!retainedWasmRelease)
+                setupAllocation.release();
         }
         const queue = pending.slice(); // copy; will shift
         let okCount = 0;
@@ -1502,165 +1513,169 @@ export class NpmInstaller {
                 const next = queue.shift();
                 if (!next)
                     return;
-                // Yield to heavy-alloc owners (today: cirrus-real boot path).
-                // Non-blocking when no owner is active. Returns false on the
-                // 30 s ceiling — we proceed regardless because the gate is a
-                // best-effort reduction of peak pressure, not a correctness
-                // dependency.
-                await waitForLowAllocPressure();
-                attempted++;
-                // Build slice for THIS spec only. Released by explicit nulling
-                // at the end of every code path through this iteration so the
-                // bytes are GC-eligible before pool.submit's RPC layer has
-                // finished tearing down its own references for the previous
-                // slot. With concurrency=1 and 28 MiB caps, peak supervisor
-                // slice memory is ~34 MiB (slice + spec metadata).
-                //
-                // Defensive: buildSliceForSpecifierWithCap performs sync VFS
-                // reads that COULD throw on a corrupted inode tree, an unread-
-                // able chunk, or any other VFS-layer surprise. Without this
-                // try/catch, a slice-walker throw escapes runSlot, rejects the
-                // Promise.all, drops every other in-flight slot's settled
-                // work, and surfaces in the supervisor as an unhandled
-                // rejection — which workerd can promote to a DO restart on a
-                // shared isolate. Catch and treat as "skip this spec, log,
-                // continue."
-                let slice = null;
+                // Hold the slice's worst-case supervisor footprint until its facet
+                // RPC and cache write settle. FIFO byte credit prevents VFS reads,
+                // streamed install writes, or cirrus boot from independently claiming
+                // the same shared-isolate headroom.
+                const allocationLease = await acquireSupervisorAllocation(PRE_BUNDLE_SLICE_CAP_BYTES);
                 try {
-                    if (next.synthetic && next.syntheticReferencedFiles) {
-                        // SCOPED slice: only the files the synthetic entry directly
-                        // references + their transitive relative imports + the
-                        // package's package.json. Skips the full package walk so
-                        // icon-libraries with thousands of files don't blow the
-                        // 28 MiB cap. (lucide-react@0.460 ships ~5-15 MiB across
-                        // 3940 files; full walk hits cap on Mossaic-scale projects
-                        // with 70+ imported icons.)
-                        const scoped = buildScopedSliceForSynthetic(this.vfs, nmDir, packageNameFromSpecifier(next.specifier), next.syntheticReferencedFiles);
-                        const built = { slice: scoped.entries, totalBytes: scoped.totalBytes };
-                        // Append the synthetic entry file itself (lives outside
-                        // the package dir; the scoped walker doesn't pick it up).
-                        const bytes = this.vfs.readFile(next.entryPath);
-                        const parentDir = next.entryPath.substring(0, next.entryPath.lastIndexOf('/'));
-                        built.slice.push({
-                            path: '/' + parentDir.replace(/^\/+/, ''),
-                            isDir: true,
-                        });
-                        built.slice.push({
-                            path: '/' + next.entryPath.replace(/^\/+/, ''),
-                            bytes,
-                            isDir: false,
-                        });
-                        built.totalBytes += bytes.length + next.entryPath.length;
-                        slice = built;
+                    attempted++;
+                    // Build slice for THIS spec only. Released by explicit nulling
+                    // at the end of every code path through this iteration so the
+                    // bytes are GC-eligible before pool.submit's RPC layer has
+                    // finished tearing down its own references for the previous
+                    // slot. With concurrency=1 and 28 MiB caps, peak supervisor
+                    // slice memory is ~34 MiB (slice + spec metadata).
+                    //
+                    // Defensive: buildSliceForSpecifierWithCap performs sync VFS
+                    // reads that COULD throw on a corrupted inode tree, an unread-
+                    // able chunk, or any other VFS-layer surprise. Without this
+                    // try/catch, a slice-walker throw escapes runSlot, rejects the
+                    // Promise.all, drops every other in-flight slot's settled
+                    // work, and surfaces in the supervisor as an unhandled
+                    // rejection — which workerd can promote to a DO restart on a
+                    // shared isolate. Catch and treat as "skip this spec, log,
+                    // continue."
+                    let slice = null;
+                    try {
+                        if (next.synthetic && next.syntheticReferencedFiles) {
+                            // SCOPED slice: only the files the synthetic entry directly
+                            // references + their transitive relative imports + the
+                            // package's package.json. Skips the full package walk so
+                            // icon-libraries with thousands of files don't blow the
+                            // 28 MiB cap. (lucide-react@0.460 ships ~5-15 MiB across
+                            // 3940 files; full walk hits cap on Mossaic-scale projects
+                            // with 70+ imported icons.)
+                            const scoped = buildScopedSliceForSynthetic(this.vfs, nmDir, packageNameFromSpecifier(next.specifier), next.syntheticReferencedFiles);
+                            const built = { slice: scoped.entries, totalBytes: scoped.totalBytes };
+                            // Append the synthetic entry file itself (lives outside
+                            // the package dir; the scoped walker doesn't pick it up).
+                            const bytes = this.vfs.readFile(next.entryPath);
+                            const parentDir = next.entryPath.substring(0, next.entryPath.lastIndexOf('/'));
+                            built.slice.push({
+                                path: '/' + parentDir.replace(/^\/+/, ''),
+                                isDir: true,
+                            });
+                            built.slice.push({
+                                path: '/' + next.entryPath.replace(/^\/+/, ''),
+                                bytes,
+                                isDir: false,
+                            });
+                            built.totalBytes += bytes.length + next.entryPath.length;
+                            slice = built;
+                        }
+                        else {
+                            slice = buildSliceForSpecifierWithCap(this.vfs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
+                        }
                     }
-                    else {
-                        slice = buildSliceForSpecifierWithCap(this.vfs, next.specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
+                    catch (e) {
+                        const msg = e?.message || String(e);
+                        safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
+                        errorCount++;
+                        errorsByModule[next.specifier] = msg;
+                        continue;
                     }
-                }
-                catch (e) {
-                    const msg = e?.message || String(e);
-                    safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
-                    errorCount++;
-                    errorsByModule[next.specifier] = msg;
-                    continue;
-                }
-                if (!slice) {
-                    safeProgress(`  skipped pre-bundle for ${next.specifier}: slice exceeded ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`);
-                    skippedCount++;
-                    continue;
-                }
-                // externalsForSpecifier is pure JS over a small list — extremely
-                // unlikely to throw, but cheap to guard since we're hardening
-                // this path comprehensively.
-                let externals;
-                try {
-                    externals = externalsForSpecifier(next.specifier);
-                }
-                catch (e) {
-                    const msg = e?.message || String(e);
-                    safeProgress(`  pre-bundle externals threw for ${next.specifier}: ${msg}`);
-                    errorCount++;
-                    errorsByModule[next.specifier] = msg;
-                    continue;
-                }
-                let spec = {
-                    specifier: next.specifier,
-                    entryPath: next.entryPath,
-                    externals,
-                    slice: slice.slice,
-                    bundlerVersion: BUNDLER_VERSION,
-                };
-                // Drop our supervisor-side reference to the slice array as soon
-                // as it's owned by `spec`. `spec` is the only thing that needs
-                // to keep it alive until the RPC structured-clone completes.
-                slice = null;
-                let result = null;
-                try {
-                    // pool.submit is per-task (no auto slot pinning). All slots
-                    // share slot index 0 in the underlying #dispatchSlot — that's
-                    // fine for our use (we don't need stable warm slots beyond
-                    // "esbuild compiled once per slot's lifetime"; for pre-bundle
-                    // the slot HAS to compile esbuild on first call regardless).
-                    result = await pool.submit(prebundleOne, spec);
-                }
-                catch (e) {
-                    const msg = e?.remoteMessage || e?.message || String(e);
-                    safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
-                    errorCount++;
-                    errorsByModule[next.specifier] = msg;
+                    if (!slice) {
+                        safeProgress(`  skipped pre-bundle for ${next.specifier}: slice exceeded ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB cap`);
+                        skippedCount++;
+                        continue;
+                    }
+                    // externalsForSpecifier is pure JS over a small list — extremely
+                    // unlikely to throw, but cheap to guard since we're hardening
+                    // this path comprehensively.
+                    let externals;
+                    try {
+                        externals = externalsForSpecifier(next.specifier);
+                    }
+                    catch (e) {
+                        const msg = e?.message || String(e);
+                        safeProgress(`  pre-bundle externals threw for ${next.specifier}: ${msg}`);
+                        errorCount++;
+                        errorsByModule[next.specifier] = msg;
+                        continue;
+                    }
+                    let spec = {
+                        specifier: next.specifier,
+                        entryPath: next.entryPath,
+                        externals,
+                        slice: slice.slice,
+                        bundlerVersion: BUNDLER_VERSION,
+                    };
+                    // Drop our supervisor-side reference to the slice array as soon
+                    // as it's owned by `spec`. `spec` is the only thing that needs
+                    // to keep it alive until the RPC structured-clone completes.
+                    slice = null;
+                    let result = null;
+                    try {
+                        // pool.submit is per-task (no auto slot pinning). All slots
+                        // share slot index 0 in the underlying #dispatchSlot — that's
+                        // fine for our use (we don't need stable warm slots beyond
+                        // "esbuild compiled once per slot's lifetime"; for pre-bundle
+                        // the slot HAS to compile esbuild on first call regardless).
+                        result = await pool.submit(prebundleOne, spec);
+                    }
+                    catch (e) {
+                        const msg = e?.remoteMessage || e?.message || String(e);
+                        safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
+                        errorCount++;
+                        errorsByModule[next.specifier] = msg;
+                    }
+                    finally {
+                        // Drop the spec reference (which transitively held slice.slice)
+                        // immediately after the RPC settles, regardless of outcome.
+                        // pool.submit's facet-pool fix (timer leak) ensures the rejected
+                        // promise's `args` aren't pinned by a 60s timer; this finally
+                        // releases our supervisor-side handle the moment the await
+                        // resolves so the next iteration starts from a low-water-mark
+                        // heap. Combined defense — see commit msg.
+                        spec = null;
+                    }
+                    if (!result || !result.ok) {
+                        const why = result?.errorText || 'pool returned null';
+                        if (result) {
+                            safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
+                            errorCount++;
+                            errorsByModule[next.specifier] = why;
+                        }
+                        result = null;
+                        continue;
+                    }
+                    if (result.warnings && result.warnings.length > 0) {
+                        for (const w of result.warnings) {
+                            safeProgress(`  [warn] ${next.specifier}: ${w}`);
+                        }
+                    }
+                    // Stamp into pkg_esm_bundles. Cache is supervisor-side SQLite,
+                    // so the write happens here (not via writeBatch — that's VFS).
+                    // Defensive: SQL writes can throw on schema mismatch / disk-full
+                    // / closed-storage-handle. A throw here would unwind through the
+                    // loop and rejected the Promise.all wrapper. Treat the failure
+                    // as "pre-bundle succeeded but cache write failed" — okCount is
+                    // not bumped, the spec falls through to on-demand bundling on
+                    // first request, and the loop continues.
+                    try {
+                        this.cache.putEsmBundle({
+                            specifier: next.specifier,
+                            bundleHash: BUNDLER_VERSION,
+                            esmCode: result.esmCode,
+                            builtAt: Date.now(),
+                            inputHash: next.inputHash ?? '',
+                        });
+                        okCount++;
+                    }
+                    catch (e) {
+                        const msg = e?.message || String(e);
+                        safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
+                        errorCount++;
+                        errorsByModule[next.specifier] = msg;
+                    }
+                    // result.esmCode is now durably in SQLite; drop our heap copy
+                    // before the next iteration's slice walk allocates.
+                    result = null;
                 }
                 finally {
-                    // Drop the spec reference (which transitively held slice.slice)
-                    // immediately after the RPC settles, regardless of outcome.
-                    // pool.submit's facet-pool fix (timer leak) ensures the rejected
-                    // promise's `args` aren't pinned by a 60s timer; this finally
-                    // releases our supervisor-side handle the moment the await
-                    // resolves so the next iteration starts from a low-water-mark
-                    // heap. Combined defense — see commit msg.
-                    spec = null;
+                    allocationLease.release();
                 }
-                if (!result || !result.ok) {
-                    const why = result?.errorText || 'pool returned null';
-                    if (result) {
-                        safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
-                        errorCount++;
-                        errorsByModule[next.specifier] = why;
-                    }
-                    result = null;
-                    continue;
-                }
-                if (result.warnings && result.warnings.length > 0) {
-                    for (const w of result.warnings) {
-                        safeProgress(`  [warn] ${next.specifier}: ${w}`);
-                    }
-                }
-                // Stamp into pkg_esm_bundles. Cache is supervisor-side SQLite,
-                // so the write happens here (not via writeBatch — that's VFS).
-                // Defensive: SQL writes can throw on schema mismatch / disk-full
-                // / closed-storage-handle. A throw here would unwind through the
-                // loop and rejected the Promise.all wrapper. Treat the failure
-                // as "pre-bundle succeeded but cache write failed" — okCount is
-                // not bumped, the spec falls through to on-demand bundling on
-                // first request, and the loop continues.
-                try {
-                    this.cache.putEsmBundle({
-                        specifier: next.specifier,
-                        bundleHash: BUNDLER_VERSION,
-                        esmCode: result.esmCode,
-                        builtAt: Date.now(),
-                        inputHash: next.inputHash ?? '',
-                    });
-                    okCount++;
-                }
-                catch (e) {
-                    const msg = e?.message || String(e);
-                    safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
-                    errorCount++;
-                    errorsByModule[next.specifier] = msg;
-                }
-                // result.esmCode is now durably in SQLite; drop our heap copy
-                // before the next iteration's slice walk allocates.
-                result = null;
                 void slotIndex;
             }
         };
@@ -1718,6 +1733,7 @@ export class NpmInstaller {
                 pool.dispose();
             }
             catch { /* best-effort */ }
+            retainedWasmRelease?.();
         }
     }
     /**

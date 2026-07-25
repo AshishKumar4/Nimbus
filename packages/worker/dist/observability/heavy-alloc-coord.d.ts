@@ -1,88 +1,65 @@
 /**
- * heavy-alloc-coord.ts — supervisor-local back-pressure between the
- * fire-and-forget pre-bundle phase and other heap-heavy supervisor work
- * (today: `npm run dev` booting cirrus-real).
+ * Supervisor-local byte-budget back-pressure for transient allocations.
  *
- * Why this exists
- * ───────────────
- * Pre-bundle dispatches up to PRE_BUNDLE_CONCURRENCY facets in parallel.
- * Each holds ~28 MiB slice while the facet RPC is in flight. The Mini-PRD
- * "DO shared isolate issues" reports DO resets at <128 MiB when the
- * isolate is shared with another DO; our 128 MiB headroom calculation
- * is therefore aspirational. Concurrent allocations in the supervisor —
- * notably cirrus-real's user-vite-config bundle + plugin-react +
- * extraSyntheticFiles — can push a shared isolate over the cap mid
- * pre-bundle, causing a reset that surfaces as the user seeing the boot
- * banner reprint several times.
- *
- * Mechanism
- * ─────────
- * A single-bit gate. Heavy-alloc owners (cirrus-real boot today) call
- * `acquireHeavyAlloc()` before allocating, releasing via the returned
- * `release()` once steady-state. Pre-bundle's runSlot awaits
- * `waitForLowAllocPressure()` between iterations — no-op when the gate
- * is open, otherwise a short sleep loop until released.
- *
- * Idempotent / re-entrant: multiple acquires increment a refcount.
- * `release()` is a one-shot (returned by acquire) so callers can't
- * accidentally double-decrement.
- *
- * Lifetime
- * ────────
- * Pre-bundle runs in the supervisor isolate, called from npm-installer
- * which is constructed by NimbusSession's command handler. cirrus-real
- * is constructed by a different command handler in the same session.
- * Module scope gives both paths one process-local coordinator for the
- * lifetime of the supervisor isolate. After a DO restart it is
- * re-created, along with the pre-bundle work it coordinates.
+ * A DO can share its isolate's 128 MiB platform ceiling with peer DOs, so
+ * independent "safe" allocations cannot each assume the full ceiling.
+ * Module scope gives every allocator in one supervisor isolate a single FIFO
+ * budget. Full-budget owners are exclusive; weighted owners may overlap only
+ * while their retained-byte claims fit together.
  */
+import { type ResizableCreditLease } from '../_shared/weighted-credit-pool.js';
+export interface SupervisorAllocationBudgetStats {
+    readonly capacity: number;
+    readonly current: number;
+    readonly peak: number;
+    readonly queued: number;
+}
+interface AllocationBudgetLifecycle {
+    onActive?: () => void;
+    onIdle?: () => void;
+}
 /**
- * W5 Lever 8: a registered observer (typically a SqliteVFS) that
- * receives shrink/restore signals when the heavy-alloc refcount
- * transitions 0↔≥1. Kept as a duck-typed pair of callbacks so we
- * don't pull SqliteVFS as a static import (preserves layering: this
- * module is consumed by both the supervisor and tests, and shouldn't
- * acquire a heavy dependency).
+ * Reusable contract behind the supervisor singleton. A separate instance is
+ * useful in tests and keeps the invariant independent of Nimbus internals.
+ */
+export declare class SupervisorAllocationBudget {
+    readonly capacity: number;
+    private readonly lifecycle;
+    private readonly credits;
+    private active;
+    constructor(capacity: number, lifecycle?: AllocationBudgetLifecycle);
+    get stats(): SupervisorAllocationBudgetStats;
+    acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+}
+/**
+ * A registered observer (typically a SqliteVFS) receives shrink/restore
+ * signals when the shared budget transitions idle↔active.
  */
 interface AllocObserver {
-    /** Called when refcount transitions 0 → 1 (heavy-alloc phase entered). */
+    /** Called when budget occupancy transitions idle → active. */
     onAcquire?: () => void;
-    /** Called when refcount transitions ≥1 → 0 (phase exited). */
+    /** Called when budget occupancy transitions active → idle. */
     onRelease?: () => void;
 }
 /**
- * W5 Lever 8 hook. Register an observer that fires when the heavy-
- * alloc refcount transitions 0 → 1 (acquire) and ≥1 → 0 (release).
+ * Register an observer that fires when the shared allocation budget
+ * transitions idle → active and active → idle.
  * Returns an unsubscribe function. Idempotent: registering the same
  * observer twice is a no-op (Set semantics).
  *
- * Wire from NimbusSession constructor: register an observer whose
- * onAcquire calls vfs.shrinkForInstall() and onRelease calls
- * vfs.restoreAfterInstall(). This decouples SqliteVFS from
- * heavy-alloc-coord while keeping the observer pattern simple.
+ * NimbusSession uses this to shrink the disposable VFS LRU while transient
+ * payloads are admitted.
  */
 export declare function registerAllocObserver(o: AllocObserver): () => void;
 /**
- * Mark a heavy-alloc phase as active. Returns a one-shot release fn —
- * call it once the phase is complete. Safe to discard the release
- * (refcount can drift up if a caller forgets — only blocks pre-bundle,
- * never blocks user work — but please don't).
+ * Reserve an exact number of supervisor-resident bytes.
  */
-export declare function acquireHeavyAlloc(): () => void;
+export declare function acquireSupervisorAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
 /**
- * Wait until the gate is open. Polls every `pollMs` (default 200 ms)
- * up to `maxWaitMs` (default 30 s). Returns whether the gate opened
- * within the window — callers can decide to continue regardless.
- *
- * Why polling vs. a Promise: heavy-alloc events (cirrus boot) happen
- * once per session at most. The few hundred-ms granularity is fine,
- * and a poll loop avoids carrying an event-emitter or extra Promise
- * chain through the coordinator. Pre-bundle wall time is dominated by
- * facet RPC; a 200 ms idle here is invisible.
+ * Reserve the full budget for an allocation whose retained size is not known
+ * accurately enough to overlap safely with other heavy work.
  */
-export declare function waitForLowAllocPressure(opts?: {
-    pollMs?: number;
-    maxWaitMs?: number;
-}): Promise<boolean>;
+export declare function acquireHeavyAlloc(signal?: AbortSignal): Promise<() => void>;
+export declare function readSupervisorAllocationBudget(): SupervisorAllocationBudgetStats;
 export {};
 //# sourceMappingURL=heavy-alloc-coord.d.ts.map
