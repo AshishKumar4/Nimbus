@@ -11,9 +11,8 @@ npx wrangler deploy
 ```
 
 `setup cloudflare` creates the R2 buckets and seeds the Python, Ruby, and
-clang runtimes.
-If Wrangler reports R2 error `10042`, enable R2 once in that account's
-dashboard and rerun. The Worker wraps `createNimbusHandler` from
+clang runtimes. If Wrangler reports R2 error `10042`, enable R2 once in
+that account's dashboard and rerun. The Worker wraps `createNimbusHandler` from
 `@nimbus-sh/sdk/worker`; [configure the handler](/docs/sdk/handler/)
 lists its options.
 
