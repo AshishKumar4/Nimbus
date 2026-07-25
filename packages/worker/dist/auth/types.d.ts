@@ -28,9 +28,9 @@
  *     user).
  *   - `scopes` is an optional array of capability strings the token
  *     grants. v1 honors `"session:create"`, `"session:attach"`,
- *     `"session:bootstrap"`, `"session:destroy"`, `"session:admin"`, and
- *     `"sandbox:use"`. Absent = all permitted (backward compat for
- *     legacy tokens).
+ *     `"session:bootstrap"`, `"session:preview"`, `"session:destroy"`,
+ *     `"session:admin"`, and `"sandbox:use"`. Absent = all permitted
+ *     (backward compat for legacy tokens).
  *   - `sid` is an optional session-pin: when present, the token may only
  *     attach to that single session. When absent, the token may attach
  *     to any session for `(tn, sub)`.
