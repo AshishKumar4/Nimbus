@@ -611,13 +611,48 @@ class HttpRequestParser extends HttpMessageParser<ParsedHttpRequest> {
   }
 }
 
+/**
+ * What a guest server produced, as plain data.
+ *
+ * A Response is an I/O object, and workerd will not let one created in one
+ * request's context be returned from another's. A guest server's response can
+ * be completed by whichever inbound request happened to resume its thread - not
+ * necessarily the request that owns the connection - so the connection settles
+ * with bytes and headers, and the owning request builds the Response itself.
+ */
+interface SettledResponse {
+  status: number;
+  statusText: string;
+  headerPairs: readonly (readonly [string, string])[];
+  body: Uint8Array | null;
+}
+
+function errorResponse(status: number, message: string): SettledResponse {
+  return {
+    status,
+    statusText: '',
+    headerPairs: [['content-type', 'text/plain; charset=utf-8']],
+    body: new TextEncoder().encode(`Nimbus virtual socket: ${message}`),
+  };
+}
+
+function toResponse(settled: SettledResponse): Response {
+  const headers = new Headers();
+  for (const [key, value] of settled.headerPairs) headers.append(key, value);
+  return new Response(settled.body, {
+    status: settled.status,
+    statusText: settled.statusText,
+    headers,
+  });
+}
+
 class VirtualConnection implements VirtualSocketConnection {
   /** Request bytes the guest server reads; filled in one shot in stage 1. */
   private readonly inbound: ByteChunkQueue;
   /** Response bytes the guest server writes; drained into the parser. */
   private readonly outbound: ByteChunkQueue;
   private readonly parser: HttpResponseParser;
-  private readonly responseReady = new Deferred<Response>();
+  private readonly responseReady = new Deferred<SettledResponse>();
   private settled = false;
   private closed = false;
 
@@ -672,17 +707,15 @@ class VirtualConnection implements VirtualSocketConnection {
   /** Abort propagation: settle the pending preview request with a terminal status. */
   abort(message: string, status: number): void {
     this.closed = true;
-    this.settle(new Response(`Nimbus virtual socket: ${message}`, { status }));
+    this.settle(errorResponse(status, message));
   }
 
   async response(timeoutMs: number): Promise<Response> {
     const timer = setTimeout(() => {
-      this.settle(
-        new Response('Nimbus virtual socket: timed out waiting for response', { status: 504 }),
-      );
+      this.settle(errorResponse(504, 'timed out waiting for response'));
     }, Math.max(1, timeoutMs));
     try {
-      return await this.responseReady.promise;
+      return toResponse(await this.responseReady.promise);
     } finally {
       clearTimeout(timer);
     }
@@ -697,20 +730,20 @@ class VirtualConnection implements VirtualSocketConnection {
     const outcome = this.parser.outcome;
     if (!outcome) return;
     if (outcome.kind === 'failed') {
-      this.settle(new Response(`Nimbus virtual socket: ${outcome.message}`, { status: 502 }));
+      this.settle(errorResponse(502, outcome.message));
       return;
     }
     const { status, statusText, headerPairs, body } = outcome.message;
-    const headers = new Headers();
-    for (const [key, value] of headerPairs) {
+    this.settle({
+      status,
+      statusText,
       // The framing is consumed here; the Worker Response re-frames the body itself.
-      if (/^transfer-encoding$/i.test(key)) continue;
-      headers.append(key, value);
-    }
-    this.settle(new Response(body, { status, statusText, headers }));
+      headerPairs: headerPairs.filter(([key]) => !/^transfer-encoding$/i.test(key)),
+      body,
+    });
   }
 
-  private settle(response: Response): void {
+  private settle(response: SettledResponse): void {
     if (this.settled) return;
     this.settled = true;
     this.responseReady.resolve(response);
