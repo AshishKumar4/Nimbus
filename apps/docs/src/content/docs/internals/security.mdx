@@ -93,6 +93,51 @@ limits: a sid-pinned attach token that expires in two minutes, a global
 cap on concurrent anonymous sessions, a per-address rate limit, and a
 fixed ten-minute session lifetime.
 
+## The preview origin
+
+A session serves each exposed port on a hostname of its own,
+`<port>--<id>.<suffix>`, where the suffix is the deployment's
+`NIMBUS_PREVIEW_HOST_SUFFIX` binding. The app is mounted at that host's root
+and owns the whole path space, which makes the origin the trust boundary:
+everything served there is untrusted user code.
+
+The router matches the preview hostname before anything else. Embedder
+routes, `/new`, `/s/<id>/`, the agent OAuth callback, the SDK's remote API,
+and the static-asset fallthrough all run after it, so
+`https://3000--<id>.<suffix>/login` reaches the app's own `/login` and no
+Nimbus endpoint is ever same-origin with code the app served.
+
+Nimbus credentials are removed before the request crosses into the app. The
+port proxy strips `Authorization`, `Proxy-Authorization`, every `X-Nimbus-*`
+header, and every cookie in the platform namespace — names starting with
+`nimbus_`, `__Host-nimbus`, or `__Secure-nimbus`. Matching the namespace
+instead of an enumerated list also covers the agent OAuth cookie in the
+session layer and an embedder's own cookies, which this layer never imports.
+Cookies the app itself set are preserved. A token arriving as
+`?nimbus_token=` is deleted from the query at the same edge, so it reaches
+neither the app nor the session's logs. The session cookie is
+`__Host-nimbus_token`, and browsers reject that prefix on any cookie carrying
+a `Domain` attribute or a `Path` other than `/`, so preview code cannot set a
+shadowing cookie for the parent domain.
+
+A preview URL is a link: it lands in history, referrers, and chat logs.
+Under enforced auth, `GET /s/<id>/api/preview-url?port=<n>` mints it a token
+scoped `session:preview`, pinned to that session, good for 90 seconds, and
+carrying a `jti` the session DO consumes set-if-absent. The preview host
+trades that token once for the sid-pinned `session:attach` cookie and
+redirects to the requested path. A replayed link gets `401`. The same token
+sent as a bearer to `/s/<id>/` gets `403` — `session:preview` grants that one
+exchange and nothing else. Reusable embedder attach tokens are refused at the
+preview exchange; only the single-use mint opens it.
+
+The hostname carries the session id, and every request on it is checked
+against the token's `sid` pin, so a credential minted for one session is
+rejected on another session's preview host.
+
+A deployment with no suffix bound serves previews at `/s/<id>/port/<n>/`
+instead. Credentials are stripped there the same way, and the app shares an
+origin with the session shell.
+
 ## Fault isolation
 
 The isolate is also the fault boundary. A process that exhausts its
