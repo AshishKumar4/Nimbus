@@ -932,8 +932,59 @@ function _readBundleCell(vfs, path) {
 function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
+/**
+ * UTF-8 byte length of `JSON.stringify(value)` — computed, for the string
+ * case, without building the string. A source cell can be megabytes on its
+ * own, and the point of the incremental accounting is that sizing the
+ * snapshot never allocates a second copy of anything in it.
+ *
+ * Non-string cells (binary content, permission-denial markers) are rare and
+ * small, so they take the direct route.
+ */
 function _jsonEncodedBytes(value) {
-    return new TextEncoder().encode(JSON.stringify(value)).length;
+    if (typeof value !== 'string') {
+        return new TextEncoder().encode(JSON.stringify(value)).length;
+    }
+    let bytes = 2; // the surrounding quotes
+    for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code === 0x22 || code === 0x5c) {
+            bytes += 2;
+            continue;
+        } // " \
+        if (code < 0x20) {
+            // \b \t \n \f \r get a two-character escape; every other C0 gets \u00XX.
+            bytes += (code === 8 || code === 9 || code === 10 || code === 12 || code === 13) ? 2 : 6;
+            continue;
+        }
+        if (code < 0x80) {
+            bytes += 1;
+            continue;
+        }
+        if (code < 0x800) {
+            bytes += 2;
+            continue;
+        }
+        if (code >= 0xd800 && code <= 0xdbff) {
+            const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+            // A well-formed pair is one 4-byte code point; a lone surrogate is
+            // escaped as \uXXXX (JSON.stringify is well-formed since ES2019).
+            if (next >= 0xdc00 && next <= 0xdfff) {
+                bytes += 4;
+                i++;
+            }
+            else {
+                bytes += 6;
+            }
+            continue;
+        }
+        if (code >= 0xdc00 && code <= 0xdfff) {
+            bytes += 6;
+            continue;
+        }
+        bytes += 3;
+    }
+    return bytes;
 }
 /** `{"bundle":` + `,"manifest":` + `}` — the frame around the two members. */
 const ENCODED_PAYLOAD_FRAME_BYTES = 23;

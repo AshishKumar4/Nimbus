@@ -110,11 +110,17 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024; // 22 MiB JSON-encoded
 // all 24 MiB, every later invocation carries it, and the supervisor holds
 // the cached copy while building the next one beside it.
 //
+// Only this sweep is bounded per file. The other enrichment passes admit a
+// file because something in the source named it — an absolute literal, a
+// `path.resolve(__dirname, …)` asset, a package's own bin tree — and a named
+// file keeps its claim at any size. The sweep alone names nothing.
+//
 // 2 MiB clears real project content (sources, configs, fixtures, ordinary
-// assets) by a wide margin. Past it the file is data, and data has two
-// honest routes that need no residency: async fs, which reads live from the
-// supervisor in 64 KiB ranges, and the entry-code path scan, which admits
-// any size once the program names the path itself.
+// assets) by a wide margin. Past it the file is data, and data is what async
+// fs is for: it reads live from the supervisor in 64 KiB ranges and never
+// needed to be resident. A relative sync read of a file larger than this,
+// where no scanner matched the literal, is the case that gives up ground —
+// it now raises ENOENT instead of costing the session.
 export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 // ── npm Constants ───────────────────────────────────────────────────────
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
