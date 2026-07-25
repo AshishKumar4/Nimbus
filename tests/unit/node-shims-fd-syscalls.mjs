@@ -129,6 +129,18 @@ assert.equal(dec.decode(grown.subarray(13)), '!');
 
 fs.closeSync(fd);
 
+// writeSync(fd, string[, position[, encoding]]) — the encoding is the FOURTH
+// argument, not the fifth. Reading it from the wrong slot silently writes
+// UTF-8 bytes where base64/hex was asked for.
+const efd = fs.openSync('/home/user/enc.bin', 'w');
+assert.equal(fs.writeSync(efd, 'aGVsbG8=', 0, 'base64'), 5);
+fs.closeSync(efd);
+assert.equal(fs.readFileSync('/home/user/enc.bin', 'utf8'), 'hello');
+const hfd = fs.openSync('/home/user/hex.bin', 'w');
+assert.equal(fs.writeSync(hfd, '414243', 0, 'hex'), 3);
+fs.closeSync(hfd);
+assert.equal(fs.readFileSync('/home/user/hex.bin', 'utf8'), 'ABC');
+
 // ── EBADF: any operation on a closed fd ──
 for (const [name, run] of [
   ['readSync', () => fs.readSync(fd, buf, 0, 1, 0)],
