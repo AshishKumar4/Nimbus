@@ -106,6 +106,29 @@ export interface OpencodeRunnerOptions {
     mode: OpencodeRunnerMode;
 }
 export type OpencodeRunnerMode = 'oneshot' | 'attached' | 'server';
+/** OpenTUI's cross-copy singleton registry key (@opentui/core, public). */
+export declare const OPENTUI_SINGLETON_SYMBOL = "@opentui/core/singleton";
+/** The registry entry holding the live CliRenderer set. */
+export declare const OPENTUI_RENDERER_TRACKER = "RendererTracker";
+/**
+ * Terminal-geometry bridge: SIGWINCH → the live renderers' resize().
+ *
+ * OpenTUI's CliRenderer subscribes to SIGWINCH itself ONLY when its stdout is
+ * process.stdout (`_usesProcessStdout`); with a custom stdout the embedding host
+ * owns the terminal and drives `renderer.resize(columns, rows)` — the same public
+ * geometry API createTestRenderer exposes. Seam 7 hands the renderer the facet
+ * TTY stdout (a distinct object, so the span feed gets allocated), which puts
+ * Nimbus on exactly that host path. But that stdout IS the process terminal:
+ * without this bridge a resize travels the whole way in — WS frame →
+ * ProcessInputStore → cpReadStdin → node-shims updates __nimbusTtyColumns/Rows
+ * and emits SIGWINCH — and then dies unheard, so the frame never reflows.
+ *
+ * Live renderers come from OpenTUI's own cross-copy registry (the same one that
+ * enforces one renderer per stream). resize() runs the reflow immediately rather
+ * than through handleResize's 100ms debounce, a facet timer that only fires on
+ * the next I/O yield anyway.
+ */
+export declare const OPENTUI_RESIZE_BRIDGE_SRC: string;
 /**
  * In-isolate Web Worker polyfill for the opencode TUI client/server split.
  *
