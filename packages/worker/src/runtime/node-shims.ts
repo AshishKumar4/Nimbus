@@ -1720,7 +1720,8 @@ const __fsMod = (() => {
       length = offsetOrOptions.length;
       position = offsetOrOptions.position;
     }
-    // Sync stdin cannot block; an unattached stdin reads as EOF.
+    // Sync stdin cannot block, so stdin always reads as EOF here — an
+    // attached tty with buffered input is NOT distinguished.
     if (_isStdioFd(fd)) return 0;
     return _fdHandle(fd, "read")._readSync(buffer, offset, length, position);
   }
@@ -1762,7 +1763,10 @@ const __fsMod = (() => {
   function close(fd, cb) {
     let err = null;
     try { closeSync(fd); } catch (e) { err = e; }
-    if (typeof cb === "function") queueMicrotask(() => cb(err));
+    // Without a callback there is nowhere to deliver the failure, so raise
+    // it here rather than let an EBADF vanish.
+    if (typeof cb !== "function") { if (err) throw err; return; }
+    queueMicrotask(() => cb(err));
   }
   function read(fd, buffer, offset, length, position, cb) {
     if (typeof buffer === "function") {
@@ -1833,12 +1837,18 @@ const __fsMod = (() => {
   function fsync(fd, cb) {
     let err = null;
     try { fsyncSync(fd); } catch (e) { err = e; }
-    if (typeof cb === "function") queueMicrotask(() => cb(err));
+    // Without a callback there is nowhere to deliver the failure, so raise
+    // it here rather than let an EBADF vanish.
+    if (typeof cb !== "function") { if (err) throw err; return; }
+    queueMicrotask(() => cb(err));
   }
   function fdatasync(fd, cb) {
     let err = null;
     try { fdatasyncSync(fd); } catch (e) { err = e; }
-    if (typeof cb === "function") queueMicrotask(() => cb(err));
+    // Without a callback there is nowhere to deliver the failure, so raise
+    // it here rather than let an EBADF vanish.
+    if (typeof cb !== "function") { if (err) throw err; return; }
+    queueMicrotask(() => cb(err));
   }
   function fchmod(fd, mode, cb) {
     const handle = _fdFor(fd, "fchmod", cb);
