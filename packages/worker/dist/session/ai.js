@@ -337,34 +337,39 @@ function modelNotFoundMessage(detail, config) {
         `configured default is ${config.model}.`;
 }
 /**
- * `/responses` is OpenAI's Responses API, which Workers AI implements on the
- * same compat surface for the models that support it (gpt-oss). It is here
- * because it is what a growing number of clients speak by default — pi's
- * built-in OpenAI models are all Responses-API models — and proxying it is the
- * same hop as `/chat/completions`, not a translation layer.
+ * The operations this gateway serves. `/responses` is OpenAI's Responses API,
+ * which Workers AI implements on the same compat surface for the models that
+ * support it (gpt-oss); it is here because it is what a growing number of
+ * clients speak by default, and proxying it is the same hop as
+ * `/chat/completions`, not a translation layer.
  */
+const AI_OPERATIONS = ['/chat/completions', '/responses', '/embeddings', '/models'];
 function matchRoute(path, method) {
-    if (path === '/models' && (method === 'GET' || method === 'HEAD'))
-        return 'models';
-    if (path === '/chat/completions' && method === 'POST')
-        return '/chat/completions';
-    if (path === '/responses' && method === 'POST')
-        return '/responses';
-    if (path === '/embeddings' && method === 'POST')
-        return '/embeddings';
-    return null;
+    if (path === '/models')
+        return method === 'GET' || method === 'HEAD' ? 'models' : null;
+    if (method !== 'POST')
+        return null;
+    return AI_OPERATIONS.includes(path) && path !== '/models' ? path : null;
 }
 /**
- * Clients disagree about whether the `/v1` lives in the base URL or in the
- * path, and a base URL that already ends in `/v1` plus a client that adds its
- * own yields `/v1/v1/models`. Strip every leading `/v1` and route on what is
- * left, so both conventions land on the same handler.
+ * Which operation a request is asking for, given whatever path it arrived with.
+ *
+ * A request that reached this gateway by mediation (_shared/ai-egress.ts) was
+ * addressed to a vendor the caller believed in, and every vendor prefixes its
+ * operations differently: `/v1/chat/completions` for OpenAI,
+ * `/client/v4/accounts/<id>/ai/v1/chat/completions` for Workers AI,
+ * `/v1/<account>/<gateway>/compat/chat/completions` for AI Gateway. Clients
+ * also disagree about whether the `/v1` belongs to the base URL or the path, so
+ * even the loopback endpoint sees both `/v1/models` and `/v1/v1/models`.
+ *
+ * The operation is always the tail, so that is what is matched — one rule
+ * covering every caller, rather than a list of vendor prefixes to keep current.
+ * A path whose tail is not an operation is returned unchanged, so the 404 names
+ * what the caller actually asked for.
  */
 function normalizeAiPath(pathname) {
-    let path = pathname || '/';
-    while (path === '/v1' || path.startsWith('/v1/'))
-        path = path.slice(3) || '/';
-    return path;
+    const path = pathname || '/';
+    return AI_OPERATIONS.find((operation) => path === operation || path.endsWith(operation)) ?? path;
 }
 /**
  * `GET /v1/models`, the endpoint tools use to discover what they can run.

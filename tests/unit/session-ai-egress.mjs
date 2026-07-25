@@ -265,6 +265,23 @@ function aiHost(env = {}) {
     }));
     assert.equal(responses.status, 200);
     assert.ok(calls[0].url.endsWith('/ai/v1/responses'), 'proxied to the Workers AI responses endpoint');
+
+    // A mediated request arrives with whatever prefix its vendor's base URL
+    // has. The operation is the tail, wherever the caller thought it lived.
+    for (const [addressed, upstream] of [
+      ['https://api.cloudflare.com/client/v4/accounts/someone-elses-id/ai/v1/chat/completions', '/ai/v1/chat/completions'],
+      ['https://gateway.ai.cloudflare.com/v1/acct/gw/compat/chat/completions', '/ai/v1/chat/completions'],
+      ['http://127.0.0.1:8790/v1/v1/chat/completions', '/ai/v1/chat/completions'],
+    ]) {
+      calls.length = 0;
+      const proxied = await handleSessionAiRequest(host, new Request(addressed, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: '@cf/a/b', messages: [] }),
+      }));
+      assert.equal(proxied.status, 200, `${addressed} routed`);
+      assert.ok(calls[0].url.endsWith(upstream), `${addressed} → ${upstream}, got ${calls[0].url}`);
+    }
   } finally {
     globalThis.fetch = realFetch;
   }
