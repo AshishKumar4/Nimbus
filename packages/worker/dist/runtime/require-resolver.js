@@ -18,9 +18,9 @@
  *   3. Read the resolved file, recursively parse ITS requires.
  *   4. Return Record<string, string> of path → content.
  *
- * Limits (sub-agent §Q1 caveats — extended regex still misses dynamic
- * requires like `require(variable)` and ESM `import` statements; greedy
- * oversampling in facet-manager.ts:buildPrefetchBundle compensates).
+ * Static analysis still misses dynamic requires like `require(variable)`;
+ * bounded greedy oversampling in facet-manager.ts:buildPrefetchBundle
+ * compensates without limiting the statically-proven require closure.
  *
  * History: this file was ARC-A-P1 quarantined after W2 because the
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
@@ -87,8 +87,6 @@ const DYNIMPORT_RE = /\bimport\s*\(\s*(['"`])([^'"`]+?)\1\s*\)/g;
 // false-positive. The walker no-ops on missed resolutions, so it's a
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
-const MAX_FILES = 4000;
-const MAX_BYTES = 24 * 1024 * 1024; // 24 MiB raw — facet-manager re-caps on JSON-encoded size.
 function strip(p) { return p.replace(/^\/+/, ''); }
 const normalizePath = normalizeVfsPath;
 /**
@@ -436,37 +434,13 @@ function resolveImportsField(vfs, name, fromDir, sink) {
         dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
     }
 }
-/**
- * Resolve the complete dependency graph starting from entry code.
- * Returns Record<path, content> + the set of package directories
- * referenced (for greedy oversampling).
- */
+/** Resolve the complete dependency graph starting from entry code. */
 export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
     const bundle = {};
-    const visitedPkgDirs = new Set();
-    let totalBytes = 0;
-    let fileCount = 0;
-    let truncated = false;
     const visited = new Set();
-    function trackPkgDir(vfsPath) {
-        if (!vfsPath.includes('node_modules/'))
-            return;
-        const parts = vfsPath.split('/');
-        const nmIdx = parts.lastIndexOf('node_modules');
-        if (nmIdx < 0)
-            return;
-        const pkgEnd = parts[nmIdx + 1]?.startsWith('@') ? nmIdx + 3 : nmIdx + 2;
-        if (pkgEnd > parts.length)
-            return;
-        visitedPkgDirs.add(parts.slice(0, pkgEnd).join('/'));
-    }
     function addFile(vfsPath) {
         if (visited.has(vfsPath))
             return;
-        if (fileCount >= MAX_FILES || totalBytes >= MAX_BYTES) {
-            truncated = true;
-            return;
-        }
         visited.add(vfsPath);
         let content;
         try {
@@ -475,14 +449,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         catch {
             return;
         }
-        if (totalBytes + content.length > MAX_BYTES) {
-            truncated = true;
-            return;
-        }
         bundle[vfsPath] = content;
-        totalBytes += content.length;
-        fileCount++;
-        trackPkgDir(vfsPath);
         // Also add the package.json for the enclosing node_modules package
         // so the runtime resolver can read the same exports/main field we
         // walked here.
@@ -496,11 +463,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
                     visited.add(pkgJsonPath);
                     try {
                         const pkgContent = vfs.readFileString(pkgJsonPath);
-                        if (totalBytes + pkgContent.length <= MAX_BYTES) {
-                            bundle[pkgJsonPath] = pkgContent;
-                            totalBytes += pkgContent.length;
-                            fileCount++;
-                        }
+                        bundle[pkgJsonPath] = pkgContent;
                     }
                     catch { /* ignore */ }
                 }
@@ -530,11 +493,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
                     visited.add(dirPkgJson);
                     try {
                         const pkgContent = vfs.readFileString(dirPkgJson);
-                        if (totalBytes + pkgContent.length <= MAX_BYTES) {
-                            bundle[dirPkgJson] = pkgContent;
-                            totalBytes += pkgContent.length;
-                            fileCount++;
-                        }
+                        bundle[dirPkgJson] = pkgContent;
                     }
                     catch { /* ignore */ }
                 }
@@ -634,14 +593,6 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
     function addStub(stubPath, content) {
         if (visited.has(stubPath))
             return;
-        if (fileCount >= MAX_FILES || totalBytes >= MAX_BYTES) {
-            truncated = true;
-            return;
-        }
-        if (totalBytes + content.length > MAX_BYTES) {
-            truncated = true;
-            return;
-        }
         // Don't shadow a real on-disk file: if VFS already has something
         // at this path, skip the stub. (Defence-in-depth — should never
         // happen because the legacy-directory branch only fires when all
@@ -650,24 +601,17 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             return;
         visited.add(stubPath);
         bundle[stubPath] = content;
-        totalBytes += content.length;
-        fileCount++;
-        trackPkgDir(stubPath);
     }
     /**
      * Sink for intermediate package.json files consulted during
      * LOAD_AS_DIRECTORY resolution (see PkgJsonSink). Adds the content
      * verbatim — package.json carries no requires, so no recursion and no
-     * enclosing-package piggyback is needed. Bounded by the same budget.
+     * enclosing-package piggyback is needed.
      */
     function addPkgJson(pkgJsonPath) {
         const k = strip(pkgJsonPath);
         if (visited.has(k) || k in bundle)
             return;
-        if (fileCount >= MAX_FILES || totalBytes >= MAX_BYTES) {
-            truncated = true;
-            return;
-        }
         let content;
         try {
             content = vfs.readFileString(k);
@@ -675,14 +619,8 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         catch {
             return;
         }
-        if (totalBytes + content.length > MAX_BYTES) {
-            truncated = true;
-            return;
-        }
         visited.add(k);
         bundle[k] = content;
-        totalBytes += content.length;
-        fileCount++;
     }
     // Start from entry code.
     //
@@ -715,16 +653,12 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
     if (vfs.exists(cwdPkg) && !visited.has(cwdPkg)) {
         try {
             const c = vfs.readFileString(cwdPkg);
-            if (totalBytes + c.length <= MAX_BYTES) {
-                bundle[cwdPkg] = c;
-                totalBytes += c.length;
-                fileCount++;
-                visited.add(cwdPkg);
-            }
+            bundle[cwdPkg] = c;
+            visited.add(cwdPkg);
         }
         catch { /* ignore */ }
     }
-    return { bundle, visitedPkgDirs, truncated };
+    return { bundle };
 }
 const BUILTINS = new Set([
     'fs', 'path', 'os', 'events', 'stream', 'buffer', 'util', 'url', 'crypto',

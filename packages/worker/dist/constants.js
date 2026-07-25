@@ -82,10 +82,10 @@ export const FACET_TIMEOUT_MS = 30_000; // 30s execution timeout
 //
 // W2.6a: bundle-size budget is gated on the JSON-ENCODED UTF-8 BYTE
 // length of the final {bundle, manifest} payload, not on raw content
-// byte sum. The dynamic worker module embeds the bundle as
-// `const __MODULE_VFS_BUNDLE = ${JSON.stringify(bundle)}`, so workerd's
-// per-module text-size limit applies to the JSON-escaped form (each
-// `\n` / `\"` / `\u` adds bytes, plus the per-key string-quote overhead).
+// byte sum. The dynamic worker module serializes bundle content into
+// JavaScript, so workerd's per-module text-size limit applies to the
+// JSON-escaped form (each `\n` / `\"` / `\u` adds bytes, plus the
+// per-key string-quote overhead).
 // raw → boots, 8 MiB raw → fails. Encoded as JSON that's roughly 18-25 MiB
 // of module text. We target 22 MiB encoded as the hard ceiling, leaving
 // ~2-3 MiB of headroom for the rest of the worker module (shims, runner
@@ -95,17 +95,33 @@ export const FACET_TIMEOUT_MS = 30_000; // 30s execution timeout
 // to measure exact UTF-8 bytes (not JS string .length, which counts UTF-16
 // code units and undercounts non-ASCII content).
 //
-// VFS_BUNDLE_MAX_BYTES (raw) is retained as a cheap pre-check so we
-// don't waste cycles building a bundle that will obviously blow the
-// encoded ceiling. 24 MiB raw will JSON-encode to roughly 30-50 MiB,
-// so we keep the raw cap a comfortable margin under the encoded one.
-// VFS_BUNDLE_MAX_FILES is retained for prefetch-side recursion safety.
-// VFS_BUNDLE_MAX_DEPTH dropped — the prefetch walk is bounded by the
-// require() graph itself; manifest pass uses MANIFEST_MAX_DEPTH (local
-// to facet-manager.ts).
+// The raw file/byte caps bound optional snapshot enrichment only. The
+// statically-proven require closure is uncapped and oversized closures are
+// partitioned into side modules, each below BUNDLE_MAX_ENCODED_BYTES.
+// VFS_BUNDLE_MAX_DEPTH was dropped because the static walker is bounded by
+// the require graph itself; the manifest pass has its own depth limit.
 export const VFS_BUNDLE_MAX_FILES = 4000;
 export const VFS_BUNDLE_MAX_BYTES = 24 * 1024 * 1024; // 24 MiB raw
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024; // 22 MiB JSON-encoded UTF-8
+// Per-file ceiling for the blind working-tree sweep (facet-manager.ts
+// addCwdProjectFiles). That pass names no file the program asked for — it
+// guesses, so a relative `readFileSync` of a project file resolves — and a
+// guess has no claim on the whole budget. Without it one data file consumes
+// all 24 MiB, every later invocation carries it, and the supervisor holds
+// the cached copy while building the next one beside it.
+//
+// Only this sweep is bounded per file. The other enrichment passes admit a
+// file because something in the source named it — an absolute literal, a
+// `path.resolve(__dirname, …)` asset, a package's own bin tree — and a named
+// file keeps its claim at any size. The sweep alone names nothing.
+//
+// 2 MiB clears real project content (sources, configs, fixtures, ordinary
+// assets) by a wide margin. Past it the file is data, and data is what async
+// fs is for: it reads live from the supervisor in 64 KiB ranges and never
+// needed to be resident. A relative sync read of a file larger than this,
+// where no scanner matched the literal, is the case that gives up ground —
+// it now raises ENOENT instead of costing the session.
+export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 // ── npm Constants ───────────────────────────────────────────────────────
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_CONCURRENCY = 12;
