@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { WeightedCreditPool } from '../../packages/worker/src/vfs/write-stream-credit-pool.ts';
+import { WeightedCreditPool } from '../../packages/worker/src/_shared/weighted-credit-pool.ts';
 
 const deferred = () => {
   let resolve;
@@ -78,6 +78,21 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(pool.stats.queued, 0);
   nextLease.release();
   held.release();
+  assert.equal(pool.stats.current, 0);
+}
+
+// A full-capacity setup reservation can hand back unused credit while keeping
+// its retained payload covered for the rest of its lifetime.
+{
+  const pool = new WeightedCreditPool(10);
+  const setup = await pool.acquire(10);
+  const queued = pool.acquire(4);
+  setup.shrinkTo(6);
+  const admitted = await queued;
+  assert.equal(setup.bytes, 6);
+  assert.equal(pool.stats.current, 10);
+  admitted.release();
+  setup.release();
   assert.equal(pool.stats.current, 0);
 }
 

@@ -3,6 +3,10 @@ export interface CreditLease {
   release(): void;
 }
 
+export interface ResizableCreditLease extends CreditLease {
+  shrinkTo(bytes: number): void;
+}
+
 export interface WeightedCreditPoolStats {
   readonly current: number;
   readonly peak: number;
@@ -11,15 +15,15 @@ export interface WeightedCreditPoolStats {
 
 interface CreditWaiter {
   readonly bytes: number;
-  readonly resolve: (lease: CreditLease) => void;
+  readonly resolve: (lease: ResizableCreditLease) => void;
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
 }
 
 /**
- * FIFO weighted credit shared by the write streams of one SqliteVFS.
- * Capacity is measured in retained payload bytes, not stream or RPC count.
+ * FIFO byte-credit pool shared by concurrent allocation owners.
+ * Capacity is measured in retained bytes, not operation count.
  */
 export class WeightedCreditPool {
   private current = 0;
@@ -28,7 +32,7 @@ export class WeightedCreditPool {
 
   constructor(readonly capacity: number) {
     if (!Number.isSafeInteger(capacity) || capacity <= 0) {
-      throw new RangeError(`write-stream credit capacity must be a positive safe integer: ${capacity}`);
+      throw new RangeError(`weighted credit capacity must be a positive safe integer: ${capacity}`);
     }
   }
 
@@ -40,13 +44,13 @@ export class WeightedCreditPool {
     };
   }
 
-  tryAcquire(bytes: number): CreditLease | null {
+  tryAcquire(bytes: number): ResizableCreditLease | null {
     this.validateRequest(bytes);
     if (this.waiters.length > 0 || this.current + bytes > this.capacity) return null;
     return this.grant(bytes);
   }
 
-  acquire(bytes: number, signal?: AbortSignal): Promise<CreditLease> {
+  acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
     try {
       this.validateRequest(bytes);
     } catch (error) {
@@ -56,7 +60,7 @@ export class WeightedCreditPool {
     const immediate = this.tryAcquire(bytes);
     if (immediate) return Promise.resolve(immediate);
 
-    return new Promise<CreditLease>((resolve, reject) => {
+    return new Promise<ResizableCreditLease>((resolve, reject) => {
       const waiter: CreditWaiter = {
         bytes,
         resolve,
@@ -86,23 +90,43 @@ export class WeightedCreditPool {
   private validateRequest(bytes: number): void {
     if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > this.capacity) {
       throw new RangeError(
-        `write-stream credit request must be a positive safe integer no larger than ${this.capacity}: ${bytes}`,
+        `weighted credit request must be a positive safe integer no larger than ${this.capacity}: ${bytes}`,
       );
     }
   }
 
-  private grant(bytes: number): CreditLease {
+  private grant(bytes: number): ResizableCreditLease {
     this.current += bytes;
     this.peak = Math.max(this.peak, this.current);
+    let leasedBytes = bytes;
     let released = false;
     return {
-      bytes,
+      get bytes() {
+        return leasedBytes;
+      },
+      shrinkTo: (nextBytes: number) => {
+        if (released) {
+          throw new Error('cannot shrink a released weighted credit lease');
+        }
+        if (
+          !Number.isSafeInteger(nextBytes)
+          || nextBytes <= 0
+          || nextBytes > leasedBytes
+        ) {
+          throw new RangeError(
+            `weighted credit lease can only shrink to a positive safe integer no larger than ${leasedBytes}: ${nextBytes}`,
+          );
+        }
+        this.current -= leasedBytes - nextBytes;
+        leasedBytes = nextBytes;
+        this.drain();
+      },
       release: () => {
         if (released) return;
         released = true;
-        this.current -= bytes;
+        this.current -= leasedBytes;
         if (this.current < 0) {
-          throw new Error('write-stream credit accounting underflow');
+          throw new Error('weighted credit accounting underflow');
         }
         this.drain();
       },

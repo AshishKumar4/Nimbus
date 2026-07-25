@@ -2,14 +2,17 @@ export interface CreditLease {
     readonly bytes: number;
     release(): void;
 }
+export interface ResizableCreditLease extends CreditLease {
+    shrinkTo(bytes: number): void;
+}
 export interface WeightedCreditPoolStats {
     readonly current: number;
     readonly peak: number;
     readonly queued: number;
 }
 /**
- * FIFO weighted credit shared by the write streams of one SqliteVFS.
- * Capacity is measured in retained payload bytes, not stream or RPC count.
+ * FIFO byte-credit pool shared by concurrent allocation owners.
+ * Capacity is measured in retained bytes, not operation count.
  */
 export declare class WeightedCreditPool {
     readonly capacity: number;
@@ -18,10 +21,10 @@ export declare class WeightedCreditPool {
     private readonly waiters;
     constructor(capacity: number);
     get stats(): WeightedCreditPoolStats;
-    tryAcquire(bytes: number): CreditLease | null;
-    acquire(bytes: number, signal?: AbortSignal): Promise<CreditLease>;
+    tryAcquire(bytes: number): ResizableCreditLease | null;
+    acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
     private validateRequest;
     private grant;
     private drain;
 }
-//# sourceMappingURL=write-stream-credit-pool.d.ts.map
+//# sourceMappingURL=weighted-credit-pool.d.ts.map

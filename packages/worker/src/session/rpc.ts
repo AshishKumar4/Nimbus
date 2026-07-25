@@ -41,9 +41,17 @@ import {
   recordFailure, getLastRpcFrame, getLastFacetId,
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import {
+  acquireSupervisorAllocation,
+} from '../observability/heavy-alloc-coord.js';
+import {
+  rpcPayloadEnd,
+  rpcPayloadStart,
+} from '../observability/diag-counters.js';
 import { CRED_KERNEL, type RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { z } from 'zod/v4';
 
@@ -106,9 +114,42 @@ function runtimeFs(self: RpcHost, pid: unknown): SqliteRuntimeFsBridge {
   return bridge;
 }
 
+function checkedReadPayloadBytes(bytes: number): number {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) {
+    throw new RangeError(`filesystem RPC read size must be a non-negative safe integer: ${bytes}`);
+  }
+  if (bytes > MAX_RPC_SAFE_PAYLOAD_BYTES) {
+    throw new RangeError(
+      `filesystem RPC read payload ${bytes} exceeds the ${MAX_RPC_SAFE_PAYLOAD_BYTES}-byte limit`,
+    );
+  }
+  return bytes;
+}
+
+async function withReadAllocation<T>(
+  bytes: number,
+  read: () => Promise<T>,
+): Promise<T> {
+  const payloadBytes = checkedReadPayloadBytes(bytes);
+  if (payloadBytes === 0) return read();
+  const lease = await acquireSupervisorAllocation(payloadBytes);
+  rpcPayloadStart(payloadBytes);
+  try {
+    return await read();
+  } finally {
+    rpcPayloadEnd(payloadBytes);
+    lease.release();
+  }
+}
+
 export async function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null> {
-    const bytes = await runtimeFs(self, pid).readFile(path);
-    return bytes ? dec.decode(bytes) : null;
+    const fs = runtimeFs(self, pid);
+    const stat = await fs.stat(path);
+    if (!stat) return null;
+    return withReadAllocation(stat.size, async () => {
+      const bytes = await fs.readFile(path);
+      return bytes ? dec.decode(bytes) : null;
+    });
 }
 
   /**
@@ -117,7 +158,10 @@ export async function _rpcReadFile(self: RpcHost, path: string, pid?: number): P
    * round-tripping through readFile (string) would corrupt bytes.
    */
 export async function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number): Promise<Uint8Array | null> {
-    return runtimeFs(self, pid).readFile(path);
+    const fs = runtimeFs(self, pid);
+    const stat = await fs.stat(path);
+    if (!stat) return null;
+    return withReadAllocation(stat.size, () => fs.readFile(path));
 }
 
   /**
@@ -305,7 +349,10 @@ export async function _rpcFsReadRange(
   pid?: number,
 ): Promise<Uint8Array | null> {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    return runtimeFs(self, pid).readRange(args.path, args.offset, args.length);
+    return withReadAllocation(
+      args.length,
+      () => runtimeFs(self, pid).readRange(args.path, args.offset, args.length),
+    );
 }
 
 export async function _rpcFsWriteRange(
@@ -335,7 +382,10 @@ export async function _rpcFsRead(
   length: number,
   pid?: number,
 ): Promise<Uint8Array> {
-    return runtimeFs(self, pid).read(handleId, offset, length);
+    return withReadAllocation(
+      length,
+      () => runtimeFs(self, pid).read(handleId, offset, length),
+    );
 }
 
 export async function _rpcFsWrite(

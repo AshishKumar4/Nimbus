@@ -41,8 +41,8 @@ export interface DiagCounters {
    * Sum of payload bytes claimed by RPCs currently in flight on the
    * SUPERVISOR boundary [Phase 2 A'.2].
    *
-   * Bumped at RPC entry by `rpcPayloadStart(bytes)` (called from
-   * src/session/supervisor-rpc.ts handlers); debited at exit by
+   * Bumped at RPC entry by `rpcPayloadStart(bytes)` in the DO-side
+   * byte-returning handlers in src/session/rpc.ts; debited at exit by
    * `rpcPayloadEnd(bytes)`. Goes back to zero after every RPC settles.
    *
    * The C'.1 heap estimator surfaces this as
