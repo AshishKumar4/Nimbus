@@ -21,7 +21,9 @@ const a = makeAsserter(label);
 console.log(`${label} — ${process.env.BASE}`);
 
 const PORT = 8451;
-const HANDLER_DELAY_MS = 400;
+const SLOW_MS = 2000;
+const FAST_MS = 50;
+const RELEASE_MS = 300;
 
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
@@ -190,20 +192,27 @@ try {
     }
   }
 
-  // ── Two connections in flight at once ────────────────────────────────────
-  // A server whose handler is slow. If handlers ran inline, or if the accept
-  // loop could not proceed past a blocked handler, two requests would cost two
-  // delays. Concurrency means they cost one.
+  // ── Connections in flight at once ────────────────────────────────────────
+  // Two properties, both of them things a request cannot own on its own. A
+  // slow handler must not decide when a fast one answers, and work a handler
+  // leaves behind - a thread that will finish after this connection has been
+  // answered - has to keep running once the request that started it is gone.
   await t.run(heredocCommand('rb_concurrent_server.rb', [
     'require "socket"',
+    '$gate = Queue.new',
     `server = TCPServer.new("0.0.0.0", ${PORT})`,
     'loop do',
     '  sock = server.accept',
     '  Thread.new(sock) do |conn|',
     '    head = conn.gets("\\r\\n\\r\\n").to_s',
     '    path = head.lines.first.to_s.split(" ")[1].to_s',
-    `    sleep ${HANDLER_DELAY_MS / 1000.0}`,
-    '    body = "HANDLED #{path}"',
+    '    body = case path',
+    `           when %r{/slow} then sleep ${SLOW_MS / 1000.0}; "SLOW"`,
+    `           when %r{/fast} then sleep ${FAST_MS / 1000.0}; "FAST"`,
+    `           when %r{/release} then Thread.new { sleep ${RELEASE_MS / 1000.0}; $gate.push("go") }; "RELEASED"`,
+    '           when %r{/hold} then "HELD #{$gate.pop}"',
+    '           else "OK"',
+    '           end',
     '    conn.write("HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nContent-Length: #{body.bytesize}\\r\\n\\r\\n#{body}")',
     '    conn.close',
     '  end',
@@ -214,22 +223,37 @@ try {
     const { output } = await t.run('ruby rb_concurrent_server.rb', 120_000);
     serverPid = Number((stripAnsi(output).match(/pid=(\d+)/) || [])[1] || 0);
 
-    // Warm the path so instantiation cost is not counted in the timing below.
+    // Warm the path so instantiation cost is not counted in the timings below.
     await fetchPort(sid, PORT, 'warm');
 
-    const started = Date.now();
-    const [one, two] = await Promise.all([
-      fetchPort(sid, PORT, 'one'),
-      fetchPort(sid, PORT, 'two'),
+    const [slow, fast] = await Promise.all([
+      fetchPort(sid, PORT, 'slow'),
+      fetchPort(sid, PORT, 'fast'),
     ]);
-    const elapsed = Date.now() - started;
+    a.check('a slow connection does not decide when a fast one answers',
+      slow.status === 200 && slow.body === 'SLOW' &&
+      fast.status === 200 && fast.body === 'FAST' &&
+      fast.elapsed < SLOW_MS / 2 && slow.elapsed < SLOW_MS * 2,
+      `slow=${slow.status}/${slow.elapsed}ms/${JSON.stringify(slow.body.slice(0, 40))} ` +
+      `fast=${fast.status}/${fast.elapsed}ms/${JSON.stringify(fast.body.slice(0, 40))} ` +
+      `(the fast handler sleeps ${FAST_MS}ms while the slow one sleeps ${SLOW_MS}ms)`);
+  }
 
-    a.check('two connections are served concurrently, not serially',
-      one.status === 200 && two.status === 200 &&
-      one.body === 'HANDLED /one' && two.body === 'HANDLED /two' &&
-      elapsed < HANDLER_DELAY_MS * 1.8,
-      `elapsed=${elapsed}ms (one handler delay is ${HANDLER_DELAY_MS}ms, two would be ${HANDLER_DELAY_MS * 2}ms) ` +
-      `one=${one.status}/${JSON.stringify(one.body.slice(0, 80))} two=${two.status}/${JSON.stringify(two.body.slice(0, 80))}`);
+  {
+    // /hold blocks on a queue that only a thread /release leaves behind can
+    // fill, and /release answers immediately. So the timer that unblocks
+    // /hold outlives the request that created it - which it cannot do if it
+    // is anchored to that request's I/O context. The stagger is what puts
+    // /hold in flight first; that ordering is the condition under test.
+    const held = fetchPort(sid, PORT, 'hold');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const released = await fetchPort(sid, PORT, 'release');
+    const hold = await held;
+    a.check('work a request leaves behind outlives that request',
+      released.status === 200 && released.body === 'RELEASED' &&
+      hold.status === 200 && hold.body === 'HELD go',
+      `hold=${hold.status}/${hold.elapsed}ms/${JSON.stringify(hold.body.slice(0, 60))} ` +
+      `release=${released.status}/${released.elapsed}ms/${JSON.stringify(released.body.slice(0, 60))}`);
   }
 
   if (serverPid > 0) await t.run(`kill ${serverPid}`, 10_000).catch(() => {});
