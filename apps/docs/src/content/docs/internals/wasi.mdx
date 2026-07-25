@@ -56,8 +56,8 @@ not long-running processes. stdin is EOF. There are no inbound sockets.
 `wasi-threads` is not implemented, and `thread_spawn` is left out of the
 import table, so a program that links pthreads stops at wasm-ld with
 `undefined symbol: thread_spawn` instead of running with wrong memory
-semantics. The refusal is at link time by choice. The reason is
-structural. `wasi-threads` asks the host to instantiate a second copy of
+semantics. The reason is structural. `wasi-threads` asks the host to
+instantiate a second copy of
 the same module against the same shared linear memory and start
 `wasi_thread_start` in it. Worker Loader isolates cannot share a
 `WebAssembly.Memory`, no `SharedArrayBuffer` crosses between them, and
