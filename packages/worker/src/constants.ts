@@ -89,10 +89,10 @@ export const FACET_TIMEOUT_MS = 30_000;  // 30s execution timeout
 //
 // W2.6a: bundle-size budget is gated on the JSON-ENCODED UTF-8 BYTE
 // length of the final {bundle, manifest} payload, not on raw content
-// byte sum. The dynamic worker module embeds the bundle as
-// `const __MODULE_VFS_BUNDLE = ${JSON.stringify(bundle)}`, so workerd's
-// per-module text-size limit applies to the JSON-escaped form (each
-// `\n` / `\"` / `\u` adds bytes, plus the per-key string-quote overhead).
+// byte sum. The dynamic worker module serializes bundle content into
+// JavaScript, so workerd's per-module text-size limit applies to the
+// JSON-escaped form (each `\n` / `\"` / `\u` adds bytes, plus the
+// per-key string-quote overhead).
 // raw → boots, 8 MiB raw → fails. Encoded as JSON that's roughly 18-25 MiB
 // of module text. We target 22 MiB encoded as the hard ceiling, leaving
 // ~2-3 MiB of headroom for the rest of the worker module (shims, runner
@@ -102,14 +102,11 @@ export const FACET_TIMEOUT_MS = 30_000;  // 30s execution timeout
 // to measure exact UTF-8 bytes (not JS string .length, which counts UTF-16
 // code units and undercounts non-ASCII content).
 //
-// VFS_BUNDLE_MAX_BYTES (raw) is retained as a cheap pre-check so we
-// don't waste cycles building a bundle that will obviously blow the
-// encoded ceiling. 24 MiB raw will JSON-encode to roughly 30-50 MiB,
-// so we keep the raw cap a comfortable margin under the encoded one.
-// VFS_BUNDLE_MAX_FILES is retained for prefetch-side recursion safety.
-// VFS_BUNDLE_MAX_DEPTH dropped — the prefetch walk is bounded by the
-// require() graph itself; manifest pass uses MANIFEST_MAX_DEPTH (local
-// to facet-manager.ts).
+// The raw file/byte caps bound optional snapshot enrichment only. The
+// statically-proven require closure is uncapped and oversized closures are
+// partitioned into side modules, each below BUNDLE_MAX_ENCODED_BYTES.
+// VFS_BUNDLE_MAX_DEPTH was dropped because the static walker is bounded by
+// the require graph itself; the manifest pass has its own depth limit.
 export const VFS_BUNDLE_MAX_FILES = 4000;
 export const VFS_BUNDLE_MAX_BYTES = 24 * 1024 * 1024;          // 24 MiB raw
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-encoded UTF-8
