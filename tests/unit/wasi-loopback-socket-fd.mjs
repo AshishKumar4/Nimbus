@@ -228,6 +228,50 @@ function parseWire(wire) {
   console.log(`  ok  a large response arrives across ${reads} successive reads`);
 }
 
+// ── An accepted connection is the SAME kind of fd as a dialed one ───────────
+// This is the invariant that keeps a second socket implementation from growing
+// back: if accept ever stops producing a file descriptor, a guest needs its own
+// buffering and framing for accepted sockets, and the two paths drift.
+{
+  const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+
+  const dialed = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(dialed.errno, ESUCCESS);
+
+  // Queue an inbound request the way the port route does, then accept it.
+  const served = kernel.handleHttpRequest(8080, new Request('http://127.0.0.1:8080/inbound', {
+    method: 'POST',
+    body: 'ping',
+  }));
+  kernel.listen(8080);
+  const accepted = kernel.acceptNow(8080) ?? (await kernel.accept(8080));
+  const bound = h.open(`dev/nimbus/socket/${accepted.id}`);
+  assert.equal(bound.errno, ESUCCESS, 'an accepted connection must bind to a fd');
+
+  const describe = (fd) => {
+    assert.equal(h.wasiImport.fd_fdstat_get(fd, 0x2000), ESUCCESS);
+    return {
+      fdstatType: h.view().getUint8(0x2000),
+      filestatType: (h.wasiImport.fd_filestat_get(fd, 0x2000), h.view().getUint8(0x2000 + 16)),
+      seek: h.wasiImport.fd_seek(fd, 0n, 0, 0x2000),
+      tell: h.wasiImport.fd_tell(fd, 0x2000),
+    };
+  };
+  assert.deepEqual(describe(bound.fd), describe(dialed.fd),
+    'accepted and dialed sockets must be indistinguishable as file descriptors');
+
+  // And it really carries the exchange: read the request, write the response.
+  assert.equal(await h.read(bound.fd), ESUCCESS);
+  assert.match(h.lastRead(), /^POST \/inbound HTTP\/1\.1/);
+  const payload = 'accepted-ok';
+  await h.write(bound.fd, `HTTP/1.1 200 OK\r\nContent-Length: ${payload.length}\r\n\r\n${payload}`);
+  const response = await served;
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), payload);
+  console.log('  ok  an accepted connection is the same kind of fd as a dialed one, and carries the exchange');
+}
+
 // ── A loopback socket fd looks like a socket, not a file ────────────────────
 {
   const h = host(async () => new Response('x'));

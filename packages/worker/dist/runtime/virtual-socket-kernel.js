@@ -469,6 +469,9 @@ class VirtualConnection {
     readAsync(maxBytes) {
         return Promise.resolve(this.read(maxBytes));
     }
+    readBytesAsync(maxBytes) {
+        return Promise.resolve(this.inbound.readUpTo(Math.max(1, maxBytes | 0)));
+    }
     /** Same reason: an empty read on an accepted connection is always genuine EOF. */
     atEof() {
         return true;
@@ -771,10 +774,10 @@ class LoopbackClientConnection {
 function describeError(error) {
     return error instanceof Error ? error.message : String(error);
 }
-function loopbackSocketStream(conn) {
+function socketStreamFor(conn) {
     return {
-        // A loopback connection has no handshake: the exchange starts when the
-        // guest's request parses, which is the first write.
+        // Neither direction has a handshake: an accepted connection already holds
+        // the request, and a dialed one starts its exchange on the first write.
         opened: Promise.resolve(),
         readable: new ReadableStream({
             async pull(controller) {
@@ -932,7 +935,19 @@ export class VirtualSocketKernel {
      * `fd_read` on a remote host.
      */
     connectStream(port) {
-        return loopbackSocketStream(this.openLoopbackClient(port));
+        return socketStreamFor(this.openLoopbackClient(port));
+    }
+    /**
+     * An already-accepted connection in the same `Socket` shape, so a server's
+     * accepted socket is the same kind of file descriptor as a client's dialed
+     * one. `accept`/`acceptNow` still hand out the connection id, because accept
+     * itself stays on the cooperative pump - this only binds the result.
+     */
+    streamFor(id) {
+        const conn = this.connections.get(Number(id));
+        if (!conn)
+            throw new Error(`connection is closed: ${id}`);
+        return socketStreamFor(conn);
     }
     openLoopbackClient(port) {
         const n = Number(port);
