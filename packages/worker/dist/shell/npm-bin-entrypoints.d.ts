@@ -4,6 +4,41 @@ import type { FacetManager } from '../facets/manager.js';
 type Output = {
     write(data: string): void;
 };
+/**
+ * How long a bin invocation may take before the shell stops waiting for it.
+ *
+ * The program itself is already bounded: FACET_TIMEOUT_MS kills a one-shot
+ * facet and the session reports exit 124 with a reason. Nothing bounds the
+ * supervisor-side work AROUND that run — the prefetch-bundle walk, the ESM
+ * transform, staging a bundled artifact, the loader hop — and nothing bounds
+ * the staged-artifact dispatch at all. A dispatch that never settles leaves
+ * `running` stuck true on this connection's shell: every later keystroke is
+ * swallowed, no prompt returns, and nothing says why. A terminal that goes
+ * silent forever is worse than a command that fails.
+ *
+ * So the invocation gets the program's lifetime twice over: the program keeps
+ * its full FACET_TIMEOUT_MS and the supervisor-side work gets the same again.
+ * Derived rather than chosen, so it cannot drift from the bound it exists to
+ * sit outside. Measured against a deployed Worker, the heaviest bins we run
+ * sit far inside it: `pi --version` (a 17.4 MiB module map, the largest
+ * observed) returns in 16s, and every staged-opencode one-shot in 2-4s.
+ */
+export declare const BIN_DISPATCH_TIMEOUT_MS: number;
+export type BinDispatchOutcome<T> = {
+    expired: false;
+    value: T;
+} | {
+    expired: true;
+};
+/**
+ * Await a bin dispatch under a bound. Reports expiry instead of hanging.
+ *
+ * The abandoned work keeps running — there is nothing to cancel it with, and a
+ * facet that eventually finishes still lands its own exit and its write-back.
+ * It just no longer holds the shell open, and it can never surface as an
+ * unhandled rejection once we have stopped listening.
+ */
+export declare function awaitBinDispatch<T>(work: Promise<T>, budgetMs: number): Promise<BinDispatchOutcome<T>>;
 type RegistryLike = {
     resolve(name: string): Promise<unknown> | unknown;
 };
