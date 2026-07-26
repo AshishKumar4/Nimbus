@@ -1102,7 +1102,9 @@ const __fsMod = (() => {
     const requested = mode === undefined ? 0 : Number(mode);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.access === "function") {
-      await _fsRpc(supervisor.access(_resolve(p), requested), "access", p, () => undefined);
+      const absPath = _resolve(p);
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _fsRpc(supervisor.access(absPath, requested), "access", p, () => undefined);
       return;
     }
     accessSync(p, requested);
@@ -1161,6 +1163,7 @@ const __fsMod = (() => {
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const previousAppend = __nimbusCapturePendingVfsAppend(k);
+    const hadPendingWrite = Object.prototype.hasOwnProperty.call(__vfsWrites, k);
     const existing = _bundleLookup(absPath);
     const existingDefined = existing !== undefined;
     const dataIsBytes = data instanceof Uint8Array;
@@ -1186,7 +1189,9 @@ const __fsMod = (() => {
     }
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
-    if (!existingDefined || previousAppend) {
+    // Bundle content is only a sync-view cache and may be stale. It can supply
+    // the local display fragment, but only a pending full write owns its prefix.
+    if (!hadPendingWrite || previousAppend) {
       const appended = _asBytes(
         dataIsBytes ? data : (typeof data === "string" ? data : String(data)),
       );
@@ -5380,9 +5385,16 @@ function __makeProcessOutputStream(streamName) {
 
 function __nimbusReportProcessExit(code, reason) {
   if (__nimbusProcessExitReported) return;
-  __nimbusProcessExitReported = true;
   __nimbusProcessExitCode = Number(code ?? 0);
   try { if (__nimbusProcessExitResolve) __nimbusProcessExitResolve(__nimbusProcessExitCode); } catch {}
+  // Generated lifecycle owners defer the terminal supervisor report until
+  // their durability boundary has drained. Reporting here would retire the
+  // writer capability before pending sync/append mutations can commit.
+  if (
+    typeof __nimbusDeferProcessExitReport !== "undefined"
+    && __nimbusDeferProcessExitReport
+  ) return;
+  __nimbusProcessExitReported = true;
   if (__supervisor && typeof __supervisor.reportExit === "function") {
     try {
       const task = __nimbusUseRpcResult(__supervisor.reportExit(code, reason || ""), () => undefined);

@@ -1,5 +1,8 @@
 export const VFS_WRITE_MUTATION_QUEUE_SOURCE = `
 const __vfsMutationTails = new Map();
+const __nimbusPendingVfsMutations = new Set();
+let __nimbusPendingVfsMutationFailure;
+let __nimbusHasPendingVfsMutationFailure = false;
 const __vfsWriteClaims = new Map();
 const __nimbusVfsAppendRangeResult = {};
 // Operation sequences reset when this generated module is evaluated again.
@@ -12,21 +15,41 @@ function __nimbusVfsPathKey(path) {
   return String(path).replace(/^\\/+/, "");
 }
 
-function __nimbusQueueVfsMutation(path, mutation) {
+function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   const key = __nimbusVfsPathKey(path);
   const previous = __vfsMutationTails.get(key) || Promise.resolve();
   const result = previous.then(mutation);
+  __nimbusPendingVfsMutations.add(result);
   // A failed mutation rejects its own caller but must not poison later writes
   // for the same path or become an unhandled queue-cleanup rejection.
   let tail;
   const clearTail = () => {
+    __nimbusPendingVfsMutations.delete(result);
     if (__vfsMutationTails.get(key) === tail) {
       __vfsMutationTails.delete(key);
     }
   };
-  tail = result.then(clearTail, clearTail);
+  tail = result.then(clearTail, (error) => {
+    if (retainFailure && !__nimbusHasPendingVfsMutationFailure) {
+      __nimbusHasPendingVfsMutationFailure = true;
+      __nimbusPendingVfsMutationFailure = error;
+    }
+    clearTail();
+  });
   __vfsMutationTails.set(key, tail);
   return result;
+}
+
+async function __nimbusDrainVfsMutations() {
+  while (__nimbusPendingVfsMutations.size > 0) {
+    await Promise.allSettled([...__nimbusPendingVfsMutations]);
+  }
+  if (__nimbusHasPendingVfsMutationFailure) {
+    const failure = __nimbusPendingVfsMutationFailure;
+    __nimbusHasPendingVfsMutationFailure = false;
+    __nimbusPendingVfsMutationFailure = undefined;
+    throw failure;
+  }
 }
 
 function __nimbusCapturePendingVfsAppend(path) {
@@ -106,7 +129,7 @@ function __nimbusUnsupportedVfsAppend(path) {
   return error;
 }
 
-function __nimbusRunVfsWriteMutation(snapshot, mutation) {
+function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
   return __nimbusQueueVfsMutation(snapshot.key, async () => {
     const value = await mutation(snapshot.content, snapshot);
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
@@ -119,10 +142,10 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation) {
       delete __vfsWrites[snapshot.key];
     }
     return value;
-  });
+  }, retainFailure);
 }
 
-function __nimbusFlushVfsWrite(path, mutation) {
+function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
   const snapshot = __nimbusCaptureVfsWrite(path);
   if (!snapshot) return Promise.resolve(undefined);
   const existing = __vfsWriteClaims.get(snapshot.key);
@@ -130,7 +153,7 @@ function __nimbusFlushVfsWrite(path, mutation) {
     return existing.promise;
   }
   if (snapshot.append) snapshot.append.claimed = true;
-  const result = __nimbusRunVfsWriteMutation(snapshot, mutation);
+  const result = __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure);
   const claim = { generation: snapshot.generation, promise: result };
   __vfsWriteClaims.set(snapshot.key, claim);
   const release = () => {
@@ -175,6 +198,32 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
   }
   await supervisor.writeFile(path, content);
   return undefined;
+}
+
+async function __nimbusDrainVfsWrites(supervisor) {
+  const paths = Object.keys(__vfsWrites);
+  const outcomes = await Promise.allSettled([
+    ...paths.map(async (path) => {
+      const persist = () => __nimbusFlushVfsWrite(
+        path,
+        (content, snapshot) =>
+          __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
+        false,
+      );
+      try {
+        await persist();
+      } catch (error) {
+        // The authority may have committed before the RPC response was lost.
+        // One retry is safe: full writes are idempotent, while appends retain
+        // the same module/operation identity and are deduplicated by authority.
+        if (error && typeof error.code === "string") throw error;
+        await persist();
+      }
+    }),
+    __nimbusDrainVfsMutations(),
+  ]);
+  const failure = outcomes.find((outcome) => outcome.status === "rejected");
+  if (failure) throw failure.reason;
 }
 `.trim();
 export const VFS_WRITE_LEDGER_SOURCE = `

@@ -2310,10 +2310,17 @@ export class SqliteVFS {
   }
 
   private resumeAppendMaintenance(): void {
-    for (const row of [...this.sql.exec(
-      'SELECT pid FROM vfs_append_pid_revocations ORDER BY pid',
-    )] as { pid: number }[]) {
-      this.finishAppendPidRevocation(Number(row.pid));
+    for (;;) {
+      const revocations = [...this.sql.exec(
+        `SELECT pid FROM vfs_append_pid_revocations
+         ORDER BY pid
+         LIMIT ?`,
+        MAX_TX_LOGICAL_ROWS,
+      )] as { pid: number }[];
+      if (revocations.length === 0) break;
+      for (const row of revocations) {
+        this.finishAppendPidRevocation(Number(row.pid));
+      }
     }
     for (const table of [
       'vfs_append_receipts',

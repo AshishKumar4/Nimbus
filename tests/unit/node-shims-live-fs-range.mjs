@@ -67,7 +67,7 @@ const factory = new Function(
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = factory(
-  {}, {}, {}, null, supervisor,
+  { 'home/user/log.txt': 'stale-snapshot\n' }, {}, {}, null, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );
@@ -145,13 +145,33 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   await assert.rejects(fsp.truncate('/home/user/never.bin', 1), /ENOENT/);
 }
 
-// appendFile on a live-only file appends instead of clobbering
+// A resident snapshot is only a sync-read cache. If authority changed after
+// startup, appendFile must preserve the live prefix rather than publish the
+// stale bundle cell as a complete replacement.
 {
   vfs.writeFile('home/user/log.txt', enc.encode('line1\n'));
   await fsp.appendFile('/home/user/log.txt', 'line2\n');
   assert.equal(new TextDecoder().decode(vfs.readFile('home/user/log.txt')), 'line1\nline2\n');
+  await fsp.appendFile('/home/user/log.txt', 'line3\n');
+  assert.equal(
+    new TextDecoder().decode(vfs.readFile('home/user/log.txt')),
+    'line1\nline2\nline3\n',
+    'later append chains remain deltas after the stale snapshot is discarded',
+  );
   // and async reads see the merged live content
-  assert.equal(await fsp.readFile('/home/user/log.txt', 'utf8'), 'line1\nline2\n');
+  assert.equal(await fsp.readFile('/home/user/log.txt', 'utf8'), 'line1\nline2\nline3\n');
+}
+
+// A real pending full rewrite does own its prefix. Appending before that
+// rewrite flushes must publish replacement + suffix, not preserve old authority.
+{
+  vfs.writeFile('home/user/pending-full.txt', enc.encode('external\n'));
+  sandbox.fs.writeFileSync('/home/user/pending-full.txt', 'replacement\n');
+  await fsp.appendFile('/home/user/pending-full.txt', 'tail\n');
+  assert.equal(
+    new TextDecoder().decode(vfs.readFile('home/user/pending-full.txt')),
+    'replacement\ntail\n',
+  );
 }
 
 // writeFile + appendFile flow (probe parity: WRITE=ok path)

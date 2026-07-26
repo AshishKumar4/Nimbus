@@ -33,6 +33,7 @@ const supervisor = {
   lstat: (path) => bridge.stat(path, { followSymlinks: false }),
   readdir: (path) => bridge.readdir(path),
   exists: async (path) => (await bridge.stat(path)) !== null,
+  access: (path, mode) => bridge.access(path, mode),
   mkdir: (path) => bridge.mkdir(path, { recursive: true }),
   fsReadRange: (path, offset, length) => bridge.readRange(path, offset, length),
   fsWriteRange: (path, offset, bytes) => bridge.writeRange(path, offset, bytes),
@@ -135,6 +136,11 @@ fs.writeFileSync(resident, 'same-facet-pending');
 assert.equal(await fsp.readFile(resident, 'utf8'), 'same-facet-pending');
 assert.equal(dec.decode(vfs.readFile(resident)), 'same-facet-pending');
 
+const accessCreated = `${dir}/access-created.txt`;
+fs.writeFileSync(accessCreated, 'created-before-access');
+await fsp.access(accessCreated);
+assert.equal(dec.decode(vfs.readFile(accessCreated)), 'created-before-access');
+
 fs.mkdirSync(`${dir}/same-facet-dir`);
 assert.deepEqual(
   await fsp.readdir(`${dir}/same-facet-dir`),
@@ -143,7 +149,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   await fsp.readdir(dir),
-  ['late.txt', 'resident.txt', 'same-facet-dir'],
+  ['access-created.txt', 'late.txt', 'resident.txt', 'same-facet-dir'],
 );
 assert.equal(vfs.stat(`${dir}/same-facet-dir`)?.type, 'directory');
 

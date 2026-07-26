@@ -794,6 +794,7 @@ const __vfsManifest = ${opts.vfsManifest};
 const __vfsMetadata = ${opts.vfsMetadata};
 ${VFS_WRITE_LEDGER_SOURCE}
 const __vfsDirs = {};
+const __nimbusDeferProcessExitReport = true;
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push
 // here on every fs/sqlite/child-process op, so over a resident TUI's lifetime a
 // plain append-only array would grow without bound. Keep it a real Array (a
@@ -925,10 +926,8 @@ try { Object.assign(process.env, env); } catch {}
 try { process.chdir(cwd); } catch {}
 
 // One-shot: capture process.exit as a throw the fetch handler unwinds. Resident
-// modes (attached TUI + headless serve): keep the shim's native exit (it emits
-// "exit", reports to the supervisor, and throws __ProcessExit) so the
-// resident-facet lifecycle and the shim's own SIGINT/stdin-pump exit path stay
-// coherent.
+// modes keep the shim's native exit event + __ProcessExit contract, but the
+// supervisor report is deferred until this runner drains VFS durability.
 if (__ocMode === "oneshot") {
   process.exit = (code) => {
     exitCode = typeof code === "number" ? code : 0;
@@ -1009,6 +1008,30 @@ async function __drainPendingIO(maxPasses = 12) {
     if (__pendingIO.length === 0 && __live.length === 0) break;
     await Promise.allSettled([...__pendingIO, ...__live]);
   }
+}
+
+async function __ocDrainVfsWrites() {
+  if (!__supervisor) return;
+  try {
+    await __nimbusDrainVfsWrites(__supervisor);
+  } catch (e) {
+    const trace = (e && e.stack) || (e && e.message) || String(e);
+    __ocLoadError = trace;
+    stderr += trace + "\\n";
+    exitCode = 1;
+    if (__ocResident) {
+      try { await __supervisor.stderr(trace + "\\n"); } catch {}
+    }
+  }
+}
+
+async function __ocReportFinalExit() {
+  if (!__supervisor || __nimbusProcessExitReported) return;
+  await __supervisor.reportExit(
+    exitCode,
+    __ocLoadError ? (__ocLoadError + "\\n") : "",
+  );
+  __nimbusProcessExitReported = true;
 }
 
 // Memory/flow diagnostic for the resident TUI, gated on the existing
@@ -1195,10 +1218,19 @@ async function __ocRunAttachedTui() {
           "missing the Nimbus deferred-entry patch (see build-node.ts)"
         );
       }
-      await __ocBundle.nimbusMain();
+      const __exitMarker = {};
+      const __mainResult = Promise.resolve(__ocBundle.nimbusMain());
+      const __result = await Promise.race([
+        __mainResult.then(() => null),
+        __nimbusProcessExitPromise.then((code) => {
+          exitCode = Number(code ?? 0);
+          return __exitMarker;
+        }),
+      ]);
+      if (__result === __exitMarker) __ocExited = true;
     } catch (e) {
-      if (e instanceof __ProcessExit) { exitCode = e.code; }
-      else if (e && e.__ocProcessExit) { exitCode = e.code; }
+      if (e instanceof __ProcessExit) { exitCode = e.code; __ocExited = true; }
+      else if (e && e.__ocProcessExit) { exitCode = e.code; __ocExited = true; }
       else {
         __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
         stderr += __ocLoadError + "\\n";
@@ -1208,26 +1240,8 @@ async function __ocRunAttachedTui() {
     // Apply the shim's recorded exit code (the native process.exit path sets it).
     if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
     await __drainPendingIO();
-    const __failedWrites = {};
-    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const path of Object.keys(__vfsWrites)) {
-        __pendingIO.push(__nimbusFlushVfsWrite(
-          path,
-          (content, snapshot) =>
-            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
-        ).catch(() => {
-          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
-            __failedWrites[path] = __vfsWrites[path];
-          }
-        }));
-      }
-    }
-    await __drainPendingIO();
-    // The shim's native exit already reported via __nimbusReportProcessExit;
-    // report here only if it did not (load error / external teardown).
-    if (__supervisor && !__nimbusProcessExitReported) {
-      try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
-    }
+    await __ocDrainVfsWrites();
+    await __ocReportFinalExit();
   } finally {
     __ocDiag.stop = true;
   }
@@ -1298,10 +1312,19 @@ async function __ocRunServe() {
           "missing the Nimbus deferred-entry patch (see build-node.ts)"
         );
       }
-      await __ocBundle.nimbusMain();
+      const __exitMarker = {};
+      const __mainResult = Promise.resolve(__ocBundle.nimbusMain());
+      const __result = await Promise.race([
+        __mainResult.then(() => null),
+        __nimbusProcessExitPromise.then((code) => {
+          exitCode = Number(code ?? 0);
+          return __exitMarker;
+        }),
+      ]);
+      if (__result === __exitMarker) __ocExited = true;
     } catch (e) {
-      if (e instanceof __ProcessExit) { exitCode = e.code; }
-      else if (e && e.__ocProcessExit) { exitCode = e.code; }
+      if (e instanceof __ProcessExit) { exitCode = e.code; __ocExited = true; }
+      else if (e && e.__ocProcessExit) { exitCode = e.code; __ocExited = true; }
       else {
         __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
         stderr += __ocLoadError + "\\n";
@@ -1310,30 +1333,17 @@ async function __ocRunServe() {
     }
     if (__nimbusProcessExitCode !== null && exitCode === 0) exitCode = __nimbusProcessExitCode;
     await __drainPendingIO();
-    const __failedWrites = {};
-    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const path of Object.keys(__vfsWrites)) {
-        __pendingIO.push(__nimbusFlushVfsWrite(
-          path,
-          (content, snapshot) =>
-            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
-        ).catch(() => {
-          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
-            __failedWrites[path] = __vfsWrites[path];
-          }
-        }));
-      }
-    }
-    await __drainPendingIO();
+    await __ocDrainVfsWrites();
     // Booted cleanly and still serving: hold the process resident. The keep-alive
-    // never resolves; it is released when the facet isolate is torn down (kill /
-    // session teardown), matching a real server whose event loop stays alive.
+    // ends only when the shim records a process exit/signal. The terminal
+    // supervisor report remains deferred until the final durability drain.
     if (exitCode === 0 && !__ocExited) {
-      await new Promise(() => {});
+      exitCode = Number(await __nimbusProcessExitPromise);
+      __ocExited = true;
+      await __drainPendingIO();
+      await __ocDrainVfsWrites();
     }
-    if (__supervisor && !__nimbusProcessExitReported) {
-      try { await __supervisor.reportExit(exitCode, __ocLoadError ? (__ocLoadError + "\\n") : ""); } catch {}
-    }
+    await __ocReportFinalExit();
   } finally {
     __ocDiag.stop = true;
   }
@@ -1397,26 +1407,12 @@ async function __ocOneShotFetch(request, workerEnv) {
       if (exitCode === 0) exitCode = 1;
     }
     await __drainPendingIO();
-    const __failedWrites = {};
-    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const path of Object.keys(__vfsWrites)) {
-        __pendingIO.push(__nimbusFlushVfsWrite(
-          path,
-          (content, snapshot) =>
-            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
-        ).catch(() => {
-          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
-            __failedWrites[path] = __vfsWrites[path];
-          }
-        }));
-      }
-    }
-    await __drainPendingIO();
+    await __ocDrainVfsWrites();
     return __ocHostResponse.json({
       exitCode,
       stdout,
       stderr,
-      vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
+      vfsWrites: __supervisor ? {} : __vfsWrites,
     });
 }
 `;
