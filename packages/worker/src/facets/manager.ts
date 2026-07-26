@@ -687,7 +687,8 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       for (const path of Object.keys(__vfsWrites)) {
         __pendingIO.push(__nimbusFlushVfsWrite(
           path,
-          (content) => __supervisor.writeFile(path, content),
+          (content, snapshot) =>
+            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
         ).catch(() => {
           if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
             __failedWrites[path] = __vfsWrites[path];
@@ -832,25 +833,29 @@ async function __nimbusFlushRuntime() {
     for (const path of Object.keys(rt.vfsWrites)) {
       const __task = rt.flushVfsWrite(
         path,
-        (content) => rt.supervisor.writeFile(path, content),
+        (content, snapshot) =>
+          rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
       );
       // Observe immediately; Promise.all below still propagates the failure.
       __task.catch(() => {});
       __vfsTasks.push(__task);
     }
   }
-  for (let pass = 0; pass < 12; pass++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (rt.pendingIO.length <= rt.settledIO) break;
-    const slice = rt.pendingIO.slice(rt.settledIO);
-    rt.settledIO = rt.pendingIO.length;
-    await Promise.allSettled(slice);
-  }
-  if (rt.settledIO === rt.pendingIO.length) {
-    rt.pendingIO.length = 0;
-    rt.settledIO = 0;
-  }
-  await Promise.all(__vfsTasks);
+  const __pendingDrain = rt.pendingDrainChain.then(async () => {
+    for (let pass = 0; pass < 12; pass++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (rt.pendingIO.length <= rt.settledIO) break;
+      const slice = rt.pendingIO.slice(rt.settledIO);
+      rt.settledIO = rt.pendingIO.length;
+      await Promise.allSettled(slice);
+    }
+    if (rt.settledIO === rt.pendingIO.length) {
+      rt.pendingIO.length = 0;
+      rt.settledIO = 0;
+    }
+  });
+  rt.pendingDrainChain = __pendingDrain;
+  await Promise.all([__pendingDrain, ...__vfsTasks]);
 }
 
 async function __nimbusEnsureStarted(workerEnv, workerCtx) {
@@ -973,6 +978,8 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       settledIO: 0,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
+      persistVfsWrite: __nimbusPersistVfsWrite,
+      pendingDrainChain: Promise.resolve(),
     };
     await __nimbusFlushRuntime();
 

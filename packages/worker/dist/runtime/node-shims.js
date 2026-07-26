@@ -30,6 +30,7 @@
  *   - __vfsBundle: Record<string, string>  (path→utf8 content)
  *   - __vfsWrites: Record<string, string | Uint8Array> (sync writes / failed async writes)
  *   - __vfsDirs:   Record<string, boolean> (dirs created)
+ *   - the shared VFS write ledger source evaluated in the same scope
  *   - cwd: string
  *   - argv, env, filename, dirname: from args
  *   - stdout, stderr, exitCode: capture variables
@@ -604,9 +605,37 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await __nimbusFlushVfsWrite(absPath, (content) =>
-        _fsRpc(supervisor.writeFile(absPath, content), "write", absPath, () => undefined)
-      );
+      await __nimbusFlushVfsWrite(absPath, async (content, snapshot) => {
+        if (snapshot.append) {
+          if (typeof supervisor.stat !== "function" ||
+              typeof supervisor.fsWriteRange !== "function") {
+            throw __nimbusUnsupportedVfsAppend(absPath);
+          }
+          const meta = await _fsRpc(
+            supervisor.stat(absPath),
+            "stat", absPath,
+            (result) => result,
+          );
+          if (meta && meta.type === "file") {
+            await _fsRpc(
+              supervisor.fsWriteRange(
+                absPath,
+                Number(meta.size) || 0,
+                __nimbusVfsAppendBytes(snapshot),
+              ),
+              "write", absPath,
+              () => undefined,
+            );
+            return __nimbusVfsAppendRangeResult;
+          }
+        }
+        await _fsRpc(
+          supervisor.writeFile(absPath, content),
+          "write", absPath,
+          () => undefined,
+        );
+        return undefined;
+      });
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
       await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);
@@ -901,44 +930,31 @@ const __fsMod = (() => {
 
   async function _appendFileAsync(p, data, opts) {
     const absPath = _resolve(p);
-    const k = _strip(absPath);
-    // Snapshot BEFORE appendFileSync creates a local write cell: a
-    // pre-existing entry means unflushed sync writes that must flush
-    // whole (they may rewrite the file head, not just append).
-    const hadUnflushedLocal = !!(__vfsWrites && k in __vfsWrites);
-    const hadLocalCell = _bundleLookup(absPath) !== undefined;
-    const bytes = data instanceof Uint8Array ? data : _enc.encode(typeof data === "string" ? data : String(data));
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
-    const snapshot = __nimbusCaptureVfsWrite(absPath);
-    if (!snapshot) return;
-    await __nimbusRunVfsWriteMutation(snapshot, async (content) => {
-      if (!hadUnflushedLocal &&
-          typeof supervisor.fsWriteRange === "function" &&
-          typeof supervisor.stat === "function") {
-        // Keep the live EOF lookup and ranged append in the same per-path
-        // queue as full writes so neither can overtake the other.
+    await __nimbusFlushVfsWrite(absPath, async (content, snapshot) => {
+      if (snapshot.append) {
+        if (typeof supervisor.stat !== "function" ||
+            typeof supervisor.fsWriteRange !== "function") {
+          throw __nimbusUnsupportedVfsAppend(absPath);
+        }
         const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
         if (meta && meta.type === "file") {
           await _fsRpc(
-            supervisor.fsWriteRange(absPath, Number(meta.size) || 0, bytes),
+            supervisor.fsWriteRange(
+              absPath,
+              Number(meta.size) || 0,
+              __nimbusVfsAppendBytes(snapshot),
+            ),
             "write", p,
             () => undefined,
           );
-          // Live-only file: appendFileSync seeded a cell holding ONLY the
-          // appended bytes. Drop it only if this is still the captured cell.
-          if (!hadLocalCell &&
-              __vfsWriteGenerations[k] === snapshot.generation &&
-              __vfsBundle) {
-            delete __vfsBundle[k];
-          }
-          return;
+          return __nimbusVfsAppendRangeResult;
         }
       }
-      // Creation (no live file) or pending local writes: flush the captured
-      // merged cell, not a later synchronous file-content mutation.
       await _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined);
+      return undefined;
     });
     _markVfsStale();
   }
@@ -987,6 +1003,24 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.fsTruncate === "function") {
       const k = _strip(absPath);
       if (__vfsWrites && k in __vfsWrites) {
+        const append = __nimbusCapturePendingVfsAppend(k);
+        if (append) {
+          const flush = __nimbusFlushVfsWrite(
+            absPath,
+            (content, snapshot) =>
+              __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
+          );
+          await __nimbusQueueVfsMutation(absPath, async () => {
+            await flush;
+            await _fsRpc(
+              supervisor.fsTruncate(absPath, size),
+              "truncate", p,
+              () => undefined,
+            );
+          });
+          _markVfsStale();
+          return;
+        }
         // Unflushed sync writes: trim locally, then flush the pending
         // cell whole (it was going to flush whole anyway).
         if (localCell === undefined) throw _fsErr("ENOENT", "truncate", p);
@@ -996,8 +1030,13 @@ const __fsMod = (() => {
       }
       // Live file is the source of truth — supervisor trims only the
       // boundary chunk; ENOENT propagates when it does not exist.
-      await _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, () => undefined);
-      if (localCell !== undefined) _truncateLocalCell(absPath, size);
+      const generation = __vfsWriteGenerations[k];
+      await __nimbusQueueVfsMutation(absPath, () =>
+        _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, () => undefined)
+      );
+      if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
+        _truncateLocalCell(absPath, size);
+      }
       _markVfsStale();
       return;
     }
@@ -1218,6 +1257,7 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
+    const previousAppend = __nimbusCapturePendingVfsAppend(k);
     const existing = _bundleLookup(absPath);
     const existingDefined = existing !== undefined;
     const dataIsBytes = data instanceof Uint8Array;
@@ -1243,6 +1283,12 @@ const __fsMod = (() => {
     }
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
+    if (!existingDefined || previousAppend) {
+      const appended = _asBytes(
+        dataIsBytes ? data : (typeof data === "string" ? data : String(data)),
+      );
+      __nimbusRecordVfsAppend(k, appended, _asBytes(cell), previousAppend);
+    }
   }
 
   // ── existsSync ──
@@ -1573,20 +1619,46 @@ const __fsMod = (() => {
         pos = (position === undefined || position === null) ? null : Math.max(0, Number(position));
       }
       const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
+      let writeAt = at;
       const supervisor = _supervisor();
       if (supervisor && typeof supervisor.fsWriteRange === "function") {
-        // Push any pending sync writes first so the ranged write lands on
-        // top of them, then write only the touched range live.
-        await _flushLocalPathToSupervisor(this._abs, supervisor);
-        await _fsRpc(supervisor.fsWriteRange(this._abs, at, bytes), "write", this._path, () => undefined);
-        _overlayLocalCell(this._abs, at, bytes);
+        const pendingSnapshot = __nimbusCaptureVfsWrite(this._abs);
+        const overlayGeneration = pendingSnapshot
+          ? pendingSnapshot.generation + 1
+          : __vfsWriteGenerations[_strip(this._abs)];
+        const flush = __nimbusFlushVfsWrite(
+          this._abs,
+          (content, snapshot) =>
+            __nimbusPersistVfsWrite(supervisor, this._abs, content, snapshot),
+        );
+        await __nimbusQueueVfsMutation(this._abs, async () => {
+          await flush;
+          if (this._flags.append && typeof supervisor.stat === "function") {
+            const meta = await _fsRpc(
+              supervisor.stat(this._abs),
+              "stat", this._path,
+              (result) => result,
+            );
+            if (meta && meta.type === "file") writeAt = Number(meta.size) || 0;
+          }
+          await _fsRpc(
+            supervisor.fsWriteRange(this._abs, writeAt, bytes),
+            "write", this._path,
+            () => undefined,
+          );
+          const key = _strip(this._abs);
+          if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
+              __vfsWriteGenerations[key] === overlayGeneration) {
+            _overlayLocalCell(this._abs, writeAt, bytes);
+          }
+        });
         _markVfsStale();
       } else {
         const cell = _writtenCell(this._abs);
         this._commit(_spliceCell(cell === undefined ? new Uint8Array(0) : _asBytes(cell), at, bytes));
       }
-      this._size = Math.max(this._size, at + bytes.byteLength);
-      if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      this._size = Math.max(this._size, writeAt + bytes.byteLength);
+      if (pos === null || this._flags.append) this._position = writeAt + bytes.byteLength;
       return { bytesWritten: bytes.byteLength, buffer };
     }
     async readFile(opts) { return _readFileAsync(this._path, opts); }
