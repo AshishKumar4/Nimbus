@@ -481,13 +481,14 @@ export class ProcessFabric {
         // First placement happens inline so a placement failure rejects the
         // spawn itself (matching the local path's boot-failure surface).
         const first = await this._placeDistinctPeer();
+        const firstWriterId = this._activatePeerWriter(spawn, first);
         const state = { current: first, handle: undefined };
         // The route target follows the process across respawns by reading the
         // live placement on every request — PortRegistry keeps one binding.
         const routeTarget = {
             handleHttpRequest: (request) => routeThroughPeer(state.current.stub, spawn.workerKey, request),
         };
-        const done = this._runPeerLifecycle(spawn, state);
+        const done = this._runPeerLifecycle(spawn, state, firstWriterId);
         const handle = new ResidentProcessHandle({
             processClass: 'heavy',
             placement: () => ({
@@ -514,15 +515,11 @@ export class ProcessFabric {
      * (new machine lottery) within the bounded budget. The first placement is
      * pre-verified by _startPeer.
      */
-    async _runPeerLifecycle(spawn, state) {
+    async _runPeerLifecycle(spawn, state, initialWriterId) {
         let respawnsLeft = HEAVY_RESPAWN_BUDGET;
+        let writerId = initialWriterId;
         for (;;) {
             const placement = state.current;
-            // A respawn re-evaluates the facet module and resets its local sequence.
-            // A new trusted incarnation prevents those new operations from aliasing
-            // acknowledged keys owned by the dead placement.
-            const writerId = crypto.randomUUID();
-            spawn.onWriterActivated(writerId);
             this.tokensInUse.set(spawn.pid, placement.isolateToken);
             try {
                 await placement.stub._rpcHostProcess(spawn.boot, {
@@ -553,9 +550,25 @@ export class ProcessFabric {
             }
             // Respawn: fresh slot, re-verified placement. The handle's route target
             // and start() read `state.current`, so both re-point automatically.
-            state.current = await this._placeDistinctPeer();
+            const next = await this._placeDistinctPeer();
+            writerId = this._activatePeerWriter(spawn, next);
+            state.current = next;
             if (state.handle)
                 state.handle.respawns++;
+        }
+    }
+    _activatePeerWriter(spawn, placement) {
+        // A respawn re-evaluates the facet module and resets its local sequence.
+        // Register a fresh incarnation before exposing this placement to a host
+        // RPC or to the placement-following handle.
+        const writerId = crypto.randomUUID();
+        try {
+            spawn.onWriterActivated(writerId);
+            return writerId;
+        }
+        catch (error) {
+            disposeRpcResource(placement.stub);
+            throw error;
         }
     }
     /**
@@ -571,17 +584,32 @@ export class ProcessFabric {
         for (let attempt = 0; attempt < HEAVY_PLACEMENT_MAX_ATTEMPTS; attempt++) {
             const slot = this.nextSlot++;
             const peerName = `${this.coordDoId}:proc:${slot}`;
-            const stub = processPeerStub(ns.get(ns.idFromName(peerName)), peerName);
-            const probe = await this._probePeer(stub, peerName);
-            const candidate = { stub, slot, peerName, isolateToken: probe.isolateToken };
-            if (!denied.has(probe.isolateToken)) {
+            let resource;
+            try {
+                resource = ns.get(ns.idFromName(peerName));
+                const stub = processPeerStub(resource, peerName);
+                const probe = await this._probePeer(stub, peerName);
+                const candidate = {
+                    stub,
+                    slot,
+                    peerName,
+                    isolateToken: probe.isolateToken,
+                };
+                if (!denied.has(probe.isolateToken)) {
+                    if (colocated)
+                        disposeRpcResource(colocated.stub);
+                    return candidate;
+                }
                 if (colocated)
                     disposeRpcResource(colocated.stub);
-                return candidate;
+                colocated = candidate;
             }
-            if (colocated)
-                disposeRpcResource(colocated.stub);
-            colocated = candidate;
+            catch (error) {
+                disposeRpcResource(resource);
+                if (colocated)
+                    disposeRpcResource(colocated.stub);
+                throw error;
+            }
         }
         return colocated;
     }

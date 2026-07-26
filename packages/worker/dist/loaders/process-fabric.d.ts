@@ -420,6 +420,7 @@ export declare class ProcessFabric {
      * pre-verified by _startPeer.
      */
     private _runPeerLifecycle;
+    private _activatePeerWriter;
     /**
      * Probe successive slots until one reports an isolate token distinct from
      * the coordinator's own and every token already hosting a process. Falls

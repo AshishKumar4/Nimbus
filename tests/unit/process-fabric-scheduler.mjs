@@ -107,19 +107,25 @@ const WRITER_LIFECYCLE = {
 /** Peer namespace mock: peerFor(name) supplies { token, host(boot, opts) }. */
 function makePeerNs(peerFor, log) {
   const hostedByKey = new Map();
+  const stubs = [];
   return {
     hostedByKey,
+    stubs,
     ns: {
       idFromName(name) { return { name }; },
       get(id) {
         const peer = peerFor(id.name);
-        return {
+        const stub = {
+          peerName: id.name,
+          disposed: false,
+          hosted: 0,
           async _rpcHostProcessProbe() {
             log.push(`probe:${id.name}`);
             return { isolateToken: peer.token };
           },
           async _rpcHostProcess(boot, opts) {
             log.push(`host:${id.name}`);
+            stub.hosted++;
             hostedByKey.set(opts.workerKey, { peer: id.name, boot, opts });
             return peer.host ? peer.host(boot, opts) : { ok: true };
           },
@@ -135,7 +141,10 @@ function makePeerNs(peerFor, log) {
             log.push(`cancel:${id.name}:${workerKey}`);
             return { cancelled: true };
           },
+          [Symbol.dispose]() { stub.disposed = true; },
         };
+        stubs.push(stub);
+        return stub;
       },
     },
   };
@@ -372,6 +381,81 @@ function makePeerNs(peerFor, log) {
   await assert.rejects(handle.done, /facet died/);
   assert.equal(log.filter((l) => l.startsWith('host:')).length, 1, 'no respawn for a torn-down pid');
   console.log('  case6c: shouldRespawn gate blocks respawn');
+}
+
+// ── (6d) first peer activation failure rejects spawn and owns cleanup ───
+{
+  const log = [];
+  const peers = makePeerNs((name) => ({ token: `distinct-${name}` }), log);
+  const { env } = makeEnv(peers.ns);
+  const retiredWriters = [];
+  const fabric = new ProcessFabric(makeCtx(), env);
+  let exposedHandle;
+  await assert.rejects(
+    (async () => {
+      exposedHandle = await fabric.startResidentProcess({
+        ...WRITER_LIFECYCLE,
+        processClass: 'heavy', startContract: 'lifetime',
+        pid: 14, workerKey: 'k14', boot: STAGED_BOOT,
+        onWriterActivated() { throw new Error('pid stopped during peer probe'); },
+        onWriterRetired: (writerId) => retiredWriters.push(writerId),
+      });
+    })(),
+    /pid stopped during peer probe/,
+    'first-placement activation failure rejects the spawn itself',
+  );
+  assert.equal(exposedHandle, undefined, 'no apparent resident handle is exposed');
+  assert.equal(peers.stubs.length, 1);
+  assert.equal(peers.stubs[0].disposed, true, 'the accepted probe stub is disposed');
+  assert.equal(peers.stubs[0].hosted, 0, 'the peer never receives a host RPC');
+  assert.deepEqual(retiredWriters, [], 'an identity that never activated is not retired');
+  assert.equal(fabric.tokensInUse.size, 0, 'failed activation cannot retain placement tokens');
+  console.log('  case6d: first peer activation failure rejects before handle exposure');
+}
+
+// ── (6e) respawn activation failure disposes only the new placement ─────
+{
+  const log = [];
+  let hostCalls = 0;
+  const peers = makePeerNs((name) => ({
+    token: `distinct-${name}`,
+    host: () => {
+      hostCalls++;
+      throw new Error('Worker exceeded memory limit.');
+    },
+  }), log);
+  const { env } = makeEnv(peers.ns);
+  const activationAttempts = [];
+  const retiredWriters = [];
+  const fabric = new ProcessFabric(makeCtx(), env);
+  const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
+    processClass: 'heavy', startContract: 'lifetime',
+    pid: 15, workerKey: 'k15', boot: STAGED_BOOT,
+    shouldRespawn: () => true,
+    onWriterActivated(writerId) {
+      activationAttempts.push(writerId);
+      if (activationAttempts.length === 2) throw new Error('pid stopped before respawn activation');
+    },
+    onWriterRetired: (writerId) => retiredWriters.push(writerId),
+  });
+  await assert.rejects(handle.done, /pid stopped before respawn activation/);
+  assert.equal(hostCalls, 1, 'only the activated first placement is hosted');
+  assert.equal(peers.stubs.length, 2);
+  assert.ok(peers.stubs.every((stub) => stub.disposed), 'both placement stubs are disposed');
+  assert.deepEqual(
+    peers.stubs.map((stub) => stub.hosted),
+    [1, 0],
+    'the rejected respawn identity never reaches the peer host',
+  );
+  assert.deepEqual(
+    retiredWriters,
+    [activationAttempts[0]],
+    'only the successfully activated first identity is retired',
+  );
+  assert.equal(handle.respawns, 0, 'a rejected activation is not an exposed respawn');
+  assert.equal(fabric.tokensInUse.size, 0, 'respawn activation failure leaves token accounting balanced');
+  console.log('  case6e: respawn activation failure disposes the unexposed placement');
 }
 
 // ── (7) kill(): cancel RPC to the hosting peer + respawn blocked ────────
