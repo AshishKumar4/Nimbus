@@ -567,8 +567,15 @@ ${ENTRYPOINT_STARTUP_DRAIN}
 
     const __failedWrites = {};
     if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      for (const path of Object.keys(__vfsWrites)) {
+        __pendingIO.push(__nimbusFlushVfsWrite(
+          path,
+          (content) => __supervisor.writeFile(path, content),
+        ).catch(() => {
+          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
+            __failedWrites[path] = __vfsWrites[path];
+          }
+        }));
       }
     }
     await __drainPendingIO();
@@ -687,31 +694,30 @@ let __nimbusAttachedLifecycle = null;
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
-  const __flush = rt.flushChain.then(async () => {
-    const __vfsTasks = [];
-    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(rt.vfsWrites)) {
-        const __generation = rt.vfsWriteGenerations[path];
-        const __task = Promise.resolve(rt.supervisor.writeFile(path, content)).then(() => {
-          if (rt.vfsWriteGenerations[path] === __generation) delete rt.vfsWrites[path];
-        });
-        // Observe immediately; Promise.all below still propagates the failure.
-        __task.catch(() => {});
-        rt.pendingIO.push(__task);
-        __vfsTasks.push(__task);
-      }
+  const __vfsTasks = [];
+  if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
+    for (const path of Object.keys(rt.vfsWrites)) {
+      const __task = rt.flushVfsWrite(
+        path,
+        (content) => rt.supervisor.writeFile(path, content),
+      );
+      // Observe immediately; Promise.all below still propagates the failure.
+      __task.catch(() => {});
+      __vfsTasks.push(__task);
     }
-    for (let pass = 0; pass < 12; pass++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      if (rt.pendingIO.length <= rt.settledIO) break;
-      const slice = rt.pendingIO.slice(rt.settledIO);
-      rt.settledIO = rt.pendingIO.length;
-      await Promise.allSettled(slice);
-    }
-    await Promise.all(__vfsTasks);
-  });
-  rt.flushChain = __flush.catch(() => {});
-  return __flush;
+  }
+  for (let pass = 0; pass < 12; pass++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (rt.pendingIO.length <= rt.settledIO) break;
+    const slice = rt.pendingIO.slice(rt.settledIO);
+    rt.settledIO = rt.pendingIO.length;
+    await Promise.allSettled(slice);
+  }
+  if (rt.settledIO === rt.pendingIO.length) {
+    rt.pendingIO.length = 0;
+    rt.settledIO = 0;
+  }
+  await Promise.all(__vfsTasks);
 }
 
 async function __nimbusEnsureStarted(workerEnv, workerCtx) {
@@ -833,8 +839,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       pendingIO: __pendingIO,
       settledIO: 0,
       vfsWrites: __vfsWrites,
-      vfsWriteGenerations: __vfsWriteGenerations,
-      flushChain: Promise.resolve(),
+      flushVfsWrite: __nimbusFlushVfsWrite,
     };
     await __nimbusFlushRuntime();
 
@@ -898,8 +903,8 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
   // it returns the in-facet server's response as a streaming host Response the
   // moment headers are known, so SSE / chunked bodies flow live over the RPC
   // boundary instead of being buffered to "finish". Flush process stdout first
-  // (independent of the response stream), then make handler sync writes durable
-  // before returning the response.
+  // (independent of the response stream), then make pending synchronous
+  // file-content writes durable before returning the response.
   await __nimbusFlushRuntime();
   const response = await globalThis.__nimbusServeHttp(req);
   try {
