@@ -265,6 +265,38 @@ assert.deepEqual(
     );
   }
 
+  // Binary sizing must remain incremental too. JSON.stringify(Uint8Array)
+  // materializes a numeric-key object whose text is more than 12x the raw
+  // bytes for representative data, defeating the no-copy sizing invariant.
+  const binary = new Uint8Array(1024 * 1024);
+  binary.fill(255);
+  const indexDigits = Array.from(
+    { length: String(binary.length - 1).length },
+    (_, index) => {
+      const digits = index + 1;
+      const start = digits === 1 ? 0 : 10 ** (digits - 1);
+      const end = Math.min(binary.length, 10 ** digits);
+      return Math.max(0, end - start) * digits;
+    },
+  ).reduce((sum, digits) => sum + digits, 0);
+  const encodedBinaryBytes = 1 + indexDigits + (7 * binary.length);
+  const originalStringify = JSON.stringify;
+  JSON.stringify = (value, ...args) => {
+    if (value instanceof Uint8Array) {
+      throw new Error('binary sizing materialized Uint8Array JSON');
+    }
+    return originalStringify(value, ...args);
+  };
+  try {
+    assert.equal(
+      encodedBundleSize({ 'data.bin': binary }, {}).bytes,
+      38 + encodedBinaryBytes,
+      'a large binary cell is sized exactly without materializing its numeric-key JSON',
+    );
+  } finally {
+    JSON.stringify = originalStringify;
+  }
+
   const bundle = { a: 'aaa', b: 'bbbb', c: 'cc' };
   const manifest = { '.': ['a', 'b', 'c'] };
   const size = encodedBundleSize(bundle, manifest);

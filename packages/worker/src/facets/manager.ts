@@ -1137,10 +1137,32 @@ type BundleCellSize = [path: string, bytes: number];
  * own, and the point of the incremental accounting is that sizing the
  * snapshot never allocates a second copy of anything in it.
  *
- * Non-string cells (binary content, permission-denial markers) are rare and
- * small, so they take the direct route.
+ * Uint8Array has no JSON representation of its own: JSON.stringify expands
+ * it to `{"0":byte,"1":byte,...}`. Materializing that form while merely
+ * sizing a binary cell can allocate more than twelve times the file's raw
+ * bytes, so count its punctuation and decimal digits directly too.
+ *
+ * Other values here are the small manifest object or a permission-denial
+ * marker and can take the direct route.
  */
 function _jsonEncodedBytes(value: unknown): number {
+  if (value instanceof Uint8Array) {
+    let bytes = 2; // the surrounding braces
+    let indexDigits = 1;
+    let nextIndexWidth = 10;
+    for (let index = 0; index < value.byteLength; index++) {
+      if (index === nextIndexWidth) {
+        indexDigits++;
+        nextIndexWidth *= 10;
+      }
+      if (index > 0) bytes += 1; // comma
+      // `"index":byte`: quotes + decimal key + colon + decimal byte.
+      const byte = value[index];
+      const byteDigits = byte < 10 ? 1 : byte < 100 ? 2 : 3;
+      bytes += 3 + indexDigits + byteDigits;
+    }
+    return bytes;
+  }
   if (typeof value !== 'string') {
     return new TextEncoder().encode(JSON.stringify(value)).length;
   }
