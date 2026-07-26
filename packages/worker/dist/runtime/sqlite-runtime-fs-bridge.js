@@ -104,11 +104,11 @@ export class SqliteRuntimeFsBridge {
         this.vfs.writeRange(p, offset, bytes);
         return bytes.byteLength;
     }
-    async appendOnce(path, pid, writerId, operationId, digest, bytes) {
-        return this.vfs.appendOnce(path, pid, writerId, operationId, digest, bytes);
+    async appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
+        return this.vfs.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
     }
-    async acknowledgeAppend(pid, writerId, operationId) {
-        this.vfs.acknowledgeAppend(pid, writerId, operationId);
+    async acknowledgeAppend(pid, writerId, moduleId, operationId) {
+        this.vfs.acknowledgeAppend(pid, writerId, moduleId, operationId);
     }
     async truncate(path, size, options = {}) {
         const p = this.resolveMutationPath(path, options.followSymlinks !== false, 'truncate');

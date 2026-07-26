@@ -2734,9 +2734,13 @@ export class FacetManager {
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
         const tracked = this.processRpcResources.get(pid);
-        if (tracked?.releaseOnReportExit)
+        if (tracked?.releaseOnReportExit) {
             this.releaseProcessRpcResources(pid);
-        this.revokeProcessVfsWriters(pid);
+            this.revokeProcessVfsWriters(pid);
+        }
+        else if (!tracked) {
+            this.revokeProcessVfsWriters(pid);
+        }
         this._teardownPairedServeFacet(pid);
     }
     /**
@@ -2908,12 +2912,13 @@ export class FacetManager {
         const workerCode = generatedWorker.code;
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
+        const writerId = crypto.randomUUID();
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({
                 props: {
                     doId: this.ctx.id.toString(),
                     pid: entry.pid,
-                    writerId: crypto.randomUUID(),
+                    writerId,
                 },
             })
             : undefined;
@@ -2987,6 +2992,8 @@ export class FacetManager {
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);
             disposeRpcResource(supervisorBinding);
+            if (supervisorBinding)
+                this.vfs?.revokeAppendWriter(entry.pid, writerId);
         }
     }
     /**
@@ -3009,7 +3016,8 @@ export class FacetManager {
         // the ~23 MB module map is assembled inside the stateless entrypoint on
         // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
         // context, which stays open for the whole run), never in this DO.
-        const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid };
+        const writerId = crypto.randomUUID();
+        const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid, writerId };
         const ctxExports = getNimbusCtxExports();
         let entrypoint;
         try {
@@ -3034,6 +3042,7 @@ export class FacetManager {
         }
         finally {
             disposeRpcResource(entrypoint);
+            this.vfs?.revokeAppendWriter(staged.pid, writerId);
         }
     }
     /**

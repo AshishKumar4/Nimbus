@@ -98,16 +98,16 @@ function withTestAppendAuthority(supervisor) {
     && typeof supervisor.fsWriteRange === 'function'
   ) {
     const appendReceipts = new Map();
-    supervisor.fsAppend = async (path, operationId, bytes) => {
-      const key = operationId;
+    supervisor.fsAppend = async (path, moduleId, operationId, bytes) => {
+      const key = `${moduleId}:${operationId}`;
       if (appendReceipts.has(key)) return bytes.byteLength;
       const meta = await supervisor.stat(path);
       await supervisor.fsWriteRange(path, Number(meta?.size) || 0, bytes);
       appendReceipts.set(key, bytes.slice());
       return bytes.byteLength;
     };
-    supervisor.fsAppendAck = async (operationId) => {
-      appendReceipts.delete(operationId);
+    supervisor.fsAppendAck = async (moduleId, operationId) => {
+      appendReceipts.delete(`${moduleId}:${operationId}`);
     };
   }
   return supervisor;
@@ -124,6 +124,7 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   writes: __vfsWrites,
   flushVfsWrite: __nimbusFlushVfsWrite,
   persistVfsWrite: __nimbusPersistVfsWrite,
+  moduleIncarnation: __nimbusVfsModuleIncarnation,
 };`,
   );
   return factory(
@@ -470,10 +471,10 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   const receipts = new Map();
   const calls = [];
   const supervisor = {
-    async fsAppend(_path, operationId, bytes) {
+    async fsAppend(_path, moduleId, operationId, bytes) {
       const suffix = new TextDecoder().decode(bytes);
-      const key = operationId;
-      calls.push({ operationId, suffix });
+      const key = `${moduleId}:${operationId}`;
+      calls.push({ moduleId, operationId, suffix });
       if (!receipts.has(key)) {
         durable += suffix;
         receipts.set(key, suffix);
@@ -484,8 +485,8 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
       }
       return bytes.byteLength;
     },
-    async fsAppendAck(operationId) {
-      receipts.delete(operationId);
+    async fsAppendAck(moduleId, operationId) {
+      receipts.delete(`${moduleId}:${operationId}`);
     },
     async writeFile(_path, content) { durable = cellText(content); },
   };
@@ -511,6 +512,38 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   ), false);
 }
 
+// Re-evaluating the dynamic-worker module resets its local numeric sequence,
+// but a fresh module incarnation keeps the new operation distinct under the
+// same still-live trusted host binding.
+{
+  let durable = 'base';
+  const receipts = new Set();
+  const calls = [];
+  const supervisor = {
+    async fsAppend(_path, moduleId, operationId, bytes) {
+      const key = `${moduleId}:${operationId}`;
+      calls.push({ moduleId, operationId });
+      if (!receipts.has(key)) {
+        durable += new TextDecoder().decode(bytes);
+        receipts.add(key);
+      }
+      return bytes.byteLength;
+    },
+    async fsAppendAck() {},
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const firstModule = makeShimFsFacet(supervisor);
+  const secondModule = makeShimFsFacet(supervisor);
+  const path = '/home/user/module-reload-append.txt';
+  await firstModule.fs.promises.appendFile(path, 'A');
+  await secondModule.fs.promises.appendFile(path, 'B');
+  assert.equal(durable, 'baseAB');
+  assert.equal(calls[0].operationId, '1');
+  assert.equal(calls[1].operationId, '1');
+  assert.notEqual(calls[0].moduleId, calls[1].moduleId);
+  assert.notEqual(firstModule.moduleIncarnation, secondModule.moduleIncarnation);
+}
+
 // Once fsAppend succeeds, the facet relinquishes retry ownership before ACK.
 // A crash/failure before the ACK reaches authority retains the receipt, and a
 // delayed duplicate is still deduplicated without local retry state.
@@ -519,9 +552,9 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   const receipts = new Set();
   const calls = [];
   const supervisor = {
-    async fsAppend(_path, operationId, bytes) {
-      const key = operationId;
-      calls.push({ operationId });
+    async fsAppend(_path, moduleId, operationId, bytes) {
+      const key = `${moduleId}:${operationId}`;
+      calls.push({ moduleId, operationId });
       if (!receipts.has(key)) {
         durable += new TextDecoder().decode(bytes);
         receipts.add(key);
@@ -544,6 +577,7 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   ), false);
   await supervisor.fsAppend(
     path,
+    calls[0].moduleId,
     calls[0].operationId,
     new TextEncoder().encode('A'),
   );
@@ -558,18 +592,18 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   let ackCalls = 0;
   const receipts = new Set();
   const supervisor = {
-    async fsAppend(_path, operationId, bytes) {
+    async fsAppend(_path, moduleId, operationId, bytes) {
       appendCalls++;
-      const key = operationId;
+      const key = `${moduleId}:${operationId}`;
       if (!receipts.has(key)) {
         durable += new TextDecoder().decode(bytes);
         receipts.add(key);
       }
       return bytes.byteLength;
     },
-    async fsAppendAck(operationId) {
+    async fsAppendAck(moduleId, operationId) {
       ackCalls++;
-      receipts.delete(operationId);
+      receipts.delete(`${moduleId}:${operationId}`);
       throw new Error('injected lost ACK response');
     },
     async writeFile(_path, content) { durable = cellText(content); },

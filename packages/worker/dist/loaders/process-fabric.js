@@ -218,7 +218,14 @@ export async function createLoadedWorkerEntrypoint(ctxExports, code, supervisor,
  */
 export async function hostResidentProcess(host, boot) {
     const route = await createRouteTarget(host);
-    const startStub = await createLoadedWorkerEntrypoint(host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot);
+    let startStub;
+    try {
+        startStub = await createLoadedWorkerEntrypoint(host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot);
+    }
+    catch (error) {
+        disposeRpcResource(route);
+        throw error;
+    }
     if (typeof startStub.startProcess !== 'function') {
         disposeRpcResources([startStub, route]);
         throw new Error('Nimbus: resident process entrypoint has no startProcess method');
@@ -412,8 +419,23 @@ export class ProcessFabric {
         // Bind that sequence to this concrete host, then retire it only after the
         // host resources are disposed; a later host must use a fresh incarnation.
         const writerId = crypto.randomUUID();
-        const hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
-        const started = hosted.start(spawn.startArgs);
+        let hosted;
+        try {
+            hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
+        }
+        catch (error) {
+            spawn.onWriterRetired?.(writerId);
+            throw error;
+        }
+        let started;
+        try {
+            started = hosted.start(spawn.startArgs);
+        }
+        catch (error) {
+            hosted.dispose();
+            spawn.onWriterRetired?.(writerId);
+            throw error;
+        }
         const held = heldUntilKilled();
         // `lifetime`: the runner's startProcess IS the process, so its settlement
         // is the lifecycle — exactly the pre-fabric boot. `boot`: the runner

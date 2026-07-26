@@ -269,17 +269,25 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async fsAppend(
     path: string,
+    moduleId: string,
     operationId: string,
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<number> {
     return this._call(
-      this._getStub()._rpcFsAppend(path, this._writerId(), operationId, bytes, this._pid()),
+      this._getStub()._rpcFsAppend(
+        path,
+        this._writerId(),
+        moduleId,
+        operationId,
+        bytes,
+        this._pid(),
+      ),
     );
   }
 
-  async fsAppendAck(operationId: string): Promise<void> {
+  async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
     return this._call(
-      this._getStub()._rpcFsAppendAck(this._writerId(), operationId, this._pid()),
+      this._getStub()._rpcFsAppendAck(this._writerId(), moduleId, operationId, this._pid()),
     );
   }
 

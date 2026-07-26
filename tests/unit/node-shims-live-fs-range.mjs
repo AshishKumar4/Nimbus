@@ -37,21 +37,23 @@ const supervisor = {
   utimes: (p, a, m) => bridge.utimes(p, a, m),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
   fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
-  async fsAppend(p, operationId, bytes) {
+  async fsAppend(p, moduleId, operationId, bytes) {
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
     const digest = Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
     return bridge.appendOnce(
       p,
       1,
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      moduleId,
       Number(operationId),
       digest,
       bytes,
     );
   },
-  fsAppendAck: (operationId) => bridge.acknowledgeAppend(
+  fsAppendAck: (moduleId, operationId) => bridge.acknowledgeAppend(
     1,
     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    moduleId,
     Number(operationId),
   ),
   fsTruncate: (p, s) => bridge.truncate(p, s),

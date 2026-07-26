@@ -208,11 +208,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsWriteRange(path, offset, bytes) {
         return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes, this._pid()));
     }
-    async fsAppend(path, operationId, bytes) {
-        return this._call(this._getStub()._rpcFsAppend(path, this._writerId(), operationId, bytes, this._pid()));
+    async fsAppend(path, moduleId, operationId, bytes) {
+        return this._call(this._getStub()._rpcFsAppend(path, this._writerId(), moduleId, operationId, bytes, this._pid()));
     }
-    async fsAppendAck(operationId) {
-        return this._call(this._getStub()._rpcFsAppendAck(this._writerId(), operationId, this._pid()));
+    async fsAppendAck(moduleId, operationId) {
+        return this._call(this._getStub()._rpcFsAppendAck(this._writerId(), moduleId, operationId, this._pid()));
     }
     async fsTruncate(path, size) {
         return this._call(this._getStub()._rpcFsTruncate(path, size, this._pid()));

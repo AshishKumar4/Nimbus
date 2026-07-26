@@ -67,7 +67,12 @@ setCtxExports({
     return binding;
   },
   NimbusLoadedEntrypoint(options) {
-    const boot = { props: options.props, startArgs: undefined, started: false };
+    const boot = {
+      props: options.props,
+      startArgs: undefined,
+      started: false,
+      disposed: false,
+    };
     localBoots.push(boot);
     return {
       startProcess(args) {
@@ -76,6 +81,7 @@ setCtxExports({
         return Promise.resolve({ ok: true, port: 8080 });
       },
       handleHttpRequest: (request) => Promise.resolve(new Response(`routed ${new URL(request.url).pathname}`)),
+      [Symbol.dispose]() { boot.disposed = true; },
     };
   },
 });
@@ -134,9 +140,18 @@ function makePeerNs(peerFor, log) {
 {
   const { env } = makeEnv();
   const fabric = new ProcessFabric(makeCtx(), env);
+  let retiredAfterDispose = false;
   const handle = await fabric.startResidentProcess({
     processClass: 'light', startContract: 'lifetime',
     pid: 42, workerKey: 'nimbus-process:coord-do-id:42', boot: STAGED_BOOT,
+    onWriterRetired(writerId) {
+      const ownedStubs = localBoots.filter(
+        (candidate) => candidate.props.supervisor.writerId === writerId,
+      );
+      assert.equal(ownedStubs.length, 2);
+      assert.ok(ownedStubs.every((candidate) => candidate.disposed));
+      retiredAfterDispose = true;
+    },
   });
   assert.ok(handle instanceof ResidentProcessHandle);
   assert.match(handle.describePlacement(), /local facet/);
@@ -148,6 +163,7 @@ function makePeerNs(peerFor, log) {
   assert.match(boot.props.supervisor.writerId, /^[0-9a-f-]{36}$/);
   assert.equal(boot.props.key, 'nimbus-process:coord-do-id:42');
   assert.equal(boot.started, true, 'local startProcess invoked');
+  assert.equal(retiredAfterDispose, true, 'writer retirement follows disposal of every host capability');
   console.log('  case1: light staged process boots the local facet path');
 }
 

@@ -124,15 +124,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     path: string,
     pid: number,
     writerId: string,
+    moduleId: string,
     operationId: number,
     digest: string,
     bytes: Uint8Array,
   ): Promise<number> {
-    return this.vfs.appendOnce(path, pid, writerId, operationId, digest, bytes);
+    return this.vfs.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
   }
 
-  async acknowledgeAppend(pid: number, writerId: string, operationId: number): Promise<void> {
-    this.vfs.acknowledgeAppend(pid, writerId, operationId);
+  async acknowledgeAppend(
+    pid: number,
+    writerId: string,
+    moduleId: string,
+    operationId: number,
+  ): Promise<void> {
+    this.vfs.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
 
   async truncate(

@@ -258,6 +258,7 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
   supervisor: z.object({
     doId: z.string().min(1),
     pid: z.number().int().nonnegative(),
+    writerId: z.string().uuid(),
   }).optional(),
   /**
    * Staged-artifact spec (opencode). When present (and `code` is not), the

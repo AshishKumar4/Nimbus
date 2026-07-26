@@ -96,8 +96,8 @@ export interface CredentialedVfs {
     readFileUncached(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
-    appendOnce(path: string, pid: number, writerId: string, operationId: number, digest: string, bytes: Uint8Array): number;
-    acknowledgeAppend(pid: number, writerId: string, operationId: number): void;
+    appendOnce(path: string, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
+    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: string, size: number): void;
     readFileString(path: string): string;
     stat(path: string): VfsStat;
@@ -350,6 +350,10 @@ export declare class SqliteVFS {
     private acknowledgeAppend;
     revokeAppendWriter(pid: number, writerId: string): void;
     revokeAppendWriters(pid: number): void;
+    private finishAppendPidRevocation;
+    private deleteAppendRowsBounded;
+    private trimAppendWriterTombstones;
+    private resumeAppendMaintenance;
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
      * Shrinking drops trailing chunk rows and trims the new last chunk;

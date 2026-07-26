@@ -338,11 +338,13 @@ const FsWriteRangeArgsSchema = z.object({
 const FsAppendArgsSchema = z.object({
   path: z.string(),
   writerId: z.string().uuid(),
+  moduleId: z.string().uuid(),
   operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
 });
 
 const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
   writerId: true,
+  moduleId: true,
   operationId: true,
 });
 
@@ -384,11 +386,12 @@ export async function _rpcFsAppend(
   self: RpcHost,
   path: string,
   writerId: string,
+  moduleId: string,
   operationId: string,
   bytes: Uint8Array | ArrayBuffer | number[],
   pid?: number,
 ): Promise<number> {
-  const args = FsAppendArgsSchema.parse({ path, writerId, operationId });
+  const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
   const sequence = Number(args.operationId);
   if (!Number.isSafeInteger(sequence)) {
     throw new Error('filesystem append operation exceeds the safe integer range');
@@ -401,6 +404,7 @@ export async function _rpcFsAppend(
     args.path,
     processId,
     args.writerId,
+    args.moduleId,
     sequence,
     digest,
     data,
@@ -410,16 +414,22 @@ export async function _rpcFsAppend(
 export async function _rpcFsAppendAck(
   self: RpcHost,
   writerId: string,
+  moduleId: string,
   operationId: string,
   pid?: number,
 ): Promise<void> {
-  const args = FsAppendAckArgsSchema.parse({ writerId, operationId });
+  const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
   const sequence = Number(args.operationId);
   if (!Number.isSafeInteger(sequence)) {
     throw new Error('filesystem append operation exceeds the safe integer range');
   }
   const processId = processPid(pid);
-  await runtimeFs(self, processId).acknowledgeAppend(processId, args.writerId, sequence);
+  await runtimeFs(self, processId).acknowledgeAppend(
+    processId,
+    args.writerId,
+    args.moduleId,
+    sequence,
+  );
 }
 
 export async function _rpcFsTruncate(self: RpcHost, path: string, size: number, pid?: number): Promise<void> {
