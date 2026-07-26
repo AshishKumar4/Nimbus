@@ -576,8 +576,13 @@ export interface ResidentProcessSpawn {
    * log so a death-plus-recovery is never silent.
    */
   onRespawn?: (cause: unknown) => void;
+  /**
+   * Called before any concrete host capability can expose this writer.
+   * A spawn must not proceed unless the supervisor accepts the authority.
+   */
+  onWriterActivated: (writerId: string) => void;
   /** Called only after the concrete host resources for this writer are revoked. */
-  onWriterRetired?: (writerId: string) => void;
+  onWriterRetired: (writerId: string) => void;
 }
 
 interface PeerPlacementInternal {
@@ -629,11 +634,12 @@ export class ProcessFabric {
     // Bind that sequence to this concrete host, then retire it only after the
     // host resources are disposed; a later host must use a fresh incarnation.
     const writerId = crypto.randomUUID();
+    spawn.onWriterActivated(writerId);
     let hosted: HostedResidentProcess;
     try {
       hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
     } catch (error) {
-      spawn.onWriterRetired?.(writerId);
+      spawn.onWriterRetired(writerId);
       throw error;
     }
     let started: Promise<unknown>;
@@ -641,7 +647,7 @@ export class ProcessFabric {
       started = hosted.start(spawn.startArgs);
     } catch (error) {
       hosted.dispose();
-      spawn.onWriterRetired?.(writerId);
+      spawn.onWriterRetired(writerId);
       throw error;
     }
     const held = heldUntilKilled();
@@ -657,7 +663,7 @@ export class ProcessFabric {
       placement: () => ({ kind: 'local' }),
       done: done.finally(() => {
         hosted.dispose();
-        spawn.onWriterRetired?.(writerId);
+        spawn.onWriterRetired(writerId);
       }),
       booted: () => started,
       routeTarget: hosted.route,
@@ -740,6 +746,7 @@ export class ProcessFabric {
       // A new trusted incarnation prevents those new operations from aliasing
       // acknowledged keys owned by the dead placement.
       const writerId = crypto.randomUUID();
+      spawn.onWriterActivated(writerId);
       this.tokensInUse.set(spawn.pid, placement.isolateToken);
       try {
         await placement.stub._rpcHostProcess(spawn.boot, {
@@ -760,7 +767,7 @@ export class ProcessFabric {
       } finally {
         this.tokensInUse.delete(spawn.pid);
         disposeRpcResource(placement.stub);
-        spawn.onWriterRetired?.(writerId);
+        spawn.onWriterRetired(writerId);
       }
       // Respawn: fresh slot, re-verified placement. The handle's route target
       // and start() read `state.current`, so both re-point automatically.

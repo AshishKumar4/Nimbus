@@ -550,6 +550,7 @@ export declare class FacetManager {
      * treats the returned handle identically regardless of where it landed.
      */
     private _startResidentProcess;
+    private _activateProcessVfsWriter;
     /**
      * A host death that the fabric recovered from is never silent: it lands in
      * the process log the user reads with `logs <pid>`.

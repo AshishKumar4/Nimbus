@@ -18,6 +18,7 @@ const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
 const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+rawVfs.activateAppendWriter(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
 const supervisor = {

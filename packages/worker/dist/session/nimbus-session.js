@@ -751,6 +751,10 @@ export class NimbusSession extends CloudflareDurableObject {
     ensureSqliteFs() {
         if (!this.sqliteFs) {
             this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
+            // A fresh coordinator generation cannot trust capabilities issued by
+            // prior generations. Their PIDs are at or below this generation's base;
+            // remove their positive append authority before serving any event.
+            this.sqliteFs.revokeAppendWritersThrough(this.processes.pidBase);
             // Shrink the disposable LRU while the shared transient-allocation
             // budget is active. Edge-triggered observer callbacks keep nested and
             // concurrent reservations from restoring the cache prematurely.

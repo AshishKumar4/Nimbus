@@ -385,8 +385,13 @@ export interface ResidentProcessSpawn {
      * log so a death-plus-recovery is never silent.
      */
     onRespawn?: (cause: unknown) => void;
+    /**
+     * Called before any concrete host capability can expose this writer.
+     * A spawn must not proceed unless the supervisor accepts the authority.
+     */
+    onWriterActivated: (writerId: string) => void;
     /** Called only after the concrete host resources for this writer are revoked. */
-    onWriterRetired?: (writerId: string) => void;
+    onWriterRetired: (writerId: string) => void;
 }
 export declare class ProcessFabric {
     private readonly ctx;

@@ -99,6 +99,11 @@ function makeCtx() {
   };
 }
 
+const WRITER_LIFECYCLE = {
+  onWriterActivated() {},
+  onWriterRetired() {},
+};
+
 /** Peer namespace mock: peerFor(name) supplies { token, host(boot, opts) }. */
 function makePeerNs(peerFor, log) {
   const hostedByKey = new Map();
@@ -141,9 +146,19 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv();
   const fabric = new ProcessFabric(makeCtx(), env);
   let retiredAfterDispose = false;
+  let activatedWriter;
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'light', startContract: 'lifetime',
     pid: 42, workerKey: 'nimbus-process:coord-do-id:42', boot: STAGED_BOOT,
+    onWriterActivated(writerId) {
+      assert.equal(
+        localBoots.some((candidate) => candidate.props.supervisor.writerId === writerId),
+        false,
+        'writer authority is activated before any local host capability is exposed',
+      );
+      activatedWriter = writerId;
+    },
     onWriterRetired(writerId) {
       const ownedStubs = localBoots.filter(
         (candidate) => candidate.props.supervisor.writerId === writerId,
@@ -161,6 +176,7 @@ function makePeerNs(peerFor, log) {
   assert.equal(boot.props.supervisor.doId, 'coord-do-id');
   assert.equal(boot.props.supervisor.pid, 42);
   assert.match(boot.props.supervisor.writerId, /^[0-9a-f-]{36}$/);
+  assert.equal(boot.props.supervisor.writerId, activatedWriter);
   assert.equal(boot.props.key, 'nimbus-process:coord-do-id:42');
   assert.equal(boot.started, true, 'local startProcess invoked');
   assert.equal(retiredAfterDispose, true, 'writer retirement follows disposal of every host capability');
@@ -172,6 +188,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv();
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'light', startContract: 'boot',
     pid: 43, workerKey: 'k43', boot: CODE_BOOT, startArgs: { userCode: 'puts 1' },
   });
@@ -206,6 +223,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime',
     pid: 7, workerKey: 'k7', boot: STAGED_BOOT,
   });
@@ -231,6 +249,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'boot',
     pid: 44, workerKey: 'k44', boot: CODE_BOOT, startArgs: { a: 1 },
   });
@@ -259,6 +278,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 8, workerKey: 'k8', boot: STAGED_BOOT,
   });
   assert.equal(log.filter((l) => l.startsWith('probe:')).length, HEAVY_PLACEMENT_MAX_ATTEMPTS);
@@ -272,9 +292,14 @@ function makePeerNs(peerFor, log) {
   const log = [];
   let hostCalls = 0;
   const writerIncarnations = [];
+  const activatedWriters = [];
   const peers = makePeerNs((name) => ({
     token: `distinct-${name}`,
     host: (_boot, opts) => {
+      assert.ok(
+        activatedWriters.includes(opts.writerId),
+        'peer writer authority is active before the host receives its capability',
+      );
       hostCalls++;
       writerIncarnations.push(opts.writerId);
       if (hostCalls === 1) throw new Error('Worker exceeded memory limit.'); // peer OOM
@@ -286,9 +311,11 @@ function makePeerNs(peerFor, log) {
   const retiredWriters = [];
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 9, workerKey: 'k9', boot: STAGED_BOOT,
     shouldRespawn: () => true,
     onRespawn: (cause) => respawnCauses.push(String(cause)),
+    onWriterActivated: (writerId) => activatedWriters.push(writerId),
     onWriterRetired: (writerId) => retiredWriters.push(writerId),
   });
   await handle.done; // must NOT reject — the respawn cleared it
@@ -296,6 +323,7 @@ function makePeerNs(peerFor, log) {
   assert.match(respawnCauses[0], /exceeded memory/, 'a recovered host death is never silent');
   assert.equal(new Set(writerIncarnations).size, 2,
     'a respawn gets a fresh trusted writer incarnation before its sequence restarts');
+  assert.deepEqual(activatedWriters, writerIncarnations);
   assert.deepEqual(retiredWriters, writerIncarnations,
     'each host writer is retired only after that placement is disposed');
   assert.deepEqual(
@@ -318,6 +346,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 10, workerKey: 'k10', boot: STAGED_BOOT,
     shouldRespawn: () => true,
   });
@@ -336,6 +365,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 11, workerKey: 'k11', boot: STAGED_BOOT,
     shouldRespawn: () => false,
   });
@@ -356,6 +386,7 @@ function makePeerNs(peerFor, log) {
   const ctx = makeCtx();
   const fabric = new ProcessFabric(ctx, env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 12, workerKey: 'k12', boot: STAGED_BOOT,
     shouldRespawn: () => true, // pid still "running" — kill must still win
   });
@@ -376,6 +407,7 @@ function makePeerNs(peerFor, log) {
   const fabric = new ProcessFabric(makeCtx(), {});
   await assert.rejects(
     fabric.startResidentProcess({
+      ...WRITER_LIFECYCLE,
       processClass: 'heavy', startContract: 'lifetime', pid: 13, workerKey: 'k13', boot: STAGED_BOOT,
     }),
     /NIMBUS_SESSION/,
