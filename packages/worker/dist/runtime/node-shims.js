@@ -604,15 +604,9 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      const content = __vfsWrites[k];
-      const generations = typeof __vfsWriteGenerations !== "undefined"
-        ? __vfsWriteGenerations
-        : null;
-      const generation = generations ? generations[k] : undefined;
-      await _fsRpc(supervisor.writeFile(absPath, content), "write", absPath, () => undefined);
-      if (generations ? generations[k] === generation : __vfsWrites[k] === content) {
-        delete __vfsWrites[k];
-      }
+      await __nimbusFlushVfsWrite(absPath, (content) =>
+        _fsRpc(supervisor.writeFile(absPath, content), "write", absPath, () => undefined)
+      );
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
       await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);
@@ -898,12 +892,10 @@ const __fsMod = (() => {
     writeFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.writeFile === "function") {
-      const cell = _writtenCell(absPath);
-      if (cell !== undefined) {
-        await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
-        if (__vfsWrites) delete __vfsWrites[_strip(absPath)];
-        _markVfsStale();
-      }
+      await __nimbusFlushVfsWrite(absPath, (content) =>
+        _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined)
+      );
+      _markVfsStale();
     }
   }
 
@@ -919,34 +911,36 @@ const __fsMod = (() => {
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
-    if (!hadUnflushedLocal && typeof supervisor.fsWriteRange === "function" && typeof supervisor.stat === "function") {
-      // Live file exists → ranged append at the live EOF. Only the
-      // appended bytes cross the RPC boundary and only the EOF chunk is
-      // rewritten; a prefix written live by another process is preserved
-      // instead of clobbered by the local view.
-      const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
-      if (meta && meta.type === "file") {
-        await _fsRpc(
-          supervisor.fsWriteRange(absPath, Number(meta.size) || 0, bytes),
-          "write", p,
-          () => undefined,
-        );
-        if (__vfsWrites) delete __vfsWrites[k];
-        // Live-only file: appendFileSync seeded a cell holding ONLY the
-        // appended bytes. Drop it so reads fall through to the live file
-        // instead of mistaking the fragment for the full content.
-        if (!hadLocalCell && __vfsBundle) delete __vfsBundle[k];
-        _markVfsStale();
-        return;
+    const snapshot = __nimbusCaptureVfsWrite(absPath);
+    if (!snapshot) return;
+    await __nimbusRunVfsWriteMutation(snapshot, async (content) => {
+      if (!hadUnflushedLocal &&
+          typeof supervisor.fsWriteRange === "function" &&
+          typeof supervisor.stat === "function") {
+        // Keep the live EOF lookup and ranged append in the same per-path
+        // queue as full writes so neither can overtake the other.
+        const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
+        if (meta && meta.type === "file") {
+          await _fsRpc(
+            supervisor.fsWriteRange(absPath, Number(meta.size) || 0, bytes),
+            "write", p,
+            () => undefined,
+          );
+          // Live-only file: appendFileSync seeded a cell holding ONLY the
+          // appended bytes. Drop it only if this is still the captured cell.
+          if (!hadLocalCell &&
+              __vfsWriteGenerations[k] === snapshot.generation &&
+              __vfsBundle) {
+            delete __vfsBundle[k];
+          }
+          return;
+        }
       }
-    }
-    // Creation (no live file) or pending local writes: flush the merged cell.
-    const cell = _writtenCell(absPath);
-    if (cell !== undefined) {
-      await _fsRpc(supervisor.writeFile(absPath, cell), "write", p, () => undefined);
-      if (__vfsWrites) delete __vfsWrites[k];
-      _markVfsStale();
-    }
+      // Creation (no live file) or pending local writes: flush the captured
+      // merged cell, not a later synchronous file-content mutation.
+      await _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined);
+    });
+    _markVfsStale();
   }
 
   async function _mkdirAsync(p, opts) {

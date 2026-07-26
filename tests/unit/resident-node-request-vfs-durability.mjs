@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // A successful response from a resident Node server is a durability boundary:
-// synchronous filesystem writes performed by the request handler must already
-// be visible through the supervisor VFS when the response is returned.
+// file content written synchronously via writeFileSync by the request handler must
+// already be visible through the supervisor VFS when the response is returned.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
@@ -47,6 +48,9 @@ const ctx = { id: { toString: () => 'request-durability-test' }, waitUntil() {} 
 const processes = new SessionProcessSupervisor();
 const ports = new PortRegistry();
 const manager = new FacetManager(ctx, env, processes, ports, {});
+const cellText = (content) => content instanceof Uint8Array
+  ? new TextDecoder().decode(content)
+  : String(content);
 
 const userCode = `
 const fs = require('node:fs');
@@ -78,34 +82,22 @@ await manager.spawnNode(userCode, {
 });
 assert.ok(residentCode?.modules?.['worker.js'], 'spawn produced a generated resident worker');
 
-function makeShimFsFacet(supervisor) {
-  const generations = Object.create(null);
-  const writes = new Proxy(Object.create(null), {
-    set(target, path, value) {
-      target[path] = value;
-      generations[path] = (generations[path] || 0) + 1;
-      return true;
-    },
-    deleteProperty(target, path) {
-      if (Object.prototype.hasOwnProperty.call(target, path)) {
-        delete target[path];
-        generations[path] = (generations[path] || 0) + 1;
-      }
-      return true;
-    },
-  });
+function makeShimFsFacet(supervisor, bundle = {}) {
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsWriteGenerations',
-    '__vfsDirs', '__vfsManifest', '__supervisor',
+    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
     'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    `"use strict";${generateShimsCode()}\n;return builtins.fs;`,
+    `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${generateShimsCode()}
+;return {
+  fs: builtins.fs,
+  writes: __vfsWrites,
+  flushVfsWrite: __nimbusFlushVfsWrite,
+};`,
   );
-  const fs = factory(
-    {}, {}, writes, generations, {}, {}, supervisor,
+  return factory(
+    bundle, {}, {}, {}, supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
-  return { fs, writes };
 }
 
 async function assertAsyncFlushPreservesNewerWrite(initial, newer) {
@@ -148,11 +140,142 @@ async function assertAsyncFlushPreservesNewerWrite(initial, newer) {
 await assertAsyncFlushPreservesNewerWrite('older', 'newer');
 await assertAsyncFlushPreservesNewerWrite('same', 'same');
 
+// Shim-triggered flushes and request-boundary full writes share one per-path
+// queue, so a delayed older authority RPC cannot land after the newer content.
+{
+  let releaseOlder;
+  let olderStarted;
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  const olderCall = new Promise((resolve) => { olderStarted = resolve; });
+  const durable = new Map();
+  const calls = [];
+  const supervisor = {
+    async writeFile(path, content) {
+      const text = cellText(content);
+      calls.push(text);
+      if (text === 'older') {
+        olderStarted();
+        await olderGate;
+      }
+      durable.set(path.replace(/^\/+/, ''), text);
+    },
+    async fsTruncate() {},
+  };
+  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const path = '/home/user/cross-boundary-race.txt';
+  fs.writeFileSync(path, 'older');
+  const shimFlush = fs.promises.truncate(path, 5);
+  await olderCall;
+  fs.writeFileSync(path, 'newer');
+  const boundaryFlush = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  await Promise.resolve();
+  assert.deepEqual(calls, ['older'], 'same-path boundary write waits behind the older shim flush');
+  releaseOlder();
+  await Promise.all([shimFlush, boundaryFlush]);
+  assert.equal(durable.get('home/user/cross-boundary-race.txt'), 'newer');
+  assert.deepEqual(calls, ['older', 'newer']);
+}
+
+// An older fs.promises.writeFile completion clears only its own captured
+// generation. A newer writeFileSync cell remains pending and can be persisted.
+{
+  let releaseOlder;
+  let olderStarted;
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  const olderCall = new Promise((resolve) => { olderStarted = resolve; });
+  const durable = new Map();
+  const calls = [];
+  const supervisor = {
+    async writeFile(path, content) {
+      const text = String(content);
+      calls.push(text);
+      if (text === 'older') {
+        olderStarted();
+        await olderGate;
+      }
+      durable.set(path, text);
+    },
+  };
+  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const path = '/home/user/async-write-race.txt';
+  const older = fs.promises.writeFile(path, 'older');
+  await olderCall;
+  fs.writeFileSync(path, 'newer');
+  releaseOlder();
+  await older;
+  await flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  assert.equal(durable.get(path), 'newer');
+  assert.deepEqual(calls, ['older', 'newer']);
+}
+
+// Ranged appends and full writes to one path are ordered together, while a
+// mutation for another path is free to complete independently.
+{
+  let releaseAppend;
+  let appendStarted;
+  const appendGate = new Promise((resolve) => { releaseAppend = resolve; });
+  const appendCall = new Promise((resolve) => { appendStarted = resolve; });
+  let durable = 'base';
+  const completions = [];
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      appendStarted();
+      await appendGate;
+      durable = durable.slice(0, position) + new TextDecoder().decode(bytes);
+      completions.push('append');
+    },
+    async writeFile(_path, content) {
+      durable = String(content);
+      completions.push('full');
+    },
+  };
+  const { fs, writes, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const path = '/home/user/append-order.txt';
+  const append = fs.promises.appendFile(path, 'A');
+  await appendCall;
+  const full = fs.promises.writeFile(path, 'newer');
+
+  writes['home/user/independent.txt'] = 'independent';
+  await flushVfsWrite(
+    '/home/user/independent.txt',
+    async () => { completions.push('independent'); },
+  );
+  assert.deepEqual(completions, ['independent'], 'different paths do not share a queue');
+
+  releaseAppend();
+  await Promise.all([append, full]);
+  assert.equal(durable, 'newer');
+  assert.deepEqual(completions, ['independent', 'append', 'full']);
+}
+
+// A failed operation rejects its caller without poisoning that path's queue;
+// the captured cell remains pending and a later generation can still persist.
+{
+  const { writes, flushVfsWrite } = makeShimFsFacet({});
+  const path = '/home/user/retry-after-failure.txt';
+  writes['home/user/retry-after-failure.txt'] = 'failed';
+  await assert.rejects(
+    flushVfsWrite(path, async () => { throw new Error('injected queue failure'); }),
+    /injected queue failure/,
+  );
+  assert.equal(writes['home/user/retry-after-failure.txt'], 'failed');
+
+  writes['home/user/retry-after-failure.txt'] = 'recovered';
+  let durable;
+  await flushVfsWrite(path, async (content) => { durable = String(content); });
+  assert.equal(durable, 'recovered');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false);
+}
+
 async function loadGeneratedWorker() {
   const source = residentCode.modules['worker.js'].replace(
     'import { WorkerEntrypoint } from "cloudflare:workers";',
     'class WorkerEntrypoint { constructor(env, ctx) { this.env = env; this.ctx = ctx; } }',
-  );
+  ) + `
+export function __nimbusTestPendingIOLength() {
+  return __nimbusRuntime ? __nimbusRuntime.pendingIO.length : -1;
+}`;
   const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
   try {
     return await import(url);
@@ -168,7 +291,7 @@ function request(path = 'first') {
 }
 
 // The public generated entrypoint must not return a successful response until
-// its handler's sync write has crossed the supervisor boundary.
+// its handler's pending writeFileSync content has crossed the supervisor boundary.
 {
   delete globalThis.__portRegistry;
   const durable = new Map();
@@ -196,7 +319,7 @@ function request(path = 'first') {
   assert.equal(
     durable.get('home/user/request-result.txt'),
     'first',
-    'request-time sync write is durable before the 200 response returns',
+    'request-time writeFileSync content is durable before the 200 response returns',
   );
 
   const second = await worker.handleHttpRequest(request('second'));
@@ -206,6 +329,34 @@ function request(path = 'first') {
     writes.map(([, content]) => content),
     ['first', 'second'],
     'a successfully flushed cell is removed instead of being rewritten at the next request',
+  );
+}
+
+// Repeated request-boundary content writes are awaited directly and do not
+// accumulate settled promises in the resident runtime's pending-I/O array.
+{
+  delete globalThis.__portRegistry;
+  const supervisor = {
+    async writeFile() {},
+    async registerPort() {},
+    async unregisterPort() {},
+    async stdout() {},
+    async stderr() {},
+    async reportExit() {},
+  };
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusNodeProcess(
+    { SUPERVISOR: supervisor },
+    { waitUntil() {} },
+  );
+  for (let index = 0; index < 32; index++) {
+    const response = await worker.handleHttpRequest(request(`retention-${index}`));
+    assert.equal(response.status, 200);
+  }
+  assert.equal(
+    generated.__nimbusTestPendingIOLength(),
+    0,
+    'settled request-boundary file-content writes are not retained',
   );
 }
 

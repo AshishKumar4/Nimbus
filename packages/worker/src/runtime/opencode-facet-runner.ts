@@ -1210,8 +1210,15 @@ async function __ocRunAttachedTui() {
     await __drainPendingIO();
     const __failedWrites = {};
     if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      for (const path of Object.keys(__vfsWrites)) {
+        __pendingIO.push(__nimbusFlushVfsWrite(
+          path,
+          (content) => __supervisor.writeFile(path, content),
+        ).catch(() => {
+          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
+            __failedWrites[path] = __vfsWrites[path];
+          }
+        }));
       }
     }
     await __drainPendingIO();
@@ -1304,8 +1311,15 @@ async function __ocRunServe() {
     await __drainPendingIO();
     const __failedWrites = {};
     if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      for (const path of Object.keys(__vfsWrites)) {
+        __pendingIO.push(__nimbusFlushVfsWrite(
+          path,
+          (content) => __supervisor.writeFile(path, content),
+        ).catch(() => {
+          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
+            __failedWrites[path] = __vfsWrites[path];
+          }
+        }));
       }
     }
     await __drainPendingIO();
@@ -1383,8 +1397,15 @@ async function __ocOneShotFetch(request, workerEnv) {
     await __drainPendingIO();
     const __failedWrites = {};
     if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+      for (const path of Object.keys(__vfsWrites)) {
+        __pendingIO.push(__nimbusFlushVfsWrite(
+          path,
+          (content) => __supervisor.writeFile(path, content),
+        ).catch(() => {
+          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
+            __failedWrites[path] = __vfsWrites[path];
+          }
+        }));
       }
     }
     await __drainPendingIO();

@@ -9,6 +9,7 @@
 // SQLite must fail EAGAIN — loudly — instead of returning wrong bytes.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
@@ -45,20 +46,22 @@ const _bytes = (cell) => (typeof cell === 'string' ? enc.encode(cell) : cell);
 
 const bundle = {};
 const metadata = {};
-const writes = {};
+let writes;
 const dirs = {};
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + code + '\n;return { fs: __fsMod, process: __processMod };'
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code +
+    '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites };'
 );
 const sandbox = factory(
-  bundle, metadata, writes, dirs, null, supervisor,
+  bundle, metadata, dirs, null, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );
+writes = sandbox.writes;
 const fs = sandbox.fs;
 
 vfs.mkdir('home/user', { recursive: true });
