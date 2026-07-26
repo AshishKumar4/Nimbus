@@ -1213,7 +1213,8 @@ async function __ocRunAttachedTui() {
       for (const path of Object.keys(__vfsWrites)) {
         __pendingIO.push(__nimbusFlushVfsWrite(
           path,
-          (content) => __supervisor.writeFile(path, content),
+          (content, snapshot) =>
+            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
         ).catch(() => {
           if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
             __failedWrites[path] = __vfsWrites[path];
@@ -1314,7 +1315,8 @@ async function __ocRunServe() {
       for (const path of Object.keys(__vfsWrites)) {
         __pendingIO.push(__nimbusFlushVfsWrite(
           path,
-          (content) => __supervisor.writeFile(path, content),
+          (content, snapshot) =>
+            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
         ).catch(() => {
           if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
             __failedWrites[path] = __vfsWrites[path];
@@ -1400,7 +1402,8 @@ async function __ocOneShotFetch(request, workerEnv) {
       for (const path of Object.keys(__vfsWrites)) {
         __pendingIO.push(__nimbusFlushVfsWrite(
           path,
-          (content) => __supervisor.writeFile(path, content),
+          (content, snapshot) =>
+            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
         ).catch(() => {
           if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
             __failedWrites[path] = __vfsWrites[path];

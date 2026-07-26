@@ -60,6 +60,15 @@ http.createServer((req, res) => {
     : req.url === '/same-race' ? 'same'
     : req.url.slice(1);
   fs.writeFileSync('/home/user/request-result.txt', content);
+  if (req.url === '/sync-append' || req.url === '/sync-appends') {
+    fs.appendFileSync('/home/user/live-prefix.txt', 'A');
+    if (req.url === '/sync-appends') {
+      fs.appendFileSync('/home/user/live-prefix.txt', 'B');
+    }
+  }
+  if (req.url === '/pending-drain') {
+    console.log('blocked prior output');
+  }
   if (req.url === '/stream') {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('data: live\\n\\n');
@@ -249,6 +258,263 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   assert.deepEqual(completions, ['independent', 'append', 'full']);
 }
 
+// A full write queued before an append remains a full image; the later append
+// extends that image rather than reviving the external prefix it replaced.
+{
+  let releaseFull;
+  let fullStarted;
+  const fullGate = new Promise((resolve) => { releaseFull = resolve; });
+  const fullCall = new Promise((resolve) => { fullStarted = resolve; });
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async writeFile(_path, content) {
+      const text = cellText(content);
+      calls.push(`full:${text}`);
+      if (text === 'new') {
+        fullStarted();
+        await fullGate;
+      }
+      durable = text;
+    },
+  };
+  const { fs } = makeShimFsFacet(supervisor);
+  const path = '/home/user/full-then-append.txt';
+  const full = fs.promises.writeFile(path, 'new');
+  await fullCall;
+  const append = fs.promises.appendFile(path, 'A');
+  releaseFull();
+  await Promise.all([full, append]);
+  assert.equal(durable, 'newA');
+  assert.deepEqual(calls, ['full:new', 'full:newA']);
+}
+
+// Concurrent appends to a live-only file carry only their uncommitted suffix
+// through the per-path queue. The local fragment must never replace the live
+// prefix as if it were a complete file image.
+{
+  let releaseFirst;
+  let firstStarted;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstCall = new Promise((resolve) => { firstStarted = resolve; });
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      calls.push(`range:${suffix}`);
+      if (suffix === 'A') {
+        firstStarted();
+        await firstGate;
+      }
+      durable = durable.slice(0, position) + suffix;
+    },
+    async writeFile(_path, content) {
+      const text = cellText(content);
+      calls.push(`full:${text}`);
+      durable = text;
+    },
+  };
+  const { fs, writes } = makeShimFsFacet(supervisor);
+  const path = '/home/user/concurrent-appends.txt';
+  const first = fs.promises.appendFile(path, 'A');
+  await firstCall;
+  const second = fs.promises.appendFile(path, 'B');
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.equal(durable, 'baseAB');
+  assert.deepEqual(calls, ['range:A', 'range:B']);
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/concurrent-appends.txt'), false);
+}
+
+// If an earlier claimed append fails, its descendant retries the complete
+// fragment at EOF rather than losing the failed suffix or replacing the prefix.
+{
+  let releaseFirst;
+  let firstStarted;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstCall = new Promise((resolve) => { firstStarted = resolve; });
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      calls.push(`range:${suffix}`);
+      if (suffix === 'A') {
+        firstStarted();
+        await firstGate;
+        throw new Error('injected append failure');
+      }
+      durable = durable.slice(0, position) + suffix;
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const { fs, writes } = makeShimFsFacet(supervisor);
+  const path = '/home/user/failed-append-chain.txt';
+  const first = fs.promises.appendFile(path, 'A');
+  await firstCall;
+  const second = fs.promises.appendFile(path, 'B');
+  releaseFirst();
+  await assert.rejects(first, /injected append failure/);
+  await second;
+  assert.equal(durable, 'baseAB');
+  assert.deepEqual(calls, ['range:A', 'range:AB']);
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/failed-append-chain.txt'), false);
+}
+
+// Without the authority primitives needed to distinguish create from append,
+// a fragment fails precisely instead of falling back to a prefix-clobbering full write.
+{
+  let durable = 'base';
+  const { fs, writes } = makeShimFsFacet({
+    async writeFile(_path, content) { durable = cellText(content); },
+  });
+  await assert.rejects(
+    fs.promises.appendFile('/home/user/unsupported-append.txt', 'A'),
+    (error) => error?.code === 'ENOSYS',
+  );
+  assert.equal(durable, 'base');
+  assert.equal(cellText(writes['home/user/unsupported-append.txt']), 'A');
+}
+
+// FileHandle ranged writes participate in the same authority queue as a later
+// synchronous full cell, and a delayed range completion cannot overlay that
+// newer local generation.
+{
+  let releaseRange;
+  let rangeStarted;
+  const rangeGate = new Promise((resolve) => { releaseRange = resolve; });
+  const rangeCall = new Promise((resolve) => { rangeStarted = resolve; });
+  let durable = 'base';
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      rangeStarted();
+      await rangeGate;
+      const text = new TextDecoder().decode(bytes);
+      durable = durable.slice(0, position) + text + durable.slice(position + bytes.byteLength);
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const { fs, flushVfsWrite, writes } = makeShimFsFacet(supervisor);
+  const path = '/home/user/handle-range-race.txt';
+  const handle = await fs.promises.open(path, 'r+');
+  const ranged = handle.write('OLD', 0);
+  await rangeCall;
+  fs.writeFileSync(path, 'newer');
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  await Promise.resolve();
+  releaseRange();
+  await Promise.all([ranged, boundary]);
+  assert.equal(durable, 'newer');
+  assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/handle-range-race.txt'), false);
+  await handle.close();
+}
+
+// The local-generation guard is captured when FileHandle.write is scheduled,
+// not when a preceding same-path mutation finally lets its queue callback run.
+{
+  let releaseBlocker;
+  let blockerStarted;
+  const blockerGate = new Promise((resolve) => { releaseBlocker = resolve; });
+  const blockerCall = new Promise((resolve) => { blockerStarted = resolve; });
+  let durable = 'base';
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      const text = new TextDecoder().decode(bytes);
+      if (text === 'X') {
+        blockerStarted();
+        await blockerGate;
+      }
+      durable = durable.slice(0, position) + text + durable.slice(position + bytes.byteLength);
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const { fs, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const path = '/home/user/queued-handle-range-race.txt';
+  const handle = await fs.promises.open(path, 'r+');
+  const blocker = handle.write('X', 0);
+  await blockerCall;
+  const ranged = handle.write('OLD', 0);
+  fs.writeFileSync(path, 'newer');
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  releaseBlocker();
+  await Promise.all([blocker, ranged, boundary]);
+  assert.equal(durable, 'newer');
+  assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
+  await handle.close();
+}
+
+// Concurrent append-mode FileHandle writes resolve the live EOF inside their
+// shared queue, so the second range cannot reuse the first range's old offset.
+{
+  let releaseFirst;
+  let firstStarted;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstCall = new Promise((resolve) => { firstStarted = resolve; });
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      calls.push([position, suffix]);
+      if (suffix === 'A') {
+        firstStarted();
+        await firstGate;
+      }
+      durable = durable.slice(0, position) + suffix;
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const { fs } = makeShimFsFacet(supervisor);
+  const handle = await fs.promises.open('/home/user/handle-appends.txt', 'a');
+  const first = handle.write('A');
+  await firstCall;
+  const second = handle.write('B');
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.equal(durable, 'baseAB');
+  assert.deepEqual(calls, [[4, 'A'], [5, 'B']]);
+  await handle.close();
+}
+
+// Live truncation is ordered with later full content and its post-RPC local
+// update is generation-guarded just like ranged writes.
+{
+  let releaseTruncate;
+  let truncateStarted;
+  const truncateGate = new Promise((resolve) => { releaseTruncate = resolve; });
+  const truncateCall = new Promise((resolve) => { truncateStarted = resolve; });
+  let durable = 'abcdef';
+  const supervisor = {
+    async fsTruncate(_path, size) {
+      truncateStarted();
+      await truncateGate;
+      durable = durable.slice(0, size);
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const path = '/home/user/truncate-race.txt';
+  const { fs, flushVfsWrite, writes } = makeShimFsFacet(
+    supervisor,
+    { 'home/user/truncate-race.txt': 'abcdef' },
+  );
+  const truncating = fs.promises.truncate(path, 3);
+  await truncateCall;
+  fs.writeFileSync(path, 'newer');
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  releaseTruncate();
+  await Promise.all([truncating, boundary]);
+  assert.equal(durable, 'newer');
+  assert.equal(fs.readFileSync(path, 'utf8'), 'newer');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/truncate-race.txt'), false);
+}
+
 // A failed operation rejects its caller without poisoning that path's queue;
 // the captured cell remains pending and a later generation can still persist.
 {
@@ -275,6 +541,11 @@ async function loadGeneratedWorker() {
   ) + `
 export function __nimbusTestPendingIOLength() {
   return __nimbusRuntime ? __nimbusRuntime.pendingIO.length : -1;
+}
+export function __nimbusTestRuntimeState() {
+  return __nimbusRuntime
+    ? { pendingIOLength: __nimbusRuntime.pendingIO.length, settledIO: __nimbusRuntime.settledIO }
+    : null;
 }`;
   const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
   try {
@@ -332,6 +603,82 @@ function request(path = 'first') {
   );
 }
 
+// appendFileSync on a nonresident live file records append-only content, so the
+// request boundary appends at authority EOF instead of replacing its prefix.
+{
+  delete globalThis.__portRegistry;
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async stat(path) {
+      return path.replace(/^\/+/, '') === 'home/user/live-prefix.txt'
+        ? { type: 'file', size: durable.length }
+        : null;
+    },
+    async fsWriteRange(_path, position, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      calls.push(`range:${suffix}`);
+      durable = durable.slice(0, position) + suffix;
+    },
+    async writeFile(path, content) {
+      if (path.replace(/^\/+/, '') === 'home/user/live-prefix.txt') {
+        const text = cellText(content);
+        calls.push(`full:${text}`);
+        durable = text;
+      }
+    },
+    async registerPort() {},
+    async unregisterPort() {},
+    async stdout() {},
+    async stderr() {},
+    async reportExit() {},
+  };
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusNodeProcess(
+    { SUPERVISOR: supervisor },
+    { waitUntil() {} },
+  );
+  const response = await worker.handleHttpRequest(request('sync-append'));
+  assert.equal(response.status, 200);
+  assert.equal(durable, 'baseA');
+  assert.deepEqual(calls, ['range:A']);
+}
+
+// Multiple unclaimed synchronous append fragments coalesce into one EOF
+// mutation rather than one full image or duplicate range operations.
+{
+  delete globalThis.__portRegistry;
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async stat(path) {
+      return path.replace(/^\/+/, '') === 'home/user/live-prefix.txt'
+        ? { type: 'file', size: durable.length }
+        : null;
+    },
+    async fsWriteRange(_path, position, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      calls.push(`range:${suffix}`);
+      durable = durable.slice(0, position) + suffix;
+    },
+    async writeFile() {},
+    async registerPort() {},
+    async unregisterPort() {},
+    async stdout() {},
+    async stderr() {},
+    async reportExit() {},
+  };
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusNodeProcess(
+    { SUPERVISOR: supervisor },
+    { waitUntil() {} },
+  );
+  const response = await worker.handleHttpRequest(request('sync-appends'));
+  assert.equal(response.status, 200);
+  assert.equal(durable, 'baseAB');
+  assert.deepEqual(calls, ['range:AB']);
+}
+
 // Repeated request-boundary content writes are awaited directly and do not
 // accumulate settled promises in the resident runtime's pending-I/O array.
 {
@@ -357,6 +704,60 @@ function request(path = 'first') {
     generated.__nimbusTestPendingIOLength(),
     0,
     'settled request-boundary file-content writes are not retained',
+  );
+}
+
+// Concurrent flush callers share one pending-I/O drain owner: neither request
+// may complete while a prior stdout task claimed by the first drain is blocked.
+{
+  delete globalThis.__portRegistry;
+  let releaseOutput;
+  let outputStarted;
+  const outputGate = new Promise((resolve) => { releaseOutput = resolve; });
+  const started = new Promise((resolve) => { outputStarted = resolve; });
+  const supervisor = {
+    async writeFile() {},
+    async registerPort() {},
+    async unregisterPort() {},
+    async stdout(text) {
+      if (text.includes('blocked prior output')) {
+        outputStarted();
+        await outputGate;
+      }
+    },
+    async stderr() {},
+    async reportExit() {},
+  };
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusNodeProcess(
+    { SUPERVISOR: supervisor },
+    { waitUntil() {} },
+  );
+  const first = worker.handleHttpRequest(request('pending-drain'));
+  await started;
+  const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (generated.__nimbusTestRuntimeState()?.settledIO === 1) break;
+    await new Promise((resolve) => rawSetTimeout(resolve, 0));
+  }
+  assert.equal(generated.__nimbusTestRuntimeState()?.settledIO, 1, 'first flush claimed prior output');
+
+  let secondCompleted = false;
+  const second = worker.handleHttpRequest(request('concurrent-drain')).then((response) => {
+    secondCompleted = true;
+    return response;
+  });
+  await new Promise((resolve) => rawSetTimeout(resolve, 10));
+  assert.equal(secondCompleted, false, 'second flush cannot skip work claimed by the first drain');
+
+  releaseOutput();
+  const [firstResponse, secondResponse] = await Promise.all([first, second]);
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.deepEqual(
+    generated.__nimbusTestRuntimeState(),
+    { pendingIOLength: 0, settledIO: 0 },
+    'completed drain work is compacted after both callers finish',
   );
 }
 
