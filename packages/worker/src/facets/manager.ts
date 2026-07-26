@@ -21,6 +21,7 @@ import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
+import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
 import { getCtxExports } from '../session/ctx-exports.js';
@@ -585,7 +586,7 @@ export default {
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
-    const __vfsWrites = {};
+${VFS_WRITE_LEDGER_SOURCE}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
@@ -819,18 +820,31 @@ let __nimbusAttachedLifecycle = null;
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
-  if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
-    for (const [path, content] of Object.entries(rt.vfsWrites)) {
-      rt.pendingIO.push(rt.supervisor.writeFile(path, content).catch(() => {}));
+  const __flush = rt.flushChain.then(async () => {
+    const __vfsTasks = [];
+    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
+      for (const [path, content] of Object.entries(rt.vfsWrites)) {
+        const __generation = rt.vfsWriteGenerations[path];
+        const __task = Promise.resolve(rt.supervisor.writeFile(path, content)).then(() => {
+          if (rt.vfsWriteGenerations[path] === __generation) delete rt.vfsWrites[path];
+        });
+        // Observe immediately; Promise.all below still propagates the failure.
+        __task.catch(() => {});
+        rt.pendingIO.push(__task);
+        __vfsTasks.push(__task);
+      }
     }
-  }
-  for (let pass = 0; pass < 12; pass++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (rt.pendingIO.length <= rt.settledIO) break;
-    const slice = rt.pendingIO.slice(rt.settledIO);
-    rt.settledIO = rt.pendingIO.length;
-    await Promise.allSettled(slice);
-  }
+    for (let pass = 0; pass < 12; pass++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (rt.pendingIO.length <= rt.settledIO) break;
+      const slice = rt.pendingIO.slice(rt.settledIO);
+      rt.settledIO = rt.pendingIO.length;
+      await Promise.allSettled(slice);
+    }
+    await Promise.all(__vfsTasks);
+  });
+  rt.flushChain = __flush.catch(() => {});
+  return __flush;
 }
 
 async function __nimbusEnsureStarted(workerEnv, workerCtx) {
@@ -865,7 +879,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
-    const __vfsWrites = {};
+${VFS_WRITE_LEDGER_SOURCE}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
@@ -952,6 +966,8 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       pendingIO: __pendingIO,
       settledIO: 0,
       vfsWrites: __vfsWrites,
+      vfsWriteGenerations: __vfsWriteGenerations,
+      flushChain: Promise.resolve(),
     };
     await __nimbusFlushRuntime();
 
@@ -1015,9 +1031,17 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
   // it returns the in-facet server's response as a streaming host Response the
   // moment headers are known, so SSE / chunked bodies flow live over the RPC
   // boundary instead of being buffered to "finish". Flush process stdout first
-  // (independent of the response stream).
+  // (independent of the response stream), then make handler sync writes durable
+  // before returning the response.
   await __nimbusFlushRuntime();
-  return globalThis.__nimbusServeHttp(req);
+  const response = await globalThis.__nimbusServeHttp(req);
+  try {
+    await __nimbusFlushRuntime();
+  } catch (e) {
+    try { await response.body?.cancel(); } catch {}
+    throw e;
+  }
+  return response;
 }
 
 export class NimbusNodeProcess extends WorkerEntrypoint {
