@@ -217,7 +217,7 @@ export interface LoadedWorkerEntrypointStub {
 
 export interface NimbusCtxExports {
   SupervisorRPC?: (options: {
-    props: { doId: string; pid: number; writerId?: string };
+    props: { doId: string; pid: number; writerId: string };
   }) => unknown;
   NimbusLoadedEntrypoint?: (options: {
     props: {
@@ -225,7 +225,7 @@ export interface NimbusCtxExports {
       name: string | null;
       depth: number;
       code: unknown;
-      supervisor: { doId: string; pid: number; writerId?: string };
+      supervisor: { doId: string; pid: number; writerId: string };
       stage?: OpencodeStageSpec;
       residentCode?: ResidentCodeSpec;
     };
@@ -249,7 +249,7 @@ export function getNimbusCtxExports(): NimbusCtxExports {
 export async function createLoadedWorkerEntrypoint(
   ctxExports: NimbusCtxExports,
   code: unknown,
-  supervisor: { doId: string; pid: number; writerId?: string },
+  supervisor: { doId: string; pid: number; writerId: string },
   name: string | null = null,
   key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
   boot?: ResidentBootSpec,
@@ -280,7 +280,7 @@ export interface ResidentHost {
    */
   ctxExports: NimbusCtxExports;
   /** Always the COORDINATOR's identity, whichever DO is hosting. */
-  supervisor: { doId: string; pid: number; writerId?: string };
+  supervisor: { doId: string; pid: number; writerId: string };
   workerKey: string;
 }
 
@@ -313,9 +313,15 @@ export async function hostResidentProcess(
   boot: ResidentBootSpec,
 ): Promise<HostedResidentProcess> {
   const route = await createRouteTarget(host);
-  const startStub = await createLoadedWorkerEntrypoint(
-    host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot,
-  );
+  let startStub: LoadedWorkerEntrypointStub;
+  try {
+    startStub = await createLoadedWorkerEntrypoint(
+      host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot,
+    );
+  } catch (error) {
+    disposeRpcResource(route);
+    throw error;
+  }
   if (typeof startStub.startProcess !== 'function') {
     disposeRpcResources([startStub, route]);
     throw new Error('Nimbus: resident process entrypoint has no startProcess method');
@@ -623,8 +629,21 @@ export class ProcessFabric {
     // Bind that sequence to this concrete host, then retire it only after the
     // host resources are disposed; a later host must use a fresh incarnation.
     const writerId = crypto.randomUUID();
-    const hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
-    const started = hosted.start(spawn.startArgs);
+    let hosted: HostedResidentProcess;
+    try {
+      hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
+    } catch (error) {
+      spawn.onWriterRetired?.(writerId);
+      throw error;
+    }
+    let started: Promise<unknown>;
+    try {
+      started = hosted.start(spawn.startArgs);
+    } catch (error) {
+      hosted.dispose();
+      spawn.onWriterRetired?.(writerId);
+      throw error;
+    }
     const held = heldUntilKilled();
     // `lifetime`: the runner's startProcess IS the process, so its settlement
     // is the lifecycle — exactly the pre-fabric boot. `boot`: the runner

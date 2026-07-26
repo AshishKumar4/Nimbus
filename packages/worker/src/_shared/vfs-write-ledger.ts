@@ -2,6 +2,10 @@ export const VFS_WRITE_MUTATION_QUEUE_SOURCE = `
 const __vfsMutationTails = new Map();
 const __vfsWriteClaims = new Map();
 const __nimbusVfsAppendRangeResult = {};
+// Operation sequences reset when this generated module is evaluated again.
+// The nonce namespaces those retries without pretending a new application
+// request is the same logical append.
+const __nimbusVfsModuleIncarnation = crypto.randomUUID();
 let __nimbusVfsAppendOperationSequence = 0;
 
 function __nimbusVfsPathKey(path) {
@@ -154,12 +158,13 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
       __nimbusBeginVfsAppendOperation(snapshot, operation);
       await supervisor.fsAppend(
         path,
+        __nimbusVfsModuleIncarnation,
         operation.id,
         operation.bytes,
       );
       __nimbusCommitVfsAppendOperation(snapshot, operation);
       try {
-        await supervisor.fsAppendAck(operation.id);
+        await supervisor.fsAppendAck(__nimbusVfsModuleIncarnation, operation.id);
       } catch {
         // The client has already relinquished retry ownership after the
         // append success. A lost acknowledgement may retain a receipt, but

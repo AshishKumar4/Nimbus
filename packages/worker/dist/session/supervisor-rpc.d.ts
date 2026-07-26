@@ -108,8 +108,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number>;
-    fsAppend(path: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
-    fsAppendAck(operationId: string): Promise<void>;
+    fsAppend(path: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
+    fsAppendAck(moduleId: string, operationId: string): Promise<void>;
     fsTruncate(path: string, size: number): Promise<void>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.

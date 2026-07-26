@@ -710,14 +710,20 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcFsAppend(
     path: string,
     writerId: string,
+    moduleId: string,
     operationId: string,
     bytes: Uint8Array | ArrayBuffer | number[],
     pid?: number,
   ): Promise<number> {
-    return _rpc._rpcFsAppend(this as any, path, writerId, operationId, bytes, pid);
+    return _rpc._rpcFsAppend(this as any, path, writerId, moduleId, operationId, bytes, pid);
   }
-  async _rpcFsAppendAck(writerId: string, operationId: string, pid?: number): Promise<void> {
-    return _rpc._rpcFsAppendAck(this as any, writerId, operationId, pid);
+  async _rpcFsAppendAck(
+    writerId: string,
+    moduleId: string,
+    operationId: string,
+    pid?: number,
+  ): Promise<void> {
+    return _rpc._rpcFsAppendAck(this as any, writerId, moduleId, operationId, pid);
   }
   async _rpcFsTruncate(path: string, size: number, pid?: number): Promise<void> { return _rpc._rpcFsTruncate(this as any, path, size, pid); }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }

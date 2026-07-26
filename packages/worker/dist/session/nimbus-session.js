@@ -608,11 +608,11 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsWriteRange(path, offset, bytes, pid) {
         return _rpc._rpcFsWriteRange(this, path, offset, bytes, pid);
     }
-    async _rpcFsAppend(path, writerId, operationId, bytes, pid) {
-        return _rpc._rpcFsAppend(this, path, writerId, operationId, bytes, pid);
+    async _rpcFsAppend(path, writerId, moduleId, operationId, bytes, pid) {
+        return _rpc._rpcFsAppend(this, path, writerId, moduleId, operationId, bytes, pid);
     }
-    async _rpcFsAppendAck(writerId, operationId, pid) {
-        return _rpc._rpcFsAppendAck(this, writerId, operationId, pid);
+    async _rpcFsAppendAck(writerId, moduleId, operationId, pid) {
+        return _rpc._rpcFsAppendAck(this, writerId, moduleId, operationId, pid);
     }
     async _rpcFsTruncate(path, size, pid) { return _rpc._rpcFsTruncate(this, path, size, pid); }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }

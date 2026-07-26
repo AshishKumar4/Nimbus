@@ -80,8 +80,8 @@ export declare function _rpcSymlink(self: RpcHost, target: string, path: string,
 export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, operationId: string, pid?: number): Promise<void>;
+export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
+export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
 export declare function _rpcFsTruncate(self: RpcHost, path: string, size: number, pid?: number): Promise<void>;
 export declare function _rpcFsOpen(self: RpcHost, path: string, flags: RuntimeOpenFlags, pid?: number): Promise<any>;
 export declare function _rpcFsRead(self: RpcHost, handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;

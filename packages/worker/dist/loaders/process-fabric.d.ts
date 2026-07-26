@@ -216,7 +216,7 @@ export interface NimbusCtxExports {
         props: {
             doId: string;
             pid: number;
-            writerId?: string;
+            writerId: string;
         };
     }) => unknown;
     NimbusLoadedEntrypoint?: (options: {
@@ -228,7 +228,7 @@ export interface NimbusCtxExports {
             supervisor: {
                 doId: string;
                 pid: number;
-                writerId?: string;
+                writerId: string;
             };
             stage?: OpencodeStageSpec;
             residentCode?: ResidentCodeSpec;
@@ -245,7 +245,7 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
 export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, code: unknown, supervisor: {
     doId: string;
     pid: number;
-    writerId?: string;
+    writerId: string;
 }, name?: string | null, key?: string, boot?: ResidentBootSpec): Promise<LoadedWorkerEntrypointStub>;
 /** Everything a host needs to boot one resident process. */
 export interface ResidentHost {
@@ -258,7 +258,7 @@ export interface ResidentHost {
     supervisor: {
         doId: string;
         pid: number;
-        writerId?: string;
+        writerId: string;
     };
     workerKey: string;
 }
