@@ -17,7 +17,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsTruncate (stateless ranged ops)
+ *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -107,6 +107,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
             throw new Error('SupervisorRPC: missing or invalid process pid in props');
         }
         return pid;
+    }
+    _writerId() {
+        const writerId = this.ctx.props?.writerId;
+        if (typeof writerId !== 'string' || writerId.length === 0) {
+            throw new Error('SupervisorRPC: missing VFS writer incarnation');
+        }
+        return writerId;
     }
     // ── Filesystem RPC ────────────────────────────────────────────────────
     async readFile(path) {
@@ -200,6 +207,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     async fsWriteRange(path, offset, bytes) {
         return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes, this._pid()));
+    }
+    async fsAppend(path, operationId, bytes) {
+        return this._call(this._getStub()._rpcFsAppend(path, this._writerId(), operationId, bytes, this._pid()));
+    }
+    async fsAppendAck(operationId) {
+        return this._call(this._getStub()._rpcFsAppendAck(this._writerId(), operationId, this._pid()));
     }
     async fsTruncate(path, size) {
         return this._call(this._getStub()._rpcFsTruncate(path, size, this._pid()));

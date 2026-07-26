@@ -143,7 +143,9 @@ function makePeerNs(peerFor, log) {
   await handle.done;
   const boot = localBoots.find((b) => b.props.stage === STAGE);
   assert.ok(boot, 'stage spec rides the entrypoint props');
-  assert.deepEqual(boot.props.supervisor, { doId: 'coord-do-id', pid: 42 });
+  assert.equal(boot.props.supervisor.doId, 'coord-do-id');
+  assert.equal(boot.props.supervisor.pid, 42);
+  assert.match(boot.props.supervisor.writerId, /^[0-9a-f-]{36}$/);
   assert.equal(boot.props.key, 'nimbus-process:coord-do-id:42');
   assert.equal(boot.started, true, 'local startProcess invoked');
   console.log('  case1: light staged process boots the local facet path');
@@ -163,7 +165,9 @@ function makePeerNs(peerFor, log) {
     'the wasm image travels as a path; the DO never reads or carries its bytes');
   assert.equal(boot.props.residentCode.modules['ruby+stdlib.wasm'], undefined);
   assert.equal(boot.props.key, 'k43');
-  assert.deepEqual(boot.props.supervisor, { doId: 'coord-do-id', pid: 43 }, 'syscalls route to the coordinator');
+  assert.equal(boot.props.supervisor.doId, 'coord-do-id', 'syscalls route to the coordinator');
+  assert.equal(boot.props.supervisor.pid, 43);
+  assert.match(boot.props.supervisor.writerId, /^[0-9a-f-]{36}$/);
   assert.deepEqual(boot.startArgs, { userCode: 'puts 1' }, 'startArgs reach the runner');
   assert.equal((await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'))).status, 200);
   // A `boot` runner stays resident after its payload: `done` must not settle.
@@ -251,25 +255,33 @@ function makePeerNs(peerFor, log) {
 {
   const log = [];
   let hostCalls = 0;
+  const writerIncarnations = [];
   const peers = makePeerNs((name) => ({
     token: `distinct-${name}`,
-    host: () => {
+    host: (_boot, opts) => {
       hostCalls++;
+      writerIncarnations.push(opts.writerId);
       if (hostCalls === 1) throw new Error('Worker exceeded memory limit.'); // peer OOM
       return { ok: true };
     },
   }), log);
   const { env } = makeEnv(peers.ns);
   const respawnCauses = [];
+  const retiredWriters = [];
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
     processClass: 'heavy', startContract: 'lifetime', pid: 9, workerKey: 'k9', boot: STAGED_BOOT,
     shouldRespawn: () => true,
     onRespawn: (cause) => respawnCauses.push(String(cause)),
+    onWriterRetired: (writerId) => retiredWriters.push(writerId),
   });
   await handle.done; // must NOT reject — the respawn cleared it
   assert.equal(handle.respawns, 1);
   assert.match(respawnCauses[0], /exceeded memory/, 'a recovered host death is never silent');
+  assert.equal(new Set(writerIncarnations).size, 2,
+    'a respawn gets a fresh trusted writer incarnation before its sequence restarts');
+  assert.deepEqual(retiredWriters, writerIncarnations,
+    'each host writer is retired only after that placement is disposed');
   assert.deepEqual(
     log.filter((l) => l.startsWith('host:')),
     ['host:coord-do-id:proc:0', 'host:coord-do-id:proc:1'],

@@ -1,6 +1,8 @@
 export const VFS_WRITE_MUTATION_QUEUE_SOURCE = `
 const __vfsMutationTails = new Map();
+const __vfsWriteClaims = new Map();
 const __nimbusVfsAppendRangeResult = {};
+let __nimbusVfsAppendOperationSequence = 0;
 
 function __nimbusVfsPathKey(path) {
   return String(path).replace(/^\\/+/, "");
@@ -40,16 +42,25 @@ function __nimbusConcatVfsBytes(left, right) {
 
 function __nimbusRecordVfsAppend(path, delta, fragment, previous) {
   const key = __nimbusVfsPathKey(path);
-  const chain = previous ? previous.chain : { failed: false };
+  const chain = previous ? previous.chain : { pending: [] };
+  let operation;
+  if (previous &&
+      !previous.claimed &&
+      !chain.pending.includes(previous.operation)) {
+    operation = previous.operation;
+    operation.bytes = __nimbusConcatVfsBytes(operation.bytes, delta);
+  } else {
+    operation = {
+      id: String(++__nimbusVfsAppendOperationSequence),
+      bytes: delta.slice(),
+    };
+  }
   __vfsAppendWrites[key] = {
     generation: __vfsWriteGenerations[key],
-    delta: previous && !previous.claimed
-      ? __nimbusConcatVfsBytes(previous.delta, delta)
-      : delta,
     fragment,
     chain,
+    operation,
     claimed: false,
-    promise: null,
   };
 }
 
@@ -64,15 +75,28 @@ function __nimbusCaptureVfsWrite(path) {
   };
 }
 
-function __nimbusVfsAppendBytes(snapshot) {
-  return snapshot.append.chain.failed
-    ? snapshot.append.fragment
-    : snapshot.append.delta;
+function __nimbusVfsAppendOperations(snapshot) {
+  const operations = snapshot.append.chain.pending.slice();
+  if (!operations.includes(snapshot.append.operation)) {
+    operations.push(snapshot.append.operation);
+  }
+  return operations;
+}
+
+function __nimbusBeginVfsAppendOperation(snapshot, operation) {
+  if (!snapshot.append.chain.pending.includes(operation)) {
+    snapshot.append.chain.pending.push(operation);
+  }
+}
+
+function __nimbusCommitVfsAppendOperation(snapshot, operation) {
+  const index = snapshot.append.chain.pending.indexOf(operation);
+  if (index !== -1) snapshot.append.chain.pending.splice(index, 1);
 }
 
 function __nimbusUnsupportedVfsAppend(path) {
   const error = new Error(
-    "ENOSYS: preserving a nonresident append requires stat and fsWriteRange: " + path,
+    "ENOSYS: preserving a nonresident append requires fsAppend and fsAppendAck: " + path,
   );
   error.code = "ENOSYS";
   return error;
@@ -81,7 +105,6 @@ function __nimbusUnsupportedVfsAppend(path) {
 function __nimbusRunVfsWriteMutation(snapshot, mutation) {
   return __nimbusQueueVfsMutation(snapshot.key, async () => {
     const value = await mutation(snapshot.content, snapshot);
-    if (snapshot.append) snapshot.append.chain.failed = false;
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
       if (snapshot.append &&
           value === __nimbusVfsAppendRangeResult &&
@@ -98,42 +121,52 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation) {
 function __nimbusFlushVfsWrite(path, mutation) {
   const snapshot = __nimbusCaptureVfsWrite(path);
   if (!snapshot) return Promise.resolve(undefined);
-  if (snapshot.append && snapshot.append.claimed) {
-    return snapshot.append.promise;
+  const existing = __vfsWriteClaims.get(snapshot.key);
+  if (existing && existing.generation === snapshot.generation) {
+    return existing.promise;
   }
   if (snapshot.append) snapshot.append.claimed = true;
   const result = __nimbusRunVfsWriteMutation(snapshot, mutation);
-  if (snapshot.append) {
-    snapshot.append.promise = result;
-    result.then(
-      () => undefined,
-      () => {
-        snapshot.append.chain.failed = true;
-        if (__vfsAppendWrites[snapshot.key] === snapshot.append) {
-          snapshot.append.claimed = false;
-          snapshot.append.promise = null;
-        }
-      },
-    );
-  }
+  const claim = { generation: snapshot.generation, promise: result };
+  __vfsWriteClaims.set(snapshot.key, claim);
+  const release = () => {
+    if (__vfsWriteClaims.get(snapshot.key) === claim) {
+      __vfsWriteClaims.delete(snapshot.key);
+    }
+  };
+  result.then(release, () => {
+    release();
+    if (snapshot.append &&
+        __vfsAppendWrites[snapshot.key] === snapshot.append) {
+      snapshot.append.claimed = false;
+    }
+  });
   return result;
 }
 
 async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
   if (snapshot.append) {
-    if (typeof supervisor.stat !== "function" ||
-        typeof supervisor.fsWriteRange !== "function") {
+    if (typeof supervisor.fsAppend !== "function" ||
+        typeof supervisor.fsAppendAck !== "function") {
       throw __nimbusUnsupportedVfsAppend(path);
     }
-    const meta = await supervisor.stat(path);
-    if (meta && meta.type === "file") {
-      await supervisor.fsWriteRange(
+    for (const operation of __nimbusVfsAppendOperations(snapshot)) {
+      __nimbusBeginVfsAppendOperation(snapshot, operation);
+      await supervisor.fsAppend(
         path,
-        Number(meta.size) || 0,
-        __nimbusVfsAppendBytes(snapshot),
+        operation.id,
+        operation.bytes,
       );
-      return __nimbusVfsAppendRangeResult;
+      __nimbusCommitVfsAppendOperation(snapshot, operation);
+      try {
+        await supervisor.fsAppendAck(operation.id);
+      } catch {
+        // The client has already relinquished retry ownership after the
+        // append success. A lost acknowledgement may retain a receipt, but
+        // must never turn a committed append into a failed/retried write.
+      }
     }
+    return __nimbusVfsAppendRangeResult;
   }
   await supervisor.writeFile(path, content);
   return undefined;

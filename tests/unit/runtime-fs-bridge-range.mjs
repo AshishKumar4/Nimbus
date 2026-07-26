@@ -5,10 +5,16 @@
 // through durable SqliteVFS symlink inodes.
 
 import assert from 'node:assert/strict';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import {
+  SqliteVFS,
+  VFS_APPEND_RECEIPT_LIMIT,
+} from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+import {
+  CHUNK_SIZE,
+  MAX_TX_BLOB_BYTES,
+} from '../../packages/worker/src/constants.ts';
 import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -179,6 +185,333 @@ const CRED_OTHER = Object.freeze({
   const tr = await bridge.open('/x/file.txt', { write: true, truncate: true });
   assert.equal((await bridge.stat('/x/file.txt')).size, 0);
   await bridge.close(tr.id);
+}
+
+// ── append receipts: atomic publication, rehydration, ACK, and hard cap ──
+{
+  const { harness, rawVfs, vfs } = makeBridge();
+  const pid = 1_000_001;
+  const writer = '11111111-1111-4111-8111-111111111111';
+  vfs.mkdir('/append', { recursive: true });
+  vfs.writeFile('/append/log.txt', enc.encode('base'));
+  harness.setFaultInjector((statement) => (
+    /INSERT INTO vfs_append_receipts/i.test(statement.sql)
+      ? new Error('injected receipt insert failure')
+      : null
+  ));
+  assert.throws(
+    () => vfs.appendOnce(
+      '/append/log.txt',
+      pid,
+      writer,
+      1,
+      'digest-A',
+      enc.encode('A'),
+    ),
+    /injected receipt insert failure/,
+  );
+  harness.clearFault();
+  assert.equal(dec.decode(vfs.readFile('/append/log.txt')), 'base');
+  assert.equal(
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    0,
+    'the file mutation rolls back when its receipt cannot commit',
+  );
+  assert.throws(
+    () => vfs.appendOnce(
+      '/missing/child.txt',
+      pid,
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      1,
+      'digest-missing',
+      enc.encode('x'),
+    ),
+    /ENOENT/,
+  );
+  assert.equal(vfs.exists('/missing'), false, 'append never creates parents outside its receipt transaction');
+
+  harness.failAfterTransaction({
+    transaction: harness.transactionCount + 1,
+    error: new Error('injected reset after append commit'),
+  });
+  assert.throws(
+    () => vfs.appendOnce(
+      '/append/log.txt',
+      pid,
+      writer,
+      1,
+      'digest-B',
+      enc.encode('B'),
+    ),
+    /injected reset after append commit/,
+  );
+
+  const reloadedRaw = new SqliteVFS(harness.sql, harness.ctx);
+  const reloaded = reloadedRaw.as(CRED_KERNEL);
+  assert.equal(dec.decode(reloaded.readFile('/append/log.txt')), 'baseB');
+  assert.equal(
+    reloaded.appendOnce(
+      '/append/log.txt',
+      pid,
+      writer,
+      1,
+      'digest-B',
+      enc.encode('B'),
+    ),
+    1,
+    'the receipt survives VFS reconstruction and deduplicates the lost response',
+  );
+  assert.equal(dec.decode(reloaded.readFile('/append/log.txt')), 'baseB');
+
+  reloaded.writeFile('/append/log.txt', enc.encode('externally-replaced-with-B'));
+  reloaded.appendOnce(
+    '/append/log.txt',
+    pid,
+    writer,
+    1,
+    'digest-B',
+    enc.encode('B'),
+  );
+  assert.equal(
+    dec.decode(reloaded.readFile('/append/log.txt')),
+    'externally-replaced-with-B',
+    'a completed receipt wins without byte-pattern inference after external drift',
+  );
+  assert.throws(
+    () => reloaded.appendOnce(
+      '/append/log.txt',
+      pid,
+      writer,
+      1,
+      'digest-C',
+      enc.encode('C'),
+    ),
+    /append receipt collision/,
+  );
+
+  reloaded.acknowledgeAppend(
+    pid,
+    writer,
+    1,
+  );
+  assert.equal(
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    0,
+    'only explicit client acknowledgement removes a completed receipt',
+  );
+
+  reloaded.unlink('/append/log.txt');
+  reloaded.rmdir('/append');
+  reloaded.appendOnce('/append/log.txt', pid, writer, 1, 'digest-B', enc.encode('B'));
+  assert.equal(reloaded.exists('/append'), false, 'ACK replay bypasses missing-parent resolution');
+
+  reloaded.mkdir('/targets', { recursive: true });
+  reloaded.writeFile('/targets/one', enc.encode('one'));
+  reloaded.writeFile('/targets/two', enc.encode('two'));
+  reloaded.symlink('/targets/one', '/link');
+  reloaded.appendOnce('/link', pid, writer, 2, 'digest-link', enc.encode('!'));
+  reloaded.unlink('/link');
+  reloaded.symlink('/targets/two', '/link');
+  const lock = rawVfs.acquireExclusiveMutation('/targets');
+  reloaded.appendOnce('/link', pid, writer, 2, 'digest-link', enc.encode('!'));
+  rawVfs.releaseExclusiveMutation(lock.owner);
+  assert.equal(dec.decode(reloaded.readFile('/targets/one')), 'one!');
+  assert.equal(dec.decode(reloaded.readFile('/targets/two')), 'two');
+  reloaded.acknowledgeAppend(pid, writer, 2);
+
+  const concurrentWriter = '55555555-5555-4555-8555-555555555555';
+  reloaded.appendOnce('/targets/two', pid, concurrentWriter, 2, 'digest-gap-2', enc.encode('2'));
+  reloaded.appendOnce('/targets/one', pid, concurrentWriter, 1, 'digest-gap-1', enc.encode('1'));
+  reloaded.acknowledgeAppend(pid, concurrentWriter, 2);
+  reloaded.appendOnce('/targets/two', pid, concurrentWriter, 2, 'digest-gap-2', enc.encode('2'));
+  reloaded.acknowledgeAppend(pid, concurrentWriter, 1);
+  assert.equal(
+    [...harness.sql.exec(
+      `SELECT acked_through FROM vfs_append_writer_state
+       WHERE pid = ? AND writer_id = ?`,
+      pid,
+      concurrentWriter,
+    )][0].acked_through,
+    2,
+    'out-of-order ACK tombstones compact only after the contiguous gap closes',
+  );
+  assert.equal(
+    [...harness.sql.exec(
+      'SELECT COUNT(*) AS count FROM vfs_append_acked_gaps WHERE pid = ? AND writer_id = ?',
+      pid,
+      concurrentWriter,
+    )][0].count,
+    0,
+  );
+
+  const respawnWriter = '22222222-2222-4222-8222-222222222222';
+  reloaded.appendOnce('/targets/two', pid, respawnWriter, 1, 'digest-new-host', enc.encode('?'));
+  assert.equal(
+    dec.decode(reloaded.readFile('/targets/two')),
+    'two2?',
+    'a fresh host incarnation may restart its local operation sequence at one',
+  );
+  assert.throws(
+    () => reloaded.acknowledgeAppend(
+      pid,
+      '33333333-3333-4333-8333-333333333333',
+      1,
+    ),
+    /ESTALE/,
+    'a foreign host incarnation cannot acknowledge another writer receipt',
+  );
+  rawVfs.revokeAppendWriter(pid, writer);
+  assert.throws(
+    () => reloaded.appendOnce(
+      '/targets/two',
+      pid,
+      writer,
+      2,
+      'digest-link',
+      enc.encode('!'),
+    ),
+    /ESTALE/,
+    'a retired old host cannot replay an uncertain operation',
+  );
+  reloaded.appendOnce(
+    '/targets/two',
+    pid,
+    respawnWriter,
+    1,
+    'digest-new-host',
+    enc.encode('?'),
+  );
+  rawVfs.revokeAppendWriters(pid);
+  assert.throws(
+    () => reloaded.appendOnce(
+      '/targets/two',
+      pid,
+      respawnWriter,
+      1,
+      'digest-new-host',
+      enc.encode('?'),
+    ),
+    /ESTALE/,
+    'a confirmed-dead host is fail-closed even for delayed old-operation replay',
+  );
+
+}
+
+// Writer state, completed receipts, and out-of-order ACK tombstones share one
+// fail-closed metadata budget. An ACK frees capacity without weakening replay.
+{
+  const { harness, vfs } = makeBridge();
+  const capPid = 2_000_001;
+  const capWriter = '44444444-4444-4444-8444-444444444444';
+  vfs.mkdir('/targets', { recursive: true });
+  vfs.writeFile('/targets/two', enc.encode('two'));
+  harness.sql.exec(
+    `INSERT INTO vfs_append_writer_state
+     (pid, writer_id, acked_through, revoked) VALUES (?, ?, 0, 0)`,
+    capPid,
+    capWriter,
+  );
+  for (let i = 0; i < VFS_APPEND_RECEIPT_LIMIT - 1; i++) {
+    harness.sql.exec(
+      `INSERT INTO vfs_append_receipts
+       (pid, writer_id, operation_id, path, byte_length, digest, created_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?)`,
+      capPid,
+      capWriter,
+      i + 1,
+      '/targets/two',
+      `digest-${i}`,
+      i,
+    );
+  }
+  const beforeCapFailure = dec.decode(vfs.readFile('/targets/two'));
+  assert.throws(
+    () => vfs.appendOnce(
+      '/targets/two',
+      capPid,
+      capWriter,
+      VFS_APPEND_RECEIPT_LIMIT,
+      'digest-cap',
+      enc.encode('!'),
+    ),
+    /ENOSPC/,
+  );
+  assert.equal(
+    dec.decode(vfs.readFile('/targets/two')),
+    beforeCapFailure,
+    'the full journal rejects before mutating the file',
+  );
+  const blockedWriter = '66666666-6666-4666-8666-666666666666';
+  assert.throws(
+    () => vfs.appendOnce(
+      '/targets/two',
+      capPid,
+      blockedWriter,
+      1,
+      'digest-blocked',
+      enc.encode('?'),
+    ),
+    /ENOSPC/,
+  );
+  assert.equal(
+    [...harness.sql.exec(
+      'SELECT COUNT(*) AS count FROM vfs_append_writer_state WHERE pid = ? AND writer_id = ?',
+      capPid,
+      blockedWriter,
+    )][0].count,
+    0,
+    'a new writer cannot consume the final slot needed for its first receipt',
+  );
+  vfs.acknowledgeAppend(capPid, capWriter, 1);
+  vfs.appendOnce(
+    '/targets/two',
+    capPid,
+    capWriter,
+    VFS_APPEND_RECEIPT_LIMIT,
+    'digest-cap',
+    enc.encode('!'),
+  );
+  assert.equal(dec.decode(vfs.readFile('/targets/two')), `${beforeCapFailure}!`);
+}
+
+// Oversized appends may stage chunks, but publication and receipt insertion
+// still share one final transaction.
+{
+  const { harness, vfs } = makeBridge();
+  vfs.mkdir('/append', { recursive: true });
+  vfs.writeFile('/append/large.bin', enc.encode('base'));
+  const large = new Uint8Array(MAX_TX_BLOB_BYTES + 1).fill(7);
+  harness.setFaultInjector((statement) => (
+    /INSERT INTO vfs_append_receipts/i.test(statement.sql)
+      ? new Error('injected staged receipt failure')
+      : null
+  ));
+  assert.throws(
+    () => vfs.appendOnce(
+      '/append/large.bin',
+      3_000_001,
+      '33333333-3333-4333-8333-333333333333',
+      1,
+      'digest-large',
+      large,
+    ),
+    /injected staged receipt failure/,
+  );
+  harness.clearFault();
+  assert.equal(dec.decode(vfs.readFile('/append/large.bin')), 'base');
+  assert.equal(
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    0,
+  );
+  vfs.appendOnce(
+    '/append/large.bin',
+    3_000_001,
+    '33333333-3333-4333-8333-333333333333',
+    1,
+    'digest-large',
+    large,
+  );
+  assert.equal(vfs.stat('/append/large.bin').size, 4 + large.byteLength);
 }
 
 // ── symlinks: native inode durability, metadata, and resolution ──

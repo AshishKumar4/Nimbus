@@ -216,6 +216,7 @@ export interface NimbusCtxExports {
         props: {
             doId: string;
             pid: number;
+            writerId?: string;
         };
     }) => unknown;
     NimbusLoadedEntrypoint?: (options: {
@@ -227,6 +228,7 @@ export interface NimbusCtxExports {
             supervisor: {
                 doId: string;
                 pid: number;
+                writerId?: string;
             };
             stage?: OpencodeStageSpec;
             residentCode?: ResidentCodeSpec;
@@ -243,6 +245,7 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
 export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, code: unknown, supervisor: {
     doId: string;
     pid: number;
+    writerId?: string;
 }, name?: string | null, key?: string, boot?: ResidentBootSpec): Promise<LoadedWorkerEntrypointStub>;
 /** Everything a host needs to boot one resident process. */
 export interface ResidentHost {
@@ -255,6 +258,7 @@ export interface ResidentHost {
     supervisor: {
         doId: string;
         pid: number;
+        writerId?: string;
     };
     workerKey: string;
 }
@@ -286,6 +290,7 @@ export declare function hostResidentProcess(host: ResidentHost, boot: ResidentBo
 export interface HostProcessOpts {
     coordinatorDoId: string;
     pid: number;
+    writerId: string;
     workerKey: string;
     startContract: StartContract;
     startArgs?: unknown;
@@ -380,6 +385,8 @@ export interface ResidentProcessSpawn {
      * log so a death-plus-recovery is never silent.
      */
     onRespawn?: (cause: unknown) => void;
+    /** Called only after the concrete host resources for this writer are revoked. */
+    onWriterRetired?: (writerId: string) => void;
 }
 export declare class ProcessFabric {
     private readonly ctx;
