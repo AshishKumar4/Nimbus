@@ -408,7 +408,11 @@ export class ProcessFabric {
     }
     // ── light: the facet lands in the coordinator's own workerd process ───
     async _startLocal(spawn) {
-        const hosted = await hostResidentProcess(this._localHost(spawn), spawn.boot);
+        // The facet-local append sequence starts at one when its module evaluates.
+        // Bind that sequence to this concrete host, then retire it only after the
+        // host resources are disposed; a later host must use a fresh incarnation.
+        const writerId = crypto.randomUUID();
+        const hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
         const started = hosted.start(spawn.startArgs);
         const held = heldUntilKilled();
         // `lifetime`: the runner's startProcess IS the process, so its settlement
@@ -421,16 +425,23 @@ export class ProcessFabric {
         return new ResidentProcessHandle({
             processClass: 'light',
             placement: () => ({ kind: 'local' }),
-            done: done.finally(() => hosted.dispose()),
+            done: done.finally(() => {
+                hosted.dispose();
+                spawn.onWriterRetired?.(writerId);
+            }),
             booted: () => started,
             routeTarget: hosted.route,
             kill: () => { held.release(); hosted.dispose(); },
         });
     }
-    _localHost(spawn) {
+    _localHost(spawn, writerId) {
         return {
             ctxExports: getNimbusCtxExports(),
-            supervisor: { doId: this.coordDoId, pid: spawn.pid },
+            supervisor: {
+                doId: this.coordDoId,
+                pid: spawn.pid,
+                writerId,
+            },
             workerKey: spawn.workerKey,
         };
     }
@@ -484,11 +495,16 @@ export class ProcessFabric {
         let respawnsLeft = HEAVY_RESPAWN_BUDGET;
         for (;;) {
             const placement = state.current;
+            // A respawn re-evaluates the facet module and resets its local sequence.
+            // A new trusted incarnation prevents those new operations from aliasing
+            // acknowledged keys owned by the dead placement.
+            const writerId = crypto.randomUUID();
             this.tokensInUse.set(spawn.pid, placement.isolateToken);
             try {
                 await placement.stub._rpcHostProcess(spawn.boot, {
                     coordinatorDoId: this.coordDoId,
                     pid: spawn.pid,
+                    writerId,
                     workerKey: spawn.workerKey,
                     startContract: spawn.startContract,
                     startArgs: spawn.startArgs,
@@ -509,6 +525,7 @@ export class ProcessFabric {
             finally {
                 this.tokensInUse.delete(spawn.pid);
                 disposeRpcResource(placement.stub);
+                spawn.onWriterRetired?.(writerId);
             }
             // Respawn: fresh slot, re-verified placement. The handle's route target
             // and start() read `state.current`, so both re-point automatically.

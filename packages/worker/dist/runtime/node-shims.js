@@ -605,37 +605,14 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await __nimbusFlushVfsWrite(absPath, async (content, snapshot) => {
-        if (snapshot.append) {
-          if (typeof supervisor.stat !== "function" ||
-              typeof supervisor.fsWriteRange !== "function") {
-            throw __nimbusUnsupportedVfsAppend(absPath);
-          }
-          const meta = await _fsRpc(
-            supervisor.stat(absPath),
-            "stat", absPath,
-            (result) => result,
-          );
-          if (meta && meta.type === "file") {
-            await _fsRpc(
-              supervisor.fsWriteRange(
-                absPath,
-                Number(meta.size) || 0,
-                __nimbusVfsAppendBytes(snapshot),
-              ),
-              "write", absPath,
-              () => undefined,
-            );
-            return __nimbusVfsAppendRangeResult;
-          }
-        }
-        await _fsRpc(
-          supervisor.writeFile(absPath, content),
+      await __nimbusFlushVfsWrite(
+        absPath,
+        (content, snapshot) => _fsRpc(
+          __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
           "write", absPath,
-          () => undefined,
-        );
-        return undefined;
-      });
+          (result) => result,
+        ),
+      );
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
       await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);
@@ -933,29 +910,14 @@ const __fsMod = (() => {
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
-    await __nimbusFlushVfsWrite(absPath, async (content, snapshot) => {
-      if (snapshot.append) {
-        if (typeof supervisor.stat !== "function" ||
-            typeof supervisor.fsWriteRange !== "function") {
-          throw __nimbusUnsupportedVfsAppend(absPath);
-        }
-        const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
-        if (meta && meta.type === "file") {
-          await _fsRpc(
-            supervisor.fsWriteRange(
-              absPath,
-              Number(meta.size) || 0,
-              __nimbusVfsAppendBytes(snapshot),
-            ),
-            "write", p,
-            () => undefined,
-          );
-          return __nimbusVfsAppendRangeResult;
-        }
-      }
-      await _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined);
-      return undefined;
-    });
+    await __nimbusFlushVfsWrite(
+      absPath,
+      (content, snapshot) => _fsRpc(
+        __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
+        "write", p,
+        (result) => result,
+      ),
+    );
     _markVfsStale();
   }
 
@@ -1619,6 +1581,9 @@ const __fsMod = (() => {
         pos = (position === undefined || position === null) ? null : Math.max(0, Number(position));
       }
       const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
+      if (bytes.byteLength === 0) {
+        return { bytesWritten: 0, buffer };
+      }
       let writeAt = at;
       const supervisor = _supervisor();
       if (supervisor && typeof supervisor.fsWriteRange === "function") {

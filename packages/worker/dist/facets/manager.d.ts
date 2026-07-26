@@ -420,6 +420,7 @@ export declare class FacetManager {
     private sqliteModuleEntry;
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
+    private revokeProcessVfsWriters;
     noteProcessReportedExit(pid: number, exitCode: number): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.

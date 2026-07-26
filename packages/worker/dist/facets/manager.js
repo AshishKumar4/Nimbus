@@ -2727,12 +2727,16 @@ export class FacetManager {
         this.processRpcResources.delete(pid);
         disposeRpcResources(tracked.resources);
     }
+    revokeProcessVfsWriters(pid) {
+        this.vfs?.revokeAppendWriters(pid);
+    }
     noteProcessReportedExit(pid, exitCode) {
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
         const tracked = this.processRpcResources.get(pid);
         if (tracked?.releaseOnReportExit)
             this.releaseProcessRpcResources(pid);
+        this.revokeProcessVfsWriters(pid);
         this._teardownPairedServeFacet(pid);
     }
     /**
@@ -2905,7 +2909,13 @@ export class FacetManager {
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid: entry.pid } })
+            ? ctxExports.SupervisorRPC({
+                props: {
+                    doId: this.ctx.id.toString(),
+                    pid: entry.pid,
+                    writerId: crypto.randomUUID(),
+                },
+            })
             : undefined;
         const body = JSON.stringify({
             argv: opts.argv || [],
@@ -3118,6 +3128,9 @@ export class FacetManager {
                 // is still expected to run — never after kill/session teardown.
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
                 onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+                onWriterRetired: (writerId) => {
+                    this.vfs?.revokeAppendWriter(pid, writerId);
+                },
             });
             this._noteProcessPlacement(pid, handle);
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
@@ -3250,6 +3263,9 @@ export class FacetManager {
                 boot: { kind: 'staged', stage: stageSpec },
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
                 onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+                onWriterRetired: (writerId) => {
+                    this.vfs?.revokeAppendWriter(pid, writerId);
+                },
             });
             this._noteProcessPlacement(pid, handle);
             // The handle's route target resolves the RUNNING facet wherever it is
@@ -3327,6 +3343,9 @@ export class FacetManager {
             workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
             shouldRespawn: () => this.processes.get(pid)?.state === 'running',
             onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+            onWriterRetired: (writerId) => {
+                this.vfs?.revokeAppendWriter(pid, writerId);
+            },
             ...spec,
         });
         this._noteProcessPlacement(pid, handle);
@@ -3729,6 +3748,7 @@ export class FacetManager {
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
         this.releaseProcessRpcResources(pid);
+        this.revokeProcessVfsWriters(pid);
         this._teardownPairedServeFacet(pid);
         if (exitCode !== 0) {
             this._w5RecordTermination(pid, exitCode, 'facet', reason);
@@ -3753,6 +3773,7 @@ export class FacetManager {
         catch { }
         this.portRegistry.unregisterByPid(pid);
         this.releaseProcessRpcResources(pid);
+        this.revokeProcessVfsWriters(pid);
         const result = this.processes.kill(pid);
         if (result) {
             try {

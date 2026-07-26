@@ -120,6 +120,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return bytes.byteLength;
   }
 
+  async appendOnce(
+    path: string,
+    pid: number,
+    writerId: string,
+    operationId: number,
+    digest: string,
+    bytes: Uint8Array,
+  ): Promise<number> {
+    return this.vfs.appendOnce(path, pid, writerId, operationId, digest, bytes);
+  }
+
+  async acknowledgeAppend(pid: number, writerId: string, operationId: number): Promise<void> {
+    this.vfs.acknowledgeAppend(pid, writerId, operationId);
+  }
+
   async truncate(
     path: string,
     size: number,

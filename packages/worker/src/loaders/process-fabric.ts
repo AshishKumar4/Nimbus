@@ -216,14 +216,16 @@ export interface LoadedWorkerEntrypointStub {
 }
 
 export interface NimbusCtxExports {
-  SupervisorRPC?: (options: { props: { doId: string; pid: number } }) => unknown;
+  SupervisorRPC?: (options: {
+    props: { doId: string; pid: number; writerId?: string };
+  }) => unknown;
   NimbusLoadedEntrypoint?: (options: {
     props: {
       key: string;
       name: string | null;
       depth: number;
       code: unknown;
-      supervisor: { doId: string; pid: number };
+      supervisor: { doId: string; pid: number; writerId?: string };
       stage?: OpencodeStageSpec;
       residentCode?: ResidentCodeSpec;
     };
@@ -247,7 +249,7 @@ export function getNimbusCtxExports(): NimbusCtxExports {
 export async function createLoadedWorkerEntrypoint(
   ctxExports: NimbusCtxExports,
   code: unknown,
-  supervisor: { doId: string; pid: number },
+  supervisor: { doId: string; pid: number; writerId?: string },
   name: string | null = null,
   key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
   boot?: ResidentBootSpec,
@@ -278,7 +280,7 @@ export interface ResidentHost {
    */
   ctxExports: NimbusCtxExports;
   /** Always the COORDINATOR's identity, whichever DO is hosting. */
-  supervisor: { doId: string; pid: number };
+  supervisor: { doId: string; pid: number; writerId?: string };
   workerKey: string;
 }
 
@@ -359,6 +361,7 @@ async function createRouteTarget(host: ResidentHost): Promise<RouteableFacetTarg
 export interface HostProcessOpts {
   coordinatorDoId: string;
   pid: number;
+  writerId: string;
   workerKey: string;
   startContract: StartContract;
   startArgs?: unknown;
@@ -567,6 +570,8 @@ export interface ResidentProcessSpawn {
    * log so a death-plus-recovery is never silent.
    */
   onRespawn?: (cause: unknown) => void;
+  /** Called only after the concrete host resources for this writer are revoked. */
+  onWriterRetired?: (writerId: string) => void;
 }
 
 interface PeerPlacementInternal {
@@ -614,7 +619,11 @@ export class ProcessFabric {
   // ── light: the facet lands in the coordinator's own workerd process ───
 
   private async _startLocal(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle> {
-    const hosted = await hostResidentProcess(this._localHost(spawn), spawn.boot);
+    // The facet-local append sequence starts at one when its module evaluates.
+    // Bind that sequence to this concrete host, then retire it only after the
+    // host resources are disposed; a later host must use a fresh incarnation.
+    const writerId = crypto.randomUUID();
+    const hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
     const started = hosted.start(spawn.startArgs);
     const held = heldUntilKilled();
     // `lifetime`: the runner's startProcess IS the process, so its settlement
@@ -627,17 +636,24 @@ export class ProcessFabric {
     return new ResidentProcessHandle({
       processClass: 'light',
       placement: () => ({ kind: 'local' }),
-      done: done.finally(() => hosted.dispose()),
+      done: done.finally(() => {
+        hosted.dispose();
+        spawn.onWriterRetired?.(writerId);
+      }),
       booted: () => started,
       routeTarget: hosted.route,
       kill: () => { held.release(); hosted.dispose(); },
     });
   }
 
-  private _localHost(spawn: ResidentProcessSpawn): ResidentHost {
+  private _localHost(spawn: ResidentProcessSpawn, writerId: string): ResidentHost {
     return {
       ctxExports: getNimbusCtxExports(),
-      supervisor: { doId: this.coordDoId, pid: spawn.pid },
+      supervisor: {
+        doId: this.coordDoId,
+        pid: spawn.pid,
+        writerId,
+      },
       workerKey: spawn.workerKey,
     };
   }
@@ -701,11 +717,16 @@ export class ProcessFabric {
     let respawnsLeft = HEAVY_RESPAWN_BUDGET;
     for (;;) {
       const placement = state.current;
+      // A respawn re-evaluates the facet module and resets its local sequence.
+      // A new trusted incarnation prevents those new operations from aliasing
+      // acknowledged keys owned by the dead placement.
+      const writerId = crypto.randomUUID();
       this.tokensInUse.set(spawn.pid, placement.isolateToken);
       try {
         await placement.stub._rpcHostProcess(spawn.boot, {
           coordinatorDoId: this.coordDoId,
           pid: spawn.pid,
+          writerId,
           workerKey: spawn.workerKey,
           startContract: spawn.startContract,
           startArgs: spawn.startArgs,
@@ -720,6 +741,7 @@ export class ProcessFabric {
       } finally {
         this.tokensInUse.delete(spawn.pid);
         disposeRpcResource(placement.stub);
+        spawn.onWriterRetired?.(writerId);
       }
       // Respawn: fresh slot, re-verified placement. The handle's route target
       // and start() read `state.current`, so both re-point automatically.

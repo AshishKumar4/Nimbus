@@ -25,6 +25,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         createParents?: boolean;
         expectedRevision?: number;
     }): Promise<number>;
+    appendOnce(path: string, pid: number, writerId: string, operationId: number, digest: string, bytes: Uint8Array): Promise<number>;
+    acknowledgeAppend(pid: number, writerId: string, operationId: number): Promise<void>;
     truncate(path: string, size: number, options?: {
         followSymlinks?: boolean;
     }): Promise<void>;

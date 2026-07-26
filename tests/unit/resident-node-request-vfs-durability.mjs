@@ -91,7 +91,30 @@ await manager.spawnNode(userCode, {
 });
 assert.ok(residentCode?.modules?.['worker.js'], 'spawn produced a generated resident worker');
 
+function withTestAppendAuthority(supervisor) {
+  if (
+    typeof supervisor.fsAppend !== 'function'
+    && typeof supervisor.stat === 'function'
+    && typeof supervisor.fsWriteRange === 'function'
+  ) {
+    const appendReceipts = new Map();
+    supervisor.fsAppend = async (path, operationId, bytes) => {
+      const key = operationId;
+      if (appendReceipts.has(key)) return bytes.byteLength;
+      const meta = await supervisor.stat(path);
+      await supervisor.fsWriteRange(path, Number(meta?.size) || 0, bytes);
+      appendReceipts.set(key, bytes.slice());
+      return bytes.byteLength;
+    };
+    supervisor.fsAppendAck = async (operationId) => {
+      appendReceipts.delete(operationId);
+    };
+  }
+  return supervisor;
+}
+
 function makeShimFsFacet(supervisor, bundle = {}) {
+  withTestAppendAuthority(supervisor);
   const factory = new Function(
     '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
     'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
@@ -100,6 +123,7 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   fs: builtins.fs,
   writes: __vfsWrites,
   flushVfsWrite: __nimbusFlushVfsWrite,
+  persistVfsWrite: __nimbusPersistVfsWrite,
 };`,
   );
   return factory(
@@ -328,40 +352,243 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/concurrent-appends.txt'), false);
 }
 
-// If an earlier claimed append fails, its descendant retries the complete
-// fragment at EOF rather than losing the failed suffix or replacing the prefix.
-{
+function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
+  let durable = 'base';
+  const calls = [];
   let releaseFirst;
   let firstStarted;
   const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
   const firstCall = new Promise((resolve) => { firstStarted = resolve; });
-  let durable = 'base';
-  const calls = [];
   const supervisor = {
     async stat() { return { type: 'file', size: durable.length }; },
     async fsWriteRange(_path, position, bytes) {
       const suffix = new TextDecoder().decode(bytes);
       calls.push(`range:${suffix}`);
-      if (suffix === 'A') {
+      if (blockFirst && calls.length === 1) {
         firstStarted();
         await firstGate;
-        throw new Error('injected append failure');
       }
+      if (failedCalls.has(calls.length)) throw new Error(`injected append failure ${calls.length}`);
       durable = durable.slice(0, position) + suffix;
     },
     async writeFile(_path, content) { durable = cellText(content); },
   };
-  const { fs, writes } = makeShimFsFacet(supervisor);
-  const path = '/home/user/failed-append-chain.txt';
-  const first = fs.promises.appendFile(path, 'A');
-  await firstCall;
-  const second = fs.promises.appendFile(path, 'B');
-  releaseFirst();
-  await assert.rejects(first, /injected append failure/);
+  const facet = makeShimFsFacet(supervisor);
+  const path = '/home/user/append-retry.txt';
+  const retry = () => facet.flushVfsWrite(
+    path,
+    (content, snapshot) =>
+      facet.persistVfsWrite(supervisor, path, content, snapshot),
+  );
+  return {
+    ...facet,
+    path,
+    calls,
+    durable: () => durable,
+    retry,
+    firstStarted: firstCall,
+    releaseFirst,
+  };
+}
+
+// A committed A is not part of B's retry suffix: retrying the exact failed
+// authority attempt appends B, not the whole local AB fragment.
+{
+  const retry = makeAppendRetryFacet(new Set([2]), { blockFirst: true });
+  const first = retry.fs.promises.appendFile(retry.path, 'A');
+  await retry.firstStarted;
+  const second = retry.fs.promises.appendFile(retry.path, 'B');
+  retry.releaseFirst();
+  await first;
+  await assert.rejects(
+    second,
+    /injected append failure 2/,
+  );
+  await retry.retry();
+  assert.equal(retry.durable(), 'baseAB');
+  assert.deepEqual(retry.calls, ['range:A', 'range:B', 'range:B']);
+  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
+}
+
+// A failed ancestor is included in its descendant's first authority attempt.
+{
+  const retry = makeAppendRetryFacet(new Set([1]), { blockFirst: true });
+  const first = retry.fs.promises.appendFile(retry.path, 'A');
+  await retry.firstStarted;
+  const second = retry.fs.promises.appendFile(retry.path, 'B');
+  retry.releaseFirst();
+  await assert.rejects(
+    first,
+    /injected append failure 1/,
+  );
   await second;
+  assert.equal(retry.durable(), 'baseAB');
+  assert.deepEqual(retry.calls, ['range:A', 'range:A', 'range:B']);
+  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
+}
+
+// If both ancestor attempts fail, retry preserves operation order and commits
+// each suffix once.
+{
+  const retry = makeAppendRetryFacet(new Set([1, 2]), { blockFirst: true });
+  const first = retry.fs.promises.appendFile(retry.path, 'A');
+  await retry.firstStarted;
+  const second = retry.fs.promises.appendFile(retry.path, 'B');
+  retry.releaseFirst();
+  await assert.rejects(
+    first,
+    /injected append failure 1/,
+  );
+  await assert.rejects(
+    second,
+    /injected append failure 2/,
+  );
+  await retry.retry();
+  assert.equal(retry.durable(), 'baseAB');
+  assert.deepEqual(retry.calls, ['range:A', 'range:A', 'range:A', 'range:B']);
+  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
+}
+
+// A single failed append retries only its own suffix and clears the pending cell.
+{
+  const retry = makeAppendRetryFacet(new Set([1]));
+  await assert.rejects(
+    retry.fs.promises.appendFile(retry.path, 'A'),
+    /injected append failure 1/,
+  );
+  await retry.retry();
+  assert.equal(retry.durable(), 'baseA');
+  assert.deepEqual(retry.calls, ['range:A', 'range:A']);
+  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
+}
+
+// A response lost after the authority atomically committed B reuses the same
+// writer/operation receipt, so B is not appended twice.
+{
+  let durable = 'base';
+  let loseBResponse = true;
+  const receipts = new Map();
+  const calls = [];
+  const supervisor = {
+    async fsAppend(_path, operationId, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      const key = operationId;
+      calls.push({ operationId, suffix });
+      if (!receipts.has(key)) {
+        durable += suffix;
+        receipts.set(key, suffix);
+      }
+      if (suffix === 'B' && loseBResponse) {
+        loseBResponse = false;
+        throw new Error('injected response loss after append commit');
+      }
+      return bytes.byteLength;
+    },
+    async fsAppendAck(operationId) {
+      receipts.delete(operationId);
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const firstFacet = makeShimFsFacet(supervisor);
+  const path = '/home/user/postcommit-append-retry.txt';
+  await firstFacet.fs.promises.appendFile(path, 'A');
+  await assert.rejects(
+    firstFacet.fs.promises.appendFile(path, 'B'),
+    /response loss after append commit/,
+  );
+  await firstFacet.flushVfsWrite(
+    path,
+    (content, snapshot) =>
+      firstFacet.persistVfsWrite(supervisor, path, content, snapshot),
+  );
   assert.equal(durable, 'baseAB');
-  assert.deepEqual(calls, ['range:A', 'range:AB']);
-  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/failed-append-chain.txt'), false);
+  const bCalls = calls.filter((call) => call.suffix === 'B');
+  assert.equal(bCalls.length, 2);
+  assert.equal(bCalls[0].operationId, bCalls[1].operationId);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    firstFacet.writes,
+    'home/user/postcommit-append-retry.txt',
+  ), false);
+}
+
+// Once fsAppend succeeds, the facet relinquishes retry ownership before ACK.
+// A crash/failure before the ACK reaches authority retains the receipt, and a
+// delayed duplicate is still deduplicated without local retry state.
+{
+  let durable = 'base';
+  const receipts = new Set();
+  const calls = [];
+  const supervisor = {
+    async fsAppend(_path, operationId, bytes) {
+      const key = operationId;
+      calls.push({ operationId });
+      if (!receipts.has(key)) {
+        durable += new TextDecoder().decode(bytes);
+        receipts.add(key);
+      }
+      return bytes.byteLength;
+    },
+    async fsAppendAck() {
+      throw new Error('injected failure before ACK delivery');
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const facet = makeShimFsFacet(supervisor);
+  const path = '/home/user/undelivered-append-ack.txt';
+  await facet.fs.promises.appendFile(path, 'A');
+  assert.equal(durable, 'baseA');
+  assert.equal(receipts.size, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    facet.writes,
+    'home/user/undelivered-append-ack.txt',
+  ), false);
+  await supervisor.fsAppend(
+    path,
+    calls[0].operationId,
+    new TextEncoder().encode('A'),
+  );
+  assert.equal(durable, 'baseA');
+}
+
+// Losing the response after authority processes ACK cannot turn the committed
+// append into a rejection or a second append.
+{
+  let durable = 'base';
+  let appendCalls = 0;
+  let ackCalls = 0;
+  const receipts = new Set();
+  const supervisor = {
+    async fsAppend(_path, operationId, bytes) {
+      appendCalls++;
+      const key = operationId;
+      if (!receipts.has(key)) {
+        durable += new TextDecoder().decode(bytes);
+        receipts.add(key);
+      }
+      return bytes.byteLength;
+    },
+    async fsAppendAck(operationId) {
+      ackCalls++;
+      receipts.delete(operationId);
+      throw new Error('injected lost ACK response');
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const facet = makeShimFsFacet(supervisor);
+  const path = '/home/user/lost-append-ack.txt';
+  await facet.fs.promises.appendFile(path, 'A');
+  await facet.flushVfsWrite(
+    path,
+    (content, snapshot) =>
+      facet.persistVfsWrite(supervisor, path, content, snapshot),
+  );
+  assert.equal(durable, 'baseA');
+  assert.equal(appendCalls, 1);
+  assert.equal(ackCalls, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    facet.writes,
+    'home/user/lost-append-ack.txt',
+  ), false);
 }
 
 // Without the authority primitives needed to distinguish create from append,
@@ -377,6 +604,85 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   );
   assert.equal(durable, 'base');
   assert.equal(cellText(writes['home/user/unsupported-append.txt']), 'A');
+}
+
+// A FileHandle range that first flushes a pending full image and a concurrent
+// boundary capture of that same generation share one in-flight full-write
+// claim. The boundary cannot queue a duplicate full image behind the range.
+{
+  let releaseFull;
+  let fullStarted;
+  const fullGate = new Promise((resolve) => { releaseFull = resolve; });
+  const fullCall = new Promise((resolve) => { fullStarted = resolve; });
+  let durable = 'base';
+  const calls = [];
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async writeFile(_path, content) {
+      const text = cellText(content);
+      calls.push(`full:${text}`);
+      fullStarted();
+      await fullGate;
+      durable = text;
+    },
+    async fsWriteRange(_path, position, bytes) {
+      const text = new TextDecoder().decode(bytes);
+      calls.push(`range:${text}`);
+      durable = durable.slice(0, position) + text + durable.slice(position + bytes.byteLength);
+    },
+  };
+  const { fs, flushVfsWrite, writes } = makeShimFsFacet(
+    supervisor,
+    { 'home/user/same-generation-claim.txt': 'base' },
+  );
+  const path = '/home/user/same-generation-claim.txt';
+  fs.writeFileSync(path, 'newbase');
+  const handle = await fs.promises.open(path, 'r+');
+  const ranged = handle.write('X', 0);
+  await fullCall;
+  const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
+  releaseFull();
+  await Promise.all([ranged, boundary]);
+  assert.equal(durable, 'Xewbase');
+  assert.deepEqual(calls, ['full:newbase', 'range:X']);
+  assert.equal(fs.readFileSync(path, 'utf8'), 'Xewbase');
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    writes,
+    'home/user/same-generation-claim.txt',
+  ), false);
+  await handle.close();
+}
+
+// A zero-byte positional FileHandle write is a true no-op: it neither extends
+// the authority/local overlay nor advances the sequential handle position.
+{
+  let durable = 'base';
+  let rangedWrites = 0;
+  const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      rangedWrites++;
+      const text = new TextDecoder().decode(bytes);
+      durable = durable.slice(0, position) + text + durable.slice(position + bytes.byteLength);
+    },
+    async writeFile(_path, content) { durable = cellText(content); },
+  };
+  const { fs } = makeShimFsFacet(
+    supervisor,
+    { 'home/user/zero-byte-write.txt': 'base' },
+  );
+  const handle = await fs.promises.open('/home/user/zero-byte-write.txt', 'r+');
+  const empty = new Uint8Array(0);
+  const result = await handle.write(empty, 0, 0, 10);
+  assert.equal(result.bytesWritten, 0);
+  assert.equal(rangedWrites, 0);
+  assert.equal(durable, 'base');
+  assert.equal(fs.readFileSync('/home/user/zero-byte-write.txt', 'utf8'), 'base');
+  const one = new Uint8Array(1);
+  const read = await handle.read(one, 0, 1, null);
+  assert.equal(read.bytesRead, 1);
+  assert.equal(new TextDecoder().decode(one), 'b');
+  await handle.close();
 }
 
 // FileHandle ranged writes participate in the same authority queue as a later
@@ -580,7 +886,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
     { waitUntil() {} },
   );
 
@@ -635,7 +941,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
     { waitUntil() {} },
   );
   const response = await worker.handleHttpRequest(request('sync-append'));
@@ -670,7 +976,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
     { waitUntil() {} },
   );
   const response = await worker.handleHttpRequest(request('sync-appends'));
