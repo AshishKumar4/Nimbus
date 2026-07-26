@@ -13,6 +13,7 @@ import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/sess
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 
 let residentCode;
+let supervisorFactory = () => ({});
 const routeStub = {
   async handleHttpRequest() {
     throw new Error('the generated worker is exercised directly in this test');
@@ -20,7 +21,7 @@ const routeStub = {
 };
 
 setCtxExports({
-  SupervisorRPC: () => ({}),
+  SupervisorRPC: (...args) => supervisorFactory(...args),
   NimbusLoadedEntrypoint: ({ props }) => {
     if (props.residentCode) residentCode = props.residentCode;
     return props.residentCode
@@ -122,7 +123,10 @@ function makeShimFsFacet(supervisor, bundle = {}) {
 ;return {
   fs: builtins.fs,
   writes: __vfsWrites,
+  queueVfsMutation: __nimbusQueueVfsMutation,
+  drainVfsMutations: __nimbusDrainVfsMutations,
   flushVfsWrite: __nimbusFlushVfsWrite,
+  drainVfsWrites: __nimbusDrainVfsWrites,
   persistVfsWrite: __nimbusPersistVfsWrite,
   moduleIncarnation: __nimbusVfsModuleIncarnation,
 };`,
@@ -510,6 +514,163 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
     firstFacet.writes,
     'home/user/postcommit-append-retry.txt',
   ), false);
+}
+
+// A one-shot boundary retries an ambiguous append with the same operation
+// identity while its writer is still active. It never degrades the suffix into
+// a whole-file write assembled from a possibly stale local cache.
+{
+  let durable = 'live-prefix';
+  let loseFirstResponse = true;
+  let writeFileCalls = 0;
+  const receipts = new Set();
+  const appendCalls = [];
+  const supervisor = {
+    async fsAppend(_path, moduleId, operationId, bytes) {
+      const key = `${moduleId}:${operationId}`;
+      appendCalls.push(key);
+      if (!receipts.has(key)) {
+        durable += new TextDecoder().decode(bytes);
+        receipts.add(key);
+      }
+      if (loseFirstResponse) {
+        loseFirstResponse = false;
+        throw new Error('injected one-shot response loss after commit');
+      }
+      return bytes.byteLength;
+    },
+    async fsAppendAck(moduleId, operationId) {
+      receipts.delete(`${moduleId}:${operationId}`);
+    },
+    async writeFile() {
+      writeFileCalls++;
+      throw new Error('append recovery must not write a whole-file image');
+    },
+  };
+  const facet = makeShimFsFacet(supervisor, {
+    'home/user/oneshot-append.txt': 'stale-prefix',
+  });
+  facet.fs.appendFileSync('/home/user/oneshot-append.txt', 'A');
+  await facet.drainVfsWrites(supervisor);
+  assert.equal(durable, 'live-prefixA');
+  assert.equal(appendCalls.length, 2);
+  assert.equal(appendCalls[0], appendCalls[1]);
+  assert.equal(writeFileCalls, 0);
+  assert.equal(Object.prototype.hasOwnProperty.call(
+    facet.writes,
+    'home/user/oneshot-append.txt',
+  ), false);
+}
+
+// Missing append authority fails the one-shot boundary loudly. The buffered
+// suffix remains retryable and is never reinterpreted as a full replacement.
+{
+  let writeFileCalls = 0;
+  const supervisor = {
+    async writeFile() {
+      writeFileCalls++;
+    },
+  };
+  const facet = makeShimFsFacet(supervisor, {
+    'home/user/unsupported-oneshot-append.txt': 'stale-prefix',
+  });
+  facet.fs.appendFileSync('/home/user/unsupported-oneshot-append.txt', 'A');
+  await assert.rejects(
+    facet.drainVfsWrites(supervisor),
+    (error) => error?.code === 'ENOSYS',
+  );
+  assert.equal(writeFileCalls, 0);
+  assert.equal(
+    cellText(facet.writes['home/user/unsupported-oneshot-append.txt']),
+    'stale-prefixA',
+  );
+}
+
+// A terminal failure on one path cannot let the boundary return and revoke its
+// writer while another path's recovery is still using that capability.
+{
+  let releaseSlowWrite;
+  const slowWriteGate = new Promise((resolve) => { releaseSlowWrite = resolve; });
+  const supervisor = {
+    async writeFile(path) {
+      if (path.endsWith('/fast-failure.txt')) {
+        throw new Error('injected terminal write failure');
+      }
+      await slowWriteGate;
+    },
+  };
+  const facet = makeShimFsFacet(supervisor);
+  facet.fs.writeFileSync('/home/user/fast-failure.txt', 'A');
+  facet.fs.writeFileSync('/home/user/slow-write.txt', 'B');
+  let drainSettled = false;
+  const drain = facet.drainVfsWrites(supervisor);
+  void drain.then(
+    () => { drainSettled = true; },
+    () => { drainSettled = true; },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(drainSettled, false);
+  releaseSlowWrite();
+  await assert.rejects(drain, /injected terminal write failure/);
+}
+
+// Definitive authority errors are not retried. Only an uncoded transport-style
+// failure can represent an ambiguous committed-but-response-lost outcome.
+{
+  let calls = 0;
+  const supervisor = {
+    async writeFile() {
+      calls++;
+      const error = new Error('permission denied');
+      error.code = 'EACCES';
+      throw error;
+    },
+  };
+  const facet = makeShimFsFacet(supervisor);
+  facet.fs.writeFileSync('/home/user/denied-write.txt', 'A');
+  await assert.rejects(
+    facet.drainVfsWrites(supervisor),
+    (error) => error?.code === 'EACCES',
+  );
+  assert.equal(calls, 1);
+}
+
+// The request boundary can await every queued file-content mutation, including
+// operations that do not create a whole-file __vfsWrites cell.
+{
+  let releaseMutation;
+  const gate = new Promise((resolve) => { releaseMutation = resolve; });
+  const facet = makeShimFsFacet({});
+  const mutation = facet.queueVfsMutation(
+    '/home/user/queued-range.txt',
+    () => gate,
+  );
+  let drained = false;
+  const drain = facet.drainVfsMutations().then(() => { drained = true; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(drained, false);
+  releaseMutation();
+  await Promise.all([mutation, drain]);
+  assert.equal(drained, true);
+}
+
+// A failed mutation remains visible to the next durability boundary even when
+// the caller observed/caught it before the boundary started. The failure is
+// consumed exactly once so it cannot poison unrelated later requests.
+{
+  const facet = makeShimFsFacet({});
+  await assert.rejects(
+    facet.queueVfsMutation(
+      '/home/user/settled-failure.txt',
+      async () => { throw new Error('settled before boundary'); },
+    ),
+    /settled before boundary/,
+  );
+  await assert.rejects(
+    facet.drainVfsMutations(),
+    /settled before boundary/,
+  );
+  await facet.drainVfsMutations();
 }
 
 // Re-evaluating the dynamic-worker module resets its local numeric sequence,
@@ -1247,6 +1408,227 @@ function request(path = 'first') {
     /injected durable write failure/,
     'durability failure rejects the request instead of returning 200',
   );
+}
+
+// Clean FileHandle range writes and truncates have no whole-file pending cell,
+// but a response still cannot cross the durability boundary while either
+// authority mutation is in flight.
+{
+  const port = 4390;
+  await manager.spawnNode(`
+const fs = require('node:fs');
+const http = require('node:http');
+let rangeHandle;
+fs.promises.open('/home/user/clean-range.txt', 'w+').then((handle) => {
+  rangeHandle = handle;
+});
+fs.promises.writeFile('/home/user/clean-truncate.txt', 'abcdef');
+http.createServer((req, res) => {
+  if (req.url === '/range') {
+    void rangeHandle.write('R', 0, 1, 0);
+  } else {
+    void fs.promises.truncate('/home/user/clean-truncate.txt', 2).catch(() => {});
+  }
+  if (req.url === '/truncate-immediate') {
+    setTimeout(() => res.end('ok'), 0);
+    return;
+  }
+  res.end('ok');
+}).listen(${port});
+`, {
+    command: 'node --watch clean-mutations.js',
+    filename: '/home/user/clean-mutations.js',
+    cwd: '/home/user',
+    port,
+  });
+
+  delete globalThis.__portRegistry;
+  const files = new Map();
+  let releaseRange;
+  let rangeStarted;
+  const rangeGate = new Promise((resolve) => { releaseRange = resolve; });
+  const rangeCall = new Promise((resolve) => { rangeStarted = resolve; });
+  let releaseTruncate;
+  let truncateStarted;
+  let failTruncate = false;
+  const truncateGate = new Promise((resolve) => { releaseTruncate = resolve; });
+  const truncateCall = new Promise((resolve) => { truncateStarted = resolve; });
+  const supervisor = {
+    async stat(path) {
+      const content = files.get(path);
+      return content === undefined ? null : { type: 'file', size: content.byteLength };
+    },
+    async writeFile(path, content) {
+      files.set(path, content instanceof Uint8Array
+        ? content.slice()
+        : new TextEncoder().encode(String(content)));
+    },
+    async fsWriteRange(path, position, bytes) {
+      rangeStarted();
+      await rangeGate;
+      const current = files.get(path) || new Uint8Array(0);
+      const next = new Uint8Array(Math.max(current.byteLength, position + bytes.byteLength));
+      next.set(current);
+      next.set(bytes, position);
+      files.set(path, next);
+    },
+    async fsTruncate(path, size) {
+      truncateStarted();
+      await truncateGate;
+      if (failTruncate) throw new Error('injected clean truncate failure');
+      files.set(path, (files.get(path) || new Uint8Array(0)).slice(0, size));
+    },
+    async registerPort() {},
+    async unregisterPort() {},
+    async stdout() {},
+    async stderr() {},
+    async reportExit() {},
+  };
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusNodeProcess(
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+    { waitUntil() {} },
+  );
+  const mutationRequest = (path) => new Request(`http://127.0.0.1:${port}/${path}`, {
+    headers: { 'X-Nimbus-Port': String(port) },
+  });
+
+  let rangeReturned = false;
+  const rangeResponse = worker.handleHttpRequest(mutationRequest('range')).then((response) => {
+    rangeReturned = true;
+    return response;
+  });
+  await rangeCall;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(rangeReturned, false);
+  releaseRange();
+  assert.equal((await rangeResponse).status, 200);
+  assert.equal(new TextDecoder().decode(files.get('/home/user/clean-range.txt')), 'R');
+
+  failTruncate = true;
+  const truncateResponse = worker.handleHttpRequest(mutationRequest('truncate'));
+  await truncateCall;
+  releaseTruncate();
+  await assert.rejects(
+    truncateResponse,
+    /injected clean truncate failure/,
+    'a floated clean mutation failure rejects the response instead of returning 200',
+  );
+
+  await assert.rejects(
+    worker.handleHttpRequest(mutationRequest('truncate-immediate')),
+    /injected clean truncate failure/,
+    'a mutation failure that settles before response headers remains visible to the boundary',
+  );
+}
+
+// Explicit process exit is only an intent until the owning lifecycle has
+// drained durability. A failed append cannot be hidden behind an earlier
+// terminal exit 0 or lose its writer authorization before the drain.
+{
+  await manager.spawnNode(`
+const fs = require('node:fs');
+fs.appendFileSync('/home/user/exit-before-drain.txt', 'A');
+process.exit(0);
+`, {
+    command: 'node exit-before-drain.js',
+    filename: '/home/user/exit-before-drain.js',
+    cwd: '/home/user',
+  });
+  const reports = [];
+  const generated = await loadGeneratedWorker();
+  const worker = new generated.NimbusNodeProcess(
+    {
+      SUPERVISOR: {
+        async fsAppend() {
+          const error = new Error('injected append failure after exit intent');
+          error.code = 'EIO';
+          throw error;
+        },
+        async fsAppendAck() {},
+        async reportExit(code) { reports.push(code); },
+        async stdout() {},
+        async stderr() {},
+      },
+    },
+    { waitUntil() {} },
+  );
+  await assert.rejects(
+    worker.startProcess(),
+    /injected append failure after exit intent/,
+  );
+  assert.deepEqual(
+    reports,
+    [],
+    'long-running Node does not report terminal success before durability',
+  );
+}
+
+// The regular one-shot generated runner follows the same ordering: process.exit
+// records the intended code, the append drain runs with live authority, and
+// only the final post-drain code is reported.
+{
+  const reports = [];
+  let appendCalls = 0;
+  const supervisor = {
+    async fsAppend() {
+      appendCalls++;
+      const error = new Error('injected one-shot append failure');
+      error.code = 'EIO';
+      throw error;
+    },
+    async fsAppendAck() {},
+    async reportExit(code) { reports.push(code); },
+    async stdout() {},
+    async stderr() {},
+  };
+  supervisorFactory = () => supervisor;
+  const executingEnv = {
+    ...env,
+    LOADER: {
+      get() {
+        throw new Error('one-shot generated runner uses LOADER.load');
+      },
+      load(config) {
+        return {
+          getEntrypoint() {
+            return {
+              async fetch(runRequest) {
+                const source = config.modules['runner.js'];
+                const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+                try {
+                  const generated = await import(url);
+                  return generated.default.fetch(runRequest, config.env);
+                } finally {
+                  URL.revokeObjectURL(url);
+                }
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+  const oneShotProcesses = new SessionProcessSupervisor();
+  const oneShotManager = new FacetManager(
+    { id: { toString: () => 'one-shot-exit-ordering' }, waitUntil() {} },
+    executingEnv,
+    oneShotProcesses,
+    new PortRegistry(),
+    {},
+  );
+  const result = await oneShotManager.exec(`
+const fs = require('node:fs');
+fs.appendFileSync('/home/user/oneshot-exit-before-drain.txt', 'A');
+process.exit(0);
+`, {
+    filename: '<eval>',
+    cwd: '/home/user',
+    captureOutput: true,
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(appendCalls, 1, `definitive EIO is not retried: ${JSON.stringify(result)}`);
+  assert.deepEqual(reports, [1], 'only the final failed durability code is reported');
 }
 
 console.log('resident-node-request-vfs-durability: ok');

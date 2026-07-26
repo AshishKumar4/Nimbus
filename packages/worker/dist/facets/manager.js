@@ -469,6 +469,7 @@ export default {
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
+    const __nimbusDeferProcessExitReport = true;
 ${VFS_WRITE_LEDGER_SOURCE}
     const __vfsDirs = {};
 
@@ -565,21 +566,20 @@ ${ENTRYPOINT_STARTUP_DRAIN}
 
     await __drainPendingIO();
 
-    const __failedWrites = {};
-    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const path of Object.keys(__vfsWrites)) {
-        __pendingIO.push(__nimbusFlushVfsWrite(
-          path,
-          (content, snapshot) =>
-            __nimbusPersistVfsWrite(__supervisor, path, content, snapshot),
-        ).catch(() => {
-          if (Object.prototype.hasOwnProperty.call(__vfsWrites, path)) {
-            __failedWrites[path] = __vfsWrites[path];
-          }
-        }));
+    if (__supervisor) {
+      try {
+        await __nimbusDrainVfsWrites(__supervisor);
+      } catch (e) {
+        const trace = (e && e.stack) || (e && e.message) || String(e);
+        stderr += trace + "\\n";
+        exitCode = 1;
+        if (!captureOutput) {
+          try {
+            await __supervisor.stderr(trace + "\\n");
+          } catch {}
+        }
       }
     }
-    await __drainPendingIO();
 
     // Drain child_process output before reporting process exit.
     try {
@@ -605,7 +605,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
-      vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
+      vfsWrites: __supervisor ? {} : __vfsWrites,
       ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount } } : {}),
     });
   }
@@ -695,20 +695,21 @@ let __nimbusAttachedLifecycle = null;
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
-  const __vfsTasks = [];
-  if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
-    for (const path of Object.keys(rt.vfsWrites)) {
-      const __task = rt.flushVfsWrite(
-        path,
-        (content, snapshot) =>
-          rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
-      );
-      // Observe immediately; Promise.all below still propagates the failure.
-      __task.catch(() => {});
-      __vfsTasks.push(__task);
-    }
-  }
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
+    const __vfsTasks = [];
+    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
+      for (const path of Object.keys(rt.vfsWrites)) {
+        __vfsTasks.push(rt.flushVfsWrite(
+          path,
+          (content, snapshot) =>
+            rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
+        ));
+      }
+    }
+    const __vfsOutcomes = await Promise.allSettled([
+      ...__vfsTasks,
+      rt.drainVfsMutations(),
+    ]);
     for (let pass = 0; pass < 12; pass++) {
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (rt.pendingIO.length <= rt.settledIO) break;
@@ -720,9 +721,11 @@ async function __nimbusFlushRuntime() {
       rt.pendingIO.length = 0;
       rt.settledIO = 0;
     }
+    const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
+    if (__vfsFailure) throw __vfsFailure.reason;
   });
-  rt.pendingDrainChain = __pendingDrain;
-  await Promise.all([__pendingDrain, ...__vfsTasks]);
+  rt.pendingDrainChain = __pendingDrain.catch(() => {});
+  await __pendingDrain;
 }
 
 async function __nimbusEnsureStarted(workerEnv, workerCtx) {
@@ -757,6 +760,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
+    const __nimbusDeferProcessExitReport = true;
 ${VFS_WRITE_LEDGER_SOURCE}
     const __vfsDirs = {};
 
@@ -846,45 +850,63 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
       persistVfsWrite: __nimbusPersistVfsWrite,
+      drainVfsMutations: __nimbusDrainVfsMutations,
       pendingDrainChain: Promise.resolve(),
     };
     await __nimbusFlushRuntime();
 
-    if (attachedTty && !__attachedExplicitExit) {
-      const __attachedLifecycle = (async () => {
-        if (__attachedCompletion) {
+    const __nimbusReportFinalExit = async (code, reason) => {
+      if (!__supervisor || __nimbusProcessExitReported) return;
+      await __supervisor.reportExit(code, reason || "");
+      __nimbusProcessExitReported = true;
+    };
+    const __nimbusReportLifecycleFailure = async (e) => {
+      const trace = (e && e.stack) || (e && e.message) || String(e);
+      stderr += trace + "\\n";
+      if (__supervisor) {
+        try { await __supervisor.stderr(trace + "\\n"); } catch {}
+        await __nimbusReportFinalExit(1, trace + "\\n");
+      }
+    };
+
+    if (__attachedExplicitExit) {
+      await __nimbusReportFinalExit(exitCode, stderr);
+    } else {
+      const __residentExitLifecycle = (async () => {
+        let finalCode = 0;
+        if (attachedTty && __attachedCompletion) {
           const __exitMarker = {};
           const __result = await Promise.race([
             __attachedCompletion.then(() => null),
-            __nimbusProcessExitPromise.then(() => __exitMarker),
+            __nimbusProcessExitPromise.then((code) => {
+              finalCode = Number(code ?? 0);
+              return __exitMarker;
+            }),
           ]);
-          if (__result === __exitMarker) return;
+          if (__result !== __exitMarker) {
+            finalCode = Number(__nimbusProcessExitCode ?? 0);
+          }
         } else {
-          await __nimbusProcessExitPromise;
+          finalCode = Number(await __nimbusProcessExitPromise);
         }
         await __nimbusFlushRuntime();
-        if (__supervisor && !__nimbusProcessExitReported) {
-          await __supervisor.reportExit(0, "");
-        }
+        await __nimbusReportFinalExit(finalCode, "");
       })().catch(async (e) => {
         if (e instanceof __ProcessExit) {
-          await __nimbusFlushRuntime();
-          if (!__nimbusProcessExitReported) {
-            __nimbusReportProcessExit(e.code, "");
+          try {
+            await __nimbusFlushRuntime();
+            await __nimbusReportFinalExit(e.code, "");
+          } catch (flushError) {
+            await __nimbusReportLifecycleFailure(flushError);
           }
           return;
         }
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        if (__supervisor) {
-          try { await __supervisor.stderr(trace + "\\n"); } catch {}
-          await __supervisor.reportExit(1, trace + "\\n");
-        }
+        await __nimbusReportLifecycleFailure(e);
       });
-      __nimbusAttachedLifecycle = __attachedLifecycle;
-      workerCtx.waitUntil(__attachedLifecycle);
-    } else if (attachedTty && __attachedExplicitExit && __supervisor) {
-      if (!__nimbusProcessExitReported) await __supervisor.reportExit(exitCode, stderr);
+      workerCtx.waitUntil(__residentExitLifecycle);
+      if (attachedTty) {
+        __nimbusAttachedLifecycle = __residentExitLifecycle;
+      }
     }
 
     if (__rpcDrops > 0 && __supervisor) {
@@ -2817,6 +2839,7 @@ export class FacetManager {
         const abortController = new AbortController();
         try {
             const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink), entry, () => abortController.abort());
+            this._flushVfsWrites(result, entry.pid);
             this.processes.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
                 this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
@@ -2835,7 +2858,6 @@ export class FacetManager {
                     at: Date.now(),
                 });
             }
-            this._flushVfsWrites(result, entry.pid);
             return result;
         }
         catch (err) {
@@ -3035,8 +3057,8 @@ export class FacetManager {
             const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', { method: 'POST' }));
             try {
                 const result = await response.json();
-                this.processes.exit(staged.pid, result.exitCode);
                 this._flushVfsWrites(result, staged.pid);
+                this.processes.exit(staged.pid, result.exitCode);
                 return { ...result, pid: staged.pid };
             }
             finally {
@@ -3515,26 +3537,17 @@ export class FacetManager {
             return;
         const vfs = this.vfs.as(this.processes.cred(pid));
         for (const [path, content] of Object.entries(result.vfsWrites)) {
-            try {
-                const parts = path.split('/');
-                for (let i = 1; i < parts.length; i++) {
-                    const dir = parts.slice(0, i).join('/');
-                    if (dir && !vfs.exists(dir))
-                        vfs.mkdir(dir, { recursive: true });
-                }
-                // binary-fs wave: __vfsWrites cells carry string | Uint8Array.
-                // The hot path here is the LIVE SUPERVISOR.writeFile RPC inside
-                // the facet — which preserves Uint8Array via structured-clone.
-                // This `result.vfsWrites` carries only the FAILED-writes residue
-                // (after JSON.parse), where Uint8Array gets serialized as a
-                // {"0":...,"1":...} object. Detect that shape and reconstitute
-                // bytes; otherwise pass through (string for source code, etc.).
-                const restored = _reviveVfsWriteCell(content);
-                vfs.writeFile(path, restored);
+            const parts = path.split('/');
+            for (let i = 1; i < parts.length; i++) {
+                const dir = parts.slice(0, i).join('/');
+                if (dir && !vfs.exists(dir))
+                    vfs.mkdir(dir, { recursive: true });
             }
-            catch (e) {
-                console.error('[nimbus] VFS write-back failed:', path, e?.message);
-            }
+            // No-supervisor fallback: these are full sync-write cells, not failed
+            // append residues. A write-back error is the command's error and must
+            // propagate before a successful process exit is recorded.
+            const restored = _reviveVfsWriteCell(content);
+            vfs.writeFile(path, restored);
         }
     }
     /** Execution timeout. */

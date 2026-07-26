@@ -900,6 +900,47 @@ const CRED_OTHER = Object.freeze({
   );
 }
 
+// Restart maintenance pages durable PID-revocation intents instead of
+// materializing an unbounded table before cleanup begins.
+{
+  const { harness } = makeBridge();
+  for (let index = 0; index <= MAX_TX_LOGICAL_ROWS; index++) {
+    harness.sql.exec(
+      `INSERT INTO vfs_append_pid_revocations (pid, retired_at)
+       VALUES (?, ?)`,
+      2_400_000 + index,
+      index,
+    );
+  }
+  const restartStart = harness.statements.length;
+  new SqliteVFS(harness.sql, harness.ctx);
+  const restartStatements = harness.statements.slice(restartStart);
+  const pageSelects = restartStatements.filter(
+    (statement) => /SELECT pid FROM vfs_append_pid_revocations[\s\S]*LIMIT \?/i.test(statement.sql),
+  );
+  assert.deepEqual(
+    pageSelects.map((statement) => statement.params),
+    [[MAX_TX_LOGICAL_ROWS], [MAX_TX_LOGICAL_ROWS], [MAX_TX_LOGICAL_ROWS]],
+    '257 restart markers are selected in 256/1/0 bounded pages',
+  );
+  const markerDeletes = restartStatements.filter(
+    (statement) => /DELETE FROM vfs_append_pid_revocations WHERE pid = \?/i.test(statement.sql),
+  );
+  assert.equal(markerDeletes.length, MAX_TX_LOGICAL_ROWS + 1);
+  assert.ok(
+    markerDeletes.every(
+      (statement) => statement.transaction !== null && statement.params.length === 1,
+    ),
+    'each marker is retired in a bounded transaction',
+  );
+  assert.equal(
+    [...harness.sql.exec(
+      'SELECT COUNT(*) AS count FROM vfs_append_pid_revocations',
+    )][0].count,
+    0,
+  );
+}
+
 // A new coordinator generation retires every prior-generation positive
 // authority while preserving writers allocated above its PID base.
 {

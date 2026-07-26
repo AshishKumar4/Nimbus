@@ -4,9 +4,10 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number }
+ * Props: { doId: string, pid: number, writerId: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
+ *   writerId — the active append-writer incarnation for this process
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
