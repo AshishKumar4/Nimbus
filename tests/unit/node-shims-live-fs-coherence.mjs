@@ -3,6 +3,7 @@
 // never as authority for async I/O after another process mutates SQLite VFS.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
@@ -39,9 +40,10 @@ const supervisor = {
 };
 
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + generateShimsCode() + '\n;return { fs: __fsMod };',
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() +
+    '\n;return { fs: __fsMod };',
 );
 const { fs } = factory(
   { 'home/user/coherence/resident.txt': 'v1' },
@@ -49,7 +51,6 @@ const { fs } = factory(
     'home/user/coherence': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
     'home/user/coherence/resident.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 },
   },
-  {},
   {},
   {
     'home/user': ['coherence'],
