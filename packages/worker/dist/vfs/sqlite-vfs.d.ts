@@ -347,12 +347,13 @@ export declare class SqliteVFS {
      * explicit client acknowledgement after that client relinquishes retries.
      */
     private appendOnce;
+    activateAppendWriter(pid: number, writerId: string): void;
     private acknowledgeAppend;
     revokeAppendWriter(pid: number, writerId: string): void;
     revokeAppendWriters(pid: number): void;
+    revokeAppendWritersThrough(maxPid: number): void;
     private finishAppendPidRevocation;
     private deleteAppendRowsBounded;
-    private trimAppendWriterTombstones;
     private resumeAppendMaintenance;
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.

@@ -195,6 +195,7 @@ const CRED_OTHER = Object.freeze({
   const { harness, rawVfs, vfs } = makeBridge();
   const pid = 1_000_001;
   const writer = '11111111-1111-4111-8111-111111111111';
+  rawVfs.activateAppendWriter(pid, writer);
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/log.txt', enc.encode('base'));
   harness.setFaultInjector((statement) => (
@@ -221,11 +222,14 @@ const CRED_OTHER = Object.freeze({
     0,
     'the file mutation rolls back when its receipt cannot commit',
   );
+  const missingPid = 1_000_002;
+  const missingWriter = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  rawVfs.activateAppendWriter(missingPid, missingWriter);
   assert.throws(
     () => vfs.appendOnce(
       '/missing/child.txt',
-      pid,
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      missingPid,
+      missingWriter,
       APPEND_MODULE,
       1,
       'digest-missing',
@@ -330,6 +334,13 @@ const CRED_OTHER = Object.freeze({
   reloaded.acknowledgeAppend(pid, writer, APPEND_MODULE, 2);
 
   const concurrentWriter = '55555555-5555-4555-8555-555555555555';
+  assert.throws(
+    () => reloadedRaw.activateAppendWriter(pid, concurrentWriter),
+    /ESTALE/,
+    'a concurrent host cannot replace the current writer before it retires',
+  );
+  rawVfs.revokeAppendWriter(pid, writer);
+  reloadedRaw.activateAppendWriter(pid, concurrentWriter);
   reloaded.appendOnce('/targets/two', pid, concurrentWriter, APPEND_MODULE, 2, 'digest-gap-2', enc.encode('2'));
   reloaded.appendOnce('/targets/one', pid, concurrentWriter, APPEND_MODULE, 1, 'digest-gap-1', enc.encode('1'));
   reloaded.acknowledgeAppend(pid, concurrentWriter, APPEND_MODULE, 2);
@@ -356,6 +367,8 @@ const CRED_OTHER = Object.freeze({
   );
 
   const respawnWriter = '22222222-2222-4222-8222-222222222222';
+  reloadedRaw.revokeAppendWriter(pid, concurrentWriter);
+  reloadedRaw.activateAppendWriter(pid, respawnWriter);
   reloaded.appendOnce('/targets/two', pid, respawnWriter, APPEND_MODULE, 1, 'digest-new-host', enc.encode('?'));
   assert.equal(
     dec.decode(reloaded.readFile('/targets/two')),
@@ -372,7 +385,6 @@ const CRED_OTHER = Object.freeze({
     /ESTALE/,
     'a foreign host incarnation cannot acknowledge another writer receipt',
   );
-  rawVfs.revokeAppendWriter(pid, writer);
   assert.throws(
     () => reloaded.appendOnce(
       '/targets/two',
@@ -415,7 +427,7 @@ const CRED_OTHER = Object.freeze({
 // Writer state, completed receipts, and out-of-order ACK tombstones share one
 // fail-closed metadata budget. An ACK frees capacity without weakening replay.
 {
-  const { harness, vfs } = makeBridge();
+  const { harness, rawVfs, vfs } = makeBridge();
   const capPid = 2_000_001;
   const capWriter = '44444444-4444-4444-8444-444444444444';
   vfs.mkdir('/targets', { recursive: true });
@@ -467,21 +479,13 @@ const CRED_OTHER = Object.freeze({
   );
   const blockedWriter = '66666666-6666-4666-8666-666666666666';
   assert.throws(
-    () => vfs.appendOnce(
-      '/targets/two',
-      capPid,
-      blockedWriter,
-      APPEND_MODULE,
-      1,
-      'digest-blocked',
-      enc.encode('?'),
-    ),
+    () => rawVfs.activateAppendWriter(capPid + 1, blockedWriter),
     /ENOSPC/,
   );
   assert.equal(
     [...harness.sql.exec(
       'SELECT COUNT(*) AS count FROM vfs_append_writer_state WHERE pid = ? AND writer_id = ?',
-      capPid,
+      capPid + 1,
       blockedWriter,
     )][0].count,
     0,
@@ -660,16 +664,19 @@ const CRED_OTHER = Object.freeze({
   );
 }
 
-// Retired writer tombstones protect recently disposed capabilities without
-// consuming active journal admission or growing without bound.
+// Retired authority is represented by absence, not a bounded negative-history
+// window: a writer must be explicitly activated before its first append.
 {
   const { harness, rawVfs, vfs } = makeBridge();
   const pid = 2_200_001;
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/churn.txt', 'base');
   let latestWriter = '';
+  let firstWriter = '';
   for (let index = 0; index <= VFS_APPEND_RECEIPT_LIMIT; index++) {
     latestWriter = crypto.randomUUID();
+    if (index === 0) firstWriter = latestWriter;
+    rawVfs.activateAppendWriter(pid, latestWriter);
     vfs.appendOnce(
       '/append/churn.txt',
       pid,
@@ -683,10 +690,10 @@ const CRED_OTHER = Object.freeze({
   }
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_writer_state WHERE revoked = 1',
+      'SELECT COUNT(*) AS count FROM vfs_append_writer_state',
     )][0].count,
-    VFS_APPEND_RECEIPT_LIMIT,
-    'disposed-writer proof remains bounded after more incarnations than the active journal cap',
+    0,
+    'disposed writers leave no retained authority or negative-history rows',
   );
   assert.equal(
     [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_module_state')][0].count,
@@ -709,7 +716,23 @@ const CRED_OTHER = Object.freeze({
     /ESTALE/,
     'the most recently disposed writer remains fail-closed',
   );
+  const beforeOldestReplay = vfs.stat('/append/churn.txt').size;
+  assert.throws(
+    () => vfs.appendOnce(
+      '/append/churn.txt',
+      pid,
+      firstWriter,
+      APPEND_MODULE,
+      1,
+      'churn-0',
+      enc.encode('x'),
+    ),
+    /ESTALE/,
+    'metadata reclamation never turns an unknown old writer into active authority',
+  );
+  assert.equal(vfs.stat('/append/churn.txt').size, beforeOldestReplay);
   const nextWriter = crypto.randomUUID();
+  rawVfs.activateAppendWriter(pid, nextWriter);
   assert.equal(
     vfs.appendOnce(
       '/append/churn.txt',
@@ -725,6 +748,57 @@ const CRED_OTHER = Object.freeze({
   );
 }
 
+// Final PID retirement remains non-resurrectable after arbitrary global churn:
+// an old capability cannot self-activate after its positive authority is gone.
+{
+  const { rawVfs, vfs } = makeBridge();
+  const retiredPid = 2_250_001;
+  const retiredWriter = crypto.randomUUID();
+  vfs.mkdir('/append', { recursive: true });
+  vfs.writeFile('/append/pid-retired.txt', 'base');
+  rawVfs.activateAppendWriter(retiredPid, retiredWriter);
+  vfs.appendOnce(
+    '/append/pid-retired.txt',
+    retiredPid,
+    retiredWriter,
+    APPEND_MODULE,
+    1,
+    'pid-retired',
+    new Uint8Array(),
+  );
+  rawVfs.revokeAppendWriters(retiredPid);
+  for (let index = 0; index <= VFS_APPEND_RECEIPT_LIMIT; index++) {
+    const churnPid = 2_260_000 + index;
+    const churnWriter = crypto.randomUUID();
+    rawVfs.activateAppendWriter(churnPid, churnWriter);
+    vfs.appendOnce(
+      '/append/pid-retired.txt',
+      churnPid,
+      churnWriter,
+      APPEND_MODULE,
+      1,
+      `pid-churn-${index}`,
+      new Uint8Array(),
+    );
+    rawVfs.revokeAppendWriter(churnPid, churnWriter);
+  }
+  const beforeReplay = vfs.stat('/append/pid-retired.txt').size;
+  assert.throws(
+    () => vfs.appendOnce(
+      '/append/pid-retired.txt',
+      retiredPid,
+      retiredWriter,
+      APPEND_MODULE,
+      1,
+      'pid-retired',
+      enc.encode('x'),
+    ),
+    /ESTALE/,
+    'a final PID retirement cannot be resurrected by an old capability',
+  );
+  assert.equal(vfs.stat('/append/pid-retired.txt').size, beforeReplay);
+}
+
 // Revocation intent and its fail-closed marker survive a reset between the
 // bounded transactions; reconstruction resumes cleanup before admitting work.
 {
@@ -733,6 +807,7 @@ const CRED_OTHER = Object.freeze({
   const writer = 'abababab-abab-4bab-8bab-abababababab';
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/reset-cleanup.txt', 'base');
+  rawVfs.activateAppendWriter(pid, writer);
   vfs.appendOnce(
     '/append/reset-cleanup.txt',
     pid,
@@ -796,11 +871,13 @@ const CRED_OTHER = Object.freeze({
   const resumedRaw = new SqliteVFS(harness.sql, harness.ctx);
   assert.equal(
     [...harness.sql.exec(
-      'SELECT revoked FROM vfs_append_writer_state WHERE pid = ? AND writer_id = ?',
+      `SELECT COUNT(*) AS count FROM vfs_append_writer_state
+       WHERE pid = ? AND writer_id = ?`,
       bulkPid,
       bulkWriter,
-    )][0].revoked,
-    1,
+    )][0].count,
+    0,
+    'reconstruction finishes cleanup and removes the retired positive authority',
   );
   assert.equal(
     [...harness.sql.exec(
@@ -809,18 +886,70 @@ const CRED_OTHER = Object.freeze({
     )][0].count,
     0,
   );
-  resumedRaw.revokeAppendWriter(bulkPid, bulkWriter);
+  assert.throws(
+    () => resumedRaw.as(CRED_KERNEL).appendOnce(
+      '/append/reset-cleanup.txt',
+      bulkPid,
+      bulkWriter,
+      APPEND_MODULE,
+      1,
+      'bulk-reset',
+      new Uint8Array(),
+    ),
+    /ESTALE/,
+  );
+}
+
+// A new coordinator generation retires every prior-generation positive
+// authority while preserving writers allocated above its PID base.
+{
+  const { rawVfs, vfs } = makeBridge();
+  const oldPid = 3_000_001;
+  const currentPid = 4_000_001;
+  const oldWriter = crypto.randomUUID();
+  const currentWriter = crypto.randomUUID();
+  vfs.mkdir('/append', { recursive: true });
+  vfs.writeFile('/append/generation.txt', 'base');
+  rawVfs.activateAppendWriter(oldPid, oldWriter);
+  rawVfs.activateAppendWriter(currentPid, currentWriter);
+  rawVfs.revokeAppendWritersThrough(4_000_000);
+  assert.throws(
+    () => vfs.appendOnce(
+      '/append/generation.txt',
+      oldPid,
+      oldWriter,
+      APPEND_MODULE,
+      1,
+      'prior-generation',
+      enc.encode('x'),
+    ),
+    /ESTALE/,
+  );
+  assert.equal(
+    vfs.appendOnce(
+      '/append/generation.txt',
+      currentPid,
+      currentWriter,
+      APPEND_MODULE,
+      1,
+      'current-generation',
+      enc.encode('y'),
+    ),
+    1,
+  );
+  assert.equal(dec.decode(vfs.readFile('/append/generation.txt')), 'basey');
 }
 
 // The receipt-to-gap transition and contiguous watermark advance share the
 // same bounded transaction. A lost response cannot leave an acknowledged key
 // dependent on a client ACK that will never be retried.
 {
-  const { harness, vfs } = makeBridge();
+  const { harness, rawVfs, vfs } = makeBridge();
   const pid = 2_400_001;
   const writer = 'efefefef-efef-4fef-8fef-efefefefefef';
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/ack-reset.txt', 'base');
+  rawVfs.activateAppendWriter(pid, writer);
   vfs.appendOnce(
     '/append/ack-reset.txt',
     pid,
@@ -871,9 +1000,13 @@ const CRED_OTHER = Object.freeze({
 // Oversized appends may stage chunks, but publication and receipt insertion
 // still share one final transaction.
 {
-  const { harness, vfs } = makeBridge();
+  const { harness, rawVfs, vfs } = makeBridge();
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/large.bin', enc.encode('base'));
+  rawVfs.activateAppendWriter(
+    3_000_001,
+    '33333333-3333-4333-8333-333333333333',
+  );
   const large = new Uint8Array(MAX_TX_BLOB_BYTES + 1).fill(7);
   harness.setFaultInjector((statement) => (
     /INSERT INTO vfs_append_receipts/i.test(statement.sql)

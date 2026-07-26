@@ -75,6 +75,23 @@ const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(rawVfs);
 
+const activated = [];
+const activate = rawVfs.activateAppendWriter.bind(rawVfs);
+rawVfs.activateAppendWriter = (pid, writerId) => {
+  assert.equal(
+    bindings.some((binding) => binding.props.writerId === writerId),
+    false,
+    'direct supervisor binding is not exposed before writer activation',
+  );
+  assert.equal(
+    stagedEntrypoints.some((entrypoint) => entrypoint.props.supervisor.writerId === writerId),
+    false,
+    'staged entrypoint is not exposed before writer activation',
+  );
+  activate(pid, writerId);
+  activated.push({ pid, writerId });
+};
+
 const retired = [];
 const revoke = rawVfs.revokeAppendWriter.bind(rawVfs);
 rawVfs.revokeAppendWriter = (pid, writerId) => {
@@ -99,13 +116,15 @@ await manager.exec('module.exports = 1', {
 assert.equal(retired.length, 1, 'unkeyed one-shot node execution retires its writer');
 assert.equal(
   [...harness.sql.exec(
-    `SELECT revoked FROM vfs_append_writer_state
+    `SELECT COUNT(*) AS count FROM vfs_append_writer_state
      WHERE pid = ? AND writer_id = ?`,
     retired[0].pid,
     retired[0].writerId,
-  )][0].revoked,
-  1,
+  )][0].count,
+  0,
+  'retirement removes positive authority instead of retaining a tombstone',
 );
+assert.deepEqual(activated[0], retired[0]);
 
 manager._stageOpencodeFacet = async () => {
   const entry = processes.spawn('opencode run', ['run'], '/home/user');
@@ -132,5 +151,6 @@ await manager.execStagedArtifact('ignored-by-test', {
 });
 assert.equal(retired.length, 2, 'keyed staged one-shot execution retires its writer');
 assert.equal(stagedEntrypoints[0].props.supervisor.writerId, retired[1].writerId);
+assert.deepEqual(activated[1], retired[1]);
 
 console.log('facet-append-writer-lifecycle: all assertions passed');

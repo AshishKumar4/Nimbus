@@ -1882,25 +1882,23 @@ export class SqliteVFS {
       pid,
     )].length > 0;
     if (pidRevoked) throw vfsError('ESTALE', `append process ${pid} is being retired`);
-    let writer = [...this.sql.exec(
+    const writer = [...this.sql.exec(
       `SELECT revoked FROM vfs_append_writer_state
        WHERE pid = ? AND writer_id = ?`,
       pid,
       writerId,
     )][0] as { revoked: number } | undefined;
-    if (writer && Number(writer.revoked) !== 0) {
-      throw vfsError('ESTALE', `append writer ${pid}/${writerId} is revoked`);
+    if (!writer || Number(writer.revoked) !== 0) {
+      throw vfsError('ESTALE', `append writer ${pid}/${writerId} is unavailable`);
     }
 
-    let moduleState = writer
-      ? [...this.sql.exec(
-          `SELECT acked_through FROM vfs_append_module_state
-           WHERE pid = ? AND writer_id = ? AND module_id = ?`,
-          pid,
-          writerId,
-          moduleId,
-        )][0] as { acked_through: number } | undefined
-      : undefined;
+    let moduleState = [...this.sql.exec(
+      `SELECT acked_through FROM vfs_append_module_state
+       WHERE pid = ? AND writer_id = ? AND module_id = ?`,
+      pid,
+      writerId,
+      moduleId,
+    )][0] as { acked_through: number } | undefined;
     const ackedThrough = Number(moduleState?.acked_through ?? 0);
     if (operationId <= ackedThrough) return bytes.byteLength;
 
@@ -1976,18 +1974,9 @@ export class SqliteVFS {
            + (SELECT COUNT(*) FROM vfs_append_acked_gaps) AS count`,
       )][0] as { count?: number } | undefined)?.count ?? 0,
     );
-    const requiredRows = 1 + (writer ? 0 : 1) + (moduleState ? 0 : 1);
+    const requiredRows = 1 + (moduleState ? 0 : 1);
     if (retainedCount > VFS_APPEND_RECEIPT_LIMIT - requiredRows) {
       throw vfsError('ENOSPC', 'append receipt journal is full');
-    }
-    if (!writer) {
-      this.sql.exec(
-        `INSERT INTO vfs_append_writer_state
-         (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
-        pid,
-        writerId,
-      );
-      writer = { revoked: 0 };
     }
     if (!moduleState) {
       this.sql.exec(
@@ -2025,6 +2014,49 @@ export class SqliteVFS {
     };
     this.writeRange(effectivePath, offset, bytes, cred, recordReceipt);
     return bytes.byteLength;
+  }
+
+  activateAppendWriter(pid: number, writerId: string): void {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw vfsError('EINVAL', `invalid append pid ${pid}`);
+    assertAppendIncarnation(writerId, 'writer');
+    if ([...this.sql.exec(
+      'SELECT 1 AS revoked FROM vfs_append_pid_revocations WHERE pid = ?',
+      pid,
+    )].length > 0) {
+      throw vfsError('ESTALE', `append process ${pid} is being retired`);
+    }
+    const writers = [...this.sql.exec(
+      `SELECT writer_id, revoked FROM vfs_append_writer_state
+       WHERE pid = ?`,
+      pid,
+    )] as { writer_id: string; revoked: number }[];
+    const writer = writers.find((candidate) => candidate.writer_id === writerId);
+    if (writer && Number(writer.revoked) === 0) {
+      return;
+    }
+    if (writers.length > 0) {
+      throw vfsError('ESTALE', `append process ${pid} already has a different writer`);
+    }
+    const retainedCount = Number(
+      ([...this.sql.exec(
+        `SELECT
+           (SELECT COUNT(*) FROM vfs_append_writer_state WHERE revoked = 0)
+           + (SELECT COUNT(*) FROM vfs_append_module_state)
+           + (SELECT COUNT(*) FROM vfs_append_receipts)
+           + (SELECT COUNT(*) FROM vfs_append_acked_gaps) AS count`,
+      )][0] as { count?: number } | undefined)?.count ?? 0,
+    );
+    if (retainedCount >= VFS_APPEND_RECEIPT_LIMIT) {
+      throw vfsError('ENOSPC', 'append receipt journal is full');
+    }
+    this.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO vfs_append_writer_state
+         (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+        pid,
+        writerId,
+      );
+    });
   }
 
   private acknowledgeAppend(
@@ -2154,13 +2186,12 @@ export class SqliteVFS {
     assertAppendIncarnation(writerId, 'writer');
     this.transactionSync(() => {
       this.sql.exec(
-        `INSERT INTO vfs_append_writer_state (pid, writer_id, revoked, retired_at)
-         VALUES (?, ?, 1, ?)
-         ON CONFLICT(pid, writer_id) DO UPDATE
-         SET revoked = 1, retired_at = excluded.retired_at`,
+        `UPDATE vfs_append_writer_state
+         SET revoked = 1, retired_at = ?
+         WHERE pid = ? AND writer_id = ?`,
+        Date.now(),
         pid,
         writerId,
-        Date.now(),
       );
     });
     this.deleteAppendRowsBounded(
@@ -2178,7 +2209,11 @@ export class SqliteVFS {
       'pid = ? AND writer_id = ?',
       [pid, writerId],
     );
-    this.trimAppendWriterTombstones();
+    this.deleteAppendRowsBounded(
+      'vfs_append_writer_state',
+      'pid = ? AND writer_id = ? AND revoked = 1',
+      [pid, writerId],
+    );
   }
 
   revokeAppendWriters(pid: number): void {
@@ -2192,6 +2227,24 @@ export class SqliteVFS {
       );
     });
     this.finishAppendPidRevocation(pid);
+  }
+
+  revokeAppendWritersThrough(maxPid: number): void {
+    if (!Number.isSafeInteger(maxPid) || maxPid < 0) {
+      throw vfsError('EINVAL', `invalid append pid ceiling ${maxPid}`);
+    }
+    for (;;) {
+      const pids = [...this.sql.exec(
+        `SELECT DISTINCT pid FROM vfs_append_writer_state
+         WHERE pid <= ?
+         ORDER BY pid
+         LIMIT ?`,
+        maxPid,
+        MAX_TX_LOGICAL_ROWS,
+      )] as { pid: number }[];
+      if (pids.length === 0) return;
+      for (const row of pids) this.revokeAppendWriters(Number(row.pid));
+    }
   }
 
   private finishAppendPidRevocation(pid: number): void {
@@ -2220,14 +2273,22 @@ export class SqliteVFS {
     this.deleteAppendRowsBounded('vfs_append_receipts', 'pid = ?', [pid]);
     this.deleteAppendRowsBounded('vfs_append_acked_gaps', 'pid = ?', [pid]);
     this.deleteAppendRowsBounded('vfs_append_module_state', 'pid = ?', [pid]);
+    this.deleteAppendRowsBounded(
+      'vfs_append_writer_state',
+      'pid = ? AND revoked = 1',
+      [pid],
+    );
     this.transactionSync(() => {
       this.sql.exec('DELETE FROM vfs_append_pid_revocations WHERE pid = ?', pid);
     });
-    this.trimAppendWriterTombstones();
   }
 
   private deleteAppendRowsBounded(
-    table: 'vfs_append_receipts' | 'vfs_append_acked_gaps' | 'vfs_append_module_state',
+    table:
+      | 'vfs_append_receipts'
+      | 'vfs_append_acked_gaps'
+      | 'vfs_append_module_state'
+      | 'vfs_append_writer_state',
     predicate: string,
     params: readonly unknown[],
   ): void {
@@ -2245,38 +2306,6 @@ export class SqliteVFS {
           ...rows.map((row) => row.rowid),
         );
       });
-    }
-  }
-
-  private trimAppendWriterTombstones(): void {
-    // Retirement is called only after the concrete RPC capability is
-    // disposed. Recent tombstones reject calls already in flight at teardown;
-    // older disposed capabilities cannot originate new calls, so retaining a
-    // bounded newest window is sufficient and cannot evict a live retry key.
-    const retained = Number(
-      ([...this.sql.exec(
-        'SELECT COUNT(*) AS count FROM vfs_append_writer_state WHERE revoked = 1',
-      )][0] as { count?: number } | undefined)?.count ?? 0,
-    );
-    let excess = retained - VFS_APPEND_RECEIPT_LIMIT;
-    while (excess > 0) {
-      const batchSize = Math.min(excess, MAX_TX_LOGICAL_ROWS);
-      const rows = [...this.sql.exec(
-        `SELECT rowid FROM vfs_append_writer_state
-         WHERE revoked = 1
-         ORDER BY retired_at, rowid
-         LIMIT ?`,
-        batchSize,
-      )] as { rowid: number }[];
-      if (rows.length === 0) return;
-      const placeholders = rows.map(() => '?').join(',');
-      this.transactionSync(() => {
-        this.sql.exec(
-          `DELETE FROM vfs_append_writer_state WHERE rowid IN (${placeholders})`,
-          ...rows.map((row) => row.rowid),
-        );
-      });
-      excess -= rows.length;
     }
   }
 
@@ -2303,6 +2332,11 @@ export class SqliteVFS {
       );
     }
     this.deleteAppendRowsBounded(
+      'vfs_append_writer_state',
+      'revoked = 1',
+      [],
+    );
+    this.deleteAppendRowsBounded(
       'vfs_append_acked_gaps',
       `EXISTS (
         SELECT 1 FROM vfs_append_module_state AS module
@@ -2313,7 +2347,6 @@ export class SqliteVFS {
       )`,
       [],
     );
-    this.trimAppendWriterTombstones();
   }
 
   /**

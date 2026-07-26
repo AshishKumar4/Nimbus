@@ -2913,15 +2913,8 @@ export class FacetManager {
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
         const writerId = crypto.randomUUID();
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({
-                props: {
-                    doId: this.ctx.id.toString(),
-                    pid: entry.pid,
-                    writerId,
-                },
-            })
-            : undefined;
+        let supervisorBinding;
+        let writerActivated = false;
         const body = JSON.stringify({
             argv: opts.argv || [],
             env: opts.env || {},
@@ -2952,6 +2945,17 @@ export class FacetManager {
         let worker;
         let entrypoint;
         try {
+            if (ctxExports?.SupervisorRPC) {
+                this._activateProcessVfsWriter(entry.pid, writerId);
+                writerActivated = true;
+                supervisorBinding = ctxExports.SupervisorRPC({
+                    props: {
+                        doId: this.ctx.id.toString(),
+                        pid: entry.pid,
+                        writerId,
+                    },
+                });
+            }
             const __loadStart = diagSink ? Date.now() : 0;
             worker = this.env.LOADER.load({
                 compatibilityDate: CF_COMPAT_DATE,
@@ -2992,7 +2996,7 @@ export class FacetManager {
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);
             disposeRpcResource(supervisorBinding);
-            if (supervisorBinding)
+            if (writerActivated)
                 this.vfs?.revokeAppendWriter(entry.pid, writerId);
         }
     }
@@ -3020,7 +3024,10 @@ export class FacetManager {
         const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid, writerId };
         const ctxExports = getNimbusCtxExports();
         let entrypoint;
+        let writerActivated = false;
         try {
+            this._activateProcessVfsWriter(staged.pid, writerId);
+            writerActivated = true;
             entrypoint = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, undefined, { kind: 'staged', stage: staged.stageSpec });
             if (typeof entrypoint.fetch !== 'function') {
                 throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
@@ -3042,7 +3049,8 @@ export class FacetManager {
         }
         finally {
             disposeRpcResource(entrypoint);
-            this.vfs?.revokeAppendWriter(staged.pid, writerId);
+            if (writerActivated)
+                this.vfs?.revokeAppendWriter(staged.pid, writerId);
         }
     }
     /**
@@ -3137,6 +3145,9 @@ export class FacetManager {
                 // is still expected to run — never after kill/session teardown.
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
                 onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+                onWriterActivated: (writerId) => {
+                    this._activateProcessVfsWriter(pid, writerId);
+                },
                 onWriterRetired: (writerId) => {
                     this.vfs?.revokeAppendWriter(pid, writerId);
                 },
@@ -3272,6 +3283,9 @@ export class FacetManager {
                 boot: { kind: 'staged', stage: stageSpec },
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
                 onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+                onWriterActivated: (writerId) => {
+                    this._activateProcessVfsWriter(pid, writerId);
+                },
                 onWriterRetired: (writerId) => {
                     this.vfs?.revokeAppendWriter(pid, writerId);
                 },
@@ -3352,6 +3366,9 @@ export class FacetManager {
             workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
             shouldRespawn: () => this.processes.get(pid)?.state === 'running',
             onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+            onWriterActivated: (writerId) => {
+                this._activateProcessVfsWriter(pid, writerId);
+            },
             onWriterRetired: (writerId) => {
                 this.vfs?.revokeAppendWriter(pid, writerId);
             },
@@ -3359,6 +3376,15 @@ export class FacetManager {
         });
         this._noteProcessPlacement(pid, handle);
         return handle;
+    }
+    _activateProcessVfsWriter(pid, writerId) {
+        const entry = this.processes.get(pid);
+        if (!entry || entry.state !== 'running') {
+            throw new Error(`Nimbus: cannot activate append writer for non-running process ${pid}`);
+        }
+        // ProcessTable PIDs are monotonic within a generation and generation-strided
+        // across resets, so this live entry is the sole positive authority root.
+        this.vfs?.activateAppendWriter(pid, writerId);
     }
     /**
      * A host death that the fabric recovered from is never silent: it lands in
