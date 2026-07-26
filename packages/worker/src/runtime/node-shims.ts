@@ -613,8 +613,15 @@ const __fsMod = (() => {
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
-      await _fsRpc(supervisor.writeFile(absPath, __vfsWrites[k]), "write", absPath, () => undefined);
-      delete __vfsWrites[k];
+      const content = __vfsWrites[k];
+      const generations = typeof __vfsWriteGenerations !== "undefined"
+        ? __vfsWriteGenerations
+        : null;
+      const generation = generations ? generations[k] : undefined;
+      await _fsRpc(supervisor.writeFile(absPath, content), "write", absPath, () => undefined);
+      if (generations ? generations[k] === generation : __vfsWrites[k] === content) {
+        delete __vfsWrites[k];
+      }
       _markVfsStale();
     } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
       await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);

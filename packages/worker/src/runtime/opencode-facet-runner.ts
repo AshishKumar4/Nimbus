@@ -37,6 +37,7 @@
  */
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
+import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,
@@ -791,7 +792,7 @@ let __supervisor = null;
 const __vfsBundle = ${opts.vfsBundle};
 const __vfsManifest = ${opts.vfsManifest};
 const __vfsMetadata = ${opts.vfsMetadata};
-const __vfsWrites = {};
+${VFS_WRITE_LEDGER_SOURCE}
 const __vfsDirs = {};
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push
 // here on every fs/sqlite/child-process op, so over a resident TUI's lifetime a
