@@ -62,8 +62,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         gid: st.gid,
         revision: this.rawVfs.revision(p),
       };
-    } catch {
-      return null;
+    } catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) return null;
+      throw error;
     }
   }
 
@@ -72,8 +73,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!p) return null;
     try {
       return this.vfs.readFile(p);
-    } catch {
-      return null;
+    } catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) return null;
+      throw error;
     }
   }
 
@@ -98,8 +100,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!p) return null;
     try {
       return this.vfs.readRange(p, offset, length);
-    } catch {
-      return null;
+    } catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) return null;
+      throw error;
     }
   }
 
@@ -421,4 +424,8 @@ function fsError(code: string, syscall: string, path: string): Error {
   err.syscall = syscall;
   err.path = path;
   return err;
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }

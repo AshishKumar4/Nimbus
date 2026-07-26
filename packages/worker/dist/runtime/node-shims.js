@@ -832,13 +832,14 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
+      await _flushLocalPathToSupervisor(absPath, supervisor);
       for (const localPath of Object.keys(__vfsWrites || {})) {
-        if (localPath.startsWith(prefix)) {
+        if (localPath !== key && localPath.startsWith(prefix)) {
           await _flushLocalPathToSupervisor("/" + localPath, supervisor);
         }
       }
       for (const localPath of Object.keys(__vfsDirs || {})) {
-        if (localPath.startsWith(prefix)) {
+        if (localPath !== key && localPath.startsWith(prefix)) {
           await _flushLocalPathToSupervisor("/" + localPath, supervisor);
         }
       }
