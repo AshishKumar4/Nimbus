@@ -670,8 +670,8 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
     { 'home/user/same-generation-claim.txt': 'base' },
   );
   const path = '/home/user/same-generation-claim.txt';
-  fs.writeFileSync(path, 'newbase');
   const handle = await fs.promises.open(path, 'r+');
+  fs.writeFileSync(path, 'newbase');
   const ranged = handle.write('X', 0);
   await fullCall;
   const boundary = flushVfsWrite(path, (content) => supervisor.writeFile(path, content));
