@@ -25,6 +25,12 @@ function makeBridge() {
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+const CRED_OTHER = Object.freeze({
+  uid: 2001,
+  gid: 2001,
+  groups: Object.freeze([2001]),
+  umask: 0o022,
+});
 
 // ── readRange / writeRange / truncate basics ──
 {
@@ -51,6 +57,37 @@ const dec = new TextDecoder();
   await bridge.mkdir('/home/user/adir');
   await assert.rejects(bridge.truncate('/home/user/adir', 0), /EISDIR/);
   await assert.rejects(bridge.writeRange('/home/user/adir', 0, enc.encode('x')), /EISDIR/);
+}
+
+// ── read misses are null; permission and type errors stay errors ──
+{
+  const { rawVfs, vfs } = makeBridge();
+  vfs.mkdir('/private', { mode: 0o700 });
+  vfs.writeFile('/private/hidden.txt', 'hidden');
+  vfs.mkdir('/visible', { mode: 0o711 });
+  vfs.writeFile('/visible/denied.txt', 'denied', { mode: 0o000 });
+  vfs.mkdir('/visible/directory', { mode: 0o755 });
+
+  const denied = new SqliteRuntimeFsBridge(rawVfs.as(CRED_OTHER), rawVfs);
+  await assert.rejects(
+    denied.stat('/private/hidden.txt'),
+    (error) => error.code === 'EACCES',
+  );
+  await assert.rejects(
+    denied.readFile('/visible/denied.txt'),
+    (error) => error.code === 'EACCES',
+  );
+  await assert.rejects(
+    denied.readRange('/visible/denied.txt', 0, 1),
+    (error) => error.code === 'EACCES',
+  );
+  await assert.rejects(
+    denied.readRange('/visible/directory', 0, 1),
+    (error) => error.code === 'EISDIR',
+  );
+  assert.equal(await denied.stat('/visible/missing.txt'), null);
+  assert.equal(await denied.readFile('/visible/missing.txt'), null);
+  assert.equal(await denied.readRange('/visible/missing.txt', 0, 1), null);
 }
 
 // ── per-path revisions: stat().revision + revision(path) isolation ──

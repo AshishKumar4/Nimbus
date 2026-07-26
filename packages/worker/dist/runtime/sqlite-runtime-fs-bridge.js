@@ -55,8 +55,10 @@ export class SqliteRuntimeFsBridge {
                 revision: this.rawVfs.revision(p),
             };
         }
-        catch {
-            return null;
+        catch (error) {
+            if (hasErrorCode(error, 'ENOENT'))
+                return null;
+            throw error;
         }
     }
     async readFile(path, options = {}) {
@@ -66,8 +68,10 @@ export class SqliteRuntimeFsBridge {
         try {
             return this.vfs.readFile(p);
         }
-        catch {
-            return null;
+        catch (error) {
+            if (hasErrorCode(error, 'ENOENT'))
+                return null;
+            throw error;
         }
     }
     async writeFile(path, bytes, options = {}) {
@@ -84,8 +88,10 @@ export class SqliteRuntimeFsBridge {
         try {
             return this.vfs.readRange(p, offset, length);
         }
-        catch {
-            return null;
+        catch (error) {
+            if (hasErrorCode(error, 'ENOENT'))
+                return null;
+            throw error;
         }
     }
     async writeRange(path, offset, bytes, options = {}) {
@@ -395,4 +401,7 @@ function fsError(code, syscall, path) {
     err.syscall = syscall;
     err.path = path;
     return err;
+}
+function hasErrorCode(error, code) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }

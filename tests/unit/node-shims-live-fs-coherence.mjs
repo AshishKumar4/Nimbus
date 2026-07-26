@@ -125,6 +125,11 @@ assert.equal(dec.decode(vfs.readFile(resident)), 'same-facet-pending');
 
 fs.mkdirSync(`${dir}/same-facet-dir`);
 assert.deepEqual(
+  await fsp.readdir(`${dir}/same-facet-dir`),
+  [],
+  'async readdir flushes the exact pending directory before listing it',
+);
+assert.deepEqual(
   await fsp.readdir(dir),
   ['late.txt', 'resident.txt', 'same-facet-dir'],
 );
