@@ -120,6 +120,17 @@ assert.deepEqual(observed, {
 
 // Pending sync mutations are newer than the supervisor until flushed. An
 // async observation must preserve them by making them authoritative first.
+fs.writeFileSync(resident, 'same-facet-open-pending');
+{
+  const handle = await fsp.open(resident, 'r');
+  assert.equal(
+    dec.decode(vfs.readFile(resident)),
+    'same-facet-open-pending',
+    'async open flushes pending sync content before observing authority metadata',
+  );
+  await handle.close();
+}
+
 fs.writeFileSync(resident, 'same-facet-pending');
 assert.equal(await fsp.readFile(resident, 'utf8'), 'same-facet-pending');
 assert.equal(dec.decode(vfs.readFile(resident)), 'same-facet-pending');
