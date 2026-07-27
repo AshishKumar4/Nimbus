@@ -335,6 +335,19 @@ const FsWriteRangeArgsSchema = z.object({
   offset: FsRangeOffsetSchema,
 });
 
+const FsAppendArgsSchema = z.object({
+  path: z.string(),
+  writerId: z.string().uuid(),
+  moduleId: z.string().uuid(),
+  operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
+});
+
+const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
+  writerId: true,
+  moduleId: true,
+  operationId: true,
+});
+
 const FsTruncateArgsSchema = z.object({
   path: z.string(),
   size: FsRangeOffsetSchema,
@@ -365,8 +378,58 @@ export async function _rpcFsWriteRange(
   bytes: Uint8Array | ArrayBuffer | number[],
   pid?: number,
 ): Promise<number> {
-    const args = FsWriteRangeArgsSchema.parse({ path, offset });
-    return runtimeFs(self, pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+  const args = FsWriteRangeArgsSchema.parse({ path, offset });
+  return runtimeFs(self, pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+}
+
+export async function _rpcFsAppend(
+  self: RpcHost,
+  path: string,
+  writerId: string,
+  moduleId: string,
+  operationId: string,
+  bytes: Uint8Array | ArrayBuffer | number[],
+  pid?: number,
+): Promise<number> {
+  const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
+  const sequence = Number(args.operationId);
+  if (!Number.isSafeInteger(sequence)) {
+    throw new Error('filesystem append operation exceeds the safe integer range');
+  }
+  const processId = processPid(pid);
+  const data = normalizeWriteBatchChunkData(bytes);
+  const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+  const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return runtimeFs(self, pid).appendOnce(
+    args.path,
+    processId,
+    args.writerId,
+    args.moduleId,
+    sequence,
+    digest,
+    data,
+  );
+}
+
+export async function _rpcFsAppendAck(
+  self: RpcHost,
+  writerId: string,
+  moduleId: string,
+  operationId: string,
+  pid?: number,
+): Promise<void> {
+  const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
+  const sequence = Number(args.operationId);
+  if (!Number.isSafeInteger(sequence)) {
+    throw new Error('filesystem append operation exceeds the safe integer range');
+  }
+  const processId = processPid(pid);
+  await runtimeFs(self, processId).acknowledgeAppend(
+    processId,
+    args.writerId,
+    args.moduleId,
+    sequence,
+  );
 }
 
 export async function _rpcFsTruncate(self: RpcHost, path: string, size: number, pid?: number): Promise<void> {
@@ -1133,6 +1196,8 @@ const HostProcessOptsSchema = z.object({
   coordinatorDoId: z.string().min(1),
   /** Supervisor-assigned pid of the process entry on the coordinator. */
   pid: z.number().int().positive(),
+  /** Trusted identity of this concrete resident-host incarnation. */
+  writerId: z.string().uuid(),
   /** Keyed dynamic-worker identity on THIS peer's loader. */
   workerKey: z.string().min(1),
   /** Runner contract: does startProcess hold for the process's life? */
@@ -1149,7 +1214,7 @@ const HostProcessOptsSchema = z.object({
  */
 export interface HostedProcessRecord {
   /** Coordinator identity every leg mints its own stubs against. */
-  supervisor: { doId: string; pid: number };
+  supervisor: { doId: string; pid: number; writerId: string };
   hosted: Promise<HostedResidentProcess>;
   booted: Promise<unknown>;
   /** Settles when the coordinator cancels or the process is torn down. */
@@ -1246,7 +1311,11 @@ export async function _rpcHostProcess(
   hosted.catch(() => {});
   booted.catch(() => {});
   registerHostedRecord(self, workerKey, {
-    supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+    supervisor: {
+      doId: hostOpts.coordinatorDoId,
+      pid: hostOpts.pid,
+      writerId: hostOpts.writerId,
+    },
     hosted, booted, cancelled, cancel,
   });
 
@@ -1254,7 +1323,11 @@ export async function _rpcHostProcess(
   try {
     facet = await hostResidentProcess({
       ctxExports: getNimbusCtxExports(),
-      supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+      supervisor: {
+        doId: hostOpts.coordinatorDoId,
+        pid: hostOpts.pid,
+        writerId: hostOpts.writerId,
+      },
       workerKey,
     }, spec);
     settleHosted(facet);

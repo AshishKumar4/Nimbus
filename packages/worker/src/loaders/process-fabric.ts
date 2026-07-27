@@ -216,14 +216,16 @@ export interface LoadedWorkerEntrypointStub {
 }
 
 export interface NimbusCtxExports {
-  SupervisorRPC?: (options: { props: { doId: string; pid: number } }) => unknown;
+  SupervisorRPC?: (options: {
+    props: { doId: string; pid: number; writerId: string };
+  }) => unknown;
   NimbusLoadedEntrypoint?: (options: {
     props: {
       key: string;
       name: string | null;
       depth: number;
       code: unknown;
-      supervisor: { doId: string; pid: number };
+      supervisor: { doId: string; pid: number; writerId: string };
       stage?: OpencodeStageSpec;
       residentCode?: ResidentCodeSpec;
     };
@@ -247,7 +249,7 @@ export function getNimbusCtxExports(): NimbusCtxExports {
 export async function createLoadedWorkerEntrypoint(
   ctxExports: NimbusCtxExports,
   code: unknown,
-  supervisor: { doId: string; pid: number },
+  supervisor: { doId: string; pid: number; writerId: string },
   name: string | null = null,
   key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
   boot?: ResidentBootSpec,
@@ -278,7 +280,7 @@ export interface ResidentHost {
    */
   ctxExports: NimbusCtxExports;
   /** Always the COORDINATOR's identity, whichever DO is hosting. */
-  supervisor: { doId: string; pid: number };
+  supervisor: { doId: string; pid: number; writerId: string };
   workerKey: string;
 }
 
@@ -311,9 +313,15 @@ export async function hostResidentProcess(
   boot: ResidentBootSpec,
 ): Promise<HostedResidentProcess> {
   const route = await createRouteTarget(host);
-  const startStub = await createLoadedWorkerEntrypoint(
-    host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot,
-  );
+  let startStub: LoadedWorkerEntrypointStub;
+  try {
+    startStub = await createLoadedWorkerEntrypoint(
+      host.ctxExports, undefined, host.supervisor, null, host.workerKey, boot,
+    );
+  } catch (error) {
+    disposeRpcResource(route);
+    throw error;
+  }
   if (typeof startStub.startProcess !== 'function') {
     disposeRpcResources([startStub, route]);
     throw new Error('Nimbus: resident process entrypoint has no startProcess method');
@@ -359,6 +367,7 @@ async function createRouteTarget(host: ResidentHost): Promise<RouteableFacetTarg
 export interface HostProcessOpts {
   coordinatorDoId: string;
   pid: number;
+  writerId: string;
   workerKey: string;
   startContract: StartContract;
   startArgs?: unknown;
@@ -567,6 +576,13 @@ export interface ResidentProcessSpawn {
    * log so a death-plus-recovery is never silent.
    */
   onRespawn?: (cause: unknown) => void;
+  /**
+   * Called before any concrete host capability can expose this writer.
+   * A spawn must not proceed unless the supervisor accepts the authority.
+   */
+  onWriterActivated: (writerId: string) => void;
+  /** Called only after the concrete host resources for this writer are revoked. */
+  onWriterRetired: (writerId: string) => void;
 }
 
 interface PeerPlacementInternal {
@@ -614,8 +630,26 @@ export class ProcessFabric {
   // ── light: the facet lands in the coordinator's own workerd process ───
 
   private async _startLocal(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle> {
-    const hosted = await hostResidentProcess(this._localHost(spawn), spawn.boot);
-    const started = hosted.start(spawn.startArgs);
+    // The facet-local append sequence starts at one when its module evaluates.
+    // Bind that sequence to this concrete host, then retire it only after the
+    // host resources are disposed; a later host must use a fresh incarnation.
+    const writerId = crypto.randomUUID();
+    spawn.onWriterActivated(writerId);
+    let hosted: HostedResidentProcess;
+    try {
+      hosted = await hostResidentProcess(this._localHost(spawn, writerId), spawn.boot);
+    } catch (error) {
+      spawn.onWriterRetired(writerId);
+      throw error;
+    }
+    let started: Promise<unknown>;
+    try {
+      started = hosted.start(spawn.startArgs);
+    } catch (error) {
+      hosted.dispose();
+      spawn.onWriterRetired(writerId);
+      throw error;
+    }
     const held = heldUntilKilled();
     // `lifetime`: the runner's startProcess IS the process, so its settlement
     // is the lifecycle — exactly the pre-fabric boot. `boot`: the runner
@@ -627,17 +661,24 @@ export class ProcessFabric {
     return new ResidentProcessHandle({
       processClass: 'light',
       placement: () => ({ kind: 'local' }),
-      done: done.finally(() => hosted.dispose()),
+      done: done.finally(() => {
+        hosted.dispose();
+        spawn.onWriterRetired(writerId);
+      }),
       booted: () => started,
       routeTarget: hosted.route,
       kill: () => { held.release(); hosted.dispose(); },
     });
   }
 
-  private _localHost(spawn: ResidentProcessSpawn): ResidentHost {
+  private _localHost(spawn: ResidentProcessSpawn, writerId: string): ResidentHost {
     return {
       ctxExports: getNimbusCtxExports(),
-      supervisor: { doId: this.coordDoId, pid: spawn.pid },
+      supervisor: {
+        doId: this.coordDoId,
+        pid: spawn.pid,
+        writerId,
+      },
       workerKey: spawn.workerKey,
     };
   }
@@ -659,6 +700,7 @@ export class ProcessFabric {
     // First placement happens inline so a placement failure rejects the
     // spawn itself (matching the local path's boot-failure surface).
     const first = await this._placeDistinctPeer();
+    const firstWriterId = this._activatePeerWriter(spawn, first);
     const state = { current: first, handle: undefined as ResidentProcessHandle | undefined };
     // The route target follows the process across respawns by reading the
     // live placement on every request — PortRegistry keeps one binding.
@@ -666,7 +708,7 @@ export class ProcessFabric {
       handleHttpRequest: (request: Request) =>
         routeThroughPeer(state.current.stub, spawn.workerKey, request),
     };
-    const done = this._runPeerLifecycle(spawn, state);
+    const done = this._runPeerLifecycle(spawn, state, firstWriterId);
     const handle = new ResidentProcessHandle({
       processClass: 'heavy',
       placement: () => ({
@@ -697,8 +739,10 @@ export class ProcessFabric {
   private async _runPeerLifecycle(
     spawn: ResidentProcessSpawn,
     state: { current: PeerPlacementInternal; handle: ResidentProcessHandle | undefined },
+    initialWriterId: string,
   ): Promise<void> {
     let respawnsLeft = HEAVY_RESPAWN_BUDGET;
+    let writerId = initialWriterId;
     for (;;) {
       const placement = state.current;
       this.tokensInUse.set(spawn.pid, placement.isolateToken);
@@ -706,6 +750,7 @@ export class ProcessFabric {
         await placement.stub._rpcHostProcess(spawn.boot, {
           coordinatorDoId: this.coordDoId,
           pid: spawn.pid,
+          writerId,
           workerKey: spawn.workerKey,
           startContract: spawn.startContract,
           startArgs: spawn.startArgs,
@@ -720,11 +765,31 @@ export class ProcessFabric {
       } finally {
         this.tokensInUse.delete(spawn.pid);
         disposeRpcResource(placement.stub);
+        spawn.onWriterRetired(writerId);
       }
       // Respawn: fresh slot, re-verified placement. The handle's route target
       // and start() read `state.current`, so both re-point automatically.
-      state.current = await this._placeDistinctPeer();
+      const next = await this._placeDistinctPeer();
+      writerId = this._activatePeerWriter(spawn, next);
+      state.current = next;
       if (state.handle) state.handle.respawns++;
+    }
+  }
+
+  private _activatePeerWriter(
+    spawn: ResidentProcessSpawn,
+    placement: PeerPlacementInternal,
+  ): string {
+    // A respawn re-evaluates the facet module and resets its local sequence.
+    // Register a fresh incarnation before exposing this placement to a host
+    // RPC or to the placement-following handle.
+    const writerId = crypto.randomUUID();
+    try {
+      spawn.onWriterActivated(writerId);
+      return writerId;
+    } catch (error) {
+      disposeRpcResource(placement.stub);
+      throw error;
     }
   }
 
@@ -741,15 +806,28 @@ export class ProcessFabric {
     for (let attempt = 0; attempt < HEAVY_PLACEMENT_MAX_ATTEMPTS; attempt++) {
       const slot = this.nextSlot++;
       const peerName = `${this.coordDoId}:proc:${slot}`;
-      const stub = processPeerStub(ns.get(ns.idFromName(peerName)), peerName);
-      const probe = await this._probePeer(stub, peerName);
-      const candidate: PeerPlacementInternal = { stub, slot, peerName, isolateToken: probe.isolateToken };
-      if (!denied.has(probe.isolateToken)) {
+      let resource: unknown;
+      try {
+        resource = ns.get(ns.idFromName(peerName));
+        const stub = processPeerStub(resource, peerName);
+        const probe = await this._probePeer(stub, peerName);
+        const candidate: PeerPlacementInternal = {
+          stub,
+          slot,
+          peerName,
+          isolateToken: probe.isolateToken,
+        };
+        if (!denied.has(probe.isolateToken)) {
+          if (colocated) disposeRpcResource(colocated.stub);
+          return candidate;
+        }
         if (colocated) disposeRpcResource(colocated.stub);
-        return candidate;
+        colocated = candidate;
+      } catch (error) {
+        disposeRpcResource(resource);
+        if (colocated) disposeRpcResource(colocated.stub);
+        throw error;
       }
-      if (colocated) disposeRpcResource(colocated.stub);
-      colocated = candidate;
     }
     return colocated!;
   }

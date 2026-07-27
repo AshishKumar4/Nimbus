@@ -4,9 +4,10 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number }
+ * Props: { doId: string, pid: number, writerId: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
+ *   writerId — the active append-writer incarnation for this process
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -17,7 +18,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsTruncate (stateless ranged ops)
+ *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -132,6 +133,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
       throw new Error('SupervisorRPC: missing or invalid process pid in props');
     }
     return pid;
+  }
+
+  private _writerId(): string {
+    const writerId = (this.ctx as any).props?.writerId;
+    if (typeof writerId !== 'string' || writerId.length === 0) {
+      throw new Error('SupervisorRPC: missing VFS writer incarnation');
+    }
+    return writerId;
   }
 
   // ── Filesystem RPC ────────────────────────────────────────────────────
@@ -257,6 +266,30 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number> {
     return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes, this._pid()));
+  }
+
+  async fsAppend(
+    path: string,
+    moduleId: string,
+    operationId: string,
+    bytes: Uint8Array | ArrayBuffer,
+  ): Promise<number> {
+    return this._call(
+      this._getStub()._rpcFsAppend(
+        path,
+        this._writerId(),
+        moduleId,
+        operationId,
+        bytes,
+        this._pid(),
+      ),
+    );
+  }
+
+  async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
+    return this._call(
+      this._getStub()._rpcFsAppendAck(this._writerId(), moduleId, operationId, this._pid()),
+    );
   }
 
   async fsTruncate(path: string, size: number): Promise<void> {

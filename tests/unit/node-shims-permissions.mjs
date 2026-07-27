@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 function createShim({
@@ -10,14 +11,15 @@ function createShim({
   supervisor = null,
 } = {}) {
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
+    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
     '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict"; let stdout = ""; let stderr = ""; let exitCode = 0; const __pendingIO = [];' +
+      VFS_WRITE_LEDGER_SOURCE +
       generateShimsCode() +
       '\n;return { fs: __fsMod, os: __osMod, process: __processMod, pendingIO: __pendingIO };',
   );
   return factory(
-    bundle, metadata, {}, {}, {}, supervisor, cred,
+    bundle, metadata, {}, {}, supervisor, cred,
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
 }

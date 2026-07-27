@@ -60,6 +60,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
     supervisor: z.ZodOptional<z.ZodObject<{
         doId: z.ZodString;
         pid: z.ZodNumber;
+        writerId: z.ZodString;
     }, z.core.$strip>>;
     stage: z.ZodOptional<z.ZodUnknown>;
     residentCode: z.ZodOptional<z.ZodObject<{

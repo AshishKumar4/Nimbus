@@ -261,6 +261,17 @@ const FsWriteRangeArgsSchema = z.object({
     path: z.string(),
     offset: FsRangeOffsetSchema,
 });
+const FsAppendArgsSchema = z.object({
+    path: z.string(),
+    writerId: z.string().uuid(),
+    moduleId: z.string().uuid(),
+    operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
+});
+const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
+    writerId: true,
+    moduleId: true,
+    operationId: true,
+});
 const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
@@ -275,6 +286,27 @@ export async function _rpcFsReadRange(self, path, offset, length, pid) {
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
     return runtimeFs(self, pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+}
+export async function _rpcFsAppend(self, path, writerId, moduleId, operationId, bytes, pid) {
+    const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
+    const sequence = Number(args.operationId);
+    if (!Number.isSafeInteger(sequence)) {
+        throw new Error('filesystem append operation exceeds the safe integer range');
+    }
+    const processId = processPid(pid);
+    const data = normalizeWriteBatchChunkData(bytes);
+    const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+    const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return runtimeFs(self, pid).appendOnce(args.path, processId, args.writerId, args.moduleId, sequence, digest, data);
+}
+export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid) {
+    const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
+    const sequence = Number(args.operationId);
+    if (!Number.isSafeInteger(sequence)) {
+        throw new Error('filesystem append operation exceeds the safe integer range');
+    }
+    const processId = processPid(pid);
+    await runtimeFs(self, processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
 }
 export async function _rpcFsTruncate(self, path, size, pid) {
     const args = FsTruncateArgsSchema.parse({ path, size });
@@ -978,6 +1010,8 @@ const HostProcessOptsSchema = z.object({
     coordinatorDoId: z.string().min(1),
     /** Supervisor-assigned pid of the process entry on the coordinator. */
     pid: z.number().int().positive(),
+    /** Trusted identity of this concrete resident-host incarnation. */
+    writerId: z.string().uuid(),
     /** Keyed dynamic-worker identity on THIS peer's loader. */
     workerKey: z.string().min(1),
     /** Runner contract: does startProcess hold for the process's life? */
@@ -1067,14 +1101,22 @@ export async function _rpcHostProcess(self, boot, opts) {
     hosted.catch(() => { });
     booted.catch(() => { });
     registerHostedRecord(self, workerKey, {
-        supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+        supervisor: {
+            doId: hostOpts.coordinatorDoId,
+            pid: hostOpts.pid,
+            writerId: hostOpts.writerId,
+        },
         hosted, booted, cancelled, cancel,
     });
     let facet;
     try {
         facet = await hostResidentProcess({
             ctxExports: getNimbusCtxExports(),
-            supervisor: { doId: hostOpts.coordinatorDoId, pid: hostOpts.pid },
+            supervisor: {
+                doId: hostOpts.coordinatorDoId,
+                pid: hostOpts.pid,
+                writerId: hostOpts.writerId,
+            },
             workerKey,
         }, spec);
         settleHosted(facet);

@@ -96,6 +96,8 @@ export interface CredentialedVfs {
     readFileUncached(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
+    appendOnce(path: string, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
+    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: string, size: number): void;
     readFileString(path: string): string;
     stat(path: string): VfsStat;
@@ -156,6 +158,7 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         message: string;
     };
 });
+export declare const VFS_APPEND_RECEIPT_LIMIT = 2048;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
@@ -337,6 +340,21 @@ export declare class SqliteVFS {
      * (same contract as writeFile).
      */
     private writeRange;
+    /**
+     * Publish an append and its dedupe receipt in the same SQLite transaction.
+     * Large content may stage privately first, but its inode publication and
+     * receipt still share the final transaction. Receipts are removed only by
+     * explicit client acknowledgement after that client relinquishes retries.
+     */
+    private appendOnce;
+    activateAppendWriter(pid: number, writerId: string): void;
+    private acknowledgeAppend;
+    revokeAppendWriter(pid: number, writerId: string): void;
+    revokeAppendWriters(pid: number): void;
+    revokeAppendWritersThrough(maxPid: number): void;
+    private finishAppendPidRevocation;
+    private deleteAppendRowsBounded;
+    private resumeAppendMaintenance;
     /**
      * Truncate or zero-extend to `size`, touching only the boundary chunk.
      * Shrinking drops trailing chunk rows and trims the new last chunk;
