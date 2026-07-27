@@ -86,20 +86,21 @@ export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
  * Memory class each staged mode declares to the process fabric — the
  * runtime-spec side of its single placement policy point.
  *
- * `attached` is the ONE heavy tenant in Nimbus. It is resident (its memory
- * grows with the conversation and the project loaded) and it never serves
- * inbound HTTP: the TUI streams ANSI frames out over the terminal RPC and
- * takes keystrokes in over the stdin pump, so nothing routes into it. That
- * makes it the only process eligible for a peer's independent memory budget,
- * and its OOM kills the process instead of resetting the session.
+ * `attached` is heavy. It is resident — its memory grows with the conversation
+ * and the project loaded — and it binds no port: the TUI streams ANSI frames
+ * out over the terminal RPC and takes keystrokes in over the stdin pump. Its
+ * OOM kills the process instead of resetting the session.
  *
- * `server` is equally resident but SERVES: it binds its route target into
- * PortRegistry and its own readiness gate polls `/doc` back through that
- * router. A peer-hosted facet cannot serve inbound HTTP (see the placement
- * constraint in `loaders/process-fabric.ts`), so it stays local. `oneshot`
- * buffers a single run and returns — it would pay the ~0.5 s peer-DO
- * cold-create for nothing (and it takes the one-shot fetch path, which never
- * reaches the fabric at all).
+ * `server` is equally resident but BINDS A PORT, and the peer-hosted
+ * inbound-HTTP leg is still broken (see `loaders/process-fabric.ts`), so it
+ * stays local. Even once that is fixed it needs measurement before moving:
+ * its readiness gate polls `/doc` in-DO on a 200 ms cadence inside a 30 s
+ * budget, so every poll would become a peer round trip during the window when
+ * the peer is coldest, on top of a ~0.5 s peer-DO cold-create.
+ *
+ * `oneshot` buffers a single run and returns; it would pay the peer cold-create
+ * for nothing, and it takes the one-shot fetch path, which never reaches the
+ * fabric at all.
  */
 export function stagedProcessClass(mode: OpencodeStageSpec['mode']): ProcessClass {
   return mode === 'attached' ? 'heavy' : 'light';

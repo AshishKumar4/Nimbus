@@ -30,37 +30,59 @@
  * `done` for death, `kill()` for teardown — so the process table, stdio, the
  * shell and the SDK never learn where a process runs.
  *
- * Placement constraint: a peer cannot serve inbound HTTP
- * ─────────────────────────────────────────────────────
- * `routeTarget` is the ONE part of the handle that placement is not invisible
- * to. A dynamically-loaded facet cannot be re-entered to serve an inbound
- * request when it lives on a peer: the peer calling into its own facet's HTTP
- * handler throws `DataCloneError: Entrypoints to dynamically-loaded workers
- * cannot be transferred to other Workers` (raised in
- * `NimbusLoadedEntrypoint.handleHttpRequest`, `session/bindings.ts`). A clean
- * same-build A/B pins it to placement alone: the same server declared `light`
- * returns 200 byte-exact, declared `heavy` returns 502. Buffering the response
- * into peer-owned bytes, transferring native Request/Response, delivering the
- * request from inside the owning `_rpcHostProcess` invocation, and minting the
- * route stub together with the boot spec were each eliminated by experiment —
- * the underlying workerd mechanism is still unexplained.
+ * Inbound HTTP to a peer-hosted process
+ * ─────────────────────────────────────
+ * A peer-hosted facet serves inbound HTTP through `routeThroughPeer` below:
+ * the coordinator's PortRegistry holds one route target per pid and cannot
+ * tell peer from local, because the target carries the request's PARTS to
+ * `_rpcRouteHostedHttp` on the hosting peer, which re-enters its own facet and
+ * returns the response's parts. Bodies are plain ReadableStreams both ways, so
+ * nothing is buffered and an SSE or chunked body still streams live.
  *
- * So: a process that serves inbound HTTP must be `light`. `routeThroughPeer`
- * below is the mechanism a fix would restore; until then no heavy-class
- * primitive may bind into PortRegistry.
+ * STILL BROKEN, and the failure is narrower than it looked. Routing a real
+ * peer-hosted `node --watch server.js` through `/s/<sid>/port/3000/` returns
+ * `DataCloneError: Entrypoints to dynamically-loaded workers cannot be
+ * transferred to other Workers` (reproduced 2026-07-27 on real Nimbus under
+ * `wrangler dev`). What is now PROVEN about it:
+ *
+ *   - It is not the response. Replacing the node facet's handler with a bare
+ *     `new Response("SENTINEL-OK")` fails identically, so every body/stream/
+ *     buffering hypothesis was aimed at the wrong stage.
+ *   - The facet is NEVER ENTERED. Logging the first line of the facet's
+ *     `handleHttpRequest` produces nothing: workerd refuses to DELIVER the
+ *     call. The throw is at `method.call(ep, …)` in
+ *     `NimbusLoadedEntrypoint.handleHttpRequest`.
+ *   - A peer CAN call into its own dynamically-loaded facet: `startProcess`
+ *     on the very same facet, from the very same peer, works — the node
+ *     server boots and registers its port. Only the code-free route path
+ *     fails, so the DO→DO hop is not itself the problem.
+ *   - Not the peer's `ctx.exports` identity (it is a first-write-wins module
+ *     singleton, so a peer sharing an isolate inherits the coordinator's —
+ *     genuinely wrong, worth fixing, but forcing `self.ctx.exports` changes
+ *     nothing here).
+ *   - Not a missing reload recipe: giving the route stub the full boot spec,
+ *     so the loader callback can genuinely reconstruct the worker, changes
+ *     nothing.
+ *
+ * A standalone probe mirroring this shape — held-open host call, the
+ * SUPERVISOR doId override, a code-free route stub minted in the using
+ * context, inbound HTTP in a later request, an 8 MiB facet-generated body —
+ * serves byte-exact in BOTH deployed production and local `wrangler dev`. So
+ * the difference lives somewhere in this worker's own
+ * NimbusLoadedEntrypoint/Worker-Loader path, not in the peer topology. The
+ * scheduler test below drives a MOCKED peer and never re-enters a real facet,
+ * which is why it stayed green throughout.
+ *
+ * Until it is fixed, no primitive that binds a port may be `heavy`.
  *
  * Policy
  * ──────
  * One field, one policy point. Each launch primitive DECLARES a
  * `processClass` where it is defined, and `startResidentProcess` is the only
  * consumer. There is no command-name or argv matching anywhere in this file.
- * A primitive is `heavy` when it is both RESIDENT (it accumulates memory over
- * its lifetime and is worth a whole workerd process) and NON-SERVING (nothing
- * routes inbound HTTP into it). Exactly one primitive qualifies today: the
- * opencode attach TUI, which talks to the user over the terminal RPC and the
- * stdin pump and binds no port. Everything else is `light` — node/vite/
- * wrangler/python/ruby servers and opencode `server` mode all bind ports, and
- * a one-shot command returns promptly and never reaches this module at all.
+ * A primitive is `heavy` when it is RESIDENT (it accumulates memory over its
+ * lifetime and is worth a whole workerd process) and binds no port. Exactly
+ * one primitive qualifies today: the opencode attach TUI.
  *
  * Boot specs
  * ──────────
@@ -468,10 +490,9 @@ function describePlacement(placement: ProcessPlacement): string {
 
 /**
  * Resource handle for one resident process — the whole surface the kernel
- * above this module sees. Its lifecycle is placement-free: `booted`, `done`
- * and `kill` behave identically whether the facet runs in the coordinator's
- * workerd process or a sibling's. `routeTarget` is the exception — see the
- * placement constraint at the top of this file.
+ * above this module sees. It is placement-free throughout: `booted`, `done`,
+ * `kill` and `routeTarget` all behave identically whether the facet runs in
+ * the coordinator's workerd process or a sibling's.
  *
  * `done` settles when the process's HOST context ends: for a `lifetime`
  * runner that is the process exiting (resolve) or dying (reject); for a
@@ -485,10 +506,11 @@ export class ResidentProcessHandle {
   readonly done: Promise<void>;
   readonly processClass: ProcessClass;
   /**
-   * Inbound-HTTP target for PortRegistry; follows the process across respawns.
-   * Usable only on a `light` handle — a peer-hosted facet cannot be re-entered
-   * to serve an inbound request (placement constraint, top of this file), so
-   * no heavy-class primitive may bind this into PortRegistry.
+   * Inbound-HTTP target for PortRegistry; follows the process across respawns
+   * by reading the live placement on every request. Placement-free like the
+   * rest of the handle: on a peer it carries the request's parts to the
+   * hosting peer, locally it is the facet's own entrypoint, and PortRegistry
+   * cannot tell the two apart.
    */
   readonly routeTarget: RouteableFacetTarget;
   /** Peer respawns consumed (heavy only). */
