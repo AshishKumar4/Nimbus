@@ -606,7 +606,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? {} : __vfsWrites,
-      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount } } : {}),
+      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0 } } : {}),
     });
   }
 };
@@ -2853,6 +2853,7 @@ export class FacetManager {
                     drainPasses: result.diag?.drainPasses ?? 0,
                     moduleMapBytes: diagSink.moduleMapBytes,
                     rpcWrites: result.diag?.rpcWrites ?? 0,
+                    fsRpcReads: result.diag?.fsRpcReads ?? 0,
                     cacheHit: vfsState.cacheHit ?? false,
                     exitCode: result.exitCode,
                     at: Date.now(),
