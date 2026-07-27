@@ -7,7 +7,7 @@
  * budget. Full-budget owners are exclusive; weighted owners may overlap only
  * while their retained-byte claims fit together.
  */
-import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '../constants.js';
+import { CHUNK_SIZE, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, SUPERVISOR_READ_RESERVE_BYTES, } from '../constants.js';
 import { WeightedCreditPool, } from '../_shared/weighted-credit-pool.js';
 /**
  * Reusable contract behind the supervisor singleton. A separate instance is
@@ -24,10 +24,10 @@ export class SupervisorAllocationBudget {
      * cache it is filling.
      */
     lifecycleHolders = 0;
-    constructor(capacity, lifecycle = {}) {
+    constructor(capacity, lifecycle = {}, reserve = {}) {
         this.capacity = capacity;
         this.lifecycle = lifecycle;
-        this.credits = new WeightedCreditPool(capacity);
+        this.credits = new WeightedCreditPool(capacity, reserve);
     }
     get stats() {
         return {
@@ -150,7 +150,10 @@ function fireOnRelease() {
 const supervisorAllocationBudget = new SupervisorAllocationBudget(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, {
     onActive: fireOnAcquire,
     onIdle: fireOnRelease,
-});
+}, 
+// A chunk-sized read draws on this rather than queueing behind a
+// multi-megabyte owner for a wait unrelated to its own cost.
+{ smallRequestBytes: CHUNK_SIZE, reserve: SUPERVISOR_READ_RESERVE_BYTES });
 /**
  * Reserve an exact number of supervisor-resident bytes.
  */
