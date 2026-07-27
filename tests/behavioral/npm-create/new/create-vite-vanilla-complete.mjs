@@ -42,8 +42,11 @@ const rCreate = await t.run(
 const outC = stripAnsi(rCreate.output);
 a.check('npm create exits 0', /CREATE_RC=0/.test(outC),
   JSON.stringify(outC.slice(-400)));
-a.check('npm create does NOT leak ENOENT JSON to stdout (PRE-fix smoking gun)',
-  !/"code":"ENOENT","errno":-2/.test(outC),
+// EAGAIN is in the alternation deliberately: a non-resident sync read now
+// reports EAGAIN rather than ENOENT, so matching only ENOENT would let the
+// exact regression this probe exists to catch slip through as a pass.
+a.check('npm create does NOT leak a failed-read code to stdout (PRE-fix smoking gun)',
+  !/"code":"(ENOENT|EAGAIN)"/.test(outC),
   JSON.stringify(outC.slice(-400)));
 
 // Verify each expected file exists. Vite-vanilla v9 template ships:

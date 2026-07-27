@@ -82,10 +82,12 @@ const observed = {
   ranged: null,
   stream: '',
 };
+let syncLateError = null;
 try {
   observed.syncLateAfterAsync = fs.readFileSync(late, 'utf8');
 } catch (error) {
   observed.syncLateAfterAsync = error.code;
+  syncLateError = error;
 }
 
 {
@@ -113,10 +115,38 @@ assert.deepEqual(observed, {
   statSize: current.length,
   names: ['late.txt', 'resident.txt'],
   late: 'created-after-spawn',
-  syncLateAfterAsync: 'ENOENT',
+  // NOT 'ENOENT'. The async readdir above enumerated late.txt and the async
+  // read returned its bytes, so this process knows the file exists. A sync
+  // read still cannot fetch content — a facet has no way to block on the
+  // supervisor — but answering "no such file" would send the caller looking
+  // for a file that is right there. EAGAIN is the same answer the fd path
+  // (readSync/writeSync) has always given for a non-resident file.
+  syncLateAfterAsync: 'EAGAIN',
   handle: current,
   ranged: current,
   stream: current,
+});
+
+// The refusal has to be actionable on its own: name the file, say why it
+// could not be served, and name the call that will serve it.
+assert.match(syncLateError.message, /late\.txt/);
+assert.match(syncLateError.message, /not resident/);
+assert.match(syncLateError.message, /fs\.promises\.readFile/);
+assert.equal(syncLateError.path, late);
+assert.equal(syncLateError.syscall, 'open');
+
+// existsSync and readFileSync must agree about the same path. Reporting the
+// file as present while the read reports it as absent is incoherent whatever
+// else is true.
+assert.equal(fs.existsSync(late), true);
+
+// A path nothing has ever observed is still a plain ENOENT — the distinction
+// only means something if genuine absence keeps its own code.
+const absent = `${dir}/never-existed.txt`;
+assert.equal(fs.existsSync(absent), false);
+assert.throws(() => fs.readFileSync(absent, 'utf8'), (error) => {
+  assert.equal(error.code, 'ENOENT');
+  return true;
 });
 
 // Pending sync mutations are newer than the supervisor until flushed. An
@@ -152,5 +182,24 @@ assert.deepEqual(
   ['access-created.txt', 'late.txt', 'resident.txt', 'same-facet-dir'],
 );
 assert.equal(vfs.stat(`${dir}/same-facet-dir`)?.type, 'directory');
+
+// Removal has to retract the path from the sync existence view too. The
+// spawn-time metadata snapshot outlives the file it describes, so without
+// that retraction a deleted file keeps reporting as present — and the read
+// path would call it merely non-resident instead of gone.
+assert.equal(fs.existsSync(resident), true);
+fs.unlinkSync(resident);
+assert.equal(fs.existsSync(resident), false);
+assert.throws(() => fs.readFileSync(resident, 'utf8'), (error) => {
+  assert.equal(error.code, 'ENOENT');
+  return true;
+});
+
+// A directory is not "non-resident content" — reading one is EISDIR, the
+// answer Node gives, not a suggestion to retry the read asynchronously.
+assert.throws(() => fs.readFileSync(dir, 'utf8'), (error) => {
+  assert.equal(error.code, 'EISDIR');
+  return true;
+});
 
 console.log('node-shims-live-fs-coherence: all assertions passed');
