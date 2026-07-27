@@ -6,9 +6,9 @@
  *   • Tools running inside the session (pi, opencode, a user script, curl)
  *     reach an OpenAI-compatible endpoint on session loopback,
  *     `http://127.0.0.1:<NIMBUS_AI_GATEWAY_PORT>/v1`, seeded into the session
- *     environment as OPENAI_BASE_URL / OPENAI_API_BASE / OPENAI_API_KEY.
- *     A tool that ignores OPENAI_BASE_URL and calls its own vendor host still
- *     lands here: the seeded key is a session capability token, and egress
+ *     environment as OPENAI_BASE_URL / OPENAI_API_BASE. A tool that ignores
+ *     the base URL and calls Cloudflare's own host still lands here: the
+ *     seeded CLOUDFLARE_API_KEY is a session capability token, and egress
  *     carrying it is mediated back to this endpoint (_shared/ai-egress.ts).
  *   • The Nimbus agent (session/agent.ts) builds its AI-SDK provider with a
  *     `fetch` that calls straight into `handleSessionAiRequest`. Same code,
@@ -88,14 +88,38 @@ type StoredCredential = z.infer<typeof StoredCredentialSchema>;
 /** Base URL of the in-session endpoint. The one true address of this gateway. */
 export declare function sessionAiBaseUrl(): string;
 /**
- * The environment every session is seeded with, so any OpenAI-compatible tool
- * reaches the gateway without being told about it — by the base URL if it reads
- * one, and otherwise by the token, which mediates its egress back here.
+ * The account id the sandbox is given. The real one never crosses the boundary:
+ * every mediated request is re-addressed in the supervisor
+ * (`proxyUpstream`), which substitutes the account of record. A tool only ever
+ * needs the id to *build a URL*, and the OS owns where that URL goes — so a
+ * placeholder is both sufficient and the only value that keeps the session's
+ * Cloudflare identity out of user code.
+ */
+export declare const SESSION_AI_ACCOUNT_PLACEHOLDER = "nimbus-session";
+/**
+ * The environment every session is seeded with, so a coding agent or an SDK
+ * reaches this session's models without being told about them.
+ *
+ * What the session actually holds is a Cloudflare Workers AI account, and every
+ * model it can run is a `@cf/…` id. `CLOUDFLARE_API_KEY` / `CLOUDFLARE_ACCOUNT_ID`
+ * is the documented interface for exactly that, so a tool reading it picks a
+ * model the account can serve and addresses
+ * `api.cloudflare.com/client/v4/accounts/<id>/ai/v1/…`, which mediation brings
+ * back here (_shared/ai-egress.ts) with the real credential substituted.
+ *
+ * The same endpoint is OpenAI-compatible, published as OPENAI_BASE_URL /
+ * OPENAI_API_BASE. It is loopback-only and needs no credential, so a client
+ * that reads the base URL works with any key or none.
+ *
+ * OPENAI_API_KEY is deliberately NOT seeded. Setting it asserts an OpenAI
+ * account, and this session can never serve an OpenAI model id — a tool that
+ * believes the assertion selects one of OpenAI's models and gets a 404 it
+ * cannot act on. The variable stays the user's: exporting a real key reaches
+ * OpenAI untouched, because that key is not this session's token.
  *
  * The token is minted per session rather than fixed, and is published under
- * NIMBUS_AI_TOKEN as well so that mediation still has something to compare
- * against after a user exports their own OPENAI_API_KEY (whose request must
- * then go to the real provider, untouched).
+ * NIMBUS_AI_TOKEN as well, so mediation has something to compare against that
+ * is not a variable the user may overwrite.
  */
 export declare function sessionAiEnv(): Record<string, string>;
 export declare function readSessionAiConfig(env: Record<string, unknown>): SessionAiConfig;

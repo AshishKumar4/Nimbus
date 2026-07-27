@@ -73,9 +73,27 @@ function installShims(env) {
 }
 
 {
-  const { routed, origin } = installShims({ [NIMBUS_AI_TOKEN_ENV]: TOKEN, OPENAI_API_KEY: TOKEN });
+  const { routed, origin } = installShims({ [NIMBUS_AI_TOKEN_ENV]: TOKEN, CLOUDFLARE_API_KEY: TOKEN });
 
-  // The whole point: the official OpenAI SDK's DEFAULT base URL, mediated.
+  // The path a coding agent actually takes: it reads the seeded Cloudflare
+  // credential, addresses Cloudflare's own host with a `@cf/…` model the
+  // account can serve, and the session gateway answers.
+  const cf = await globalThis.fetch(
+    'https://api.cloudflare.com/client/v4/accounts/nimbus-session/ai/v1/chat/completions',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: '@cf/a/b', messages: [] }),
+    },
+  );
+  assert.equal(cf.headers.get('X-Served-By'), 'session-ai');
+  assert.equal(routed.length, 1, 'the Cloudflare-addressed request was served by the session gateway');
+  assert.equal(routed[0].port, NIMBUS_AI_GATEWAY_PORT);
+  assert.equal(origin.length, 0, 'nothing left the sandbox');
+  routed.length = 0;
+
+  // A user who exports the session token as their own OPENAI_API_KEY is
+  // mediated just the same: the policy is the credential, never the host.
   const res = await globalThis.fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
