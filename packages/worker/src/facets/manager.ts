@@ -76,11 +76,12 @@ export interface FacetExecResult {
    */
   vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
   /**
-   * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses and
-   * rpcWrites originate inside the facet (see exec-telemetry.ts); the
-   * supervisor folds them with its own phase timings before recording.
+   * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses,
+   * rpcWrites and fsRpcReads originate inside the facet (see
+   * exec-telemetry.ts); the supervisor folds them with its own phase timings
+   * before recording.
    */
-  diag?: { drainPasses: number; rpcWrites: number };
+  diag?: { drainPasses: number; rpcWrites: number; fsRpcReads: number };
 }
 
 /**
@@ -723,7 +724,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? {} : __vfsWrites,
-      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount } } : {}),
+      ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0 } } : {}),
     });
   }
 };
@@ -3143,6 +3144,7 @@ export class FacetManager {
           drainPasses: result.diag?.drainPasses ?? 0,
           moduleMapBytes: diagSink.moduleMapBytes,
           rpcWrites: result.diag?.rpcWrites ?? 0,
+          fsRpcReads: result.diag?.fsRpcReads ?? 0,
           cacheHit: vfsState.cacheHit ?? false,
           exitCode: result.exitCode,
           at: Date.now(),

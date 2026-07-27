@@ -7,7 +7,7 @@
  * budget. Full-budget owners are exclusive; weighted owners may overlap only
  * while their retained-byte claims fit together.
  */
-import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '../constants.js';
+import { CHUNK_SIZE, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, SUPERVISOR_READ_RESERVE_BYTES, } from '../constants.js';
 import { WeightedCreditPool, } from '../_shared/weighted-credit-pool.js';
 /**
  * Reusable contract behind the supervisor singleton. A separate instance is
@@ -18,10 +18,16 @@ export class SupervisorAllocationBudget {
     lifecycle;
     credits;
     active = false;
-    constructor(capacity, lifecycle = {}) {
+    /**
+     * Leases that drive the disposable-cache lifecycle. Occupancy cannot stand
+     * in for this: a read holds credit too, and a read must not sacrifice the
+     * cache it is filling.
+     */
+    lifecycleHolders = 0;
+    constructor(capacity, lifecycle = {}, reserve = {}) {
         this.capacity = capacity;
         this.lifecycle = lifecycle;
-        this.credits = new WeightedCreditPool(capacity);
+        this.credits = new WeightedCreditPool(capacity, reserve);
     }
     get stats() {
         return {
@@ -29,11 +35,34 @@ export class SupervisorAllocationBudget {
             ...this.credits.stats,
         };
     }
-    async acquire(bytes, signal) {
+    /**
+     * Reserve bytes and, while held, mark the budget active so observers can
+     * free heap headroom. For owners whose payload is what the headroom is for:
+     * installs, clones, pre-bundles, boot payloads, streamed writes.
+     */
+    acquire(bytes, signal) {
+        return this._acquire(bytes, signal, true);
+    }
+    /**
+     * Reserve bytes WITHOUT driving the cache lifecycle, for owners that are
+     * filling the disposable cache rather than competing with it. Shrinking a
+     * chunk cache to serve a chunk read is circular: sequentially the budget
+     * empties between every read, so an occupancy-edged observer fires once per
+     * read and the cache is pinned at its shrunk floor for the whole workload,
+     * never warming. The byte credit is still taken — back-pressure is what
+     * stops a large read overlapping a large write.
+     */
+    acquireWithoutLifecycle(bytes, signal) {
+        return this._acquire(bytes, signal, false);
+    }
+    async _acquire(bytes, signal, drivesLifecycle) {
         const credit = await this.credits.acquire(bytes, signal);
-        if (!this.active) {
-            this.active = true;
-            this.lifecycle.onActive?.();
+        if (drivesLifecycle) {
+            this.lifecycleHolders++;
+            if (!this.active) {
+                this.active = true;
+                this.lifecycle.onActive?.();
+            }
         }
         let released = false;
         return {
@@ -48,7 +77,10 @@ export class SupervisorAllocationBudget {
                     return;
                 released = true;
                 credit.release();
-                if (this.credits.stats.current === 0) {
+                if (!drivesLifecycle)
+                    return;
+                this.lifecycleHolders--;
+                if (this.lifecycleHolders === 0 && this.active) {
                     this.active = false;
                     this.lifecycle.onIdle?.();
                 }
@@ -118,12 +150,23 @@ function fireOnRelease() {
 const supervisorAllocationBudget = new SupervisorAllocationBudget(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, {
     onActive: fireOnAcquire,
     onIdle: fireOnRelease,
-});
+}, 
+// A chunk-sized read draws on this rather than queueing behind a
+// multi-megabyte owner for a wait unrelated to its own cost.
+{ smallRequestBytes: CHUNK_SIZE, reserve: SUPERVISOR_READ_RESERVE_BYTES });
 /**
  * Reserve an exact number of supervisor-resident bytes.
  */
 export function acquireSupervisorAllocation(bytes, signal) {
     return supervisorAllocationBudget.acquire(bytes, signal);
+}
+/**
+ * Reserve bytes for a filesystem READ. Takes the same byte credit as any
+ * other owner but does not shrink the disposable VFS cache, which reads are
+ * there to fill.
+ */
+export function acquireSupervisorReadAllocation(bytes, signal) {
+    return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
 }
 /**
  * Reserve the full budget for an allocation whose retained size is not known
