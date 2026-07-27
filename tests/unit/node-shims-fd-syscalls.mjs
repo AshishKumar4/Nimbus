@@ -324,6 +324,14 @@ assert.throws(() => fs.readSync(lfd, buf, 0, 4, 0), (e) => {
   assert.match(e.message, /not resident/);
   return true;
 });
+// readFileSync answers the SAME condition, so it must give the same code.
+// It used to report ENOENT here — one mechanism with two answers, and the
+// wrong one claimed a file npm had demonstrably installed did not exist.
+assert.throws(() => fs.readFileSync('/home/user/live-only.bin'), (e) => {
+  assert.equal(e.code, 'EAGAIN', 'a non-resident readFileSync must match readSync');
+  assert.match(e.message, /not resident/);
+  return true;
+});
 // Writing onto a non-resident, non-empty file would silently destroy the
 // bytes we cannot see, so it must refuse too.
 assert.throws(() => fs.writeSync(lfd, 'x', 0), (e) => e.code === 'EAGAIN');

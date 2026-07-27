@@ -2773,8 +2773,9 @@ export async function buildPrefetchBundle(
       truncated = true;
       console.warn(
         `[facet-manager] prefetch snapshot exceeded ${BUNDLE_MAX_ENCODED_BYTES} encoded `
-          + `bytes; evicted ${evicted.length} optional file(s). Synchronous reads of `
-          + `these raise ENOENT: ${describeBundleCells(evicted)}`,
+          + `bytes; evicted ${evicted.length} optional file(s). They still exist and `
+          + `async reads still return them; synchronous reads raise EAGAIN: `
+          + `${describeBundleCells(evicted)}`,
       );
     }
   }
