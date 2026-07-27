@@ -36,7 +36,7 @@ const r1 = await t.run(
 const out1 = stripAnsi(r1.output);
 a.check(
   'node -e readFileSync(<absolute-path>) reads shell-written file',
-  /hello-abs-probe/.test(out1) && !/ENOENT/.test(out1),
+  /hello-abs-probe/.test(out1) && !/ENOENT|EAGAIN/.test(out1),
   `tail: ${JSON.stringify(out1.slice(-300))}`,
 );
 
@@ -53,7 +53,7 @@ const r2 = await t.run(
 const out2 = stripAnsi(r2.output);
 a.check(
   'cross-isolate persistence: node writes, second node reads (no ENOENT)',
-  /cross-iso-ok/.test(out2) && !/ENOENT/.test(out2),
+  /cross-iso-ok/.test(out2) && !/ENOENT|EAGAIN/.test(out2),
   `tail: ${JSON.stringify(out2.slice(-300))}`,
 );
 
