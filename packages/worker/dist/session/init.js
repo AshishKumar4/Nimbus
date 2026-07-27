@@ -1666,14 +1666,14 @@ export function initSession(self, ws) {
         PORT: '3000',
         HOST: '0.0.0.0',
         NIMBUS_SESSION_ID: '', // patched after Shell ctor — see below.
-        // The session AI gateway (session/ai.ts). Any OpenAI-compatible tool —
-        // pi, opencode, a user's own script, curl — reaches the session's models
-        // from these without being configured: by OPENAI_BASE_URL if it reads
-        // one, and otherwise by the key, which is this session's capability token
-        // and mediates the tool's own egress back to the gateway
-        // (_shared/ai-egress.ts). A user who exports their own OPENAI_BASE_URL or
-        // OPENAI_API_KEY still wins, via the persisted spread — their key is not
-        // this session's token, so their request goes to their provider.
+        // The session AI gateway (session/ai.ts). A coding agent, a user's own
+        // script or curl reaches the session's models from these without being
+        // configured: by OPENAI_BASE_URL if it reads one, and otherwise by
+        // CLOUDFLARE_API_KEY, this session's capability token, which mediates the
+        // tool's own egress back to the gateway (_shared/ai-egress.ts). A user
+        // who exports their own OPENAI_BASE_URL or CLOUDFLARE_API_KEY still wins,
+        // via the persisted spread — their key is not this session's token, so
+        // their request goes to their own account.
         ...sessionAiEnv(),
         // Persisted env keys win over defaults — the user's `export FOO=bar`
         // survives reconnect.

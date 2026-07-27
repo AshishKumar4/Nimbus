@@ -12,6 +12,16 @@
  * tells them a provider is configured when the endpoint they will call is not
  * reachable.
  *
+ * Which vendor the OS names therefore matters as much as the mediation itself.
+ * A tool that reads a vendor key also holds that vendor's model catalogue, and
+ * this session runs Cloudflare Workers AI: every model it can serve is a
+ * `@cf/…` id. So the key is seeded as CLOUDFLARE_API_KEY, the interface for the
+ * account the session actually has. The tool then picks a model that exists
+ * here and addresses Cloudflare's host, and mediation makes that request land
+ * on the session's own gateway. Naming a vendor whose catalogue the session
+ * cannot serve would deliver the request and then fail on the model id, which
+ * is not a working capability.
+ *
  * The mediation
  * ─────────────
  * The seeded key is a session capability token, and any request leaving the
@@ -39,10 +49,10 @@
 /**
  * Env var holding the session's AI capability token.
  *
- * Carried under its own name as well as OPENAI_API_KEY because OPENAI_API_KEY
- * is the user's to overwrite: someone who exports a real provider key must
- * still reach that provider. Mediation compares against THIS variable, never
- * against whatever OPENAI_API_KEY happens to hold.
+ * Carried under its own name as well as CLOUDFLARE_API_KEY because
+ * CLOUDFLARE_API_KEY is the user's to overwrite: someone who exports a real
+ * Cloudflare token must still reach their own account. Mediation compares
+ * against THIS variable, never against whatever the vendor variable holds.
  */
 export const NIMBUS_AI_TOKEN_ENV = 'NIMBUS_AI_TOKEN';
 

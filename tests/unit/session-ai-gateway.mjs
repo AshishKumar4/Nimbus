@@ -33,11 +33,15 @@ import {
   setSessionAiAccount,
   storeSessionAiCredential,
   DEFAULT_SESSION_AI_MODEL,
+  SESSION_AI_ACCOUNT_PLACEHOLDER,
   SESSION_AI_CREDENTIAL_KEY,
 } from '../../packages/worker/src/session/ai.ts';
 import { createNimbusAgentOAuthCookie } from '../../packages/worker/src/session/agent-oauth.ts';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
-import { NIMBUS_AI_TOKEN_ENV } from '../../packages/worker/src/_shared/ai-egress.ts';
+import {
+  NIMBUS_AI_TOKEN_ENV,
+  requestCarriesSessionAiToken,
+} from '../../packages/worker/src/_shared/ai-egress.ts';
 
 const ACCOUNT = 'f44999d1ddda7012e9a87729eba250f1';
 const OTHER_ACCOUNT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -655,10 +659,44 @@ const baseAuth = {
   // The seeded key is this session's capability token: it names this gateway
   // and nothing else, so an env dump inside the sandbox still reveals nothing
   // about the Cloudflare credential the supervisor holds.
-  assert.match(env.OPENAI_API_KEY, /^sk-nimbus-[0-9a-f]{32}$/);
-  assert.equal(env[NIMBUS_AI_TOKEN_ENV], env.OPENAI_API_KEY);
+  assert.match(env.CLOUDFLARE_API_KEY, /^sk-nimbus-[0-9a-f]{32}$/);
+  assert.equal(env[NIMBUS_AI_TOKEN_ENV], env.CLOUDFLARE_API_KEY);
   // Minted per session, never a shared constant.
-  assert.notEqual(sessionAiEnv().OPENAI_API_KEY, env.OPENAI_API_KEY);
+  assert.notEqual(sessionAiEnv().CLOUDFLARE_API_KEY, env.CLOUDFLARE_API_KEY);
+  // The account of record never crosses into the sandbox — the supervisor
+  // substitutes it on every request it serves.
+  assert.equal(env.CLOUDFLARE_ACCOUNT_ID, SESSION_AI_ACCOUNT_PLACEHOLDER);
+  assert.doesNotMatch(env.CLOUDFLARE_ACCOUNT_ID, /^[0-9a-f]{32}$/);
+  // OPENAI_API_KEY is deliberately absent: asserting an OpenAI account makes a
+  // tool holding OpenAI's catalogue select a model this session cannot serve.
+  // The variable stays the user's — a real key exported here reaches OpenAI.
+  assert.equal(env.OPENAI_API_KEY, undefined);
+}
+
+// A tool that reads the seeded Cloudflare credential and addresses Cloudflare's
+// own host produces egress this session recognises as its own inference, on a
+// path whose tail is an operation the gateway serves. The placeholder account
+// id in the URL therefore costs nothing.
+{
+  const env = sessionAiEnv();
+  const url = new URL(
+    `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions`,
+  );
+  assert.equal(
+    requestCarriesSessionAiToken(
+      new Headers({ Authorization: `Bearer ${env.CLOUDFLARE_API_KEY}` }),
+      env[NIMBUS_AI_TOKEN_ENV],
+    ),
+    true,
+  );
+  const served = await handleSessionAiRequest(makeHost({}), new Request(url, {
+    method: 'POST',
+    body: JSON.stringify({ model: DEFAULT_SESSION_AI_MODEL, messages: [] }),
+  }));
+  // No credential of record here, so the gateway answers "not connected" —
+  // which is only reachable once the path has been matched to an operation.
+  assert.equal(served.status, 503);
+  assert.equal((await served.json()).error.code, 'E_AI_NOT_CONNECTED');
 }
 
 console.log('session-ai-gateway: all assertions passed');
