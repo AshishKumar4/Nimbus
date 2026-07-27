@@ -248,18 +248,19 @@ Cloud-native development environment on Cloudflare Workers.
 ## AI Models
 
 This session exposes your Cloudflare Workers AI account as an OpenAI-compatible
-endpoint on loopback. \`OPENAI_BASE_URL\`, \`OPENAI_API_BASE\` and
-\`OPENAI_API_KEY\` are already set, so coding agents and OpenAI SDK clients work
-without configuration:
+endpoint on loopback. \`CLOUDFLARE_API_KEY\`, \`CLOUDFLARE_ACCOUNT_ID\`,
+\`OPENAI_BASE_URL\` and \`OPENAI_API_BASE\` are already set, so a coding agent
+finds your own models without being configured:
 
 \`\`\`bash
-env | grep -i openai              # how to reach it
 curl $OPENAI_BASE_URL/models      # models available to your account
+pi                                # a coding agent, on those models
 \`\`\`
 
 Connect Cloudflare from the agent panel if the endpoint reports that no account
 is connected. No API key is stored in the session — the endpoint is reachable
-only from inside it.
+only from inside it, and needs no credential of its own. An OpenAI SDK client
+that insists on one can use \`export OPENAI_API_KEY=$NIMBUS_AI_TOKEN\`.
 
 ## Install More Runtimes
 
