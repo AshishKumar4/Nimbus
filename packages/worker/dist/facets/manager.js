@@ -2594,8 +2594,9 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
         if (evicted.length > 0) {
             truncated = true;
             console.warn(`[facet-manager] prefetch snapshot exceeded ${BUNDLE_MAX_ENCODED_BYTES} encoded `
-                + `bytes; evicted ${evicted.length} optional file(s). Synchronous reads of `
-                + `these raise ENOENT: ${describeBundleCells(evicted)}`);
+                + `bytes; evicted ${evicted.length} optional file(s). They still exist and `
+                + `async reads still return them; synchronous reads raise EAGAIN: `
+                + `${describeBundleCells(evicted)}`);
         }
     }
     const fileCount = Object.keys(bundle).length;

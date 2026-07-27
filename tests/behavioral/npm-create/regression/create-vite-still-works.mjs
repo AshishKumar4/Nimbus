@@ -25,8 +25,10 @@ const r1 = await t.run(
   240_000,
 );
 const out = stripAnsi(r1.output);
-a.check('create-vite: no ENOENT in scaffold output',
-  !/"code":"ENOENT"/.test(out),
+// Both codes: a non-resident sync read reports EAGAIN, so an ENOENT-only
+// guard would stop catching the scaffold-read regression it was written for.
+a.check('create-vite: no failed-read code in scaffold output',
+  !/"code":"(ENOENT|EAGAIN)"/.test(out),
   `tail=${JSON.stringify(tail(out))}`);
 
 // Verify the expected file set landed.

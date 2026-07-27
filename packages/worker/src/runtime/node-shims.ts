@@ -493,14 +493,73 @@ const __fsMod = (() => {
     return undefined;
   }
 
+  // __vfsMetadata is not declared in every embedding of these shims, so the
+  // one guarded reference lives here and every other reader goes through it.
+  function _metadataTable() {
+    return (typeof __vfsMetadata !== "undefined" && __vfsMetadata) ? __vfsMetadata : null;
+  }
+
   function _metadata(absPath) {
-    const k = _strip(absPath);
-    return (typeof __vfsMetadata !== "undefined" && __vfsMetadata) ? __vfsMetadata[k] : undefined;
+    const table = _metadataTable();
+    return table ? table[_strip(absPath)] : undefined;
   }
 
   function _denialCode(cell) {
     return cell && typeof cell === "object" && !(cell instanceof Uint8Array) &&
       typeof cell.error === "string" ? cell.error : null;
+  }
+
+  // Removal retracts the path from the sync existence view — __vfsMetadata
+  // (spawn-time stat records) and __vfsManifest (directory shape). Without
+  // it, existsSync keeps reporting a file this process already deleted and
+  // the sync read path reports that file as merely non-resident.
+  function _forgetSyncPath(k) {
+    const metadata = _metadataTable();
+    if (metadata) delete metadata[k];
+    if (!__vfsManifest) return;
+    delete __vfsManifest[k];
+    const slash = k.lastIndexOf("/");
+    const parent = slash >= 0 ? k.slice(0, slash) : "";
+    const name = slash >= 0 ? k.slice(slash + 1) : k;
+    const siblings = __vfsManifest[parent];
+    if (!siblings) return;
+    const at = siblings.indexOf(name);
+    if (at !== -1) siblings.splice(at, 1);
+  }
+
+  function _forgetSyncTree(k) {
+    const prefix = k + "/";
+    const metadata = _metadataTable();
+    if (metadata) {
+      for (const mk of Object.keys(metadata)) if (mk.startsWith(prefix)) delete metadata[mk];
+    }
+    if (__vfsManifest) {
+      for (const dk of Object.keys(__vfsManifest)) if (dk.startsWith(prefix)) delete __vfsManifest[dk];
+    }
+    _forgetSyncPath(k);
+  }
+
+  /**
+   * The honest error for a sync read the resident view cannot serve. A facet
+   * has no synchronous I/O primitive, so a sync read is limited to content
+   * staged into this process — but the sync existence view (__vfsMetadata +
+   * __vfsManifest) knows far more paths than the content bundle carries.
+   * ENOENT is only correct when the path is unknown there too; for a path
+   * that demonstrably exists it sends the caller hunting for a missing file
+   * instead of awaiting the read that would return it.
+   */
+  function _notResidentError(absPath, displayPath, syscall, asyncForm) {
+    const st = _statResolved(absPath, displayPath, { throwIfNoEntry: false });
+    if (st === undefined) return _fsErr("ENOENT", syscall, displayPath);
+    if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
+    const err = _fsErr("EAGAIN", syscall, displayPath);
+    err.message += " — '" + String(displayPath) + "' exists but its content is not " +
+      "resident in this facet, and synchronous I/O cannot block to fetch it" +
+      // The async form only reaches the live VFS when a supervisor is bound;
+      // without one it re-enters this same resident view, so promising that
+      // it would return the bytes would be its own lie.
+      (_supervisor() ? "; " + asyncForm + " reads it from the live filesystem" : "");
+    return err;
   }
 
   function _fsErr(code, syscall, p) {
@@ -873,6 +932,12 @@ const __fsMod = (() => {
       }
       const entries = await _fsRpc(supervisor.readdir(absPath), "scandir", p, (result) => result);
       if (Array.isArray(entries)) {
+        // Every local mutation under this directory was just flushed, so the
+        // live listing is strictly newer than the spawn-time snapshot. Record
+        // its shape: the sync existence view must not go on contradicting a
+        // directory this very process has enumerated. Names only — size, mode
+        // and ownership are not observable here and are never invented.
+        if (__vfsManifest) __vfsManifest[key] = entries.map((entry) => entry.name);
         if (opts?.withFileTypes) {
           return entries
             .map((entry) => _direntObject(entry.name, entry.type))
@@ -1202,7 +1267,7 @@ const __fsMod = (() => {
     _ensureAncestorsTraversable(absPath, "open", p);
     const content = _bundleLookup(absPath);
     if (content === undefined) {
-      throw _fsErr("ENOENT", "open", p);
+      throw _notResidentError(absPath, p, "open", "fs.promises.readFile");
     }
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
@@ -1312,6 +1377,14 @@ const __fsMod = (() => {
   function statSync(p, opts) {
     const absPath = _resolve(p);
     _ensureAncestorsTraversable(absPath, "stat", p);
+    return _statResolved(absPath, p, opts);
+  }
+
+  // The stat ladder for a path whose ancestors the caller has already
+  // checked. Reading it back out of statSync lets the sync read path
+  // classify a miss without redoing the resolve and ancestor walk it just
+  // performed — that path runs on every module-resolution probe.
+  function _statResolved(absPath, p, opts) {
     const k = _strip(absPath);
     // Content written this exec session is newer than the spawn-time
     // metadata snapshot, so it — not __vfsMetadata — is authoritative for
@@ -1460,6 +1533,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     if (__vfsBundle) delete __vfsBundle[k];
     if (__vfsWrites) delete __vfsWrites[k];
+    _forgetSyncPath(k);
   }
 
   // ── rmdirSync ──
@@ -1467,6 +1541,7 @@ const __fsMod = (() => {
     const absPath = _resolve(p);
     const k = _strip(absPath);
     if (__vfsDirs) delete __vfsDirs[k];
+    _forgetSyncPath(k);
   }
 
   // ── renameSync ──
@@ -1478,6 +1553,13 @@ const __fsMod = (() => {
       __vfsWrites[newK] = content;
       if (__vfsBundle) { __vfsBundle[newK] = content; delete __vfsBundle[oldK]; }
       if (__vfsWrites) delete __vfsWrites[oldK];
+      // The stat record travels with the content: dropping it would lose the
+      // mode/ownership, and leaving it behind would keep the source path
+      // reporting as an existing file this rename already moved away.
+      const metadata = _metadataTable();
+      const moved = metadata ? metadata[oldK] : undefined;
+      _forgetSyncPath(oldK);
+      if (moved) metadata[newK] = moved;
     }
   }
 
@@ -1687,15 +1769,9 @@ const __fsMod = (() => {
       return _asBytes(cell);
     }
     _notResident(syscall) {
-      // Distinguish "gone" from "never prefetched" so the caller gets a
-      // truthful errno instead of a plausible-looking wrong answer.
-      if (statSync(this._path, { throwIfNoEntry: false }) === undefined) {
-        return _fsErr("ENOENT", syscall, this._path);
-      }
-      const err = _fsErr("EAGAIN", syscall, this._path);
-      err.message += " — content is not resident in this facet and synchronous " +
-        "I/O cannot block; use the async fs." + syscall + "/fs.promises form instead";
-      return err;
+      return _notResidentError(
+        this._abs, this._path, syscall, "the async fs." + syscall + "/fs.promises form",
+      );
     }
     _readBase(syscall) {
       const bytes = this._residentBytes(syscall);
@@ -2062,6 +2138,7 @@ const __fsMod = (() => {
         if (__vfsBundle) for (const bk of Object.keys(__vfsBundle)) if (bk === k || bk.startsWith(prefix)) delete __vfsBundle[bk];
         if (__vfsWrites) for (const wk of Object.keys(__vfsWrites)) if (wk === k || wk.startsWith(prefix)) delete __vfsWrites[wk];
         if (__vfsDirs) for (const dk of Object.keys(__vfsDirs)) if (dk === k || dk.startsWith(prefix)) delete __vfsDirs[dk];
+        _forgetSyncTree(k);
       } else {
         try { await _unlinkAsync(p); } catch (e) { if (!o.force) throw e; }
       }
