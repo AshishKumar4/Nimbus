@@ -542,12 +542,10 @@ export declare class FacetManager {
      */
     private _noteProcessPlacement;
     /**
-     * The one way this manager boots a resident process. Both spawn primitives
-     * declare `light`: every process they launch (node servers, vite, wrangler,
-     * python/ruby servers) binds its facet into PortRegistry and serves inbound
-     * HTTP, and a peer-hosted facet cannot serve inbound HTTP (see the placement
-     * constraint in `loaders/process-fabric.ts`). Everything after this call
-     * treats the returned handle identically regardless of where it landed.
+     * The one way this manager boots a resident process. The caller's primitive
+     * declares its own `processClass`; this method carries it to the fabric's
+     * single policy point and adds nothing of its own. Everything after this
+     * call treats the returned handle identically regardless of where it landed.
      */
     private _startResidentProcess;
     private _activateProcessVfsWriter;
@@ -590,9 +588,18 @@ export declare class FacetManager {
      * environment used by foreground `node <script>` execution.
      *
      * A resident primitive: the process outlives the call, may bind a port, and
-     * accumulates memory for as long as it runs — so it declares `heavy` and the
-     * fabric gives it its own workerd process. Where it lands is the fabric's
-     * business; nothing below this line knows or asks.
+     * accumulates memory for as long as it runs.
+     *
+     * Declares `light`, and the reason is ordering, not placement. A node
+     * request handler routinely writes a file and returns a response that
+     * asserts the write is already visible; `resident-node-request-vfs-durability`
+     * pins that. Locally the write and the response settle against one VFS in
+     * one workerd process. On a peer the write travels back over SUPERVISOR
+     * while the response travels forward over the route target — two independent
+     * paths — and nothing today orders them. Until that ordering is re-proven
+     * across the extra hop rather than assumed, node stays in the coordinator's
+     * process. Its image is also the cheapest of the resident runtimes, so it
+     * has the least to gain from a peer.
      */
     spawnNode(code: string, opts?: {
         argv?: string[];
@@ -614,9 +621,14 @@ export declare class FacetManager {
      *
      * The shared primitive for any runtime that serves over
      * handleHttpRequest(Request) — the python and ruby socket servers today.
-     * Like every resident primitive it declares `heavy`: the runtime image it
-     * carries is exactly the memory that should not sit in the coordinator's
-     * workerd process.
+     *
+     * Declares `heavy`. The interpreter image it carries is exactly the memory
+     * that should not sit in the coordinator's workerd process — ruby's
+     * interpreter+stdlib alone is 34.3 MiB, and it already travels to the host
+     * BY VFS PATH, so peer placement costs the coordinator nothing it was not
+     * already paying. It has no readiness coupling back into the session: the
+     * runner answers startProcess with its boot payload and the caller waits on
+     * that one promise, so nothing polls the port to decide the process is up.
      */
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<{
         pid: number;
