@@ -534,6 +534,18 @@ const __fsMod = (() => {
     catch (error) { throw _mapSupervisorError(error, syscall, p); }
   }
 
+  // Every supervisor READ round trip the facet issues. The runner reports it
+  // in the exec-diag envelope, so a change to how reads are issued (batched,
+  // coalesced, pipelined) is measurable instead of asserted. Reads are the
+  // only fs RPC a program can issue thousands of in one lifetime — a whole
+  // file costs one per READ_STREAM_CHUNK_BYTES — so this counts reads rather
+  // than every fs call.
+  if (typeof globalThis.__nimbusFsRpcReads !== "number") globalThis.__nimbusFsRpcReads = 0;
+  function _fsReadRpc(promise, syscall, p, use) {
+    globalThis.__nimbusFsRpcReads++;
+    return _fsRpc(promise, syscall, p, use);
+  }
+
   const _localTimes = globalThis.__nimbusVfsTimes || (globalThis.__nimbusVfsTimes = Object.create(null));
   const _localModes = globalThis.__nimbusVfsModes || (globalThis.__nimbusVfsModes = Object.create(null));
 
@@ -752,7 +764,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      const bytes = await _fsRpc(supervisor.fsReadRange(absPath, pos, want), "read", displayPath, (r) => r);
+      const bytes = await _fsReadRpc(supervisor.fsReadRange(absPath, pos, want), "read", displayPath, (r) => r);
       if (bytes === null || bytes === undefined) throw _fsErr("ENOENT", "open", displayPath);
       return bytes.byteLength === 0 ? null : bytes;
     }
@@ -791,7 +803,7 @@ const __fsMod = (() => {
 
     if (typeof supervisor.readFile === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      const text = await _fsRpc(supervisor.readFile(absPath), "open", p, (result) => result);
+      const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
       if (text !== null && text !== undefined) {
         return encoding ? _asString(text) : __BufferMod.from(text);
       }

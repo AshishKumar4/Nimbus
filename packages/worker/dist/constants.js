@@ -163,6 +163,17 @@ export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 // with 7 MiB left for metadata, structured-clone overhead, and runtime state.
 // This is 31.25% of the platform's 128 MiB hard isolate ceiling.
 export const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES = 40 * 1024 * 1024;
+// Reserved slice of that allowance for chunk-sized filesystem reads, so a
+// read is never queued behind a multi-megabyte owner for a wait that has
+// nothing to do with its own cost. A read only draws on this when the shared
+// budget is already contended — which is exactly when the VFS LRU is shrunk
+// to 8 MiB — so peak accounting is 40 + 1 admitted, 8 LRU, 9 bundle baseline:
+// 58 MiB, still under the 64 MiB soft ceiling.
+//
+// 1 MiB is 16 concurrent READ_STREAM_CHUNK_BYTES reads. The point is not
+// depth, it is that a read loop keeps moving while a heavy owner works
+// instead of stopping dead for the duration.
+export const SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';
 export const DEFAULT_HOME = '/home/user';

@@ -45,7 +45,7 @@ import {
 } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import {
-  acquireSupervisorAllocation,
+  acquireSupervisorReadAllocation,
 } from '../observability/heavy-alloc-coord.js';
 import {
   rpcPayloadEnd,
@@ -135,7 +135,7 @@ async function withReadAllocation<T>(
 ): Promise<T> {
   const payloadBytes = checkedReadPayloadBytes(bytes);
   if (payloadBytes === 0) return read();
-  const lease = await acquireSupervisorAllocation(payloadBytes);
+  const lease = await acquireSupervisorReadAllocation(payloadBytes);
   rpcPayloadStart(payloadBytes);
   try {
     return await read();

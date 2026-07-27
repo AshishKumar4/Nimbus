@@ -7,7 +7,7 @@
  * recompile. There was no per-exec timing, so optimizing it was blind.
  *
  * This singleton ring records `{ bundleMs, loadMs, runMs, drainPasses,
- * moduleMapBytes, rpcWrites, cacheHit }` for the last few execs, gated on
+ * moduleMapBytes, rpcWrites, fsRpcReads, cacheHit }` for the last few execs, gated on
  * `NIMBUS_DIAG_EXEC=1`. Surfaced via `GET /api/_diag/exec` so behavioral
  * probes can read measured deltas before/after an optimization.
  *
@@ -16,8 +16,8 @@
  * empty. Same pattern as the install-pipeline diag flag
  * (NIMBUS_DIAG_INSTALL_PIPELINE).
  *
- * drainPasses + rpcWrites originate INSIDE the facet isolate (the
- * supervisor can't see them, and `Date.now()` is frozen in the no-I/O
+ * drainPasses + rpcWrites + fsRpcReads originate INSIDE the facet isolate
+ * (the supervisor can't see them, and `Date.now()` is frozen in the no-I/O
  * drain so a wall-clock proxy would read 0). The generated runner reports
  * them in its result envelope; the supervisor folds them into the record.
  */
@@ -38,6 +38,10 @@ export interface ExecTelemetryRecord {
     moduleMapBytes: number;
     /** Supervisor RPC writes the facet issued (__queueRpcWrite calls). */
     rpcWrites: number;
+    /** Supervisor fs READ round trips the facet issued. A whole-file async
+     *  read costs one per READ_STREAM_CHUNK_BYTES, so this is the count that
+     *  moves when reads are batched, coalesced or pipelined. */
+    fsRpcReads: number;
     /** Whether the prefetch bundle was served from cache (no VFS walk). */
     cacheHit: boolean;
     /** Exit code, for cross-referencing telemetry against failures. */
