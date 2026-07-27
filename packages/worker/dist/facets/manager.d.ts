@@ -37,13 +37,15 @@ export interface FacetExecResult {
      */
     vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
     /**
-     * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses and
-     * rpcWrites originate inside the facet (see exec-telemetry.ts); the
-     * supervisor folds them with its own phase timings before recording.
+     * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses,
+     * rpcWrites and fsRpcReads originate inside the facet (see
+     * exec-telemetry.ts); the supervisor folds them with its own phase timings
+     * before recording.
      */
     diag?: {
         drainPasses: number;
         rpcWrites: number;
+        fsRpcReads: number;
     };
 }
 /**

@@ -7,7 +7,7 @@
  * recompile. There was no per-exec timing, so optimizing it was blind.
  *
  * This singleton ring records `{ bundleMs, loadMs, runMs, drainPasses,
- * moduleMapBytes, rpcWrites, cacheHit }` for the last few execs, gated on
+ * moduleMapBytes, rpcWrites, fsRpcReads, cacheHit }` for the last few execs, gated on
  * `NIMBUS_DIAG_EXEC=1`. Surfaced via `GET /api/_diag/exec` so behavioral
  * probes can read measured deltas before/after an optimization.
  *
@@ -16,8 +16,8 @@
  * empty. Same pattern as the install-pipeline diag flag
  * (NIMBUS_DIAG_INSTALL_PIPELINE).
  *
- * drainPasses + rpcWrites originate INSIDE the facet isolate (the
- * supervisor can't see them, and `Date.now()` is frozen in the no-I/O
+ * drainPasses + rpcWrites + fsRpcReads originate INSIDE the facet isolate
+ * (the supervisor can't see them, and `Date.now()` is frozen in the no-I/O
  * drain so a wall-clock proxy would read 0). The generated runner reports
  * them in its result envelope; the supervisor folds them into the record.
  */
