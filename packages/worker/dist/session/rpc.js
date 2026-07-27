@@ -33,7 +33,7 @@ import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { createLoadedWorkerEntrypoint, getNimbusCtxExports, hostResidentProcess, isolateToken, ResidentBootSpecSchema, } from '../loaders/process-fabric.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
-import { acquireSupervisorAllocation, } from '../observability/heavy-alloc-coord.js';
+import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-coord.js';
 import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
@@ -101,7 +101,7 @@ async function withReadAllocation(bytes, read) {
     const payloadBytes = checkedReadPayloadBytes(bytes);
     if (payloadBytes === 0)
         return read();
-    const lease = await acquireSupervisorAllocation(payloadBytes);
+    const lease = await acquireSupervisorReadAllocation(payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {
         return await read();

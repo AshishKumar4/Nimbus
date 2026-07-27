@@ -33,6 +33,12 @@ interface AllocationBudgetLifecycle {
 export class SupervisorAllocationBudget {
   private readonly credits: WeightedCreditPool;
   private active = false;
+  /**
+   * Leases that drive the disposable-cache lifecycle. Occupancy cannot stand
+   * in for this: a read holds credit too, and a read must not sacrifice the
+   * cache it is filling.
+   */
+  private lifecycleHolders = 0;
 
   constructor(
     readonly capacity: number,
@@ -48,11 +54,40 @@ export class SupervisorAllocationBudget {
     };
   }
 
-  async acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
+  /**
+   * Reserve bytes and, while held, mark the budget active so observers can
+   * free heap headroom. For owners whose payload is what the headroom is for:
+   * installs, clones, pre-bundles, boot payloads, streamed writes.
+   */
+  acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
+    return this._acquire(bytes, signal, true);
+  }
+
+  /**
+   * Reserve bytes WITHOUT driving the cache lifecycle, for owners that are
+   * filling the disposable cache rather than competing with it. Shrinking a
+   * chunk cache to serve a chunk read is circular: sequentially the budget
+   * empties between every read, so an occupancy-edged observer fires once per
+   * read and the cache is pinned at its shrunk floor for the whole workload,
+   * never warming. The byte credit is still taken — back-pressure is what
+   * stops a large read overlapping a large write.
+   */
+  acquireWithoutLifecycle(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
+    return this._acquire(bytes, signal, false);
+  }
+
+  private async _acquire(
+    bytes: number,
+    signal: AbortSignal | undefined,
+    drivesLifecycle: boolean,
+  ): Promise<ResizableCreditLease> {
     const credit = await this.credits.acquire(bytes, signal);
-    if (!this.active) {
-      this.active = true;
-      this.lifecycle.onActive?.();
+    if (drivesLifecycle) {
+      this.lifecycleHolders++;
+      if (!this.active) {
+        this.active = true;
+        this.lifecycle.onActive?.();
+      }
     }
 
     let released = false;
@@ -67,7 +102,9 @@ export class SupervisorAllocationBudget {
         if (released) return;
         released = true;
         credit.release();
-        if (this.credits.stats.current === 0) {
+        if (!drivesLifecycle) return;
+        this.lifecycleHolders--;
+        if (this.lifecycleHolders === 0 && this.active) {
           this.active = false;
           this.lifecycle.onIdle?.();
         }
@@ -164,6 +201,18 @@ export function acquireSupervisorAllocation(
   signal?: AbortSignal,
 ): Promise<ResizableCreditLease> {
   return supervisorAllocationBudget.acquire(bytes, signal);
+}
+
+/**
+ * Reserve bytes for a filesystem READ. Takes the same byte credit as any
+ * other owner but does not shrink the disposable VFS cache, which reads are
+ * there to fill.
+ */
+export function acquireSupervisorReadAllocation(
+  bytes: number,
+  signal?: AbortSignal,
+): Promise<ResizableCreditLease> {
+  return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
 }
 
 /**
