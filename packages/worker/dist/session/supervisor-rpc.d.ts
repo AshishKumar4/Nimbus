@@ -4,9 +4,10 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number }
+ * Props: { doId: string, pid: number, writerId: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
+ *   writerId — the active append-writer incarnation for this process
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -17,7 +18,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsTruncate (stateless ranged ops)
+ *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
@@ -67,6 +68,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _getStub;
     private _call;
     private _pid;
+    private _writerId;
     readFile(path: string): Promise<string | null>;
     /**
      * Read a file as raw bytes. Used by the git network facet for binary
@@ -107,6 +109,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number>;
+    fsAppend(path: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
+    fsAppendAck(moduleId: string, operationId: string): Promise<void>;
     fsTruncate(path: string, size: number): Promise<void>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.

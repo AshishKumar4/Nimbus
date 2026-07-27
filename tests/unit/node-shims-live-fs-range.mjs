@@ -6,6 +6,7 @@
 // live VFS content stays authoritative.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
@@ -17,6 +18,7 @@ const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
 const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
+rawVfs.activateAppendWriter(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
 const supervisor = {
@@ -36,17 +38,36 @@ const supervisor = {
   utimes: (p, a, m) => bridge.utimes(p, a, m),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
   fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
+  async fsAppend(p, moduleId, operationId, bytes) {
+    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    const digest = Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return bridge.appendOnce(
+      p,
+      1,
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      moduleId,
+      Number(operationId),
+      digest,
+      bytes,
+    );
+  },
+  fsAppendAck: (moduleId, operationId) => bridge.acknowledgeAppend(
+    1,
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    moduleId,
+    Number(operationId),
+  ),
   fsTruncate: (p, s) => bridge.truncate(p, s),
 };
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + code + '\n;return { fs: __fsMod };'
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return { fs: __fsMod };'
 );
 const sandbox = factory(
-  {}, {}, {}, {}, null, supervisor,
+  { 'home/user/log.txt': 'stale-snapshot\n' }, {}, {}, null, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );
@@ -124,13 +145,33 @@ await assert.rejects(fsp.open('/home/user/nope.bin', 'r'), /ENOENT/);
   await assert.rejects(fsp.truncate('/home/user/never.bin', 1), /ENOENT/);
 }
 
-// appendFile on a live-only file appends instead of clobbering
+// A resident snapshot is only a sync-read cache. If authority changed after
+// startup, appendFile must preserve the live prefix rather than publish the
+// stale bundle cell as a complete replacement.
 {
   vfs.writeFile('home/user/log.txt', enc.encode('line1\n'));
   await fsp.appendFile('/home/user/log.txt', 'line2\n');
   assert.equal(new TextDecoder().decode(vfs.readFile('home/user/log.txt')), 'line1\nline2\n');
+  await fsp.appendFile('/home/user/log.txt', 'line3\n');
+  assert.equal(
+    new TextDecoder().decode(vfs.readFile('home/user/log.txt')),
+    'line1\nline2\nline3\n',
+    'later append chains remain deltas after the stale snapshot is discarded',
+  );
   // and async reads see the merged live content
-  assert.equal(await fsp.readFile('/home/user/log.txt', 'utf8'), 'line1\nline2\n');
+  assert.equal(await fsp.readFile('/home/user/log.txt', 'utf8'), 'line1\nline2\nline3\n');
+}
+
+// A real pending full rewrite does own its prefix. Appending before that
+// rewrite flushes must publish replacement + suffix, not preserve old authority.
+{
+  vfs.writeFile('home/user/pending-full.txt', enc.encode('external\n'));
+  sandbox.fs.writeFileSync('/home/user/pending-full.txt', 'replacement\n');
+  await fsp.appendFile('/home/user/pending-full.txt', 'tail\n');
+  assert.equal(
+    new TextDecoder().decode(vfs.readFile('home/user/pending-full.txt')),
+    'replacement\ntail\n',
+  );
 }
 
 // writeFile + appendFile flow (probe parity: WRITE=ok path)

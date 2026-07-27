@@ -18,6 +18,7 @@
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
+import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { prefetchForRequire } from '../runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '../runtime/javascript-ast.js';
@@ -468,7 +469,8 @@ export default {
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
-    const __vfsWrites = {};
+    const __nimbusDeferProcessExitReport = true;
+${VFS_WRITE_LEDGER_SOURCE}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
@@ -564,13 +566,20 @@ ${ENTRYPOINT_STARTUP_DRAIN}
 
     await __drainPendingIO();
 
-    const __failedWrites = {};
-    if (__supervisor && Object.keys(__vfsWrites).length > 0) {
-      for (const [path, content] of Object.entries(__vfsWrites)) {
-        __pendingIO.push(__supervisor.writeFile(path, content).catch(() => { __failedWrites[path] = content; }));
+    if (__supervisor) {
+      try {
+        await __nimbusDrainVfsWrites(__supervisor);
+      } catch (e) {
+        const trace = (e && e.stack) || (e && e.message) || String(e);
+        stderr += trace + "\\n";
+        exitCode = 1;
+        if (!captureOutput) {
+          try {
+            await __supervisor.stderr(trace + "\\n");
+          } catch {}
+        }
       }
     }
-    await __drainPendingIO();
 
     // Drain child_process output before reporting process exit.
     try {
@@ -596,7 +605,7 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       exitCode,
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
-      vfsWrites: __supervisor ? __failedWrites : __vfsWrites,
+      vfsWrites: __supervisor ? {} : __vfsWrites,
       ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount } } : {}),
     });
   }
@@ -686,18 +695,37 @@ let __nimbusAttachedLifecycle = null;
 async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
-  if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
-    for (const [path, content] of Object.entries(rt.vfsWrites)) {
-      rt.pendingIO.push(rt.supervisor.writeFile(path, content).catch(() => {}));
+  const __pendingDrain = rt.pendingDrainChain.then(async () => {
+    const __vfsTasks = [];
+    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
+      for (const path of Object.keys(rt.vfsWrites)) {
+        __vfsTasks.push(rt.flushVfsWrite(
+          path,
+          (content, snapshot) =>
+            rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
+        ));
+      }
     }
-  }
-  for (let pass = 0; pass < 12; pass++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (rt.pendingIO.length <= rt.settledIO) break;
-    const slice = rt.pendingIO.slice(rt.settledIO);
-    rt.settledIO = rt.pendingIO.length;
-    await Promise.allSettled(slice);
-  }
+    const __vfsOutcomes = await Promise.allSettled([
+      ...__vfsTasks,
+      rt.drainVfsMutations(),
+    ]);
+    for (let pass = 0; pass < 12; pass++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (rt.pendingIO.length <= rt.settledIO) break;
+      const slice = rt.pendingIO.slice(rt.settledIO);
+      rt.settledIO = rt.pendingIO.length;
+      await Promise.allSettled(slice);
+    }
+    if (rt.settledIO === rt.pendingIO.length) {
+      rt.pendingIO.length = 0;
+      rt.settledIO = 0;
+    }
+    const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
+    if (__vfsFailure) throw __vfsFailure.reason;
+  });
+  rt.pendingDrainChain = __pendingDrain.catch(() => {});
+  await __pendingDrain;
 }
 
 async function __nimbusEnsureStarted(workerEnv, workerCtx) {
@@ -732,7 +760,8 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx) {
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
     let exitCode = 0;
-    const __vfsWrites = {};
+    const __nimbusDeferProcessExitReport = true;
+${VFS_WRITE_LEDGER_SOURCE}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
@@ -819,44 +848,65 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       pendingIO: __pendingIO,
       settledIO: 0,
       vfsWrites: __vfsWrites,
+      flushVfsWrite: __nimbusFlushVfsWrite,
+      persistVfsWrite: __nimbusPersistVfsWrite,
+      drainVfsMutations: __nimbusDrainVfsMutations,
+      pendingDrainChain: Promise.resolve(),
     };
     await __nimbusFlushRuntime();
 
-    if (attachedTty && !__attachedExplicitExit) {
-      const __attachedLifecycle = (async () => {
-        if (__attachedCompletion) {
+    const __nimbusReportFinalExit = async (code, reason) => {
+      if (!__supervisor || __nimbusProcessExitReported) return;
+      await __supervisor.reportExit(code, reason || "");
+      __nimbusProcessExitReported = true;
+    };
+    const __nimbusReportLifecycleFailure = async (e) => {
+      const trace = (e && e.stack) || (e && e.message) || String(e);
+      stderr += trace + "\\n";
+      if (__supervisor) {
+        try { await __supervisor.stderr(trace + "\\n"); } catch {}
+        await __nimbusReportFinalExit(1, trace + "\\n");
+      }
+    };
+
+    if (__attachedExplicitExit) {
+      await __nimbusReportFinalExit(exitCode, stderr);
+    } else {
+      const __residentExitLifecycle = (async () => {
+        let finalCode = 0;
+        if (attachedTty && __attachedCompletion) {
           const __exitMarker = {};
           const __result = await Promise.race([
             __attachedCompletion.then(() => null),
-            __nimbusProcessExitPromise.then(() => __exitMarker),
+            __nimbusProcessExitPromise.then((code) => {
+              finalCode = Number(code ?? 0);
+              return __exitMarker;
+            }),
           ]);
-          if (__result === __exitMarker) return;
+          if (__result !== __exitMarker) {
+            finalCode = Number(__nimbusProcessExitCode ?? 0);
+          }
         } else {
-          await __nimbusProcessExitPromise;
+          finalCode = Number(await __nimbusProcessExitPromise);
         }
         await __nimbusFlushRuntime();
-        if (__supervisor && !__nimbusProcessExitReported) {
-          await __supervisor.reportExit(0, "");
-        }
+        await __nimbusReportFinalExit(finalCode, "");
       })().catch(async (e) => {
         if (e instanceof __ProcessExit) {
-          await __nimbusFlushRuntime();
-          if (!__nimbusProcessExitReported) {
-            __nimbusReportProcessExit(e.code, "");
+          try {
+            await __nimbusFlushRuntime();
+            await __nimbusReportFinalExit(e.code, "");
+          } catch (flushError) {
+            await __nimbusReportLifecycleFailure(flushError);
           }
           return;
         }
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        if (__supervisor) {
-          try { await __supervisor.stderr(trace + "\\n"); } catch {}
-          await __supervisor.reportExit(1, trace + "\\n");
-        }
+        await __nimbusReportLifecycleFailure(e);
       });
-      __nimbusAttachedLifecycle = __attachedLifecycle;
-      workerCtx.waitUntil(__attachedLifecycle);
-    } else if (attachedTty && __attachedExplicitExit && __supervisor) {
-      if (!__nimbusProcessExitReported) await __supervisor.reportExit(exitCode, stderr);
+      workerCtx.waitUntil(__residentExitLifecycle);
+      if (attachedTty) {
+        __nimbusAttachedLifecycle = __residentExitLifecycle;
+      }
     }
 
     if (__rpcDrops > 0 && __supervisor) {
@@ -882,9 +932,17 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
   // it returns the in-facet server's response as a streaming host Response the
   // moment headers are known, so SSE / chunked bodies flow live over the RPC
   // boundary instead of being buffered to "finish". Flush process stdout first
-  // (independent of the response stream).
+  // (independent of the response stream), then make pending synchronous
+  // file-content writes durable before returning the response.
   await __nimbusFlushRuntime();
-  return globalThis.__nimbusServeHttp(req);
+  const response = await globalThis.__nimbusServeHttp(req);
+  try {
+    await __nimbusFlushRuntime();
+  } catch (e) {
+    try { await response.body?.cancel(); } catch {}
+    throw e;
+  }
+  return response;
 }
 
 export class NimbusNodeProcess extends WorkerEntrypoint {
@@ -938,10 +996,33 @@ function _bundleCellLength(cell) {
  * own, and the point of the incremental accounting is that sizing the
  * snapshot never allocates a second copy of anything in it.
  *
- * Non-string cells (binary content, permission-denial markers) are rare and
- * small, so they take the direct route.
+ * Uint8Array has no JSON representation of its own: JSON.stringify expands
+ * it to `{"0":byte,"1":byte,...}`. Materializing that form while merely
+ * sizing a binary cell can allocate more than twelve times the file's raw
+ * bytes, so count its punctuation and decimal digits directly too.
+ *
+ * Other values here are the small manifest object or a permission-denial
+ * marker and can take the direct route.
  */
 function _jsonEncodedBytes(value) {
+    if (value instanceof Uint8Array) {
+        let bytes = 2; // the surrounding braces
+        let indexDigits = 1;
+        let nextIndexWidth = 10;
+        for (let index = 0; index < value.byteLength; index++) {
+            if (index === nextIndexWidth) {
+                indexDigits++;
+                nextIndexWidth *= 10;
+            }
+            if (index > 0)
+                bytes += 1; // comma
+            // `"index":byte`: quotes + decimal key + colon + decimal byte.
+            const byte = value[index];
+            const byteDigits = byte < 10 ? 1 : byte < 100 ? 2 : 3;
+            bytes += 3 + indexDigits + byteDigits;
+        }
+        return bytes;
+    }
     if (typeof value !== 'string') {
         return new TextEncoder().encode(JSON.stringify(value)).length;
     }
@@ -2668,12 +2749,20 @@ export class FacetManager {
         this.processRpcResources.delete(pid);
         disposeRpcResources(tracked.resources);
     }
+    revokeProcessVfsWriters(pid) {
+        this.vfs?.revokeAppendWriters(pid);
+    }
     noteProcessReportedExit(pid, exitCode) {
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
         const tracked = this.processRpcResources.get(pid);
-        if (tracked?.releaseOnReportExit)
+        if (tracked?.releaseOnReportExit) {
             this.releaseProcessRpcResources(pid);
+            this.revokeProcessVfsWriters(pid);
+        }
+        else if (!tracked) {
+            this.revokeProcessVfsWriters(pid);
+        }
         this._teardownPairedServeFacet(pid);
     }
     /**
@@ -2750,6 +2839,7 @@ export class FacetManager {
         const abortController = new AbortController();
         try {
             const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink), entry, () => abortController.abort());
+            this._flushVfsWrites(result, entry.pid);
             this.processes.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
                 this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
@@ -2768,7 +2858,6 @@ export class FacetManager {
                     at: Date.now(),
                 });
             }
-            this._flushVfsWrites(result, entry.pid);
             return result;
         }
         catch (err) {
@@ -2845,9 +2934,9 @@ export class FacetManager {
         const workerCode = generatedWorker.code;
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({ props: { doId: this.ctx.id.toString(), pid: entry.pid } })
-            : undefined;
+        const writerId = crypto.randomUUID();
+        let supervisorBinding;
+        let writerActivated = false;
         const body = JSON.stringify({
             argv: opts.argv || [],
             env: opts.env || {},
@@ -2878,6 +2967,17 @@ export class FacetManager {
         let worker;
         let entrypoint;
         try {
+            if (ctxExports?.SupervisorRPC) {
+                this._activateProcessVfsWriter(entry.pid, writerId);
+                writerActivated = true;
+                supervisorBinding = ctxExports.SupervisorRPC({
+                    props: {
+                        doId: this.ctx.id.toString(),
+                        pid: entry.pid,
+                        writerId,
+                    },
+                });
+            }
             const __loadStart = diagSink ? Date.now() : 0;
             worker = this.env.LOADER.load({
                 compatibilityDate: CF_COMPAT_DATE,
@@ -2918,6 +3018,8 @@ export class FacetManager {
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);
             disposeRpcResource(supervisorBinding);
+            if (writerActivated)
+                this.vfs?.revokeAppendWriter(entry.pid, writerId);
         }
     }
     /**
@@ -2940,10 +3042,14 @@ export class FacetManager {
         // the ~23 MB module map is assembled inside the stateless entrypoint on
         // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
         // context, which stays open for the whole run), never in this DO.
-        const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid };
+        const writerId = crypto.randomUUID();
+        const supervisor = { doId: this.ctx.id.toString(), pid: staged.pid, writerId };
         const ctxExports = getNimbusCtxExports();
         let entrypoint;
+        let writerActivated = false;
         try {
+            this._activateProcessVfsWriter(staged.pid, writerId);
+            writerActivated = true;
             entrypoint = await createLoadedWorkerEntrypoint(ctxExports, undefined, supervisor, null, undefined, { kind: 'staged', stage: staged.stageSpec });
             if (typeof entrypoint.fetch !== 'function') {
                 throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
@@ -2951,8 +3057,8 @@ export class FacetManager {
             const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', { method: 'POST' }));
             try {
                 const result = await response.json();
-                this.processes.exit(staged.pid, result.exitCode);
                 this._flushVfsWrites(result, staged.pid);
+                this.processes.exit(staged.pid, result.exitCode);
                 return { ...result, pid: staged.pid };
             }
             finally {
@@ -2965,6 +3071,8 @@ export class FacetManager {
         }
         finally {
             disposeRpcResource(entrypoint);
+            if (writerActivated)
+                this.vfs?.revokeAppendWriter(staged.pid, writerId);
         }
     }
     /**
@@ -3059,6 +3167,12 @@ export class FacetManager {
                 // is still expected to run — never after kill/session teardown.
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
                 onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+                onWriterActivated: (writerId) => {
+                    this._activateProcessVfsWriter(pid, writerId);
+                },
+                onWriterRetired: (writerId) => {
+                    this.vfs?.revokeAppendWriter(pid, writerId);
+                },
             });
             this._noteProcessPlacement(pid, handle);
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
@@ -3191,6 +3305,12 @@ export class FacetManager {
                 boot: { kind: 'staged', stage: stageSpec },
                 shouldRespawn: () => this.processes.get(pid)?.state === 'running',
                 onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+                onWriterActivated: (writerId) => {
+                    this._activateProcessVfsWriter(pid, writerId);
+                },
+                onWriterRetired: (writerId) => {
+                    this.vfs?.revokeAppendWriter(pid, writerId);
+                },
             });
             this._noteProcessPlacement(pid, handle);
             // The handle's route target resolves the RUNNING facet wherever it is
@@ -3268,10 +3388,25 @@ export class FacetManager {
             workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
             shouldRespawn: () => this.processes.get(pid)?.state === 'running',
             onRespawn: (cause) => this._noteHostRespawn(pid, cause),
+            onWriterActivated: (writerId) => {
+                this._activateProcessVfsWriter(pid, writerId);
+            },
+            onWriterRetired: (writerId) => {
+                this.vfs?.revokeAppendWriter(pid, writerId);
+            },
             ...spec,
         });
         this._noteProcessPlacement(pid, handle);
         return handle;
+    }
+    _activateProcessVfsWriter(pid, writerId) {
+        const entry = this.processes.get(pid);
+        if (!entry || entry.state !== 'running') {
+            throw new Error(`Nimbus: cannot activate append writer for non-running process ${pid}`);
+        }
+        // ProcessTable PIDs are monotonic within a generation and generation-strided
+        // across resets, so this live entry is the sole positive authority root.
+        this.vfs?.activateAppendWriter(pid, writerId);
     }
     /**
      * A host death that the fabric recovered from is never silent: it lands in
@@ -3402,26 +3537,17 @@ export class FacetManager {
             return;
         const vfs = this.vfs.as(this.processes.cred(pid));
         for (const [path, content] of Object.entries(result.vfsWrites)) {
-            try {
-                const parts = path.split('/');
-                for (let i = 1; i < parts.length; i++) {
-                    const dir = parts.slice(0, i).join('/');
-                    if (dir && !vfs.exists(dir))
-                        vfs.mkdir(dir, { recursive: true });
-                }
-                // binary-fs wave: __vfsWrites cells carry string | Uint8Array.
-                // The hot path here is the LIVE SUPERVISOR.writeFile RPC inside
-                // the facet — which preserves Uint8Array via structured-clone.
-                // This `result.vfsWrites` carries only the FAILED-writes residue
-                // (after JSON.parse), where Uint8Array gets serialized as a
-                // {"0":...,"1":...} object. Detect that shape and reconstitute
-                // bytes; otherwise pass through (string for source code, etc.).
-                const restored = _reviveVfsWriteCell(content);
-                vfs.writeFile(path, restored);
+            const parts = path.split('/');
+            for (let i = 1; i < parts.length; i++) {
+                const dir = parts.slice(0, i).join('/');
+                if (dir && !vfs.exists(dir))
+                    vfs.mkdir(dir, { recursive: true });
             }
-            catch (e) {
-                console.error('[nimbus] VFS write-back failed:', path, e?.message);
-            }
+            // No-supervisor fallback: these are full sync-write cells, not failed
+            // append residues. A write-back error is the command's error and must
+            // propagate before a successful process exit is recorded.
+            const restored = _reviveVfsWriteCell(content);
+            vfs.writeFile(path, restored);
         }
     }
     /** Execution timeout. */
@@ -3670,6 +3796,7 @@ export class FacetManager {
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
         this.releaseProcessRpcResources(pid);
+        this.revokeProcessVfsWriters(pid);
         this._teardownPairedServeFacet(pid);
         if (exitCode !== 0) {
             this._w5RecordTermination(pid, exitCode, 'facet', reason);
@@ -3694,6 +3821,7 @@ export class FacetManager {
         catch { }
         this.portRegistry.unregisterByPid(pid);
         this.releaseProcessRpcResources(pid);
+        this.revokeProcessVfsWriters(pid);
         const result = this.processes.kill(pid);
         if (result) {
             try {

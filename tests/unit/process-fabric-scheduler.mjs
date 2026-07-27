@@ -67,7 +67,12 @@ setCtxExports({
     return binding;
   },
   NimbusLoadedEntrypoint(options) {
-    const boot = { props: options.props, startArgs: undefined, started: false };
+    const boot = {
+      props: options.props,
+      startArgs: undefined,
+      started: false,
+      disposed: false,
+    };
     localBoots.push(boot);
     return {
       startProcess(args) {
@@ -76,6 +81,7 @@ setCtxExports({
         return Promise.resolve({ ok: true, port: 8080 });
       },
       handleHttpRequest: (request) => Promise.resolve(new Response(`routed ${new URL(request.url).pathname}`)),
+      [Symbol.dispose]() { boot.disposed = true; },
     };
   },
 });
@@ -93,22 +99,33 @@ function makeCtx() {
   };
 }
 
+const WRITER_LIFECYCLE = {
+  onWriterActivated() {},
+  onWriterRetired() {},
+};
+
 /** Peer namespace mock: peerFor(name) supplies { token, host(boot, opts) }. */
 function makePeerNs(peerFor, log) {
   const hostedByKey = new Map();
+  const stubs = [];
   return {
     hostedByKey,
+    stubs,
     ns: {
       idFromName(name) { return { name }; },
       get(id) {
         const peer = peerFor(id.name);
-        return {
+        const stub = {
+          peerName: id.name,
+          disposed: false,
+          hosted: 0,
           async _rpcHostProcessProbe() {
             log.push(`probe:${id.name}`);
             return { isolateToken: peer.token };
           },
           async _rpcHostProcess(boot, opts) {
             log.push(`host:${id.name}`);
+            stub.hosted++;
             hostedByKey.set(opts.workerKey, { peer: id.name, boot, opts });
             return peer.host ? peer.host(boot, opts) : { ok: true };
           },
@@ -124,7 +141,10 @@ function makePeerNs(peerFor, log) {
             log.push(`cancel:${id.name}:${workerKey}`);
             return { cancelled: true };
           },
+          [Symbol.dispose]() { stub.disposed = true; },
         };
+        stubs.push(stub);
+        return stub;
       },
     },
   };
@@ -134,18 +154,41 @@ function makePeerNs(peerFor, log) {
 {
   const { env } = makeEnv();
   const fabric = new ProcessFabric(makeCtx(), env);
+  let retiredAfterDispose = false;
+  let activatedWriter;
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'light', startContract: 'lifetime',
     pid: 42, workerKey: 'nimbus-process:coord-do-id:42', boot: STAGED_BOOT,
+    onWriterActivated(writerId) {
+      assert.equal(
+        localBoots.some((candidate) => candidate.props.supervisor.writerId === writerId),
+        false,
+        'writer authority is activated before any local host capability is exposed',
+      );
+      activatedWriter = writerId;
+    },
+    onWriterRetired(writerId) {
+      const ownedStubs = localBoots.filter(
+        (candidate) => candidate.props.supervisor.writerId === writerId,
+      );
+      assert.equal(ownedStubs.length, 2);
+      assert.ok(ownedStubs.every((candidate) => candidate.disposed));
+      retiredAfterDispose = true;
+    },
   });
   assert.ok(handle instanceof ResidentProcessHandle);
   assert.match(handle.describePlacement(), /local facet/);
   await handle.done;
   const boot = localBoots.find((b) => b.props.stage === STAGE);
   assert.ok(boot, 'stage spec rides the entrypoint props');
-  assert.deepEqual(boot.props.supervisor, { doId: 'coord-do-id', pid: 42 });
+  assert.equal(boot.props.supervisor.doId, 'coord-do-id');
+  assert.equal(boot.props.supervisor.pid, 42);
+  assert.match(boot.props.supervisor.writerId, /^[0-9a-f-]{36}$/);
+  assert.equal(boot.props.supervisor.writerId, activatedWriter);
   assert.equal(boot.props.key, 'nimbus-process:coord-do-id:42');
   assert.equal(boot.started, true, 'local startProcess invoked');
+  assert.equal(retiredAfterDispose, true, 'writer retirement follows disposal of every host capability');
   console.log('  case1: light staged process boots the local facet path');
 }
 
@@ -154,6 +197,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv();
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'light', startContract: 'boot',
     pid: 43, workerKey: 'k43', boot: CODE_BOOT, startArgs: { userCode: 'puts 1' },
   });
@@ -163,7 +207,9 @@ function makePeerNs(peerFor, log) {
     'the wasm image travels as a path; the DO never reads or carries its bytes');
   assert.equal(boot.props.residentCode.modules['ruby+stdlib.wasm'], undefined);
   assert.equal(boot.props.key, 'k43');
-  assert.deepEqual(boot.props.supervisor, { doId: 'coord-do-id', pid: 43 }, 'syscalls route to the coordinator');
+  assert.equal(boot.props.supervisor.doId, 'coord-do-id', 'syscalls route to the coordinator');
+  assert.equal(boot.props.supervisor.pid, 43);
+  assert.match(boot.props.supervisor.writerId, /^[0-9a-f-]{36}$/);
   assert.deepEqual(boot.startArgs, { userCode: 'puts 1' }, 'startArgs reach the runner');
   assert.equal((await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'))).status, 200);
   // A `boot` runner stays resident after its payload: `done` must not settle.
@@ -186,6 +232,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime',
     pid: 7, workerKey: 'k7', boot: STAGED_BOOT,
   });
@@ -211,6 +258,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'boot',
     pid: 44, workerKey: 'k44', boot: CODE_BOOT, startArgs: { a: 1 },
   });
@@ -239,6 +287,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 8, workerKey: 'k8', boot: STAGED_BOOT,
   });
   assert.equal(log.filter((l) => l.startsWith('probe:')).length, HEAVY_PLACEMENT_MAX_ATTEMPTS);
@@ -251,25 +300,41 @@ function makePeerNs(peerFor, log) {
 {
   const log = [];
   let hostCalls = 0;
+  const writerIncarnations = [];
+  const activatedWriters = [];
   const peers = makePeerNs((name) => ({
     token: `distinct-${name}`,
-    host: () => {
+    host: (_boot, opts) => {
+      assert.ok(
+        activatedWriters.includes(opts.writerId),
+        'peer writer authority is active before the host receives its capability',
+      );
       hostCalls++;
+      writerIncarnations.push(opts.writerId);
       if (hostCalls === 1) throw new Error('Worker exceeded memory limit.'); // peer OOM
       return { ok: true };
     },
   }), log);
   const { env } = makeEnv(peers.ns);
   const respawnCauses = [];
+  const retiredWriters = [];
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 9, workerKey: 'k9', boot: STAGED_BOOT,
     shouldRespawn: () => true,
     onRespawn: (cause) => respawnCauses.push(String(cause)),
+    onWriterActivated: (writerId) => activatedWriters.push(writerId),
+    onWriterRetired: (writerId) => retiredWriters.push(writerId),
   });
   await handle.done; // must NOT reject — the respawn cleared it
   assert.equal(handle.respawns, 1);
   assert.match(respawnCauses[0], /exceeded memory/, 'a recovered host death is never silent');
+  assert.equal(new Set(writerIncarnations).size, 2,
+    'a respawn gets a fresh trusted writer incarnation before its sequence restarts');
+  assert.deepEqual(activatedWriters, writerIncarnations);
+  assert.deepEqual(retiredWriters, writerIncarnations,
+    'each host writer is retired only after that placement is disposed');
   assert.deepEqual(
     log.filter((l) => l.startsWith('host:')),
     ['host:coord-do-id:proc:0', 'host:coord-do-id:proc:1'],
@@ -290,6 +355,7 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 10, workerKey: 'k10', boot: STAGED_BOOT,
     shouldRespawn: () => true,
   });
@@ -308,12 +374,88 @@ function makePeerNs(peerFor, log) {
   const { env } = makeEnv(peers.ns);
   const fabric = new ProcessFabric(makeCtx(), env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 11, workerKey: 'k11', boot: STAGED_BOOT,
     shouldRespawn: () => false,
   });
   await assert.rejects(handle.done, /facet died/);
   assert.equal(log.filter((l) => l.startsWith('host:')).length, 1, 'no respawn for a torn-down pid');
   console.log('  case6c: shouldRespawn gate blocks respawn');
+}
+
+// ── (6d) first peer activation failure rejects spawn and owns cleanup ───
+{
+  const log = [];
+  const peers = makePeerNs((name) => ({ token: `distinct-${name}` }), log);
+  const { env } = makeEnv(peers.ns);
+  const retiredWriters = [];
+  const fabric = new ProcessFabric(makeCtx(), env);
+  let exposedHandle;
+  await assert.rejects(
+    (async () => {
+      exposedHandle = await fabric.startResidentProcess({
+        ...WRITER_LIFECYCLE,
+        processClass: 'heavy', startContract: 'lifetime',
+        pid: 14, workerKey: 'k14', boot: STAGED_BOOT,
+        onWriterActivated() { throw new Error('pid stopped during peer probe'); },
+        onWriterRetired: (writerId) => retiredWriters.push(writerId),
+      });
+    })(),
+    /pid stopped during peer probe/,
+    'first-placement activation failure rejects the spawn itself',
+  );
+  assert.equal(exposedHandle, undefined, 'no apparent resident handle is exposed');
+  assert.equal(peers.stubs.length, 1);
+  assert.equal(peers.stubs[0].disposed, true, 'the accepted probe stub is disposed');
+  assert.equal(peers.stubs[0].hosted, 0, 'the peer never receives a host RPC');
+  assert.deepEqual(retiredWriters, [], 'an identity that never activated is not retired');
+  assert.equal(fabric.tokensInUse.size, 0, 'failed activation cannot retain placement tokens');
+  console.log('  case6d: first peer activation failure rejects before handle exposure');
+}
+
+// ── (6e) respawn activation failure disposes only the new placement ─────
+{
+  const log = [];
+  let hostCalls = 0;
+  const peers = makePeerNs((name) => ({
+    token: `distinct-${name}`,
+    host: () => {
+      hostCalls++;
+      throw new Error('Worker exceeded memory limit.');
+    },
+  }), log);
+  const { env } = makeEnv(peers.ns);
+  const activationAttempts = [];
+  const retiredWriters = [];
+  const fabric = new ProcessFabric(makeCtx(), env);
+  const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
+    processClass: 'heavy', startContract: 'lifetime',
+    pid: 15, workerKey: 'k15', boot: STAGED_BOOT,
+    shouldRespawn: () => true,
+    onWriterActivated(writerId) {
+      activationAttempts.push(writerId);
+      if (activationAttempts.length === 2) throw new Error('pid stopped before respawn activation');
+    },
+    onWriterRetired: (writerId) => retiredWriters.push(writerId),
+  });
+  await assert.rejects(handle.done, /pid stopped before respawn activation/);
+  assert.equal(hostCalls, 1, 'only the activated first placement is hosted');
+  assert.equal(peers.stubs.length, 2);
+  assert.ok(peers.stubs.every((stub) => stub.disposed), 'both placement stubs are disposed');
+  assert.deepEqual(
+    peers.stubs.map((stub) => stub.hosted),
+    [1, 0],
+    'the rejected respawn identity never reaches the peer host',
+  );
+  assert.deepEqual(
+    retiredWriters,
+    [activationAttempts[0]],
+    'only the successfully activated first identity is retired',
+  );
+  assert.equal(handle.respawns, 0, 'a rejected activation is not an exposed respawn');
+  assert.equal(fabric.tokensInUse.size, 0, 'respawn activation failure leaves token accounting balanced');
+  console.log('  case6e: respawn activation failure disposes the unexposed placement');
 }
 
 // ── (7) kill(): cancel RPC to the hosting peer + respawn blocked ────────
@@ -328,6 +470,7 @@ function makePeerNs(peerFor, log) {
   const ctx = makeCtx();
   const fabric = new ProcessFabric(ctx, env);
   const handle = await fabric.startResidentProcess({
+    ...WRITER_LIFECYCLE,
     processClass: 'heavy', startContract: 'lifetime', pid: 12, workerKey: 'k12', boot: STAGED_BOOT,
     shouldRespawn: () => true, // pid still "running" — kill must still win
   });
@@ -348,6 +491,7 @@ function makePeerNs(peerFor, log) {
   const fabric = new ProcessFabric(makeCtx(), {});
   await assert.rejects(
     fabric.startResidentProcess({
+      ...WRITER_LIFECYCLE,
       processClass: 'heavy', startContract: 'lifetime', pid: 13, workerKey: 'k13', boot: STAGED_BOOT,
     }),
     /NIMBUS_SESSION/,

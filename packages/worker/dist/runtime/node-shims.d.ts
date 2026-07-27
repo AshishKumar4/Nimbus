@@ -18,9 +18,9 @@
  *   - assert, util, url, querystring, string_decoder, readline, tty, timers
  *
  * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
- * async reads and common async mutations can use the supervisor bridge for
- * live SQLite VFS coherence. Sync writes stay in __vfsWrites and flush on
- * completion.
+ * async reads use the supervisor bridge as their source of truth whenever it
+ * is available. Sync writes stay in __vfsWrites until an async observation or
+ * process completion flushes them to the supervisor.
  */
 export declare function generateShimsCode(): string;
 //# sourceMappingURL=node-shims.d.ts.map

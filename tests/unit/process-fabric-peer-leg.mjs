@@ -39,6 +39,7 @@ const STAGED_BOOT = { kind: 'staged', stage: STAGE };
 const OPTS = {
   coordinatorDoId: 'coordinator-do-id',
   pid: 21,
+  writerId: '11111111-1111-4111-8111-111111111111',
   workerKey: 'nimbus-process:coordinator-do-id:21',
   startContract: 'lifetime',
 };
@@ -97,7 +98,11 @@ function makeSelf() {
   const boot = boots.at(-1);
   assert.deepEqual(
     boot.props.supervisor,
-    { doId: 'coordinator-do-id', pid: 21 },
+    {
+      doId: 'coordinator-do-id',
+      pid: 21,
+      writerId: OPTS.writerId,
+    },
     'syscalls route to the COORDINATOR, not this peer',
   );
   assert.equal(boot.props.key, OPTS.workerKey);
@@ -137,7 +142,11 @@ function makeSelf() {
     codeBoot.code.vfsWasmModules,
     'the image travels as a path for the loading entrypoint to resolve, not as bytes',
   );
-  assert.deepEqual(boot.props.supervisor, { doId: 'coordinator-do-id', pid: 21 });
+  assert.deepEqual(boot.props.supervisor, {
+    doId: 'coordinator-do-id',
+    pid: 21,
+    writerId: OPTS.writerId,
+  });
   let settled = false;
   hosted.then(() => { settled = true; }, () => { settled = true; });
   await new Promise((r) => setTimeout(r, 0));

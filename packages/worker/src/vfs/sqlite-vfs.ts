@@ -148,6 +148,16 @@ export interface CredentialedVfs {
   readFileUncached(path: string): Uint8Array;
   readRange(path: string, offset: number, length: number): Uint8Array;
   writeRange(path: string, offset: number, bytes: Uint8Array): void;
+  appendOnce(
+    path: string,
+    pid: number,
+    writerId: string,
+    moduleId: string,
+    operationId: number,
+    digest: string,
+    bytes: Uint8Array,
+  ): number;
+  acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
   truncate(path: string, size: number): void;
   readFileString(path: string): string;
   stat(path: string): VfsStat;
@@ -215,6 +225,7 @@ const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
 const CONTENT_SCHEMA_MIGRATION = 'content_generations_v1';
+export const VFS_APPEND_RECEIPT_LIMIT = 2048;
 const INODE_KIND_FILE = 0;
 const INODE_KIND_DIRECTORY = 1;
 const INODE_KIND_SYMLINK = 2;
@@ -256,6 +267,23 @@ interface TransactionPlanMetrics {
   logicalRows: number;
   sqlExecs: number;
   affectedPaths: number;
+}
+
+function withCommitRowMetrics(metrics: TransactionPlanMetrics): TransactionPlanMetrics {
+  return {
+    ...metrics,
+    logicalRows: metrics.logicalRows + 1,
+    sqlExecs: metrics.sqlExecs + 1,
+  };
+}
+
+const VFS_APPEND_INCARNATION_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertAppendIncarnation(value: string, kind: 'writer' | 'module'): void {
+  if (!VFS_APPEND_INCARNATION_PATTERN.test(value)) {
+    throw vfsError('EINVAL', `invalid append ${kind} incarnation`);
+  }
 }
 
 interface TransactionPlan {
@@ -575,6 +603,7 @@ export class SqliteVFS {
     this.ctx = ctx!;
     this.events = new VfsEventEmitter();
     this.initSchema();
+    this.resumeAppendMaintenance();
     this.loadInodes();
     this.runContentMaintenanceSafely(2, true);
   }
@@ -586,6 +615,45 @@ export class SqliteVFS {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_schema_migrations (
         id TEXT PRIMARY KEY,
         applied_at INTEGER NOT NULL
+      )`);
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_receipts (
+        pid INTEGER NOT NULL,
+        writer_id TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        operation_id INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        digest TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (pid, writer_id, module_id, operation_id)
+      )`);
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_writer_state (
+        pid INTEGER NOT NULL,
+        writer_id TEXT NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0,
+        retired_at INTEGER,
+        PRIMARY KEY (pid, writer_id)
+      )`);
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_module_state (
+        pid INTEGER NOT NULL,
+        writer_id TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        acked_through INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (pid, writer_id, module_id)
+      )`);
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_pid_revocations (
+        pid INTEGER PRIMARY KEY,
+        retired_at INTEGER NOT NULL
+      )`);
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_acked_gaps (
+        pid INTEGER NOT NULL,
+        writer_id TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        operation_id INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        digest TEXT NOT NULL,
+        PRIMARY KEY (pid, writer_id, module_id, operation_id)
       )`);
 
       const contentMigrationApplied = [...this.sql.exec(
@@ -1163,6 +1231,12 @@ export class SqliteVFS {
       readFileUncached: (path) => this.readFileUncached(path, bound),
       readRange: (path, offset, length) => this.readRange(path, offset, length, bound),
       writeRange: (path, offset, bytes) => this.writeRange(path, offset, bytes, bound),
+      appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => (
+        this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)
+      ),
+      acknowledgeAppend: (pid, writerId, moduleId, operationId) => (
+        this.acknowledgeAppend(pid, writerId, moduleId, operationId)
+      ),
       truncate: (path, size) => this.truncate(path, size, bound),
       readFileString: (path) => this.readFileString(path, bound),
       stat: (path) => this.stat(path, bound, true),
@@ -1480,6 +1554,7 @@ export class SqliteVFS {
     content: string | Uint8Array,
     options: { mode?: number } | undefined,
     cred: VfsCred,
+    onCommit?: () => void,
   ): void {
     this.assertMutationsAllowed([path]);
     const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
@@ -1522,10 +1597,10 @@ export class SqliteVFS {
       chunkCount,
     };
     try {
-      this.writeBatch({ inodes: [inode], chunks }, cred);
+      this.writeBatch({ inodes: [inode], chunks }, cred, onCommit);
     } catch (error) {
       if (!(error instanceof SqliteVfsTransactionTooLargeError)) throw error;
-      this.replaceFileWithStagedContent(inode, chunks);
+      this.replaceFileWithStagedContent(inode, chunks, undefined, onCommit);
     }
   }
 
@@ -1708,7 +1783,13 @@ export class SqliteVFS {
    * Creates the file when missing; callers own parent-dir creation
    * (same contract as writeFile).
    */
-  private writeRange(path: string, offset: number, bytes: Uint8Array, cred: VfsCred): void {
+  private writeRange(
+    path: string,
+    offset: number,
+    bytes: Uint8Array,
+    cred: VfsCred,
+    onCommit?: () => void,
+  ): void {
     this.assertMutationsAllowed([path]);
     const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
     const effectivePath = resolved.path;
@@ -1723,11 +1804,14 @@ export class SqliteVFS {
     if (isNew) {
       const initial = new Uint8Array(end);
       initial.set(bytes, start);
-      this.writeFile(effectivePath, initial, undefined, cred);
+      this.writeFile(effectivePath, initial, undefined, cred, onCommit);
       return;
     }
     // POSIX pwrite of zero bytes never extends or dirties an existing file.
-    if (bytes.length === 0) return;
+    if (bytes.length === 0) {
+      if (onCommit) this.transactionSync(onCommit);
+      return;
+    }
 
     const oldSize = prior.size;
     const oldChunkCount = prior.chunkCount;
@@ -1762,10 +1846,513 @@ export class SqliteVFS {
 
     const newChunkCount = newSize === 0 ? 0 : Math.ceil(newSize / CHUNK_SIZE);
     const next = this.updatedFileInode(prior, newSize, newChunkCount, now);
-    if (this.commitCurrentContentMutation(prior, next, changedChunks, [])) return;
+    if (this.commitCurrentContentMutation(prior, next, changedChunks, [], onCommit)) return;
     this.replaceFileWithGeneratedContent(
       next,
       (chunkId) => this.generatedMutationChunk(prior, next, changedChunks, chunkId),
+      onCommit,
+    );
+  }
+
+  /**
+   * Publish an append and its dedupe receipt in the same SQLite transaction.
+   * Large content may stage privately first, but its inode publication and
+   * receipt still share the final transaction. Receipts are removed only by
+   * explicit client acknowledgement after that client relinquishes retries.
+   */
+  private appendOnce(
+    path: string,
+    pid: number,
+    writerId: string,
+    moduleId: string,
+    operationId: number,
+    digest: string,
+    bytes: Uint8Array,
+    cred: VfsCred,
+  ): number {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw vfsError('EINVAL', `invalid append pid ${pid}`);
+    assertAppendIncarnation(writerId, 'writer');
+    assertAppendIncarnation(moduleId, 'module');
+    if (!Number.isSafeInteger(operationId) || operationId <= 0) {
+      throw vfsError('EINVAL', `invalid append operation ${operationId}`);
+    }
+    const normalized = normalizeVfsPath(path);
+    const pidRevoked = [...this.sql.exec(
+      'SELECT 1 AS revoked FROM vfs_append_pid_revocations WHERE pid = ?',
+      pid,
+    )].length > 0;
+    if (pidRevoked) throw vfsError('ESTALE', `append process ${pid} is being retired`);
+    const writer = [...this.sql.exec(
+      `SELECT revoked FROM vfs_append_writer_state
+       WHERE pid = ? AND writer_id = ?`,
+      pid,
+      writerId,
+    )][0] as { revoked: number } | undefined;
+    if (!writer || Number(writer.revoked) !== 0) {
+      throw vfsError('ESTALE', `append writer ${pid}/${writerId} is unavailable`);
+    }
+
+    let moduleState = [...this.sql.exec(
+      `SELECT acked_through FROM vfs_append_module_state
+       WHERE pid = ? AND writer_id = ? AND module_id = ?`,
+      pid,
+      writerId,
+      moduleId,
+    )][0] as { acked_through: number } | undefined;
+    const ackedThrough = Number(moduleState?.acked_through ?? 0);
+    if (operationId <= ackedThrough) return bytes.byteLength;
+
+    const acknowledgedGap = [...this.sql.exec(
+      `SELECT path, byte_length, digest
+       FROM vfs_append_acked_gaps
+       WHERE pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`,
+      pid,
+      writerId,
+      moduleId,
+      operationId,
+    )][0] as { path: string; byte_length: number; digest: string } | undefined;
+    if (acknowledgedGap) {
+      if (
+        acknowledgedGap.path !== normalized
+        || Number(acknowledgedGap.byte_length) !== bytes.byteLength
+        || acknowledgedGap.digest !== digest
+      ) {
+        throw vfsError('EINVAL', `append acknowledgement collision for ${pid}/${operationId}`);
+      }
+      return bytes.byteLength;
+    }
+
+    const existing = [...this.sql.exec(
+      `SELECT path, byte_length, digest
+       FROM vfs_append_receipts
+       WHERE pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`,
+      pid,
+      writerId,
+      moduleId,
+      operationId,
+    )][0] as { path: string; byte_length: number; digest: string } | undefined;
+    if (existing) {
+      if (
+        existing.path !== normalized
+        || Number(existing.byte_length) !== bytes.byteLength
+        || existing.digest !== digest
+      ) {
+        throw vfsError('EINVAL', `append receipt collision for ${pid}/${writerId}/${operationId}`);
+      }
+      return bytes.byteLength;
+    }
+
+    const highestKnown = Number(
+      ([...this.sql.exec(
+        `SELECT MAX(operation_id) AS operation_id
+         FROM (
+           SELECT operation_id FROM vfs_append_receipts
+             WHERE pid = ? AND writer_id = ? AND module_id = ?
+           UNION ALL
+           SELECT operation_id FROM vfs_append_acked_gaps
+             WHERE pid = ? AND writer_id = ? AND module_id = ?
+         )`,
+        pid,
+        writerId,
+        moduleId,
+        pid,
+        writerId,
+        moduleId,
+      )][0] as { operation_id?: number | null } | undefined)?.operation_id
+        ?? ackedThrough,
+    );
+    if (operationId > Math.max(ackedThrough, highestKnown) + VFS_APPEND_RECEIPT_LIMIT) {
+      throw vfsError('EINVAL', `append operation gap exceeds ${VFS_APPEND_RECEIPT_LIMIT}`);
+    }
+
+    const retainedCount = Number(
+      ([...this.sql.exec(
+        `SELECT
+           (SELECT COUNT(*) FROM vfs_append_writer_state WHERE revoked = 0)
+           + (SELECT COUNT(*) FROM vfs_append_module_state)
+           + (SELECT COUNT(*) FROM vfs_append_receipts)
+           + (SELECT COUNT(*) FROM vfs_append_acked_gaps) AS count`,
+      )][0] as { count?: number } | undefined)?.count ?? 0,
+    );
+    const requiredRows = 1 + (moduleState ? 0 : 1);
+    if (retainedCount > VFS_APPEND_RECEIPT_LIMIT - requiredRows) {
+      throw vfsError('ENOSPC', 'append receipt journal is full');
+    }
+    if (!moduleState) {
+      this.sql.exec(
+        `INSERT INTO vfs_append_module_state
+         (pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, 0)`,
+        pid,
+        writerId,
+        moduleId,
+      );
+      moduleState = { acked_through: 0 };
+    }
+
+    const resolved = this.checkAccess(normalized, 0, cred, { allowMissingLeaf: true });
+    const effectivePath = resolved.path;
+    const inode = resolved.inode;
+    if (inode?.kind === 'directory') throw vfsError('EISDIR', effectivePath);
+    if (inode && inode.kind !== 'file') {
+      throw vfsError('EINVAL', `${effectivePath} is not a regular file`);
+    }
+    const offset = inode?.size ?? 0;
+    const recordReceipt = (): void => {
+      this.sql.exec(
+         `INSERT INTO vfs_append_receipts
+         (pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        pid,
+        writerId,
+        moduleId,
+        operationId,
+        normalized,
+        bytes.byteLength,
+        digest,
+        Date.now(),
+      );
+    };
+    this.writeRange(effectivePath, offset, bytes, cred, recordReceipt);
+    return bytes.byteLength;
+  }
+
+  activateAppendWriter(pid: number, writerId: string): void {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw vfsError('EINVAL', `invalid append pid ${pid}`);
+    assertAppendIncarnation(writerId, 'writer');
+    if ([...this.sql.exec(
+      'SELECT 1 AS revoked FROM vfs_append_pid_revocations WHERE pid = ?',
+      pid,
+    )].length > 0) {
+      throw vfsError('ESTALE', `append process ${pid} is being retired`);
+    }
+    const writers = [...this.sql.exec(
+      `SELECT writer_id, revoked FROM vfs_append_writer_state
+       WHERE pid = ?`,
+      pid,
+    )] as { writer_id: string; revoked: number }[];
+    const writer = writers.find((candidate) => candidate.writer_id === writerId);
+    if (writer && Number(writer.revoked) === 0) {
+      return;
+    }
+    if (writers.length > 0) {
+      throw vfsError('ESTALE', `append process ${pid} already has a different writer`);
+    }
+    const retainedCount = Number(
+      ([...this.sql.exec(
+        `SELECT
+           (SELECT COUNT(*) FROM vfs_append_writer_state WHERE revoked = 0)
+           + (SELECT COUNT(*) FROM vfs_append_module_state)
+           + (SELECT COUNT(*) FROM vfs_append_receipts)
+           + (SELECT COUNT(*) FROM vfs_append_acked_gaps) AS count`,
+      )][0] as { count?: number } | undefined)?.count ?? 0,
+    );
+    if (retainedCount >= VFS_APPEND_RECEIPT_LIMIT) {
+      throw vfsError('ENOSPC', 'append receipt journal is full');
+    }
+    this.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO vfs_append_writer_state
+         (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+        pid,
+        writerId,
+      );
+    });
+  }
+
+  private acknowledgeAppend(
+    pid: number,
+    writerId: string,
+    moduleId: string,
+    operationId: number,
+  ): void {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw vfsError('EINVAL', `invalid append pid ${pid}`);
+    assertAppendIncarnation(writerId, 'writer');
+    assertAppendIncarnation(moduleId, 'module');
+    if (!Number.isSafeInteger(operationId) || operationId <= 0) {
+      throw vfsError('EINVAL', `invalid append operation ${operationId}`);
+    }
+    const writer = [...this.sql.exec(
+      `SELECT revoked FROM vfs_append_writer_state
+       WHERE pid = ? AND writer_id = ?`,
+      pid,
+      writerId,
+    )][0] as { revoked: number } | undefined;
+    if (!writer || Number(writer.revoked) !== 0) {
+      throw vfsError('ESTALE', `append writer ${pid} is unavailable`);
+    }
+    const moduleState = [...this.sql.exec(
+      `SELECT acked_through FROM vfs_append_module_state
+       WHERE pid = ? AND writer_id = ? AND module_id = ?`,
+      pid,
+      writerId,
+      moduleId,
+    )][0] as { acked_through: number } | undefined;
+    if (!moduleState) {
+      throw vfsError('ESTALE', `append module ${pid}/${writerId}/${moduleId} is unavailable`);
+    }
+    let ackedThrough = Number(moduleState.acked_through);
+    if (operationId <= ackedThrough) return;
+    const existingGap = [...this.sql.exec(
+      `SELECT 1 AS present FROM vfs_append_acked_gaps
+       WHERE pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`,
+      pid,
+      writerId,
+      moduleId,
+      operationId,
+    )].length > 0;
+    let receipt: { path: string; byte_length: number; digest: string } | undefined;
+    if (!existingGap) {
+      receipt = [...this.sql.exec(
+        `SELECT path, byte_length, digest
+         FROM vfs_append_receipts
+         WHERE pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`,
+        pid,
+        writerId,
+        moduleId,
+        operationId,
+      )][0] as { path: string; byte_length: number; digest: string } | undefined;
+      if (!receipt) {
+        throw vfsError('EINVAL', `append operation ${pid}/${operationId} has not completed`);
+      }
+    }
+
+    const acknowledged = [...this.sql.exec(
+      `SELECT operation_id FROM vfs_append_acked_gaps
+       WHERE pid = ? AND writer_id = ? AND module_id = ? AND operation_id > ?
+       ORDER BY operation_id`,
+      pid,
+      writerId,
+      moduleId,
+      ackedThrough,
+    )] as { operation_id: number }[];
+    if (!existingGap) acknowledged.push({ operation_id: operationId });
+    acknowledged.sort((left, right) => Number(left.operation_id) - Number(right.operation_id));
+    for (const row of acknowledged) {
+      const sequence = Number(row.operation_id);
+      if (sequence <= ackedThrough) continue;
+      if (sequence !== ackedThrough + 1) break;
+      ackedThrough = sequence;
+    }
+
+    const priorAckedThrough = Number(moduleState.acked_through);
+    if (!existingGap || ackedThrough > priorAckedThrough) {
+      this.transactionSync(() => {
+        if (!existingGap) {
+          const completed = receipt!;
+          this.sql.exec(
+            `INSERT INTO vfs_append_acked_gaps
+             (pid, writer_id, module_id, operation_id, path, byte_length, digest)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            pid,
+            writerId,
+            moduleId,
+            operationId,
+            completed.path,
+            completed.byte_length,
+            completed.digest,
+          );
+          this.sql.exec(
+            `DELETE FROM vfs_append_receipts
+             WHERE pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`,
+            pid,
+            writerId,
+            moduleId,
+            operationId,
+          );
+        }
+        if (ackedThrough > priorAckedThrough) {
+          this.sql.exec(
+            `UPDATE vfs_append_module_state SET acked_through = ?
+             WHERE pid = ? AND writer_id = ? AND module_id = ?`,
+            ackedThrough,
+            pid,
+            writerId,
+            moduleId,
+          );
+        }
+      });
+    }
+    if (ackedThrough > priorAckedThrough) {
+      this.deleteAppendRowsBounded(
+        'vfs_append_acked_gaps',
+        'pid = ? AND writer_id = ? AND module_id = ? AND operation_id <= ?',
+        [pid, writerId, moduleId, ackedThrough],
+      );
+    }
+  }
+
+  revokeAppendWriter(pid: number, writerId: string): void {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw vfsError('EINVAL', `invalid append pid ${pid}`);
+    assertAppendIncarnation(writerId, 'writer');
+    this.transactionSync(() => {
+      this.sql.exec(
+        `UPDATE vfs_append_writer_state
+         SET revoked = 1, retired_at = ?
+         WHERE pid = ? AND writer_id = ?`,
+        Date.now(),
+        pid,
+        writerId,
+      );
+    });
+    this.deleteAppendRowsBounded(
+      'vfs_append_receipts',
+      'pid = ? AND writer_id = ?',
+      [pid, writerId],
+    );
+    this.deleteAppendRowsBounded(
+      'vfs_append_acked_gaps',
+      'pid = ? AND writer_id = ?',
+      [pid, writerId],
+    );
+    this.deleteAppendRowsBounded(
+      'vfs_append_module_state',
+      'pid = ? AND writer_id = ?',
+      [pid, writerId],
+    );
+    this.deleteAppendRowsBounded(
+      'vfs_append_writer_state',
+      'pid = ? AND writer_id = ? AND revoked = 1',
+      [pid, writerId],
+    );
+  }
+
+  revokeAppendWriters(pid: number): void {
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw vfsError('EINVAL', `invalid append pid ${pid}`);
+    this.transactionSync(() => {
+      this.sql.exec(
+        `INSERT INTO vfs_append_pid_revocations (pid, retired_at) VALUES (?, ?)
+         ON CONFLICT(pid) DO UPDATE SET retired_at = excluded.retired_at`,
+        pid,
+        Date.now(),
+      );
+    });
+    this.finishAppendPidRevocation(pid);
+  }
+
+  revokeAppendWritersThrough(maxPid: number): void {
+    if (!Number.isSafeInteger(maxPid) || maxPid < 0) {
+      throw vfsError('EINVAL', `invalid append pid ceiling ${maxPid}`);
+    }
+    for (;;) {
+      const pids = [...this.sql.exec(
+        `SELECT DISTINCT pid FROM vfs_append_writer_state
+         WHERE pid <= ?
+         ORDER BY pid
+         LIMIT ?`,
+        maxPid,
+        MAX_TX_LOGICAL_ROWS,
+      )] as { pid: number }[];
+      if (pids.length === 0) return;
+      for (const row of pids) this.revokeAppendWriters(Number(row.pid));
+    }
+  }
+
+  private finishAppendPidRevocation(pid: number): void {
+    for (;;) {
+      const writers = [...this.sql.exec(
+        `SELECT writer_id FROM vfs_append_writer_state
+         WHERE pid = ? AND revoked = 0
+         ORDER BY rowid
+         LIMIT ?`,
+        pid,
+        MAX_TX_LOGICAL_ROWS,
+      )] as { writer_id: string }[];
+      if (writers.length === 0) break;
+      const placeholders = writers.map(() => '?').join(',');
+      this.transactionSync(() => {
+        this.sql.exec(
+          `UPDATE vfs_append_writer_state
+           SET revoked = 1, retired_at = ?
+           WHERE pid = ? AND writer_id IN (${placeholders})`,
+          Date.now(),
+          pid,
+          ...writers.map((writer) => writer.writer_id),
+        );
+      });
+    }
+    this.deleteAppendRowsBounded('vfs_append_receipts', 'pid = ?', [pid]);
+    this.deleteAppendRowsBounded('vfs_append_acked_gaps', 'pid = ?', [pid]);
+    this.deleteAppendRowsBounded('vfs_append_module_state', 'pid = ?', [pid]);
+    this.deleteAppendRowsBounded(
+      'vfs_append_writer_state',
+      'pid = ? AND revoked = 1',
+      [pid],
+    );
+    this.transactionSync(() => {
+      this.sql.exec('DELETE FROM vfs_append_pid_revocations WHERE pid = ?', pid);
+    });
+  }
+
+  private deleteAppendRowsBounded(
+    table:
+      | 'vfs_append_receipts'
+      | 'vfs_append_acked_gaps'
+      | 'vfs_append_module_state'
+      | 'vfs_append_writer_state',
+    predicate: string,
+    params: readonly unknown[],
+  ): void {
+    for (;;) {
+      const rows = [...this.sql.exec(
+        `SELECT rowid FROM ${table} WHERE ${predicate} ORDER BY rowid LIMIT ?`,
+        ...params,
+        MAX_TX_LOGICAL_ROWS,
+      )] as { rowid: number }[];
+      if (rows.length === 0) return;
+      const placeholders = rows.map(() => '?').join(',');
+      this.transactionSync(() => {
+        this.sql.exec(
+          `DELETE FROM ${table} WHERE rowid IN (${placeholders})`,
+          ...rows.map((row) => row.rowid),
+        );
+      });
+    }
+  }
+
+  private resumeAppendMaintenance(): void {
+    for (;;) {
+      const revocations = [...this.sql.exec(
+        `SELECT pid FROM vfs_append_pid_revocations
+         ORDER BY pid
+         LIMIT ?`,
+        MAX_TX_LOGICAL_ROWS,
+      )] as { pid: number }[];
+      if (revocations.length === 0) break;
+      for (const row of revocations) {
+        this.finishAppendPidRevocation(Number(row.pid));
+      }
+    }
+    for (const table of [
+      'vfs_append_receipts',
+      'vfs_append_acked_gaps',
+      'vfs_append_module_state',
+    ] as const) {
+      this.deleteAppendRowsBounded(
+        table,
+        `EXISTS (
+          SELECT 1 FROM vfs_append_writer_state AS writer
+          WHERE writer.pid = ${table}.pid
+            AND writer.writer_id = ${table}.writer_id
+            AND writer.revoked = 1
+        )`,
+        [],
+      );
+    }
+    this.deleteAppendRowsBounded(
+      'vfs_append_writer_state',
+      'revoked = 1',
+      [],
+    );
+    this.deleteAppendRowsBounded(
+      'vfs_append_acked_gaps',
+      `EXISTS (
+        SELECT 1 FROM vfs_append_module_state AS module
+        WHERE module.pid = vfs_append_acked_gaps.pid
+          AND module.writer_id = vfs_append_acked_gaps.writer_id
+          AND module.module_id = vfs_append_acked_gaps.module_id
+          AND module.acked_through >= vfs_append_acked_gaps.operation_id
+      )`,
+      [],
     );
   }
 
@@ -1873,6 +2460,7 @@ export class SqliteVFS {
     inode: BatchInodeEntry,
     changedChunks: ReadonlyMap<number, Uint8Array>,
     deletedChunks: readonly DeletedContentChunk[],
+    onCommit?: () => void,
   ): boolean {
     const contentId = this.contentIdForInode(prior);
     const builder = new TransactionPlanBuilder();
@@ -1888,7 +2476,8 @@ export class SqliteVFS {
     }
     for (const chunk of deletedChunks) builder.addDeletedChunk(chunk);
     const plan = builder.build();
-    if (exceededTransactionLimit(plan.metrics) !== null) return false;
+    const metrics = onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics;
+    if (exceededTransactionLimit(metrics) !== null) return false;
     this._writeBatchOnce(
       {
         payload: { inodes: [inode], chunks: [] },
@@ -1897,6 +2486,7 @@ export class SqliteVFS {
       },
       { source: 'range-mutation', limitMode: 'bounded' },
       changedChunks.size,
+      onCommit,
     );
     return true;
   }
@@ -2284,13 +2874,18 @@ export class SqliteVFS {
    * limits, then executed in one transaction with 9-inode / 33-chunk SQL
    * grouping. Oversized strict calls fail with E2BIG before mutation.
    */
-  private writeBatch(payload: BatchWritePayload, cred: VfsCred): { inodes: number; chunks: number } {
+  private writeBatch(
+    payload: BatchWritePayload,
+    cred: VfsCred,
+    onCommit?: () => void,
+  ): { inodes: number; chunks: number } {
     const normalized = this.authorizeBatch(payload, cred);
     this.assertMutationsAllowed(batchMutationPaths(normalized));
     const result = this._writeBatchWithRetry(
       normalized,
       { source: 'strict-batch', limitMode: 'bounded' },
       true,
+      onCommit,
     );
     this.runContentMaintenanceSafely(1);
     return result;
@@ -2300,6 +2895,7 @@ export class SqliteVFS {
     inode: BatchInodeEntry,
     chunks: readonly BatchChunkEntry[],
     onPhase?: (phase: 'stage' | 'publish') => void,
+    onCommit?: () => void,
   ): { inodes: number; chunks: number } {
     this.validateFileChunks(inode, chunks);
     onPhase?.('stage');
@@ -2321,7 +2917,7 @@ export class SqliteVFS {
       flushChunks();
 
       onPhase?.('publish');
-      const result = this.publishStagedFile(inode, contentId, chunks.length);
+      const result = this.publishStagedFile(inode, contentId, chunks.length, onCommit);
       this.runContentMaintenanceSafely(1);
       return result;
     } catch (error) {
@@ -2340,6 +2936,7 @@ export class SqliteVFS {
   private replaceFileWithGeneratedContent(
     inode: BatchInodeEntry,
     chunkAt: (chunkId: number) => Uint8Array,
+    onCommit?: () => void,
   ): { inodes: number; chunks: number } {
     this.validateInodeContentShape(inode);
     const contentId = this.beginStagedContent();
@@ -2364,7 +2961,7 @@ export class SqliteVFS {
         builder.addChunk(chunk);
       }
       flushChunks();
-      const result = this.publishStagedFile(inode, contentId, inode.chunkCount);
+      const result = this.publishStagedFile(inode, contentId, inode.chunkCount, onCommit);
       this.runContentMaintenanceSafely(1);
       return result;
     } catch (error) {
@@ -2395,6 +2992,7 @@ export class SqliteVFS {
     inode: BatchInodeEntry,
     contentId: string,
     publishedChunkCount: number,
+    onCommit?: () => void,
   ): { inodes: number; chunks: number } {
     this.assertMutationsAllowed([inode.path]);
     const prior = this.inodes.get(inode.path);
@@ -2409,11 +3007,12 @@ export class SqliteVFS {
     builder.addPublishedContent(contentId);
     if (prior && !prior.isDir) builder.addGcContent(this.contentIdForInode(prior));
     const plan = builder.build();
-    this.assertTransactionFits(plan.metrics);
+    this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
     const result = this._writeBatchOnce(
       { payload: { inodes: [inode], chunks: [] }, plan, deletedInodes: [] },
       { source: 'content-publish', limitMode: 'bounded' },
       publishedChunkCount,
+      onCommit,
     );
     this.activeStagingContentIds.delete(contentId);
     return result;
@@ -2670,16 +3269,19 @@ export class SqliteVFS {
     payload: BatchWritePayload,
     execution: TransactionExecution,
     enforceLimits: boolean,
+    onCommit?: () => void,
   ): { inodes: number; chunks: number } {
     if (enforceLimits) {
       const preflight = this.prepareBatchTransaction(payload, false);
       if (preflight.plan.metrics.sqlExecs === 0) return { inodes: 0, chunks: 0 };
-      this.assertTransactionFits(preflight.plan.metrics);
+      this.assertTransactionFits(
+        onCommit ? withCommitRowMetrics(preflight.plan.metrics) : preflight.plan.metrics,
+      );
     }
     const prepared = this.prepareBatchTransaction(payload, true);
     if (prepared.plan.metrics.sqlExecs === 0) return { inodes: 0, chunks: 0 };
     try {
-      return this._writeBatchOnce(prepared, execution);
+      return this._writeBatchOnce(prepared, execution, undefined, onCommit);
     } catch (error) {
       const cause = classifyError(error);
       // Classify before deciding to retry. Only the SQLITE_NOMEM family
@@ -2705,7 +3307,7 @@ export class SqliteVFS {
       // transaction once. Splitting a strict batch would publish a prefix
       // if a later half failed and would advance its revision more than once.
       this.evictAll();
-      return this._writeBatchOnce(prepared, execution);
+      return this._writeBatchOnce(prepared, execution, undefined, onCommit);
     }
   }
 
@@ -2741,7 +3343,11 @@ export class SqliteVFS {
     this.ctx.storage.transactionSync(callback);
   }
 
-  private executeTransactionPlan(plan: TransactionPlan, execution: TransactionExecution): void {
+  private executeTransactionPlan(
+    plan: TransactionPlan,
+    execution: TransactionExecution,
+    onCommit?: () => void,
+  ): void {
     this.executeMeasuredTransaction(plan, execution, () => {
       for (const path of plan.deletedPaths) {
         this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
@@ -2837,6 +3443,7 @@ export class SqliteVFS {
           ...values,
         );
       }
+      onCommit?.();
     });
     if (plan.gcContentIds.length > 0) this.maintenancePending = true;
   }
@@ -3288,10 +3895,11 @@ export class SqliteVFS {
     prepared: PreparedBatchTransaction,
     execution: TransactionExecution,
     publishedChunkCount?: number,
+    onCommit?: () => void,
   ): { inodes: number; chunks: number } {
     const { payload, plan, deletedInodes } = prepared;
     try {
-      this.executeTransactionPlan(plan, execution);
+      this.executeTransactionPlan(plan, execution, onCommit);
     } catch (error) {
       console.error('[sqlite-vfs] writeBatch failed:', this.errorMessage(error));
       throw error;
