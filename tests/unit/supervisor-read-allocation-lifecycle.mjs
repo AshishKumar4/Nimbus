@@ -76,14 +76,16 @@ function makeBudget() {
 }
 
 // ── back-pressure is preserved: reads still take real credit ────────────
+// Decoupling reads from the cache lifecycle must not decouple them from the
+// byte budget. A large read still waits for a large owner to finish.
 {
   const { budget } = makeBudget();
-  const big = await budget.acquireWithoutLifecycle(40 * MiB);
+  const held = await budget.acquire(40 * MiB);
   let granted = false;
-  const queued = budget.acquireWithoutLifecycle(CHUNK).then((l) => { granted = true; return l; });
+  const queued = budget.acquireWithoutLifecycle(28 * MiB).then((l) => { granted = true; return l; });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(granted, false, 'a read took no byte credit — back-pressure was dropped, not decoupled');
-  big.release();
+  held.release();
   (await queued).release();
 }
 

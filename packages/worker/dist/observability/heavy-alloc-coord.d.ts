@@ -7,7 +7,7 @@
  * budget. Full-budget owners are exclusive; weighted owners may overlap only
  * while their retained-byte claims fit together.
  */
-import { type ResizableCreditLease } from '../_shared/weighted-credit-pool.js';
+import { type ResizableCreditLease, type WeightedCreditPoolOptions } from '../_shared/weighted-credit-pool.js';
 export interface SupervisorAllocationBudgetStats {
     readonly capacity: number;
     readonly current: number;
@@ -33,7 +33,7 @@ export declare class SupervisorAllocationBudget {
      * cache it is filling.
      */
     private lifecycleHolders;
-    constructor(capacity: number, lifecycle?: AllocationBudgetLifecycle);
+    constructor(capacity: number, lifecycle?: AllocationBudgetLifecycle, reserve?: WeightedCreditPoolOptions);
     get stats(): SupervisorAllocationBudgetStats;
     /**
      * Reserve bytes and, while held, mark the budget active so observers can

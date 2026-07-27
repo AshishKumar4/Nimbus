@@ -8,10 +8,15 @@
  * while their retained-byte claims fit together.
  */
 
-import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '../constants.js';
+import {
+  CHUNK_SIZE,
+  SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
+  SUPERVISOR_READ_RESERVE_BYTES,
+} from '../constants.js';
 import {
   WeightedCreditPool,
   type ResizableCreditLease,
+  type WeightedCreditPoolOptions,
 } from '../_shared/weighted-credit-pool.js';
 
 export interface SupervisorAllocationBudgetStats {
@@ -43,8 +48,9 @@ export class SupervisorAllocationBudget {
   constructor(
     readonly capacity: number,
     private readonly lifecycle: AllocationBudgetLifecycle = {},
+    reserve: WeightedCreditPoolOptions = {},
   ) {
-    this.credits = new WeightedCreditPool(capacity);
+    this.credits = new WeightedCreditPool(capacity, reserve);
   }
 
   get stats(): SupervisorAllocationBudgetStats {
@@ -191,6 +197,9 @@ const supervisorAllocationBudget = new SupervisorAllocationBudget(
     onActive: fireOnAcquire,
     onIdle: fireOnRelease,
   },
+  // A chunk-sized read draws on this rather than queueing behind a
+  // multi-megabyte owner for a wait unrelated to its own cost.
+  { smallRequestBytes: CHUNK_SIZE, reserve: SUPERVISOR_READ_RESERVE_BYTES },
 );
 
 /**
