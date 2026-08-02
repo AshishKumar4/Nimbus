@@ -212,8 +212,18 @@ export declare const FACET_IMAGE_DIR = "var/lib/nimbus/facet-images";
  * An image is named by the SHA-256 of its own bytes, so its name IS its
  * integrity check and a stale image is not something to invalidate but
  * something that cannot be addressed: different generated text is a different
- * path. Identical text — the same tool spawned twice, or respawned on a fresh
- * peer after its host died — resolves to one image that is already there.
+ * path.
+ *
+ * What that actually dedups, measured on a deployed worker rather than
+ * assumed: a RESPAWN resolves to the image already there, because the fabric
+ * replays one unchanged boot spec onto the fresh peer — and that is the case
+ * correctness depends on. Two separate spawns of the same tool do NOT,
+ * whenever the generated text carries anything per-process: an attached-TTY
+ * spawn bakes `NIMBUS_CP_CHILD_PID` into `__NIMBUS_ARGS`, so `pi` twice wrote
+ * two images (2c3a90ad… then c5b74f1a…). A spawn with no attached TTY has no
+ * pid in its args and does dedup. Lifting argv/env/pid out of the generated
+ * text into `startArgs` would make every image per-PROGRAM and shareable
+ * across spawns and sessions; the sweep bounds the store either way.
  */
 export declare function facetImageDigest(source: string): Promise<string>;
 export declare function facetImagePath(digest: string): string;
