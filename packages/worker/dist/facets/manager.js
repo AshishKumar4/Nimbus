@@ -1971,7 +1971,7 @@ export function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetSta
  * (user scripts, npx-cache files outside node_modules, eval) is
  * a no-op.
  */
-function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile) {
+export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile) {
     if (!scriptPath)
         return { added: 0 };
     const stripped = scriptPath.replace(/^\/+/, '');
@@ -2012,8 +2012,10 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfil
     // BFS walk pkgRoot. Skip nested `node_modules` (those are
     // separate packages with their own walk if/when they become
     // entry points).
-    let added = 0;
+    // Phase 1 — enumerate candidates and their sizes. Nothing is read here, so
+    // an unread multi-MiB cell costs a stat rather than a transfer.
     let visited = 0;
+    const candidates = [];
     const queue = [pkgRoot];
     while (queue.length > 0 && visited < MAX_PKG_FILES) {
         const dir = queue.shift();
@@ -2045,26 +2047,51 @@ function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfil
                 continue;
             if (bundle[child] !== undefined)
                 continue;
-            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-                return { added };
-            if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
-                return { added };
-            // hardening-r5: preserve binary content as Uint8Array.
-            let content;
+            let size;
             try {
-                content = _readBundleCell(vfs, child);
+                size = vfs.lstat(child).size;
             }
             catch {
                 continue;
             }
-            const cellLen = _bundleCellLength(content);
-            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
-                return { added };
-            bundle[child] = content;
-            budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
-            added++;
+            if (size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)
+                continue;
+            candidates.push({ path: child, size });
         }
+    }
+    // Phase 2 — admit smallest first.
+    //
+    // The budget is shared with every other pass, so whatever this walk spends
+    // is denied to the rest. Ordering by size maximizes the number of files
+    // admitted per byte, and the files a program actually reads at runtime are
+    // the small ones: typescript's 51 `lib.*.d.ts` cells total 3.3 MiB and are
+    // all read, while its single `lib/typescript.js` is 8.69 MiB and is not.
+    // In readdir order the latter could exhaust the budget before the former
+    // was reached.
+    candidates.sort((a, b) => a.size - b.size);
+    let added = 0;
+    for (const candidate of candidates) {
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+            break;
+        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+            break;
+        // hardening-r5: preserve binary content as Uint8Array.
+        let content;
+        try {
+            content = _readBundleCell(vfs, candidate.path);
+        }
+        catch {
+            continue;
+        }
+        const cellLen = _bundleCellLength(content);
+        // A cell that does not fit must not abandon the walk: smallest-first
+        // ordering means everything after it is smaller and may still fit.
+        if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
+            continue;
+        bundle[candidate.path] = content;
+        budgetState.totalBytes += cellLen;
+        budgetState.fileCount++;
+        added++;
     }
     return { added };
 }
@@ -2079,13 +2106,25 @@ const RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS = new Set([
     'coverage',
     '.github',
 ]);
+/**
+ * Suffixes never *read* at runtime — consumed only by tooling that does not
+ * run inside a facet. Excluding them is safe because no program can observe
+ * the difference.
+ *
+ * This list deliberately no longer guesses at content. It previously carried
+ * `.d.ts` and `.md`, and both were wrong the same way: the walk that consults
+ * it visits ONLY the entry package's own tree (see `addBinTargetSiblings`),
+ * which is precisely the package most likely to read its own data at runtime.
+ * `.d.ts` stripped TypeScript's `lib.*.d.ts` — the single unsatisfiable read
+ * behind every `TS2318` — and `.md` stripped pi's `CHANGELOG.md`. "`.d.ts` is
+ * type-only metadata" holds for every package except the one whose runtime
+ * data happens to be `.d.ts`, and this walk only ever looks at that one.
+ *
+ * Size, not extension, is what bounds this walk now.
+ */
 const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
     '.map',
-    '.d.ts',
-    '.d.ts.map',
     '.tsbuildinfo',
-    '.md',
-    '.markdown',
     '.png',
     '.jpg',
     '.jpeg',
@@ -2097,6 +2136,21 @@ const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
     '.mov',
     '.webm',
 ];
+/**
+ * Per-file ceiling for the speculative entry-package walk.
+ *
+ * Everything the entry package needs in order to *run* arrives through the
+ * require closure, which is uncapped and never evicted. This walk exists only
+ * to catch data files the static walker cannot see, and data files are small.
+ * Multi-MiB cells in a package tree are overwhelmingly alternative bundles —
+ * typescript ships an 8.69 MiB `lib/typescript.js` that is never read — rather
+ * than data.
+ *
+ * So one speculative guess must not spend the budget every later invocation
+ * then carries: the same reasoning as `CWD_SNAPSHOT_MAX_FILE_BYTES`, applied
+ * to the package tree.
+ */
+const BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES = 4 * 1024 * 1024;
 function shouldIncludeBinPackageFile(pkgRoot, path, bundleProfile) {
     if (bundleProfile === 'scaffold')
         return true;

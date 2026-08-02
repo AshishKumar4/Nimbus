@@ -302,6 +302,40 @@ export declare function addStaticReadFileDotfilesAndCompiled(vfs: CredentialedVf
     added: number;
 };
 /**
+ * G3 (runtime-pkg wave) — bin-target sibling oversample.
+ *
+ * When the entry script lives at `node_modules/<pkg>/...` (typical
+ * shape: cli.js, bin/foo, dist/index.js), bins commonly do
+ * `readFileSync(path.join(__dirname, '<rel>'))` to load assets that
+ * the static walker can't see (computed paths, package-internal
+ * data files, .cow / .pem / .wasm / .ttf / etc.).
+ *
+ * Pre-fix: addStaticReadFileAssets only covers a hardcoded ASSET_EXT
+ * whitelist (.css/.html/.htm/.svg/.txt/.json). Cowsay's `.cow` files
+ * ENOENT at runtime.
+ *
+ * Fix shape: when entry is inside a `node_modules/<pkg>` directory,
+ * walk that pkg dir's contents and pull runtime package files under
+ * VFS_BUNDLE_MAX_BYTES, capped at `MAX_PKG_FILES` per-pkg so a
+ * 1000-file barrel package can't blow the bundle budget. Scaffold
+ * bundle profile keeps full package-template access for `create-*`
+ * initializers.
+ *
+ * Runtime profile skips docs/examples/source maps/images, while scaffold
+ * profile preserves initializer template trees.
+ *
+ * Caller already passed the `cwd` and the `scriptPath`; we only act
+ * if scriptPath is /<...>/node_modules/<pkg>/... — anything else
+ * (user scripts, npx-cache files outside node_modules, eval) is
+ * a no-op.
+ */
+export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: string | undefined, bundle: Record<string, string | Uint8Array>, budgetState: {
+    totalBytes: number;
+    fileCount: number;
+}, bundleProfile: FacetBundleProfile): {
+    added: number;
+};
+/**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
  * The static walker supplies the complete known require closure. Separate
