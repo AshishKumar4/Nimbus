@@ -69,19 +69,36 @@
  * Architecture (filesystem WASI strategy)
  * ──────────────────────────────
  *
- * Strategy: bulk-snapshot + flush. The supervisor snapshots the user's
- * session VFS subtree into a JSON-serializable {files, dirs} shape and ships
- * it as the facet argument. The facet's preamble installs
- * `__wasiInitFS(snapshot)` which builds an in-memory virtual FS keyed by
- * canonical path strings. WASI fd≥3 ops act on that VFS. After `_start`
- * returns, `__wasiSnapshotFS()` extracts the mutated state which the
- * supervisor flushes back into SqliteFS.
+ * Strategy: live VFS, seeded cache. The session VFS (supervisor DO) is the
+ * single source of truth. The facet holds a CACHE of it:
  *
- * This avoids a per-call SUPERVISOR RPC for every WASI fn (which would
- * be 5+ RPCs per cat(1) invocation; per-byte overhead). The cost is one
- * snapshot at submit-time + one flush at return. For programs touching
- * a small set of files (clang, sed, awk, etc.) this is overwhelmingly
- * the right trade-off.
+ *   - `__wasiInitFS(seed)` installs a metadata manifest (dirs, modes, sizes,
+ *     times, symlinks) plus optional file content. Content the seed did not
+ *     carry is listed in `sizes` and demand-loaded through the SUPERVISOR
+ *     binding (`fsReadRange`, 64 KiB chunks) on first read — a seed miss is
+ *     a cache miss, never a correctness failure.
+ *   - Writes apply to the cache synchronously and enqueue write-through ops
+ *     (writeFile / fsWriteRange / unlink / mkdir / rename / …) on a FIFO
+ *     persist queue that drains continuously. Callers await
+ *     `__wasiDrainPersist()` before returning a result and at every resident
+ *     park, so a server's writes are durable while it runs — there is no
+ *     flush-on-exit and no diff-back.
+ *   - Any live read (content fetch, stat miss, readdir refresh) first drains
+ *     the queue, so the supervisor's answer always includes this process's
+ *     own writes.
+ *   - A metadata miss with a supervisor present goes to a live `stat` before
+ *     reporting ENOENT, so files created after spawn are visible.
+ *
+ * Seeds are validated supervisor-side by the per-subtree VFS revision
+ * (runners rebuild the seed when the revision moved), so a served seed is
+ * never stale. Without a supervisor binding the seed is authoritative and
+ * behavior degrades to the closed-world snapshot semantics unit tests use.
+ *
+ * Blocking discipline: file/stdio ops that can be answered from the cache
+ * return a plain errno number (JSPI passes it through with no suspender, so
+ * sync callers — ruby _initialize, opentui render — are unaffected). Ops
+ * that need the supervisor return a Promise which the Suspending wrapper
+ * parks the guest on; the guest must run under WebAssembly.promising.
  *
  * Errno values (subset)
  * ─────────────────────
@@ -247,6 +264,113 @@ class __WasiExit { constructor(code) { this.code = code | 0; } }
 let __wasiFS = null;       // populated by __wasiInitFS
 let __wasiPreopens = [];   // [{ wasiPath, vfsPath, fd }, ...]
 
+// ── Live backing store ───────────────────────────────────────────────────
+//
+// The supervisor stub, when present, makes __wasiFS a CACHE of the session
+// VFS rather than a closed world. Absent (unit tests, pools that legitimately
+// run sealed) the seed is authoritative and every path below degrades to
+// pure in-memory behavior.
+let __wasiSup = null;
+
+// FIFO of pending mutations. Writes land in the cache synchronously and are
+// mirrored here; the queue drains continuously so a process that never exits
+// still persists. Ordering is preserved because each op awaits its
+// predecessor — a rename must not overtake the write that created the file.
+const __wasiPersistQ = { pending: [], tail: Promise.resolve(), failures: [] };
+
+function __wasiAdoptSupervisor(sup) {
+  __wasiSup = sup || null;
+}
+
+/** Mirror one mutation to the session VFS. Cache is already updated. */
+function __wasiEnqueue(op, run) {
+  if (!__wasiSup) return;
+  const entry = { op };
+  __wasiPersistQ.pending.push(entry);
+  __wasiPersistQ.tail = __wasiPersistQ.tail.then(async () => {
+    try {
+      await run(__wasiSup);
+    } catch (e) {
+      // A failed write-back is data loss and must be visible, not swallowed.
+      __wasiPersistQ.failures.push(op + ': ' + ((e && e.message) || String(e)));
+    } finally {
+      const i = __wasiPersistQ.pending.indexOf(entry);
+      if (i >= 0) __wasiPersistQ.pending.splice(i, 1);
+    }
+  });
+}
+
+// Paths with a write-back already queued. The queued op reads the cache when
+// it runs, so a burst of fd_writes to one file coalesces into one round trip
+// instead of one per write.
+const __wasiDirty = new Set();
+
+// Paths a live stat has already reported absent. Cleared whenever anything is
+// created or the cache is revalidated, so a negative never outlives the fact.
+const __wasiNegative = new Set();
+
+function __wasiPersistFile(vfsPath) {
+  if (!__wasiSup || __wasiDirty.has(vfsPath)) return;
+  __wasiDirty.add(vfsPath);
+  __wasiEnqueue('writeFile ' + vfsPath, async (sup) => {
+    __wasiDirty.delete(vfsPath);
+    const bytes = __wasiFS && __wasiFS.files.get(vfsPath);
+    if (!bytes) return;
+    await sup.writeFile(vfsPath, bytes);
+  });
+}
+
+/**
+ * Drop cached content that matches what the supervisor already has, turning
+ * those inodes back into manifest entries so the next read refetches. Content
+ * with a write still queued is never dropped. Returns the paths evicted.
+ *
+ * This is what makes the cache a cache: memory pressure and staleness are both
+ * answered by forgetting, never by serving something known to be old.
+ */
+function __wasiEvictCleanContent() {
+  if (!__wasiFS || !__wasiSup) return [];
+  const evicted = [];
+  for (const [path, bytes] of [...__wasiFS.files]) {
+    if (__wasiDirty.has(path)) continue;
+    const orig = __wasiFS.origFiles.get(path);
+    if (!orig || orig.length !== bytes.length) continue;
+    let same = true;
+    for (let i = 0; i < orig.length; i++) { if (orig[i] !== bytes[i]) { same = false; break; } }
+    if (!same) continue;
+    __wasiFS.files.delete(path);
+    __wasiFS.sizes.set(path, bytes.length);
+    evicted.push(path);
+  }
+  return evicted;
+}
+
+/**
+ * Re-sync the cache with the session VFS. A resident process (a server) must
+ * see files that other processes created or changed after it spawned, so the
+ * cached content is dropped and metadata re-read on next access.
+ */
+async function __wasiRevalidateFS() {
+  if (!__wasiSup || !__wasiFS) return [];
+  await __wasiDrainPersist();
+  __wasiNegative.clear();
+  return __wasiEvictCleanContent();
+}
+
+/**
+ * Await every queued mutation. Callers drain before returning a result to the
+ * supervisor and before any live read, so the supervisor's view always
+ * includes this process's own writes.
+ */
+async function __wasiDrainPersist() {
+  await __wasiPersistQ.tail;
+  if (__wasiPersistQ.failures.length > 0) {
+    const failures = __wasiPersistQ.failures.slice();
+    __wasiPersistQ.failures.length = 0;
+    throw new Error('wasi persist failed: ' + failures.join('; '));
+  }
+}
+
 // All paths are stored in canonical form: no leading '/', no '..', no
 // double slashes. The wasm program sees '/foo/bar.txt' (with leading
 // slash) but the VFS keys are 'home/user/.../foo/bar.txt'.
@@ -326,10 +450,26 @@ function __wasiInitFS(opts) {
     symlinks.set(canon, String(target));
     origSymlinks.set(canon, String(target));
   }
+  // Metadata-only entries: the manifest knows the file and its size, the seed
+  // did not carry its bytes. Content arrives on first read via the supervisor.
+  // A path here but absent from the files map is a cache miss, never ENOENT.
+  const sizes = new Map();
+  for (const [path, size] of Object.entries(opts.sizes || {})) {
+    const canon = __wasiCanonicalize(path);
+    sizes.set(canon, Number(size));
+    if (!times.has(canon)) {
+      const t = { mtime: nowNs, atime: nowNs, ctime: nowNs };
+      times.set(canon, t);
+      origTimes.set(canon, { mtime: t.mtime, atime: t.atime, ctime: t.ctime });
+    }
+  }
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
-    files, dirs, times, symlinks, modes,
+    files, dirs, times, symlinks, modes, sizes,
     origFiles, origDirs, origTimes, origSymlinks,
+    // Files at or above this size are never held whole; reads window through
+    // the supervisor instead. Keeps a 200 MiB blob from ending the isolate.
+    residentFileCap: Number(opts.residentFileCap ?? (8 * 1024 * 1024)),
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   __wasiPreopens = [];
@@ -831,6 +971,99 @@ function __wasiMakeImports(opts) {
     if (!__wasiFS) return null;
     return __wasiFS.files.get(vfsPath) || null;
   }
+  /** Known to exist — resident content or a manifest entry. */
+  function fileKnown(vfsPath) {
+    if (!__wasiFS) return false;
+    return __wasiFS.files.has(vfsPath) || __wasiFS.sizes.has(vfsPath);
+  }
+  /** Size without forcing a load. */
+  function fileSize(vfsPath) {
+    if (!__wasiFS) return 0;
+    const resident = __wasiFS.files.get(vfsPath);
+    if (resident) return resident.length;
+    return __wasiFS.sizes.get(vfsPath) ?? 0;
+  }
+  /**
+   * Bytes for [offset, offset+length) of a file. Returns synchronously when
+   * the content is resident — JSPI passes a plain value through with no
+   * suspender, so sync-only guests are unaffected by the live path existing.
+   * Returns a Promise only on a genuine cache miss.
+   */
+  function readRange(vfsPath, offset, length) {
+    const resident = __wasiFS.files.get(vfsPath);
+    if (resident) {
+      const start = Math.min(offset, resident.length);
+      return resident.subarray(start, Math.min(resident.length, start + length));
+    }
+    const size = __wasiFS.sizes.get(vfsPath);
+    if (size === undefined) return new Uint8Array(0);
+    if (!__wasiSup) return new Uint8Array(0);
+    // Queued writes must be visible to our own live read.
+    return (async () => {
+      await __wasiDrainPersist();
+      if (size <= __wasiFS.residentFileCap) {
+        const whole = await __wasiSup.fsReadRange(vfsPath, 0, size);
+        const bytes = whole instanceof Uint8Array ? whole : new Uint8Array(whole);
+        __wasiFS.files.set(vfsPath, bytes);
+        // The diff-back mirror must agree, or a demand-loaded file would be
+        // reported as newly written by every runner still using the diff.
+        __wasiFS.origFiles.set(vfsPath, bytes.slice());
+        const start = Math.min(offset, bytes.length);
+        return bytes.subarray(start, Math.min(bytes.length, start + length));
+      }
+      // Too large to hold: window straight through, nothing cached.
+      const want = Math.max(0, Math.min(length, size - offset));
+      if (want === 0) return new Uint8Array(0);
+      const win = await __wasiSup.fsReadRange(vfsPath, offset, want);
+      return win instanceof Uint8Array ? win : new Uint8Array(win);
+    })();
+  }
+  /** Scatter the given bytes across the iovec list; returns bytes consumed. */
+  function scatterIovs(bytes, iovsPtr, iovsLen, dv, memU8) {
+    let done = 0;
+    for (let i = 0; i < iovsLen && done < bytes.length; i++) {
+      const iov = iovsPtr + i * 8;
+      const bufPtr = dv.getUint32(iov, true);
+      const bufLen = dv.getUint32(iov + 4, true);
+      const n = Math.min(bufLen, bytes.length - done);
+      if (n <= 0) break;
+      memU8.set(bytes.subarray(done, done + n), bufPtr);
+      done += n;
+      if (n < bufLen) break;
+    }
+    return done;
+  }
+  /**
+   * Resolve a path the manifest does not know. Files created after this
+   * process spawned are invisible to a seed, so a miss asks the supervisor
+   * once and records the answer — including the negative, so a program that
+   * probes the same absent path in a loop pays a single round trip.
+   */
+  function statLive(vfsPath) {
+    if (!__wasiSup || __wasiNegative.has(vfsPath)) return false;
+    return (async () => {
+      await __wasiDrainPersist();
+      const st = await __wasiSup.stat(vfsPath);
+      if (!st) { __wasiNegative.add(vfsPath); return false; }
+      ensureParentDirs(vfsPath);
+      if (st.type === 'directory') {
+        __wasiFS.dirs.add(vfsPath);
+        __wasiFS.modes.set(vfsPath, 7);
+      } else {
+        __wasiFS.sizes.set(vfsPath, Number(st.size ?? 0));
+        __wasiFS.modes.set(vfsPath, 6);
+      }
+      const ns = BigInt(st.mtime ?? Date.now()) * 1000000n;
+      __wasiFS.times.set(vfsPath, { mtime: ns, atime: ns, ctime: ns });
+      return true;
+    })();
+  }
+  /** Total capacity of an iovec list. */
+  function iovsCapacity(iovsPtr, iovsLen, dv) {
+    let total = 0;
+    for (let i = 0; i < iovsLen; i++) total += dv.getUint32(iovsPtr + i * 8 + 4, true);
+    return total;
+  }
   function hasDir(vfsPath) {
     if (!__wasiFS) return false;
     if (__wasiFS.dirs.has(vfsPath)) return true;
@@ -839,15 +1072,20 @@ function __wasiMakeImports(opts) {
   }
   function setFile(vfsPath, bytes) {
     __wasiFS.files.set(vfsPath, bytes);
+    __wasiFS.sizes.delete(vfsPath);
+    __wasiNegative.delete(vfsPath);
     if (!__wasiFS.modes.has(vfsPath)) __wasiFS.modes.set(vfsPath, 6);
     // WASI socket and polling support B1: bump mtime+ctime on every write. atime stays as-is
     // (read paths bump atime explicitly via touchAccess()).
     __wasiBumpMtime(vfsPath);
+    __wasiPersistFile(vfsPath);
   }
   function unsetFile(vfsPath) {
     __wasiFS.files.delete(vfsPath);
+    __wasiFS.sizes.delete(vfsPath);
     __wasiFS.times.delete(vfsPath);
     __wasiFS.modes.delete(vfsPath);
+    __wasiEnqueue('unlink ' + vfsPath, (sup) => sup.unlink(vfsPath));
   }
   function touchAccess(vfsPath) {
     // WASI socket and polling support B1: bump atime on a read. mtime/ctime unchanged.
@@ -983,25 +1221,20 @@ function __wasiMakeImports(opts) {
       }
       if (entry.kind === 'dir' || entry.kind === 'preopen') return __WASI_EISDIR;
       if (entry.kind !== 'file') return __WASI_EBADF;
-      const file = getFile(entry.vfsPath);
-      if (!file) return __WASI_ENOENT;
-      const dv = view();
-      const memU8 = u8();
-      let total = 0;
-      for (let i = 0; i < iovsLen; i++) {
-        const iov = iovsPtr + i * 8;
-        const bufPtr = dv.getUint32(iov, true);
-        const bufLen = dv.getUint32(iov + 4, true);
-        const remain = file.length - entry.offset;
-        if (remain <= 0) break;
-        const n = Math.min(bufLen, remain);
-        memU8.set(file.subarray(entry.offset, entry.offset + n), bufPtr);
+      if (!fileKnown(entry.vfsPath)) return __WASI_ENOENT;
+      const want = iovsCapacity(iovsPtr, iovsLen, view());
+      const take = Math.min(want, Math.max(0, fileSize(entry.vfsPath) - entry.offset));
+      if (take === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
+      const chunk = readRange(entry.vfsPath, entry.offset, take);
+      // Re-read memory views after a possible suspension: the guest may have
+      // grown its memory while we were parked, detaching the old buffer.
+      const deliver = (bytes) => {
+        const n = scatterIovs(bytes, iovsPtr, iovsLen, view(), u8());
         entry.offset += n;
-        total += n;
-        if (n < bufLen) break;
-      }
-      writeU32LE(nreadPtr, total);
-      return __WASI_ESUCCESS;
+        writeU32LE(nreadPtr, n);
+        return __WASI_ESUCCESS;
+      };
+      return (chunk && typeof chunk.then === 'function') ? chunk.then(deliver) : deliver(chunk);
     },
 
     fd_write(fd, iovsPtr, iovsLen, nwrittenPtr) {
@@ -1212,7 +1445,7 @@ function __wasiMakeImports(opts) {
         return __WASI_ELOOP;
       }
 
-      const fileExists = __wasiFS.files.has(resolved) || (
+      const fileExists = __wasiFS.files.has(resolved) || __wasiFS.sizes.has(resolved) || (
         __wasiFS.modes.has(resolved) &&
         !__wasiFS.dirs.has(resolved) &&
         !__wasiFS.symlinks.has(resolved)
@@ -1272,9 +1505,11 @@ function __wasiMakeImports(opts) {
       ensureParentDirs(resolved);
       __wasiFS.dirs.add(resolved);
       __wasiFS.modes.set(resolved, 7);
+      __wasiNegative.delete(resolved);
       // WASI socket and polling support B1: seed times for the new dir.
       const now = __wasiNowNs();
       __wasiFS.times.set(resolved, { mtime: now, atime: now, ctime: now });
+      __wasiEnqueue('mkdir ' + resolved, (sup) => sup.mkdir(resolved));
       return __WASI_ESUCCESS;
     },
 
@@ -1288,6 +1523,7 @@ function __wasiMakeImports(opts) {
       if (children.length > 0) return __WASI_ENOTEMPTY;
       __wasiFS.dirs.delete(resolved);
       __wasiFS.modes.delete(resolved);
+      __wasiEnqueue('rmdir ' + resolved, (sup) => sup.rmdir(resolved));
       return __WASI_ESUCCESS;
     },
 
@@ -1305,7 +1541,7 @@ function __wasiMakeImports(opts) {
         __wasiFS.modes.delete(resolved);
         return __WASI_ESUCCESS;
       }
-      if (!__wasiFS.files.has(resolved)) return __WASI_ENOENT;
+      if (!fileKnown(resolved)) return __WASI_ENOENT;
       unsetFile(resolved);
       return __WASI_ESUCCESS;
     },
@@ -1322,7 +1558,9 @@ function __wasiMakeImports(opts) {
       const srcFile      = __wasiFS.files.get(src);
       const srcIsDir     = __wasiFS.dirs.has(src);
       const srcIsSymlink = __wasiFS.symlinks.has(src);
-      if (srcFile === undefined && !srcIsDir && !srcIsSymlink) return __WASI_ENOENT;
+      // A manifest-only file is a file: its bytes just are not resident yet.
+      const srcIsLazy    = srcFile === undefined && __wasiFS.sizes.has(src);
+      if (srcFile === undefined && !srcIsLazy && !srcIsDir && !srcIsSymlink) return __WASI_ENOENT;
       if (src === dst) return __WASI_ESUCCESS;  // rename to itself is a no-op
       // Move the path's timestamps with it, bumping ctime (metadata change).
       const moveTimes = (from, to) => {
@@ -1340,11 +1578,17 @@ function __wasiMakeImports(opts) {
       };
       // Pre-remove the destination of any kind (atomic overwrite).
       __wasiFS.files.delete(dst);
+      __wasiFS.sizes.delete(dst);
       __wasiFS.dirs.delete(dst);
       __wasiFS.symlinks.delete(dst);
       __wasiFS.times.delete(dst);
       __wasiFS.modes.delete(dst);
-      if (srcIsSymlink) {
+      if (srcIsLazy) {
+        __wasiFS.sizes.set(dst, __wasiFS.sizes.get(src));
+        __wasiFS.sizes.delete(src);
+        moveTimes(src, dst);
+        moveMode(src, dst);
+      } else if (srcIsSymlink) {
         __wasiFS.symlinks.set(dst, __wasiFS.symlinks.get(src));
         __wasiFS.symlinks.delete(src);
         moveTimes(src, dst);
@@ -1389,7 +1633,16 @@ function __wasiMakeImports(opts) {
             moveMode(key, nk);
           }
         }
+        for (const key of [...__wasiFS.sizes.keys()]) {
+          if (key.startsWith(srcPrefix)) {
+            __wasiFS.sizes.set(rebase(key), __wasiFS.sizes.get(key));
+            __wasiFS.sizes.delete(key);
+          }
+        }
       }
+      // One op: the supervisor renames the whole subtree atomically, which a
+      // per-descendant replay could not.
+      __wasiEnqueue('rename ' + src + ' -> ' + dst, (sup) => sup.rename(src, dst));
       return __WASI_ESUCCESS;
     },
 
@@ -1404,38 +1657,47 @@ function __wasiMakeImports(opts) {
       const resolved = rp.path;
       const traversal = __wasiCheckTraversal(baseFd, resolved);
       if (traversal !== __WASI_ESUCCESS) return traversal;
-      let ftype, size;
-      if (!follow && rp.isSymlink) {
-        ftype = __WASI_FT_SYMBOLIC_LINK;
-        size = BigInt(new TextEncoder().encode(__wasiFS.symlinks.get(resolved)).length);
-      } else if (__wasiFS.files.has(resolved)) {
-        ftype = __WASI_FT_REGULAR_FILE;
-        size = BigInt(__wasiFS.files.get(resolved).length);
-      } else if (__wasiFS.dirs.has(resolved)) {
-        ftype = __WASI_FT_DIRECTORY;
-        size = 0n;
-      } else if (__wasiFS.modes.has(resolved)) {
-        ftype = __WASI_FT_REGULAR_FILE;
-        size = 0n;
-      } else {
+      const classify = () => {
+        if (!follow && rp.isSymlink) {
+          return [__WASI_FT_SYMBOLIC_LINK,
+            BigInt(new TextEncoder().encode(__wasiFS.symlinks.get(resolved)).length)];
+        }
+        if (__wasiFS.files.has(resolved) || __wasiFS.sizes.has(resolved)) {
+          return [__WASI_FT_REGULAR_FILE, BigInt(fileSize(resolved))];
+        }
+        if (__wasiFS.dirs.has(resolved)) return [__WASI_FT_DIRECTORY, 0n];
+        if (__wasiFS.modes.has(resolved)) return [__WASI_FT_REGULAR_FILE, 0n];
+        return null;
+      };
+      let kind = classify();
+      if (!kind) {
+        const live = statLive(resolved);
+        if (live && typeof live.then === 'function') {
+          return live.then((found) => (found ? emitStat(...classify()) : __WASI_ENOENT));
+        }
         return __WASI_ENOENT;
       }
-      // WASI socket and polling support B1: emit real timestamps.
-      const t = __wasiFS.times.get(resolved) || { mtime: 0n, atime: 0n, ctime: 0n };
-      const dv = view();
-      // filestat_t layout (WASI preview1):
-      //   dev:u64@0, ino:u64@8, filetype:u8@16, [pad 17..23],
-      //   nlink:u64@24, size:u64@32, atim:u64@40, mtim:u64@48, ctim:u64@56
-      writeU64LE(statPtr,      0n);
-      writeU64LE(statPtr + 8,  0n);
-      dv.setUint8(statPtr + 16, ftype);
-      for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
-      writeU64LE(statPtr + 24, 1n);
-      writeU64LE(statPtr + 32, size);
-      writeU64LE(statPtr + 40, t.atime);
-      writeU64LE(statPtr + 48, t.mtime);
-      writeU64LE(statPtr + 56, t.ctime);
-      return __WASI_ESUCCESS;
+      return emitStat(...kind);
+
+      // Hoisted: reached from both the resident and the post-live-stat path.
+      function emitStat(ftype, size) {
+        // WASI socket and polling support B1: emit real timestamps.
+        const t = __wasiFS.times.get(resolved) || { mtime: 0n, atime: 0n, ctime: 0n };
+        const dv = view();
+        // filestat_t layout (WASI preview1):
+        //   dev:u64@0, ino:u64@8, filetype:u8@16, [pad 17..23],
+        //   nlink:u64@24, size:u64@32, atim:u64@40, mtim:u64@48, ctim:u64@56
+        writeU64LE(statPtr,      0n);
+        writeU64LE(statPtr + 8,  0n);
+        dv.setUint8(statPtr + 16, ftype);
+        for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
+        writeU64LE(statPtr + 24, 1n);
+        writeU64LE(statPtr + 32, size);
+        writeU64LE(statPtr + 40, t.atime);
+        writeU64LE(statPtr + 48, t.mtime);
+        writeU64LE(statPtr + 56, t.ctime);
+        return __WASI_ESUCCESS;
+      }
     },
 
     // WASI socket and polling support B2: real path_filestat_set_times. Honors ATIM/ATIM_NOW/
@@ -1554,8 +1816,7 @@ function __wasiMakeImports(opts) {
       let timesPath = null;
       if (entry.kind === 'file') {
         ftype = __WASI_FT_REGULAR_FILE;
-        const f = getFile(entry.vfsPath);
-        if (f) size = BigInt(f.length);
+        size = BigInt(fileSize(entry.vfsPath));
         timesPath = entry.vfsPath;
       } else if (entry.kind === 'dir' || entry.kind === 'preopen') {
         ftype = __WASI_FT_DIRECTORY;
@@ -1613,28 +1874,19 @@ function __wasiMakeImports(opts) {
     fd_pread(fd, iovsPtr, iovsLen, offsetArg, nreadPtr) {
       const entry = fdTable.get(fd);
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
-      const file = getFile(entry.vfsPath);
-      if (!file) return __WASI_ENOENT;
-      let offset = typeof offsetArg === 'bigint'
+      if (!fileKnown(entry.vfsPath)) return __WASI_ENOENT;
+      const offset = typeof offsetArg === 'bigint'
         ? Number(offsetArg)
         : (offsetArg >>> 0);
-      const dv = view();
-      const memU8 = u8();
-      let total = 0;
-      for (let i = 0; i < iovsLen; i++) {
-        const iov = iovsPtr + i * 8;
-        const bufPtr = dv.getUint32(iov, true);
-        const bufLen = dv.getUint32(iov + 4, true);
-        const remain = file.length - offset;
-        if (remain <= 0) break;
-        const n = Math.min(bufLen, remain);
-        memU8.set(file.subarray(offset, offset + n), bufPtr);
-        offset += n;
-        total += n;
-        if (n < bufLen) break;
-      }
-      writeU32LE(nreadPtr, total);
-      return __WASI_ESUCCESS;
+      const want = iovsCapacity(iovsPtr, iovsLen, view());
+      const take = Math.min(want, Math.max(0, fileSize(entry.vfsPath) - offset));
+      if (take === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
+      const chunk = readRange(entry.vfsPath, offset, take);
+      const deliver = (bytes) => {
+        writeU32LE(nreadPtr, scatterIovs(bytes, iovsPtr, iovsLen, view(), u8()));
+        return __WASI_ESUCCESS;
+      };
+      return (chunk && typeof chunk.then === 'function') ? chunk.then(deliver) : deliver(chunk);
     },
 
     fd_pwrite(fd, iovsPtr, iovsLen, offsetArg, nwrittenPtr) {
@@ -2283,6 +2535,14 @@ function __wasiMakeImports(opts) {
     // render) that only touch files/stdio are unaffected.
     imports.fd_read       = new WebAssembly.Suspending(imports.fd_read);
     imports.fd_write      = new WebAssembly.Suspending(imports.fd_write);
+    // fd_pread reaches the same file bodies as fd_read and so can equally
+    // land on a cache miss that must go to the supervisor. Leaving it
+    // unwrapped would trap the guest the first time a demand load happened
+    // to arrive through pread(2) rather than read(2).
+    imports.fd_pread      = new WebAssembly.Suspending(imports.fd_pread);
+    // path_filestat_get resolves a path the seed manifest never listed by
+    // asking the supervisor, so it too can return a Promise.
+    imports.path_filestat_get = new WebAssembly.Suspending(imports.path_filestat_get);
   }
 
   return {
@@ -2370,6 +2630,18 @@ export interface WasiFsSnapshot {
   files: Record<string, string>;
   /** Initial directory list (vfsPaths). */
   dirs: string[];
+  /**
+   * vfsPath → size for files the manifest knows but whose bytes were not
+   * seeded. First read demand-loads them through the supervisor. A seed that
+   * lists a file here instead of in `files` trades one round trip on first
+   * access for not shipping bytes the process may never open.
+   */
+  sizes?: Record<string, number>;
+  /**
+   * Files at or above this many bytes are never held resident; reads window
+   * through the supervisor instead. Defaults to 8 MiB.
+   */
+  residentFileCap?: number;
   /** Effective read/write/execute bits for the invoking process, keyed by vfsPath. */
   modes: Record<string, number>;
   /**
