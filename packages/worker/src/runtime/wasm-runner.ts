@@ -92,7 +92,10 @@ declare const __wasiInitFS: (opts: {
   // WASI socket and polling support B1+B3: additive optional fields.
   times?: Record<string, { mtime: string; atime: string; ctime: string }>;
   symlinks?: Record<string, string>;
+  sizes?: Record<string, number>;
 }) => void;
+declare const __wasiAdoptSupervisor: (sup: unknown) => void;
+declare const __wasiDrainPersist: () => Promise<void>;
 declare const __wasiSnapshotFS: () => {
   filesWritten: Record<string, string>;
   filesDeleted: string[];
@@ -312,10 +315,11 @@ export function makeWasmRunner(deps: {
     const pool = new NimbusLoaderPool(deps.env, deps.ctx, {
       tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
       concurrency: 1,
-      // No SUPERVISOR binding required for compute-only workloads,
-      // and omitting it keeps the bindings table minimal so the
-      // facet isolate boots fast.
-      omitSupervisor: true,
+      // WASI mode needs the SUPERVISOR binding: it is what backs the
+      // filesystem with the live session VFS instead of a spawn-time copy.
+      // Direct (compute-only) mode has no filesystem at all, so it keeps the
+      // bindings table empty and the facet isolate boots fast.
+      omitSupervisor: !isWasi,
       // WASI mode: ship the WASI shim source as a module-init preamble
       // so `__wasiMakeImports` is in scope when the facet fn runs.
       // Direct mode: no preamble (saves a few KB per submit).
@@ -358,8 +362,10 @@ export function makeWasmRunner(deps: {
           files: Record<string, string>;
           dirs: string[];
           modes: Record<string, number>;
+          sizes?: Record<string, number>;
         };
       },
+      facetEnv?: { SUPERVISOR?: unknown },
     ): Promise<WasmCallResult> {
       const wasmTable = (globalThis as any).__NIMBUS_WASM || {};
       const mod = wasmTable['user.wasm'];
@@ -415,7 +421,12 @@ export function makeWasmRunner(deps: {
             files:    args.wasiFs.files,
             dirs:     args.wasiFs.dirs,
             modes:    args.wasiFs.modes,
+            sizes:    args.wasiFs.sizes,
           });
+          // initFS resets the live state, so adoption has to follow it. From
+          // here the seed is a cache: content it did not carry is fetched on
+          // demand and writes go back as they happen.
+          __wasiAdoptSupervisor(facetEnv && facetEnv.SUPERVISOR);
         } else {
           // Minimal FS so __wasiFS isn't null when WASI fns are called.
           initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
@@ -466,6 +477,9 @@ export function makeWasmRunner(deps: {
         const r = runStartAsync
           ? await runStartAsync(inst, { memory: memRef.mem })
           : runStart(inst, { memory: memRef.mem });
+        // Writes reached the session VFS as they happened; this waits for the
+        // queue so the caller cannot observe a result before the data lands.
+        await __wasiDrainPersist();
         const fsDiff = snapshotFS();
         return {
           ok: r.exitCode === 0 && !r.error,
