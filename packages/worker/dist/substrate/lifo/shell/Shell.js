@@ -70,6 +70,15 @@ export class Shell {
     tabCount = 0;
     // Paste queue for multiline paste support
     pasteQueue = [];
+    /**
+     * Keystrokes that arrived while a foreground command owned the terminal and
+     * nothing was reading stdin. A tty buffers type-ahead and hands it to the
+     * shell when the job exits; dropping it loses whatever the user typed, and
+     * when a dispatch never settles it leaves that connection with no feedback
+     * whatsoever. Held as whole chunks so a multi-byte escape sequence replays
+     * as one keystroke rather than three.
+     */
+    typeAhead = [];
     constructor(terminal, vfs, registry, env, processRegistry, commandIdentity) {
         this.terminal = terminal;
         this.vfs = vfs;
@@ -399,31 +408,36 @@ export class Shell {
                 this.redrawLine();
             return;
         }
-        // ESC sequences
-        if (data === '\x1b[D') {
-            this.moveCursorLeft();
-            return;
+        // ESC sequences. Cursor motion and history are line EDITING, so they only
+        // belong to a shell that owns the line. While a command runs they must
+        // fall through: to the stdin reader that has its own cursor (and its own
+        // handlers for these very sequences), or to the type-ahead buffer.
+        if (!this.running) {
+            if (data === '\x1b[D') {
+                this.moveCursorLeft();
+                return;
+            }
+            if (data === '\x1b[C') {
+                this.moveCursorRight();
+                return;
+            }
+            if (data === '\x1b[A') {
+                this.historyUp();
+                return;
+            }
+            if (data === '\x1b[B') {
+                this.historyDown();
+                return;
+            }
+            if (data === '\x1b[H' || data === '\x01') {
+                this.moveCursorHome();
+                return;
+            } // Home / Ctrl+A
+            if (data === '\x1b[F' || data === '\x05') {
+                this.moveCursorEnd();
+                return;
+            } // End / Ctrl+E
         }
-        if (data === '\x1b[C') {
-            this.moveCursorRight();
-            return;
-        }
-        if (data === '\x1b[A') {
-            this.historyUp();
-            return;
-        }
-        if (data === '\x1b[B') {
-            this.historyDown();
-            return;
-        }
-        if (data === '\x1b[H' || data === '\x01') {
-            this.moveCursorHome();
-            return;
-        } // Home / Ctrl+A
-        if (data === '\x1b[F' || data === '\x05') {
-            this.moveCursorEnd();
-            return;
-        } // End / Ctrl+E
         // Ctrl+C
         if (data === '\x03') {
             if (this.running && this.abortController) {
@@ -473,8 +487,17 @@ export class Shell {
             this.handleStdinInput(data);
             return;
         }
-        if (this.running)
+        // A foreground command owns the line editor and nothing is reading stdin,
+        // so this is type-ahead. Echo it — that is what a tty does, and it is the
+        // only sign of life a wedged dispatch can give — then hold it for replay.
+        if (this.running) {
+            this.typeAhead.push(data);
+            if (data === '\r')
+                this.terminal.write('\r\n');
+            else if (data >= ' ' && data !== '\x7f')
+                this.terminal.write(normalizeTerminalNewlines(data));
             return;
+        }
         // Tab completion
         if (data === '\t') {
             this.handleTab();
@@ -710,6 +733,17 @@ export class Shell {
         // Track where we left the cursor
         this.screenCursorRow = desiredRow;
     }
+    /**
+     * Replay buffered type-ahead through the line editor. Stops the moment a
+     * replayed keystroke starts a command: the rest stays queued and is
+     * delivered when that one settles, so a queued line is never fed into a
+     * shell that is busy again.
+     */
+    drainTypeAhead() {
+        while (!this.running && this.typeAhead.length > 0) {
+            this.handleInput(this.typeAhead.shift());
+        }
+    }
     drainPasteQueue() {
         const next = this.pasteQueue.shift();
         if (next !== undefined) {
@@ -811,6 +845,7 @@ export class Shell {
         }
         this.printPrompt();
         this.drainPasteQueue();
+        this.drainTypeAhead();
     }
     // ─── Builtins (now with stdout/stderr params for pipe support) ───
     async builtinCd(args, stderr) {
