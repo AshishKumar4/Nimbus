@@ -148,6 +148,25 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint {
      * preview) until the facet closed the stream.
      */
     private _relayNestedRpcResponse;
+    /**
+     * Invoke the facet's HTTP handler.
+     *
+     * The call must be written as `ep.method(request)`. An RPC stub's method is a
+     * JsRpcProperty, whose every property access is a WILDCARD that extends a
+     * pipelined path (`JSG_WILDCARD_PROPERTY`, workerd api/worker-rpc.h) — so
+     * `method.call(ep, request)` does NOT reach Function.prototype.call. It builds
+     * the path `handleHttpRequest.call` and invokes it remotely with `ep` as its
+     * first ARGUMENT. Serializing `ep` — an entrypoint to a dynamically-loaded
+     * worker — is what workerd refuses:
+     *
+     *   DataCloneError: Entrypoints to dynamically-loaded workers cannot be
+     *   transferred to other Workers
+     *
+     * (server.c++ `requireAllowsTransfer` → `throwDynamicEntrypointTransferError`).
+     * The facet is never entered, because the failure is in serializing the
+     * arguments, before the call is delivered.
+     */
+    private _callHttpHandler;
     handleHttpRequest(request: Request): Promise<Response>;
     /**
      * Forward fetch() to the outer worker's entrypoint. All three outer
