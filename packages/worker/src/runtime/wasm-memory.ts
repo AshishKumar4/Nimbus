@@ -34,6 +34,24 @@ export const WASM_PAGE_BYTES = 65536;
 /** wasm32 address-space ceiling: 65536 pages of 64 KiB = 4 GiB. */
 export const WASM32_MAX_PAGES = 65536;
 
+/**
+ * Default ceiling for one wasm process's linear memory.
+ *
+ * Measured on prod workerd (throwaway account-pinned DO, 2026-08-02): a
+ * Durable Object sustains ~200 MiB of live wasm linear memory and is then
+ * killed, and it makes no difference whether those pages were written to or
+ * merely reserved — the untouched and fully-filled arms died at exactly the
+ * same 200 MiB. Reserving address space is billed at full price, so there is
+ * no headroom to be had by growing lazily.
+ *
+ * 128 MiB leaves ~70 MiB of that measured ceiling for the facet's own JS
+ * heap, the module text, and the runner's buffers. It is a budget rather than
+ * a measurement of any particular workload's need, and unlike the supervisor
+ * heap budget this one IS enforced — `withMemoryLimit` puts it where a guest
+ * `memory.grow` can see it.
+ */
+export const DEFAULT_WASM_PROCESS_LIMIT_BYTES = 128 * 1024 * 1024;
+
 /** Limits declared by a wasm memory, in pages. */
 export interface WasmMemoryLimits {
   readonly minPages: number;
