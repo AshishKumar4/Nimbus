@@ -357,6 +357,17 @@ function __wasiEvictCleanContent() {
 async function __wasiRevalidateFS() {
   if (!__wasiSup || !__wasiFS) return [];
   await __wasiDrainPersist();
+  // One round trip decides it. An unchanged subtree means the cache is still
+  // exactly right, so a resident server parking between requests pays a single
+  // revision check rather than re-reading everything it had already loaded.
+  if (typeof __wasiSup.fsRevision === 'function') {
+    let revision;
+    try {
+      revision = await __wasiSup.fsRevision(__wasiFS.root);
+    } catch { revision = null; }
+    if (revision !== null && revision === __wasiFS.revision) return [];
+    __wasiFS.revision = revision;
+  }
   __wasiNegative.clear();
   return __wasiEvictCleanContent();
 }
@@ -484,6 +495,17 @@ function __wasiInitFS(opts) {
     // Files at or above this size are never held whole; reads window through
     // the supervisor instead. Keeps a 200 MiB blob from ending the isolate.
     residentFileCap: Number(opts.residentFileCap ?? (8 * 1024 * 1024)),
+    // Roots the seed claims to have listed COMPLETELY. Only a producer that
+    // walked a subtree without exclusions may claim one. Inside such a root a
+    // path the manifest lacks is genuinely absent, so the miss is answered
+    // here instead of costing a round trip — which is most of the traffic a
+    // language runtime generates ($LOAD_PATH / sys.path probing walks
+    // candidate names that mostly do not exist).
+    enumeratedRoots: (opts.enumeratedRoots || []).map(__wasiCanonicalize),
+    // Supervisor revision the seed was built against; a park re-checks it and
+    // only then drops cached content. Without this the cache could serve
+    // content another process has since changed.
+    revision: opts.revision ?? null,
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   __wasiPreopens = [];
@@ -1053,8 +1075,19 @@ function __wasiMakeImports(opts) {
    * once and records the answer — including the negative, so a program that
    * probes the same absent path in a loop pays a single round trip.
    */
+  /** True when the seed listed this path's subtree exhaustively. */
+  function underEnumeratedRoot(vfsPath) {
+    for (const root of __wasiFS.enumeratedRoots) {
+      if (root === '' || vfsPath === root || vfsPath.startsWith(root + '/')) return true;
+    }
+    return false;
+  }
   function statLive(vfsPath) {
     if (!__wasiSup || __wasiNegative.has(vfsPath)) return false;
+    // The manifest is authoritative inside a root it fully enumerated, so an
+    // absent path there is absent — no round trip. Revalidation at a park is
+    // what lets files created after spawn become visible.
+    if (underEnumeratedRoot(vfsPath)) return false;
     return (async () => {
       await __wasiDrainPersist();
       const st = await __wasiSup.stat(vfsPath);
@@ -2668,6 +2701,14 @@ export interface WasiFsSnapshot {
    * through the supervisor instead. Defaults to 8 MiB.
    */
   residentFileCap?: number;
+  /**
+   * Roots this seed listed COMPLETELY. Only a producer that walked the subtree
+   * with no exclusions may claim one: inside a claimed root an unlisted path
+   * is treated as genuinely absent and answered without a round trip.
+   */
+  enumeratedRoots?: string[];
+  /** Supervisor VFS revision the seed was built against (see fsRevision). */
+  revision?: number;
   /** Effective read/write/execute bits for the invoking process, keyed by vfsPath. */
   modes: Record<string, number>;
   /**
