@@ -43,6 +43,8 @@ import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
 import {
   FACET_PROVIDED_PACKAGES,
+  FS_READ_BATCH_PATH_LIMIT,
+  FS_READ_BATCH_REQUEST_BYTES,
   MAX_RPC_SAFE_PAYLOAD_BYTES,
   NIMBUS_AI_GATEWAY_PORT,
   NODE_VERSION,
@@ -514,6 +516,7 @@ const __fsMod = (() => {
   // it, existsSync keeps reporting a file this process already deleted and
   // the sync read path reports that file as merely non-resident.
   function _forgetSyncPath(k) {
+    _announcedDirs.delete(k);
     const metadata = _metadataTable();
     if (metadata) delete metadata[k];
     if (!__vfsManifest) return;
@@ -529,6 +532,7 @@ const __fsMod = (() => {
 
   function _forgetSyncTree(k) {
     const prefix = k + "/";
+    for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
     const metadata = _metadataTable();
     if (metadata) {
       for (const mk of Object.keys(metadata)) if (mk.startsWith(prefix)) delete metadata[mk];
@@ -682,8 +686,38 @@ const __fsMod = (() => {
     globalThis.__nimbusVfsMayBeStale = true;
   }
 
+  // Directories mkdirSync created that the authority has not been told about.
+  // A sync syscall cannot make an RPC, so mkdirSync can only record the
+  // directory in the sync view (__vfsDirs) — and the write-back then flushed
+  // the FILE without ever announcing the directories above it. writeFile
+  // creates missing parents implicitly and so papered over the gap; fsAppend
+  // and fsTruncate do not, which is how an appendFileSync log inside a fresh
+  // mkdir tree failed ENOENT on its own parent and never reached authority.
+  const _announcedDirs = new Set();
+
+  // Announce every directory on \`absPath\` the authority may not know about.
+  // supervisor.mkdir is recursive, so the deepest unannounced one creates all
+  // of them in a single round trip; a path whose directories are already live
+  // (the common case) costs none at all.
+  async function _announceLocalDirs(absPath, supervisor) {
+    if (!__vfsDirs || typeof supervisor.mkdir !== "function") return;
+    const pending = [];
+    let key = "";
+    for (const segment of _strip(absPath).split("/")) {
+      if (!segment) continue;
+      key = key ? key + "/" + segment : segment;
+      if (key in __vfsDirs && !_announcedDirs.has(key)) pending.push(key);
+    }
+    if (pending.length === 0) return;
+    const deepest = "/" + pending[pending.length - 1];
+    await _fsRpc(supervisor.mkdir(deepest), "mkdir", deepest, () => undefined);
+    for (const dir of pending) _announcedDirs.add(dir);
+    _markVfsStale();
+  }
+
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
+    await _announceLocalDirs(absPath, supervisor);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
       await __nimbusFlushVfsWrite(
         absPath,
@@ -693,9 +727,6 @@ const __fsMod = (() => {
           (result) => result,
         ),
       );
-      _markVfsStale();
-    } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
-      await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);
       _markVfsStale();
     }
     // Pending sync chmod rides along with any flush of the same path
@@ -813,6 +844,63 @@ const __fsMod = (() => {
   // multi-MB file for one RPC frame.
   const READ_STREAM_CHUNK_BYTES = 65536;
 
+  // Ranged reads issued in the same microtask turn travel as ONE batch.
+  //
+  // A round trip costs an order of magnitude more than the read behind it,
+  // so a program awaiting reads one at a time pays for round trips and
+  // nothing else. Nothing here changes what a read sees: every request is
+  // the same live ranged read, executed in order, in the caller's turn. The
+  // gather window is one microtask, so it can only capture reads the program
+  // had already issued concurrently — a sequential loop batches nothing
+  // because it has issued nothing else to batch.
+  const READ_BATCH_PATH_LIMIT = ${FS_READ_BATCH_PATH_LIMIT};
+  const READ_BATCH_REQUEST_BYTES = ${FS_READ_BATCH_REQUEST_BYTES};
+  let _openReadBatch = null;
+
+  function _queueRangeRead(supervisor, absPath, pos, want) {
+    let batch = _openReadBatch;
+    if (batch && (
+      batch.requests.length >= READ_BATCH_PATH_LIMIT
+      || batch.bytes + want > READ_BATCH_REQUEST_BYTES
+    )) {
+      _openReadBatch = null;
+      _flushReadBatch(batch);
+      batch = null;
+    }
+    if (!batch) {
+      batch = { supervisor, requests: [], settlers: [], bytes: 0 };
+      _openReadBatch = batch;
+      queueMicrotask(() => {
+        if (_openReadBatch === batch) _openReadBatch = null;
+        _flushReadBatch(batch);
+      });
+    }
+    batch.bytes += want;
+    batch.requests.push({ path: absPath, offset: pos, length: want });
+    return new Promise((resolve, reject) => { batch.settlers.push({ resolve, reject }); });
+  }
+
+  async function _flushReadBatch(batch) {
+    globalThis.__nimbusFsRpcReads++;
+    try {
+      const entries = await __nimbusUseRpcResult(
+        batch.supervisor.fsReadBatch(batch.requests), (r) => r,
+      );
+      for (let i = 0; i < batch.settlers.length; i++) {
+        const entry = entries[i];
+        if (entry && entry.error) {
+          const err = new Error(entry.error.message);
+          if (entry.error.code) err.code = entry.error.code;
+          batch.settlers[i].reject(err);
+        } else {
+          batch.settlers[i].resolve(entry ? entry.bytes : null);
+        }
+      }
+    } catch (error) {
+      for (const settler of batch.settlers) settler.reject(error);
+    }
+  }
+
   /**
    * Read \`want\` bytes at \`pos\`. Async reads always consult the live VFS.
    * A pending sync write is flushed first, so the supervisor remains the
@@ -821,6 +909,14 @@ const __fsMod = (() => {
    */
   async function _readRangeAt(absPath, displayPath, pos, want) {
     const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.fsReadBatch === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      let bytes;
+      try { bytes = await _queueRangeRead(supervisor, absPath, pos, want); }
+      catch (error) { throw _mapSupervisorError(error, "read", displayPath); }
+      if (bytes === null || bytes === undefined) throw _fsErr("ENOENT", "open", displayPath);
+      return bytes.byteLength === 0 ? null : bytes;
+    }
     if (supervisor && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       const bytes = await _fsReadRpc(supervisor.fsReadRange(absPath, pos, want), "read", displayPath, (r) => r);
@@ -838,6 +934,28 @@ const __fsMod = (() => {
     throw _fsErr("ENOENT", "open", displayPath);
   }
 
+  // Every chunk of \`absPath\` from \`from\` to EOF, issued in ONE turn so the
+  // read batch carries them together. A stat bounds the walk; a chunk that
+  // comes back short or missing still ends the file, exactly as taking them
+  // one at a time did, so a file that shrank under the reader is read short
+  // rather than read wrong.
+  async function _readChunksFrom(absPath, displayPath, supervisor, from) {
+    const meta = await _fsRpc(supervisor.stat(absPath), "stat", displayPath, (result) => result);
+    const end = meta ? Number(meta.size) || 0 : 0;
+    const offsets = [];
+    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
+    const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
+      absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
+    )));
+    const parts = [];
+    for (const chunk of chunks) {
+      if (chunk === null) break;
+      parts.push(chunk);
+      if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+    }
+    return parts;
+  }
+
   async function _liveReadFile(p, opts) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
@@ -847,6 +965,14 @@ const __fsMod = (() => {
     if (typeof supervisor.fsReadRange === "function") {
       // Chunked: the caller wants the whole file, but nothing upstream has
       // to hold it all at once to produce it.
+      //
+      // A short chunk is the only signal the file ended, so this walk could
+      // only ever have one chunk in flight — 65 sequential round trips for a
+      // 4 MiB file, each costing far more than the read behind it. The FIRST
+      // chunk still costs exactly one trip and settles it for every file
+      // that fits in one. When it comes back full there is demonstrably
+      // more, and a stat says how much, so the remainder is issued together
+      // and the read batch carries it in a single trip.
       const parts = [];
       let total = 0;
       for (;;) {
@@ -855,6 +981,12 @@ const __fsMod = (() => {
         parts.push(chunk);
         total += chunk.byteLength;
         if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+        if (typeof supervisor.stat !== "function") continue;
+        for (const rest of await _readChunksFrom(absPath, p, supervisor, total)) {
+          parts.push(rest);
+          total += rest.byteLength;
+        }
+        break;
       }
       const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
       return encoding ? _asString(bytes) : __BufferMod.from(bytes);
@@ -984,6 +1116,7 @@ const __fsMod = (() => {
     writeFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.writeFile === "function") {
+      await _announceLocalDirs(absPath, supervisor);
       await __nimbusFlushVfsWrite(absPath, (content) =>
         _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined)
       );
@@ -996,6 +1129,7 @@ const __fsMod = (() => {
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
+    await _announceLocalDirs(absPath, supervisor);
     await __nimbusFlushVfsWrite(
       absPath,
       (content, snapshot) => _fsRpc(
@@ -1049,6 +1183,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     const localCell = _bundleLookup(absPath);
     if (supervisor && typeof supervisor.fsTruncate === "function") {
+      await _announceLocalDirs(absPath, supervisor);
       const k = _strip(absPath);
       if (__vfsWrites && k in __vfsWrites) {
         const append = __nimbusCapturePendingVfsAppend(k);
@@ -4504,8 +4639,28 @@ builtins.http = (() => {
     get writableFinished() { return this._ended; }
     get destroyed() { return this._destroyed; }
   }
-  class IncomingMessage extends __eventsMod {
-    constructor(u, m, h) { super(); this.url = u || "/"; this.method = m || "GET"; this.headers = h || {}; this.httpVersion = "1.1"; }
+  // Node's IncomingMessage is a Readable whose chunks are Buffers, and every
+  // idiom for reading a request body depends on both halves of that: the
+  // canonical \`req.on('data', c => chunks.push(c))\` + \`Buffer.concat(chunks)\`
+  // brand-checks each chunk as a TypedArray, \`for await (const c of req)\` and
+  // \`req.pipe()\` need the stream contract, and a Readable is what holds the
+  // bytes until a consumer actually attaches instead of emitting them into
+  // the void. The body arrives here as bytes and is pushed on demand.
+  class IncomingMessage extends __streamMod.Readable {
+    constructor(u, m, h, body) {
+      super();
+      this.url = u || "/";
+      this.method = m || "GET";
+      this.headers = h || {};
+      this.httpVersion = "1.1";
+      this._body = body && body.byteLength > 0 ? body : null;
+    }
+    _read() {
+      const body = this._body;
+      this._body = null;
+      if (body) this.push(__BufferMod.from(body));
+      this.push(null);
+    }
   }
   class Server extends __eventsMod {
     constructor(handler) { super(); this._parkedRequests = []; if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
@@ -4575,9 +4730,16 @@ builtins.http = (() => {
     setKeepAlive() { return this; }
     address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
     _handleRequest(u, m, h, b) {
-      const req = new IncomingMessage(u, m, h);
+      const req = new IncomingMessage(u, m, h, b);
       const res = new ServerResponse();
-      const dispatch = () => { this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } };
+      // Node drains a request body the handler never reads, which is what lets
+      // an 'end'-only listener fire. Nudge the stream once the handler has had
+      // its turn, so a handler that DID attach a consumer owns the bytes and
+      // one that did not still sees the request complete.
+      const dispatch = () => {
+        this.emit("request", req, res);
+        if (req.readableFlowing !== true) req.resume();
+      };
       if (this.listenerCount("request") === 0) this._parkedRequests.push(dispatch);
       else dispatch();
       return res;
@@ -4603,8 +4765,12 @@ builtins.http = (() => {
     const url = new URL(request.url);
     const headers = {};
     request.headers.forEach((v, k) => { headers[k] = v; });
-    let body = "";
-    if (request.method !== "GET" && request.method !== "HEAD") body = await request.text();
+    // Bytes, not text: a UTF-8 decode corrupts every binary upload, and the
+    // decoded string is not the TypedArray receiver Buffer methods require.
+    let body = null;
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      body = new Uint8Array(await request.arrayBuffer());
+    }
     const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
     // Return once headers are known. A handler that never sends headers is
     // bounded by a header timeout (NOT a body-finish cap) so a hung handler

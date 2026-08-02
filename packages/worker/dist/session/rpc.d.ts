@@ -24,6 +24,7 @@
 import { type HostedResidentProcess } from '../loaders/process-fabric.js';
 import { type RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { z } from 'zod/v4';
 type RpcHost = any;
 export declare function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null>;
 /**
@@ -77,8 +78,49 @@ export declare function _rpcRmdir(self: RpcHost, path: string, pid?: number): Pr
 export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number): Promise<void>;
 export declare function _rpcReadlink(self: RpcHost, path: string, pid?: number): Promise<string | null>;
 export declare function _rpcSymlink(self: RpcHost, target: string, path: string, pid?: number): Promise<void>;
+declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodObject<{
+    path: z.ZodString;
+    offset: z.ZodNumber;
+    length: z.ZodNumber;
+}, z.core.$strip>>;
+/** One requested range in a batch read. `length` bounds what it may return. */
+export type FsReadBatchRequest = z.infer<typeof FsReadBatchArgsSchema>[number];
+export interface FsReadBatchEntryError {
+    readonly code?: string;
+    readonly message: string;
+}
+/**
+ * One range's outcome, positionally matched to its request. `bytes: null`
+ * means the path does not exist — the same answer `fsReadRange` gives.
+ */
+export type FsReadBatchEntry = {
+    bytes: Uint8Array | null;
+    error?: undefined;
+} | {
+    bytes?: undefined;
+    error: FsReadBatchEntryError;
+};
 export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+/**
+ * Read many ranges in ONE round trip.
+ *
+ * Every entry is the same read `_rpcFsReadRange` performs, through the same
+ * process credential and the same live bridge, in request order. A batch is
+ * therefore exactly as authoritative as the individual reads it replaces —
+ * it takes no snapshot and consults nothing the single-read path would not.
+ * What it saves is round trips, which is the whole cost of a read.
+ *
+ * One failing path must not cost the caller the whole batch — with N separate
+ * calls it would have learned each outcome — so a read that throws is
+ * reported in its own slot and the rest of the batch proceeds. A missing path
+ * yields `bytes: null`, exactly as the single read does.
+ *
+ * Bounds are checked before any read and rejected rather than trimmed: a
+ * caller that silently got fewer entries than it asked for would read a
+ * truncated file as a complete one.
+ */
+export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: number): Promise<FsReadBatchEntry[]>;
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
 export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;

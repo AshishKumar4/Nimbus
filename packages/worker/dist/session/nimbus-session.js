@@ -606,6 +606,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsReadRange(path, offset, length, pid) {
         return _rpc._rpcFsReadRange(this, path, offset, length, pid);
     }
+    async _rpcFsReadBatch(requests, pid) {
+        return _rpc._rpcFsReadBatch(this, requests, pid);
+    }
     async _rpcFsWriteRange(path, offset, bytes, pid) {
         return _rpc._rpcFsWriteRange(this, path, offset, bytes, pid);
     }
