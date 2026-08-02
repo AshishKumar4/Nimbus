@@ -71,6 +71,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
             wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
         }, z.core.$strip>]>>;
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     }, z.core.$strip>>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
@@ -130,9 +131,13 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown>;
     _codeWithSupervisor(props: NimbusLoadedEntrypointProps, includeSupervisor: boolean): Promise<unknown>;
     /**
-     * Complete a resident-process module map in THIS isolate: read each wasm
-     * image off the coordinator's disk through the facet's own supervisor, in
-     * RPC-safe ranges (the images are larger than a single RPC value).
+     * Complete a resident-process module map in THIS isolate: read every member
+     * the spec named by path off the coordinator's disk through the facet's own
+     * supervisor, in RPC-safe ranges (the members are larger than a single RPC
+     * value — that is why they are named rather than carried).
+     *
+     * Wasm images and generated module text take the same route and differ only
+     * in how the bytes are handed to the loader.
      */
     _residentCodeConfig(spec: ResidentCodeSpec, supervisorBinding: unknown): Promise<Record<string, unknown>>;
     _resolveEntrypoint(options: {

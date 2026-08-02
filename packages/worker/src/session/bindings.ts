@@ -25,7 +25,12 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
 import { assembleOpencodeFacetConfig } from '../facets/opencode-staging.js';
-import { ResidentCodeSpecSchema, type ResidentCodeSpec } from '../loaders/process-fabric.js';
+import {
+  ResidentCodeSpecSchema,
+  facetImageDigest,
+  facetImagePathDigest,
+  type ResidentCodeSpec,
+} from '../loaders/process-fabric.js';
 
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
@@ -226,11 +231,36 @@ let _loadedCodesEvictions = 0;
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 
+interface SupervisorFileReader {
+  stat(path: string): Promise<{ size?: number } | null>;
+  fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+}
+
+/**
+ * Read one content-addressed facet image and verify it against the digest its
+ * path claims. Content addressing is only a guarantee if the bytes are checked
+ * against the name they arrived under: an image that was truncated, or
+ * replaced by something the generator never wrote, would otherwise be loaded
+ * as the program and fail somewhere inside it with no way back to the cause.
+ */
+async function readFacetImage(fs: SupervisorFileReader, path: string): Promise<string> {
+  const expected = facetImagePathDigest(path);
+  if (!expected) {
+    throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
+  }
+  const source = new TextDecoder().decode(await readSupervisorFile(fs, path));
+  const actual = await facetImageDigest(source);
+  if (actual !== expected) {
+    throw new Error(
+      `Nimbus: facet image '${path}' does not match its digest (read ${actual}); `
+        + 'the image store is corrupt and the process cannot boot from it',
+    );
+  }
+  return source;
+}
+
 async function readSupervisorFile(
-  fs: {
-    stat(path: string): Promise<{ size?: number } | null>;
-    fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-  },
+  fs: SupervisorFileReader,
   path: string,
 ): Promise<ArrayBuffer> {
   const stat = await fs.stat(path);
@@ -271,11 +301,13 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
   /**
    * Generated-module-map spec for a resident process (node / python / ruby).
    * Like `stage` it is COMPLETED here rather than in a session DO: its wasm
-   * images are named by VFS path and read through this entrypoint's own
-   * SUPERVISOR binding, which routes to the coordinator wherever this
-   * entrypoint runs. Ruby's interpreter+stdlib image alone is 34.3 MiB, past
-   * what any RPC value may carry, so by-path is the only way it can reach a
-   * peer at all — and it keeps the bytes out of every session DO's heap.
+   * images and its generated module text are named by VFS path and read
+   * through this entrypoint's own SUPERVISOR binding, which routes to the
+   * coordinator wherever this entrypoint runs. Ruby's interpreter+stdlib image
+   * alone is 34.3 MiB and a node facet's disk snapshot reached 44 MB, both
+   * past what any RPC value may carry, so by-path is the only way either can
+   * reach a peer at all — and it keeps the bytes out of every session DO's
+   * heap.
    */
   residentCode: ResidentCodeSpecSchema.optional(),
 }).passthrough();
@@ -502,31 +534,38 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
   }
 
   /**
-   * Complete a resident-process module map in THIS isolate: read each wasm
-   * image off the coordinator's disk through the facet's own supervisor, in
-   * RPC-safe ranges (the images are larger than a single RPC value).
+   * Complete a resident-process module map in THIS isolate: read every member
+   * the spec named by path off the coordinator's disk through the facet's own
+   * supervisor, in RPC-safe ranges (the members are larger than a single RPC
+   * value — that is why they are named rather than carried).
+   *
+   * Wasm images and generated module text take the same route and differ only
+   * in how the bytes are handed to the loader.
    */
   async _residentCodeConfig(
     spec: ResidentCodeSpec,
     supervisorBinding: unknown,
   ): Promise<Record<string, unknown>> {
-    const wasmModules: Record<string, { wasm: ArrayBuffer }> = {};
-    const paths = Object.entries(spec.vfsWasmModules ?? {});
-    if (paths.length > 0) {
-      const fs = supervisorBinding as {
-        stat(path: string): Promise<{ size?: number } | null>;
-        fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-      } | undefined;
-      if (!fs) throw new Error('Nimbus: resident process wasm images need a SUPERVISOR binding to read them');
-      for (const [moduleName, path] of paths) {
-        wasmModules[moduleName] = { wasm: await readSupervisorFile(fs, path) };
+    const wasmPaths = Object.entries(spec.vfsWasmModules ?? {});
+    const textPaths = Object.entries(spec.vfsTextModules ?? {});
+    const resolved: Record<string, string | { wasm: ArrayBuffer }> = {};
+    if (wasmPaths.length > 0 || textPaths.length > 0) {
+      const fs = supervisorBinding as SupervisorFileReader | undefined;
+      if (!fs) {
+        throw new Error('Nimbus: resident process modules named by path need a SUPERVISOR binding to read them');
+      }
+      for (const [moduleName, path] of wasmPaths) {
+        resolved[moduleName] = { wasm: await readSupervisorFile(fs, path) };
+      }
+      for (const [moduleName, path] of textPaths) {
+        resolved[moduleName] = await readFacetImage(fs, path);
       }
     }
     return {
       compatibilityDate: spec.compatibilityDate,
       compatibilityFlags: spec.compatibilityFlags,
       mainModule: spec.mainModule,
-      modules: { ...spec.modules, ...wasmModules },
+      modules: { ...spec.modules, ...resolved },
       ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
     };
   }
