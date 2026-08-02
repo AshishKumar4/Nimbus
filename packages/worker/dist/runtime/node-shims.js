@@ -4495,8 +4495,28 @@ builtins.http = (() => {
     get writableFinished() { return this._ended; }
     get destroyed() { return this._destroyed; }
   }
-  class IncomingMessage extends __eventsMod {
-    constructor(u, m, h) { super(); this.url = u || "/"; this.method = m || "GET"; this.headers = h || {}; this.httpVersion = "1.1"; }
+  // Node's IncomingMessage is a Readable whose chunks are Buffers, and every
+  // idiom for reading a request body depends on both halves of that: the
+  // canonical \`req.on('data', c => chunks.push(c))\` + \`Buffer.concat(chunks)\`
+  // brand-checks each chunk as a TypedArray, \`for await (const c of req)\` and
+  // \`req.pipe()\` need the stream contract, and a Readable is what holds the
+  // bytes until a consumer actually attaches instead of emitting them into
+  // the void. The body arrives here as bytes and is pushed on demand.
+  class IncomingMessage extends __streamMod.Readable {
+    constructor(u, m, h, body) {
+      super();
+      this.url = u || "/";
+      this.method = m || "GET";
+      this.headers = h || {};
+      this.httpVersion = "1.1";
+      this._body = body && body.byteLength > 0 ? body : null;
+    }
+    _read() {
+      const body = this._body;
+      this._body = null;
+      if (body) this.push(__BufferMod.from(body));
+      this.push(null);
+    }
   }
   class Server extends __eventsMod {
     constructor(handler) { super(); this._parkedRequests = []; if (handler) this.on("request", handler); this._port = 0; this._host = undefined; this._listening = false; }
@@ -4566,9 +4586,16 @@ builtins.http = (() => {
     setKeepAlive() { return this; }
     address() { return { address: this._host || "0.0.0.0", port: this._port, family: "IPv4" }; }
     _handleRequest(u, m, h, b) {
-      const req = new IncomingMessage(u, m, h);
+      const req = new IncomingMessage(u, m, h, b);
       const res = new ServerResponse();
-      const dispatch = () => { this.emit("request", req, res); if (b) { req.emit("data", b); req.emit("end"); } else { req.emit("end"); } };
+      // Node drains a request body the handler never reads, which is what lets
+      // an 'end'-only listener fire. Nudge the stream once the handler has had
+      // its turn, so a handler that DID attach a consumer owns the bytes and
+      // one that did not still sees the request complete.
+      const dispatch = () => {
+        this.emit("request", req, res);
+        if (req.readableFlowing !== true) req.resume();
+      };
       if (this.listenerCount("request") === 0) this._parkedRequests.push(dispatch);
       else dispatch();
       return res;
@@ -4594,8 +4621,12 @@ builtins.http = (() => {
     const url = new URL(request.url);
     const headers = {};
     request.headers.forEach((v, k) => { headers[k] = v; });
-    let body = "";
-    if (request.method !== "GET" && request.method !== "HEAD") body = await request.text();
+    // Bytes, not text: a UTF-8 decode corrupts every binary upload, and the
+    // decoded string is not the TypedArray receiver Buffer methods require.
+    let body = null;
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      body = new Uint8Array(await request.arrayBuffer());
+    }
     const res = server._handleRequest(url.pathname + url.search, request.method, headers, body);
     // Return once headers are known. A handler that never sends headers is
     // bounded by a header timeout (NOT a body-finish cap) so a hung handler
