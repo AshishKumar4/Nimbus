@@ -505,6 +505,7 @@ const __fsMod = (() => {
   // it, existsSync keeps reporting a file this process already deleted and
   // the sync read path reports that file as merely non-resident.
   function _forgetSyncPath(k) {
+    _announcedDirs.delete(k);
     const metadata = _metadataTable();
     if (metadata) delete metadata[k];
     if (!__vfsManifest) return;
@@ -520,6 +521,7 @@ const __fsMod = (() => {
 
   function _forgetSyncTree(k) {
     const prefix = k + "/";
+    for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
     const metadata = _metadataTable();
     if (metadata) {
       for (const mk of Object.keys(metadata)) if (mk.startsWith(prefix)) delete metadata[mk];
@@ -673,8 +675,38 @@ const __fsMod = (() => {
     globalThis.__nimbusVfsMayBeStale = true;
   }
 
+  // Directories mkdirSync created that the authority has not been told about.
+  // A sync syscall cannot make an RPC, so mkdirSync can only record the
+  // directory in the sync view (__vfsDirs) — and the write-back then flushed
+  // the FILE without ever announcing the directories above it. writeFile
+  // creates missing parents implicitly and so papered over the gap; fsAppend
+  // and fsTruncate do not, which is how an appendFileSync log inside a fresh
+  // mkdir tree failed ENOENT on its own parent and never reached authority.
+  const _announcedDirs = new Set();
+
+  // Announce every directory on \`absPath\` the authority may not know about.
+  // supervisor.mkdir is recursive, so the deepest unannounced one creates all
+  // of them in a single round trip; a path whose directories are already live
+  // (the common case) costs none at all.
+  async function _announceLocalDirs(absPath, supervisor) {
+    if (!__vfsDirs || typeof supervisor.mkdir !== "function") return;
+    const pending = [];
+    let key = "";
+    for (const segment of _strip(absPath).split("/")) {
+      if (!segment) continue;
+      key = key ? key + "/" + segment : segment;
+      if (key in __vfsDirs && !_announcedDirs.has(key)) pending.push(key);
+    }
+    if (pending.length === 0) return;
+    const deepest = "/" + pending[pending.length - 1];
+    await _fsRpc(supervisor.mkdir(deepest), "mkdir", deepest, () => undefined);
+    for (const dir of pending) _announcedDirs.add(dir);
+    _markVfsStale();
+  }
+
   async function _flushLocalPathToSupervisor(absPath, supervisor) {
     const k = _strip(absPath);
+    await _announceLocalDirs(absPath, supervisor);
     if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
       await __nimbusFlushVfsWrite(
         absPath,
@@ -684,9 +716,6 @@ const __fsMod = (() => {
           (result) => result,
         ),
       );
-      _markVfsStale();
-    } else if (__vfsDirs && k in __vfsDirs && typeof supervisor.mkdir === "function") {
-      await _fsRpc(supervisor.mkdir(absPath), "mkdir", absPath, () => undefined);
       _markVfsStale();
     }
     // Pending sync chmod rides along with any flush of the same path
@@ -975,6 +1004,7 @@ const __fsMod = (() => {
     writeFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.writeFile === "function") {
+      await _announceLocalDirs(absPath, supervisor);
       await __nimbusFlushVfsWrite(absPath, (content) =>
         _fsRpc(supervisor.writeFile(absPath, content), "write", p, () => undefined)
       );
@@ -987,6 +1017,7 @@ const __fsMod = (() => {
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.writeFile !== "function") return;
+    await _announceLocalDirs(absPath, supervisor);
     await __nimbusFlushVfsWrite(
       absPath,
       (content, snapshot) => _fsRpc(
@@ -1040,6 +1071,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     const localCell = _bundleLookup(absPath);
     if (supervisor && typeof supervisor.fsTruncate === "function") {
+      await _announceLocalDirs(absPath, supervisor);
       const k = _strip(absPath);
       if (__vfsWrites && k in __vfsWrites) {
         const append = __nimbusCapturePendingVfsAppend(k);
