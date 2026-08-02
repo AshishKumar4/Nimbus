@@ -862,7 +862,10 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     // moment "durable while running" can be made true: by the time the caller
     // holds a response, everything the request wrote has reached the VFS.
     'async function __nimbusParkRuby(value) {',
-    '  await __wasiDrainPersist();',
+    // Revalidate drains first, then spends ONE round trip on the subtree
+    // revision. An unchanged subtree keeps the whole cache; a changed one
+    // drops the clean half so the next read sees another process's writes.
+    '  await __wasiRevalidateFS();',
     '  return value;',
     '}',
     'export default class NimbusRubyProcess extends WorkerEntrypoint {',
