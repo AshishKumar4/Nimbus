@@ -54,7 +54,11 @@ import {
 import { CRED_KERNEL, type RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
+import {
+  FS_READ_BATCH_PATH_LIMIT,
+  FS_READ_BATCH_REQUEST_BYTES,
+  MAX_RPC_SAFE_PAYLOAD_BYTES,
+} from '../constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { z } from 'zod/v4';
 
@@ -127,6 +131,26 @@ function checkedReadPayloadBytes(bytes: number): number {
     );
   }
   return bytes;
+}
+
+/**
+ * Bytes a ranged read can actually return, so the reservation covers the
+ * result rather than the ask. A 64 KiB range over a 200-byte file retains 200
+ * bytes; reserving the range would let a handful of small reads exhaust the
+ * read reserve and serialise a workload whose real cost is negligible.
+ *
+ * `stat` here is a local SQLite lookup inside the DO — the same one
+ * `_rpcReadFile` makes for the same reason — not a second round trip.
+ */
+async function rangeReadBytes(
+  fs: SqliteRuntimeFsBridge,
+  path: string,
+  offset: number,
+  length: number,
+): Promise<number> {
+  const stat = await fs.stat(path);
+  if (!stat) return 0;
+  return Math.max(0, Math.min(length, stat.size - offset));
 }
 
 async function withReadAllocation<T>(
@@ -330,6 +354,28 @@ const FsReadRangeArgsSchema = z.object({
   length: FsRangeOffsetSchema,
 });
 
+const FsReadBatchArgsSchema = z.array(z.object({
+  path: z.string().min(1),
+  offset: FsRangeOffsetSchema,
+  length: FsRangeOffsetSchema.max(FS_READ_BATCH_REQUEST_BYTES),
+})).min(1).max(FS_READ_BATCH_PATH_LIMIT);
+
+/** One requested range in a batch read. `length` bounds what it may return. */
+export type FsReadBatchRequest = z.infer<typeof FsReadBatchArgsSchema>[number];
+
+export interface FsReadBatchEntryError {
+  readonly code?: string;
+  readonly message: string;
+}
+
+/**
+ * One range's outcome, positionally matched to its request. `bytes: null`
+ * means the path does not exist — the same answer `fsReadRange` gives.
+ */
+export type FsReadBatchEntry =
+  | { bytes: Uint8Array | null; error?: undefined }
+  | { bytes?: undefined; error: FsReadBatchEntryError };
+
 const FsWriteRangeArgsSchema = z.object({
   path: z.string(),
   offset: FsRangeOffsetSchema,
@@ -365,10 +411,83 @@ export async function _rpcFsReadRange(
   pid?: number,
 ): Promise<Uint8Array | null> {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
+    const fs = runtimeFs(self, pid);
     return withReadAllocation(
-      args.length,
-      () => runtimeFs(self, pid).readRange(args.path, args.offset, args.length),
+      await rangeReadBytes(fs, args.path, args.offset, args.length),
+      () => fs.readRange(args.path, args.offset, args.length),
     );
+}
+
+/**
+ * Read many ranges in ONE round trip.
+ *
+ * Every entry is the same read `_rpcFsReadRange` performs, through the same
+ * process credential and the same live bridge, in request order. A batch is
+ * therefore exactly as authoritative as the individual reads it replaces —
+ * it takes no snapshot and consults nothing the single-read path would not.
+ * What it saves is round trips, which is the whole cost of a read.
+ *
+ * One failing path must not cost the caller the whole batch — with N separate
+ * calls it would have learned each outcome — so a read that throws is
+ * reported in its own slot and the rest of the batch proceeds. A missing path
+ * yields `bytes: null`, exactly as the single read does.
+ *
+ * Bounds are checked before any read and rejected rather than trimmed: a
+ * caller that silently got fewer entries than it asked for would read a
+ * truncated file as a complete one.
+ */
+export async function _rpcFsReadBatch(
+  self: RpcHost,
+  requests: unknown,
+  pid?: number,
+): Promise<FsReadBatchEntry[]> {
+    const args = FsReadBatchArgsSchema.parse(requests);
+    const requestedBytes = args.reduce((total, request) => total + request.length, 0);
+    if (requestedBytes > FS_READ_BATCH_REQUEST_BYTES) {
+      throw new RangeError(
+        `filesystem read batch requests ${requestedBytes} bytes across ${args.length} ranges, `
+        + `over the ${FS_READ_BATCH_REQUEST_BYTES}-byte limit`,
+      );
+    }
+
+    // Sizing pass. A path this process may not stat contributes nothing and
+    // still gets its own entry below — denying one path must not deny the
+    // batch, which is what N separate reads would have done.
+    const fs = runtimeFs(self, pid);
+    let residentBytes = 0;
+    for (const request of args) {
+      try {
+        residentBytes += await rangeReadBytes(fs, request.path, request.offset, request.length);
+      } catch { /* the read pass reports this path's error in its own slot */ }
+    }
+
+    return withReadAllocation(residentBytes, async () => {
+      const entries: FsReadBatchEntry[] = [];
+      for (const request of args) {
+        try {
+          entries.push({ bytes: await fs.readRange(request.path, request.offset, request.length) });
+        } catch (error) {
+          entries.push({ error: readBatchEntryError(error) });
+        }
+      }
+      return entries;
+    });
+}
+
+/**
+ * Errors cross an RPC boundary as `name`/`message` only, so the code a
+ * caller needs to map to an errno travels as data.
+ */
+function readBatchEntryError(error: unknown): FsReadBatchEntryError {
+  if (typeof error === 'object' && error !== null) {
+    const code = Reflect.get(error, 'code');
+    const message = Reflect.get(error, 'message');
+    if (typeof code === 'string') {
+      return { code, message: typeof message === 'string' ? message : code };
+    }
+    if (typeof message === 'string') return { message };
+  }
+  return { message: String(error) };
 }
 
 export async function _rpcFsWriteRange(
