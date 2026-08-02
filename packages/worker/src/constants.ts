@@ -165,10 +165,13 @@ export const CF_COMPAT_DATE = '2026-04-01';
 // so the supervisor always has runway when workerd LRU-evicts neighbours
 // or AIR (Asynchronous Isolate Recreation) folds growing isolates.
 //
-// 64 MiB is a budget, not a measurement. Every supervisor allocation
-// site is accounted for in src/observability/heap-estimate.ts which sums
-// known contributors: the supervisor baseline, VFS LRU and in-flight
-// writes, pre-bundle slices, and streaming RPC buffers.
+// 64 MiB is a budget, not a measurement, and nothing enforces it.
+// src/observability/heap-estimate.ts sums the INSTRUMENTED contributors —
+// the supervisor baseline, VFS LRU and in-flight writes, pre-bundle slices,
+// and streaming RPC buffers — which is a lower bound, not full coverage.
+// The prefetch-bundle path in facets/manager.ts allocates against this
+// budget without accounting for it; see HEAP_BLIND_SPOTS for the current
+// gap. Read a low percentOfCeiling accordingly.
 export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 
 // Shared allowance for transient allocations in the supervisor DO. With the
