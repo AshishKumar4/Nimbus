@@ -111,6 +111,21 @@ export const VFS_BUNDLE_MAX_FILES = 4000;
 export const VFS_BUNDLE_MAX_BYTES = 24 * 1024 * 1024;          // 24 MiB raw
 export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-encoded UTF-8
 
+// Bytes the FacetManager's cross-exec prefetch-bundle LRU may retain.
+//
+// It was bounded by ENTRY COUNT alone, which bounds nothing: each entry holds
+// a raw bundle plus its serialized source, manifest and metadata, so 16 of
+// them at the per-bundle caps exceed the entire supervisor ceiling several
+// times over. A cache that exists to avoid rebuilding must not be able to
+// reset the DO holding it, and only a byte bound can promise that.
+//
+// A quarter of SUPERVISOR_HEAP_CEILING_BYTES: enough for the working set of an
+// ordinary project's repeated execs, and small enough that a full cache plus
+// the ~9 MiB static baseline still leaves the transient allocation budget its
+// room. One bundle larger than this is admitted anyway and evicts the rest —
+// refusing it would mean never caching the program the session is running.
+export const PREFETCH_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+
 // Per-file ceiling for the blind working-tree sweep (facet-manager.ts
 // addCwdProjectFiles). That pass names no file the program asked for — it
 // guesses, so a relative `readFileSync` of a project file resolves — and a

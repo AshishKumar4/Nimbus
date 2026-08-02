@@ -62,8 +62,15 @@ import {
   CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
+  PREFETCH_CACHE_MAX_BYTES,
 } from '../constants.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
+import {
+  prefetchBundleStart,
+  prefetchBundleEnd,
+  setPrefetchCacheBytes,
+} from '../observability/diag-counters.js';
 
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -1194,6 +1201,31 @@ function _bundleCellLength(cell: string | Uint8Array): number {
 }
 
 type BundleCellSize = [path: string, bytes: number];
+
+/**
+ * Supervisor-heap cost of a FacetVfsState the prefetch LRU is holding on to.
+ *
+ * A cached entry retains the raw bundle AND the serialized forms built from
+ * it — source modules, manifest, metadata — so the memoization that saves the
+ * rebuild costs roughly twice the bundle. Counting only the raw cells would
+ * under-report the cache by about half, which is how a count-bounded LRU came
+ * to look affordable.
+ */
+function retainedVfsStateBytes(state: FacetVfsState): number {
+  let bytes = 0;
+  for (const [path, cell] of Object.entries(state.bundle)) {
+    bytes += path.length;
+    if (typeof cell === 'string' || cell instanceof Uint8Array) bytes += _bundleCellLength(cell);
+  }
+  const source = state.bundleSource;
+  if (source) {
+    bytes += source.expression.length + source.imports.length;
+    for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
+  }
+  bytes += state.serializedManifest?.length ?? 0;
+  bytes += state.serializedMetadata?.length ?? 0;
+  return bytes;
+}
 
 /**
  * UTF-8 byte length of `JSON.stringify(value)` — computed, for the string
@@ -2688,6 +2720,30 @@ export async function buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
 ): Promise<FacetVfsState> {
+  // This build accumulates raw VFS contents in the supervisor heap, and did it
+  // with nothing watching: the estimator read 9.4 MiB while these bytes were
+  // resetting the DO three times. Take the budget the enrichment passes are
+  // allowed to spend, so a build queues behind other heavy work instead of
+  // racing it, and attribute it so it lands under `prefetchBundleBytes` rather
+  // than in the unattributed remainder.
+  const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
+  prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
+  try {
+    return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile);
+  } finally {
+    prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
+    lease.release();
+  }
+}
+
+async function _buildPrefetchBundle(
+  vfs: CredentialedVfs,
+  scriptPath: string | undefined,
+  cwd: string,
+  entryCode: string,
+  esbuild?: EsbuildService,
+  bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
+): Promise<FacetVfsState> {
   // 1. Static reachable-set walk from entry.
   const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
   const bundle: Record<string, string | Uint8Array> = { ...prefetch.bundle };
@@ -2944,8 +3000,12 @@ export class FacetManager {
   private prefetchBundleCache = new Map<string, {
     revision: number;
     vfsState: FacetVfsState;
+    /** Retained supervisor-heap cost of this entry; the LRU's real bound. */
+    bytes: number;
   }>();
   private static readonly PREFETCH_CACHE_MAX = 16;
+  /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
+  private prefetchCacheBytes = 0;
 
   // NOTE: the opencode artifact sources (entry bundle, chunk pack, TUI worker
   // sources, wasm sidecars) are NEVER materialized on this manager — the
@@ -3022,12 +3082,43 @@ export class FacetManager {
     vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
     vfsState.cacheHit = false;
 
-    this.prefetchBundleCache.set(key, { revision, vfsState });
-    if (this.prefetchBundleCache.size > FacetManager.PREFETCH_CACHE_MAX) {
-      const oldest = this.prefetchBundleCache.keys().next().value;
-      if (oldest !== undefined) this.prefetchBundleCache.delete(oldest);
-    }
+    this._admitPrefetchCacheEntry(key, revision, vfsState);
     return vfsState;
+  }
+
+  /**
+   * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
+   * entry count and its byte bound.
+   *
+   * The count alone bounded nothing — each entry holds a raw bundle plus its
+   * serialized source, manifest and metadata, so sixteen of them could hold
+   * several times the supervisor ceiling. That is the same defect that let
+   * pi's 44 MB boot payload through: a thing sized by count when what matters
+   * is bytes.
+   */
+  private _admitPrefetchCacheEntry(
+    key: string,
+    revision: number,
+    vfsState: FacetVfsState,
+  ): void {
+    const previous = this.prefetchBundleCache.get(key);
+    if (previous) this.prefetchCacheBytes -= previous.bytes;
+    const bytes = retainedVfsStateBytes(vfsState);
+    this.prefetchBundleCache.delete(key);
+    this.prefetchBundleCache.set(key, { revision, vfsState, bytes });
+    this.prefetchCacheBytes += bytes;
+    for (const [oldest, entry] of this.prefetchBundleCache) {
+      if (
+        this.prefetchBundleCache.size <= FacetManager.PREFETCH_CACHE_MAX
+        && this.prefetchCacheBytes <= PREFETCH_CACHE_MAX_BYTES
+      ) break;
+      // The entry just admitted is the one the caller is about to use; a
+      // bundle bigger than the whole bound evicts everything else and stays.
+      if (oldest === key) continue;
+      this.prefetchBundleCache.delete(oldest);
+      this.prefetchCacheBytes -= entry.bytes;
+    }
+    setPrefetchCacheBytes(this.prefetchCacheBytes);
   }
 
   /**
