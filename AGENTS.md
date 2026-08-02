@@ -231,14 +231,40 @@ Useful commands:
 |---|---|
 | Typecheck | `bun run typecheck` |
 | Build packages | `bun run --cwd packages/worker build` |
-| All live probes | `BASE=https://nimbus-os.dev bun test:behavioral` |
-| One live probe | `BASE=https://nimbus-os.dev bun tests/behavioral/<path>.mjs` |
-| Limit runner scope | `NIMBUS_PROBE_ONLY=<path-fragment> BASE=... bun test:behavioral` |
+| Unit suite | `for f in tests/unit/*.mjs; do bun "$f" || break; done` |
+| All live probes | `BASE=<target> bun test:behavioral` |
+| One live probe | `BASE=<target> bun tests/behavioral/<path>.mjs` |
+| Limit runner scope | `NIMBUS_PROBE_ONLY=<path-fragment> BASE=<target> bun test:behavioral` |
 
 Probes should assert user-visible behavior, not static strings or HTTP 200
 alone. Use bounded polling with loud failures; do not add sleep-only or
-defensive-catch tests. Live probes that create hosted-demo sessions must delete
-those sessions in `finally` via the public cleanup path.
+defensive-catch tests. Live probes that create sessions must delete those
+sessions in `finally` via the public cleanup path.
+
+### Probe targets
+
+`BASE` cannot be `https://nimbus-os.dev`. The hosted demo gates `POST /new`
+and every `/s/<sid>/*` route on an interactive Cloudflare OAuth cookie and
+never reads `Authorization: Bearer`, so a headless run gets
+`401 E_DEMO_LOGIN_REQUIRED`. The bearer-token embedder is `apps/probe`,
+where the core router's `POST /new` accepts a `session:create` JWT signed
+with that deployment's `JWT_SECRET`.
+
+Deploy your own disposable one — no shared secret needed:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=<account>
+
+eval "$(bun tests/behavioral/_throwaway-target.mjs up)"   # exports BASE + NIMBUS_PROBE_TOKEN
+bun tests/behavioral/run-all.mjs --no-retry
+bun tests/behavioral/_throwaway-target.mjs down           # delete, and confirm it is gone
+```
+
+`_throwaway-target.mjs session` prints `{base, sessionId, token}` for driving
+one session by hand. Throwaways are named `nimbus-tw-*`, live on
+`workers.dev`, and get their own Durable Object namespace. Delete them when
+you are done. Never deploy to `nimbus-os.dev`, versioned previews included —
+its wildcard route serves live production.
 
 Agent-specific probes:
 
