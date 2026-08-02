@@ -2567,6 +2567,56 @@ function __wasiMakeImports(opts) {
   // If Suspending isn't available (older runtime), socket imports remain
   // async fns that the wasm boundary will reject with a trap — caller
   // sees a clean failure via __wasiRunStartAsync's catch block.
+  // ── Park watchdog ──────────────────────────────────────────────────────
+  //
+  // Measured on deployed throwaway workers (probe a8be311831c0c183a): a wasm
+  // stack suspended ACROSS REQUESTS resumes correctly inside a DO Facet, but
+  // only up to roughly 15-18 seconds of idle. Past that ceiling the promise
+  // NEVER SETTLES — it does not reject, it simply never resolves. An unguarded
+  // park therefore wedges the process forever with nothing raised anywhere,
+  // which is strictly worse than failing: nothing to log, nothing to retry.
+  //
+  // Every suspending import therefore parks against a deadline set with margin
+  // below the measured floor, and on expiry resolves to EAGAIN — an errno the
+  // guest's own retry logic already handles — instead of hanging.
+  //
+  // This guards the PROMISE, not the suspension mechanism, so it serves an
+  // Asyncify-unwound guest exactly as well as a JSPI-suspended one.
+  const __WASI_PARK_CEILING_MS  = 15000;  // measured; deadline must stay under
+  const __WASI_PARK_DEADLINE_MS = 10000;
+  void __WASI_PARK_CEILING_MS;
+
+  function withParkDeadline(fn) {
+    return function parkGuarded(...args) {
+      const r = fn.apply(this, args);
+      // A cache hit or a sync errno is passed straight through: only a real
+      // park is guarded, so this costs nothing on the synchronous path.
+      if (!r || typeof r.then !== 'function') return r;
+      return new Promise((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve(__WASI_EAGAIN);
+        }, __WASI_PARK_DEADLINE_MS);
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        };
+        r.then(finish, () => finish(__WASI_EAGAIN));
+      });
+    };
+  }
+  // Applied to every import that can park, before Suspending wraps them.
+  for (const name of [
+    'sock_send', 'sock_recv', 'sock_shutdown', 'poll_oneoff',
+    'fd_read', 'fd_write', 'fd_pread', 'path_filestat_get',
+  ]) {
+    if (typeof imports[name] === 'function') imports[name] = withParkDeadline(imports[name]);
+  }
+
   if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
     imports.sock_send     = new WebAssembly.Suspending(imports.sock_send);
     imports.sock_recv     = new WebAssembly.Suspending(imports.sock_recv);
