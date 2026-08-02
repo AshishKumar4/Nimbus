@@ -278,8 +278,12 @@ let __wasiSup = null;
 // predecessor — a rename must not overtake the write that created the file.
 const __wasiPersistQ = { pending: [], tail: Promise.resolve(), failures: [] };
 
+// Adopting is idempotent and never downgrades. A resident process re-enters
+// through routed fetch/handleHttpRequest hops that resolve the entrypoint
+// WITHOUT a supervisor in env; clearing the live stub on those hops would
+// strand the process holding a cache it can no longer write back.
 function __wasiAdoptSupervisor(sup) {
-  __wasiSup = sup || null;
+  if (sup) __wasiSup = sup;
 }
 
 /** Mirror one mutation to the session VFS. Cache is already updated. */
@@ -395,6 +399,16 @@ function __wasiNowNs() {
   return BigInt(Date.now()) * 1000000n;
 }
 function __wasiInitFS(opts) {
+  // A fresh init is a fresh process: no supervisor adopted yet, and none of
+  // the previous tenant's queued writes, dirty paths or negative lookups may
+  // survive into it. Pools reuse an isolate across calls, so leaking any of
+  // this would let one program's state answer another program's syscalls.
+  __wasiSup = null;
+  __wasiDirty.clear();
+  __wasiNegative.clear();
+  __wasiPersistQ.pending.length = 0;
+  __wasiPersistQ.failures.length = 0;
+  __wasiPersistQ.tail = Promise.resolve();
   const files = new Map();   // canonicalVfsPath → Uint8Array
   const dirs  = new Set();   // canonicalVfsPath
   // WASI socket and polling support B1: parallel timestamp + symlink maps.
@@ -2607,6 +2621,13 @@ async function __wasiRunStartAsync(instance, ctx) {
     return { exitCode: 1, error: (e && e.message) ? e.message : String(e) };
   }
 }
+// A serialized facet body is evaluated in this module's scope, but runners
+// reach helpers through globalThis (the convention __rubyRun and __clangRun
+// already follow) because a direct reference to a preamble-only symbol will
+// not typecheck in the supervisor bundle the body is authored in.
+globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
+globalThis.__wasiDrainPersist    = __wasiDrainPersist;
+globalThis.__wasiRevalidateFS    = __wasiRevalidateFS;
 // ── END: wasi-instance preamble ─────────────────────────────────────────
 `;
 
