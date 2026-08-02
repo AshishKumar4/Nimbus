@@ -20,6 +20,7 @@
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
+ *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -205,6 +206,34 @@ export class SupervisorRPC extends WorkerEntrypoint {
      */
     async fsReadRange(path, offset, length) {
         return this._call(this._getStub()._rpcFsReadRange(path, offset, length, this._pid()));
+    }
+    /**
+     * Read many ranges in ONE round trip — the read-side counterpart to
+     * writeBatchStream, and for the same reason: a per-item round trip is the
+     * whole cost of a filesystem workload, not the storage lookup behind it.
+     * A file the caller knows is small is one entry; a large one is a run of
+     * entries over the same path.
+     *
+     * Entries come back positionally, each carrying exactly what the
+     * equivalent fsReadRange would have returned. The batch is bounded by
+     * FS_READ_BATCH_PATH_LIMIT paths and FS_READ_BATCH_REQUEST_BYTES of
+     * requested range, and the supervisor rejects anything past either — never
+     * a short result, which a caller could mistake for a short file.
+     */
+    async fsReadBatch(requests) {
+        // The requested total is the batch's payload ceiling: every entry
+        // returns at most the range asked for. Counting it keeps the
+        // supervisor's heap estimate honest for the duration of the await, the
+        // same accounting writeBatch does for its inbound payload.
+        const payloadBytes = requests.reduce((total, request) => total + request.length, 0);
+        setLastRpcFrame('fsReadBatch', payloadBytes);
+        rpcPayloadStart(payloadBytes);
+        try {
+            return await this._call(this._getStub()._rpcFsReadBatch(requests, this._pid()));
+        }
+        finally {
+            rpcPayloadEnd(payloadBytes);
+        }
     }
     async fsWriteRange(path, offset, bytes) {
         return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes, this._pid()));
