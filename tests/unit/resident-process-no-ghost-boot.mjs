@@ -31,6 +31,8 @@ import {
   _rpcRouteHostedHttp,
   _rpcCancelHostProcess,
 } from '../../packages/worker/src/session/rpc.ts';
+import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { readFileSync } from 'node:fs';
 
 /**
@@ -117,6 +119,11 @@ const ctx = { id: { toString: () => 'do-test' }, waitUntil: (_p) => {} };
 const processes = new SessionProcessSupervisor();
 const portRegistry = new PortRegistry();
 const fm = new FacetManager(ctx, env, processes, portRegistry, {});
+// A resident process materializes its generated module map in the session's
+// image store and boots from the path, so the manager needs the disk every
+// real session has.
+const harness = createSqliteVfsTestHarness();
+fm.setVfs(new SqliteVFS(harness.sql, harness.ctx));
 
 // ── 1. spawning evaluates the user's program exactly once ───────────────────
 const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
@@ -128,14 +135,17 @@ const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
 assert.equal(world.boots.length, 1, "spawn evaluates the user's program exactly once");
 const firstBoot = world.boots[0].id;
 
-// A node process stays on the coordinator. Its boot payload carries the
-// module map by value, and a large one exceeds the 32 MiB RPC ceiling the
-// moment it has to cross a DO boundary — pi serialized to 44,252,709 bytes
-// and died at spawn. Python and Ruby are hosted on peers instead, because
-// their images ride as VFS paths the host resolves itself. When node's boot
-// spec ships by path too, this expectation becomes 1.
-assert.equal(peerSelf._hostedProcesses.size, 0,
-  'a node process stays local while its boot spec ships by value');
+// A node process is hosted on a peer DO, like python and ruby. What made that
+// possible is that its boot spec names its module map by VFS path instead of
+// carrying it: inline, pi's serialized to 44,252,709 bytes and died at the
+// 32 MiB RPC ceiling the moment the spec had to cross a DO boundary.
+assert.equal(peerSelf._hostedProcesses.size, 1,
+  'a node process is hosted on a peer, its module map named by path');
+const spec = nleProps.find((p) => p.residentCode)?.residentCode;
+assert.equal(spec.modules['worker.js'], undefined,
+  'the generated worker does not ride inside the spec that crosses to the peer');
+assert.match(spec.vfsTextModules['worker.js'], /^\/var\/lib\/nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
+  'it is named by the digest of its own bytes, so a stale image cannot be addressed');
 
 // The route stub must be code-free — this is the property that makes a ghost
 // boot impossible rather than merely unlikely.

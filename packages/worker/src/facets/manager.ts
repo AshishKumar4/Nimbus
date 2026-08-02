@@ -39,6 +39,9 @@ import {
   getNimbusCtxExports,
   ProcessFabric,
   ResidentProcessHandle,
+  FACET_IMAGE_DIR,
+  facetImageDigest,
+  facetImagePath,
   type LoadedWorkerEntrypointStub,
   type ProcessClass,
   type ResidentBootSpec,
@@ -60,6 +63,7 @@ import {
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
 } from '../constants.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
 
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -2905,6 +2909,8 @@ export class FacetManager {
   /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
   private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
+  /** pid → the boot images its facet loads from; the image sweep's root set. */
+  private residentImages = new Map<number, string[]>();
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
@@ -3751,6 +3757,85 @@ export class FacetManager {
   }
 
   /**
+   * Materialize generated module sources in the content-addressed image store
+   * and return the `vfsTextModules` map naming them.
+   *
+   * A resident process's module map is sized by the user's disk, so it cannot
+   * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
+   * it here, once, is also what lets the coordinator stop holding it: after
+   * this returns, the only thing the DO keeps is a path.
+   *
+   * The store is written by the kernel and read by the process, so nothing
+   * here depends on which credential spawned what. Digest collisions are the
+   * hash's problem; everything else is idempotent — an image already present
+   * at its own digest is already the bytes we were about to write.
+   */
+  private async _materializeFacetImages(
+    pid: number,
+    modules: Record<string, string>,
+  ): Promise<Record<string, string>> {
+    const vfs = this.vfs;
+    if (!vfs) {
+      throw new Error(
+        'Nimbus: a resident process needs a session filesystem to materialize its boot image',
+      );
+    }
+    const fs = vfs.as(CRED_KERNEL);
+    const images: Record<string, string> = {};
+    const sources = new Map<string, string>();
+    for (const [moduleName, source] of Object.entries(modules)) {
+      const path = facetImagePath(await facetImageDigest(source));
+      images[moduleName] = path;
+      sources.set(path, source);
+    }
+    // Everything below runs without awaiting, so this process joins the
+    // sweep's root set before a concurrent spawn can sweep what it just wrote.
+    this.residentImages.set(pid, [...sources.keys()]);
+    fs.mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
+    for (const [path, source] of sources) {
+      const stored = path.replace(/^\/+/, '');
+      const bytes = new TextEncoder().encode(source);
+      // A whole-file write is atomic against the DO's single thread, so an
+      // image already present at the right size cannot be a torn one, and
+      // rewriting it would only cost the disk. Size is enough of a check here
+      // because the reader verifies the digest before the loader sees it.
+      if (fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength) continue;
+      fs.writeFile(stored, bytes, { mode: 0o644 });
+    }
+    this._sweepFacetImages(fs);
+    return images;
+  }
+
+  /**
+   * Drop every image no running process boots from.
+   *
+   * Content addressing means a changed program writes a NEW image rather than
+   * replacing one, so a watch loop — or simply a session that runs a few
+   * different programs — would otherwise leave one bundle-sized file behind
+   * per distinct version. The root set is the process table, which is exact:
+   * an image is live for precisely as long as the process that boots from it,
+   * including across a respawn onto a fresh peer, which re-reads that same
+   * image. Nothing is left for a TTL or an eviction heuristic to guess at, and
+   * after a DO reset the table is empty so every orphan goes.
+   */
+  private _sweepFacetImages(fs: CredentialedVfs): void {
+    const live = new Set<string>();
+    for (const [pid, paths] of this.residentImages) {
+      if (this.processes.get(pid)?.state === 'running') {
+        for (const path of paths) live.add(path);
+      } else {
+        this.residentImages.delete(pid);
+      }
+    }
+    let entries: { name: string }[];
+    try { entries = fs.readdir(FACET_IMAGE_DIR); } catch { return; }
+    for (const entry of entries) {
+      if (live.has(`/${FACET_IMAGE_DIR}/${entry.name}`)) continue;
+      try { fs.unlink(`${FACET_IMAGE_DIR}/${entry.name}`); } catch { /* already gone */ }
+    }
+  }
+
+  /**
    * The one way this manager boots a resident process. The caller's primitive
    * declares its own `processClass`; this method carries it to the fabric's
    * single policy point and adds nothing of its own. Everything after this
@@ -3982,16 +4067,21 @@ export class FacetManager {
    * A resident primitive: the process outlives the call, may bind a port, and
    * accumulates memory for as long as it runs.
    *
-   * Declares `light`, and the reason is ordering, not placement. A node
-   * request handler routinely writes a file and returns a response that
-   * asserts the write is already visible; `resident-node-request-vfs-durability`
-   * pins that. Locally the write and the response settle against one VFS in
-   * one workerd process. On a peer the write travels back over SUPERVISOR
-   * while the response travels forward over the route target — two independent
-   * paths — and nothing today orders them. Until that ordering is re-proven
-   * across the extra hop rather than assumed, node stays in the coordinator's
-   * process. Its image is also the cheapest of the resident runtimes, so it
-   * has the least to gain from a peer.
+   * Declares `heavy`. Its module map — the snapshot of the user's disk the
+   * facet is built from — is the largest thing Nimbus generates, and it now
+   * travels to the host by VFS path rather than inside the boot spec, which is
+   * what lets the spec cross a DO boundary at all.
+   *
+   * The other question a peer raises is ordering, and it is settled rather
+   * than assumed: a node request handler routinely writes a file and returns a
+   * response asserting the write is already visible. The handler awaits its
+   * durability boundary BEFORE the response exists, and the write goes
+   * straight to the coordinator over SUPERVISOR while only the finished
+   * response takes the extra hop back through the hosting peer — so the extra
+   * hop is entirely downstream of the write. `resident-node-peer-request-
+   * durability` proves that through the real `_rpcRouteHostedHttp` leg — the
+   * part `resident-node-request-vfs-durability` cannot see, because it drives
+   * the generated worker directly.
    */
   async spawnNode(
     code: string,
@@ -4066,14 +4156,7 @@ export class FacetManager {
 
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        // LIGHT until the boot spec ships by path rather than by value.
-        // A node process carries its module map in the boot payload, and a
-        // large one (pi: ~44 MB serialized) exceeds the 32 MiB RPC ceiling
-        // the moment that payload has to cross a DO boundary. Ruby and
-        // Python are unaffected because their images already ride as VFS
-        // paths the host resolves itself. Verified on prod: a peer-hosted
-        // node server serves correctly, and pi dies at spawn.
-        processClass: 'light',
+        processClass: 'heavy',
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
@@ -4083,11 +4166,13 @@ export class FacetManager {
             compatibilityDate: CF_COMPAT_DATE,
             compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
             mainModule: 'worker.js',
-            modules: {
+            // Only the sqlite sidecar rides by value: it is a fixed-size
+            // asset of the worker's own, not of the user's disk.
+            modules: sqliteModules,
+            vfsTextModules: await this._materializeFacetImages(entry.pid, {
               'worker.js': workerCode,
               ...generatedWorker.modules,
-              ...sqliteModules,
-            },
+            }),
           },
         },
       });

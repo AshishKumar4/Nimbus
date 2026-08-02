@@ -72,13 +72,14 @@
  *            assembled by the HOST inside a stateless NimbusLoadedEntrypoint
  *            isolate on the Worker-Loader cache-miss path, never in a session
  *            DO (which OOM-reset at the isolate cap when it did).
- *   code   — a generated module map (node / python / ruby runners). Module
- *            TEXT rides inline; wasm sidecars ride BY VFS PATH and are
- *            materialized by the HOST from the coordinator's disk. A ruby
- *            server's `ruby+stdlib.wasm` alone is 34.3 MiB — past workerd's
- *            32 MiB RPC argument limit — so shipping bytes was never an
- *            option, and resolving them host-side keeps them out of the
- *            coordinator's isolate entirely.
+ *   code   — a generated module map (node / python / ruby runners). Only
+ *            FIXED-SIZE module text rides inline; anything sized by the user's
+ *            disk rides BY VFS PATH and is materialized by the HOST from the
+ *            coordinator's disk. A ruby server's `ruby+stdlib.wasm` alone is
+ *            34.3 MiB and a node facet's disk snapshot reached 44 MB for pi —
+ *            both past workerd's 32 MiB RPC argument limit — so shipping bytes
+ *            was never an option, and resolving them host-side keeps them out
+ *            of the coordinator's isolate entirely.
  *
  * Peer topology
  * ─────────────
@@ -150,7 +151,8 @@ export type StartContract = 'lifetime' | 'boot';
 
 /**
  * A generated module map in the form that crosses a placement boundary.
- * Module TEXT rides inline; wasm images are named by VFS path and read by the
+ * Only bounded, fixed-size module text rides inline; anything whose size is a
+ * function of the user's disk is named by VFS path and read by the
  * NimbusLoadedEntrypoint that loads the facet — never by a session DO.
  */
 export const ResidentCodeSpecSchema = z.object({
@@ -158,8 +160,8 @@ export const ResidentCodeSpecSchema = z.object({
   compatibilityFlags: z.array(z.string()),
   mainModule: z.string().min(1),
   /**
-   * Inline modules: generated source text, plus small wasm sidecars that come
-   * from the worker's own ASSETS rather than the user's disk.
+   * Inline modules: fixed-size generated source, plus small wasm sidecars that
+   * come from the worker's own ASSETS rather than the user's disk.
    */
   modules: z.record(z.string(), z.union([z.string(), z.object({ wasm: z.instanceof(ArrayBuffer) })])),
   /**
@@ -169,6 +171,21 @@ export const ResidentCodeSpecSchema = z.object({
    * argument limit, so its bytes can never ride inside a boot spec.
    */
   vfsWasmModules: z.record(z.string(), z.string()).optional(),
+  /**
+   * Module name → absolute VFS path of a GENERATED module source, read as
+   * UTF-8 at load. The same by-path posture as `vfsWasmModules`, for module
+   * text whose size is a function of the user's disk.
+   *
+   * A node facet carries a snapshot of that disk, and it is the largest thing
+   * Nimbus generates: pi's is 3096 cells and inline it serialized to
+   * 44,252,709 bytes, so the boot spec died at workerd's 32 MiB RPC ceiling
+   * the moment it had to cross to a peer. That text cannot be rebuilt from the
+   * user's files on the far side either — two thirds of the cells are esbuild
+   * ESM→CJS output, and the manifest and metadata members are walks of the
+   * tree rather than files in it. So the generator materializes its output in
+   * the content-addressed image store below and the spec names it.
+   */
+  vfsTextModules: z.record(z.string(), z.string()).optional(),
 });
 
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
@@ -179,6 +196,52 @@ export const ResidentBootSpecSchema = z.discriminatedUnion('kind', [
 ]);
 
 export type ResidentBootSpec = z.infer<typeof ResidentBootSpecSchema>;
+
+// ── Boot-image store ────────────────────────────────────────────────────────
+
+/**
+ * Where a generated module source is materialized so a boot spec can name it.
+ *
+ * Outside any user working tree on purpose. The passes that build a node
+ * facet's snapshot enumerate the process's cwd, so an image written under one
+ * would be swept into the next snapshot — and that snapshot is what produced
+ * the image, so each spawn would grow the thing it just wrote.
+ *
+ * Kernel-owned and world-readable: the generator writes as CRED_KERNEL, and
+ * every process reads through a supervisor binding that enforces its own
+ * credential. Mode 0644 is what makes the read succeed for any process by
+ * construction rather than by a privilege carve-out in the permission layer,
+ * and leaves the bytes beyond reach of the user whose program they encode.
+ */
+export const FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
+
+/**
+ * An image is named by the SHA-256 of its own bytes, so its name IS its
+ * integrity check and a stale image is not something to invalidate but
+ * something that cannot be addressed: different generated text is a different
+ * path. Identical text — the same tool spawned twice, or respawned on a fresh
+ * peer after its host died — resolves to one image that is already there.
+ */
+export async function facetImageDigest(source: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function facetImagePath(digest: string): string {
+  return `/${FACET_IMAGE_DIR}/${digest}.js`;
+}
+
+/**
+ * The digest an image path claims, for the reader's verify-on-read. Content
+ * addressing only holds if the bytes are checked against the name they were
+ * fetched under; without that a truncated or overwritten image boots as
+ * silently-wrong code, which in a facet surfaces as an unattributable
+ * "Cannot find module" a long way from the corruption.
+ */
+export function facetImagePathDigest(path: string): string | null {
+  const match = /(?:^|\/)([0-9a-f]{64})\.js$/.exec(path);
+  return match ? match[1] : null;
+}
 
 /**
  * Distinct peer slots probed before accepting a co-located peer. Co-location
