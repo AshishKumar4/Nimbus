@@ -128,9 +128,14 @@ const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
 assert.equal(world.boots.length, 1, "spawn evaluates the user's program exactly once");
 const firstBoot = world.boots[0].id;
 
-// A port-binding resident process gets its own DO, and serves from it.
-assert.equal(peerSelf._hostedProcesses.size, 1,
-  'a port-binding resident process is hosted on a peer DO');
+// A node process stays on the coordinator. Its boot payload carries the
+// module map by value, and a large one exceeds the 32 MiB RPC ceiling the
+// moment it has to cross a DO boundary — pi serialized to 44,252,709 bytes
+// and died at spawn. Python and Ruby are hosted on peers instead, because
+// their images ride as VFS paths the host resolves itself. When node's boot
+// spec ships by path too, this expectation becomes 1.
+assert.equal(peerSelf._hostedProcesses.size, 0,
+  'a node process stays local while its boot spec ships by value');
 
 // The route stub must be code-free — this is the property that makes a ghost
 // boot impossible rather than merely unlikely.
