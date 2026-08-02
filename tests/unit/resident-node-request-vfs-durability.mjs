@@ -11,6 +11,13 @@ import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import {
+  _rpcHostProcessProbe,
+  _rpcHostProcess,
+  _rpcAwaitHostedBoot,
+  _rpcRouteHostedHttp,
+  _rpcCancelHostProcess,
+} from '../../packages/worker/src/session/rpc.ts';
 
 let residentCode;
 let supervisorFactory = () => ({});
@@ -30,7 +37,20 @@ setCtxExports({
   },
 });
 
+// spawnNode is heavy, so the spawn places the facet on a peer DO. The peer is
+// wired to the REAL host leg; this test then exercises the generated worker
+// directly, so placement only has to be plumbed, not simulated.
+const peerSelf = { _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
+const peerStub = {
+  _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
+  _rpcHostProcess: (boot, opts) => _rpcHostProcess(peerSelf, boot, opts),
+  _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peerSelf, key),
+  _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peerSelf, key, wire),
+  _rpcCancelHostProcess: async (key) => _rpcCancelHostProcess(peerSelf, key),
+};
+
 const env = {
+  NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => peerStub },
   LOADER: {
     load() { throw new Error('resident processes use NimbusLoadedEntrypoint'); },
     get() { throw new Error('resident processes use NimbusLoadedEntrypoint'); },

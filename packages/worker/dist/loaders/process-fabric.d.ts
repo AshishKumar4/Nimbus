@@ -39,50 +39,29 @@
  * returns the response's parts. Bodies are plain ReadableStreams both ways, so
  * nothing is buffered and an SSE or chunked body still streams live.
  *
- * STILL BROKEN, and the failure is narrower than it looked. Routing a real
- * peer-hosted `node --watch server.js` through `/s/<sid>/port/3000/` returns
- * `DataCloneError: Entrypoints to dynamically-loaded workers cannot be
- * transferred to other Workers` (reproduced 2026-07-27 on real Nimbus under
- * `wrangler dev`). What is now PROVEN about it:
- *
- *   - It is not the response. Replacing the node facet's handler with a bare
- *     `new Response("SENTINEL-OK")` fails identically, so every body/stream/
- *     buffering hypothesis was aimed at the wrong stage.
- *   - The facet is NEVER ENTERED. Logging the first line of the facet's
- *     `handleHttpRequest` produces nothing: workerd refuses to DELIVER the
- *     call. The throw is at `method.call(ep, …)` in
- *     `NimbusLoadedEntrypoint.handleHttpRequest`.
- *   - A peer CAN call into its own dynamically-loaded facet: `startProcess`
- *     on the very same facet, from the very same peer, works — the node
- *     server boots and registers its port. Only the code-free route path
- *     fails, so the DO→DO hop is not itself the problem.
- *   - Not the peer's `ctx.exports` identity (it is a first-write-wins module
- *     singleton, so a peer sharing an isolate inherits the coordinator's —
- *     genuinely wrong, worth fixing, but forcing `self.ctx.exports` changes
- *     nothing here).
- *   - Not a missing reload recipe: giving the route stub the full boot spec,
- *     so the loader callback can genuinely reconstruct the worker, changes
- *     nothing.
- *
- * A standalone probe mirroring this shape — held-open host call, the
- * SUPERVISOR doId override, a code-free route stub minted in the using
- * context, inbound HTTP in a later request, an 8 MiB facet-generated body —
- * serves byte-exact in BOTH deployed production and local `wrangler dev`. So
- * the difference lives somewhere in this worker's own
- * NimbusLoadedEntrypoint/Worker-Loader path, not in the peer topology. The
- * scheduler test below drives a MOCKED peer and never re-enters a real facet,
- * which is why it stayed green throughout.
- *
- * Until it is fixed, no primitive that binds a port may be `heavy`.
+ * This leg was broken until the route call stopped going through
+ * `Function.prototype.call`. A dynamic worker's entrypoint declares no
+ * `handleHttpRequest`, so the property resolves through workerd's RPC wildcard
+ * to a JsRpcProperty, whose prototype is NOT Function.prototype — `.call` on it
+ * extends the pipelined path instead, so `method.call(ep, request)` invoked the
+ * remote path `handleHttpRequest.call` with `ep` as its first ARGUMENT.
+ * Serializing an entrypoint to a dynamically-loaded worker is exactly what
+ * workerd refuses, so the call failed before the facet was ever entered. The
+ * coordinator never hit it because PortRegistry's target normalization prefers
+ * `fetch`, and `ep.fetch` IS a declared method whose `.call` is the real one.
+ * See `NimbusLoadedEntrypoint._callHttpHandler` in session/bindings.ts.
  *
  * Policy
  * ──────
  * One field, one policy point. Each launch primitive DECLARES a
  * `processClass` where it is defined, and `startResidentProcess` is the only
  * consumer. There is no command-name or argv matching anywhere in this file.
- * A primitive is `heavy` when it is RESIDENT (it accumulates memory over its
- * lifetime and is worth a whole workerd process) and binds no port. Exactly
- * one primitive qualifies today: the opencode attach TUI.
+ * A primitive is `heavy` when it is RESIDENT — it accumulates memory over its
+ * lifetime and is worth a whole workerd process. Binding a port is no longer a
+ * disqualifier: node servers, the python/ruby socket servers and the opencode
+ * attach TUI are all heavy. `opencode serve` is the one resident holdout, kept
+ * local until its readiness gate (in-DO `/doc` polls on a 30 s budget) has been
+ * measured across the extra hop on a deployed target.
  *
  * Boot specs
  * ──────────

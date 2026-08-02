@@ -4015,7 +4015,7 @@ export class FacetManager {
 
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        processClass: 'light',
+        processClass: 'heavy',
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
@@ -4124,7 +4124,7 @@ export class FacetManager {
     let resourcesTracked = false;
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        processClass: 'light',
+        processClass: 'heavy',
         // These runners answer startProcess with a boot payload (listening
         // port, or a completed non-server run) and stay resident after it.
         startContract: 'boot',
