@@ -120,7 +120,11 @@ const result = await fm._runOpencodeServerFacet(staged, port);
 assert.equal(loaderLoadCalled, false, 'server facet must not use the one-shot LOADER.load');
 assert.equal(loaderGetCalled, false, 'no session DO may materialize the facet config');
 assert.equal(nleProps.length, 2, 'one stage-carrying start stub + one code-free route stub');
-assert.equal(peerSelf._hostedProcesses.size, 0, 'a serving facet is never hosted on a peer');
+// A serving facet CAN now be hosted on a peer — a peer-hosted node server
+// proxies through /port/<n> end to end. `opencode serve` stays local for a
+// different reason: its readiness gate polls /doc in-DO on a fixed budget, and
+// that has not been measured across the extra hop yet.
+assert.equal(peerSelf._hostedProcesses.size, 0, 'opencode serve is hosted locally, not on a peer');
 for (const props of nleProps) {
   assert.equal(props.key, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
 }

@@ -85,10 +85,10 @@ setCtxExports({
   },
 });
 
-// The node/python/ruby spawn primitives all bind a port, and a peer-hosted
-// facet cannot be re-entered to serve inbound HTTP, so they declare `light`.
-// The peer namespace is wired to the REAL peer legs anyway, so "this never
-// reached a peer" is a live observation rather than absent plumbing.
+// The node/python/ruby spawn primitives are `heavy`: each lands on its own
+// peer DO. The peer namespace is wired to the REAL peer legs, so every routed
+// request below genuinely crosses the peer hop — the no-ghost-boot invariant
+// is asserted THROUGH that hop rather than around it.
 const peerSelf = { _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
 const peerStub = {
   _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
@@ -128,9 +128,9 @@ const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
 assert.equal(world.boots.length, 1, "spawn evaluates the user's program exactly once");
 const firstBoot = world.boots[0].id;
 
-// A server must stay in the coordinator's own process: a peer cannot serve it.
-assert.equal(peerSelf._hostedProcesses.size, 0,
-  'a port-binding resident process is hosted locally, never on a peer');
+// A port-binding resident process gets its own DO, and serves from it.
+assert.equal(peerSelf._hostedProcesses.size, 1,
+  'a port-binding resident process is hosted on a peer DO');
 
 // The route stub must be code-free — this is the property that makes a ghost
 // boot impossible rather than merely unlikely.
