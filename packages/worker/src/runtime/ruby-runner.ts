@@ -853,11 +853,22 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     'function __nimbusAdoptRubySupervisor(env) {',
     '  const supervisor = env && env.SUPERVISOR;',
     '  if (supervisor) globalThis.__nimbusRubySupervisor = supervisor;',
+    // The WASI filesystem takes the same stub. That is what turns the
+    // spawn-time seed into a cache over the session VFS, so a server that
+    // never exits still persists its writes instead of losing them entirely.
+    '  __wasiAdoptSupervisor(supervisor);',
+    '}',
+    // A resident process parks between requests, and parking is the only
+    // moment "durable while running" can be made true: by the time the caller
+    // holds a response, everything the request wrote has reached the VFS.
+    'async function __nimbusParkRuby(value) {',
+    '  await __wasiDrainPersist();',
+    '  return value;',
     '}',
     'export default class NimbusRubyProcess extends WorkerEntrypoint {',
     '  async startProcess(args) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
-    '    return __nimbusStartRubyProcess(args || {});',
+    '    return __nimbusParkRuby(await __nimbusStartRubyProcess(args || {}));',
     '  }',
     '  async fetch(request) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
@@ -868,7 +879,7 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
     '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
     '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
-    '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
+    '    return __nimbusParkRuby(await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request));',
     '  }',
     '}',
   ].join('\n');
@@ -893,26 +904,37 @@ async function dispatchRubyFacet(
   const pool = new NimbusLoaderPool(env, ctx, {
     tag: 'ruby-runner',
     concurrency: 1,
-    omitSupervisor: true,
     preamble,
   });
 
   const facetFn = async function rubyFacetCall(
     inArgs: RubyFacetCallArgs,
+    facetEnv: { SUPERVISOR?: unknown },
   ): Promise<unknown> {
     const fn = Reflect.get(globalThis, '__rubyRun');
     if (typeof fn !== 'function') {
       return { exitCode: 127, stdout: '', stderr: '',
         error: 'ruby-runner preamble missing: __rubyRun not in scope' };
     }
-    return await fn({
-      userCode: inArgs.userCode,
-      rbArgv: inArgs.rbArgv,
-      userEnv: inArgs.userEnv,
-      progName: inArgs.progName,
-      cwd: inArgs.cwd,
-      fsSnapshot: inArgs.fsSnapshot,
-    });
+    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
+      ((s: unknown) => void) | undefined;
+    const drain = Reflect.get(globalThis, '__wasiDrainPersist') as
+      (() => Promise<void>) | undefined;
+    adopt?.(facetEnv && facetEnv.SUPERVISOR);
+    try {
+      return await fn({
+        userCode: inArgs.userCode,
+        rbArgv: inArgs.rbArgv,
+        userEnv: inArgs.userEnv,
+        progName: inArgs.progName,
+        cwd: inArgs.cwd,
+        fsSnapshot: inArgs.fsSnapshot,
+      });
+    } finally {
+      // Even on a raised Ruby exception the writes that already happened are
+      // the user's data, so the drain is in `finally`, not the success path.
+      await drain?.();
+    }
   };
 
   try {
