@@ -157,3 +157,30 @@ const INIT = (extra = {}) => ({
 }
 
 console.log('wasi-live-adoption: all assertions passed');
+
+// ── 5. A park that never settles must yield an errno, never hang ────────────
+// Measured ceiling: a cross-request suspension past ~15-18s idle leaves the
+// promise permanently unsettled. Without a deadline the guest wedges silently.
+{
+  const sup = mockSupervisor();
+  // A supervisor whose read never settles is exactly the wedge case.
+  sup.fsReadRange = () => new Promise(() => {});
+  P.__wasiInitFS(INIT({
+    sizes: { 'home/user/wedge.txt': 10 },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/wedge.txt': 6 },
+  }));
+  P.__wasiAdoptSupervisor(sup);
+  const h = host();
+  const { fd } = await h.open('home/user/wedge.txt');
+  const started = Date.now();
+  const settled = await Promise.race([
+    h.read(fd).then(() => 'settled'),
+    new Promise((r) => setTimeout(() => r('HUNG'), 30000)),
+  ]);
+  assert.equal(settled, 'settled',
+    'a never-settling park must resolve to an errno rather than hang forever');
+  assert.ok(Date.now() - started < 15000,
+    'the park deadline must fire below the measured 15-18s suspension ceiling');
+}
+
+console.log('wasi-live-adoption: watchdog assertions passed');
