@@ -10,16 +10,33 @@
  * therefore reported zero forever — useless for verifying memory-
  * containment work in plan §3 Track A'.
  *
- * Replacement: a deterministic estimator that sums KNOWN supervisor heap
- * allocation sources from runtime counters that ARE accurate
- * (diag-counters.ts singleton + SqliteVFS.getStats()). Every byte has a
- * named contributor; a regression in any one component is locatable.
+ * Replacement: a deterministic estimator that sums the INSTRUMENTED
+ * supervisor heap allocation sources — runtime counters that ARE accurate
+ * (diag-counters.ts singleton + SqliteVFS.getStats()). Every byte it
+ * reports has a named contributor, so a regression in any one component
+ * is locatable.
  *
- * The estimator is INTENTIONALLY conservative: each component reports a
- * peak-or-current value, and the total may overestimate (in-flight bytes
- * are counted before they're freed; LRU bytes are the cap, not always
- * the current footprint). Better to over-report than under-report when
- * the alternative is the zero-everywhere status quo.
+ * `estimatedBytes` is a LOWER BOUND, not a total
+ * ─────────────────────────────────────────────
+ * Within each instrumented component the estimator over-reports on
+ * purpose: components carry a peak-or-current value, in-flight bytes are
+ * counted before they are freed, and LRU bytes are the cap rather than the
+ * live footprint.
+ *
+ * Across components it UNDER-reports, because it can only sum what is
+ * instrumented. Allocation sites that neither bump a diag counter nor take
+ * a lease via `acquireSupervisorAllocation` are invisible to it, and it has
+ * no way to infer their size. Observed consequence: the supervisor DO was
+ * reset three times under prefetch-bundle construction while this estimator
+ * reported a 9.4 MiB baseline and 35 KB of LRU — the bytes that actually
+ * killed it were all in sites listed in HEAP_BLIND_SPOTS below.
+ *
+ * So `estimatedBytes` and `percentOfCeiling` answer "how much of the
+ * ceiling do the instrumented sources account for", NOT "how close is the
+ * supervisor to being reset". `blindSpots` is returned alongside them so a
+ * reader cannot mistake one question for the other. Closing a blind spot
+ * means instrumenting it at its own allocation site and adding it to the
+ * breakdown — never estimating it from here.
  *
  * Eviction-label taxonomy
  * ───────────────────────
@@ -37,9 +54,11 @@
  */
 
 import {
+  BUNDLE_MAX_ENCODED_BYTES,
   PRE_BUNDLE_CONCURRENCY,
   PRE_BUNDLE_SLICE_CAP_BYTES,
   SUPERVISOR_HEAP_CEILING_BYTES,
+  VFS_BUNDLE_MAX_BYTES,
 } from '../constants.js';
 import type { DiagCounters } from './diag-counters.js';
 import {
@@ -62,18 +81,93 @@ export const WORKERD_EVICTION_LABELS = [
 ] as const;
 
 /**
+ * A supervisor allocation site the estimator cannot see.
+ *
+ * Listing one here is a statement of fact about instrumentation, not a
+ * measurement: the site allocates on the supervisor heap without bumping a
+ * diag counter or taking an `acquireSupervisorAllocation` lease, so its
+ * live size is unknown to this module. Only `capBytes` — the bound the
+ * site enforces on itself — is knowable from here.
+ */
+export interface HeapBlindSpot {
+  /** Module-qualified allocation site. */
+  source: string;
+  /**
+   * Upper bound the site enforces per retained item, or null when nothing
+   * bounds its total bytes. A null here is the important case: it means no
+   * finite worst case can be stated for the supervisor at all.
+   */
+  capBytes: number | null;
+  /** What allocates, and why the estimator cannot observe it. */
+  reason: string;
+}
+
+/**
+ * Supervisor allocation sites known to be unaccounted for.
+ *
+ * Both entries below are the prefetch-bundle path in facets/manager.ts,
+ * which contains no `acquireSupervisorAllocation` call and reports no byte
+ * counter. `breakdown.preBundleSliceBytes` does NOT cover them — that
+ * component tracks the separate pre-bundle FACET pool via
+ * `DiagCounters.preBundleFacet`, and reads 0 while these are at their peak.
+ *
+ * Closing these means instrumenting them in facets/manager.ts and moving
+ * them into HeapBreakdown. Until then they are named here so the gap is
+ * visible in /api/_diag/memory instead of being silently absent.
+ */
+export const HEAP_BLIND_SPOTS: readonly HeapBlindSpot[] = [
+  {
+    source: 'facets/manager.ts:buildPrefetchBundle',
+    capBytes: VFS_BUNDLE_MAX_BYTES,
+    reason:
+      'Accumulates raw VFS file contents into an in-heap bundle object on every '
+      + 'foreground exec. Bounded only by a function-local budgetState counter that '
+      + 'is never reported anywhere.',
+  },
+  {
+    source: 'facets/manager.ts:prefetchBundleCache',
+    capBytes: null,
+    reason:
+      'Retains up to PREFETCH_CACHE_MAX (16) FacetVfsState entries ACROSS execs, each '
+      + 'holding both the raw bundle and its serialized source plus manifest/metadata '
+      + `JSON (~${Math.round((VFS_BUNDLE_MAX_BYTES + BUNDLE_MAX_ENCODED_BYTES) / (1024 * 1024))} MiB `
+      + 'per entry at the caps). The LRU is bounded by ENTRY COUNT, not by bytes, so no '
+      + 'finite byte cap exists — 16 entries at the caps exceed the supervisor ceiling '
+      + 'many times over.',
+  },
+];
+
+/**
  * Supervisor heap snapshot. Components are PEAK-OR-CURRENT bytes from
  * runtime counters; the estimator never calls process.memoryUsage().
  */
 export interface HeapEstimate {
-  /** Sum of all components below. Always equals breakdown sum. */
+  /**
+   * Sum of the instrumented components below. Always equals the breakdown
+   * sum, and is a LOWER BOUND on supervisor heap — see `blindSpots`.
+   */
   estimatedBytes: number;
   /** SUPERVISOR_HEAP_CEILING_BYTES (constant — 64 MiB by design). */
   ceilingBytes: number;
-  /** estimatedBytes / ceilingBytes × 100, one decimal place. */
+  /**
+   * estimatedBytes / ceilingBytes × 100, one decimal place. Shares
+   * estimatedBytes' lower-bound caveat: a low value does NOT mean the
+   * supervisor has headroom, only that instrumented sources are small.
+   */
   percentOfCeiling: number;
-  /** Per-source byte attribution. */
+  /** Per-source byte attribution for the instrumented sources. */
   breakdown: HeapBreakdown;
+  /**
+   * Allocation sites this estimate does not cover. Non-empty means
+   * `estimatedBytes` cannot be read as a total. See HEAP_BLIND_SPOTS.
+   */
+  blindSpots: readonly HeapBlindSpot[];
+  /**
+   * Worst-case bytes the blind spots could add, or null when any of them
+   * is unbounded — in which case no finite worst case exists and only
+   * direct instrumentation can answer the headroom question.
+   */
+  blindSpotCeilingBytes: number | null;
   /**
    * Shared transient-allocation budget occupancy. Named contributors overlap
    * this total; any otherwise-unattributed occupancy is included in
@@ -221,6 +315,10 @@ export function estimateSupervisorHeap(
     ceilingBytes: SUPERVISOR_HEAP_CEILING_BYTES,
     percentOfCeiling,
     breakdown,
+    blindSpots: HEAP_BLIND_SPOTS,
+    blindSpotCeilingBytes: HEAP_BLIND_SPOTS.some((s) => s.capBytes === null)
+      ? null
+      : HEAP_BLIND_SPOTS.reduce((sum, s) => sum + (s.capBytes ?? 0), 0),
     allocationBudget,
   };
 }
