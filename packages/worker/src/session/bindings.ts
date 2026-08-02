@@ -618,15 +618,38 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     return new Response(readable, init);
   }
 
+  /**
+   * Invoke the facet's HTTP handler.
+   *
+   * The call must be written as `ep.method(request)`. An RPC stub's method is a
+   * JsRpcProperty, whose every property access is a WILDCARD that extends a
+   * pipelined path (`JSG_WILDCARD_PROPERTY`, workerd api/worker-rpc.h) — so
+   * `method.call(ep, request)` does NOT reach Function.prototype.call. It builds
+   * the path `handleHttpRequest.call` and invokes it remotely with `ep` as its
+   * first ARGUMENT. Serializing `ep` — an entrypoint to a dynamically-loaded
+   * worker — is what workerd refuses:
+   *
+   *   DataCloneError: Entrypoints to dynamically-loaded workers cannot be
+   *   transferred to other Workers
+   *
+   * (server.c++ `requireAllowsTransfer` → `throwDynamicEntrypointTransferError`).
+   * The facet is never entered, because the failure is in serializing the
+   * arguments, before the call is delivered.
+   */
+  private _callHttpHandler(ep: any, request: Request): Promise<Response> {
+    return typeof ep.handleHttpRequest === 'function'
+      ? ep.handleHttpRequest(request)
+      : ep.fetch(request);
+  }
+
   async handleHttpRequest(request: Request): Promise<Response> {
     const ep = await this._resolveEntrypoint({ includeSupervisor: false });
     try {
-      const method = ep.handleHttpRequest || ep.fetch;
-      if (typeof method !== 'function') {
+      if (typeof ep.handleHttpRequest !== 'function' && typeof ep.fetch !== 'function') {
         disposeRpcResource(ep);
         return new Response('Nimbus: loaded worker entrypoint has no HTTP request handler', { status: 502 });
       }
-      const response = await method.call(ep, await materializeNestedRpcRequest(request));
+      const response = await this._callHttpHandler(ep, await materializeNestedRpcRequest(request));
       return this._relayNestedRpcResponse(ep, response);
     } catch (e) {
       disposeRpcResource(ep);
