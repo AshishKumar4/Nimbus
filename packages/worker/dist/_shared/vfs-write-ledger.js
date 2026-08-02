@@ -7,8 +7,13 @@ const __vfsWriteClaims = new Map();
 const __nimbusVfsAppendRangeResult = {};
 // Operation sequences reset when this generated module is evaluated again.
 // The nonce namespaces those retries without pretending a new application
-// request is the same logical append.
-const __nimbusVfsModuleIncarnation = crypto.randomUUID();
+// request is the same logical append. Minted lazily: this source is spliced
+// into the opencode runner's module scope, where workerd forbids global-scope
+// RNG; the first append always runs in handler context.
+let __nimbusVfsModuleIncarnationNonce;
+function __nimbusVfsModuleIncarnation() {
+  return (__nimbusVfsModuleIncarnationNonce ??= crypto.randomUUID());
+}
 let __nimbusVfsAppendOperationSequence = 0;
 
 function __nimbusVfsPathKey(path) {
@@ -181,13 +186,13 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
       __nimbusBeginVfsAppendOperation(snapshot, operation);
       await supervisor.fsAppend(
         path,
-        __nimbusVfsModuleIncarnation,
+        __nimbusVfsModuleIncarnation(),
         operation.id,
         operation.bytes,
       );
       __nimbusCommitVfsAppendOperation(snapshot, operation);
       try {
-        await supervisor.fsAppendAck(__nimbusVfsModuleIncarnation, operation.id);
+        await supervisor.fsAppendAck(__nimbusVfsModuleIncarnation(), operation.id);
       } catch {
         // The client has already relinquished retry ownership after the
         // append success. A lost acknowledgement may retain a receipt, but
