@@ -13,7 +13,7 @@ import {
   listInstalledRuntimes,
   type MinShellRegistry,
 } from '../runtime/package-manager.js';
-import type { ProcessEntry } from '../runtime/process-table.js';
+import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import type { LogChunk, ProcessLogReadOptions } from '../runtime/process-logs.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry, type PortEntry } from '../runtime/port-registry.js';
@@ -628,7 +628,37 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
   self.terminal = null;
   await closeAcceptedWebSockets(self);
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
+  installEmptyProcessState(self, successorGeneration(self));
+}
+
+/**
+ * The generation the NEXT boot of this session will run as.
+ *
+ * rpcDestroy re-persists the pre-destroy generation after wiping storage,
+ * so `maybeBumpIsolateGen` reads it back and bumps once — landing here.
+ */
+function successorGeneration(self: ProgrammaticHost): number {
+  return (self._w9IsolateGen ?? 0) + 1;
+}
+
+/**
+ * Install the empty process/port state a destroyed session leaves behind.
+ *
+ * A brand-new SessionProcessSupervisor starts at pidBase 0, and
+ * `isPriorGenerationPid` (session/rpc.ts) counts a pid as prior-generation
+ * only when it is at or below that floor. Left at 0, NOTHING classifies as
+ * prior-generation — so a straggler facet spawned before the destroy lands
+ * its output, exit and stdin pump on the recreated session instead of being
+ * refused with an attributed death.
+ *
+ * Storage already gets this right: the next boot floors pids at
+ * `generation * PID_GEN_STRIDE`, which is above every pid the destroyed
+ * generation could have issued. This instance has to refuse exactly the
+ * same set for the rest of its life, so it takes the same floor.
+ */
+function installEmptyProcessState(self: ProgrammaticHost, generation: number): void {
   self.processes = new SessionProcessSupervisor();
+  self.processes.setPidBase(generation * PID_GEN_STRIDE);
   self.portRegistry = new PortRegistry();
   self._w9PersistWired = false;
 }
@@ -680,11 +710,14 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.wranglerAliasBannerShown = false;
   self._b4Phase = 'drained';
 
-  self.processes = new SessionProcessSupervisor();
-  self.portRegistry = new PortRegistry();
-  self._w9PersistWired = false;
+  // Adopt the generation the next boot will derive from the counter
+  // rpcDestroy just re-persisted, so the in-memory pid floor and the
+  // persisted one agree. Deliberately left unpersisted: storage keeps the
+  // pre-destroy value, and maybeBumpIsolateGen re-derives this one from it.
+  const generation = successorGeneration(self);
+  installEmptyProcessState(self, generation);
   self._w9SchemaInit = false;
-  self._w9IsolateGen = 0;
+  self._w9IsolateGen = generation;
   self._w9IsolateGenPersisted = false;
   try { self._w9WireProcessLogPersist?.(); } catch {}
 }
