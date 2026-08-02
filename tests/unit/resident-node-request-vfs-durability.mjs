@@ -702,7 +702,7 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
   assert.equal(calls[0].operationId, '1');
   assert.equal(calls[1].operationId, '1');
   assert.notEqual(calls[0].moduleId, calls[1].moduleId);
-  assert.notEqual(firstModule.moduleIncarnation, secondModule.moduleIncarnation);
+  assert.notEqual(firstModule.moduleIncarnation(), secondModule.moduleIncarnation());
 }
 
 // Once fsAppend succeeds, the facet relinquishes retry ownership before ACK.
