@@ -42,7 +42,7 @@ import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
-import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { flushVfsDiff, manifestVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -88,7 +88,7 @@ export function makeRubyRunnerFactory(deps: {
       return entry ? `${installRoot}/${entry.path}` : null;
     };
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
-    let fsSnapshotCache: { cred: string; cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
+    let fsSnapshotCache: { cred: string; cwd: string; revision: number; result: ReturnType<typeof manifestVfs> } | null = null;
 
     const registerGemBins = (vfs: CredentialedVfs): void => {
       if (!registry) return;
@@ -210,7 +210,14 @@ export function makeRubyRunnerFactory(deps: {
         ? fsSnapshotCache.result
         : null;
       if (!fsSnapshot) {
-        fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [defaultGemHome()] });
+        // A manifest, not a copy: sizes and modes only. The facet demand-loads
+        // the few files the program opens and writes back as it goes, so a
+        // spawn no longer pays to base64 the whole subtree — and no longer
+        // fails outright on a tree over 5000 files or 32 MiB.
+        fsSnapshot = manifestVfs(vfs, cwd, {
+          extraRoots: [defaultGemHome()],
+          revision,
+        });
         fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
       }
       if ('error' in fsSnapshot) {
@@ -1050,6 +1057,12 @@ function __nimbusInstallRubyFsSnapshot(snapshot) {
   for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
     files[String(path).replace(/^\\/+/, '')] = b64;
   }
+  // Metadata-only entries: the manifest carries each file's size and content
+  // arrives on first read. Canonicalized exactly like the content entries.
+  const sizes = {};
+  for (const [path, size] of Object.entries((snapshot && snapshot.sizes) || {})) {
+    sizes[String(path).replace(/^\\/+/, '')] = size;
+  }
   __wasiInitFS({
     root: '',
     preopens: [
@@ -1058,8 +1071,13 @@ function __nimbusInstallRubyFsSnapshot(snapshot) {
       { wasiPath: '/home', vfsPath: 'home' },
     ],
     files,
+    sizes,
     dirs: Array.from(dirs).filter(Boolean),
     modes,
+    // Forwarded, never invented here: only the producer knows whether it
+    // walked those roots completely.
+    enumeratedRoots: (snapshot && snapshot.enumeratedRoots) || [],
+    revision: snapshot && snapshot.revision,
   });
 }
 
