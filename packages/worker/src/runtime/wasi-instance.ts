@@ -2630,6 +2630,18 @@ export interface WasiFsSnapshot {
   files: Record<string, string>;
   /** Initial directory list (vfsPaths). */
   dirs: string[];
+  /**
+   * vfsPath → size for files the manifest knows but whose bytes were not
+   * seeded. First read demand-loads them through the supervisor. A seed that
+   * lists a file here instead of in `files` trades one round trip on first
+   * access for not shipping bytes the process may never open.
+   */
+  sizes?: Record<string, number>;
+  /**
+   * Files at or above this many bytes are never held resident; reads window
+   * through the supervisor instead. Defaults to 8 MiB.
+   */
+  residentFileCap?: number;
   /** Effective read/write/execute bits for the invoking process, keyed by vfsPath. */
   modes: Record<string, number>;
   /**
