@@ -145,8 +145,10 @@ const INIT = (extra = {}) => ({
   const src = buildRubySocketProcessWorker('/* preamble */');
   assert.ok(/__wasiAdoptSupervisor\(supervisor\)/.test(src),
     'ruby resident entry must hand the SUPERVISOR stub to the filesystem');
-  assert.ok(/__wasiDrainPersist\(\)/.test(src),
-    'ruby resident entry must drain queued writes');
+  // Either entry point drains: __wasiRevalidateFS drains before it checks the
+  // subtree revision. What must not happen is parking without draining.
+  assert.ok(/__wasiDrainPersist\(\)|__wasiRevalidateFS\(\)/.test(src),
+    'ruby resident entry must drain queued writes when parking');
   // A server answers requests and never exits, so the drain has to be on the
   // request path — not only on startProcess.
   const httpBody = src.slice(src.indexOf('async handleHttpRequest'));
