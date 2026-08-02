@@ -21,6 +21,8 @@
 const _counters = {
     installPhase: 'idle',
     inFlightRpcPayloadBytes: 0,
+    prefetchBundleBytes: 0,
+    prefetchCacheBytes: 0,
     installFacet: {
         tarballsCompleted: 0,
         cumulativeBytesDecoded: 0,
@@ -90,6 +92,35 @@ export function rpcPayloadEnd(bytes) {
     if (_counters.inFlightRpcPayloadBytes < 0) {
         _counters.inFlightRpcPayloadBytes = 0;
     }
+}
+/**
+ * Track an in-flight prefetch-bundle build. Call with the byte reservation the
+ * build took from the supervisor allocation budget, and pair with
+ * `prefetchBundleEnd` in the matching `finally` so it returns to zero whether
+ * the build succeeded or threw.
+ */
+export function prefetchBundleStart(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0)
+        return;
+    _counters.prefetchBundleBytes += n;
+}
+/** Release an in-flight prefetch-bundle reservation. Floors at 0. */
+export function prefetchBundleEnd(bytes) {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n <= 0)
+        return;
+    _counters.prefetchBundleBytes -= n;
+    if (_counters.prefetchBundleBytes < 0)
+        _counters.prefetchBundleBytes = 0;
+}
+/**
+ * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache
+ * owns the number and reports it whenever it admits or evicts an entry.
+ */
+export function setPrefetchCacheBytes(bytes) {
+    const n = Number(bytes);
+    _counters.prefetchCacheBytes = Number.isFinite(n) && n > 0 ? n : 0;
 }
 /** Fold facet-returned counters into the supervisor's diag state.
  *  Called by npm-installer after the batch-facet returns; aggregates

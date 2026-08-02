@@ -430,6 +430,8 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
+    /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
+    private prefetchCacheBytes;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -449,6 +451,17 @@ export declare class FacetManager {
      * stored so subsequent hits skip rebuilding them too.
      */
     private _buildPrefetchBundleCached;
+    /**
+     * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
+     * entry count and its byte bound.
+     *
+     * The count alone bounded nothing — each entry holds a raw bundle plus its
+     * serialized source, manifest and metadata, so sixteen of them could hold
+     * several times the supervisor ceiling. That is the same defect that let
+     * pi's 44 MB boot payload through: a thing sized by count when what matters
+     * is bytes.
+     */
+    private _admitPrefetchCacheEntry;
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
