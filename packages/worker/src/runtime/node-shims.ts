@@ -43,6 +43,8 @@ import { getExportsResolverJS } from '../_shared/exports-resolver.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
 import {
   FACET_PROVIDED_PACKAGES,
+  FS_READ_BATCH_PATH_LIMIT,
+  FS_READ_BATCH_REQUEST_BYTES,
   MAX_RPC_SAFE_PAYLOAD_BYTES,
   NIMBUS_AI_GATEWAY_PORT,
   NODE_VERSION,
@@ -842,6 +844,63 @@ const __fsMod = (() => {
   // multi-MB file for one RPC frame.
   const READ_STREAM_CHUNK_BYTES = 65536;
 
+  // Ranged reads issued in the same microtask turn travel as ONE batch.
+  //
+  // A round trip costs an order of magnitude more than the read behind it,
+  // so a program awaiting reads one at a time pays for round trips and
+  // nothing else. Nothing here changes what a read sees: every request is
+  // the same live ranged read, executed in order, in the caller's turn. The
+  // gather window is one microtask, so it can only capture reads the program
+  // had already issued concurrently — a sequential loop batches nothing
+  // because it has issued nothing else to batch.
+  const READ_BATCH_PATH_LIMIT = ${FS_READ_BATCH_PATH_LIMIT};
+  const READ_BATCH_REQUEST_BYTES = ${FS_READ_BATCH_REQUEST_BYTES};
+  let _openReadBatch = null;
+
+  function _queueRangeRead(supervisor, absPath, pos, want) {
+    let batch = _openReadBatch;
+    if (batch && (
+      batch.requests.length >= READ_BATCH_PATH_LIMIT
+      || batch.bytes + want > READ_BATCH_REQUEST_BYTES
+    )) {
+      _openReadBatch = null;
+      _flushReadBatch(batch);
+      batch = null;
+    }
+    if (!batch) {
+      batch = { supervisor, requests: [], settlers: [], bytes: 0 };
+      _openReadBatch = batch;
+      queueMicrotask(() => {
+        if (_openReadBatch === batch) _openReadBatch = null;
+        _flushReadBatch(batch);
+      });
+    }
+    batch.bytes += want;
+    batch.requests.push({ path: absPath, offset: pos, length: want });
+    return new Promise((resolve, reject) => { batch.settlers.push({ resolve, reject }); });
+  }
+
+  async function _flushReadBatch(batch) {
+    globalThis.__nimbusFsRpcReads++;
+    try {
+      const entries = await __nimbusUseRpcResult(
+        batch.supervisor.fsReadBatch(batch.requests), (r) => r,
+      );
+      for (let i = 0; i < batch.settlers.length; i++) {
+        const entry = entries[i];
+        if (entry && entry.error) {
+          const err = new Error(entry.error.message);
+          if (entry.error.code) err.code = entry.error.code;
+          batch.settlers[i].reject(err);
+        } else {
+          batch.settlers[i].resolve(entry ? entry.bytes : null);
+        }
+      }
+    } catch (error) {
+      for (const settler of batch.settlers) settler.reject(error);
+    }
+  }
+
   /**
    * Read \`want\` bytes at \`pos\`. Async reads always consult the live VFS.
    * A pending sync write is flushed first, so the supervisor remains the
@@ -850,6 +909,14 @@ const __fsMod = (() => {
    */
   async function _readRangeAt(absPath, displayPath, pos, want) {
     const supervisor = _supervisor();
+    if (supervisor && typeof supervisor.fsReadBatch === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor);
+      let bytes;
+      try { bytes = await _queueRangeRead(supervisor, absPath, pos, want); }
+      catch (error) { throw _mapSupervisorError(error, "read", displayPath); }
+      if (bytes === null || bytes === undefined) throw _fsErr("ENOENT", "open", displayPath);
+      return bytes.byteLength === 0 ? null : bytes;
+    }
     if (supervisor && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       const bytes = await _fsReadRpc(supervisor.fsReadRange(absPath, pos, want), "read", displayPath, (r) => r);
@@ -867,6 +934,28 @@ const __fsMod = (() => {
     throw _fsErr("ENOENT", "open", displayPath);
   }
 
+  // Every chunk of \`absPath\` from \`from\` to EOF, issued in ONE turn so the
+  // read batch carries them together. A stat bounds the walk; a chunk that
+  // comes back short or missing still ends the file, exactly as taking them
+  // one at a time did, so a file that shrank under the reader is read short
+  // rather than read wrong.
+  async function _readChunksFrom(absPath, displayPath, supervisor, from) {
+    const meta = await _fsRpc(supervisor.stat(absPath), "stat", displayPath, (result) => result);
+    const end = meta ? Number(meta.size) || 0 : 0;
+    const offsets = [];
+    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
+    const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
+      absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
+    )));
+    const parts = [];
+    for (const chunk of chunks) {
+      if (chunk === null) break;
+      parts.push(chunk);
+      if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+    }
+    return parts;
+  }
+
   async function _liveReadFile(p, opts) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
@@ -876,6 +965,14 @@ const __fsMod = (() => {
     if (typeof supervisor.fsReadRange === "function") {
       // Chunked: the caller wants the whole file, but nothing upstream has
       // to hold it all at once to produce it.
+      //
+      // A short chunk is the only signal the file ended, so this walk could
+      // only ever have one chunk in flight — 65 sequential round trips for a
+      // 4 MiB file, each costing far more than the read behind it. The FIRST
+      // chunk still costs exactly one trip and settles it for every file
+      // that fits in one. When it comes back full there is demonstrably
+      // more, and a stat says how much, so the remainder is issued together
+      // and the read batch carries it in a single trip.
       const parts = [];
       let total = 0;
       for (;;) {
@@ -884,6 +981,12 @@ const __fsMod = (() => {
         parts.push(chunk);
         total += chunk.byteLength;
         if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+        if (typeof supervisor.stat !== "function") continue;
+        for (const rest of await _readChunksFrom(absPath, p, supervisor, total)) {
+          parts.push(rest);
+          total += rest.byteLength;
+        }
+        break;
       }
       const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
       return encoding ? _asString(bytes) : __BufferMod.from(bytes);
