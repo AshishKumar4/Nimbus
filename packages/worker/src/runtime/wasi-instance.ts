@@ -69,19 +69,36 @@
  * Architecture (filesystem WASI strategy)
  * ──────────────────────────────
  *
- * Strategy: bulk-snapshot + flush. The supervisor snapshots the user's
- * session VFS subtree into a JSON-serializable {files, dirs} shape and ships
- * it as the facet argument. The facet's preamble installs
- * `__wasiInitFS(snapshot)` which builds an in-memory virtual FS keyed by
- * canonical path strings. WASI fd≥3 ops act on that VFS. After `_start`
- * returns, `__wasiSnapshotFS()` extracts the mutated state which the
- * supervisor flushes back into SqliteFS.
+ * Strategy: live VFS, seeded cache. The session VFS (supervisor DO) is the
+ * single source of truth. The facet holds a CACHE of it:
  *
- * This avoids a per-call SUPERVISOR RPC for every WASI fn (which would
- * be 5+ RPCs per cat(1) invocation; per-byte overhead). The cost is one
- * snapshot at submit-time + one flush at return. For programs touching
- * a small set of files (clang, sed, awk, etc.) this is overwhelmingly
- * the right trade-off.
+ *   - `__wasiInitFS(seed)` installs a metadata manifest (dirs, modes, sizes,
+ *     times, symlinks) plus optional file content. Content the seed did not
+ *     carry is listed in `sizes` and demand-loaded through the SUPERVISOR
+ *     binding (`fsReadRange`, 64 KiB chunks) on first read — a seed miss is
+ *     a cache miss, never a correctness failure.
+ *   - Writes apply to the cache synchronously and enqueue write-through ops
+ *     (writeFile / fsWriteRange / unlink / mkdir / rename / …) on a FIFO
+ *     persist queue that drains continuously. Callers await
+ *     `__wasiDrainPersist()` before returning a result and at every resident
+ *     park, so a server's writes are durable while it runs — there is no
+ *     flush-on-exit and no diff-back.
+ *   - Any live read (content fetch, stat miss, readdir refresh) first drains
+ *     the queue, so the supervisor's answer always includes this process's
+ *     own writes.
+ *   - A metadata miss with a supervisor present goes to a live `stat` before
+ *     reporting ENOENT, so files created after spawn are visible.
+ *
+ * Seeds are validated supervisor-side by the per-subtree VFS revision
+ * (runners rebuild the seed when the revision moved), so a served seed is
+ * never stale. Without a supervisor binding the seed is authoritative and
+ * behavior degrades to the closed-world snapshot semantics unit tests use.
+ *
+ * Blocking discipline: file/stdio ops that can be answered from the cache
+ * return a plain errno number (JSPI passes it through with no suspender, so
+ * sync callers — ruby _initialize, opentui render — are unaffected). Ops
+ * that need the supervisor return a Promise which the Suspending wrapper
+ * parks the guest on; the guest must run under WebAssembly.promising.
  *
  * Errno values (subset)
  * ─────────────────────
