@@ -4066,7 +4066,14 @@ export class FacetManager {
 
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        processClass: 'heavy',
+        // LIGHT until the boot spec ships by path rather than by value.
+        // A node process carries its module map in the boot payload, and a
+        // large one (pi: ~44 MB serialized) exceeds the 32 MiB RPC ceiling
+        // the moment that payload has to cross a DO boundary. Ruby and
+        // Python are unaffected because their images already ride as VFS
+        // paths the host resolves itself. Verified on prod: a peer-hosted
+        // node server serves correctly, and pi dies at spawn.
+        processClass: 'light',
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
