@@ -19,6 +19,7 @@ import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
+import { vfsPathExtension } from '../vfs/path.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { prefetchForRequire } from '../runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '../runtime/javascript-ast.js';
@@ -2378,7 +2379,7 @@ function __cacheKey(src) {
  */
 function _markBundleEsmAsFailed(bundle, reason) {
     for (const path of Object.keys(bundle)) {
-        if (!path.endsWith('.js') && !path.endsWith('.mjs'))
+        if (!isBundleModuleCandidate(path))
             continue;
         const src = bundle[path];
         if (typeof src !== 'string')
@@ -2392,17 +2393,29 @@ function _markBundleEsmAsFailed(bundle, reason) {
     }
 }
 /**
+ * The set of bundle entries the facet's startup pre-compile loop turns into
+ * functions, minus the ones already in the right format. Everything the loop
+ * compiles must pass through the ESM→CJS transform first: a file the loop
+ * compiles but this pass skipped reaches `new Function` as ESM source and
+ * dies there, and request-time codegen is blocked so nothing can recover it.
+ *
+ * Extensionless entries are in the set for the same reason the pre-compile
+ * loop takes them — that is the shape of nearly every npm `bin` script.
+ * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
+ * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ */
+function isBundleModuleCandidate(path) {
+    const ext = vfsPathExtension(path);
+    return ext === '.js' || ext === '.mjs' || ext === '';
+}
+/**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
  * Mutates `bundle` in place. Errors are swallowed (the file is left as
  * ESM source); the facet's pre-compile loop will record the SyntaxError
  * into __compileFailures and __loadModule will surface it (Fix C).
  *
- * Skips:
- *   - .json (esbuild can transform but there's no payoff and it's a
- *     no-op on our pre-compile loop too).
- *   - .cjs (already CJS; transform is a wash).
- *   - files that pass the regex sniff cleanly (heuristic: no top-level
- *     import/export → CJS-shaped already).
+ * Candidate set is `isBundleModuleCandidate`; within it, files with no
+ * top-level import/export are already CJS-shaped and left alone.
  *
  * Returns the count of files transformed (for diagnostics).
  */
@@ -2412,11 +2425,11 @@ async function transformEsmInBundle(bundle, esbuild) {
     // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
     const candidates = [];
     for (const path of Object.keys(bundle)) {
-        if (!path.endsWith('.js') && !path.endsWith('.mjs'))
+        if (!isBundleModuleCandidate(path))
             continue;
         const src = bundle[path];
-        // hardening-r5: binary cells (rare for .js/.mjs but defensive) are
-        // not ESM. Skip — looksLikeEsm + esbuild.transform expect strings.
+        // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
+        // esbuild.transform expect strings.
         if (typeof src !== 'string')
             continue;
         if (!looksLikeEsm(src))
