@@ -49,7 +49,7 @@
  *     workerd CSP rejects that path.
  */
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
+import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
@@ -108,22 +108,20 @@ export function formatWasmRunnerWasiInfo() {
  * inside a context that holds a precompiled Module — we don't yet
  * have one in the supervisor (CSP blocks request-time compile).
  */
-function hasWasiImports(bytes) {
-    // Recognise BOTH 'wasi_snapshot_preview1' (modern) AND
-    // 'wasi_unstable' (older WASI ABI, binji-linked binaries use this).
-    // Either substring in the wasm bytes is sufficient — WASI module-
-    // name strings are length-prefixed UTF-8 in the import section; a
-    // substring match against the raw bytes can't false-positive at the
-    // import position. False-positives elsewhere (e.g. in a data
-    // section that happens to contain "wasi_unstable" as a string
-    // literal) are harmless — the WASI shim won't be invoked unless
-    // the wasm actually has `_start` and the imports the shim provides.
+function detectWasiAbi(bytes) {
+    // Recognise BOTH 'wasi_snapshot_preview1' (modern) AND 'wasi_unstable'
+    // (preview0, what binji-linked binaries import). Which one matters: the two
+    // share every function name and every signature but disagree on fd_seek's
+    // whence constants and on the filestat layout, so binding the wrong one
+    // never traps — it silently returns wrong offsets and wrong file sizes.
+    // 'wasi_unstable' is not a substring of 'wasi_snapshot_preview1', so the
+    // two needles cannot be confused; a module carrying both is preview1.
     const enc = new TextEncoder();
     const needles = [
-        enc.encode('wasi_snapshot_preview1'),
-        enc.encode('wasi_unstable'),
+        [enc.encode('wasi_snapshot_preview1'), 'preview1'],
+        [enc.encode('wasi_unstable'), 'preview0'],
     ];
-    for (const needle of needles) {
+    for (const [needle, abi] of needles) {
         if (bytes.length < needle.length)
             continue;
         outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
@@ -131,10 +129,10 @@ function hasWasiImports(bytes) {
                 if (bytes[i + j] !== needle[j])
                     continue outer;
             }
-            return true;
+            return abi;
         }
     }
-    return false;
+    return null;
 }
 /**
  * Build a `run` function suitable for RuntimeSpec.run(). Parameterised
@@ -175,7 +173,8 @@ export function makeWasmRunner(deps) {
         // WASI mode treats every argv token as a string passed to the
         // program; direct mode treats argv[0] as export name and the rest
         // as integers.
-        const isWasi = hasWasiImports(bytes);
+        const wasiAbi = detectWasiAbi(bytes);
+        const isWasi = wasiAbi !== null;
         let exportName;
         let parsedArgs = [];
         let wasiArgv = [];
@@ -235,16 +234,17 @@ export function makeWasmRunner(deps) {
         const pool = new NimbusLoaderPool(deps.env, deps.ctx, {
             tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
             concurrency: 1,
-            // No SUPERVISOR binding required for compute-only workloads,
-            // and omitting it keeps the bindings table minimal so the
-            // facet isolate boots fast.
-            omitSupervisor: true,
+            // WASI mode needs the SUPERVISOR binding: it is what backs the
+            // filesystem with the live session VFS instead of a spawn-time copy.
+            // Direct (compute-only) mode has no filesystem at all, so it keeps the
+            // bindings table empty and the facet isolate boots fast.
+            omitSupervisor: !isWasi,
             // WASI mode: ship the WASI shim source as a module-init preamble
             // so `__wasiMakeImports` is in scope when the facet fn runs.
             // Direct mode: no preamble (saves a few KB per submit).
             preamble: isWasi ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
         });
-        const facetFn = async function wasmFacetCall(args) {
+        const facetFn = async function wasmFacetCall(args, facetEnv) {
             const wasmTable = globalThis.__NIMBUS_WASM || {};
             const mod = wasmTable['user.wasm'];
             if (!mod) {
@@ -296,31 +296,36 @@ export function makeWasmRunner(deps) {
                         files: args.wasiFs.files,
                         dirs: args.wasiFs.dirs,
                         modes: args.wasiFs.modes,
+                        sizes: args.wasiFs.sizes,
                     });
+                    // initFS resets the live state, so adoption has to follow it. From
+                    // here the seed is a cache: content it did not carry is fetched on
+                    // demand and writes go back as they happen.
+                    __wasiAdoptSupervisor(facetEnv && facetEnv.SUPERVISOR);
                 }
                 else {
                     // Minimal FS so __wasiFS isn't null when WASI fns are called.
                     initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
                 }
                 const memRef = { mem: null };
+                const abi = args.wasiAbi || 'preview1';
                 const wasi = mk({
                     argv: args.wasiArgv || [],
                     env: args.wasiEnv || {},
+                    abi,
                     getMemory: () => memRef.mem,
                 });
                 let inst;
                 try {
-                    // Both modern `wasi_snapshot_preview1` and older
-                    // `wasi_unstable` namespaces point at the SAME shim
-                    // import object. The WASI ABIs are near-identical in
-                    // function signatures (preview1 fixed fd_seek's offset
-                    // width to i64 and the `filestat` struct layout); our
-                    // shim implements preview1 and the older binji-linked
-                    // binaries are tolerant of the wider types via JS
-                    // BigInt coercion at the wasm boundary.
+                    // Bind ONLY the namespace this module actually imports, with the
+                    // import table built for that ABI. Aliasing one preview1 table onto
+                    // both names — which this did until the encodings were checked
+                    // against the binaries — gives a preview0 guest inverted fd_seek
+                    // whence and a 64-byte filestat it decodes as 56, so every lseek
+                    // lands wrong and every st_size reads back as the nlink field. The
+                    // signatures are identical, so nothing traps and nothing is logged.
                     const result = await WebAssembly.instantiate(mod, {
-                        wasi_snapshot_preview1: wasi.wasiImport,
-                        wasi_unstable: wasi.wasiImport,
+                        [WASI_ABI_NAMESPACE[abi]]: wasi.wasiImport,
                     });
                     inst = (result instanceof WebAssembly.Instance ? result : result.instance);
                 }
@@ -349,6 +354,9 @@ export function makeWasmRunner(deps) {
                 const r = runStartAsync
                     ? await runStartAsync(inst, { memory: memRef.mem })
                     : runStart(inst, { memory: memRef.mem });
+                // Writes reached the session VFS as they happened; this waits for the
+                // queue so the caller cannot observe a result before the data lands.
+                await __wasiDrainPersist();
                 const fsDiff = snapshotFS();
                 return {
                     ok: r.exitCode === 0 && !r.error,
@@ -462,7 +470,7 @@ export function makeWasmRunner(deps) {
         let outcome;
         try {
             const submitArgs = isWasi
-                ? { mode: 'wasi', wasiArgv, wasiEnv, wasiFs }
+                ? { mode: 'wasi', wasiArgv, wasiEnv, wasiAbi: wasiAbi ?? undefined, wasiFs }
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await pool.submit(facetFn, submitArgs, {
                 wasmModules: { 'user.wasm': buf },
