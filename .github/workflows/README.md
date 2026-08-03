@@ -52,6 +52,33 @@ NIMBUS_PROBE_ONLY=astro-real,sveltekit-real \
   BASE=https://nimbus-probe.ashishkmr472.workers.dev bun tests/behavioral/run-all.mjs
 ```
 
+### Without the signing secret: your own throwaway target
+
+`NIMBUS_PROBE_JWT_SECRET` is a repo secret, so it is not on your machine.
+`tests/behavioral/_throwaway-target.mjs` closes that gap: it deploys
+`apps/probe` under a disposable `nimbus-tw-*` name on `workers.dev`, gives
+it a freshly generated `JWT_SECRET`, and mints matching tokens. The
+throwaway gets its own Durable Object namespace, so it shares no session
+state with production.
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=<account>          # account pin, required
+
+eval "$(bun tests/behavioral/_throwaway-target.mjs up)"   # exports BASE + NIMBUS_PROBE_TOKEN
+bun tests/behavioral/run-all.mjs --no-retry
+
+bun tests/behavioral/_throwaway-target.mjs session   # one session: {base, sessionId, token}
+bun tests/behavioral/_throwaway-target.mjs down      # delete, and confirm it is gone
+```
+
+`up` rebuilds `packages/worker/dist` first, because wrangler bundles `dist`
+and not `src`; pass `--no-build` when you know the bundle is current.
+Tokens default to a 3-hour TTL — long enough that a probe can always still
+`DELETE` the sessions it created.
+
+Nothing here belongs on `nimbus-os.dev`. Its wildcard route serves live
+production, versioned previews included.
+
 ### Required-check setup (one-time, manual)
 
 To make `pr-strict` block merge:

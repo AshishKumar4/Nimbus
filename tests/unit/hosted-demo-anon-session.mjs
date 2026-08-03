@@ -230,4 +230,19 @@ async function expireSession(env, sessionId) {
   console.log('  [6] sandbox principals: anon:anon vs demo:<user> never collide');
 }
 
+// [7] A deployment without JWT_SECRET fails loudly and consumes no capacity.
+// The token mint runs after the capacity-guarded INSERT, so a secret checked
+// only at mint time would burn a live slot on every request until its TTL.
+{
+  const env = makeEnv({ JWT_SECRET: undefined });
+  await assert.rejects(
+    () => handleAnonSessionCreate(createRequest(), env),
+    /JWT_SECRET/,
+    'the missing secret surfaces as a thrown configuration error',
+  );
+  const count = await env.DEMO_DB.prepare('SELECT COUNT(*) AS n FROM demo_sessions').first();
+  assert.equal(count.n, 0, 'no anon slot is consumed when the secret is missing');
+  console.log('  [7] missing JWT_SECRET throws before any session row is created');
+}
+
 console.log('hosted-demo-anon-session: all tests passed');
