@@ -48,6 +48,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
+import { assertThrowawaySafe } from '../../scripts/deploy-isolation.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const PROBE_APP = join(ROOT, 'apps', 'probe');
@@ -77,6 +78,18 @@ async function up() {
   const account = requireAccountPin();
   const name = flags.name ? qualify(flags.name) : `${NAME_PREFIX}${randomSuffix()}`;
   const secret = randomSecret();
+
+  // Before wrangler is invoked at all: `--name` overrides only the name, so
+  // every binding still comes from apps/probe's config. Verify none of them
+  // resolve to a production resource rather than remembering that they do
+  // not — a probe that skipped this wrote rows into the live demo D1.
+  const isolation = assertThrowawaySafe({
+    configPath: 'apps/probe/wrangler.jsonc',
+    workerName: name,
+    root: ROOT,
+  });
+  for (const note of isolation.shared) log(`shared with production — ${note}`);
+  log(`bindings verified: ${name} resolves no production resource`);
 
   if (flags.build !== false) {
     log(`building packages/worker → dist (wrangler bundles dist, not src)`);
