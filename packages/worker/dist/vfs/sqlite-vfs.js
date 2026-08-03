@@ -273,6 +273,25 @@ export class SqliteVFS {
     // so unrelated writes no longer invalidate them. In-memory only — the
     // clock resets with the DO lifetime, exactly like the caches keyed on it.
     _pathRevisions = new Map();
+    // ── Invalidation log (facet cache coherence) ──────────────────────────
+    // A facet's resident set is a cache of this VFS, and it learns what to
+    // drop by asking `invalidatedSince(cursor)` for the delta. _pathRevisions
+    // cannot serve that: it answers "what is the watermark under here", not
+    // "what changed since when".
+    //
+    // _epoch exists because _revision is in-memory and restarts at 0 with the
+    // DO, while a facet outlives supervisor restarts. A bare revision compare
+    // fails OPEN across one: a facet holding cursor N sees the clock reset,
+    // N further writes land, and `rev === cursor` reads as "nothing changed"
+    // while every byte it holds is stale. Classic ABA, in the one direction
+    // this protocol may never fail in. An epoch never recurs, so the pair is
+    // globally monotonic. Supervisor DO resets are an observed event here,
+    // not a hypothetical.
+    _epoch = crypto.randomUUID();
+    _invalidations = [];
+    static INVALIDATION_LOG_MAX = 8192;
+    /** Identifies this supervisor incarnation. Never reused across restarts. */
+    get epoch() { return this._epoch; }
     exclusiveMutationLeases = new Map();
     activeMutationOwner = null;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -1027,16 +1046,73 @@ export class SqliteVFS {
             return this._revision;
         return this._pathRevisions.get(p) ?? 0;
     }
-    /** Advance the clock once and stamp every path + its ancestors. */
+    /**
+     * Advance the clock once, stamp every path + its ancestors, and record
+     * the mutation in the invalidation log.
+     *
+     * This is the single mutation chokepoint for coherence purposes. Five
+     * mutation paths bypass the `_writeBatchOnce` funnel — `_mkdirSingle`,
+     * `utimes`, `chmod`, `chown`, `rename` — but all of them reach here, so
+     * a hook sited anywhere else silently misses renames, which is the
+     * mutation most likely to break a build tool.
+     *
+     * The log records the mutated path AND its parent. A facet's content
+     * cells key on the exact path; its directory-shape view keys on the
+     * parent. Recording only the path would let a facet observe a file's
+     * bytes coherently while still believing the file does not exist.
+     * Recording every ancestor would cost O(depth) entries per write for no
+     * additional coverage, since no facet view keys on a grandparent.
+     */
     bumpRevision(paths) {
         const rev = ++this._revision;
         for (const path of paths) {
             let p = normalizeVfsPath(path);
+            const mutated = p;
             while (p !== '') {
                 this._pathRevisions.set(p, rev);
                 p = this.parentPath(p);
             }
+            if (mutated === '')
+                continue;
+            this._invalidations.push({ rev, path: mutated });
+            const parent = this.parentPath(mutated);
+            if (parent !== '')
+                this._invalidations.push({ rev, path: parent });
         }
+        const max = SqliteVFS.INVALIDATION_LOG_MAX;
+        if (this._invalidations.length > max) {
+            this._invalidations = this._invalidations.slice(-max);
+        }
+    }
+    /**
+     * The paths mutated since `cursor`, for a facet holding a cache stamped
+     * at `(epoch, cursor)`.
+     *
+     * Returns `poison` — meaning "drop the whole resident set" — when the
+     * caller's view cannot be repaired incrementally: a different supervisor
+     * incarnation (its revisions are unrelated to ours), or a cursor older
+     * than the retained log (entries it needed have been dropped). Both
+     * degrade to a cold cache, never to a stale byte.
+     */
+    invalidatedSince(epoch, cursor) {
+        const rev = this._revision;
+        if (epoch !== this._epoch || cursor > rev) {
+            return { epoch: this._epoch, rev, paths: [], poison: true };
+        }
+        if (cursor === rev)
+            return { epoch: this._epoch, rev, paths: [], poison: false };
+        const oldest = this._invalidations.length > 0 ? this._invalidations[0].rev : rev + 1;
+        // The log starts at rev 1; a cursor at or above the oldest retained
+        // entry minus one can still be served completely.
+        if (cursor < oldest - 1) {
+            return { epoch: this._epoch, rev, paths: [], poison: true };
+        }
+        const paths = new Set();
+        for (const entry of this._invalidations) {
+            if (entry.rev > cursor)
+                paths.add(entry.path);
+        }
+        return { epoch: this._epoch, rev, paths: [...paths], poison: false };
     }
     acquireExclusiveMutation(path, options = {}) {
         let root = normalizeVfsPath(path);

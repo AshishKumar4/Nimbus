@@ -595,6 +595,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReadlink(path, pid) { return _rpc._rpcReadlink(this, path, pid); }
     async _rpcSymlink(target, path, pid) { return _rpc._rpcSymlink(this, target, path, pid); }
     async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
+    async _rpcFsAcquire(epoch, cursor, pid) {
+        return _rpc._rpcFsAcquire(this, epoch, cursor, pid);
+    }
     async _rpcFsOpen(path, flags, pid) { return _rpc._rpcFsOpen(this, path, flags, pid); }
     async _rpcFsRead(handleId, offset, length, pid) {
         return _rpc._rpcFsRead(this, handleId, offset, length, pid);

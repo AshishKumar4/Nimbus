@@ -675,6 +675,144 @@ const __fsMod = (() => {
     globalThis.__nimbusVfsMayBeStale = true;
   }
 
+  // ══ Cache coherence: ACQUIRE + read-through fill ═════════════════════
+  //
+  // The supervisor's SQLite VFS is the only authority. Everything in this
+  // facet — __vfsBundle, __vfsMetadata, __vfsManifest, __vfsDirs — is a
+  // cache of it, and __vfsWrites is this process's own not-yet-flushed
+  // mutations.
+  //
+  // INVARIANT: a cell may be served synchronously only if no write to its
+  // path has been committed by the supervisor AND DELIVERED to this facet
+  // since the cell was fetched. Delivery happens in _acquireBarrier.
+  //
+  // WHAT THIS DOES NOT CLAIM. It is measurably false that every facet
+  // resumption carries an invalidation. Three resumptions reach a facet
+  // with no supervisor in the path, all confirmed live on a throwaway:
+  //   - a facet-local timer (setTimeout(250) advanced the clock 250 ms);
+  //   - a direct outbound fetch (the facet reaches the public internet;
+  //     LOADER.load passes no globalOutbound, so it inherits the parent
+  //     network — see facets/manager.ts and loaders/loader-pool.ts);
+  //   - an unsolicited inbound WebSocket frame pushed by an arbitrary
+  //     external server.
+  // The fetch case is barriered below, in the fetch dispatcher. The timer
+  // and WebSocket cases are NOT, and are named in _UNBARRIERED_RESUMPTIONS
+  // so the gap is greppable rather than an unstated assumption. Across
+  // those, this facet serves state as of its last supervisor reply.
+  //
+  // So the guarantee is: causal consistency, read-your-writes and
+  // monotonic reads across every supervisor-mediated channel; linearizable
+  // whenever the resumption was delivered by a supervisor reply. Nothing
+  // stronger.
+  const _UNBARRIERED_RESUMPTIONS = ["timer", "websocket-push"];
+
+  const _cursor = globalThis.__nimbusVfsCursor
+    || (globalThis.__nimbusVfsCursor = { epoch: null, rev: 0 });
+
+  // Whether any of this is working is a measurement, not an opinion: a fill
+  // rate and an invalidation count. Same shape and the same reporting path
+  // as __nimbusFsRpcReads, which the runner already folds into the exec-diag
+  // envelope — there is no reason to invent a second surface for it.
+  const _stats = globalThis.__nimbusVfsCoherence
+    || (globalThis.__nimbusVfsCoherence = { fills: 0, filledBytes: 0, invalidations: 0, poisons: 0 });
+
+  /**
+   * Drop a path from the sync CONTENT views, leaving the existence views
+   * alone.
+   *
+   * Deliberate asymmetry. An invalidation says "what you hold is no longer
+   * known-good"; it does not say whether the path was modified or removed,
+   * and the facet cannot tell them apart from the path alone. Dropping the
+   * name as well would make existsSync answer false for a file that was
+   * merely rewritten — a fabricated ENOENT, which is worse than the honest
+   * refusal, because it sends the caller down an error path built for a
+   * different condition. Keeping the name means the next sync read reports
+   * EAGAIN ("exists, not resident") and the async read that follows returns
+   * either the new bytes or a truthful ENOENT.
+   *
+   * __vfsWrites is never dropped: this process's own unflushed writes are
+   * strictly newer than anything the supervisor can report, and discarding
+   * them would break read-your-writes.
+   */
+  function _evictResident(k) {
+    let evicted = false;
+    if (__vfsBundle && k in __vfsBundle) { delete __vfsBundle[k]; evicted = true; }
+    const metadata = _metadataTable();
+    if (metadata && k in metadata) { delete metadata[k]; evicted = true; }
+    return evicted;
+  }
+
+  /**
+   * Install bytes the supervisor just served as the resident cell for a
+   * path, at the cursor they were served under.
+   *
+   * This is a correctness obligation before it is an optimization. An async
+   * read that returns v2 while leaving the resident cell at v1 makes the
+   * NEXT synchronous read go backwards in time relative to a value the
+   * program has already seen, which no amount of invalidation discipline
+   * catches — the supervisor never learns what the facet's own read
+   * returned, so it has nothing to invalidate. The bytes are already paid
+   * for; caching them costs one map insert.
+   *
+   * The parent's manifest entry gains the name too, so the existence view
+   * cannot go on denying a file whose bytes this process is holding.
+   */
+  function _installResident(absPath, bytes) {
+    if (!__vfsBundle) return;
+    const k = _strip(absPath);
+    if (k === "") return;
+    __vfsBundle[k] = bytes;
+    // Keep the stat view consistent with the bytes now held. Without this
+    // the content view is fresh while statSync still reports the
+    // spawn-time length, so a program can read N bytes and be told the
+    // file is M — an inconsistency introduced BY the fill. Only the size
+    // is corrected: type, mode, ownership and timestamps stay as the
+    // authority last reported them, so mtime-based change detection
+    // (make, tsc --build, watchers) does not see every read as a change.
+    const metadata = _metadataTable();
+    if (metadata && k in metadata) {
+      metadata[k] = { ...metadata[k], size: _byteLen(bytes) };
+    }
+    if (__vfsManifest) {
+      const slash = k.lastIndexOf("/");
+      const parent = slash >= 0 ? k.slice(0, slash) : "";
+      const name = slash >= 0 ? k.slice(slash + 1) : k;
+      const siblings = __vfsManifest[parent];
+      if (Array.isArray(siblings) && siblings.indexOf(name) === -1) siblings.push(name);
+    }
+    _stats.fills++;
+    _stats.filledBytes += _byteLen(bytes);
+  }
+
+  /**
+   * ACQUIRE. Apply every invalidation the supervisor has for this facet,
+   * then re-stamp the cursor.
+   *
+   * Awaited before the async fs operation that carries it returns, so user
+   * code never resumes holding a cell the supervisor has already told us
+   * to drop.
+   *
+   * A poison result means the delta cannot repair the view — a different
+   * supervisor incarnation, or a cursor older than the retained log — so
+   * the whole resident content view goes. That costs a cold cache; the
+   * alternative is a stale byte.
+   */
+  async function _acquireBarrier(supervisor) {
+    if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
+    let result;
+    try { result = await supervisor.fsAcquire(_cursor.epoch, _cursor.rev); }
+    catch { return; }
+    if (!result || typeof result.rev !== "number") return;
+    if (result.poison) {
+      if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) _evictResident(k);
+      _stats.poisons++;
+    } else if (Array.isArray(result.paths)) {
+      for (const k of result.paths) if (_evictResident(k)) _stats.invalidations++;
+    }
+    _cursor.epoch = result.epoch;
+    _cursor.rev = result.rev;
+  }
+
   // Directories mkdirSync created that the authority has not been told about.
   // A sync syscall cannot make an RPC, so mkdirSync can only record the
   // directory in the sync view (__vfsDirs) — and the write-back then flushed
@@ -950,6 +1088,7 @@ const __fsMod = (() => {
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
+    await _acquireBarrier(supervisor);
 
     if (typeof supervisor.fsReadRange === "function") {
       // Chunked: the caller wants the whole file, but nothing upstream has
@@ -978,6 +1117,7 @@ const __fsMod = (() => {
         break;
       }
       const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
+      _installResident(absPath, bytes);
       return encoding ? _asString(bytes) : __BufferMod.from(bytes);
     }
 
@@ -985,6 +1125,7 @@ const __fsMod = (() => {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
       if (text !== null && text !== undefined) {
+        _installResident(absPath, text);
         return encoding ? _asString(text) : __BufferMod.from(text);
       }
     }
@@ -1015,6 +1156,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.stat === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _acquireBarrier(supervisor);
       const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
       if (meta) return _statObject(meta);
       throw _fsErr("ENOENT", "stat", p);
@@ -1027,6 +1169,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.lstat === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _acquireBarrier(supervisor);
       const meta = await _fsRpc(supervisor.lstat(absPath), "lstat", p, (result) => result);
       if (meta) return _statObject(meta);
       throw _fsErr("ENOENT", "lstat", p);
@@ -1040,6 +1183,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
+      await _acquireBarrier(supervisor);
       await _flushLocalPathToSupervisor(absPath, supervisor);
       for (const localPath of Object.keys(__vfsWrites || {})) {
         if (localPath !== key && localPath.startsWith(prefix)) {

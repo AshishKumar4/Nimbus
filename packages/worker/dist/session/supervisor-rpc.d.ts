@@ -99,6 +99,23 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     unlink(path: string): Promise<void>;
     readlink(path: string): Promise<string | null>;
     symlink(target: string, path: string): Promise<void>;
+    /**
+     * ACQUIRE: the paths mutated since the facet's cursor, plus a fresh
+     * cursor. The facet drops those cells from its resident set before
+     * running further user code.
+     *
+     * A separate call rather than a field stamped onto every RPC reply:
+     * SupervisorRPC runs in a different isolate from the DO that owns the
+     * revision clock, so stamping here would cost its own round trip anyway,
+     * and enveloping the existing returns would break `useRpcResource`
+     * disposal, which targets the returned value.
+     */
+    fsAcquire(epoch: string | null, cursor: number): Promise<{
+        epoch: string;
+        rev: number;
+        paths: string[];
+        poison: boolean;
+    }>;
     fsRevision(path?: string): Promise<number>;
     fsOpen(path: string, flags: any): Promise<any>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;

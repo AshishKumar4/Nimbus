@@ -22,7 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 import { type HostedResidentProcess } from '../loaders/process-fabric.js';
-import { type RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import { type RuntimeOpenFlags, type VfsAcquireResult } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
@@ -101,6 +101,14 @@ export type FsReadBatchEntry = {
     error: FsReadBatchEntryError;
 };
 export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
+/**
+ * The facet cache-coherence barrier: what changed since `cursor`.
+ *
+ * Returned as payload, never on an Error — custom Error properties do not
+ * survive structured clone across the RPC boundary, so a cursor carried that
+ * way would silently arrive as undefined.
+ */
+export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
 /**
  * Read many ranges in ONE round trip.
