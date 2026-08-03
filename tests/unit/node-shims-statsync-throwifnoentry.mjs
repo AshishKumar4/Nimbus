@@ -13,8 +13,13 @@ const factory = new Function(
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + code + '\n;return { fs: __fsMod };'
 );
+// A bundled cell always arrives with the stat record for the same path:
+// buildVfsMetadata() runs over the final bundle, after every eviction pass,
+// so a facet cannot be handed content it has no record for.
 const sandbox = factory(
-  { 'home/user/present.txt': 'hi' }, {}, {}, {}, {}, null,
+  { 'home/user/present.txt': 'hi' },
+  { 'home/user/present.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
+  {}, {}, {}, null,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );

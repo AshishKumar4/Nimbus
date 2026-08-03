@@ -10,17 +10,28 @@ import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
+// The session's user — the credential the facet below runs as, the one its
+// supervisor executes on its behalf, and the one that owns this tree. The
+// kernel only lays the tree down and hands it over; a supervisor that went
+// on acting as root while the facet claimed to be uid 1000 would be a
+// credential fiction, and the stat records the facet reads back would
+// disagree with the ones its own writes produce.
+const OWNER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const dir = '/home/user/coherence';
 const resident = `${dir}/resident.txt`;
 const late = `${dir}/late.txt`;
 
-vfs.mkdir(dir, { recursive: true });
+const kernel = rawVfs.as(CRED_KERNEL);
+kernel.mkdir(dir, { recursive: true });
+kernel.chown(dir, OWNER.uid, OWNER.gid);
+
+const vfs = rawVfs.as(OWNER);
+const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 vfs.writeFile(resident, enc.encode('v1'));
 
 const supervisor = {
@@ -58,7 +69,7 @@ const { fs } = factory(
     'home/user/coherence': ['resident.txt'],
   },
   supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+  OWNER,
   '/home/user/coherence',
   [],
   {},
