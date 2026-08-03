@@ -5674,7 +5674,23 @@ globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specif
     return new URL(text, current ? "file:///" + current : "file:///").href;
   }
   const resolved = __resolveFrom(text, fromDir);
-  return resolved ? "file:///" + resolved.replace(/^\\/+/, "") : text;
+  // Node throws ERR_MODULE_NOT_FOUND rather than answering with the specifier
+  // it could not resolve, and packages are written against that: the standard
+  // shape is a try/catch that reports something the user can act on. Handing
+  // back the bare specifier passes the "unresolved" case off as a URL, so
+  // fileURLToPath downstream yields a path that was never on disk and the
+  // eventual error names a phantom file instead of the missing package.
+  // typescript@7 does exactly this: with the specifier echoed back it reports
+  // "Executable not found: @typescript/typescript-linux-x64/lib/tsc", where
+  // its own catch would have said the platform package is missing.
+  if (!resolved) {
+    const err = new Error(
+      "Cannot find package '" + text + "' imported from " + (current || fromDir || "<unknown>"),
+    );
+    err.code = "ERR_MODULE_NOT_FOUND";
+    throw err;
+  }
+  return "file:///" + resolved.replace(/^\\/+/, "");
 };
 
 /**
