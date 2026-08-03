@@ -18,6 +18,9 @@ import {
   _rpcRouteHostedHttp,
   _rpcCancelHostProcess,
 } from '../../packages/worker/src/session/rpc.ts';
+import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 
 let residentCode;
 let supervisorFactory = () => ({});
@@ -69,6 +72,15 @@ const ctx = { id: { toString: () => 'request-durability-test' }, waitUntil() {} 
 const processes = new SessionProcessSupervisor();
 const ports = new PortRegistry();
 const manager = new FacetManager(ctx, env, processes, ports, {});
+// The spawn materializes its generated module map in the session's image store
+// and boots from the path, so the manager needs a real disk.
+const harness = createSqliteVfsTestHarness();
+const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
+manager.setVfs(sessionVfs);
+/** The generated worker source, read back out of the image store by path. */
+const residentWorkerSource = () => sessionVfs
+  .as(CRED_KERNEL)
+  .readFileString(residentCode.vfsTextModules['worker.js'].replace(/^\/+/, ''));
 const cellText = (content) => content instanceof Uint8Array
   ? new TextDecoder().decode(content)
   : String(content);
@@ -110,7 +122,8 @@ await manager.spawnNode(userCode, {
   cwd: '/home/user',
   port: 4387,
 });
-assert.ok(residentCode?.modules?.['worker.js'], 'spawn produced a generated resident worker');
+assert.ok(residentCode?.vfsTextModules?.['worker.js'], 'spawn produced a generated resident worker');
+assert.ok(residentWorkerSource().includes('NimbusNodeProcess'), 'the image holds the generated worker');
 
 function withTestAppendAuthority(supervisor) {
   if (
@@ -1056,7 +1069,7 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
 }
 
 async function loadGeneratedWorker() {
-  const source = residentCode.modules['worker.js'].replace(
+  const source = residentWorkerSource().replace(
     'import { WorkerEntrypoint } from "cloudflare:workers";',
     'class WorkerEntrypoint { constructor(env, ctx) { this.env = env; this.ctx = ctx; } }',
   ) + `

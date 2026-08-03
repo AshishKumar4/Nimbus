@@ -139,7 +139,29 @@ interface FacetVfsState {
     serializedMetadata?: string;
     /** Move the bundle out of the main module when combined state exceeds its ceiling. */
     bundleSideModulesRequired?: boolean;
+    /**
+     * Memoized `bundleUsesNodeSqlite(entryCode, bundle)`. Answered while the raw
+     * cells are still in hand so `releaseSerializedSources` can drop them — it is
+     * the only thing anything downstream still wanted them for.
+     */
+    usesNodeSqlite?: boolean;
 }
+/**
+ * Drop the raw forms of everything that has been serialized, in place.
+ *
+ * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
+ * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
+ * a state carrying both from one carrying only the serialized halves, because
+ * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * Holding both doubles the cost of a cached entry for its whole lifetime, and
+ * that lifetime spans execs.
+ *
+ * Only for states that are about to be RETAINED. `spawnNode` and
+ * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
+ * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
+ * neither goes through here.
+ */
+export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
 interface FacetVfsBundleSource {
     expression: string;
     imports: string;
@@ -400,6 +422,8 @@ export declare class FacetManager {
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
+    /** pid → the boot images its facet loads from; the image sweep's root set. */
+    private residentImages;
     private timedOutProcessIds;
     private _pairedServeFacet;
     /**
@@ -428,6 +452,8 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
+    /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
+    private prefetchCacheBytes;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -447,6 +473,17 @@ export declare class FacetManager {
      * stored so subsequent hits skip rebuilding them too.
      */
     private _buildPrefetchBundleCached;
+    /**
+     * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
+     * entry count and its byte bound.
+     *
+     * The count alone bounded nothing — each entry holds a raw bundle plus its
+     * serialized source, manifest and metadata, so sixteen of them could hold
+     * several times the supervisor ceiling. That is the same defect that let
+     * pi's 44 MB boot payload through: a thing sized by count when what matters
+     * is bytes.
+     */
+    private _admitPrefetchCacheEntry;
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
@@ -578,6 +615,34 @@ export declare class FacetManager {
      */
     private _noteProcessPlacement;
     /**
+     * Materialize generated module sources in the content-addressed image store
+     * and return the `vfsTextModules` map naming them.
+     *
+     * A resident process's module map is sized by the user's disk, so it cannot
+     * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
+     * it here, once, is also what lets the coordinator stop holding it: after
+     * this returns, the only thing the DO keeps is a path.
+     *
+     * The store is written by the kernel and read by the process, so nothing
+     * here depends on which credential spawned what. Digest collisions are the
+     * hash's problem; everything else is idempotent — an image already present
+     * at its own digest is already the bytes we were about to write.
+     */
+    private _materializeFacetImages;
+    /**
+     * Drop every image no running process boots from.
+     *
+     * Content addressing means a changed program writes a NEW image rather than
+     * replacing one, so a watch loop — or simply a session that runs a few
+     * different programs — would otherwise leave one bundle-sized file behind
+     * per distinct version. The root set is the process table, which is exact:
+     * an image is live for precisely as long as the process that boots from it,
+     * including across a respawn onto a fresh peer, which re-reads that same
+     * image. Nothing is left for a TTL or an eviction heuristic to guess at, and
+     * after a DO reset the table is empty so every orphan goes.
+     */
+    private _sweepFacetImages;
+    /**
      * The one way this manager boots a resident process. The caller's primitive
      * declares its own `processClass`; this method carries it to the fabric's
      * single policy point and adds nothing of its own. Everything after this
@@ -626,16 +691,21 @@ export declare class FacetManager {
      * A resident primitive: the process outlives the call, may bind a port, and
      * accumulates memory for as long as it runs.
      *
-     * Declares `light`, and the reason is ordering, not placement. A node
-     * request handler routinely writes a file and returns a response that
-     * asserts the write is already visible; `resident-node-request-vfs-durability`
-     * pins that. Locally the write and the response settle against one VFS in
-     * one workerd process. On a peer the write travels back over SUPERVISOR
-     * while the response travels forward over the route target — two independent
-     * paths — and nothing today orders them. Until that ordering is re-proven
-     * across the extra hop rather than assumed, node stays in the coordinator's
-     * process. Its image is also the cheapest of the resident runtimes, so it
-     * has the least to gain from a peer.
+     * Declares `heavy`. Its module map — the snapshot of the user's disk the
+     * facet is built from — is the largest thing Nimbus generates, and it now
+     * travels to the host by VFS path rather than inside the boot spec, which is
+     * what lets the spec cross a DO boundary at all.
+     *
+     * The other question a peer raises is ordering, and it is settled rather
+     * than assumed: a node request handler routinely writes a file and returns a
+     * response asserting the write is already visible. The handler awaits its
+     * durability boundary BEFORE the response exists, and the write goes
+     * straight to the coordinator over SUPERVISOR while only the finished
+     * response takes the extra hop back through the hosting peer — so the extra
+     * hop is entirely downstream of the write. `resident-node-peer-request-
+     * durability` proves that through the real `_rpcRouteHostedHttp` leg — the
+     * part `resident-node-request-vfs-durability` cannot see, because it drives
+     * the generated worker directly.
      */
     spawnNode(code: string, opts?: {
         argv?: string[];

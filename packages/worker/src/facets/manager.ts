@@ -40,6 +40,9 @@ import {
   getNimbusCtxExports,
   ProcessFabric,
   ResidentProcessHandle,
+  FACET_IMAGE_DIR,
+  facetImageDigest,
+  facetImagePath,
   type LoadedWorkerEntrypointStub,
   type ProcessClass,
   type ResidentBootSpec,
@@ -60,7 +63,15 @@ import {
   CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
+  PREFETCH_CACHE_MAX_BYTES,
 } from '../constants.js';
+import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
+import {
+  prefetchBundleStart,
+  prefetchBundleEnd,
+  setPrefetchCacheBytes,
+} from '../observability/diag-counters.js';
 
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -1147,6 +1158,33 @@ interface FacetVfsState {
   serializedMetadata?: string;
   /** Move the bundle out of the main module when combined state exceeds its ceiling. */
   bundleSideModulesRequired?: boolean;
+  /**
+   * Memoized `bundleUsesNodeSqlite(entryCode, bundle)`. Answered while the raw
+   * cells are still in hand so `releaseSerializedSources` can drop them — it is
+   * the only thing anything downstream still wanted them for.
+   */
+  usesNodeSqlite?: boolean;
+}
+
+/**
+ * Drop the raw forms of everything that has been serialized, in place.
+ *
+ * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
+ * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
+ * a state carrying both from one carrying only the serialized halves, because
+ * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * Holding both doubles the cost of a cached entry for its whole lifetime, and
+ * that lifetime spans execs.
+ *
+ * Only for states that are about to be RETAINED. `spawnNode` and
+ * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
+ * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
+ * neither goes through here.
+ */
+export function releaseSerializedSources(vfsState: FacetVfsState): void {
+  if (vfsState.bundleSource) vfsState.bundle = {};
+  if (vfsState.serializedManifest !== undefined) vfsState.manifest = {};
+  if (vfsState.serializedMetadata !== undefined) vfsState.metadata = {};
 }
 
 interface FacetVfsBundleSource {
@@ -1191,6 +1229,31 @@ function _bundleCellLength(cell: string | Uint8Array): number {
 }
 
 type BundleCellSize = [path: string, bytes: number];
+
+/**
+ * Supervisor-heap cost of a FacetVfsState the prefetch LRU is holding on to.
+ *
+ * A cached entry retains the raw bundle AND the serialized forms built from
+ * it — source modules, manifest, metadata — so the memoization that saves the
+ * rebuild costs roughly twice the bundle. Counting only the raw cells would
+ * under-report the cache by about half, which is how a count-bounded LRU came
+ * to look affordable.
+ */
+function retainedVfsStateBytes(state: FacetVfsState): number {
+  let bytes = 0;
+  for (const [path, cell] of Object.entries(state.bundle)) {
+    bytes += path.length;
+    if (typeof cell === 'string' || cell instanceof Uint8Array) bytes += _bundleCellLength(cell);
+  }
+  const source = state.bundleSource;
+  if (source) {
+    bytes += source.expression.length + source.imports.length;
+    for (const moduleSource of Object.values(source.modules)) bytes += moduleSource.length;
+  }
+  bytes += state.serializedManifest?.length ?? 0;
+  bytes += state.serializedMetadata?.length ?? 0;
+  return bytes;
+}
 
 /**
  * UTF-8 byte length of `JSON.stringify(value)` — computed, for the string
@@ -2698,6 +2761,30 @@ export async function buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
 ): Promise<FacetVfsState> {
+  // This build accumulates raw VFS contents in the supervisor heap, and did it
+  // with nothing watching: the estimator read 9.4 MiB while these bytes were
+  // resetting the DO three times. Take the budget the enrichment passes are
+  // allowed to spend, so a build queues behind other heavy work instead of
+  // racing it, and attribute it so it lands under `prefetchBundleBytes` rather
+  // than in the unattributed remainder.
+  const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
+  prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
+  try {
+    return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile);
+  } finally {
+    prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
+    lease.release();
+  }
+}
+
+async function _buildPrefetchBundle(
+  vfs: CredentialedVfs,
+  scriptPath: string | undefined,
+  cwd: string,
+  entryCode: string,
+  esbuild?: EsbuildService,
+  bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
+): Promise<FacetVfsState> {
   // 1. Static reachable-set walk from entry.
   const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
   const bundle: Record<string, string | Uint8Array> = { ...prefetch.bundle };
@@ -2919,6 +3006,8 @@ export class FacetManager {
   /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
   private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
+  /** pid → the boot images its facet loads from; the image sweep's root set. */
+  private residentImages = new Map<number, string[]>();
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
@@ -2952,8 +3041,12 @@ export class FacetManager {
   private prefetchBundleCache = new Map<string, {
     revision: number;
     vfsState: FacetVfsState;
+    /** Retained supervisor-heap cost of this entry; the LRU's real bound. */
+    bytes: number;
   }>();
   private static readonly PREFETCH_CACHE_MAX = 16;
+  /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
+  private prefetchCacheBytes = 0;
 
   // NOTE: the opencode artifact sources (entry bundle, chunk pack, TUI worker
   // sources, wasm sidecars) are NEVER materialized on this manager — the
@@ -3028,14 +3121,61 @@ export class FacetManager {
     );
     vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
     vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
+    // The only consumer of the raw cells past this point is a single boolean,
+    // so answer it now rather than hold ~17 MB (pi) to answer it later.
+    vfsState.usesNodeSqlite = bundleUsesNodeSqlite(entryCode, vfsState.bundle);
     vfsState.cacheHit = false;
 
-    this.prefetchBundleCache.set(key, { revision, vfsState });
-    if (this.prefetchBundleCache.size > FacetManager.PREFETCH_CACHE_MAX) {
-      const oldest = this.prefetchBundleCache.keys().next().value;
-      if (oldest !== undefined) this.prefetchBundleCache.delete(oldest);
-    }
+    // Serialization is total: bundleSource/serializedManifest/serializedMetadata
+    // carry every byte the raw cells and objects do, and generateEntrypointCode
+    // reads only the serialized forms. Retaining both doubled what an entry
+    // costs for its whole lifetime — measured for pi at 502af77, per entry:
+    // raw 17,253,610 + source 18,262,324 + manifest 600,060 + metadata
+    // 3,841,244 = 39,957,238 B, of which the raw halves are 21,694,914 B held
+    // to answer `usesNodeSqlite`. Dropping them is a pure release: nothing
+    // downstream of this method reads them, and a cache MISS rebuilds from the
+    // VFS rather than from anything discarded here.
+    //
+    // Released BEFORE admission so the byte bound prices what the entry costs
+    // from here on, not the peak it passed through on the way in.
+    releaseSerializedSources(vfsState);
+    this._admitPrefetchCacheEntry(key, revision, vfsState);
     return vfsState;
+  }
+
+  /**
+   * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
+   * entry count and its byte bound.
+   *
+   * The count alone bounded nothing — each entry holds a raw bundle plus its
+   * serialized source, manifest and metadata, so sixteen of them could hold
+   * several times the supervisor ceiling. That is the same defect that let
+   * pi's 44 MB boot payload through: a thing sized by count when what matters
+   * is bytes.
+   */
+  private _admitPrefetchCacheEntry(
+    key: string,
+    revision: number,
+    vfsState: FacetVfsState,
+  ): void {
+    const previous = this.prefetchBundleCache.get(key);
+    if (previous) this.prefetchCacheBytes -= previous.bytes;
+    const bytes = retainedVfsStateBytes(vfsState);
+    this.prefetchBundleCache.delete(key);
+    this.prefetchBundleCache.set(key, { revision, vfsState, bytes });
+    this.prefetchCacheBytes += bytes;
+    for (const [oldest, entry] of this.prefetchBundleCache) {
+      if (
+        this.prefetchBundleCache.size <= FacetManager.PREFETCH_CACHE_MAX
+        && this.prefetchCacheBytes <= PREFETCH_CACHE_MAX_BYTES
+      ) break;
+      // The entry just admitted is the one the caller is about to use; a
+      // bundle bigger than the whole bound evicts everything else and stays.
+      if (oldest === key) continue;
+      this.prefetchBundleCache.delete(oldest);
+      this.prefetchCacheBytes -= entry.bytes;
+    }
+    setPrefetchCacheBytes(this.prefetchCacheBytes);
   }
 
   /**
@@ -3301,7 +3441,9 @@ export class FacetManager {
     signal: AbortSignal,
     diagSink?: { loadMs: number; runMs: number; moduleMapBytes: number },
   ): Promise<FacetExecResult> {
-    const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
+    // Answered by _buildPrefetchBundleCached while the raw cells were still in
+    // hand; re-deriving it here is what forced them to be retained.
+    const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
     const [sqliteModules, shims] = await Promise.all([
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeShimsCode(this.env),
@@ -3765,6 +3907,85 @@ export class FacetManager {
   }
 
   /**
+   * Materialize generated module sources in the content-addressed image store
+   * and return the `vfsTextModules` map naming them.
+   *
+   * A resident process's module map is sized by the user's disk, so it cannot
+   * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
+   * it here, once, is also what lets the coordinator stop holding it: after
+   * this returns, the only thing the DO keeps is a path.
+   *
+   * The store is written by the kernel and read by the process, so nothing
+   * here depends on which credential spawned what. Digest collisions are the
+   * hash's problem; everything else is idempotent — an image already present
+   * at its own digest is already the bytes we were about to write.
+   */
+  private async _materializeFacetImages(
+    pid: number,
+    modules: Record<string, string>,
+  ): Promise<Record<string, string>> {
+    const vfs = this.vfs;
+    if (!vfs) {
+      throw new Error(
+        'Nimbus: a resident process needs a session filesystem to materialize its boot image',
+      );
+    }
+    const fs = vfs.as(CRED_KERNEL);
+    const images: Record<string, string> = {};
+    const sources = new Map<string, string>();
+    for (const [moduleName, source] of Object.entries(modules)) {
+      const path = facetImagePath(await facetImageDigest(source));
+      images[moduleName] = path;
+      sources.set(path, source);
+    }
+    // Everything below runs without awaiting, so this process joins the
+    // sweep's root set before a concurrent spawn can sweep what it just wrote.
+    this.residentImages.set(pid, [...sources.keys()]);
+    fs.mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
+    for (const [path, source] of sources) {
+      const stored = path.replace(/^\/+/, '');
+      const bytes = new TextEncoder().encode(source);
+      // A whole-file write is atomic against the DO's single thread, so an
+      // image already present at the right size cannot be a torn one, and
+      // rewriting it would only cost the disk. Size is enough of a check here
+      // because the reader verifies the digest before the loader sees it.
+      if (fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength) continue;
+      fs.writeFile(stored, bytes, { mode: 0o644 });
+    }
+    this._sweepFacetImages(fs);
+    return images;
+  }
+
+  /**
+   * Drop every image no running process boots from.
+   *
+   * Content addressing means a changed program writes a NEW image rather than
+   * replacing one, so a watch loop — or simply a session that runs a few
+   * different programs — would otherwise leave one bundle-sized file behind
+   * per distinct version. The root set is the process table, which is exact:
+   * an image is live for precisely as long as the process that boots from it,
+   * including across a respawn onto a fresh peer, which re-reads that same
+   * image. Nothing is left for a TTL or an eviction heuristic to guess at, and
+   * after a DO reset the table is empty so every orphan goes.
+   */
+  private _sweepFacetImages(fs: CredentialedVfs): void {
+    const live = new Set<string>();
+    for (const [pid, paths] of this.residentImages) {
+      if (this.processes.get(pid)?.state === 'running') {
+        for (const path of paths) live.add(path);
+      } else {
+        this.residentImages.delete(pid);
+      }
+    }
+    let entries: { name: string }[];
+    try { entries = fs.readdir(FACET_IMAGE_DIR); } catch { return; }
+    for (const entry of entries) {
+      if (live.has(`/${FACET_IMAGE_DIR}/${entry.name}`)) continue;
+      try { fs.unlink(`${FACET_IMAGE_DIR}/${entry.name}`); } catch { /* already gone */ }
+    }
+  }
+
+  /**
    * The one way this manager boots a resident process. The caller's primitive
    * declares its own `processClass`; this method carries it to the fabric's
    * single policy point and adds nothing of its own. Everything after this
@@ -3996,16 +4217,21 @@ export class FacetManager {
    * A resident primitive: the process outlives the call, may bind a port, and
    * accumulates memory for as long as it runs.
    *
-   * Declares `light`, and the reason is ordering, not placement. A node
-   * request handler routinely writes a file and returns a response that
-   * asserts the write is already visible; `resident-node-request-vfs-durability`
-   * pins that. Locally the write and the response settle against one VFS in
-   * one workerd process. On a peer the write travels back over SUPERVISOR
-   * while the response travels forward over the route target — two independent
-   * paths — and nothing today orders them. Until that ordering is re-proven
-   * across the extra hop rather than assumed, node stays in the coordinator's
-   * process. Its image is also the cheapest of the resident runtimes, so it
-   * has the least to gain from a peer.
+   * Declares `heavy`. Its module map — the snapshot of the user's disk the
+   * facet is built from — is the largest thing Nimbus generates, and it now
+   * travels to the host by VFS path rather than inside the boot spec, which is
+   * what lets the spec cross a DO boundary at all.
+   *
+   * The other question a peer raises is ordering, and it is settled rather
+   * than assumed: a node request handler routinely writes a file and returns a
+   * response asserting the write is already visible. The handler awaits its
+   * durability boundary BEFORE the response exists, and the write goes
+   * straight to the coordinator over SUPERVISOR while only the finished
+   * response takes the extra hop back through the hosting peer — so the extra
+   * hop is entirely downstream of the write. `resident-node-peer-request-
+   * durability` proves that through the real `_rpcRouteHostedHttp` leg — the
+   * part `resident-node-request-vfs-durability` cannot see, because it drives
+   * the generated worker directly.
    */
   async spawnNode(
     code: string,
@@ -4080,14 +4306,7 @@ export class FacetManager {
 
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        // LIGHT until the boot spec ships by path rather than by value.
-        // A node process carries its module map in the boot payload, and a
-        // large one (pi: ~44 MB serialized) exceeds the 32 MiB RPC ceiling
-        // the moment that payload has to cross a DO boundary. Ruby and
-        // Python are unaffected because their images already ride as VFS
-        // paths the host resolves itself. Verified on prod: a peer-hosted
-        // node server serves correctly, and pi dies at spawn.
-        processClass: 'light',
+        processClass: 'heavy',
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
@@ -4097,11 +4316,13 @@ export class FacetManager {
             compatibilityDate: CF_COMPAT_DATE,
             compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
             mainModule: 'worker.js',
-            modules: {
+            // Only the sqlite sidecar rides by value: it is a fixed-size
+            // asset of the worker's own, not of the user's disk.
+            modules: sqliteModules,
+            vfsTextModules: await this._materializeFacetImages(entry.pid, {
               'worker.js': workerCode,
               ...generatedWorker.modules,
-              ...sqliteModules,
-            },
+            }),
           },
         },
       });
