@@ -7,6 +7,7 @@ import type {
   RuntimeOpenFlags,
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
+  VfsAcquireResult,
 } from './os-contracts.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -346,6 +347,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (path === undefined) return this.rawVfs.revision();
     const p = this.resolveDataPath(path, true) ?? normalizeVfsPath(path);
     return this.rawVfs.revision(p);
+  }
+
+  async acquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult> {
+    return this.rawVfs.invalidatedSince(epoch, cursor);
   }
 
   subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
