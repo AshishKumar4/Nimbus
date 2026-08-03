@@ -78,12 +78,7 @@ export type SessionAiResolution = {
     ok: false;
     reason: SessionAiUnavailable;
 };
-declare const StoredCredentialSchema: z.ZodObject<{
-    accessToken: z.ZodString;
-    refreshToken: z.ZodOptional<z.ZodString>;
-    accountId: z.ZodNullable<z.ZodString>;
-    expiresAt: z.ZodNullable<z.ZodNumber>;
-}, z.core.$strip>;
+declare const StoredCredentialSchema: any;
 type StoredCredential = z.infer<typeof StoredCredentialSchema>;
 /** Base URL of the in-session endpoint. The one true address of this gateway. */
 export declare function sessionAiBaseUrl(): string;

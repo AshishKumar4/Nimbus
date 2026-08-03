@@ -52,27 +52,7 @@ export declare class NimbusAssetsRPC extends WorkerEntrypoint {
      */
     fetch(request: Request): Promise<Response>;
 }
-declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
-    key: z.ZodString;
-    name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    depth: z.ZodOptional<z.ZodNumber>;
-    code: z.ZodOptional<z.ZodUnknown>;
-    supervisor: z.ZodOptional<z.ZodObject<{
-        doId: z.ZodString;
-        pid: z.ZodNumber;
-        writerId: z.ZodString;
-    }, z.core.$strip>>;
-    stage: z.ZodOptional<z.ZodUnknown>;
-    residentCode: z.ZodOptional<z.ZodObject<{
-        compatibilityDate: z.ZodString;
-        compatibilityFlags: z.ZodArray<z.ZodString>;
-        mainModule: z.ZodString;
-        modules: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
-            wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
-        }, z.core.$strip>]>>;
-        vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-    }, z.core.$strip>>;
-}, z.core.$loose>;
+declare const NimbusLoadedEntrypointPropsSchema: any;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
  * Diagnostic surface for /api/_diag/memory. Returns a snapshot of

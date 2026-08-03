@@ -2643,10 +2643,18 @@ function __wasiMakeImports(opts) {
     // (await reader.read()). Same Suspending shape as sock_*.
     imports.poll_oneoff   = new WebAssembly.Suspending(imports.poll_oneoff);
     // fd_read/fd_write become suspending too: a socket fd routes to the
-    // async sock bodies (Promise → JSPI suspends). File/stdio ops return a
-    // plain errno number, which JSPI passes straight through with no
-    // suspender required — so sync callers (ruby _initialize, opentui
-    // render) that only touch files/stdio are unaffected.
+    // async sock bodies (Promise → JSPI suspends).
+    //
+    // CAUTION — this was measured the hard way. Wrapping an import in
+    // Suspending makes it unsafe to call from ANY stack not under
+    // WebAssembly.promising, EVEN WHEN the import returns a plain integer:
+    // V8 requires the suspender to exist at call time, not merely when a
+    // Promise comes back (proven with a hand-assembled module whose import
+    // returned 42 and still trapped). An earlier version of this comment
+    // claimed sync file/stdio callers were unaffected. They are not, and
+    // that mistake is what broke ruby in production — its boot path stats
+    // five paths on a raw stack. Every export that can reach these imports
+    // must go through promising.
     imports.fd_read       = new WebAssembly.Suspending(imports.fd_read);
     imports.fd_write      = new WebAssembly.Suspending(imports.fd_write);
     // fd_pread reaches the same file bodies as fd_read and so can equally

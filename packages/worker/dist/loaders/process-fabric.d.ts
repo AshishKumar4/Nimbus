@@ -144,50 +144,9 @@ export type StartContract = 'lifetime' | 'boot';
  * Module TEXT rides inline; wasm images are named by VFS path and read by the
  * NimbusLoadedEntrypoint that loads the facet — never by a session DO.
  */
-export declare const ResidentCodeSpecSchema: z.ZodObject<{
-    compatibilityDate: z.ZodString;
-    compatibilityFlags: z.ZodArray<z.ZodString>;
-    mainModule: z.ZodString;
-    modules: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
-        wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
-    }, z.core.$strip>]>>;
-    vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-}, z.core.$strip>;
+export declare const ResidentCodeSpecSchema: any;
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
-export declare const ResidentBootSpecSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
-    kind: z.ZodLiteral<"staged">;
-    stage: z.ZodObject<{
-        mode: z.ZodEnum<{
-            oneshot: "oneshot";
-            attached: "attached";
-            server: "server";
-        }>;
-        argv: z.ZodArray<z.ZodString>;
-        env: z.ZodRecord<z.ZodString, z.ZodString>;
-        cred: z.ZodObject<{
-            uid: z.ZodNumber;
-            gid: z.ZodNumber;
-            groups: z.ZodArray<z.ZodNumber>;
-            umask: z.ZodNumber;
-        }, z.core.$strip>;
-        cwd: z.ZodString;
-        stdin: z.ZodString;
-        vfsBundle: z.ZodString;
-        vfsManifest: z.ZodString;
-        vfsMetadata: z.ZodString;
-    }, z.core.$strip>;
-}, z.core.$strip>, z.ZodObject<{
-    kind: z.ZodLiteral<"code">;
-    code: z.ZodObject<{
-        compatibilityDate: z.ZodString;
-        compatibilityFlags: z.ZodArray<z.ZodString>;
-        mainModule: z.ZodString;
-        modules: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
-            wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
-        }, z.core.$strip>]>>;
-        vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-    }, z.core.$strip>;
-}, z.core.$strip>], "kind">;
+export declare const ResidentBootSpecSchema: any;
 export type ResidentBootSpec = z.infer<typeof ResidentBootSpecSchema>;
 /**
  * Distinct peer slots probed before accepting a co-located peer. Co-location
