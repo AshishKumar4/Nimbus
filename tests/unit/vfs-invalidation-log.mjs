@@ -80,3 +80,35 @@ assert.equal(
 );
 
 console.log('vfs-invalidation-log: all assertions passed');
+
+// The log is bounded by BYTES, not entry count. An entry-count bound is not
+// a bound: paths are unbounded in length, so N entries permit unbounded
+// memory — in the supervisor DO, which is the memory-constrained side and
+// has been observed resetting under allocation pressure. Overflowing it must
+// stay safe (poison, cold cache) rather than grow without limit.
+{
+  const h2 = createSqliteVfsTestHarness();
+  const raw2 = new SqliteVFS(h2.sql, h2.ctx);
+  const v2 = raw2.as(CRED_KERNEL);
+  const deep = 'home/user/' + 'x'.repeat(200);
+  v2.mkdir('/' + deep, { recursive: true });
+  const base = raw2.invalidatedSince(null, 0);
+  for (let i = 0; i < 4000; i++) {
+    v2.writeFile(`/${deep}/f${i}-${'y'.repeat(120)}.txt`, enc.encode('z'));
+  }
+  const after = raw2.invalidatedSince(base.epoch, base.rev);
+  assert.equal(after.poison, true, 'a cursor older than the retained log poisons');
+  // 4000 writes x ~350 B/entry x 2 entries would be ~2.8 MB unbounded.
+  const held = raw2._invalidationBytes;
+  assert.ok(held <= 256 * 1024, `log stays within its byte budget, held=${held}`);
+  // Still correct after eviction: a fresh cursor sees subsequent writes.
+  const fresh = raw2.invalidatedSince(after.epoch, after.rev);
+  assert.deepEqual(fresh.paths, [], 'fresh cursor is clean');
+  v2.writeFile(`/${deep}/after.txt`, enc.encode('q'));
+  assert.ok(
+    raw2.invalidatedSince(fresh.epoch, fresh.rev).paths.includes(`${deep}/after.txt`),
+    'log still tracks writes after eviction',
+  );
+}
+
+console.log('vfs-invalidation-log: byte bound assertions passed');
