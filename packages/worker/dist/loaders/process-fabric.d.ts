@@ -72,13 +72,14 @@
  *            assembled by the HOST inside a stateless NimbusLoadedEntrypoint
  *            isolate on the Worker-Loader cache-miss path, never in a session
  *            DO (which OOM-reset at the isolate cap when it did).
- *   code   — a generated module map (node / python / ruby runners). Module
- *            TEXT rides inline; wasm sidecars ride BY VFS PATH and are
- *            materialized by the HOST from the coordinator's disk. A ruby
- *            server's `ruby+stdlib.wasm` alone is 34.3 MiB — past workerd's
- *            32 MiB RPC argument limit — so shipping bytes was never an
- *            option, and resolving them host-side keeps them out of the
- *            coordinator's isolate entirely.
+ *   code   — a generated module map (node / python / ruby runners). Only
+ *            FIXED-SIZE module text rides inline; anything sized by the user's
+ *            disk rides BY VFS PATH and is materialized by the HOST from the
+ *            coordinator's disk. A ruby server's `ruby+stdlib.wasm` alone is
+ *            34.3 MiB and a node facet's disk snapshot reached 44 MB for pi —
+ *            both past workerd's 32 MiB RPC argument limit — so shipping bytes
+ *            was never an option, and resolving them host-side keeps them out
+ *            of the coordinator's isolate entirely.
  *
  * Peer topology
  * ─────────────
@@ -141,7 +142,8 @@ export type ProcessClass = 'light' | 'heavy';
 export type StartContract = 'lifetime' | 'boot';
 /**
  * A generated module map in the form that crosses a placement boundary.
- * Module TEXT rides inline; wasm images are named by VFS path and read by the
+ * Only bounded, fixed-size module text rides inline; anything whose size is a
+ * function of the user's disk is named by VFS path and read by the
  * NimbusLoadedEntrypoint that loads the facet — never by a session DO.
  */
 export declare const ResidentCodeSpecSchema: z.ZodObject<{
@@ -152,6 +154,7 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
         wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
     }, z.core.$strip>]>>;
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
 }, z.core.$strip>;
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
 export declare const ResidentBootSpecSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
@@ -186,9 +189,52 @@ export declare const ResidentBootSpecSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
             wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
         }, z.core.$strip>]>>;
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     }, z.core.$strip>;
 }, z.core.$strip>], "kind">;
 export type ResidentBootSpec = z.infer<typeof ResidentBootSpecSchema>;
+/**
+ * Where a generated module source is materialized so a boot spec can name it.
+ *
+ * Outside any user working tree on purpose. The passes that build a node
+ * facet's snapshot enumerate the process's cwd, so an image written under one
+ * would be swept into the next snapshot — and that snapshot is what produced
+ * the image, so each spawn would grow the thing it just wrote.
+ *
+ * Kernel-owned and world-readable: the generator writes as CRED_KERNEL, and
+ * every process reads through a supervisor binding that enforces its own
+ * credential. Mode 0644 is what makes the read succeed for any process by
+ * construction rather than by a privilege carve-out in the permission layer,
+ * and leaves the bytes beyond reach of the user whose program they encode.
+ */
+export declare const FACET_IMAGE_DIR = "var/lib/nimbus/facet-images";
+/**
+ * An image is named by the SHA-256 of its own bytes, so its name IS its
+ * integrity check and a stale image is not something to invalidate but
+ * something that cannot be addressed: different generated text is a different
+ * path.
+ *
+ * What that actually dedups, measured on a deployed worker rather than
+ * assumed: a RESPAWN resolves to the image already there, because the fabric
+ * replays one unchanged boot spec onto the fresh peer — and that is the case
+ * correctness depends on. Two separate spawns of the same tool do NOT,
+ * whenever the generated text carries anything per-process: an attached-TTY
+ * spawn bakes `NIMBUS_CP_CHILD_PID` into `__NIMBUS_ARGS`, so `pi` twice wrote
+ * two images (2c3a90ad… then c5b74f1a…). A spawn with no attached TTY has no
+ * pid in its args and does dedup. Lifting argv/env/pid out of the generated
+ * text into `startArgs` would make every image per-PROGRAM and shareable
+ * across spawns and sessions; the sweep bounds the store either way.
+ */
+export declare function facetImageDigest(source: string): Promise<string>;
+export declare function facetImagePath(digest: string): string;
+/**
+ * The digest an image path claims, for the reader's verify-on-read. Content
+ * addressing only holds if the bytes are checked against the name they were
+ * fetched under; without that a truncated or overwritten image boots as
+ * silently-wrong code, which in a facet surfaces as an unattributable
+ * "Cannot find module" a long way from the corruption.
+ */
+export declare function facetImagePathDigest(path: string): string | null;
 /**
  * Distinct peer slots probed before accepting a co-located peer. Co-location
  * is rare (probe: 1 shared pair in 24 fresh peers), so 4 attempts make an
