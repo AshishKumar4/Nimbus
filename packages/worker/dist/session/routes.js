@@ -30,6 +30,7 @@ import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, 
 import { readDiagCounters } from '../observability/diag-counters.js';
 import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '../observability/oom-discriminator.js';
 import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '../constants.js';
+import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '../observability/heap-estimate.js';
 import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
@@ -146,13 +147,36 @@ async function restorePersistedDevServer(self, onlyPort) {
  * `/preview/?port=N`, and the `<port>--<sid>` preview hostname, which the
  * router forwards as `/port/<n>/`. They differ only in how the port and the
  * inner path are spelled, so they must not differ in what answers.
+ *
+ * `mountBase` is the public URL prefix the served app is mounted at for THIS
+ * request — '' for a root-mounted `<port>--<sid>` host, '/s/<sid>/preview' for
+ * the preview path. The in-process Cirrus dev server rewrites base-relative
+ * URLs (module URLs, <base href>, BASE_URL, router basename), so it is handed
+ * the base directly: the generic port proxy strips the Nimbus base header at
+ * the untrusted-code boundary and cannot carry it, and a plain user server on
+ * any other port is mounted at root and needs no rewriting.
  */
-async function routeToSessionPort(self, port, request, innerPath) {
+async function routeToSessionPort(self, port, request, innerPath, mountBase) {
     await restorePersistedDevServer(self, port);
+    if (port === self._viteShimPort && self.viteDevServer?.isRunning) {
+        return self.viteDevServer.handleRequest(request, innerPath, mountBase);
+    }
     const proxied = await self.portRegistry.routeRequest(port, request, innerPath);
     if (proxied)
         return proxied;
     return new Response(`No process listening on port ${port}`, { status: 502 });
+}
+/**
+ * The public URL prefix a port-routed request is mounted at. `<port>--<sid>`
+ * hosts arrive with an empty base header (mounted at the origin root); the
+ * path form `/s/<sid>/port/<n>/` arrives with `/s/<sid>` and mounts under
+ * `/s/<sid>/port/<n>`. Either way the base is a property of the door, read
+ * from the header the router set — never the sticky sessionBasePath, which a
+ * concurrent path request could have left pointing elsewhere.
+ */
+function portRouteMountBase(request, port) {
+    const header = request.headers.get(BASE_PATH_HEADER);
+    return header ? `${header}/port/${port}` : '';
 }
 const RecoveryEventRecordBodySchema = z.object({
     at: z.coerce.number().optional(),
@@ -996,7 +1020,9 @@ export async function handleFetch(self, request) {
                 const q = sp.toString();
                 return q ? '?' + q : '';
             })();
-            return routeToSessionPort(self, queryPort, request, previewInner);
+            // `/preview/?port=N` is the session preview path: assets it serves
+            // are fetched relative to `/s/<sid>/preview/`, so that is the mount.
+            return routeToSessionPort(self, queryPort, request, previewInner, self.viteBasePath);
         }
         // ── Real-vite takes precedence if running ───────────────────────
         // Cirrus shim and real-vite are mutually exclusive per session.
@@ -1038,7 +1064,9 @@ export async function handleFetch(self, request) {
         await restorePersistedDevServer(self);
         if (self.viteDevServer?.isRunning) {
             const previewPath = (url.pathname.replace(/^\/preview/, '') || '/') + url.search;
-            return self.viteDevServer.handleRequest(request, previewPath);
+            // Bare `/preview/` is the session preview path — mounted at
+            // `/s/<sid>/preview`.
+            return self.viteDevServer.handleRequest(request, previewPath, self.viteBasePath);
         }
         // Polished placeholder — auto-reloads when vite starts.
         // Checks the VFS for the starter app so we can offer a context-aware hint.
@@ -1137,7 +1165,7 @@ export async function handleFetch(self, request) {
     if (portMatch) {
         const port = parseInt(portMatch[1]);
         const path = normalizeForwardedHttpPath(portMatch[2] || '/');
-        return routeToSessionPort(self, port, request, path);
+        return routeToSessionPort(self, port, request, path, portRouteMountBase(request, port));
     }
     // ── /api/_diag/cache — per-tier cache observability ───────────────
     //
