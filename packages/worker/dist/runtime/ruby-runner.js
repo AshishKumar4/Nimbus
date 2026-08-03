@@ -898,7 +898,9 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 function __nimbusInstallRubyFsSnapshot(snapshot) {
   const dirs = new Set(['tmp', 'home']);
   const files = {};
-  const modes = { '': 7, tmp: 7, home: 7, ...snapshot.modes };
+  // Null-safe like every other field here: a REPL eval calls __rubyRun with
+  // no snapshot at all and must get the bootstrap defaults, not a TypeError.
+  const modes = { '': 7, tmp: 7, home: 7, ...(snapshot && snapshot.modes) };
   for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
   for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
     files[String(path).replace(/^\\/+/, '')] = b64;
@@ -1103,6 +1105,24 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   }
   memRef = instance.exports.memory;
 
+  // Entering the Ruby VM.
+  //
+  // The WASI imports this instance is given include ones wrapped in
+  // WebAssembly.Suspending — fd_read, fd_write, fd_pread, path_filestat_get,
+  // poll_oneoff and the sock_* family. V8 requires an active
+  // WebAssembly.promising suspender for ANY call into a suspending import,
+  // whether or not that import returns a Promise (measured on workerd:
+  // a Suspending import returning a plain i32 off a raw stack throws
+  // SuspendError "trying to suspend without WebAssembly.promising"). So every
+  // entry into this instance is promising-wrapped, not just the ones that are
+  // known to park today: which WASI calls the guest makes is the guest's
+  // business, and the suspending set grows.
+  //
+  // cabi_realloc is deliberately not wrapped. It is the guest allocator, not a
+  // VM entry — it never reaches WASI, and it is reached from the synchronous
+  // rb-js-abi-host callbacks, which cannot await.
+  const enterVm = (fn) => WebAssembly.promising(fn);
+
   // ── Ruby bootstrap sequence ────────────────────────────────────
   // Order matters (per ruby.wasm DefaultRubyVM):
   //   1. _initialize (reactor entry; runs static initializers)
@@ -1112,10 +1132,10 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   //   4. ruby-init-loadpath()   — set $LOAD_PATH from packed stdlib
   try {
     if (typeof instance.exports._initialize === 'function') {
-      instance.exports._initialize();
+      await enterVm(instance.exports._initialize)();
     }
     if (typeof instance.exports.__wasi_vfs_rt_init === 'function') {
-      instance.exports.__wasi_vfs_rt_init();
+      await enterVm(instance.exports.__wasi_vfs_rt_init)();
     }
   } catch (e) {
     return { ok: false, error: '_initialize/wasi_vfs_rt_init failed: ' + (e && e.message), stack: e && e.stack };
@@ -1175,20 +1195,9 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     ok: true,
     instance,
     wasi,
-    rubyInit,
-    rubyInitLoadpath,
-    rbEvalStringProtect,
-    // Ruby I/O routes through fd_read/fd_write, which are WebAssembly.
-    // Suspending imports (WASI socket support). V8 traps the first
-    // suspending-import call on a stack that is not under a
-    // WebAssembly.promising suspender, so the guest eval must run through
-    // the promising entrypoint — the same contract wasm-runner uses for
-    // its WASI mode. Null when promising is unavailable (older runtimes):
-    // callers fall back to the bare sync export.
-    rbEvalStringProtectPromising:
-      (typeof WebAssembly !== 'undefined' && typeof WebAssembly.promising === 'function')
-        ? WebAssembly.promising(rbEvalStringProtect)
-        : null,
+    rubyInit: enterVm(rubyInit),
+    rubyInitLoadpath: enterVm(rubyInitLoadpath),
+    rbEvalStringProtect: enterVm(rbEvalStringProtect),
     writeListString,
     writeString,
     rubyInitialized: false,  // mutated to true by __rubyRun on first call
@@ -1215,9 +1224,7 @@ async function __nimbusRubyEval(boot, rubyCode) {
   const bytes = new TextEncoder().encode(rubyCode);
   const codePtr = boot.instance.exports.cabi_realloc(0, 0, 1, bytes.length);
   new Uint8Array(memory.buffer).set(bytes, codePtr);
-  const retPtr = boot.rbEvalStringProtectPromising
-    ? await boot.rbEvalStringProtectPromising(codePtr, bytes.length)
-    : boot.rbEvalStringProtect(codePtr, bytes.length);
+  const retPtr = await boot.rbEvalStringProtect(codePtr, bytes.length);
   // Return is a tuple: (rb-abi-value handle u32, status s32) — 8 bytes
   const dv = new DataView(memory.buffer);
   return { handle: dv.getUint32(retPtr + 0, true), status: dv.getInt32(retPtr + 4, true) };
@@ -1287,8 +1294,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   if (!boot.rubyInitialized) {
     try {
       const initArgs = boot.writeListString(['ruby', '-e_=0']);
-      boot.rubyInit(initArgs.ptr, initArgs.len);
-      boot.rubyInitLoadpath();
+      await boot.rubyInit(initArgs.ptr, initArgs.len);
+      await boot.rubyInitLoadpath();
       boot.rubyInitialized = true;
     } catch (e) {
       return {

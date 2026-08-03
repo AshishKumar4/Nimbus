@@ -30,8 +30,7 @@ import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
-import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { RUBY_RUNNER_PREAMBLE_TAIL } from './ruby-runner.js';
+import { buildRubyPreamble } from './ruby-runner.js';
 import { CRED_KERNEL } from './os-contracts.js';
 
 export interface RubyReplDeps {
@@ -149,12 +148,15 @@ class RubyReplAdapter implements ReplAdapter {
     }
 
     // Non-zero exit code from Ruby = user called exit / process aborted.
+    // A runner-level failure (result.error) must reach the terminal: it is
+    // the only account of WHY the session is ending, and dropping it turns
+    // a broken interpreter into a silent exit to the shell.
     if (result.exitCode !== 0 && result.exitCode !== undefined) {
       return {
         kind: 'exit',
         exitCode: result.exitCode,
         stdout: result.stdout,
-        stderr: result.stderr,
+        stderr: (result.stderr || '') + (result.error ? `[ruby-repl] ${result.error}\n` : ''),
       };
     }
 
@@ -179,23 +181,10 @@ class RubyReplAdapter implements ReplAdapter {
     const wasmBytes = vfs.readFile(wasmPath);
     this.wasmBytesAB = toAB(wasmBytes);
 
-    // Compose the same preamble ruby-runner uses. WASI_INSTANCE_PREAMBLE_SRC
-    // + FinalizationRegistry shim + RUBY_RUNNER_PREAMBLE_TAIL.
-    const preamble = [
-      '// ── WASI shim preamble ──',
-      WASI_INSTANCE_PREAMBLE_SRC,
-      '',
-      '// ── FinalizationRegistry shim ──',
-      'if (typeof globalThis.FinalizationRegistry === "undefined") {',
-      '  globalThis.FinalizationRegistry = class FinalizationRegistry {',
-      '    constructor(_cleanup) {}',
-      '    register(_target, _heldValue, _token) {}',
-      '    unregister(_token) {}',
-      '  };',
-      '}',
-      '',
-      RUBY_RUNNER_PREAMBLE_TAIL,
-    ].join('\n');
+    // The one canonical Ruby facet preamble. A hand-rolled copy here once
+    // drifted (it lacked the language-prelude const __rubyRun requires, so
+    // every REPL eval died on boot) — compose it in exactly one place.
+    const preamble = buildRubyPreamble();
 
     const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
     const env = (facetMgr as any).env;
