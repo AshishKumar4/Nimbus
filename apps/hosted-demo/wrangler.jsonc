@@ -1,6 +1,22 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "nimbus",
+  // The TOP-LEVEL block is the DEVELOPMENT configuration. It names no
+  // production resource, and its Worker name is not the production Worker.
+  // Production lives exclusively under `env.production`, reached by
+  // `bun run deploy:production` (`wrangler deploy -e production`).
+  //
+  // The split is load-bearing, not tidiness. `wrangler deploy --name foo`
+  // overrides ONLY the name; every binding still comes from the block being
+  // deployed. While this block held the production `database_id`, two
+  // separate throwaway probes — one hand-rolled from this directory, one a
+  // copy of this file with `env` stripped out — silently read and wrote the
+  // live demo D1 while appearing isolated, and burned DEMO_ANON_MAX_ACTIVE
+  // slots away from the public docs terminal. Anything inheriting this
+  // block now lands on development resources instead.
+  //
+  // tests/unit/deploy-isolation.mjs enforces this in CI: it fails if a
+  // non-production deploy resolves any resource env.production also binds.
+  "name": "nimbus-dev",
   // The hosted-demo embedder is the live demo at nimbus-os.dev
   // and serves as the canonical reference embedder for the SDK.
   // The small src/index.ts here re-exports from @nimbus-sh/sdk/worker
@@ -117,10 +133,13 @@
   // Per-IP limiter for the anonymous docs-terminal endpoint
   // (POST /api/demo/anon-session). Counters are shared across Workers on
   // the account by namespace_id; period must be 10 or 60 (seconds).
+  // Distinct namespace from production's 1001: counters are shared across
+  // Workers on the account BY namespace_id, so a dev or throwaway sharing it
+  // would spend production's per-IP budget for real visitors on that IP.
   "ratelimits": [
     {
       "name": "ANON_RATE_LIMITER",
-      "namespace_id": "1001",
+      "namespace_id": "1002",
       "simple": { "limit": 6, "period": 60 }
     }
   ],
@@ -169,11 +188,15 @@
 	      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
 	    ]
 	  },
+	  // Development database, carrying the same migrations as production.
+	  // `wrangler dev` simulates D1 locally and never contacts this id, so
+	  // its real purpose is to be the thing a throwaway inherits instead of
+	  // production. The production database is named only in env.production.
 	  "d1_databases": [
 	    {
 	      "binding": "DEMO_DB",
-	      "database_name": "nimbus-demo",
-	      "database_id": "8e2ecc37-d975-49d8-96b7-885d45734a53"
+	      "database_name": "nimbus-demo-dev",
+	      "database_id": "72d98818-359a-4c30-ba59-e3f4418bfa74"
 	    }
 	  ],
 	  "migrations": [
