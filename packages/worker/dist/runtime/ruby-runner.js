@@ -898,7 +898,9 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 function __nimbusInstallRubyFsSnapshot(snapshot) {
   const dirs = new Set(['tmp', 'home']);
   const files = {};
-  const modes = { '': 7, tmp: 7, home: 7, ...snapshot.modes };
+  // Null-safe like every other field here: a REPL eval calls __rubyRun with
+  // no snapshot at all and must get the bootstrap defaults, not a TypeError.
+  const modes = { '': 7, tmp: 7, home: 7, ...(snapshot && snapshot.modes) };
   for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
   for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
     files[String(path).replace(/^\\/+/, '')] = b64;
