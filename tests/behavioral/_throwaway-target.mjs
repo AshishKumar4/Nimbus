@@ -89,6 +89,7 @@ async function up() {
     root: ROOT,
   });
   for (const note of isolation.shared) log(`shared with production — ${note}`);
+  for (const gap of isolation.missing) log(`WARNING: ${gap}`);
   log(`bindings verified: ${name} resolves no production resource`);
 
   if (flags.build !== false) {
