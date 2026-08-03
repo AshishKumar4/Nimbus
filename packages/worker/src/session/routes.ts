@@ -932,8 +932,13 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
 
         // Persist so vite survives DO hibernation. basePath included so the
         // rehydrated server after DO sleep emits URLs under the same prefix
-        // even before the next forwarded request updates sessionBasePath.
-        await self.ctx.storage.put(VITE_CONFIG_KEY, { root, aliases: body.aliases, define: body.define, injectBasename: body.injectBasename, basePath });
+        // even before the next forwarded request updates sessionBasePath;
+        // port so a server started here on a non-default port comes back on
+        // the port it was actually listening on rather than vite's default.
+        await self.ctx.storage.put(VITE_CONFIG_KEY, {
+          root, aliases: body.aliases, define: body.define,
+          injectBasename: body.injectBasename, basePath, port: apiVitePort,
+        });
 
         return Response.json({ ok: true, root, running: true });
       } catch (e: any) {
