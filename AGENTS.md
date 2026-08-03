@@ -284,11 +284,37 @@ Agent-specific probes:
 | Install deps | `bun install` |
 | Bundle worker assets | `bun run bundle` |
 | Dev server | `bun run dev` |
-| Deploy default | `bun run deploy` |
-| Deploy production | `bun run deploy:production` |
+| Deploy the dev stack (`nimbus-dev`) | `bun run deploy` |
+| Deploy production (`nimbus`) | `bun run deploy:production` |
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
+| Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 
 The root `predev` and `predeploy` scripts regenerate worker bundles.
+
+**Production is `wrangler deploy -e production`, and nothing else.** The
+top-level block of `apps/hosted-demo/wrangler.jsonc` is the DEVELOPMENT
+configuration — Worker `nimbus-dev`, database `nimbus-demo-dev`, its own
+rate-limit namespace. Only `env.production` names production resources.
+
+That split is load-bearing: `wrangler deploy --name foo` overrides ONLY the
+name, and every binding still comes from the block being deployed. Two
+throwaway probes wrote rows into the live demo D1 that way — one deployed from
+`apps/hosted-demo` by hand, one from a copy of the config with `env` stripped
+out. Both looked isolated; neither was.
+
+So **verify a throwaway's bindings before sending it a request, rather than
+trusting the directory it came from.** `bun scripts/deploy-isolation.mjs`
+answers it for the repo's configs, `_throwaway-target.mjs up` runs the same
+check before it invokes wrangler, and `tests/unit/deploy-isolation.mjs` holds
+the line in CI.
+
+Two things about throwaways that are not obvious, both learned the hard way:
+a deploy that dies during **asset upload still creates the script**, so a
+failed deploy is not "nothing to clean up"; and `wrangler deploy` can fail
+that way and **still exit 0**, so assert `Current Version ID` appears in its
+output before trusting that you probed what you built. Enumerate with
+`GET /accounts/<id>/workers/scripts` — a 404 on the workers.dev hostname does
+not mean the script is absent.
 
 ## Gotchas
 
