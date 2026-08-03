@@ -162,6 +162,50 @@ const SHARED_BY_DESIGN = new Map([
     'manifests and the catalog; an operator script publishes them'],
 ]);
 
+/**
+ * Bindings whose ABSENCE fails loudly at runtime rather than degrading.
+ *
+ * The isolation check above asks "can this deploy reach production?". This
+ * asks the symmetric question — "can this deploy actually run?" — because
+ * stripping bindings is the obvious way to make a throwaway look isolated,
+ * and two of them do not degrade: they throw from deep inside a session,
+ * where the error reads as a bug in whatever was being probed.
+ *
+ * A missing one is a WARNING, not a violation: a loader-only probe that
+ * never touches a runtime is legitimately minimal. Sharing production
+ * resources is a safety boundary; lacking a capability is a limitation.
+ * Conflating them would make the safety check something people turn off.
+ */
+const REQUIRED_BINDINGS = [
+  {
+    binding: 'ASSETS',
+    present: (b) => Boolean(b.assets?.binding),
+    breaks: 'almost everything. Four unguarded paths, none of which is the ' +
+      'bundled real-vite mode people expect: npm install\'s pre-bundler ' +
+      '(npm/installer.ts) and the DEFAULT in-process vite shim ' +
+      '(facets/vite-dev-server.ts) both call fetchEsbuildWasmBytes, which ' +
+      'fetches env.ASSETS bare; the generated vite/cirrus/tailwind modules ' +
+      'call loadAssetText, which rejects E_ASSETS_BINDING_MISSING. The ' +
+      '`if (env.ASSETS)` guards in router/index.ts cover only the router\'s ' +
+      'own static fallthrough and say nothing about these. Assets-free is ' +
+      'safe only for a probe that installs nothing and transforms nothing',
+  },
+  {
+    binding: 'NIMBUS_RUNTIME_CACHE',
+    present: (b) => (b.r2_buckets ?? []).some((r) => r.binding === 'NIMBUS_RUNTIME_CACHE'),
+    breaks: 'anything touching a runtime (python, ruby, clang, node) — ' +
+      'runtime-catalog.ts throws "NIMBUS_RUNTIME_CACHE binding missing" for ' +
+      'catalog, manifest and blob fetches',
+  },
+];
+
+/** Load-bearing bindings absent from `block`, with what each one breaks. */
+export function missingCapabilities(block) {
+  return REQUIRED_BINDINGS
+    .filter((r) => !r.present(block))
+    .map((r) => `${r.binding} is absent — breaks ${r.breaks}`);
+}
+
 export function loadConfig(relPath, root = REPO_ROOT) {
   // Bun parses JSONC natively; the repo's tooling is Bun throughout.
   return JSON.parse(stripJsonc(readFileSync(join(root, relPath), 'utf8')));
@@ -307,7 +351,10 @@ export function checkConfig(relPath, {
   const isProductionDeploy = envName === PRODUCTION_ENV && !workerName;
 
   if (isProductionDeploy) {
-    return { config: relPath, violations, shared: [], production: prodName, target: targetName };
+    return {
+      config: relPath, violations, shared: [], missing: [],
+      production: prodName, target: targetName,
+    };
   }
 
   // A non-production deploy must not land on the production Worker name.
@@ -335,7 +382,8 @@ export function checkConfig(relPath, {
     );
   }
 
-  return { config: relPath, violations, shared, production: prodName, target: targetName };
+  const missing = missingCapabilities(resolveEnvironment(config, envName));
+  return { config: relPath, violations, shared, missing, production: prodName, target: targetName };
 }
 
 export function checkAll({ root = REPO_ROOT } = {}) {
@@ -365,13 +413,16 @@ export function assertThrowawaySafe({
 if (import.meta.main) {
   let failed = false;
   for (const result of checkAll()) {
-    if (result.violations.length === 0) {
-      console.log(`ok  ${result.config}${result.production ? ` (production: ${result.production})` : ' (no production env)'}`);
-      continue;
+    if (result.violations.length > 0) {
+      failed = true;
+      console.error(`FAIL ${result.config} — default deploy reaches production:`);
+      for (const v of result.violations) console.error(`  - ${v}`);
+    } else {
+      console.log(`ok  ${result.config} (production: ${result.production})`);
     }
-    failed = true;
-    console.error(`FAIL ${result.config} — default deploy reaches production:`);
-    for (const v of result.violations) console.error(`  - ${v}`);
+    // Not a failure: a minimal probe may legitimately lack these. Printed so
+    // a stripped-down config does not fail cryptically from inside a session.
+    for (const m of result.missing ?? []) console.warn(`warn  ${result.config} — ${m}`);
   }
   process.exit(failed ? 1 : 0);
 }
