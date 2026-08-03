@@ -22,6 +22,7 @@ import {
   checkAll,
   checkConfig,
   loadConfig,
+  missingCapabilities,
   resolveWorkerName,
   sharedResourceIdentifiers,
 } from '../../scripts/deploy-isolation.mjs';
@@ -183,6 +184,35 @@ const PROD_D1 = {
   assert.equal(resolveWorkerName(config, 'staging'), 'app-staging', 'wrangler appends an unset env name');
   assert.equal(resolveWorkerName(config, 'production', 'override'), 'override');
   console.log('  [9] worker-name resolution follows wrangler inheritance');
+}
+
+// [10] Load-bearing bindings are reported when absent, as a WARNING rather
+// than a violation. Stripping bindings is the obvious way to make a
+// throwaway look isolated, and ASSETS / NIMBUS_RUNTIME_CACHE do not degrade
+// — they throw from inside a session, where the error reads as a bug in
+// whatever was being probed. A minimal loader-only probe is still allowed.
+{
+  assert.deepEqual(missingCapabilities(loadConfig('apps/probe/wrangler.jsonc')), [],
+    'apps/probe carries every load-bearing binding');
+
+  const stripped = missingCapabilities({ durable_objects: {}, worker_loaders: [] });
+  assert.equal(stripped.length, 2);
+  assert.ok(stripped.some((m) => m.startsWith('ASSETS is absent')));
+  assert.ok(stripped.some((m) => m.startsWith('NIMBUS_RUNTIME_CACHE is absent')));
+  // The consequence is named, so the warning is actionable rather than noise.
+  assert.match(stripped.join(' '), /installer\.ts/, 'npm install is named as an ASSETS consumer');
+  assert.match(stripped.join(' '), /runtime-catalog\.ts/);
+
+  const root = fixture({
+    'wrangler.jsonc': {
+      name: 'probe-min',
+      env: { production: { name: 'nimbus', d1_databases: [PROD_D1] } },
+    },
+  });
+  const result = checkConfig('wrangler.jsonc', { root, configs: ['wrangler.jsonc'] });
+  assert.deepEqual(result.violations, [], 'a minimal probe is isolated, not rejected');
+  assert.equal(result.missing.length, 2, 'but its missing capabilities are still reported');
+  console.log('  [10] load-bearing bindings warn when absent without failing the check');
 }
 
 console.log('deploy-isolation: all tests passed');
