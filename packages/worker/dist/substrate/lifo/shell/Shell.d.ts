@@ -67,6 +67,15 @@ export declare class Shell {
     private commandIdentity;
     private tabCount;
     pasteQueue: string[];
+    /**
+     * Keystrokes that arrived while a foreground command owned the terminal and
+     * nothing was reading stdin. A tty buffers type-ahead and hands it to the
+     * shell when the job exits; dropping it loses whatever the user typed, and
+     * when a dispatch never settles it leaves that connection with no feedback
+     * whatsoever. Held as whole chunks so a multi-byte escape sequence replays
+     * as one keystroke rather than three.
+     */
+    typeAhead: string[];
     constructor(terminal: ITerminal, vfs: VFS, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
     private registerBuiltins;
     getJobTable(): JobTable;
@@ -96,6 +105,13 @@ export declare class Shell {
     private applyCompletion;
     private getPromptWidth;
     redrawLine(): void;
+    /**
+     * Replay buffered type-ahead through the line editor. Stops the moment a
+     * replayed keystroke starts a command: the rest stays queued and is
+     * delivered when that one settles, so a queued line is never fed into a
+     * shell that is busy again.
+     */
+    drainTypeAhead(): void;
     drainPasteQueue(): void;
     private moveCursorLeft;
     private moveCursorRight;

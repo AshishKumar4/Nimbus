@@ -64,6 +64,19 @@ export const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 // The platform limit is 32 MiB; 28 MiB leaves room for structured-clone
 // metadata and matches the proven on-demand facet transfer envelope.
 export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
+// ── Batched filesystem reads ────────────────────────────────────────────
+// A round trip costs an order of magnitude more than the SQLite lookup
+// behind it, so a program that touches many files pays for round trips and
+// almost nothing else. One batch read answers many ranges in one trip, and
+// is bounded the way the shared write flush is (npm/install-batch-facet):
+// by paths AND by bytes, because either bound alone lets the other run away.
+//
+// The byte bound is on the REQUESTED range total — the only figure a caller
+// can check before it asks — and the result can only be smaller. It sits far
+// below MAX_RPC_SAFE_PAYLOAD_BYTES so a batch cannot approach the platform's
+// 32 MiB RPC ceiling however the caller packs it.
+export const FS_READ_BATCH_PATH_LIMIT = 128;
+export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and
 // /@modules/ bundles are also persisted (SQLite) — this LRU is just the
