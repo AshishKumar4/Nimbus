@@ -36,6 +36,7 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
+import { vfsPathExtension } from '../vfs/path.js';
 import { CRED_KERNEL } from './os-contracts.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
@@ -209,9 +210,15 @@ export function buildRuntimeHandler(spec, ctx0) {
         // dispatch honours the nearest package.json's `"type"` field
         // (and the file extension) to decide whether to parse as ESM:
         //
-        //   - .mjs  → always ESM
-        //   - .cjs  → always CJS
-        //   - .js   → ESM iff nearest package.json has "type": "module"
+        //   - .mjs          → always ESM
+        //   - .cjs          → always CJS
+        //   - .js           → ESM iff nearest package.json has "type": "module"
+        //   - no extension  → same rule as .js. Node allows an extensionless
+        //                     main entry and resolves its format from the
+        //                     package type, and that is the shape of nearly
+        //                     every npm `bin` script (typescript's `bin/tsc`,
+        //                     and the `node_modules/.bin/<cli>` target the bin
+        //                     dispatcher hands us).
         //
         // Without this, every modern ESM-only npm initialiser
         // (create-vite, create-astro, create-svelte, modern create-*)
@@ -225,13 +232,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // sub-module ESM files. esbuild's CJS output emits __require /
         // module.exports / exports.X so the facet's pre-compile loop
         // sees ordinary CJS source.
-        function isEsmScript(absPath, src) {
-            if (absPath.endsWith('.mjs'))
-                return true;
-            if (absPath.endsWith('.cjs'))
-                return false;
-            if (!absPath.endsWith('.js'))
-                return false;
+        function nearestPackageTypeIsModule(absPath) {
             // Walk up dirs looking for the nearest package.json. First one
             // wins (Node spec); we do NOT consult ancestors past it.
             let dir = absPath.replace(/^\/+/, '');
@@ -257,20 +258,20 @@ export function buildRuntimeHandler(spec, ctx0) {
             }
             return false;
         }
-        const needsEsmTransform = resolvedPath.endsWith('.mjs') ||
-            (resolvedPath.endsWith('.js') && isEsmScript(resolvedPath, code));
+        const scriptExt = vfsPathExtension(resolvedPath);
+        const needsEsmTransform = scriptExt === '.mjs' ||
+            ((scriptExt === '.js' || scriptExt === '') && nearestPackageTypeIsModule(resolvedPath));
         // esbuild transform for TypeScript / TSX / JSX (both node and bun)
-        // AND for ESM `.js` / `.mjs` entry scripts (primitive ESM-detect).
-        if (resolvedPath.endsWith('.ts') ||
-            resolvedPath.endsWith('.tsx') ||
-            resolvedPath.endsWith('.jsx') ||
+        // AND for ESM entry scripts (primitive ESM-detect).
+        if (scriptExt === '.ts' ||
+            scriptExt === '.tsx' ||
+            scriptExt === '.jsx' ||
             needsEsmTransform) {
             try {
                 const eb = getEsbuild();
-                const ext = resolvedPath.split('.').pop();
-                const loader = ext === 'tsx' ? 'tsx' :
-                    ext === 'jsx' ? 'jsx' :
-                        ext === 'ts' ? 'ts' :
+                const loader = scriptExt === '.tsx' ? 'tsx' :
+                    scriptExt === '.jsx' ? 'jsx' :
+                        scriptExt === '.ts' ? 'ts' :
                             'js';
                 // Substitute `import.meta.url` at compile-time so esbuild's
                 // CJS output doesn't reduce it to `undefined` (its default
