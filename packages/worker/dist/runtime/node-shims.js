@@ -1236,7 +1236,10 @@ const __fsMod = (() => {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       await _acquireBarrier(supervisor);
       const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
-      if (meta) return _statObject(_recordAuthority(absPath, meta), _strip(absPath));
+      // Reported verbatim, without the pending-chmod overlay a keyed
+      // _statObject would apply: the authority just answered, and its
+      // answer already includes anything this process flushed.
+      if (meta) return _statObject(_recordAuthority(absPath, meta));
       throw _fsErr("ENOENT", "stat", p);
     }
     return statSync(p);
@@ -1249,7 +1252,10 @@ const __fsMod = (() => {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       await _acquireBarrier(supervisor);
       const meta = await _fsRpc(supervisor.lstat(absPath), "lstat", p, (result) => result);
-      if (meta) return _statObject(_recordAuthority(absPath, meta), _strip(absPath));
+      // Reported verbatim, without the pending-chmod overlay a keyed
+      // _statObject would apply: the authority just answered, and its
+      // answer already includes anything this process flushed.
+      if (meta) return _statObject(_recordAuthority(absPath, meta));
       throw _fsErr("ENOENT", "lstat", p);
     }
     return lstatSync(p);
