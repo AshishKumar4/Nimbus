@@ -101,7 +101,13 @@ function makeWokenSession(storage = {}) {
     ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(); },
     seedFilesystem() {},
   };
+  self.store = store;
   return self;
+}
+
+/** What survives an eviction: DO storage, and nothing else. */
+function hibernate(self) {
+  return makeWokenSession(Object.fromEntries(self.store));
 }
 
 const HIBERNATED = {
@@ -175,6 +181,27 @@ function request(path) {
   const response = await handleFetch(self, request(`/port/${VITE_PORT}/`));
   assert.equal(response.status, 502);
   console.log('  [6] no persisted config means nothing to restore');
+}
+
+// 7. A dev server started on a non-default port comes back on THAT port.
+//    What gets persisted at start decides what the restore can rebuild, so
+//    the writer and the restore are pinned together.
+{
+  const started = makeWokenSession();
+  const start = await handleFetch(started, new Request('https://nimbus-os.dev/api/start-vite', {
+    method: 'POST',
+    headers: { 'X-Nimbus-Base': BASE_PATH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ root: ROOT, port: 3100 }),
+  }));
+  assert.equal(start.status, 200);
+  assert.equal(started.portRegistry.has(3100), true, 'the started server listens on 3100');
+
+  const woken = hibernate(started);
+  const response = await handleFetch(woken, request('/port/3100/'));
+  assert.equal(response.status, 200, `expected port 3100 to come back, got ${response.status}`);
+  assert.match(await response.text(), /hibernated app/);
+  assert.equal(woken._viteShimPort, 3100);
+  console.log('  [7] a non-default port survives hibernation on the port route');
 }
 
 await rm(outputDir, { recursive: true, force: true });
