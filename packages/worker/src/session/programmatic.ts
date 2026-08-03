@@ -27,7 +27,7 @@ import {
   writeProcessInput,
 } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
 
 interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -426,7 +426,7 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number): Promi
       if (self.viteDevServer?.isRunning) {
         self.viteDevServer.stop();
         self.viteDevServer = null;
-        try { await self.ctx.storage.delete('vite-config'); } catch {}
+        try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
       }
     } catch {}
     try { self.portRegistry.unregisterByPid(n); } catch {}
@@ -565,7 +565,7 @@ export async function rpcDestroy(
           self.cirrusReal = null;
           if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
           self.viteDevServer = null;
-          try { await self.ctx.storage.delete('vite-config'); } catch {}
+          try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
           self._viteShimPid = null;
           self._viteShimPort = null;
         } else if (self.facetManager?.kill?.(pid)) {
