@@ -963,6 +963,29 @@ export default NimbusNodeProcess;
     };
 }
 /**
+ * Drop the raw forms of everything that has been serialized, in place.
+ *
+ * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
+ * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
+ * a state carrying both from one carrying only the serialized halves, because
+ * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * Holding both doubles the cost of a cached entry for its whole lifetime, and
+ * that lifetime spans execs.
+ *
+ * Only for states that are about to be RETAINED. `spawnNode` and
+ * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
+ * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
+ * neither goes through here.
+ */
+export function releaseSerializedSources(vfsState) {
+    if (vfsState.bundleSource)
+        vfsState.bundle = {};
+    if (vfsState.serializedManifest !== undefined)
+        vfsState.manifest = {};
+    if (vfsState.serializedMetadata !== undefined)
+        vfsState.metadata = {};
+}
+/**
  * hardening-r5: read a file from the VFS and decide whether to keep it
  * as a string (valid UTF-8 text — the hot path for source code,
  * package.json, configs) or as Uint8Array bytes (binary — wasm
@@ -2822,7 +2845,23 @@ export class FacetManager {
         vfsState.bundleSource = buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
         vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
+        // The only consumer of the raw cells past this point is a single boolean,
+        // so answer it now rather than hold ~17 MB (pi) to answer it later.
+        vfsState.usesNodeSqlite = bundleUsesNodeSqlite(entryCode, vfsState.bundle);
         vfsState.cacheHit = false;
+        // Serialization is total: bundleSource/serializedManifest/serializedMetadata
+        // carry every byte the raw cells and objects do, and generateEntrypointCode
+        // reads only the serialized forms. Retaining both doubled what an entry
+        // costs for its whole lifetime — measured for pi at 502af77, per entry:
+        // raw 17,253,610 + source 18,262,324 + manifest 600,060 + metadata
+        // 3,841,244 = 39,957,238 B, of which the raw halves are 21,694,914 B held
+        // to answer `usesNodeSqlite`. Dropping them is a pure release: nothing
+        // downstream of this method reads them, and a cache MISS rebuilds from the
+        // VFS rather than from anything discarded here.
+        //
+        // Released BEFORE admission so the byte bound prices what the entry costs
+        // from here on, not the peak it passed through on the way in.
+        releaseSerializedSources(vfsState);
         this._admitPrefetchCacheEntry(key, revision, vfsState);
         return vfsState;
     }
@@ -3057,7 +3096,9 @@ export class FacetManager {
     }
     // ── One-shot dynamic Worker entrypoint ────────────────────────────────
     async _execViaLoader(code, opts, entry, vfsState, signal, diagSink) {
-        const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
+        // Answered by _buildPrefetchBundleCached while the raw cells were still in
+        // hand; re-deriving it here is what forced them to be retained.
+        const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
         const [sqliteModules, shims] = await Promise.all([
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
