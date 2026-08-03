@@ -139,7 +139,29 @@ interface FacetVfsState {
     serializedMetadata?: string;
     /** Move the bundle out of the main module when combined state exceeds its ceiling. */
     bundleSideModulesRequired?: boolean;
+    /**
+     * Memoized `bundleUsesNodeSqlite(entryCode, bundle)`. Answered while the raw
+     * cells are still in hand so `releaseSerializedSources` can drop them — it is
+     * the only thing anything downstream still wanted them for.
+     */
+    usesNodeSqlite?: boolean;
 }
+/**
+ * Drop the raw forms of everything that has been serialized, in place.
+ *
+ * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
+ * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
+ * a state carrying both from one carrying only the serialized halves, because
+ * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * Holding both doubles the cost of a cached entry for its whole lifetime, and
+ * that lifetime spans execs.
+ *
+ * Only for states that are about to be RETAINED. `spawnNode` and
+ * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
+ * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
+ * neither goes through here.
+ */
+export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
 interface FacetVfsBundleSource {
     expression: string;
     imports: string;
