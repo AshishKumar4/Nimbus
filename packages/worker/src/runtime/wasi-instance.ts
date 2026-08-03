@@ -962,7 +962,21 @@ function __wasiCheckMode(path, requested) {
 // ─── makeImports ────────────────────────────────────────────────────────
 
 function __wasiMakeImports(opts) {
-  // opts: { argv, env, getMemory, stdoutWrite?, stderrWrite? }
+  // opts: { argv, env, getMemory, abi?, stdoutWrite?, stderrWrite? }
+  //
+  // WASI shipped two wire ABIs and both are still in the world: the modern
+  // sysroot handed to user programs is preview1, while the binji-2020 clang and
+  // wasm-ld toolchain is preview0 ('wasi_unstable'). Every function name and
+  // every signature is identical between them, so a mismatch never traps — it
+  // silently returns wrong numbers. Exactly two encodings differ, and both are
+  // parameters of this one implementation rather than grounds for a second:
+  // fd_seek's whence constants are permuted, and filestat is 56 bytes with a
+  // u32 nlink instead of 64 with a u64.
+  const preview0 = opts.abi === 'preview0';
+  // preview0: CUR=0, END=1, SET=2. preview1: SET=0, CUR=1, END=2.
+  const WHENCE_SET = preview0 ? 2 : 0;
+  const WHENCE_CUR = preview0 ? 0 : 1;
+  const WHENCE_END = preview0 ? 1 : 2;
   const argv = opts.argv || [];
   const envArr = [];
   if (opts.env) for (const k of Object.keys(opts.env)) envArr.push(k + '=' + opts.env[k]);
@@ -983,6 +997,33 @@ function __wasiMakeImports(opts) {
   function readPath(ptr, len) {
     const bytes = u8().subarray(ptr, ptr + len);
     return utf8dec.decode(bytes);
+  }
+  // The single filestat emitter for both ABIs. preview1 is 64 bytes with an
+  // eight-byte nlink at +24; preview0 is 56 with a four-byte nlink at +20, so
+  // every field from nlink onward shifts. A caller decoding the wrong layout
+  // reads st_size out of the nlink slot and sees 1 — silently, since the
+  // function signature is identical either way.
+  function writeFilestat(statPtr, ftype, size, t) {
+    const dv = view();
+    writeU64LE(statPtr,     0n);            // dev
+    writeU64LE(statPtr + 8, 0n);            // ino
+    dv.setUint8(statPtr + 16, ftype);
+    if (preview0) {
+      for (let i = 17; i < 20; i++) dv.setUint8(statPtr + i, 0);
+      dv.setUint32(statPtr + 20, 1, true);  // nlink u32
+      writeU64LE(statPtr + 24, size);
+      writeU64LE(statPtr + 32, t.atime);
+      writeU64LE(statPtr + 40, t.mtime);
+      writeU64LE(statPtr + 48, t.ctime);
+      return __WASI_ESUCCESS;
+    }
+    for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
+    writeU64LE(statPtr + 24, 1n);           // nlink u64
+    writeU64LE(statPtr + 32, size);
+    writeU64LE(statPtr + 40, t.atime);
+    writeU64LE(statPtr + 48, t.mtime);
+    writeU64LE(statPtr + 56, t.ctime);
+    return __WASI_ESUCCESS;
   }
 
   let stdoutBuf = '';
@@ -1351,9 +1392,9 @@ function __wasiMakeImports(opts) {
       const file = getFile(entry.vfsPath);
       const fileLen = file ? BigInt(file.length) : 0n;
       let next;
-      if (whence === 0) next = delta;
-      else if (whence === 1) next = cur + delta;
-      else if (whence === 2) next = fileLen + delta;
+      if (whence === WHENCE_SET) next = delta;
+      else if (whence === WHENCE_CUR) next = cur + delta;
+      else if (whence === WHENCE_END) next = fileLen + delta;
       else return __WASI_EINVAL;
       if (next < 0n) return __WASI_EINVAL;
       entry.offset = Number(next);
@@ -1730,20 +1771,7 @@ function __wasiMakeImports(opts) {
       function emitStat(ftype, size) {
         // WASI socket and polling support B1: emit real timestamps.
         const t = __wasiFS.times.get(resolved) || { mtime: 0n, atime: 0n, ctime: 0n };
-        const dv = view();
-        // filestat_t layout (WASI preview1):
-        //   dev:u64@0, ino:u64@8, filetype:u8@16, [pad 17..23],
-        //   nlink:u64@24, size:u64@32, atim:u64@40, mtim:u64@48, ctim:u64@56
-        writeU64LE(statPtr,      0n);
-        writeU64LE(statPtr + 8,  0n);
-        dv.setUint8(statPtr + 16, ftype);
-        for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
-        writeU64LE(statPtr + 24, 1n);
-        writeU64LE(statPtr + 32, size);
-        writeU64LE(statPtr + 40, t.atime);
-        writeU64LE(statPtr + 48, t.mtime);
-        writeU64LE(statPtr + 56, t.ctime);
-        return __WASI_ESUCCESS;
+        return writeFilestat(statPtr, ftype, size, t);
       }
     },
 
@@ -1857,7 +1885,6 @@ function __wasiMakeImports(opts) {
     fd_filestat_get(fd, statPtr) {
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
-      const dv = view();
       let ftype = __WASI_FT_UNKNOWN;
       let size = 0n;
       let timesPath = null;
@@ -1876,16 +1903,7 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_SOCKET_STREAM;
       }
       const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
-      writeU64LE(statPtr,      0n);
-      writeU64LE(statPtr + 8,  0n);
-      dv.setUint8(statPtr + 16, ftype);
-      for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
-      writeU64LE(statPtr + 24, 1n);
-      writeU64LE(statPtr + 32, size);
-      writeU64LE(statPtr + 40, t.atime);
-      writeU64LE(statPtr + 48, t.mtime);
-      writeU64LE(statPtr + 56, t.ctime);
-      return __WASI_ESUCCESS;
+      return writeFilestat(statPtr, ftype, size, t);
     },
     fd_filestat_set_size(fd, size) {
       const entry = fdTable.get(fd);
@@ -2723,6 +2741,19 @@ globalThis.__wasiRevalidateFS    = __wasiRevalidateFS;
  * persistent runtime state without widening every command to the whole home
  * directory. Backward-compatible — callers that omit it use `root` only.
  */
+/**
+ * The two WASI wire ABIs still in circulation. They share every function name
+ * and every signature, differing only in fd_seek's whence constants and the
+ * filestat struct layout — so binding the wrong one is silent, not a trap.
+ * `preview1` is `wasi_snapshot_preview1`; `preview0` is `wasi_unstable`.
+ */
+export type WasiAbi = 'preview1' | 'preview0';
+
+export const WASI_ABI_NAMESPACE: Readonly<Record<WasiAbi, string>> = Object.freeze({
+  preview1: 'wasi_snapshot_preview1',
+  preview0: 'wasi_unstable',
+});
+
 export interface WasiFsSnapshot {
   /** Canonical VFS root (no leading slash). E.g. `home/user/wasi-files`. */
   root: string;

@@ -277,8 +277,12 @@ let __wasiSup = null;
 // predecessor — a rename must not overtake the write that created the file.
 const __wasiPersistQ = { pending: [], tail: Promise.resolve(), failures: [] };
 
+// Adopting is idempotent and never downgrades. A resident process re-enters
+// through routed fetch/handleHttpRequest hops that resolve the entrypoint
+// WITHOUT a supervisor in env; clearing the live stub on those hops would
+// strand the process holding a cache it can no longer write back.
 function __wasiAdoptSupervisor(sup) {
-  __wasiSup = sup || null;
+  if (sup) __wasiSup = sup;
 }
 
 /** Mirror one mutation to the session VFS. Cache is already updated. */
@@ -352,6 +356,17 @@ function __wasiEvictCleanContent() {
 async function __wasiRevalidateFS() {
   if (!__wasiSup || !__wasiFS) return [];
   await __wasiDrainPersist();
+  // One round trip decides it. An unchanged subtree means the cache is still
+  // exactly right, so a resident server parking between requests pays a single
+  // revision check rather than re-reading everything it had already loaded.
+  if (typeof __wasiSup.fsRevision === 'function') {
+    let revision;
+    try {
+      revision = await __wasiSup.fsRevision(__wasiFS.root);
+    } catch { revision = null; }
+    if (revision !== null && revision === __wasiFS.revision) return [];
+    __wasiFS.revision = revision;
+  }
   __wasiNegative.clear();
   return __wasiEvictCleanContent();
 }
@@ -394,6 +409,16 @@ function __wasiNowNs() {
   return BigInt(Date.now()) * 1000000n;
 }
 function __wasiInitFS(opts) {
+  // A fresh init is a fresh process: no supervisor adopted yet, and none of
+  // the previous tenant's queued writes, dirty paths or negative lookups may
+  // survive into it. Pools reuse an isolate across calls, so leaking any of
+  // this would let one program's state answer another program's syscalls.
+  __wasiSup = null;
+  __wasiDirty.clear();
+  __wasiNegative.clear();
+  __wasiPersistQ.pending.length = 0;
+  __wasiPersistQ.failures.length = 0;
+  __wasiPersistQ.tail = Promise.resolve();
   const files = new Map();   // canonicalVfsPath → Uint8Array
   const dirs  = new Set();   // canonicalVfsPath
   // WASI socket and polling support B1: parallel timestamp + symlink maps.
@@ -469,6 +494,17 @@ function __wasiInitFS(opts) {
     // Files at or above this size are never held whole; reads window through
     // the supervisor instead. Keeps a 200 MiB blob from ending the isolate.
     residentFileCap: Number(opts.residentFileCap ?? (8 * 1024 * 1024)),
+    // Roots the seed claims to have listed COMPLETELY. Only a producer that
+    // walked a subtree without exclusions may claim one. Inside such a root a
+    // path the manifest lacks is genuinely absent, so the miss is answered
+    // here instead of costing a round trip — which is most of the traffic a
+    // language runtime generates ($LOAD_PATH / sys.path probing walks
+    // candidate names that mostly do not exist).
+    enumeratedRoots: (opts.enumeratedRoots || []).map(__wasiCanonicalize),
+    // Supervisor revision the seed was built against; a park re-checks it and
+    // only then drops cached content. Without this the cache could serve
+    // content another process has since changed.
+    revision: opts.revision ?? null,
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
   __wasiPreopens = [];
@@ -925,7 +961,21 @@ function __wasiCheckMode(path, requested) {
 // ─── makeImports ────────────────────────────────────────────────────────
 
 function __wasiMakeImports(opts) {
-  // opts: { argv, env, getMemory, stdoutWrite?, stderrWrite? }
+  // opts: { argv, env, getMemory, abi?, stdoutWrite?, stderrWrite? }
+  //
+  // WASI shipped two wire ABIs and both are still in the world: the modern
+  // sysroot handed to user programs is preview1, while the binji-2020 clang and
+  // wasm-ld toolchain is preview0 ('wasi_unstable'). Every function name and
+  // every signature is identical between them, so a mismatch never traps — it
+  // silently returns wrong numbers. Exactly two encodings differ, and both are
+  // parameters of this one implementation rather than grounds for a second:
+  // fd_seek's whence constants are permuted, and filestat is 56 bytes with a
+  // u32 nlink instead of 64 with a u64.
+  const preview0 = opts.abi === 'preview0';
+  // preview0: CUR=0, END=1, SET=2. preview1: SET=0, CUR=1, END=2.
+  const WHENCE_SET = preview0 ? 2 : 0;
+  const WHENCE_CUR = preview0 ? 0 : 1;
+  const WHENCE_END = preview0 ? 1 : 2;
   const argv = opts.argv || [];
   const envArr = [];
   if (opts.env) for (const k of Object.keys(opts.env)) envArr.push(k + '=' + opts.env[k]);
@@ -946,6 +996,33 @@ function __wasiMakeImports(opts) {
   function readPath(ptr, len) {
     const bytes = u8().subarray(ptr, ptr + len);
     return utf8dec.decode(bytes);
+  }
+  // The single filestat emitter for both ABIs. preview1 is 64 bytes with an
+  // eight-byte nlink at +24; preview0 is 56 with a four-byte nlink at +20, so
+  // every field from nlink onward shifts. A caller decoding the wrong layout
+  // reads st_size out of the nlink slot and sees 1 — silently, since the
+  // function signature is identical either way.
+  function writeFilestat(statPtr, ftype, size, t) {
+    const dv = view();
+    writeU64LE(statPtr,     0n);            // dev
+    writeU64LE(statPtr + 8, 0n);            // ino
+    dv.setUint8(statPtr + 16, ftype);
+    if (preview0) {
+      for (let i = 17; i < 20; i++) dv.setUint8(statPtr + i, 0);
+      dv.setUint32(statPtr + 20, 1, true);  // nlink u32
+      writeU64LE(statPtr + 24, size);
+      writeU64LE(statPtr + 32, t.atime);
+      writeU64LE(statPtr + 40, t.mtime);
+      writeU64LE(statPtr + 48, t.ctime);
+      return __WASI_ESUCCESS;
+    }
+    for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
+    writeU64LE(statPtr + 24, 1n);           // nlink u64
+    writeU64LE(statPtr + 32, size);
+    writeU64LE(statPtr + 40, t.atime);
+    writeU64LE(statPtr + 48, t.mtime);
+    writeU64LE(statPtr + 56, t.ctime);
+    return __WASI_ESUCCESS;
   }
 
   let stdoutBuf = '';
@@ -1038,8 +1115,19 @@ function __wasiMakeImports(opts) {
    * once and records the answer — including the negative, so a program that
    * probes the same absent path in a loop pays a single round trip.
    */
+  /** True when the seed listed this path's subtree exhaustively. */
+  function underEnumeratedRoot(vfsPath) {
+    for (const root of __wasiFS.enumeratedRoots) {
+      if (root === '' || vfsPath === root || vfsPath.startsWith(root + '/')) return true;
+    }
+    return false;
+  }
   function statLive(vfsPath) {
     if (!__wasiSup || __wasiNegative.has(vfsPath)) return false;
+    // The manifest is authoritative inside a root it fully enumerated, so an
+    // absent path there is absent — no round trip. Revalidation at a park is
+    // what lets files created after spawn become visible.
+    if (underEnumeratedRoot(vfsPath)) return false;
     return (async () => {
       await __wasiDrainPersist();
       const st = await __wasiSup.stat(vfsPath);
@@ -1303,9 +1391,9 @@ function __wasiMakeImports(opts) {
       const file = getFile(entry.vfsPath);
       const fileLen = file ? BigInt(file.length) : 0n;
       let next;
-      if (whence === 0) next = delta;
-      else if (whence === 1) next = cur + delta;
-      else if (whence === 2) next = fileLen + delta;
+      if (whence === WHENCE_SET) next = delta;
+      else if (whence === WHENCE_CUR) next = cur + delta;
+      else if (whence === WHENCE_END) next = fileLen + delta;
       else return __WASI_EINVAL;
       if (next < 0n) return __WASI_EINVAL;
       entry.offset = Number(next);
@@ -1682,20 +1770,7 @@ function __wasiMakeImports(opts) {
       function emitStat(ftype, size) {
         // WASI socket and polling support B1: emit real timestamps.
         const t = __wasiFS.times.get(resolved) || { mtime: 0n, atime: 0n, ctime: 0n };
-        const dv = view();
-        // filestat_t layout (WASI preview1):
-        //   dev:u64@0, ino:u64@8, filetype:u8@16, [pad 17..23],
-        //   nlink:u64@24, size:u64@32, atim:u64@40, mtim:u64@48, ctim:u64@56
-        writeU64LE(statPtr,      0n);
-        writeU64LE(statPtr + 8,  0n);
-        dv.setUint8(statPtr + 16, ftype);
-        for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
-        writeU64LE(statPtr + 24, 1n);
-        writeU64LE(statPtr + 32, size);
-        writeU64LE(statPtr + 40, t.atime);
-        writeU64LE(statPtr + 48, t.mtime);
-        writeU64LE(statPtr + 56, t.ctime);
-        return __WASI_ESUCCESS;
+        return writeFilestat(statPtr, ftype, size, t);
       }
     },
 
@@ -1809,7 +1884,6 @@ function __wasiMakeImports(opts) {
     fd_filestat_get(fd, statPtr) {
       const entry = fdTable.get(fd);
       if (!entry) return __WASI_EBADF;
-      const dv = view();
       let ftype = __WASI_FT_UNKNOWN;
       let size = 0n;
       let timesPath = null;
@@ -1828,16 +1902,7 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_SOCKET_STREAM;
       }
       const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
-      writeU64LE(statPtr,      0n);
-      writeU64LE(statPtr + 8,  0n);
-      dv.setUint8(statPtr + 16, ftype);
-      for (let i = 17; i < 24; i++) dv.setUint8(statPtr + i, 0);
-      writeU64LE(statPtr + 24, 1n);
-      writeU64LE(statPtr + 32, size);
-      writeU64LE(statPtr + 40, t.atime);
-      writeU64LE(statPtr + 48, t.mtime);
-      writeU64LE(statPtr + 56, t.ctime);
-      return __WASI_ESUCCESS;
+      return writeFilestat(statPtr, ftype, size, t);
     },
     fd_filestat_set_size(fd, size) {
       const entry = fdTable.get(fd);
@@ -2656,8 +2721,19 @@ async function __wasiRunStartAsync(instance, ctx) {
     return { exitCode: 1, error: (e && e.message) ? e.message : String(e) };
   }
 }
+// A serialized facet body is evaluated in this module's scope, but runners
+// reach helpers through globalThis (the convention __rubyRun and __clangRun
+// already follow) because a direct reference to a preamble-only symbol will
+// not typecheck in the supervisor bundle the body is authored in.
+globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
+globalThis.__wasiDrainPersist    = __wasiDrainPersist;
+globalThis.__wasiRevalidateFS    = __wasiRevalidateFS;
 // ── END: wasi-instance preamble ─────────────────────────────────────────
 `;
+export const WASI_ABI_NAMESPACE = Object.freeze({
+    preview1: 'wasi_snapshot_preview1',
+    preview0: 'wasi_unstable',
+});
 /**
  * Names of the WASI imports implemented by this shim.
  *

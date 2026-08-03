@@ -53,7 +53,8 @@ import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from './wasi-instance.js';
+import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
+import type { WasiAbi } from './wasi-instance.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
@@ -63,6 +64,7 @@ import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 declare const __wasiMakeImports: (opts: {
   argv?: string[];
   env?: Record<string, string>;
+  abi?: WasiAbi;
   getMemory: () => WebAssembly.Memory | null;
   stdoutWrite?: (s: string) => void;
   stderrWrite?: (s: string) => void;
@@ -171,31 +173,29 @@ export function formatWasmRunnerWasiInfo(): string {
  * inside a context that holds a precompiled Module — we don't yet
  * have one in the supervisor (CSP blocks request-time compile).
  */
-function hasWasiImports(bytes: Uint8Array): boolean {
-  // Recognise BOTH 'wasi_snapshot_preview1' (modern) AND
-  // 'wasi_unstable' (older WASI ABI, binji-linked binaries use this).
-  // Either substring in the wasm bytes is sufficient — WASI module-
-  // name strings are length-prefixed UTF-8 in the import section; a
-  // substring match against the raw bytes can't false-positive at the
-  // import position. False-positives elsewhere (e.g. in a data
-  // section that happens to contain "wasi_unstable" as a string
-  // literal) are harmless — the WASI shim won't be invoked unless
-  // the wasm actually has `_start` and the imports the shim provides.
+function detectWasiAbi(bytes: Uint8Array): WasiAbi | null {
+  // Recognise BOTH 'wasi_snapshot_preview1' (modern) AND 'wasi_unstable'
+  // (preview0, what binji-linked binaries import). Which one matters: the two
+  // share every function name and every signature but disagree on fd_seek's
+  // whence constants and on the filestat layout, so binding the wrong one
+  // never traps — it silently returns wrong offsets and wrong file sizes.
+  // 'wasi_unstable' is not a substring of 'wasi_snapshot_preview1', so the
+  // two needles cannot be confused; a module carrying both is preview1.
   const enc = new TextEncoder();
-  const needles = [
-    enc.encode('wasi_snapshot_preview1'),
-    enc.encode('wasi_unstable'),
+  const needles: [Uint8Array, WasiAbi][] = [
+    [enc.encode('wasi_snapshot_preview1'), 'preview1'],
+    [enc.encode('wasi_unstable'), 'preview0'],
   ];
-  for (const needle of needles) {
+  for (const [needle, abi] of needles) {
     if (bytes.length < needle.length) continue;
     outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
       for (let j = 0; j < needle.length; j++) {
         if (bytes[i + j] !== needle[j]) continue outer;
       }
-      return true;
+      return abi;
     }
   }
-  return false;
+  return null;
 }
 
 /**
@@ -247,7 +247,8 @@ export function makeWasmRunner(deps: {
     // WASI mode treats every argv token as a string passed to the
     // program; direct mode treats argv[0] as export name and the rest
     // as integers.
-    const isWasi = hasWasiImports(bytes);
+    const wasiAbi = detectWasiAbi(bytes);
+    const isWasi = wasiAbi !== null;
 
     let exportName: string | undefined;
     let parsedArgs: number[] = [];
@@ -356,6 +357,7 @@ export function makeWasmRunner(deps: {
         intArgs?: number[];
         wasiArgv?: string[];
         wasiEnv?: Record<string, string>;
+        wasiAbi?: WasiAbi;
         wasiFs?: {
           root: string;
           preopens: Array<{ wasiPath: string; vfsPath: string }>;
@@ -432,24 +434,24 @@ export function makeWasmRunner(deps: {
           initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
         }
         const memRef: { mem: WebAssembly.Memory | null } = { mem: null };
+        const abi = args.wasiAbi || 'preview1';
         const wasi = mk({
           argv: args.wasiArgv || [],
           env: args.wasiEnv || {},
+          abi,
           getMemory: () => memRef.mem,
         });
         let inst: WebAssembly.Instance;
         try {
-          // Both modern `wasi_snapshot_preview1` and older
-          // `wasi_unstable` namespaces point at the SAME shim
-          // import object. The WASI ABIs are near-identical in
-          // function signatures (preview1 fixed fd_seek's offset
-          // width to i64 and the `filestat` struct layout); our
-          // shim implements preview1 and the older binji-linked
-          // binaries are tolerant of the wider types via JS
-          // BigInt coercion at the wasm boundary.
+          // Bind ONLY the namespace this module actually imports, with the
+          // import table built for that ABI. Aliasing one preview1 table onto
+          // both names — which this did until the encodings were checked
+          // against the binaries — gives a preview0 guest inverted fd_seek
+          // whence and a 64-byte filestat it decodes as 56, so every lseek
+          // lands wrong and every st_size reads back as the nlink field. The
+          // signatures are identical, so nothing traps and nothing is logged.
           const result: any = await WebAssembly.instantiate(mod as any, {
-            wasi_snapshot_preview1: wasi.wasiImport,
-            wasi_unstable: wasi.wasiImport,
+            [WASI_ABI_NAMESPACE[abi]]: wasi.wasiImport,
           });
           inst = (result instanceof WebAssembly.Instance ? result : result.instance);
         } catch (e: any) {
@@ -608,7 +610,7 @@ export function makeWasmRunner(deps: {
     let outcome: DispatchOutcome;
     try {
       const submitArgs = isWasi
-        ? { mode: 'wasi' as const, wasiArgv, wasiEnv, wasiFs }
+        ? { mode: 'wasi' as const, wasiArgv, wasiEnv, wasiAbi: wasiAbi ?? undefined, wasiFs }
         : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
       outcome = (await pool.submit(
         facetFn,
