@@ -51,7 +51,11 @@ import {
   rpcPayloadEnd,
   rpcPayloadStart,
 } from '../observability/diag-counters.js';
-import { CRED_KERNEL, type RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import {
+  CRED_KERNEL,
+  type RuntimeOpenFlags,
+  type VfsAcquireResult,
+} from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import {
@@ -399,8 +403,32 @@ const FsTruncateArgsSchema = z.object({
   size: FsRangeOffsetSchema,
 });
 
+// A facet supplies its own cursor, so it is untrusted input. A null epoch is
+// the legitimate first call from a facet that has never acquired.
+const FsAcquireArgsSchema = z.object({
+  epoch: z.string().max(64).nullable(),
+  cursor: z.number().int().min(0),
+});
+
 export async function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number> {
     return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
+}
+
+/**
+ * The facet cache-coherence barrier: what changed since `cursor`.
+ *
+ * Returned as payload, never on an Error — custom Error properties do not
+ * survive structured clone across the RPC boundary, so a cursor carried that
+ * way would silently arrive as undefined.
+ */
+export async function _rpcFsAcquire(
+  self: RpcHost,
+  epoch: string | null,
+  cursor: number,
+  pid?: number,
+): Promise<VfsAcquireResult> {
+  const args = FsAcquireArgsSchema.parse({ epoch, cursor });
+  return runtimeFs(self, pid).acquire(args.epoch, args.cursor);
 }
 
 export async function _rpcFsReadRange(

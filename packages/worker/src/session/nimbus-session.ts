@@ -694,6 +694,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcReadlink(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid); }
   async _rpcSymlink(target: string, path: string, pid?: number): Promise<void> { return _rpc._rpcSymlink(this as any, target, path, pid); }
   async _rpcFsRevision(path?: string, pid?: number): Promise<number> { return _rpc._rpcFsRevision(this as any, path, pid); }
+  async _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<any> {
+    return _rpc._rpcFsAcquire(this as any, epoch, cursor, pid);
+  }
   async _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any> { return _rpc._rpcFsOpen(this as any, path, flags, pid); }
   async _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array> {
     return _rpc._rpcFsRead(this as any, handleId, offset, length, pid);
