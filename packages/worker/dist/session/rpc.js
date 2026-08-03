@@ -35,7 +35,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observabilit
 import { classifyError } from '../observability/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-coord.js';
 import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
 import { routeSessionLoopback } from './loopback.js';
@@ -296,8 +296,25 @@ const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
 });
+// A facet supplies its own cursor, so it is untrusted input. A null epoch is
+// the legitimate first call from a facet that has never acquired.
+const FsAcquireArgsSchema = z.object({
+    epoch: z.string().max(64).nullable(),
+    cursor: z.number().int().min(0),
+});
 export async function _rpcFsRevision(self, path, pid) {
     return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
+}
+/**
+ * The facet cache-coherence barrier: what changed since `cursor`.
+ *
+ * Returned as payload, never on an Error — custom Error properties do not
+ * survive structured clone across the RPC boundary, so a cursor carried that
+ * way would silently arrive as undefined.
+ */
+export async function _rpcFsAcquire(self, epoch, cursor, pid) {
+    const args = FsAcquireArgsSchema.parse({ epoch, cursor });
+    return runtimeFs(self, pid).acquire(args.epoch, args.cursor);
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid) {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });

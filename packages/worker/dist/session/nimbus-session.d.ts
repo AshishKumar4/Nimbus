@@ -248,6 +248,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcReadlink(path: string, pid?: number): Promise<string | null>;
     _rpcSymlink(target: string, path: string, pid?: number): Promise<void>;
     _rpcFsRevision(path?: string, pid?: number): Promise<number>;
+    _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<any>;
     _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any>;
     _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
     _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;

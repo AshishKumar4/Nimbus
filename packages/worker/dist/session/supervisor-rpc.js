@@ -184,6 +184,20 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async symlink(target, path) {
         return this._call(this._getStub()._rpcSymlink(target, path, this._pid()));
     }
+    /**
+     * ACQUIRE: the paths mutated since the facet's cursor, plus a fresh
+     * cursor. The facet drops those cells from its resident set before
+     * running further user code.
+     *
+     * A separate call rather than a field stamped onto every RPC reply:
+     * SupervisorRPC runs in a different isolate from the DO that owns the
+     * revision clock, so stamping here would cost its own round trip anyway,
+     * and enveloping the existing returns would break `useRpcResource`
+     * disposal, which targets the returned value.
+     */
+    async fsAcquire(epoch, cursor) {
+        return this._call(this._getStub()._rpcFsAcquire(epoch, cursor, this._pid()));
+    }
     async fsRevision(path) {
         return this._call(this._getStub()._rpcFsRevision(path, this._pid()));
     }
