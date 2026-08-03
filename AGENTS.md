@@ -329,3 +329,11 @@ not mean the script is absent.
 - Never edit generated files directly; rerun the package build/bundle scripts.
 - Never revert changes you did not make. Check `git status --short` before
   editing and preserve sibling work.
+- To read a file at another ref, use `git show <ref>:<path>`, or a worktree
+  already at that ref. `git checkout <ref> -- <path>` writes the index as well
+  as the working tree, so it stages a diff without saying so, and it mixes
+  trees: another ref's tests run against this branch's source and fail for
+  reasons that are not real.
+- `git status --short` prints two columns, staged then unstaged. Read both
+  before committing, and confirm with `git show --stat HEAD` that the commit
+  carries the files its message claims.
