@@ -83,9 +83,16 @@ async function up() {
     wrangle('bun', ['run', '--cwd', 'packages/worker', 'build'], { cwd: ROOT, account });
   }
 
+  // Recorded before the deploy, not after: `wrangler deploy` can create the
+  // script and still fail before it reports a URL, and a name nothing knows
+  // about is a name nobody tears down.
+  const createdAt = new Date().toISOString();
+  writeState({ name, base: null, secret, createdAt });
+
   log(`deploying apps/probe as ${name}`);
   const deploy = wrangle(WRANGLER, ['deploy', '--name', name], { cwd: PROBE_APP, account });
   const base = workersDevUrl(deploy.stdout + deploy.stderr, name);
+  writeState({ name, base, secret, createdAt });
 
   log(`setting JWT_SECRET on ${name}`);
   wrangle(WRANGLER, ['secret', 'put', 'JWT_SECRET', '--name', name], {
@@ -93,8 +100,6 @@ async function up() {
     account,
     input: secret,
   });
-
-  writeState({ name, base, secret, createdAt: new Date().toISOString() });
 
   const jwt = await mintProbeToken(secret, ttlMs());
   await waitForTarget(base, jwt);
@@ -114,6 +119,7 @@ async function token() {
 
 async function session() {
   const state = readState(resolveName());
+  if (!state.base) throw new Error(`${state.name} never finished deploying — run \`down\` and try \`up\` again`);
   const jwt = await mintProbeToken(state.secret, ttlMs());
   const { sessionId, attachPath } = await createSession(state.base, jwt);
   process.stdout.write(`${JSON.stringify({ base: state.base, sessionId, attachPath, token: jwt }, null, 2)}\n`);
@@ -141,7 +147,7 @@ async function down() {
 function list() {
   for (const name of listStateNames()) {
     const state = readState(name);
-    process.stdout.write(`${name}\t${state.base}\t${state.createdAt}\n`);
+    process.stdout.write(`${name}\t${state.base ?? '(deploy incomplete)'}\t${state.createdAt}\n`);
   }
 }
 
@@ -230,15 +236,18 @@ function workersDevUrl(output, name) {
 /**
  * Deletion is only done when Cloudflare stops serving the hostname AND
  * stops listing the script. `wrangler deployments list` is the API-backed
- * half: it 404s once the script is gone.
+ * half — it exits 0 for a script that exists (even one that never finished
+ * deploying) and 1 with `[code: 10007]` once the script is really gone.
  */
 async function confirmDeleted(name, account) {
   const state = tryReadState(name);
-  if (state) {
+  const checks = [];
+  if (state?.base) {
     const response = await fetch(state.base, { redirect: 'manual' }).catch(() => null);
     if (response && response.status !== 404) {
       return { ok: false, reason: `${state.base} still answers ${response.status}` };
     }
+    checks.push('hostname 404s');
   }
   const listed = wrangle(WRANGLER, ['deployments', 'list', '--name', name], {
     cwd: PROBE_APP,
@@ -246,7 +255,8 @@ async function confirmDeleted(name, account) {
     allowFail: true,
   });
   if (listed.status === 0) return { ok: false, reason: 'script is still listed by the API' };
-  return { ok: true, reason: 'hostname 404s and the script is not listed' };
+  checks.push('the script is not listed');
+  return { ok: true, reason: checks.join(' and ') };
 }
 
 // ── State ────────────────────────────────────────────────────────────
