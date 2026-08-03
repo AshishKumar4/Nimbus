@@ -2529,9 +2529,14 @@ function __wasiMakeImports(opts) {
     imports.poll_oneoff   = new WebAssembly.Suspending(imports.poll_oneoff);
     // fd_read/fd_write become suspending too: a socket fd routes to the
     // async sock bodies (Promise → JSPI suspends). File/stdio ops return a
-    // plain errno number, which JSPI passes straight through with no
-    // suspender required — so sync callers (ruby _initialize, opentui
-    // render) that only touch files/stdio are unaffected.
+    // plain errno number, which JSPI passes through UNDER AN ACTIVE
+    // SUSPENDER. There is no passthrough without one: V8 traps ANY call
+    // into a Suspending import off a non-promising stack with SuspendError
+    // "trying to suspend without WebAssembly.promising", even when the
+    // import returns a plain number (measured on workerd, compat
+    // 2026-04-01). Every export that can reach these imports must be
+    // entered via WebAssembly.promising — assuming sync callers were
+    // unaffected is exactly how the Ruby VM boot went dark.
     imports.fd_read       = new WebAssembly.Suspending(imports.fd_read);
     imports.fd_write      = new WebAssembly.Suspending(imports.fd_write);
     // fd_pread reaches the same file bodies as fd_read and so can equally
