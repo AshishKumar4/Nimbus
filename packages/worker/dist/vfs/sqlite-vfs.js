@@ -289,7 +289,16 @@ export class SqliteVFS {
     // not a hypothetical.
     _epoch = crypto.randomUUID();
     _invalidations = [];
-    static INVALIDATION_LOG_MAX = 8192;
+    _invalidationBytes = 0;
+    // Bounded by BYTES, not by entry count. An entry-count bound is not a
+    // bound at all here: paths are unbounded in length, so N entries permit
+    // unbounded memory — and this lives in the supervisor DO, the side that
+    // is measurably memory-constrained and has been observed resetting under
+    // allocation pressure. Overflow is safe by construction (the cursor
+    // falls behind the log, invalidatedSince poisons, the facet takes a cold
+    // cache), so the budget can be small. An npm install churns this
+    // continuously and must not be able to grow it.
+    static INVALIDATION_LOG_MAX_BYTES = 256 * 1024;
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch() { return this._epoch; }
     exclusiveMutationLeases = new Map();
@@ -1074,15 +1083,29 @@ export class SqliteVFS {
             }
             if (mutated === '')
                 continue;
-            this._invalidations.push({ rev, path: mutated });
+            this._record(rev, mutated);
             const parent = this.parentPath(mutated);
             if (parent !== '')
-                this._invalidations.push({ rev, path: parent });
+                this._record(rev, parent);
         }
-        const max = SqliteVFS.INVALIDATION_LOG_MAX;
-        if (this._invalidations.length > max) {
-            this._invalidations = this._invalidations.slice(-max);
+        if (this._invalidationBytes <= SqliteVFS.INVALIDATION_LOG_MAX_BYTES)
+            return;
+        let dropped = 0;
+        while (dropped < this._invalidations.length
+            && this._invalidationBytes > SqliteVFS.INVALIDATION_LOG_MAX_BYTES) {
+            this._invalidationBytes -= SqliteVFS.entryBytes(this._invalidations[dropped].path);
+            dropped++;
         }
+        if (dropped > 0)
+            this._invalidations = this._invalidations.slice(dropped);
+    }
+    /** UTF-16 payload plus a flat allowance for the entry object itself. */
+    static entryBytes(path) {
+        return path.length * 2 + 48;
+    }
+    _record(rev, path) {
+        this._invalidations.push({ rev, path });
+        this._invalidationBytes += SqliteVFS.entryBytes(path);
     }
     /**
      * The paths mutated since `cursor`, for a facet holding a cache stamped

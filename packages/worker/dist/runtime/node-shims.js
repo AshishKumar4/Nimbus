@@ -686,25 +686,31 @@ const __fsMod = (() => {
   // path has been committed by the supervisor AND DELIVERED to this facet
   // since the cell was fetched. Delivery happens in _acquireBarrier.
   //
-  // WHAT THIS DOES NOT CLAIM. It is measurably false that every facet
-  // resumption carries an invalidation. Three resumptions reach a facet
-  // with no supervisor in the path, all confirmed live on a throwaway:
-  //   - a facet-local timer (setTimeout(250) advanced the clock 250 ms);
-  //   - a direct outbound fetch (the facet reaches the public internet;
-  //     LOADER.load passes no globalOutbound, so it inherits the parent
-  //     network — see facets/manager.ts and loaders/loader-pool.ts);
-  //   - an unsolicited inbound WebSocket frame pushed by an arbitrary
-  //     external server.
-  // The fetch case is barriered below, in the fetch dispatcher. The timer
-  // and WebSocket cases are NOT, and are named in _UNBARRIERED_RESUMPTIONS
-  // so the gap is greppable rather than an unstated assumption. Across
-  // those, this facet serves state as of its last supervisor reply.
+  // THE HARD CASE. A node sync read has no synchronous channel to the
+  // authority — Atomics.wait is disabled, SharedArrayBuffer cannot cross a
+  // Worker-Loader boundary, and a pure-JS stack cannot JSPI-suspend. So a
+  // sync read cannot itself fetch; it can only serve what is already local.
+  // Coherence therefore has to be established at the RESUMPTION boundary,
+  // before user code runs, not inside the read.
   //
-  // So the guarantee is: causal consistency, read-your-writes and
-  // monotonic reads across every supervisor-mediated channel; linearizable
-  // whenever the resumption was delivered by a supervisor reply. Nothing
-  // stronger.
-  const _UNBARRIERED_RESUMPTIONS = ["timer", "websocket-push"];
+  // Three resumptions reach a facet with no supervisor in the path (all
+  // measured live): a facet-local timer, a direct outbound fetch, and an
+  // unsolicited inbound WebSocket frame. Each is barriered by manufacturing
+  // the missing supervisor round trip at the boundary the shim owns:
+  //   - timer:  setTimeout/setInterval callbacks run behind an awaited
+  //             _acquireAndRefetch (see _installResumptionBarriers). CLOSED.
+  //   - fetch:  the dispatcher fires fsAcquire concurrently with egress and
+  //             flushes W ahead of it; the RTT hides under the network. CLOSED.
+  //   - socket: needs the supervisor to OWN the socket (terminate it and
+  //             relay frames), so the frame delivery is a supervisor message
+  //             the same barrier can ride. Designed, NOT yet built.
+  //
+  // Correctness of the timer barrier is unconditional and costs one
+  // supervisor round trip per resumption — a setTimeout(0) poll-and-read
+  // loop pays one RTT per iteration. That cost is removable only by a
+  // proactive revision push whose delivery ordering is an unrun workerd
+  // probe, never by weakening the barrier.
+  const _UNBARRIERED_RESUMPTIONS = ["websocket-frame"]; // socket relay pending; see above
 
   const _cursor = globalThis.__nimbusVfsCursor
     || (globalThis.__nimbusVfsCursor = { epoch: null, rev: 0 });
@@ -798,19 +804,89 @@ const __fsMod = (() => {
    * alternative is a stale byte.
    */
   async function _acquireBarrier(supervisor) {
-    if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
+    if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
     let result;
     try { result = await supervisor.fsAcquire(_cursor.epoch, _cursor.rev); }
-    catch { return; }
-    if (!result || typeof result.rev !== "number") return;
+    catch { return []; }
+    if (!result || typeof result.rev !== "number") return [];
+    // Paths that held content before this eviction are the ones worth
+    // refetching at a resumption boundary — a later sync read of any of them
+    // would otherwise miss. Collected before the delete so the membership
+    // test is against the pre-eviction bundle.
+    const wereResident = [];
     if (result.poison) {
-      if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) _evictResident(k);
+      if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       _stats.poisons++;
     } else if (Array.isArray(result.paths)) {
-      for (const k of result.paths) if (_evictResident(k)) _stats.invalidations++;
+      for (const k of result.paths) {
+        const held = !!(__vfsBundle && k in __vfsBundle);
+        if (_evictResident(k)) _stats.invalidations++;
+        if (held) wereResident.push(k);
+      }
     }
     _cursor.epoch = result.epoch;
     _cursor.rev = result.rev;
+    return wereResident;
+  }
+
+  /**
+   * ACQUIRE, then repopulate the working set the invalidation just dropped.
+   *
+   * The barrier used at every UNTRUSTED resumption — a timer firing, a
+   * relayed socket frame — where user code is about to run synchronously
+   * with no supervisor message to have carried an invalidation. Manufacture
+   * that message: apply the delta, then live-read every path that was
+   * resident and is now stale so a synchronous read inside the callback
+   * sees exactly what an async read issued at this instant would.
+   *
+   * Eviction alone is not enough here. An async fs op evicts and then reads
+   * its own path live, so a dropped cell repairs itself; a timer callback
+   * has no such follow-up, so a dropped-but-not-refetched cell would raise
+   * EAGAIN on the next sync read — the unhandleable error §7 warns about.
+   * Under the owner's no-price-ceiling mandate we pay the refetch.
+   *
+   * This closes staleness of RESIDENT cells across an untrusted resumption.
+   * A first synchronous touch of a NON-resident path is the separate
+   * residency floor and is unaffected — it still raises EAGAIN, correctly.
+   */
+  async function _acquireAndRefetch(supervisor) {
+    const stale = await _acquireBarrier(supervisor);
+    if (stale.length === 0) return;
+    await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
+  }
+
+  // Every untrusted resumption — a facet-local timer, a relayed socket frame
+  // — runs user code with no supervisor message behind it, so it cannot have
+  // carried an invalidation (see _UNBARRIERED_RESUMPTIONS). The shim owns
+  // these entry points, so it manufactures the missing barrier: the user
+  // callback is preceded by a completed ACQUIRE-and-refetch. After it, a
+  // synchronous read in the callback is as fresh as an async read at the
+  // same instant — the owner's invariant, met for the sync path.
+  //
+  // Correctness is unconditional and costs one supervisor round trip per
+  // resumption. That cost is real (a setTimeout(0) poll-and-read loop pays
+  // one RTT per iteration) and is the number to hand the owner; it is
+  // removable only by a proactive revision push whose delivery ordering is
+  // an unrun workerd probe, never by weakening the barrier.
+  function _installResumptionBarriers() {
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
+    if (globalThis.__nimbusResumptionBarriersInstalled) return;
+    globalThis.__nimbusResumptionBarriersInstalled = true;
+    const _setTimeout = globalThis.setTimeout;
+    const _setInterval = globalThis.setInterval;
+    if (typeof _setTimeout === "function") {
+      globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
+        if (typeof cb !== "function") return _setTimeout(cb, ms);
+        return _setTimeout(() => { _acquireAndRefetch(supervisor).then(() => cb(...args)); }, ms);
+      };
+    }
+    if (typeof _setInterval === "function") {
+      globalThis.setInterval = function setInterval(cb, ms, ...args) {
+        if (typeof cb !== "function") return _setInterval(cb, ms);
+        return _setInterval(() => { _acquireAndRefetch(supervisor).then(() => cb(...args)); }, ms);
+      };
+    }
   }
 
   // Directories mkdirSync created that the authority has not been told about.
@@ -1083,12 +1159,15 @@ const __fsMod = (() => {
     return parts;
   }
 
-  async function _liveReadFile(p, opts) {
+  async function _liveReadFile(p, opts, skipAcquire) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
-    await _acquireBarrier(supervisor);
+    // The refetch step of _acquireAndRefetch has already acquired against a
+    // fresh cursor, so re-acquiring here would be a redundant round trip
+    // that always returns "still R". Every other caller acquires.
+    if (!skipAcquire) await _acquireBarrier(supervisor);
 
     if (typeof supervisor.fsReadRange === "function") {
       // Chunked: the caller wants the whole file, but nothing upstream has
@@ -2687,6 +2766,7 @@ const __fsMod = (() => {
   __defLazyStream("WriteStream", __getWriteStream);
   __defLazyStream("FileReadStream", __getReadStream);
   __defLazyStream("FileWriteStream", __getWriteStream);
+  _installResumptionBarriers();
   return __fsExports;
 })();
 

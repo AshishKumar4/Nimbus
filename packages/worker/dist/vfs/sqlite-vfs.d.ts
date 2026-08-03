@@ -195,7 +195,8 @@ export declare class SqliteVFS {
     private _pathRevisions;
     private readonly _epoch;
     private _invalidations;
-    private static readonly INVALIDATION_LOG_MAX;
+    private _invalidationBytes;
+    private static readonly INVALIDATION_LOG_MAX_BYTES;
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch(): string;
     private readonly exclusiveMutationLeases;
@@ -317,6 +318,9 @@ export declare class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     private bumpRevision;
+    /** UTF-16 payload plus a flat allowance for the entry object itself. */
+    private static entryBytes;
+    private _record;
     /**
      * The paths mutated since `cursor`, for a facet holding a cache stamped
      * at `(epoch, cursor)`.
