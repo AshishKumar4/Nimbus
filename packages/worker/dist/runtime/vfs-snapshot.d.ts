@@ -13,6 +13,7 @@ export interface VfsLike {
         mode: number;
         uid: number;
         gid: number;
+        size: number;
     };
     readFile(path: string): Uint8Array;
     writeFile(path: string, content: Uint8Array | string): void;
@@ -38,6 +39,28 @@ export interface VfsSnapshotResult {
     bytes: number;
     files: number;
 }
+/**
+ * Describe a VFS subtree without copying it.
+ *
+ * Same walk as snapshotVfs, but it records each file's SIZE instead of its
+ * bytes, so the result is a manifest the WASI layer treats as a cache index:
+ * content is demand-loaded through the supervisor on first read, and a path
+ * the manifest lacks is genuinely absent (the walk excludes nothing).
+ *
+ * That last property is why this cannot be a flag on snapshotVfs. snapshotVfs
+ * skips node_modules/.cache/.npm/.nimbus and unreadable files, so its output
+ * may not describe the subtree completely and must never claim to.
+ */
+export declare function manifestVfs(vfs: VfsLike, vfsRoot: string, opts?: {
+    extraRoots?: Iterable<string>;
+    revision?: number;
+}): {
+    snapshot: WasiFsSnapshot;
+    files: number;
+    bytes: number;
+} | {
+    error: string;
+};
 export declare function bytesToB64(bytes: Uint8Array): string;
 export declare function b64ToBytes(b64: string): Uint8Array;
 /**
