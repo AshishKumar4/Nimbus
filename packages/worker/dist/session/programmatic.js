@@ -12,7 +12,7 @@ import { PortRegistry } from '../runtime/port-registry.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '../runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
 const ProcessLogsOptionsSchema = z.object({
     cursor: z.number().int().nonnegative().optional(),
     lines: z.number().int().nonnegative().optional(),
@@ -239,7 +239,7 @@ export async function rpcKillProcess(self, pid) {
                 self.viteDevServer.stop();
                 self.viteDevServer = null;
                 try {
-                    await self.ctx.storage.delete('vite-config');
+                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
                 }
                 catch { }
             }
@@ -359,7 +359,7 @@ export async function rpcDestroy(self, options = {}) {
                         self.viteDevServer.stop();
                     self.viteDevServer = null;
                     try {
-                        await self.ctx.storage.delete('vite-config');
+                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
                     }
                     catch { }
                     self._viteShimPid = null;
