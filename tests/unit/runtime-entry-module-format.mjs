@@ -157,6 +157,25 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.transforms[0].opts.loader, 'js');
 }
 
+// ── an extensionless CommonJS body inside a type:module project survives ──
+//
+// Nimbus writes `node_modules/.bin/<name>` as a real file holding a CJS
+// require of the bin target (npm writes a symlink, which Node realpaths into
+// the target package). Under a `type: module` project the nearest
+// package.json is the user's, so this file now takes the ESM arm — which is
+// what Node does too. esbuild's CJS emit is a no-op on CJS input, so the
+// require has to come out the far side intact.
+{
+  const shim = 'require("/home/user/node_modules/genpkg/bin/genpkg");\n';
+  const r = await runScript({
+    'home/user/package.json': JSON.stringify({ name: 'app', type: 'module' }),
+    'home/user/node_modules/.bin/genpkg': `#!/usr/bin/env node\n${shim}`,
+  }, '/home/user/node_modules/.bin/genpkg');
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.match(r.transforms[0].code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
+  assert.match(r.code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
+}
+
 // ── a dotfile entry has no extension; its package type decides ──
 {
   const r = await runScript({
