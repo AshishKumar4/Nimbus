@@ -379,7 +379,7 @@ export function makeWasmRunner(deps) {
                         return {
                             ok: false,
                             mode: 'wasi',
-                            error: `wasi-threads: could not reserve the shared memory this module declares `
+                            error: `wasi-threads: could not reserve the shared memory the module declares `
                                 + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
                                 + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${e?.message || e}. `
                                 + 'A shared memory reserves its maximum immediately — lower --max-memory.',
