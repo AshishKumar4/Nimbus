@@ -1074,7 +1074,13 @@ function __wasiMakeImports(opts) {
     }
     const size = __wasiFS.sizes.get(vfsPath);
     if (size === undefined) return new Uint8Array(0);
-    if (!__wasiSup) return new Uint8Array(0);
+    // A manifest entry says "this file exists and has N bytes"; the bytes live
+    // in the session VFS. With no supervisor there is no way to get them, and
+    // answering with zero bytes is not a degraded read — it is a DIFFERENT
+    // FILE, reported as a success. Ruby's require took that empty content,
+    // defined nothing, and failed later as an undefined constant with nothing
+    // pointing back here. Callers turn null into EIO.
+    if (!__wasiSup) return null;
     // Queued writes must be visible to our own live read.
     return (async () => {
       await __wasiDrainPersist();
@@ -1317,6 +1323,9 @@ function __wasiMakeImports(opts) {
       // Re-read memory views after a possible suspension: the guest may have
       // grown its memory while we were parked, detaching the old buffer.
       const deliver = (bytes) => {
+        // Null is "the content exists but is unreachable" — never zero bytes,
+        // which the guest cannot tell from an empty file.
+        if (bytes === null) return __WASI_EIO;
         const n = scatterIovs(bytes, iovsPtr, iovsLen, view(), u8());
         entry.offset += n;
         writeU32LE(nreadPtr, n);
@@ -1960,6 +1969,7 @@ function __wasiMakeImports(opts) {
       if (take === 0) { writeU32LE(nreadPtr, 0); return __WASI_ESUCCESS; }
       const chunk = readRange(entry.vfsPath, offset, take);
       const deliver = (bytes) => {
+        if (bytes === null) return __WASI_EIO;
         writeU32LE(nreadPtr, scatterIovs(bytes, iovsPtr, iovsLen, view(), u8()));
         return __WASI_ESUCCESS;
       };

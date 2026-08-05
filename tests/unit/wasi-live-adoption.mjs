@@ -11,6 +11,14 @@
 import assert from 'node:assert';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const RUBY_RUNNER_SRC = join(
+  dirname(fileURLToPath(import.meta.url)), '..', '..',
+  'packages', 'worker', 'src', 'runtime', 'ruby-runner.ts',
+);
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -215,4 +223,36 @@ console.log('wasi-live-adoption: all assertions passed');
 }
 
 console.log('wasi-live-adoption: watchdog assertions passed');
+// ── 7. An unreachable manifest entry is an I/O error, never an empty file ────
+// A manifest entry asserts "this file exists and has N bytes" while the bytes
+// stay in the session VFS. With no supervisor there is no way to fetch them,
+// and returning zero bytes is not a degraded read — it is a different file,
+// handed over as a success. Ruby's require consumed exactly that, defined
+// nothing, and died later on an undefined constant with nothing pointing back.
+{
+  P.__wasiInitFS(INIT({
+    sizes: { 'home/user/seeded.rb': 24 },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/seeded.rb': 6 },
+    revision: 3,
+  }));
+  // Deliberately NOT adopting: this is the state __wasiInitFS leaves behind,
+  // and the state a runner that adopts before mounting is left in.
+  const h = host();
+  const opened = await h.open('home/user/seeded.rb');
+  assert.equal(opened.errno, 0, 'the manifest entry must open — it exists');
+  const read = await h.read(opened.fd);
+  assert.equal(read.errno, 29, `an unreachable manifest entry must read EIO, got errno ${read.errno}`);
+  assert.notEqual(read.text, '', 'a zero-byte success is the failure this asserts against');
+}
+
+// ── 8. Ruby re-adopts AFTER mounting, because the mount drops the stub ───────
+{
+  const runner = readFileSync(RUBY_RUNNER_SRC, 'utf8');
+  const mount = runner.indexOf('__nimbusInstallRubyFsSnapshot(args.fsSnapshot)');
+  const readopt = runner.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor)');
+  assert.ok(mount > 0 && readopt > mount,
+    'ruby must adopt the supervisor AFTER __wasiInitFS, which clears it');
+}
+
 console.log('wasi-live-adoption: silent-write-loss assertions passed');
+console.log('wasi-live-adoption: unreachable-content and adopt-order assertions passed');
