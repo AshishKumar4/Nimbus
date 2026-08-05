@@ -17,67 +17,33 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import {
-  _rpcHostProcessProbe,
-  _rpcHostProcess,
-  _rpcRouteHostedHttp,
-  _rpcCancelHostProcess,
-} from '../../packages/worker/src/session/rpc.ts';
+import { residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
-// setCtxExports is first-write-wins, so install ONE dispatcher and key the
-// per-facet route stubs on the worker key the manager resolves with. The
-// manager creates a stage-carrying START stub and a code-free ROUTE stub per
-// serve facet; neither may pin the facet code in props (residency pin,
-// live-diagnosed 2026-07-16: the ~23 MB opencode module map in the DO heap
-// OOM-reset the supervisor).
-const stubsByKey = new Map();
-const startStub = { async startProcess() { return new Promise(() => {}); } }; // resident
-setCtxExports({
-  NimbusLoadedEntrypoint: (opts) => {
-    assert.equal(opts.props.code, undefined, 'stubs must not pin the module map');
-    return opts.props.stage ? startStub : stubsByKey.get(opts.props.key);
-  },
-  SupervisorRPC: (_opts) => ({ __supervisor: true }),
-});
+setCtxExports({ SupervisorRPC: (_opts) => ({ __supervisor: true }) });
 
-// A route stub whose FIRST poll wedges forever (the mid-boot black hole) and
-// whose later polls answer 200 (the server finished booting).
+// One serve facet per pid, each with its own poll behaviour. The module map is
+// not built here: the subject is the readiness gate, not what the map contains.
+const facetBehaviour = new Map();
+const world = createFacetWorld((_config, info) => ({
+  async startProcess() { return new Promise(() => {}); }, // resident
+  handleHttpRequest: (request) => facetBehaviour.get(info.facetName)(request),
+}), { resolveConfig: false });
+
+// The FIRST poll wedges forever (the mid-boot black hole); later polls answer
+// 200 (the server finished booting).
 let polls = 0;
-const routeStub = {
-  async handleHttpRequest(_request) {
-    polls++;
-    if (polls === 1) return new Promise(() => {});
-    return new Response('{"openapi":"3.0.0"}', { status: 200 });
-  },
-};
-
-const failingLoader = {
-  load() { throw new Error('no session DO may load the facet directly'); },
-  get(_key, _cb) { throw new Error('no session DO may load the facet directly'); },
-};
-
-// `opencode serve` SERVES — the readiness gate below polls /doc back through
-// PortRegistry — so it declares light and the facet stays in the coordinator's
-// own process. The peer namespace is wired to the REAL peer legs regardless, so
-// a regression that sent a serving facet to a peer would show up here.
-const peerSelf = {
-  _hostedProcesses: new Map(),
-  _hostedProcessWaiters: new Map(),
-  env: { LOADER: failingLoader },
-};
-const peerStub = {
-  _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
-  _rpcHostProcess: (boot, opts) => _rpcHostProcess(peerSelf, boot, opts),
-  _rpcRouteHostedHttp: (key, request) => _rpcRouteHostedHttp(peerSelf, key, request),
-  _rpcCancelHostProcess: async (key) => _rpcCancelHostProcess(peerSelf, key),
+const wedgeThenServe = () => {
+  polls++;
+  if (polls === 1) return new Promise(() => {});
+  return Promise.resolve(new Response('{"openapi":"3.0.0"}', { status: 200 }));
 };
 
 const env = {
-  LOADER: failingLoader,
-  NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => peerStub },
+  LOADER: world.loader,
   ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
 };
-const ctx = { id: { toString: () => 'do-test' }, waitUntil: (_p) => {} };
+const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();
 const portRegistry = new PortRegistry();
 const fm = new FacetManager(ctx, env, processes, portRegistry, {});
@@ -92,7 +58,7 @@ const entry = processes.spawn('opencode serve --port 4096', ['opencode', 'serve'
 const pid = entry.pid;
 processes.setLongRunning(pid);
 const port = 4096;
-stubsByKey.set(`nimbus-process:do-test:${pid}`, routeStub);
+facetBehaviour.set(residentFacetName(pid), wedgeThenServe);
 await fm._runOpencodeServerFacet({
   pid,
   command: 'opencode serve --port 4096',
@@ -108,12 +74,12 @@ assert.ok(polls >= 2, `a fresh poll fired after the wedged one (polls=${polls})`
 assert.ok(elapsed < 3000, `gate passed without starving on the wedged poll (took ${elapsed}ms)`);
 
 // Fail-loud path: never-200 polls surface the last poll outcome at the deadline.
-const stubNever = {
-  async handleHttpRequest(_request) { return new Response('nope', { status: 502 }); },
-};
 const entry2 = processes.spawn('opencode serve --port 4097', ['opencode', 'serve'], '/home/user');
 processes.setLongRunning(entry2.pid);
-stubsByKey.set(`nimbus-process:do-test:${entry2.pid}`, stubNever);
+facetBehaviour.set(
+  residentFacetName(entry2.pid),
+  async () => new Response('nope', { status: 502 }),
+);
 await fm._runOpencodeServerFacet({
   pid: entry2.pid,
   command: 'opencode serve --port 4097',
