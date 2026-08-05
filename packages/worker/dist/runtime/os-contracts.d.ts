@@ -238,7 +238,7 @@ export interface PackageAbiPolicy {
     /** bin-target file extensions that mark a native executable. */
     nativeBinExtensions: readonly string[];
 }
-export type RuntimeAbiCapability = 'wasi.snapshot-preview1' | 'wasi.unstable-import-alias' | 'vfs.snapshot-diff' | 'stdio' | 'argv' | 'env' | 'clock' | 'random' | 'path' | 'symlink' | 'hardlink' | 'poll' | 'outbound-tcp-devtcp';
+export type RuntimeAbiCapability = 'wasi.snapshot-preview1' | 'wasi.unstable-import-alias' | 'vfs.snapshot-diff' | 'stdio' | 'argv' | 'env' | 'clock' | 'random' | 'path' | 'symlink' | 'hardlink' | 'poll' | 'outbound-tcp-devtcp' | 'wasi.threads';
 export interface RuntimeAbiDescriptor {
     os: typeof NIMBUS_OS_NAME;
     target: typeof NIMBUS_ABI_TARGET;

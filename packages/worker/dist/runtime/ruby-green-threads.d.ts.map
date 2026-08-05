@@ -1,1 +1,1 @@
-{"version":3,"file":"ruby-green-threads.d.ts","sourceRoot":"","sources":["../../src/runtime/ruby-green-threads.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GA6FG;AACH,eAAO,MAAM,kBAAkB,QA0oB9B,CAAC"}
+{"version":3,"file":"ruby-green-threads.d.ts","sourceRoot":"","sources":["../../src/runtime/ruby-green-threads.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAsGG;AACH,eAAO,MAAM,kBAAkB,QA0oB9B,CAAC"}

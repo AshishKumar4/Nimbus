@@ -74,5 +74,7 @@ export const WASM32_WASI_NIMBUS_ABI = {
         'hardlink',
         'poll',
         'outbound-tcp-devtcp',
+        // Cooperative, correct, and not parallel — see runtime/wasi-threads.ts.
+        'wasi.threads',
     ]),
 };
