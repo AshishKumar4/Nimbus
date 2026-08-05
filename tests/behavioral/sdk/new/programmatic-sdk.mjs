@@ -51,6 +51,10 @@ const stub = {
   async _rpcReadFileBytes(path) { calls.push(['readFileBytes', path]); return new Uint8Array([1, 2]); },
   async _rpcWriteFile(path, content) { calls.push(['writeFile', path, content]); },
   async _rpcStat(path) { calls.push(['stat', path]); return { type: 'file', size: 4, mtime: 1, mode: 0o644 }; },
+  async _rpcLstat(path) { calls.push(['lstat', path]); return { type: 'symlink', size: 4, mtime: 1, mode: 0o777 }; },
+  async _rpcRename(from, to) { calls.push(['rename', from, to]); },
+  async _rpcChmod(path, mode) { calls.push(['chmod', path, mode]); },
+  async _rpcFsReadRange(path, offset, length) { calls.push(['readRange', path, offset, length]); return new Uint8Array([3, 4]); },
   async _rpcReaddir(path) { calls.push(['readdir', path]); return [{ name: 'a.txt', type: 'file' }]; },
   async _rpcExists(path) { calls.push(['exists', path]); return true; },
   async _rpcMkdir(path) { calls.push(['mkdir', path]); },
@@ -177,6 +181,22 @@ a.check('capabilities report allowed runtimes without generic native overclaim',
 
 const stat = await box.files.stat('/home/user/project/a.txt');
 a.check('files.stat exposes VFS stat', stat?.type === 'file' && stat.size === 4);
+
+const lstat = await box.files.lstat('/home/user/project/link');
+a.check('files.lstat does not follow the symlink leaf', lstat?.type === 'symlink');
+
+await box.files.rename('/home/user/project/a.txt', '/home/user/project/b.txt');
+a.check('files.rename calls the rename RPC',
+  !!calls.find((c) => c[0] === 'rename' && c[2] === '/home/user/project/b.txt'));
+
+await box.files.chmod('/home/user/project/b.txt', 0o755);
+a.check('files.chmod calls the chmod RPC',
+  !!calls.find((c) => c[0] === 'chmod' && c[2] === 0o755));
+
+const range = await box.files.readRange('/home/user/project/b.txt', 2, 2);
+a.check('files.readRange reads a byte window without the whole file',
+  range instanceof Uint8Array && range.length === 2
+  && !!calls.find((c) => c[0] === 'readRange' && c[2] === 2 && c[3] === 2));
 
 await box.processes.resize(7, { columns: 100, rows: 31 });
 a.check('processes.resize calls terminal-size RPC',

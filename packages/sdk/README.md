@@ -210,7 +210,11 @@ await box.files.write('/home/user/app/a.txt', 'hello');
 await box.files.read('/home/user/app/a.txt');
 await box.files.list('/home/user/app');
 await box.files.stat('/home/user/app/a.txt');
-await box.files.delete('/home/user/app/a.txt');
+await box.files.lstat('/home/user/app/link');
+await box.files.rename('/home/user/app/a.txt', '/home/user/app/b.txt');
+await box.files.chmod('/home/user/app/b.txt', 0o755);
+await box.files.readRange('/home/user/app/b.txt', 0, 64);
+await box.files.delete('/home/user/app/b.txt');
 
 await box.runtimes.available();
 await box.runtimes.installed();

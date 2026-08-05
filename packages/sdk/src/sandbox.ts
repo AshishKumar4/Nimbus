@@ -212,7 +212,11 @@ interface NimbusSessionStub {
   _rpcReadFileBytes(path: string): Promise<Uint8Array | null>;
   _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
   _rpcStat(path: string): Promise<NimbusFileStat | null>;
+  _rpcLstat(path: string): Promise<NimbusFileStat | null>;
   _rpcReaddir(path: string): Promise<{ name: string; type: string }[]>;
+  _rpcRename(from: string, to: string): Promise<void>;
+  _rpcChmod(path: string, mode: number): Promise<void>;
+  _rpcFsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
   _rpcExists(path: string): Promise<boolean>;
   _rpcMkdir(path: string): Promise<void>;
   _rpcDeleteFile(path: string, options?: { recursive?: boolean }): Promise<void>;
@@ -531,6 +535,11 @@ export class NimbusSandbox {
       _rpcReadFileBytes: (path) => this.remoteRpc('readFileBytes', [path], Uint8ArrayOrNullSchema),
       _rpcWriteFile: (path, content) => this.remoteRpc('writeFile', [path, content], UndefinedResultSchema),
       _rpcStat: (path) => this.remoteRpc('stat', [path], FileStatSchema.nullable()),
+      _rpcLstat: (path) => this.remoteRpc('lstat', [path], FileStatSchema.nullable()),
+      _rpcRename: (from, to) => this.remoteRpc('rename', [from, to], UndefinedResultSchema),
+      _rpcChmod: (path, mode) => this.remoteRpc('chmod', [path, mode], UndefinedResultSchema),
+      _rpcFsReadRange: (path, offset, length) =>
+        this.remoteRpc('readRange', [path, offset, length], Uint8ArrayOrNullSchema),
       _rpcReaddir: (path) => this.remoteRpc('readdir', [path], z.array(DirectoryEntrySchema)),
       _rpcExists: (path) => this.remoteRpc('exists', [path], BooleanResultSchema),
       _rpcMkdir: (path) => this.remoteRpc('mkdir', [path], UndefinedResultSchema),
@@ -668,6 +677,24 @@ export class NimbusSandbox {
     stat: async (path: string): Promise<NimbusFileStat | null> => {
       await this.ready();
       return this.rpc(this.stub()._rpcStat(path));
+    },
+    /** stat without following a symlink leaf. */
+    lstat: async (path: string): Promise<NimbusFileStat | null> => {
+      await this.ready();
+      return this.rpc(this.stub()._rpcLstat(path));
+    },
+    rename: async (from: string, to: string): Promise<void> => {
+      await this.ready();
+      return this.rpc(this.stub()._rpcRename(from, to));
+    },
+    chmod: async (path: string, mode: number): Promise<void> => {
+      await this.ready();
+      return this.rpc(this.stub()._rpcChmod(path, mode));
+    },
+    /** Read `length` bytes at `offset` without materializing the whole file. */
+    readRange: async (path: string, offset: number, length: number): Promise<Uint8Array | null> => {
+      await this.ready();
+      return this.rpc(this.stub()._rpcFsReadRange(path, offset, length));
     },
     list: async (path = this.root): Promise<{ name: string; type: string }[]> => {
       await this.ready();
