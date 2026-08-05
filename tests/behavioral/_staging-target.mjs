@@ -37,8 +37,9 @@
 //                           only copy an identical binding list a third
 //                           time, for wrangler to drift.
 //
-//   Neither is `nimbus-probe`: that Worker is what CI points BASE at, so
-//   deploying a branch there would silently make CI test the branch.
+//   Neither is `nimbus-probe`, the long-lived probe target, nor `nimbus`.
+//   CI deploys its own `nimbus-tw-ci-*` throwaway per run and grades that,
+//   so nothing here is a target a branch should land on.
 //
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>       # account pin, required

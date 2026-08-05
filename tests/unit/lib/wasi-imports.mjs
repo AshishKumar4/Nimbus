@@ -3,10 +3,10 @@
  *
  * wasi-instance.ts wraps fd_read/fd_write/fd_pread/path_filestat_get and the
  * socket and poll_oneoff imports in WebAssembly.Suspending whenever the
- * runtime has JSPI. V8 traps ANY call into a Suspending import from a stack that
- * WebAssembly.promising did not enter — a plain errno return included; that
- * constraint is documented at the wrap site and is what took the Ruby VM boot
- * dark. Only a wasm guest can enter such a stack, so a test driving the
+ * runtime has JSPI. V8 traps ANY call into a Suspending import from a stack
+ * that WebAssembly.promising did not enter — a plain errno return included;
+ * that constraint is documented at the wrap site and is what took the Ruby VM
+ * boot dark. Only a wasm guest can enter such a stack, so a test driving the
  * imports from JS cannot call the wrapped table at all.
  *
  * The wrapper is pure calling convention: it parks the guest on whatever the
