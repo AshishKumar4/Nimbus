@@ -1,110 +1,233 @@
 #!/usr/bin/env bun
-// static-checks/no-this-in-facet-fns — static guard against `\bthis\b`
-// regressions in facet-bound functions.
+// static-checks/no-this-in-facet-fns — a facet function may not contain the
+// token `this` anywhere the bundler will keep it.
 //
-// Workerd's loader-pool serializes worker fns via fn.toString() and
-// rejects sources containing `\bthis\b` (no late binding in remote
-// isolates). The regression has appeared 3 times in python-repl.ts
-// (see repl-r7/regression/no-this-in-facet-fn.mjs for history).
+// The loader serializes a facet function with fn.toString() and refuses it if
+// the source matches /\bthis\b/, because a remote isolate has no receiver to
+// bind (see src/loaders/vendor/serialize.ts). That guard is a plain regex, so
+// it cannot tell a `this` that needs binding from the English word in a
+// sentence.
 //
-// This probe is a fast, deploy-free, source-level check. It does NOT
-// hit prod (so BASE is optional). It reads facet-bound function
-// bodies from disk and asserts no bare `this` token appears.
+// WHAT MAKES THIS CLASS DANGEROUS
+//   Bundling strips comments. It does not strip strings.
 //
-// Coverage:
-//   - src/runtime/python-repl.ts  →  replStepFacetFn
-//   - src/runtime/ruby-repl.ts    →  replStepFacetFn (if defined)
-//   - src/runtime/bun-repl.ts     →  replStepFacetFn (if defined)
-//   - src/runtime/node-repl.ts    →  replStepFacetFn (if defined)
+//   The word is harmless in a comment and fatal in a message, so the day
+//   someone moves the same sentence from one into the other, every dispatch
+//   through that function begins failing at runtime with an error that blames
+//   `this`. That is what happened to wasmFacetCall: eight occurrences sat in
+//   its comments for months, then wasi-threads parity put one in a
+//   shared-memory error string and `wasm-runner` stopped working entirely
+//   (hand-crafted-add 4/7, pthread-parity 3/10, clang/hello-world 4/5).
 //
-// If you add a new facet-bound function elsewhere, add it to TARGETS.
+//   So this check blanks comments and then matches, seeing what the loader
+//   will see. Occurrences in comments are counted and reported but do not
+//   fail — flagging those would make the check cry wolf on eight harmless
+//   lines, which is how a guard gets switched off.
+//
+// WHY dist AND NOT src
+//   dist is what the worker is bundled from, it is committed, and it is plain
+//   JavaScript — no type annotations whose braces would confuse a body scan.
+//   Checking it checks what ships.
+//
+// WHY DISCOVERY AND NOT A LIST
+//   The previous version of this check carried a hand-written list of four
+//   files. All four had since been deleted, so it reported "0 pass / 0 fail"
+//   and guarded nothing while the regression it existed to catch shipped.
+//   Facet functions are now found by following `.submit(...)` call sites, and
+//   the run fails outright if discovery collapses.
 
-import { readFileSync, existsSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, relative } from 'node:path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..', '..', '..');
+const DIST = join(REPO, 'packages', 'worker', 'dist');
 
-const TARGETS = [
-  // path, fn-name(s) — facet-bound fns serialized via fn.toString()
-  // by src/loaders/loader-pool.ts and run in a remote isolate where
-  // late-binding `this` is unavailable.
-  { path: 'src/runtime/python-repl.ts', fns: ['replStepFacetFn'] },
-  { path: 'src/runtime/ruby-repl.ts', fns: ['rubyReplStepFacetFn'] },
-  { path: 'src/runtime/bun-repl.ts', fns: ['bunReplStepFacetFn'] },
-  { path: 'src/runtime/node-repl.ts', fns: ['nodeReplStepFacetFn'] },
-];
+/** A facet function is reached through `pool.submit(fn, …)`; nothing else serializes one. */
+const SUBMIT = '.submit(';
 
 /**
- * Extract a top-level function body by name from a source file.
- * Returns the slice of source from `function NAME(` through the
- * matching `}\n` at column 0. If the fn doesn't exist, returns null.
- *
- * Crude but reliable: relies on the project's consistent formatting
- * (top-level fn declarations close with `}` at column 0).
+ * The floor that keeps this check from going quiet again. If a refactor
+ * renames `submit` or moves dispatch elsewhere, discovery drops and the run
+ * fails rather than printing a cheerful zero.
  */
-function extractFnBody(source, fnName) {
-  const startRe = new RegExp(`^function\\s+${fnName}\\s*\\(`, 'm');
-  const startMatch = startRe.exec(source);
-  if (!startMatch) return null;
-  const start = startMatch.index;
-  // Find the next `}\n` at column 0 after the fn signature.
-  const closeRe = /^}\s*$/m;
-  closeRe.lastIndex = start + startMatch[0].length;
-  const closeMatch = closeRe.exec(source.slice(start + startMatch[0].length));
-  if (!closeMatch) return source.slice(start);  // open-ended — return rest
-  const end = start + startMatch[0].length + closeMatch.index + closeMatch[0].length;
-  return source.slice(start, end);
+const MIN_EXPECTED_FACET_FNS = 3;
+
+// ── scanning ────────────────────────────────────────────────────────────────
+//
+// One pass that understands strings, template literals, regex literals and
+// comments. It returns a same-length copy with every comment byte replaced by
+// a space, so offsets still line up with the original and anything found in
+// the blanked text can be reported at its real line number.
+
+const ID_TAIL = /[A-Za-z0-9_$)\]]/;
+
+function blankComments(src) {
+  const out = src.split('');
+  let i = 0;
+  let lastSignificant = '';
+  while (i < src.length) {
+    const c = src[i];
+    const next = src[i + 1];
+
+    if (c === '/' && next === '/') {
+      while (i < src.length && src[i] !== '\n') { out[i] = ' '; i++; }
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      out[i] = ' '; out[i + 1] = ' '; i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
+        if (src[i] !== '\n') out[i] = ' ';
+        i++;
+      }
+      if (i < src.length) { out[i] = ' '; out[i + 1] = ' '; i += 2; }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      i++;
+      while (i < src.length) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === quote) { i++; break; }
+        i++;
+      }
+      lastSignificant = quote;
+      continue;
+    }
+    // A `/` is a regex literal unless the previous significant character could
+    // end an expression, in which case it is division.
+    if (c === '/' && !ID_TAIL.test(lastSignificant)) {
+      i++;
+      while (i < src.length) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === '[') { while (i < src.length && src[i] !== ']') { if (src[i] === '\\') i++; i++; } }
+        if (src[i] === '/') { i++; break; }
+        if (src[i] === '\n') break;
+        i++;
+      }
+      lastSignificant = '/';
+      continue;
+    }
+    if (!/\s/.test(c)) lastSignificant = c;
+    i++;
+  }
+  return out.join('');
+}
+
+/** Offset of the `{` opening the body of the function whose signature starts at `from`. */
+function bodyStart(text, from) {
+  let i = text.indexOf('(', from);
+  if (i < 0) return -1;
+  let depth = 0;
+  for (; i < text.length; i++) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') { depth--; if (depth === 0) { i++; break; } }
+  }
+  while (i < text.length && /\s/.test(text[i])) i++;
+  return text[i] === '{' ? i : -1;
+}
+
+/** End offset (exclusive) of the block opened at `open`. */
+function matchBrace(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+
+/** Every `<name>` handed to `.submit(`, in source order. */
+function submittedNames(blank) {
+  const names = [];
+  let at = 0;
+  for (;;) {
+    const hit = blank.indexOf(SUBMIT, at);
+    if (hit < 0) return names;
+    at = hit + SUBMIT.length;
+    const arg = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[,)]/.exec(blank.slice(at));
+    if (arg) names.push(arg[1]);
+  }
+}
+
+/** Locate the function bound to `name`, returning its body range. */
+function facetFnRange(blank, name) {
+  const decl = new RegExp(
+    `(?:const|let|var)\\s+${name}\\s*=\\s*(?:async\\s+)?function\\b|` +
+    `(?:async\\s+)?function\\s+${name}\\s*\\(`,
+  ).exec(blank);
+  if (!decl) return null;
+  const open = bodyStart(blank, decl.index);
+  if (open < 0) return null;
+  const close = matchBrace(blank, open);
+  if (close < 0) return null;
+  return { open, close };
+}
+
+function jsFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) out.push(...jsFiles(full));
+    else if (entry.endsWith('.js')) out.push(full);
+  }
+  return out;
+}
+
+const lineOf = (src, offset) => src.slice(0, offset).split('\n').length;
+
+// ── run ─────────────────────────────────────────────────────────────────────
+
+console.log('static-checks/no-this-in-facet-fns');
+
+if (!existsSync(DIST)) {
+  console.log(`  ✗ ${relative(REPO, DIST)} is missing — run \`bun run --cwd packages/worker build\``);
+  process.exit(1);
 }
 
 let pass = 0;
 let fail = 0;
-const failures = [];
+let discovered = 0;
 
-console.log(`static-checks/no-this-in-facet-fns`);
+for (const file of jsFiles(DIST)) {
+  const src = readFileSync(file, 'utf-8');
+  if (!src.includes(SUBMIT)) continue;
+  const blank = blankComments(src);
+  const rel = relative(REPO, file);
 
-for (const tgt of TARGETS) {
-  const fullPath = join(REPO, tgt.path);
-  if (!existsSync(fullPath)) {
-    console.log(`  - ${tgt.path}: not present (skipped)`);
-    continue;
-  }
-  const src = readFileSync(fullPath, 'utf-8');
-  for (const fnName of tgt.fns) {
-    const body = extractFnBody(src, fnName);
-    if (body === null) {
-      console.log(`  - ${tgt.path}::${fnName}: not defined (skipped)`);
+  for (const name of new Set(submittedNames(blank))) {
+    const range = facetFnRange(blank, name);
+    if (!range) continue;   // a parameter, or defined in another module
+    discovered++;
+
+    const body = blank.slice(range.open, range.close);
+    const raw = src.slice(range.open, range.close);
+    const live = [...body.matchAll(/\bthis\b/g)];
+    const inComments = [...raw.matchAll(/\bthis\b/g)].length - live.length;
+    const note = inComments > 0 ? ` (${inComments} in comments, stripped when bundled)` : '';
+
+    if (live.length === 0) {
+      console.log(`  ✓ ${rel}::${name} — no \`this\` the bundler would keep${note}`);
+      pass++;
       continue;
     }
-    // Find any bare `this` token. Use word boundary.
-    const matches = [];
-    const re = /\bthis\b/g;
-    let m;
-    while ((m = re.exec(body)) !== null) {
-      // Compute line number for diagnostics.
-      const upTo = body.slice(0, m.index);
-      const lineInBody = upTo.split('\n').length;
-      const bodyStartLine = src.slice(0, src.indexOf(body)).split('\n').length;
-      const fileLine = bodyStartLine + lineInBody - 1;
-      const lineSrc = src.split('\n')[fileLine - 1] || '';
-      matches.push({ fileLine, lineSrc: lineSrc.trim().slice(0, 120) });
+    console.log(`  ✗ ${rel}::${name} — ${live.length} \`this\` survive(s) bundling${note}:`);
+    for (const m of live) {
+      const line = lineOf(src, range.open + m.index);
+      console.log(`      line ${line}: ${(src.split('\n')[line - 1] || '').trim().slice(0, 120)}`);
     }
-    if (matches.length === 0) {
-      console.log(`  \u2713 ${tgt.path}::${fnName} — no bare \`this\` token`);
-      pass++;
-    } else {
-      console.log(`  \u2717 ${tgt.path}::${fnName} — ${matches.length} bare \`this\` token(s):`);
-      for (const m of matches) {
-        console.log(`      line ${m.fileLine}: ${m.lineSrc}`);
-      }
-      fail++;
-      failures.push({ target: `${tgt.path}::${fnName}`, matches });
-    }
+    fail++;
   }
 }
 
-console.log(`\n  \u2500\u2500\u2500\u2500 [static-checks/no-this-in-facet-fns] ${pass} pass / ${fail} fail`);
+if (discovered < MIN_EXPECTED_FACET_FNS) {
+  console.log(
+    `  ✗ discovery found only ${discovered} facet function(s), expected at least ` +
+    `${MIN_EXPECTED_FACET_FNS} — dispatch moved and this check is no longer looking at it`,
+  );
+  fail++;
+}
 
+console.log(`\n  ──── [static-checks/no-this-in-facet-fns] ${pass} pass / ${fail} fail`);
 process.exit(fail > 0 ? 1 : 0);
