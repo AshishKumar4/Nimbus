@@ -1,111 +1,55 @@
 #!/usr/bin/env bun
 // A routed request must never boot a SECOND copy of the user's program.
 //
-// A resident process (`node server.js`, a python/ruby socket server) runs in a
-// keyed dynamic worker. Its port is served through a NimbusLoadedEntrypoint
-// route stub resolved fresh on each request. If that stub carries the
-// program's code, a request arriving after the Worker Loader evicted the entry
-// silently boots a SECOND isolate: the user's module scope is evaluated again,
-// its side effects re-run, and the request is answered 200 by a process the
-// user never started — with its own memory, while the process they did start
-// sits idle. Live-reproduced on a local workerd 2026-07-24: after three more
-// resident servers were spawned in one session, the first server's port
-// answered 200 with a different module-scope boot id.
+// A resident process (`node server.js`, a python/ruby socket server) runs as a
+// DO Facet of the session, and its port is served through that facet's stub. If
+// a request arriving after the facet was lost could re-run the facet's start
+// callback, the user's module scope would be evaluated again, its side effects
+// re-run, and the request answered 200 by a process the user never started —
+// with its own memory, while the process they did start is gone.
+// Live-reproduced on a local workerd 2026-07-24 under the previous keyed-loader
+// scheme: after three more resident servers were spawned in one session, the
+// first server's port answered 200 with a different module-scope boot id.
 //
 // The invariant, asserted here through FacetManager's public spawn surface:
 //   1. spawning a resident process evaluates the program EXACTLY ONCE;
 //   2. any number of routed requests evaluate it ZERO further times;
-//   3. a request that finds the facet evicted FAILS LOUD — it never boots a
+//   3. a request that finds the facet gone FAILS LOUD — it never boots a
 //      replacement and answers from it.
-// A "boot" here is a code-carrying load, exactly as it is on the real loader.
+// A "boot" here is one module evaluation, exactly as it is on the real loader.
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import {
-  _rpcHostProcessProbe,
-  _rpcHostProcess,
-  _rpcAwaitHostedBoot,
-  _rpcRouteHostedHttp,
-  _rpcCancelHostProcess,
-} from '../../packages/worker/src/session/rpc.ts';
+import { residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { readFileSync } from 'node:fs';
 
+setCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
+
 /**
- * Stands in for the Worker Loader plus the program it runs. Each load of the
- * program's code is one BOOT with a fresh module scope, which is what a real
- * second isolate would give the user.
+ * Stands in for the program the facet runs. Each module evaluation is one BOOT
+ * with a fresh module scope, which is what a real second isolate would give the
+ * user.
  */
-function makeLoaderWorld() {
-  const world = { boots: [], evicted: false };
-  const loadedByKey = new Map();
-  world.resolve = (key, code) => {
-    if (code !== undefined) {
-      const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
-      world.boots.push(boot);
-      loadedByKey.set(key, boot);
-      return boot;
-    }
-    const running = world.evicted ? undefined : loadedByKey.get(key);
-    if (!running) throw new Error(`Nimbus: dynamic worker '${key}' is no longer loaded (evicted?)`);
-    return running;
+const world = createFacetWorld(() => {
+  const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
+  return {
+    boot,
+    async startProcess() { return { ok: true }; },
+    async handleHttpRequest(request) {
+      boot.served++;
+      return Response.json({ boot: boot.id, served: boot.served, url: new URL(request.url).pathname });
+    },
   };
-  return world;
-}
-
-/**
- * Whatever form the program arrives in — an inline config, a resident-code
- * spec, a staged artifact — carrying it means this stub can BOOT the program.
- * Carrying nothing means it must find the one already running.
- */
-const bootSpecOf = (props) => props.code ?? props.residentCode ?? props.stage;
-
-const world = makeLoaderWorld();
-const nleProps = [];
-setCtxExports({
-  SupervisorRPC: (opts) => ({ __supervisor: opts.props }),
-  NimbusLoadedEntrypoint: (opts) => {
-    nleProps.push(opts.props);
-    const props = opts.props;
-    return {
-      // Both methods resolve in the CALLER's context, as the real entrypoint
-      // does — a code-free stub reaches the running program or throws.
-      async startProcess() {
-        world.resolve(props.key, bootSpecOf(props));
-        return { ok: true };
-      },
-      async handleHttpRequest(request) {
-        const boot = world.resolve(props.key, bootSpecOf(props));
-        boot.served++;
-        return Response.json({ boot: boot.id, served: boot.served, url: new URL(request.url).pathname });
-      },
-    };
-  },
 });
 
-// The node/python/ruby spawn primitives are `heavy`: each lands on its own
-// peer DO. The peer namespace is wired to the REAL peer legs, so every routed
-// request below genuinely crosses the peer hop — the no-ghost-boot invariant
-// is asserted THROUGH that hop rather than around it.
-const peerSelf = { _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
-const peerStub = {
-  _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
-  _rpcHostProcess: (boot, opts) => _rpcHostProcess(peerSelf, boot, opts),
-  _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peerSelf, key),
-  _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peerSelf, key, wire),
-  _rpcCancelHostProcess: async (key) => _rpcCancelHostProcess(peerSelf, key),
-};
-
 const env = {
-  NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => peerStub },
-  LOADER: {
-    load() { throw new Error('a resident process must not be loaded by the DO'); },
-    get() { throw new Error('a resident process must not be loaded by the DO'); },
-  },
+  LOADER: world.loader,
   // spawnNode stages the node shims from ASSETS (integrity-checked) before it
   // boots anything, so serve the real staged artifact.
   ASSETS: {
@@ -115,7 +59,7 @@ const env = {
     },
   },
 };
-const ctx = { id: { toString: () => 'do-test' }, waitUntil: (_p) => {} };
+const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();
 const portRegistry = new PortRegistry();
 const fm = new FacetManager(ctx, env, processes, portRegistry, {});
@@ -133,46 +77,29 @@ const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
   port: 3000,
 });
 assert.equal(world.boots.length, 1, "spawn evaluates the user's program exactly once");
-const firstBoot = world.boots[0].id;
-
-// A node process is hosted on a peer DO, like python and ruby. What made that
-// possible is that its boot spec names its module map by VFS path instead of
-// carrying it: inline, pi's serialized to 44,252,709 bytes and died at the
-// 32 MiB RPC ceiling the moment the spec had to cross a DO boundary.
-assert.equal(peerSelf._hostedProcesses.size, 1,
-  'a node process is hosted on a peer, its module map named by path');
-const spec = nleProps.find((p) => p.residentCode)?.residentCode;
-assert.equal(spec.modules['worker.js'], undefined,
-  'the generated worker does not ride inside the spec that crosses to the peer');
-assert.match(spec.vfsTextModules['worker.js'], /^\/var\/lib\/nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
-  'it is named by the digest of its own bytes, so a stale image cannot be addressed');
-
-// The route stub must be code-free — this is the property that makes a ghost
-// boot impossible rather than merely unlikely.
-const routeProps = nleProps.filter((p) => bootSpecOf(p) === undefined);
-assert.ok(routeProps.length >= 1, 'a code-free route stub is bound for the process');
-assert.ok(
-  routeProps.some((p) => p.key === `nimbus-process:do-test:${spawned.pid}`),
-  'the code-free stub is keyed on the process, so it resolves THAT running facet',
-);
+const firstBoot = world.boots[0].instance.boot;
+const facetName = residentFacetName(spawned.pid);
+assert.deepEqual(world.liveFacets(), [facetName], 'the process IS the session\'s facet for that pid');
+assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${spawned.pid}`,
+  'the module map is keyed on the process, so no two processes can share one');
 
 // ── 2. routed requests never evaluate the program again ─────────────────────
 for (let i = 0; i < 25; i++) {
   const res = await portRegistry.routeRequest(3000, new Request(`http://s/port/3000/ping?i=${i}`), '/ping');
   assert.equal(res.status, 200, `request ${i} served`);
   const body = await res.json();
-  assert.equal(body.boot, firstBoot, `request ${i} was answered by the process the user started`);
+  assert.equal(body.boot, firstBoot.id, `request ${i} was answered by the process the user started`);
   assert.equal(body.url, '/ping', 'the inner path reaches the program unchanged');
 }
 assert.equal(world.boots.length, 1, '25 routed requests booted nothing — no ghost process');
-assert.equal(world.boots[0].served, 25, 'every request landed on the one running program');
+assert.equal(firstBoot.served, 25, 'every request landed on the one running program');
 
-// ── 3. an evicted facet fails LOUD instead of booting a replacement ─────────
-world.evicted = true;
-const afterEviction = await portRegistry.routeRequest(3000, new Request('http://s/port/3000/ping'), '/ping');
-assert.equal(afterEviction.status, 502, 'an evicted facet surfaces an error to the caller');
-assert.match((await afterEviction.json()).error, /no longer loaded/, 'the error names the real cause');
-assert.equal(world.boots.length, 1, 'eviction booted NO replacement — the ghost never happens');
+// ── 3. a lost facet fails LOUD instead of booting a replacement ────────────
+world.lose(facetName);
+const afterLoss = await portRegistry.routeRequest(3000, new Request('http://s/port/3000/ping'), '/ping');
+assert.equal(afterLoss.status, 502, 'a lost facet surfaces an error to the caller');
+assert.match((await afterLoss.json()).error, /no longer loaded/, 'the error names the real cause');
+assert.equal(world.boots.length, 1, 'the loss booted NO replacement — the ghost never happens');
 
 // ── 4b. $PORT is a hint to the program, not a claim on the port ────────────
 // The session exports PORT=3000 by default so Express-style scripts find it.

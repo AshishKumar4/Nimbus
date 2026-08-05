@@ -34,7 +34,7 @@ import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
-import { sqliteWasmModuleEntry, stagedProcessClass, type OpencodeStageSpec } from './opencode-staging.js';
+import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
   createLoadedWorkerEntrypoint,
   getNimbusCtxExports,
@@ -44,8 +44,8 @@ import {
   facetImageDigest,
   facetImagePath,
   type LoadedWorkerEntrypointStub,
-  type ProcessClass,
   type ResidentBootSpec,
+  type ResidentDiskReader,
   type StartContract,
 } from '../loaders/process-fabric.js';
 import {
@@ -787,7 +787,7 @@ function generateLongRunningNodeCode(
   return {
     code: `
 ${bundleSource.imports}
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
 const USER_CODE = ${safeCode};
@@ -1092,7 +1092,7 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
   return response;
 }
 
-export class NimbusNodeProcess extends WorkerEntrypoint {
+export class NimbusProcess extends DurableObject {
   async startProcess() {
     await __nimbusEnsureStarted(this.env, this.ctx);
     if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
@@ -1101,7 +1101,6 @@ export class NimbusNodeProcess extends WorkerEntrypoint {
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
 }
-export default NimbusNodeProcess;
 `,
     modules: bundleSource.modules,
   };
@@ -3049,12 +3048,11 @@ export class FacetManager {
   private prefetchCacheBytes = 0;
 
   // NOTE: the opencode artifact sources (entry bundle, chunk pack, TUI worker
-  // sources, wasm sidecars) are NEVER materialized on this manager — the
-  // supervisor DO OOM-reset at the 128 MiB isolate cap when the dual
-  // serve+attach spawn staged them here. facets/opencode-staging.ts assembles
-  // the facet config inside NimbusLoadedEntrypoint (a stateless worker
-  // isolate) on the Worker-Loader cache-miss path; this manager only builds
-  // the small OpencodeStageSpec (argv/env/VFS snapshot).
+  // sources, wasm sidecars) are never materialized on the spawn path — this
+  // manager only builds the small OpencodeStageSpec (argv/env/VFS snapshot).
+  // facets/opencode-staging.ts assembles the module map inside the
+  // Worker-Loader cache-miss callback, so the sources exist only while a facet
+  // is actually loading.
 
   constructor(
     ctx: DurableObjectState,
@@ -3068,7 +3066,7 @@ export class FacetManager {
     this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
-    this.processFabric = new ProcessFabric(ctx, env);
+    this.processFabric = new ProcessFabric(ctx, env, () => this._residentDisk());
     const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
@@ -3574,10 +3572,7 @@ export class FacetManager {
     try {
       this._activateProcessVfsWriter(staged.pid, writerId);
       writerActivated = true;
-      entrypoint = await createLoadedWorkerEntrypoint(
-        ctxExports, undefined, supervisor, null, undefined,
-        { kind: 'staged', stage: staged.stageSpec },
-      );
+      entrypoint = await createLoadedWorkerEntrypoint(ctxExports, supervisor, staged.stageSpec);
       if (typeof entrypoint.fetch !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
       }
@@ -3694,21 +3689,14 @@ export class FacetManager {
   ): Promise<StagedArtifactExecResult> {
     let handle: ResidentProcessHandle | undefined;
     try {
-      // Keyed, stage-carrying resident process through the fabric's single
-      // placement policy point. The opencode runner holds its startProcess
-      // open for the process's whole life, so the held RPC chain IS the
-      // lifecycle — the same contract at either placement.
+      // The opencode runner holds its startProcess open for the process's
+      // whole life, so that one call IS the lifecycle.
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
       handle = await this.processFabric.startResidentProcess({
-        processClass: stagedProcessClass(stageSpec.mode),
         startContract: 'lifetime',
         pid,
         workerKey,
         boot: { kind: 'staged', stage: stageSpec },
-        // Respawn (a fresh host = new machine lottery) only while the process
-        // is still expected to run — never after kill/session teardown.
-        shouldRespawn: () => this.processes.get(pid)?.state === 'running',
-        onRespawn: (cause) => this._noteHostRespawn(pid, cause),
         onWriterActivated: (writerId) => {
           this._activateProcessVfsWriter(pid, writerId);
         },
@@ -3840,18 +3828,13 @@ export class FacetManager {
     let resourcesTracked = false;
     try {
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-      // Stage-carrying resident process through the fabric: the module map is
-      // assembled in a stateless NimbusLoadedEntrypoint isolate on the
-      // Worker-Loader cache-miss path, and the held-open startProcess RPC owns
-      // the facet's SUPERVISOR binding for the process lifetime.
+      // The module map is assembled on the Worker-Loader cache-miss path, so
+      // the artifact sources exist only while this facet is loading.
       handle = await this.processFabric.startResidentProcess({
-        processClass: stagedProcessClass(stageSpec.mode),
         startContract: 'lifetime',
         pid,
         workerKey,
         boot: { kind: 'staged', stage: stageSpec },
-        shouldRespawn: () => this.processes.get(pid)?.state === 'running',
-        onRespawn: (cause) => this._noteHostRespawn(pid, cause),
         onWriterActivated: (writerId) => {
           this._activateProcessVfsWriter(pid, writerId);
         },
@@ -3907,13 +3890,32 @@ export class FacetManager {
   }
 
   /**
+   * The reader the fabric completes a boot spec's by-path members with.
+   *
+   * Reads as CRED_KERNEL because that is who WROTE them: the generated images
+   * are kernel-owned (`_materializeFacetImages`) and the runtime wasm images
+   * are installed by the kernel. Uncached because these are the session's
+   * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
+   * the VFS content LRU for the life of the session is what once crashed the
+   * supervisor.
+   */
+  private _residentDisk(): ResidentDiskReader {
+    const vfs = this.vfs;
+    if (!vfs) {
+      throw new Error('Nimbus: a resident process needs a session filesystem to boot');
+    }
+    const fs = vfs.as(CRED_KERNEL);
+    return { readFile: (path) => fs.readFileUncached(path) };
+  }
+
+  /**
    * Materialize generated module sources in the content-addressed image store
    * and return the `vfsTextModules` map naming them.
    *
-   * A resident process's module map is sized by the user's disk, so it cannot
-   * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
-   * it here, once, is also what lets the coordinator stop holding it: after
-   * this returns, the only thing the DO keeps is a path.
+   * A resident process's module map is sized by the user's disk, so it does
+   * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
+   * Writing it here, once, is what lets the session stop holding it: after
+   * this returns, the only thing it keeps is a path.
    *
    * The store is written by the kernel and read by the process, so nothing
    * here depends on which credential spawned what. Digest collisions are the
@@ -3963,10 +3965,9 @@ export class FacetManager {
    * replacing one, so a watch loop — or simply a session that runs a few
    * different programs — would otherwise leave one bundle-sized file behind
    * per distinct version. The root set is the process table, which is exact:
-   * an image is live for precisely as long as the process that boots from it,
-   * including across a respawn onto a fresh peer, which re-reads that same
-   * image. Nothing is left for a TTL or an eviction heuristic to guess at, and
-   * after a DO reset the table is empty so every orphan goes.
+   * an image is live for precisely as long as the process that boots from it.
+   * Nothing is left for a TTL or an eviction heuristic to guess at, and after
+   * a DO reset the table is empty so every orphan goes.
    */
   private _sweepFacetImages(fs: CredentialedVfs): void {
     const live = new Set<string>();
@@ -3986,15 +3987,13 @@ export class FacetManager {
   }
 
   /**
-   * The one way this manager boots a resident process. The caller's primitive
-   * declares its own `processClass`; this method carries it to the fabric's
-   * single policy point and adds nothing of its own. Everything after this
-   * call treats the returned handle identically regardless of where it landed.
+   * The one way this manager boots a resident process. Every resident process
+   * is a facet of this session; there is nothing to place and nothing here
+   * decides anything about where a program runs.
    */
   private async _startResidentProcess(
     pid: number,
     spec: {
-      processClass: ProcessClass;
       startContract: StartContract;
       boot: ResidentBootSpec;
       startArgs?: unknown;
@@ -4003,8 +4002,6 @@ export class FacetManager {
     const handle = await this.processFabric.startResidentProcess({
       pid,
       workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
-      shouldRespawn: () => this.processes.get(pid)?.state === 'running',
-      onRespawn: (cause) => this._noteHostRespawn(pid, cause),
       onWriterActivated: (writerId) => {
         this._activateProcessVfsWriter(pid, writerId);
       },
@@ -4025,20 +4022,6 @@ export class FacetManager {
     // ProcessTable PIDs are monotonic within a generation and generation-strided
     // across resets, so this live entry is the sole positive authority root.
     this.vfs?.activateAppendWriter(pid, writerId);
-  }
-
-  /**
-   * A host death that the fabric recovered from is never silent: it lands in
-   * the process log the user reads with `logs <pid>`.
-   */
-  private _noteHostRespawn(pid: number, cause: unknown): void {
-    try {
-      this.processes.appendOutput(
-        pid,
-        'stderr',
-        `[nimbus] process host died (${errorMessage(cause)}); respawning on a fresh peer\n`,
-      );
-    } catch { /* best-effort */ }
   }
 
   /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -4217,21 +4200,9 @@ export class FacetManager {
    * A resident primitive: the process outlives the call, may bind a port, and
    * accumulates memory for as long as it runs.
    *
-   * Declares `heavy`. Its module map — the snapshot of the user's disk the
-   * facet is built from — is the largest thing Nimbus generates, and it now
-   * travels to the host by VFS path rather than inside the boot spec, which is
-   * what lets the spec cross a DO boundary at all.
-   *
-   * The other question a peer raises is ordering, and it is settled rather
-   * than assumed: a node request handler routinely writes a file and returns a
-   * response asserting the write is already visible. The handler awaits its
-   * durability boundary BEFORE the response exists, and the write goes
-   * straight to the coordinator over SUPERVISOR while only the finished
-   * response takes the extra hop back through the hosting peer — so the extra
-   * hop is entirely downstream of the write. `resident-node-peer-request-
-   * durability` proves that through the real `_rpcRouteHostedHttp` leg — the
-   * part `resident-node-request-vfs-durability` cannot see, because it drives
-   * the generated worker directly.
+   * Its module map — the snapshot of the user's disk the facet is built from —
+   * is the largest thing Nimbus generates, so it travels by VFS path rather
+   * than inside the boot spec and is read only when the facet loads.
    */
   async spawnNode(
     code: string,
@@ -4306,7 +4277,6 @@ export class FacetManager {
 
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        processClass: 'heavy',
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
@@ -4390,13 +4360,12 @@ export class FacetManager {
    * The shared primitive for any runtime that serves over
    * handleHttpRequest(Request) — the python and ruby socket servers today.
    *
-   * Declares `heavy`. The interpreter image it carries is exactly the memory
-   * that should not sit in the coordinator's workerd process — ruby's
-   * interpreter+stdlib alone is 34.3 MiB, and it already travels to the host
-   * BY VFS PATH, so peer placement costs the coordinator nothing it was not
-   * already paying. It has no readiness coupling back into the session: the
-   * runner answers startProcess with its boot payload and the caller waits on
-   * that one promise, so nothing polls the port to decide the process is up.
+   * The interpreter image it carries is the memory that should not sit in the
+   * session's own isolate — ruby's interpreter+stdlib alone is 34.3 MiB — and
+   * a facet's envelope is independent of the session's, so it does not. It has
+   * no readiness coupling back into the session: the runner answers
+   * startProcess with its boot payload and the caller waits on that one
+   * promise, so nothing polls the port to decide the process is up.
    */
   async spawnWorker(
     workerCode: string,
@@ -4417,7 +4386,6 @@ export class FacetManager {
     let resourcesTracked = false;
     try {
       handle = await this._startResidentProcess(entry.pid, {
-        processClass: 'heavy',
         // These runners answer startProcess with a boot payload (listening
         // port, or a completed non-server run) and stay resident after it.
         startContract: 'boot',
@@ -4492,8 +4460,6 @@ export class FacetManager {
   kill(pid: number): boolean {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
-    try { (this.ctx as any).facets?.abort(`proc-${entry.pid}`, new Error('SIGKILL')); } catch {}
-    try { (this.ctx as any).facets?.delete(`proc-${entry.pid}`); } catch {}
     this.portRegistry.unregisterByPid(pid);
     this.releaseProcessRpcResources(pid);
     this.revokeProcessVfsWriters(pid);

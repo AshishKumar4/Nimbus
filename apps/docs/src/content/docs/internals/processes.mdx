@@ -35,12 +35,11 @@ and an overall budget. The opencode pair starts the server, checks it over
 loopback, then attaches the TUI at `127.0.0.1:4096`. Their lifecycles are tied,
 so exiting one reaps the other.
 
-Each launch primitive declares its process class, and one policy point reads
-it. The serve half binds a port, so it declares light and runs on the
-coordinator. The attach half sends frames over the terminal RPC and receives
-keystrokes over the stdin pump, so it declares heavy and runs on a [peer
-DO](/docs/internals/fabric/) with a memory budget of its own — the only heavy
-tenant today. The serve half is stable; the attach half is [still being
+Both halves run the same way every resident process does: as a [facet of the
+session](/docs/internals/fabric/), each with a memory envelope of its own. The
+serve half binds a port and answers over it; the attach half sends frames over
+the terminal RPC and takes keystrokes over the stdin pump. The serve half is
+stable; the attach half is [still being
 hardened](/docs/fine-print/capabilities/).
 
 ## Pipes and process boundaries
