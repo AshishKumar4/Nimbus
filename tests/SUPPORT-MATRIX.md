@@ -37,7 +37,7 @@ Status legend:
 | npm create / npx scaffolding | ⚠️ | `tests/behavioral/npm-create/*`, `tests/behavioral/runtime-pkg/npx-parity.mjs` | Specific scaffolders and npx parity paths, not every npm initializer. |
 | Multi-tab concurrent terminal sessions | ⚠️ | `tests/behavioral/multi-tab.mjs`, `tests/behavioral/parallel-installs.mjs` | There are probes for concurrent attach/install behavior, but README still should avoid claiming mature multi-tab UX. |
 | WASI preview1 / wasm runner | ✅ | `tests/behavioral/wasi/*`, `tests/behavioral/wasi-paths/*`, `tests/behavioral/wasm-runner/*` | Preview1 functions implemented except `sock_accept`; outbound TCP and poll paths are probed. |
-| wasi-threads / `-pthread` | ❌ | `docs/wasi-threads.md` | Refused by design; thread-like shared-memory semantics cannot be implemented correctly in workerd isolates today. |
+| wasi-threads / `-pthread` | ✅ | `tests/unit/wasi-threads-scheduler.mjs`, `tests/unit/wasi-threads-load-contract.mjs`, `tests/behavioral/wasm/pthread-parity.mjs` | Mutex, condvar, join, TLS, barriers, semaphores are correct. Cooperative only — no parallelism and no preemption of a thread that never blocks. Builds missing the shared memory or the futex shim are rejected at load. |
 
 ## Probe Coverage Notes
 

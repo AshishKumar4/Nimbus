@@ -56,14 +56,12 @@
  *       each remaining promise against a microtask sentinel; collects
  *       all currently-resolved events into the output.
  *
- * wasi-threads hard limit:
- *   wasi_thread_start is NOT exposed in this shim's import table.
- *   Workers facet isolates have no shared-linear-memory primitive
- *   across instances, so pthread semantics cannot be implemented
- *   correctly. User code that links pthreads gets a wasm-ld
- *   "undefined symbol: thread_spawn" error at LINK time — a clear
- *   diagnostic instead of a runtime memory-corruption bug.
- *   Full rationale + workarounds-considered-and-rejected:
+ * wasi-threads:
+ *   Implemented, in runtime/wasi-threads.ts, whose preamble is appended to
+ *   this one — threads syscall through THESE imports, so they share one
+ *   evaluated scope. This file's only stake in it is two lines: a park
+ *   releases the scheduler token (withParkDeadline) and sched_yield is a
+ *   real scheduling point. Correct but never parallel; see
  *   docs/wasi-threads.md.
  *
  * Architecture (filesystem WASI strategy)
@@ -118,11 +116,17 @@
  *   __WASI_FSTFLAGS_MTIM     = 4
  *   __WASI_FSTFLAGS_MTIM_NOW = 8
  */
+import { WASI_THREADS_PREAMBLE_SRC } from './wasi-threads.js';
 /**
  * Source string injected as the loader-pool `preamble`. The facet's
  * module init evaluates this verbatim so the WASI helpers (`__wasiInitFS`,
  * `__wasiMakeImports`, `__wasiRunStart`, `__wasiReadFilesB64`) are in scope
  * when the user fn runs. Self-contained — no closure captures, no imports.
+ *
+ * The wasi-threads scheduler is appended rather than inlined: it is one
+ * evaluated scope with the syscall layer (it has to be — threads syscall
+ * through these very imports), but it is a separate concern and lives in its
+ * own file.
  */
 export const WASI_INSTANCE_PREAMBLE_SRC = `
 // ── BEGIN: wasi-instance preamble (core WASI + filesystem WASI) ─────────────────────
@@ -149,6 +153,7 @@ const __WASI_ENOTEMPTY      = 55;
 const __WASI_ENOTSOCK       = 57;
 const __WASI_EPIPE          = 64;
 const __WASI_ESPIPE         = 70;
+const __WASI_ETIMEDOUT      = 73;
 const __WASI_ENOTCAPABLE    = 76;
 // clock ids
 const __WASI_CLOCK_REALTIME           = 0;
@@ -255,6 +260,16 @@ class __WasiExit { constructor(code) { this.code = code | 0; } }
 //
 let __wasiFS = null;       // populated by __wasiInitFS
 let __wasiPreopens = [];   // [{ wasiPath, vfsPath, fd }, ...]
+
+// ── Threads ──────────────────────────────────────────────────────────────
+//
+// The green-thread scheduler for this process, when the guest is a
+// wasi-threads build; null otherwise, which is every runtime today. Held here
+// rather than passed through every call because one facet is one process, the
+// same reason __wasiFS and __wasiSup are. The WASI layer reads it for exactly
+// two things — releasing the scheduler token while a syscall parks, and
+// sched_yield — and wasi-threads.ts owns everything else about it.
+let __wasiThreads = null;
 
 // ── Live backing store ───────────────────────────────────────────────────
 //
@@ -960,8 +975,55 @@ function __wasiCheckMode(path, requested) {
 
 // ─── makeImports ────────────────────────────────────────────────────────
 
+// ── Park watchdog ────────────────────────────────────────────────────────
+//
+// Measured on deployed throwaway workers (probe a8be311831c0c183a): a wasm
+// stack suspended ACROSS REQUESTS resumes correctly inside a DO Facet, but
+// only up to roughly 15-18 seconds of idle. Past that ceiling the promise
+// NEVER SETTLES — it does not reject, it simply never resolves. An unguarded
+// park therefore wedges the process forever with nothing raised anywhere,
+// which is strictly worse than failing: nothing to log, nothing to retry.
+//
+// Every suspending import therefore parks against a deadline set with margin
+// below the measured floor, and on expiry resolves to EAGAIN — an errno the
+// guest's own retry logic already handles — instead of hanging.
+//
+// This guards the PROMISE, not the suspension mechanism, so it serves an
+// Asyncify-unwound guest exactly as well as a JSPI-suspended one.
+const __WASI_PARK_CEILING_MS  = 15000;  // measured; deadline must stay under
+const __WASI_PARK_DEADLINE_MS = 10000;
+void __WASI_PARK_CEILING_MS;
+
+function withParkDeadline(fn) {
+  return function parkGuarded(...args) {
+    const r = fn.apply(this, args);
+    // A cache hit or a sync errno is passed straight through: only a real
+    // park is guarded, so this costs nothing on the synchronous path.
+    if (!r || typeof r.then !== 'function') return r;
+    const guarded = new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(__WASI_EAGAIN);
+      }, __WASI_PARK_DEADLINE_MS);
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      r.then(finish, () => finish(__WASI_EAGAIN));
+    });
+    // A real park is also the moment a threaded process must let a peer run:
+    // this is the single point every blocking syscall already goes through,
+    // so the scheduler needs no per-import wiring.
+    return __wasiThreads ? __wasiThreads.parkIo(guarded) : guarded;
+  };
+}
+
 function __wasiMakeImports(opts) {
-  // opts: { argv, env, getMemory, abi?, parking?, stdoutWrite?, stderrWrite? }
+  // opts: { argv, env, getMemory, abi?, parking?, threads?, stdoutWrite?, stderrWrite? }
   //
   // WASI shipped two wire ABIs and both are still in the world: the modern
   // sysroot handed to user programs is preview1, while the binji-2020 clang and
@@ -2137,7 +2199,10 @@ function __wasiMakeImports(opts) {
       return __WASI_ESUCCESS;
     },
 
-    sched_yield()   { return __WASI_ESUCCESS; },
+    // A yield is a no-op for a single-threaded guest and a real scheduling
+    // point for a threaded one — the same syscall, answered by whoever owns
+    // the runnable set.
+    sched_yield()   { return __wasiThreads ? __wasiThreads.yieldNow() : __WASI_ESUCCESS; },
 
     // ── WASI socket and polling support B8: poll_oneoff FULL ────────────────────────────────
     //
@@ -2572,9 +2637,8 @@ function __wasiMakeImports(opts) {
         // This trades request/response-protocol correctness (where the
         // peer expects EOF to know when the request is done) for
         // server-echo-protocol correctness (where the peer streams
-        // back regardless). The probe is the latter case; documented
-        // limit for the former: see docs/wasi-threads.md
-        // and surrounding sock_* commentary.
+        // back regardless). The probe is the latter case; the limit for
+        // the former is documented in the surrounding sock_* commentary.
         if (wantWr && !entry.halfClosedWr) {
           entry.halfClosedWr = true;
         }
@@ -2606,48 +2670,7 @@ function __wasiMakeImports(opts) {
   // If Suspending isn't available (older runtime), socket imports remain
   // async fns that the wasm boundary will reject with a trap — caller
   // sees a clean failure via __wasiRunStartAsync's catch block.
-  // ── Park watchdog ──────────────────────────────────────────────────────
-  //
-  // Measured on deployed throwaway workers (probe a8be311831c0c183a): a wasm
-  // stack suspended ACROSS REQUESTS resumes correctly inside a DO Facet, but
-  // only up to roughly 15-18 seconds of idle. Past that ceiling the promise
-  // NEVER SETTLES — it does not reject, it simply never resolves. An unguarded
-  // park therefore wedges the process forever with nothing raised anywhere,
-  // which is strictly worse than failing: nothing to log, nothing to retry.
-  //
-  // Every suspending import therefore parks against a deadline set with margin
-  // below the measured floor, and on expiry resolves to EAGAIN — an errno the
-  // guest's own retry logic already handles — instead of hanging.
-  //
-  // This guards the PROMISE, not the suspension mechanism, so it serves an
-  // Asyncify-unwound guest exactly as well as a JSPI-suspended one.
-  const __WASI_PARK_CEILING_MS  = 15000;  // measured; deadline must stay under
-  const __WASI_PARK_DEADLINE_MS = 10000;
-  void __WASI_PARK_CEILING_MS;
-
-  function withParkDeadline(fn) {
-    return function parkGuarded(...args) {
-      const r = fn.apply(this, args);
-      // A cache hit or a sync errno is passed straight through: only a real
-      // park is guarded, so this costs nothing on the synchronous path.
-      if (!r || typeof r.then !== 'function') return r;
-      return new Promise((resolve) => {
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          resolve(__WASI_EAGAIN);
-        }, __WASI_PARK_DEADLINE_MS);
-        const finish = (value) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(value);
-        };
-        r.then(finish, () => finish(__WASI_EAGAIN));
-      });
-    };
-  }
+  // Park watchdog — see the constants and withParkDeadline at module scope.
   // Every import that can park.
   const parkable = [
     'sock_send', 'sock_recv', 'sock_shutdown', 'poll_oneoff',
@@ -2673,6 +2696,16 @@ function __wasiMakeImports(opts) {
   // anyway must not be handed a Promise where an i32 belongs: that is a
   // configuration error, and it is reported where it happens.
   if (opts.parking === 'none') {
+    // Threads are cooperative suspension by construction: a guest that cannot
+    // be suspended cannot have them, and pretending otherwise would run every
+    // thread to completion inline — a function call wearing a thread's name.
+    if (opts.threads) {
+      throw new Error(
+        'wasi: a threads build cannot run with parking:none; its threads block on a '
+        + 'software futex, which requires the guest to be entered under '
+        + 'WebAssembly.promising',
+      );
+    }
     for (const name of parkable) {
       const fn = imports[name];
       if (typeof fn !== 'function') continue;
@@ -2716,6 +2749,10 @@ function __wasiMakeImports(opts) {
     // path_filestat_get resolves a path the seed manifest never listed by
     // asking the supervisor, so it too can return a Promise.
     imports.path_filestat_get = new WebAssembly.Suspending(imports.path_filestat_get);
+    // sched_yield parks only in a threaded process, so it is wrapped only for
+    // one: every other guest keeps the plain i32 return it has today, and no
+    // existing runtime changes shape.
+    if (opts.threads) imports.sched_yield = new WebAssembly.Suspending(imports.sched_yield);
   }
 
   return {
@@ -2788,7 +2825,7 @@ globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
 globalThis.__wasiDrainPersist    = __wasiDrainPersist;
 globalThis.__wasiRevalidateFS    = __wasiRevalidateFS;
 // ── END: wasi-instance preamble ─────────────────────────────────────────
-`;
+` + WASI_THREADS_PREAMBLE_SRC;
 export const WASI_ABI_NAMESPACE = Object.freeze({
     preview1: 'wasi_snapshot_preview1',
     preview0: 'wasi_unstable',
