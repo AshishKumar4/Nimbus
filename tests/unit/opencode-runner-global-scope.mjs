@@ -59,7 +59,11 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
     source = source.replaceAll(find, `from "./${stubName}"`);
     writeFileSync(join(dir, stubName), stubSource);
   };
-  alias('cloudflare:workers', 'cloudflare-workers.mjs', 'export class WorkerEntrypoint {}\n');
+  alias(
+    'cloudflare:workers',
+    'cloudflare-workers.mjs',
+    'export class WorkerEntrypoint {}\nexport class DurableObject {}\n',
+  );
   alias(SQLITE_WASM_MODULE_NAME, 'sqlite-wasm.mjs', 'export default {};\n');
   for (const [key, wasm] of Object.entries(OPENCODE_TREE_SITTER_WASMS)) {
     alias(wasm, `tree-sitter-${key}.mjs`, 'export default {};\n');
@@ -119,7 +123,7 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
     realStderrWrite(`MODULE-EVAL FAILED: ${detail?.message}\n${detail?.stack}\n`);
     realProcess.exitCode = 1;
   } else if (typeof entrypoint !== 'function') {
-    realStderrWrite('MODULE-EVAL FAILED: module did not evaluate to the WorkerEntrypoint class\n');
+    realStderrWrite('MODULE-EVAL FAILED: module did not evaluate to an entrypoint class\n');
     realProcess.exitCode = 1;
   } else {
     realStdoutWrite('MODULE-EVAL CLEAN\n');

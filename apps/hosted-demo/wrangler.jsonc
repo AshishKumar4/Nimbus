@@ -1,6 +1,28 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "nimbus",
+  // Three tiers, three disjoint sets of account-level resources:
+  //
+  //   top level    → `nimbus-dev` / `nimbus-demo-dev` / rate-limit 1002.
+  //                  DEVELOPMENT, and the block a `--name` override
+  //                  inherits, so a throwaway lands here by default.
+  //   env.staging  → `nimbus-staging` / `nimbus-demo-staging` / 1003.
+  //                  Persistent pre-production. `bun run staging:deploy`.
+  //   env.production → `nimbus` / `nimbus-demo` / 1001. `bun run
+  //                  deploy:production` (`wrangler deploy -e production`),
+  //                  and nothing else.
+  //
+  // The split is load-bearing, not tidiness. `wrangler deploy --name foo`
+  // overrides ONLY the name; every binding still comes from the block being
+  // deployed. While this block held the production `database_id`, two
+  // separate throwaway probes — one hand-rolled from this directory, one a
+  // copy of this file with `env` stripped out — silently read and wrote the
+  // live demo D1 while appearing isolated, and burned DEMO_ANON_MAX_ACTIVE
+  // slots away from the public docs terminal. Anything inheriting this
+  // block now lands on development resources instead.
+  //
+  // tests/unit/deploy-isolation.mjs enforces this in CI: it fails if a
+  // non-production deploy resolves any resource env.production also binds.
+  "name": "nimbus-dev",
   // The hosted-demo embedder is the live demo at nimbus-os.dev
   // and serves as the canonical reference embedder for the SDK.
   // The small src/index.ts here re-exports from @nimbus-sh/sdk/worker
@@ -57,22 +79,40 @@
   // rejects redundant flags). See smoketest-result.md for the
   // empirical chain that established this.
   "compatibility_flags": ["nodejs_compat"],
-  // [astro-node-v22] Enable versioned-preview URLs. Each
-  // `wrangler versions upload` (and `wrangler deploy`) generates a
-  // per-version URL of the form
-  //   <VERSION_PREFIX>-nimbus-os.dev
-  // (VERSION_PREFIX = first 8 hex chars of the version ID) which routes
-  // to that specific version without affecting prod traffic. Used by
-  // probes to verify a fix when sibling agents are racing deploys to
-  // production. Docs: developers.cloudflare.com/workers/configuration/previews
+  // BUILD NOTHING ON VERSIONED PREVIEW URLS until someone produces one
+  // that resolves. Measured 2026-08-05, wrangler 4.98.0, on
+  // `nimbus-staging` — `preview_urls` and `workers_dev` both on, the most
+  // favourable case available:
+  //   - `wrangler deploy` printed the workers.dev URL and `Current
+  //     Version ID` and nothing else; `wrangler versions upload` printed
+  //     only `Worker Version ID`. Neither printed a preview URL.
+  //   - `<version-prefix>-nimbus-staging.<subdomain>.workers.dev` 404s
+  //     for a version id that demonstrably exists — as does the same
+  //     shape against the production Worker's live version.
+  // The key stays because removing it can only make previews less
+  // available (wrangler 4.44+ disables them by default:
+  // https://developers.cloudflare.com/changelog/2025-09-17-update-preview-url-setting/).
+  // That is a conservative default, NOT evidence that previews work.
   //
-  // Without this flag wrangler 4.44+ disables preview URLs by default
-  // (https://developers.cloudflare.com/changelog/2025-09-17-update-preview-url-setting/);
-  // versioned preview URL requests return 404 from CF preview infra.
+  // Read the above before writing a fifth wrong thing here. The comment
+  // this replaced claimed the URL was `<VERSION_PREFIX>-nimbus-os.dev`
+  // and that previews were safe in prod because only someone holding the
+  // prefix could resolve one. Three agents in a row acted on it. Measured
+  // 2026-08-04: `<anything>-nimbus-os.dev` is NXDOMAIN — a hyphen where a
+  // subdomain needs a dot, so it was never a host — while
+  // `deadbeef.nimbus-os.dev` and `zzzznope.nimbus-os.dev` BOTH resolve
+  // and BOTH answer 200, because the `*.nimbus-os.dev/*` route below
+  // hands every subdomain to the production Worker. DNS obscurity was
+  // never the protection.
   //
-  // Safe to keep enabled in prod: preview URLs only resolve when
-  // someone has the version-id prefix (random per upload). No traffic
-  // shaping risk.
+  // What keeps a test off production is the DEPLOY TARGET, not the
+  // hostname. `wrangler versions upload -e production` and `wrangler
+  // deploy -e production` both act on the Worker named `nimbus`: the
+  // first appends to the live script's version list, the second shifts
+  // its traffic. Neither is made safe by visiting some URL afterwards.
+  // Isolation is a distinct Worker name — `nimbus-staging` (env.staging),
+  // `nimbus-probe-staging`, or a `nimbus-tw-*` throwaway. See AGENTS.md
+  // § Staging And Promote.
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "preview_urls": true,
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
@@ -117,10 +157,13 @@
   // Per-IP limiter for the anonymous docs-terminal endpoint
   // (POST /api/demo/anon-session). Counters are shared across Workers on
   // the account by namespace_id; period must be 10 or 60 (seconds).
+  // Distinct namespace from production's 1001: counters are shared across
+  // Workers on the account BY namespace_id, so a dev or throwaway sharing it
+  // would spend production's per-IP budget for real visitors on that IP.
   "ratelimits": [
     {
       "name": "ANON_RATE_LIMITER",
-      "namespace_id": "1001",
+      "namespace_id": "1002",
       "simple": { "limit": 6, "period": 60 }
     }
   ],
@@ -169,11 +212,15 @@
 	      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
 	    ]
 	  },
+	  // Development database, carrying the same migrations as production.
+	  // `wrangler dev` simulates D1 locally and never contacts this id, so
+	  // its real purpose is to be the thing a throwaway inherits instead of
+	  // production. The production database is named only in env.production.
 	  "d1_databases": [
 	    {
 	      "binding": "DEMO_DB",
-	      "database_name": "nimbus-demo",
-	      "database_id": "8e2ecc37-d975-49d8-96b7-885d45734a53"
+	      "database_name": "nimbus-demo-dev",
+	      "database_id": "72d98818-359a-4c30-ba59-e3f4418bfa74"
 	    }
 	  ],
 	  "migrations": [
@@ -258,6 +305,91 @@
   // is to append the env name unless `name` is explicitly set in the
   // env block).
   "env": {
+    // Persistent pre-production mirror. Same `main`, same `dist/assets`,
+    // same inherited `placement`/`alias`/`compatibility_date` as
+    // env.production, with every account-level identifier swapped: Worker
+    // `nimbus-staging`, database `nimbus-demo-staging`, rate-limit
+    // namespace 1003, and its own Durable Object namespace and
+    // JWT_SECRET. `bun run staging:deploy` builds and deploys it; `bun
+    // run staging:test` runs the behavioral suite against it. Nothing
+    // here may name a production resource — tests/unit/deploy-isolation.mjs
+    // checks this block by name, not just the top-level one.
+    //
+    // Two deliberate divergences from production, both structural rather
+    // than chosen:
+    //
+    //   No `routes`. Staging answers on workers.dev, so it needs no zone
+    //   and no DNS record, and it cannot collide with the wildcard route
+    //   that serves live traffic.
+    //
+    //   No `NIMBUS_PREVIEW_HOST_SUFFIX`. Port previews need one hostname
+    //   per (session, port) — `<port>--<sid>.<suffix>` — which requires a
+    //   wildcard DNS record on a zone. workers.dev gives a Worker exactly
+    //   one hostname, so the suffix is left unset and `readPreviewHostSuffix`
+    //   degrades to previews-disabled (packages/worker/src/_shared/preview-host.ts).
+    //   Path-based `/s/<sid>/port/<n>/` — what the behavioral driver
+    //   uses — is unaffected. Host-based previews are therefore verified
+    //   on prod's zone or a throwaway with a zone route, not here.
+    "staging": {
+      "name": "nimbus-staging",
+      "compatibility_flags": ["nodejs_compat"],
+      "preview_urls": true,
+      "workers_dev": true,
+      "vars": {
+        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+        "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
+        "NIMBUS_AGENT_GATEWAY_ID": "default",
+        "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
+        "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
+        "NIMBUS_CF_OAUTH_SCOPES": "user-details.read account-settings.read ai.write aig.run",
+        "DEMO_SESSION_IDLE_TTL_DAYS": "3",
+        "DEMO_TOUCH_DEBOUNCE_SECONDS": "600",
+        "DEMO_AUTH_COOKIE_DAYS": "30",
+        "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
+        "DEMO_CLEANUP_BATCH_SIZE": "100",
+        "DEMO_ANON_TTL_SECONDS": "600",
+        "DEMO_ANON_MAX_ACTIVE": "10"
+      },
+      "ratelimits": [
+        {
+          "name": "ANON_RATE_LIMITER",
+          "namespace_id": "1003",
+          "simple": { "limit": 6, "period": 60 }
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+        ]
+      },
+      "d1_databases": [
+        {
+          "binding": "DEMO_DB",
+          "database_name": "nimbus-demo-staging",
+          "database_id": "5589ddb3-96bc-4a73-b939-5431553b63d7"
+        }
+      ],
+      "worker_loaders": [
+        { "binding": "LOADER" }
+      ],
+      "triggers": {
+        "crons": ["*/10 * * * *"]
+      },
+      "r2_buckets": [
+        {
+          "binding": "NPM_TARBALL_CACHE",
+          "bucket_name": "nimbus-npm-cache"
+        },
+        {
+          "binding": "NPM_PACKUMENT_CACHE",
+          "bucket_name": "nimbus-npm-packument-cache"
+        },
+        {
+          "binding": "NIMBUS_RUNTIME_CACHE",
+          "bucket_name": "nimbus-runtime-cache"
+        }
+      ]
+    },
     "production": {
       "name": "nimbus",
       "compatibility_flags": ["nodejs_compat"],

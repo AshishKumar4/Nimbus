@@ -84,11 +84,20 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
 wasm-opt --fpcast-emu bash -o bash.fpc.wasm
 
 # Asyncify allowlist: the process calls + setjmp/longjmp (capture/replay) + the
-# pipe byte ops fd_read/fd_write (they suspend when a pipe would block, so their
-# callers must be instrumented to unwind — without this, a blocked capture read
-# in $(...) corrupts the stack). EH-free (asyncify-native setjmp) so this works.
+# byte ops fd_read/fd_write and the readiness wait poll_oneoff (all three
+# suspend when a pipe would block, so their callers must be instrumented to
+# unwind — without this, a blocked capture read in $(...) corrupts the stack).
+# EH-free (asyncify-native setjmp) so this works.
+#
+# poll_oneoff was MISSING from this list while bash-runner.ts already armed an
+# unwind from inside it (the "nothing ready, blockable fd-read subscription"
+# park). That unwind therefore propagated through uninstrumented frames whose
+# locals were never spilled to MAIN_BUF. It is latent rather than constant only
+# because poll_oneoff usually finds something ready and returns via its fast
+# path. The committed bash.async.wasm predates this line; it takes effect on the
+# next rebuild (see BRINGUP.md).
 wasm-opt --asyncify \
-  --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid,nimbus_proc.setjmp,nimbus_proc.longjmp,wasi_snapshot_preview1.fd_read,wasi_snapshot_preview1.fd_write \
+  --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid,nimbus_proc.setjmp,nimbus_proc.longjmp,wasi_snapshot_preview1.fd_read,wasi_snapshot_preview1.fd_write,wasi_snapshot_preview1.poll_oneoff \
   bash.fpc.wasm -o bash.async.wasm
 
 echo "Built: $BASH_SRC/bash (linked) + $BASH_SRC/bash.async.wasm (asyncified)"

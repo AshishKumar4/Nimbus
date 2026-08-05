@@ -41,8 +41,8 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsDiff, type WasiFsSnapshot } from './wasi-instance.js';
-import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
+import { manifestVfs } from './vfs-manifest.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -88,7 +88,7 @@ export function makeRubyRunnerFactory(deps: {
       return entry ? `${installRoot}/${entry.path}` : null;
     };
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
-    let fsSnapshotCache: { cred: string; cwd: string; revision: number; result: ReturnType<typeof snapshotVfs> } | null = null;
+    let fsSnapshotCache: { cred: string; cwd: string; revision: number; result: ReturnType<typeof manifestVfs> } | null = null;
 
     const registerGemBins = (vfs: CredentialedVfs): void => {
       if (!registry) return;
@@ -210,7 +210,14 @@ export function makeRubyRunnerFactory(deps: {
         ? fsSnapshotCache.result
         : null;
       if (!fsSnapshot) {
-        fsSnapshot = snapshotVfs(vfs, cwd, { extraRoots: [defaultGemHome()] });
+        // A manifest, not a copy: sizes and modes only. The facet demand-loads
+        // the few files the program opens and writes back as it goes, so a
+        // spawn no longer pays to base64 the whole subtree — and no longer
+        // fails outright on a tree over 5000 files or 32 MiB.
+        fsSnapshot = manifestVfs(vfs, cwd, {
+          extraRoots: [defaultGemHome()],
+          revision,
+        });
         fsSnapshotCache = { cred: credKey, cwd, revision, result: fsSnapshot };
       }
       if ('error' in fsSnapshot) {
@@ -232,11 +239,10 @@ export function makeRubyRunnerFactory(deps: {
       const command = formatRubyCommand(binName, argv);
       const result = needsResidentProcess(parsed)
         ? await spawnRubySocketProcess(facetMgr, facetArgs, command)
-        : await dispatchRubyFacet(facetMgr, facetArgs);
+        : await dispatchRubyFacet(facetMgr, facetArgs, ctx.pid);
 
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
-      if (result.fsDiff) flushVfsDiff(vfs, result.fsDiff);
       if (result.error) {
         ctx.stderr.write(`${binName}: ${result.error}\n`);
         return 1;
@@ -576,7 +582,6 @@ interface RubyFacetResult {
   stdout: string;
   stderr: string;
   error?: string;
-  fsDiff?: WasiFsDiff;
 }
 
 interface RubySocketProcessResult extends RubyFacetResult {
@@ -589,7 +594,6 @@ const RubyFacetResultSchema = z.object({
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
-  fsDiff: z.custom<WasiFsDiff>().optional(),
 }).passthrough();
 
 const RubySocketProcessBootResponseSchema = z.object({
@@ -608,7 +612,6 @@ function normalizeRubyFacetResult(raw: unknown): RubyFacetResult | null {
     stdout: parsed.data.stdout || '',
     stderr: parsed.data.stderr || '',
     error: parsed.data.error,
-    fsDiff: parsed.data.fsDiff,
   };
 }
 
@@ -689,7 +692,6 @@ async function spawnRubySocketProcess(
       exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr || result.error || '',
-      fsDiff: result.fsDiff,
     };
   }
 
@@ -703,7 +705,7 @@ async function spawnRubySocketProcess(
 
 export function buildRubySocketProcessWorker(preamble: string): string {
   return [
-    'import { WorkerEntrypoint } from "cloudflare:workers";',
+    'import { DurableObject } from "cloudflare:workers";',
     "import __NIMBUS_WASM_ruby_stdlib from './ruby+stdlib.wasm';",
     'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
     "globalThis.__NIMBUS_WASM['ruby+stdlib.wasm'] = __NIMBUS_WASM_ruby_stdlib;",
@@ -853,11 +855,25 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     'function __nimbusAdoptRubySupervisor(env) {',
     '  const supervisor = env && env.SUPERVISOR;',
     '  if (supervisor) globalThis.__nimbusRubySupervisor = supervisor;',
+    // The WASI filesystem takes the same stub. That is what turns the
+    // spawn-time seed into a cache over the session VFS, so a server that
+    // never exits still persists its writes instead of losing them entirely.
+    '  __wasiAdoptSupervisor(supervisor);',
     '}',
-    'export default class NimbusRubyProcess extends WorkerEntrypoint {',
+    // A resident process parks between requests, and parking is the only
+    // moment "durable while running" can be made true: by the time the caller
+    // holds a response, everything the request wrote has reached the VFS.
+    'async function __nimbusParkRuby(value) {',
+    // Revalidate drains first, then spends ONE round trip on the subtree
+    // revision. An unchanged subtree keeps the whole cache; a changed one
+    // drops the clean half so the next read sees another process's writes.
+    '  await __wasiRevalidateFS();',
+    '  return value;',
+    '}',
+    'export class NimbusProcess extends DurableObject {',
     '  async startProcess(args) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
-    '    return __nimbusStartRubyProcess(args || {});',
+    '    return __nimbusParkRuby(await __nimbusStartRubyProcess(args || {}));',
     '  }',
     '  async fetch(request) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
@@ -868,7 +884,7 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
     '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
     '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
-    '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
+    '    return __nimbusParkRuby(await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request));',
     '  }',
     '}',
   ].join('\n');
@@ -877,6 +893,7 @@ export function buildRubySocketProcessWorker(preamble: string): string {
 async function dispatchRubyFacet(
   facetMgr: FacetManager,
   args: RubyFacetArgs,
+  pid: number,
 ): Promise<RubyFacetResult> {
   // The Ruby preamble runs the entire bootstrap at child-facet module-
   // init time (same architecture as Pyodide v2). The wasm Module is
@@ -893,26 +910,45 @@ async function dispatchRubyFacet(
   const pool = new NimbusLoaderPool(env, ctx, {
     tag: 'ruby-runner',
     concurrency: 1,
-    omitSupervisor: true,
+    // The supervisor derives the write credential from this pid, so a pool
+    // that binds SUPERVISOR without one has a filesystem it can read and
+    // never write — every write-back rejected as an unauthorized process.
+    supervisorPid: pid,
     preamble,
   });
 
   const facetFn = async function rubyFacetCall(
     inArgs: RubyFacetCallArgs,
+    facetEnv: { SUPERVISOR?: unknown },
   ): Promise<unknown> {
     const fn = Reflect.get(globalThis, '__rubyRun');
     if (typeof fn !== 'function') {
       return { exitCode: 127, stdout: '', stderr: '',
         error: 'ruby-runner preamble missing: __rubyRun not in scope' };
     }
-    return await fn({
-      userCode: inArgs.userCode,
-      rbArgv: inArgs.rbArgv,
-      userEnv: inArgs.userEnv,
-      progName: inArgs.progName,
-      cwd: inArgs.cwd,
-      fsSnapshot: inArgs.fsSnapshot,
-    });
+    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
+      ((s: unknown) => void) | undefined;
+    const drain = Reflect.get(globalThis, '__wasiDrainPersist') as
+      (() => Promise<void>) | undefined;
+    const supervisor = facetEnv && facetEnv.SUPERVISOR;
+    // Published where __rubyRun re-adopts it after the mount; adopting only
+    // here would be undone by __wasiInitFS.
+    if (supervisor) Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
+    adopt?.(supervisor);
+    try {
+      return await fn({
+        userCode: inArgs.userCode,
+        rbArgv: inArgs.rbArgv,
+        userEnv: inArgs.userEnv,
+        progName: inArgs.progName,
+        cwd: inArgs.cwd,
+        fsSnapshot: inArgs.fsSnapshot,
+      });
+    } finally {
+      // Even on a raised Ruby exception the writes that already happened are
+      // the user's data, so the drain is in `finally`, not the success path.
+      await drain?.();
+    }
   };
 
   try {
@@ -1018,10 +1054,18 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 function __nimbusInstallRubyFsSnapshot(snapshot) {
   const dirs = new Set(['tmp', 'home']);
   const files = {};
-  const modes = { '': 7, tmp: 7, home: 7, ...snapshot.modes };
+  // Null-safe like every other field here: a REPL eval calls __rubyRun with
+  // no snapshot at all and must get the bootstrap defaults, not a TypeError.
+  const modes = { '': 7, tmp: 7, home: 7, ...(snapshot && snapshot.modes) };
   for (const dir of (snapshot && snapshot.dirs) || []) dirs.add(String(dir).replace(/^\\/+/, '').replace(/\\/+$/, ''));
   for (const [path, b64] of Object.entries((snapshot && snapshot.files) || {})) {
     files[String(path).replace(/^\\/+/, '')] = b64;
+  }
+  // Metadata-only entries: the manifest carries each file's size and content
+  // arrives on first read. Canonicalized exactly like the content entries.
+  const sizes = {};
+  for (const [path, size] of Object.entries((snapshot && snapshot.sizes) || {})) {
+    sizes[String(path).replace(/^\\/+/, '')] = size;
   }
   __wasiInitFS({
     root: '',
@@ -1031,8 +1075,13 @@ function __nimbusInstallRubyFsSnapshot(snapshot) {
       { wasiPath: '/home', vfsPath: 'home' },
     ],
     files,
+    sizes,
     dirs: Array.from(dirs).filter(Boolean),
     modes,
+    // Forwarded, never invented here: only the producer knows whether it
+    // walked those roots completely.
+    enumeratedRoots: (snapshot && snapshot.enumeratedRoots) || [],
+    revision: snapshot && snapshot.revision,
   });
 }
 
@@ -1223,6 +1272,24 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   }
   memRef = instance.exports.memory;
 
+  // Entering the Ruby VM.
+  //
+  // The WASI imports this instance is given include ones wrapped in
+  // WebAssembly.Suspending — fd_read, fd_write, fd_pread, path_filestat_get,
+  // poll_oneoff and the sock_* family. V8 requires an active
+  // WebAssembly.promising suspender for ANY call into a suspending import,
+  // whether or not that import returns a Promise (measured on workerd:
+  // a Suspending import returning a plain i32 off a raw stack throws
+  // SuspendError "trying to suspend without WebAssembly.promising"). So every
+  // entry into this instance is promising-wrapped, not just the ones that are
+  // known to park today: which WASI calls the guest makes is the guest's
+  // business, and the suspending set grows.
+  //
+  // cabi_realloc is deliberately not wrapped. It is the guest allocator, not a
+  // VM entry — it never reaches WASI, and it is reached from the synchronous
+  // rb-js-abi-host callbacks, which cannot await.
+  const enterVm = (fn) => WebAssembly.promising(fn);
+
   // ── Ruby bootstrap sequence ────────────────────────────────────
   // Order matters (per ruby.wasm DefaultRubyVM):
   //   1. _initialize (reactor entry; runs static initializers)
@@ -1232,10 +1299,10 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   //   4. ruby-init-loadpath()   — set $LOAD_PATH from packed stdlib
   try {
     if (typeof instance.exports._initialize === 'function') {
-      instance.exports._initialize();
+      await enterVm(instance.exports._initialize)();
     }
     if (typeof instance.exports.__wasi_vfs_rt_init === 'function') {
-      instance.exports.__wasi_vfs_rt_init();
+      await enterVm(instance.exports.__wasi_vfs_rt_init)();
     }
   } catch (e) {
     return { ok: false, error: '_initialize/wasi_vfs_rt_init failed: ' + (e && e.message), stack: e && e.stack };
@@ -1295,20 +1362,9 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     ok: true,
     instance,
     wasi,
-    rubyInit,
-    rubyInitLoadpath,
-    rbEvalStringProtect,
-    // Ruby I/O routes through fd_read/fd_write, which are WebAssembly.
-    // Suspending imports (WASI socket support). V8 traps the first
-    // suspending-import call on a stack that is not under a
-    // WebAssembly.promising suspender, so the guest eval must run through
-    // the promising entrypoint — the same contract wasm-runner uses for
-    // its WASI mode. Null when promising is unavailable (older runtimes):
-    // callers fall back to the bare sync export.
-    rbEvalStringProtectPromising:
-      (typeof WebAssembly !== 'undefined' && typeof WebAssembly.promising === 'function')
-        ? WebAssembly.promising(rbEvalStringProtect)
-        : null,
+    rubyInit: enterVm(rubyInit),
+    rubyInitLoadpath: enterVm(rubyInitLoadpath),
+    rbEvalStringProtect: enterVm(rbEvalStringProtect),
     writeListString,
     writeString,
     rubyInitialized: false,  // mutated to true by __rubyRun on first call
@@ -1335,9 +1391,7 @@ async function __nimbusRubyEval(boot, rubyCode) {
   const bytes = new TextEncoder().encode(rubyCode);
   const codePtr = boot.instance.exports.cabi_realloc(0, 0, 1, bytes.length);
   new Uint8Array(memory.buffer).set(bytes, codePtr);
-  const retPtr = boot.rbEvalStringProtectPromising
-    ? await boot.rbEvalStringProtectPromising(codePtr, bytes.length)
-    : boot.rbEvalStringProtect(codePtr, bytes.length);
+  const retPtr = await boot.rbEvalStringProtect(codePtr, bytes.length);
   // Return is a tuple: (rb-abi-value handle u32, status s32) — 8 bytes
   const dv = new DataView(memory.buffer);
   return { handle: dv.getUint32(retPtr + 0, true), status: dv.getInt32(retPtr + 4, true) };
@@ -1391,6 +1445,13 @@ globalThis.__rubyRun = async function __rubyRun(args) {
 
   try {
     __nimbusInstallRubyFsSnapshot(args.fsSnapshot);
+    // AFTER the mount, never before. __wasiInitFS deliberately drops the
+    // supervisor so a pooled isolate cannot serve the previous tenant's
+    // filesystem, which means adopting first — as both ruby entry points do,
+    // since they must adopt before they know whether a mount is coming —
+    // leaves the seed with no backing store for the whole script load.
+    // Every require then read a manifest entry with nothing behind it.
+    __wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor);
   } catch (e) {
     globalThis.__nimbusRubyStderr.push('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');
   }
@@ -1407,8 +1468,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   if (!boot.rubyInitialized) {
     try {
       const initArgs = boot.writeListString(['ruby', '-e_=0']);
-      boot.rubyInit(initArgs.ptr, initArgs.len);
-      boot.rubyInitLoadpath();
+      await boot.rubyInit(initArgs.ptr, initArgs.len);
+      await boot.rubyInitLoadpath();
       boot.rubyInitialized = true;
     } catch (e) {
       return {
@@ -1609,7 +1670,6 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     exitCode: exitCode,
     stdout: stdoutOut,
     stderr: stderrOut,
-    fsDiff: (typeof __wasiSnapshotFS === 'function' ? __wasiSnapshotFS() : null),
   };
 };
 

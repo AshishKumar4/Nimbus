@@ -30,14 +30,13 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, hostResidentProcess, isolateToken, ResidentBootSpecSchema, } from '../loaders/process-fabric.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-coord.js';
 import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
+import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
@@ -96,6 +95,21 @@ function checkedReadPayloadBytes(bytes) {
         throw new RangeError(`filesystem RPC read payload ${bytes} exceeds the ${MAX_RPC_SAFE_PAYLOAD_BYTES}-byte limit`);
     }
     return bytes;
+}
+/**
+ * Bytes a ranged read can actually return, so the reservation covers the
+ * result rather than the ask. A 64 KiB range over a 200-byte file retains 200
+ * bytes; reserving the range would let a handful of small reads exhaust the
+ * read reserve and serialise a workload whose real cost is negligible.
+ *
+ * `stat` here is a local SQLite lookup inside the DO — the same one
+ * `_rpcReadFile` makes for the same reason — not a second round trip.
+ */
+async function rangeReadBytes(fs, path, offset, length) {
+    const stat = await fs.stat(path);
+    if (!stat)
+        return 0;
+    return Math.max(0, Math.min(length, stat.size - offset));
 }
 async function withReadAllocation(bytes, read) {
     const payloadBytes = checkedReadPayloadBytes(bytes);
@@ -257,6 +271,11 @@ const FsReadRangeArgsSchema = z.object({
     offset: FsRangeOffsetSchema,
     length: FsRangeOffsetSchema,
 });
+const FsReadBatchArgsSchema = z.array(z.object({
+    path: z.string().min(1),
+    offset: FsRangeOffsetSchema,
+    length: FsRangeOffsetSchema.max(FS_READ_BATCH_REQUEST_BYTES),
+})).min(1).max(FS_READ_BATCH_PATH_LIMIT);
 const FsWriteRangeArgsSchema = z.object({
     path: z.string(),
     offset: FsRangeOffsetSchema,
@@ -281,7 +300,73 @@ export async function _rpcFsRevision(self, path, pid) {
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid) {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    return withReadAllocation(args.length, () => runtimeFs(self, pid).readRange(args.path, args.offset, args.length));
+    const fs = runtimeFs(self, pid);
+    return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length));
+}
+/**
+ * Read many ranges in ONE round trip.
+ *
+ * Every entry is the same read `_rpcFsReadRange` performs, through the same
+ * process credential and the same live bridge, in request order. A batch is
+ * therefore exactly as authoritative as the individual reads it replaces —
+ * it takes no snapshot and consults nothing the single-read path would not.
+ * What it saves is round trips, which is the whole cost of a read.
+ *
+ * One failing path must not cost the caller the whole batch — with N separate
+ * calls it would have learned each outcome — so a read that throws is
+ * reported in its own slot and the rest of the batch proceeds. A missing path
+ * yields `bytes: null`, exactly as the single read does.
+ *
+ * Bounds are checked before any read and rejected rather than trimmed: a
+ * caller that silently got fewer entries than it asked for would read a
+ * truncated file as a complete one.
+ */
+export async function _rpcFsReadBatch(self, requests, pid) {
+    const args = FsReadBatchArgsSchema.parse(requests);
+    const requestedBytes = args.reduce((total, request) => total + request.length, 0);
+    if (requestedBytes > FS_READ_BATCH_REQUEST_BYTES) {
+        throw new RangeError(`filesystem read batch requests ${requestedBytes} bytes across ${args.length} ranges, `
+            + `over the ${FS_READ_BATCH_REQUEST_BYTES}-byte limit`);
+    }
+    // Sizing pass. A path this process may not stat contributes nothing and
+    // still gets its own entry below — denying one path must not deny the
+    // batch, which is what N separate reads would have done.
+    const fs = runtimeFs(self, pid);
+    let residentBytes = 0;
+    for (const request of args) {
+        try {
+            residentBytes += await rangeReadBytes(fs, request.path, request.offset, request.length);
+        }
+        catch { /* the read pass reports this path's error in its own slot */ }
+    }
+    return withReadAllocation(residentBytes, async () => {
+        const entries = [];
+        for (const request of args) {
+            try {
+                entries.push({ bytes: await fs.readRange(request.path, request.offset, request.length) });
+            }
+            catch (error) {
+                entries.push({ error: readBatchEntryError(error) });
+            }
+        }
+        return entries;
+    });
+}
+/**
+ * Errors cross an RPC boundary as `name`/`message` only, so the code a
+ * caller needs to map to an errno travels as data.
+ */
+function readBatchEntryError(error) {
+    if (typeof error === 'object' && error !== null) {
+        const code = Reflect.get(error, 'code');
+        const message = Reflect.get(error, 'message');
+        if (typeof code === 'string') {
+            return { code, message: typeof message === 'string' ? message : code };
+        }
+        if (typeof message === 'string')
+            return { message };
+    }
+    return { message: String(error) };
 }
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
@@ -995,225 +1080,6 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         }
         catch { /* best-effort */ }
     }
-}
-// ── Process fabric: peer-DO host leg (heavy-class process scheduler) ─────
-//
-// THIS DO instance acts as a process-hosting peer for a sibling coordinator
-// session: it boots a staged process facet from its OWN env.LOADER (so the
-// facet lands in THIS DO's workerd process — an independent memory budget)
-// while the facet's SUPERVISOR binding is minted for the COORDINATOR's doId,
-// so every syscall routes back to the user's session. Same trust/routing
-// posture as _rpcFanoutExecute's INSTALL-HONESTY override. See
-// loaders/process-fabric.ts for the scheduler side.
-const HostProcessOptsSchema = z.object({
-    /** Full doId of the coordinator session (SUPERVISOR routing target). */
-    coordinatorDoId: z.string().min(1),
-    /** Supervisor-assigned pid of the process entry on the coordinator. */
-    pid: z.number().int().positive(),
-    /** Trusted identity of this concrete resident-host incarnation. */
-    writerId: z.string().uuid(),
-    /** Keyed dynamic-worker identity on THIS peer's loader. */
-    workerKey: z.string().min(1),
-    /** Runner contract: does startProcess hold for the process's life? */
-    startContract: z.enum(['lifetime', 'boot']),
-    /** Opaque arguments forwarded to the runner's startProcess. */
-    startArgs: z.unknown().optional(),
-});
-/**
- * How long a boot-payload or routed-HTTP leg waits for its process's host
- * record. Normally zero: the coordinator issues `_rpcHostProcess` first and it
- * registers before its first await. The wait exists so neither leg can lose a
- * race with a respawn or with RPC delivery order.
- */
-const HOSTED_RECORD_WAIT_MS = 30_000;
-function hostedRecords(self) {
-    return self._hostedProcesses;
-}
-function hostedWaiters(self) {
-    return self._hostedProcessWaiters;
-}
-function registerHostedRecord(self, workerKey, record) {
-    hostedRecords(self).set(workerKey, record);
-    const waiters = hostedWaiters(self).get(workerKey);
-    if (!waiters)
-        return;
-    hostedWaiters(self).delete(workerKey);
-    for (const notify of waiters)
-        notify(record);
-}
-function awaitHostedRecord(self, workerKey) {
-    const existing = hostedRecords(self).get(workerKey);
-    if (existing)
-        return Promise.resolve(existing);
-    return new Promise((resolve, reject) => {
-        const waiters = hostedWaiters(self).get(workerKey) ?? new Set();
-        const notify = (record) => { clearTimeout(timer); resolve(record); };
-        const timer = setTimeout(() => {
-            waiters.delete(notify);
-            if (waiters.size === 0)
-                hostedWaiters(self).delete(workerKey);
-            reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
-        }, HOSTED_RECORD_WAIT_MS);
-        waiters.add(notify);
-        hostedWaiters(self).set(workerKey, waiters);
-    });
-}
-/**
- * RPC: placement probe. Returns this peer's module-scope isolate token so
- * the coordinator's scheduler can verify the peer landed in a distinct
- * workerd process (same token ⇒ shared isolate/process ⇒ try the next slot).
- */
-export function _rpcHostProcessProbe(_self) {
-    return { isolateToken: isolateToken() };
-}
-/**
- * RPC: host a heavy-class resident process. Held open by the coordinator for
- * the process's whole lifetime — the exact contract the coordinator's local
- * attach path has with its loopback startProcess. Resolves on clean process
- * exit (the facet reports its exit to the coordinator itself via SUPERVISOR);
- * rejects on facet death, which the coordinator maps to SIGKILL semantics in
- * its ProcessTable and may answer with a respawn on a fresh peer.
- *
- * If the coordinator dies, workerd cancels this inbound call; the held-open
- * startProcess context below collapses and the facet dies with it — a
- * process-hosting peer never outlives its parent session.
- */
-export async function _rpcHostProcess(self, boot, opts) {
-    const hostOpts = HostProcessOptsSchema.parse(opts);
-    const spec = ResidentBootSpecSchema.parse(boot);
-    const { workerKey } = hostOpts;
-    let cancel = () => { };
-    const cancelled = new Promise((resolve) => { cancel = resolve; });
-    let settleHosted = () => { };
-    let failHosted = () => { };
-    const hosted = new Promise((resolve, reject) => {
-        settleHosted = resolve;
-        failHosted = reject;
-    });
-    let settleBooted = () => { };
-    let failBooted = () => { };
-    const booted = new Promise((resolve, reject) => {
-        settleBooted = resolve;
-        failBooted = reject;
-    });
-    // Nothing awaits these two promises unless a leg asks for them; keep the
-    // runtime from reporting them as unhandled while the process is healthy.
-    hosted.catch(() => { });
-    booted.catch(() => { });
-    registerHostedRecord(self, workerKey, {
-        supervisor: {
-            doId: hostOpts.coordinatorDoId,
-            pid: hostOpts.pid,
-            writerId: hostOpts.writerId,
-        },
-        hosted, booted, cancelled, cancel,
-    });
-    let facet;
-    try {
-        facet = await hostResidentProcess({
-            ctxExports: getNimbusCtxExports(),
-            supervisor: {
-                doId: hostOpts.coordinatorDoId,
-                pid: hostOpts.pid,
-                writerId: hostOpts.writerId,
-            },
-            workerKey,
-        }, spec);
-        settleHosted(facet);
-        const live = facet;
-        // Cancellation releases the facet's resources — the identical teardown a
-        // local placement applies — so each contract settles exactly as it would
-        // have locally: a `lifetime` runner's held call rejects, a `boot` runner's
-        // residency simply ends.
-        cancelled.then(() => live.dispose());
-        const started = facet.start(hostOpts.startArgs);
-        started.then(settleBooted, failBooted);
-        if (hostOpts.startContract === 'lifetime') {
-            // The runner's startProcess IS the process: this call is the lifetime.
-            await started;
-            return { ok: true };
-        }
-        // A `boot` runner returns once it is up; the facet then stays resident
-        // behind the resources this call holds, so keep holding until the
-        // coordinator cancels — or dies, which workerd surfaces by cancelling
-        // this inbound call. A hosting peer never outlives its coordinator.
-        await started;
-        await cancelled;
-        return { ok: true };
-    }
-    catch (e) {
-        failHosted(e);
-        failBooted(e);
-        throw e;
-    }
-    finally {
-        hostedRecords(self).delete(workerKey);
-        facet?.dispose();
-    }
-}
-/**
- * RPC: read back the boot payload of a process this peer hosts. The runner was
- * started by `_rpcHostProcess`; this never starts anything, so a coordinator
- * asking twice — or asking after a respawn — gets the same answer the local
- * placement would have returned inline.
- */
-export async function _rpcAwaitHostedBoot(self, workerKey) {
-    const record = await awaitHostedRecord(self, workerKey);
-    return { payload: await record.booted };
-}
-/**
- * RPC: inbound HTTP for a port owned by a process this peer hosts. The
- * coordinator's PortRegistry holds one route target per pid and cannot tell
- * this apart from a local facet: the same code-free NimbusLoadedEntrypoint
- * resolves the running facet, here on the PEER's loader.
- *
- * The route target is minted PER CALL, in the context that uses it. A stub
- * held from the host call belongs to that call's I/O context, and re-entering
- * it from here would read as transferring a dynamically-loaded worker's
- * entrypoint — which workerd does refuse. Minting fresh is what keeps this
- * leg legal; it is not an optimisation and must not be hoisted.
- */
-export async function _rpcRouteHostedHttp(self, workerKey, wire) {
-    const record = await awaitHostedRecord(self, workerKey);
-    await record.hosted; // the facet must be loaded before it can be re-entered
-    // A route target must be minted in the context that USES it: a
-    // NimbusLoadedEntrypoint stub held from the host call belongs to that call's
-    // I/O context, and re-entering it from here reads as transferring a
-    // dynamically-loaded worker's entrypoint, which workerd refuses.
-    const route = await createLoadedWorkerEntrypoint(getNimbusCtxExports(), undefined, record.supervisor, null, workerKey);
-    const headers = new Headers();
-    for (const [k, v] of wire.headers)
-        headers.append(k, v);
-    const init = { method: wire.method, headers };
-    if (wire.body) {
-        init.body = wire.body;
-        init.duplex = 'half';
-    }
-    const response = await route.handleHttpRequest(new Request(wire.url, init));
-    const responseHeaders = [];
-    response.headers.forEach((v, k) => { responseHeaders.push([k, v]); });
-    return {
-        status: response.status,
-        statusText: response.statusText,
-        headers: responseHeaders,
-        body: response.body,
-    };
-}
-/**
- * RPC: deterministic kill of a hosted process. Releases the resources pinning
- * the facet — the same teardown FacetManager.kill applies to a local facet —
- * which settles the coordinator's held-open `_rpcHostProcess` call.
- */
-export function _rpcCancelHostProcess(self, workerKey) {
-    const record = hostedRecords(self).get(workerKey);
-    if (!record)
-        return { cancelled: false };
-    hostedRecords(self).delete(workerKey);
-    try {
-        record.cancel();
-    }
-    catch { /* best-effort */ }
-    return { cancelled: true };
 }
 // ── Cache-observability stats forward (cache metrics support) ──────
 //

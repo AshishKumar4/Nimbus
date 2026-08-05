@@ -43,36 +43,13 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 
-const require = createRequire(import.meta.url);
+import { resolvePackageDir } from './resolve-package-dir.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
-// Walk up looking for node_modules/sql.js — handles both the
-// packages/worker/node_modules layout and the monorepo hoist.
-function resolvePkgDir(start, pkgName) {
-  let dir = start;
-  while (true) {
-    const candidate = path.join(dir, 'node_modules', pkgName);
-    try {
-      require('node:fs').statSync(candidate);
-      return candidate;
-    } catch { /* fall through */ }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // bun hoists to node_modules/.bun/<pkg>@<v>/node_modules/<pkg>; resolve
-  // through require() as a fallback so the script works post-bun-install.
-  try {
-    const main = require.resolve(`${pkgName}/package.json`);
-    return path.dirname(main);
-  } catch { /* fall through */ }
-  throw new Error(`Cannot locate node_modules/${pkgName} starting at ${start}`);
-}
-
-const PKG_DIR = resolvePkgDir(ROOT, 'sql.js');
+const PKG_DIR = resolvePackageDir('sql.js', { start: ROOT });
 const JS_SRC = path.join(PKG_DIR, 'dist', 'sql-wasm.js');
 const WASM_SRC = path.join(PKG_DIR, 'dist', 'sql-wasm.wasm');
 const PKG_JSON = path.join(PKG_DIR, 'package.json');

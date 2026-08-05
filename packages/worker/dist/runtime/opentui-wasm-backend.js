@@ -108,6 +108,7 @@ export class OpenTUIWasmBackend {
             argv: opts.argv ?? ['opentui'],
             env: opts.env ?? {},
             getMemory: () => memory,
+            parking: 'none',
             stdoutWrite: opts.stdoutWrite,
             stderrWrite: opts.stderrWrite,
         });

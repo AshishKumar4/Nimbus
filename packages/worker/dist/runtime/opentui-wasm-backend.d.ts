@@ -77,6 +77,14 @@ export interface WasiHost {
         argv?: string[];
         env?: Record<string, string>;
         getMemory: () => WebAssembly.Memory | null;
+        /**
+         * `'none'` keeps the parkable imports unwrapped. Required here: every
+         * entry into this instance is synchronous — `_initialize()` at
+         * construction, and each FFI symbol call per frame — so the instance can
+         * never be under a `WebAssembly.promising` suspender, and a `Suspending`
+         * import traps such a call even when it returns a plain value.
+         */
+        parking?: 'jspi' | 'none';
         stdoutWrite?: (s: string) => void;
         stderrWrite?: (s: string) => void;
     }): WasiMakeImportsResult;
