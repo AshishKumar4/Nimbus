@@ -21,7 +21,6 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { type HostedResidentProcess } from '../loaders/process-fabric.js';
 import { type RuntimeOpenFlags } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
@@ -360,101 +359,6 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
 }): Promise<{
     results: unknown[];
 }>;
-/**
- * One process this peer hosts for a coordinator sibling. Created
- * synchronously by `_rpcHostProcess` before any await, so the boot-payload
- * and routed-HTTP legs — which the coordinator may issue concurrently — always
- * find the record and simply await it.
- */
-export interface HostedProcessRecord {
-    /** Coordinator identity every leg mints its own stubs against. */
-    supervisor: {
-        doId: string;
-        pid: number;
-        writerId: string;
-    };
-    hosted: Promise<HostedResidentProcess>;
-    booted: Promise<unknown>;
-    /** Settles when the coordinator cancels or the process is torn down. */
-    cancelled: Promise<void>;
-    cancel(): void;
-}
-/**
- * RPC: placement probe. Returns this peer's module-scope isolate token so
- * the coordinator's scheduler can verify the peer landed in a distinct
- * workerd process (same token ⇒ shared isolate/process ⇒ try the next slot).
- */
-export declare function _rpcHostProcessProbe(_self: RpcHost): {
-    isolateToken: string;
-};
-/**
- * RPC: host a heavy-class resident process. Held open by the coordinator for
- * the process's whole lifetime — the exact contract the coordinator's local
- * attach path has with its loopback startProcess. Resolves on clean process
- * exit (the facet reports its exit to the coordinator itself via SUPERVISOR);
- * rejects on facet death, which the coordinator maps to SIGKILL semantics in
- * its ProcessTable and may answer with a respawn on a fresh peer.
- *
- * If the coordinator dies, workerd cancels this inbound call; the held-open
- * startProcess context below collapses and the facet dies with it — a
- * process-hosting peer never outlives its parent session.
- */
-export declare function _rpcHostProcess(self: RpcHost, boot: unknown, opts: unknown): Promise<{
-    ok: boolean;
-}>;
-/**
- * RPC: read back the boot payload of a process this peer hosts. The runner was
- * started by `_rpcHostProcess`; this never starts anything, so a coordinator
- * asking twice — or asking after a respawn — gets the same answer the local
- * placement would have returned inline.
- */
-export declare function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): Promise<{
-    payload: unknown;
-}>;
-/**
- * Inbound HTTP for a peer-hosted process, on the wire.
- *
- * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
- * rejects it with "Entrypoints to dynamically-loaded workers cannot be
- * transferred to other Workers", because the object belongs to the
- * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
- * body is a plain ReadableStream, which RPC transfers with flow control. So
- * the leg carries the parts and rebuilds the object on each side: no
- * buffering, no size ceiling, and an SSE or chunked body still flows live.
- */
-export interface HostedHttpRequest {
-    method: string;
-    url: string;
-    headers: [string, string][];
-    body: ReadableStream | null;
-}
-export interface HostedHttpResponse {
-    status: number;
-    statusText: string;
-    headers: [string, string][];
-    body: ReadableStream | null;
-}
-/**
- * RPC: inbound HTTP for a port owned by a process this peer hosts. The
- * coordinator's PortRegistry holds one route target per pid and cannot tell
- * this apart from a local facet: the same code-free NimbusLoadedEntrypoint
- * resolves the running facet, here on the PEER's loader.
- *
- * The route target is minted PER CALL, in the context that uses it. A stub
- * held from the host call belongs to that call's I/O context, and re-entering
- * it from here would read as transferring a dynamically-loaded worker's
- * entrypoint — which workerd does refuse. Minting fresh is what keeps this
- * leg legal; it is not an optimisation and must not be hoisted.
- */
-export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
-/**
- * RPC: deterministic kill of a hosted process. Releases the resources pinning
- * the facet — the same teardown FacetManager.kill applies to a local facet —
- * which settles the coordinator's held-open `_rpcHostProcess` call.
- */
-export declare function _rpcCancelHostProcess(self: RpcHost, workerKey: string): {
-    cancelled: boolean;
-};
 import { type CacheTier, type CacheKind } from '../_shared/cache-stats.js';
 export type CacheStatEvent = {
     kind: 'hit';
