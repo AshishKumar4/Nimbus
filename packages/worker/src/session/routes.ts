@@ -37,6 +37,7 @@ import {
   type SessionState,
 } from '../observability/oom-discriminator.js';
 import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '../constants.js';
+import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '../observability/heap-estimate.js';
 import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
@@ -45,6 +46,7 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
+import { startRealVite } from './start-real-vite.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
@@ -104,13 +106,33 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
     const config = await self.ctx.storage.get(VITE_CONFIG_KEY) as any;
     // A parallel request may have restored the server while this one waited
     // on storage — a woken page fetches several URLs at once. Everything
-    // below runs without yielding, so this re-check is the whole exclusion.
-    if (self.viteDevServer?.isRunning) return;
+    // below runs without yielding UNTIL the first await, so re-check there.
+    if (self.viteDevServer?.isRunning || self.cirrusReal?.isRunning) return;
     if (!config?.root) return;
     // The port the saved config listens on; configs written before ports
     // were recorded predate P5 and are vite's default.
     const port = (config.port && Number.isFinite(config.port)) ? config.port : DEFAULT_VITE_PORT;
     if (onlyPort != null && onlyPort !== port) return;
+
+    // A cirrus-real session rebuilds the real-vite facet, not the Cirrus shim —
+    // same key, same starter the `vite` builtin uses, so a woken real-vite
+    // session comes back as real-vite rather than degrading to the shim.
+    if (config.devServer === 'real') {
+      // Booting the facet yields (heavy-alloc gate, ASSETS fetch), so a woken
+      // page's parallel requests could each start one. Coalesce onto a single
+      // in-flight boot; the ViteDevServer path below needs no such guard
+      // because it runs to completion without yielding.
+      if (self._realViteRestore) { await self._realViteRestore; return; }
+      self.ensureSqliteFs();
+      self._realViteRestore = startRealVite(self, {
+        root: config.root,
+        port,
+        basePath: config.basePath || self.viteBasePath,
+        configDir: config.configDir || config.root,
+      }).finally(() => { self._realViteRestore = null; });
+      await self._realViteRestore;
+      return;
+    }
 
     self.ensureSqliteFs();
     if (!self.esbuildService) self.esbuildService = new EsbuildService(self.sqliteFs!);
@@ -159,17 +181,92 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
  * `/preview/?port=N`, and the `<port>--<sid>` preview hostname, which the
  * router forwards as `/port/<n>/`. They differ only in how the port and the
  * inner path are spelled, so they must not differ in what answers.
+ *
+ * `mountBase` is the public URL prefix the served app is mounted at for THIS
+ * request — '' for a root-mounted `<port>--<sid>` host, '/s/<sid>/preview' for
+ * the preview path. The in-process Cirrus dev server rewrites base-relative
+ * URLs (module URLs, <base href>, BASE_URL, router basename), so it is handed
+ * the base directly: the generic port proxy strips the Nimbus base header at
+ * the untrusted-code boundary and cannot carry it, and a plain user server on
+ * any other port is mounted at root and needs no rewriting.
  */
 async function routeToSessionPort(
   self: RoutesHost,
   port: number,
   request: Request,
   innerPath: string,
+  mountBase: string,
 ): Promise<Response> {
   await restorePersistedDevServer(self, port);
+  if (port === self._viteShimPort) {
+    // The preview HMR WebSocket can't cross the port-registry RPC, so it is
+    // accepted in-DO for both dev servers — the same handling `/preview/` uses.
+    if (self.cirrusReal?.isRunning && isCirrusHmrPath(innerPath)) {
+      return acceptCirrusHmrWs(self, request);
+    }
+    // The Cirrus dev server rewrites base-relative URLs per request and the
+    // generic proxy strips the base header, so hand it the request directly.
+    if (self.viteDevServer?.isRunning) {
+      return self.viteDevServer.handleRequest(request, innerPath, mountBase);
+    }
+  }
   const proxied = await self.portRegistry.routeRequest(port, request, innerPath);
   if (proxied) return proxied;
   return new Response(`No process listening on port ${port}`, { status: 502 });
+}
+
+/**
+ * The public URL prefix a port-routed request is mounted at. `<port>--<sid>`
+ * hosts arrive with an empty base header (mounted at the origin root); the
+ * path form `/s/<sid>/port/<n>/` arrives with `/s/<sid>` and mounts under
+ * `/s/<sid>/port/<n>`. Either way the base is a property of the door, read
+ * from the header the router set — never the sticky sessionBasePath, which a
+ * concurrent path request could have left pointing elsewhere.
+ */
+function portRouteMountBase(request: Request, port: number): string {
+  const header = request.headers.get(BASE_PATH_HEADER);
+  return header ? `${header}/port/${port}` : '';
+}
+
+/** True if `innerPath` targets the cirrus-real HMR socket, under any mount
+ *  base — the client opens `<base>/__nimbus_hmr`, and on a `<port>--<sid>` host
+ *  the router forwards the whole path, base and all, under `/port/N`. */
+function isCirrusHmrPath(innerPath: string): boolean {
+  const p = innerPath.split('?')[0];
+  return p === '/__nimbus_hmr' || p.endsWith('/__nimbus_hmr');
+}
+
+/**
+ * Accept a Vite HMR WebSocket for the running cirrus-real facet and wire it
+ * into the facet's HMR bridge.
+ *
+ * Handled in the DO, never through the port-registry proxy: that proxy moves a
+ * Request/Response over RPC and drops the `webSocket` handshake, so a HMR
+ * upgrade routed through it hangs. This is the ONE place a preview HMR socket
+ * is accepted — shared by the `/preview/` path and the `<port>--<sid>` host's
+ * `/port/N` route, so HMR works the same on both.
+ *
+ * ctx.acceptWebSocket (hibernatable) is required because HMR messages arrive
+ * from a DIFFERENT request context (the facet's long-poll RPC), and workerd
+ * forbids cross-request I/O on a `server.accept()`'d socket.
+ */
+function acceptCirrusHmrWs(self: RoutesHost, request: Request): Response {
+  if (request.headers.get('Upgrade') !== 'websocket') {
+    return new Response('Expected WebSocket', { status: 426 });
+  }
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  self.ctx.acceptWebSocket(server, ['cirrus-hmr']);
+  const clientId = self.cirrusReal!.attachHmrClient(server);
+  (server as any).serializeAttachment?.({ kind: 'cirrus-hmr', clientId });
+  const hmrClients = (self._cirrusHmrWsClients ||= new Map());
+  hmrClients.set(server, clientId);
+  // Echo the vite-hmr subprotocol.
+  const wantedProto = request.headers.get('Sec-WebSocket-Protocol') || '';
+  const useProto = wantedProto.split(',').map((s) => s.trim()).find((p) => p === 'vite-hmr' || p === 'vite-ping');
+  const respHeaders: Record<string, string> = {};
+  if (useProto) respHeaders['Sec-WebSocket-Protocol'] = useProto;
+  return new Response(null, { status: 101, webSocket: client, headers: respHeaders });
 }
 
 const RecoveryEventRecordBodySchema = z.object({
@@ -1003,8 +1100,17 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           const q = sp.toString();
           return q ? '?' + q : '';
         })();
-        return routeToSessionPort(self, queryPort, request, previewInner);
+        // `/preview/?port=N` is the session preview path: assets it serves
+        // are fetched relative to `/s/<sid>/preview/`, so that is the mount.
+        return routeToSessionPort(self, queryPort, request, previewInner, self.viteBasePath);
       }
+
+      // Rebuild whatever dev server a previous isolate left behind BEFORE the
+      // serving checks below — a woken real-vite session must be restored (and
+      // then served) through the cirrus-real branch, and a woken Cirrus-shim
+      // session through the branch after it. Restoring only before the shim
+      // check (as it once was) left a rehydrated real-vite server unserved.
+      await restorePersistedDevServer(self);
 
       // ── Real-vite takes precedence if running ───────────────────────
       // Cirrus shim and real-vite are mutually exclusive per session.
@@ -1013,42 +1119,22 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       if (self.cirrusReal?.isRunning) {
         const previewPath = (url.pathname.replace(/^\/preview/, '') || '/') + url.search;
 
-        // Phase 2: HMR WebSocket upgrade. Vite's @vite/client opens a
-        // WS against `<base>/__nimbus_hmr` (our custom HMR path). We
-        // accept it here and plug it into cirrusReal.hmr so the facet's
-        // ws-shim sees a 'connection' event on its next long-poll.
-        // Non-hibernatable (server.accept, not ctx.acceptWebSocket) —
-        // clients auto-reconnect on DO wake.
-        if (previewPath.startsWith('/__nimbus_hmr') || previewPath === '/__nimbus_hmr') {
-          if (request.headers.get('Upgrade') !== 'websocket') {
-            return new Response('Expected WebSocket', { status: 426 });
-          }
-          const pair = new WebSocketPair();
-          const [client, server] = Object.values(pair);
-          // Use ctx.acceptWebSocket (hibernatable) — required because
-          // HMR sends messages from a DIFFERENT request context (the
-          // facet's long-poll RPC). workerd forbids cross-request I/O
-          // on server.accept()'d sockets.
-          self.ctx.acceptWebSocket(server, ['cirrus-hmr']);
-          const clientId = self.cirrusReal.attachHmrClient(server);
-          (server as any).serializeAttachment?.({ kind: 'cirrus-hmr', clientId });
-          const hmrClients = (self._cirrusHmrWsClients ||= new Map());
-          hmrClients.set(server, clientId);
-          // Echo the vite-hmr subprotocol.
-          const wantedProto = request.headers.get('Sec-WebSocket-Protocol') || '';
-          const useProto = wantedProto.split(',').map(s => s.trim()).find(p => p === 'vite-hmr' || p === 'vite-ping');
-          const respHeaders: Record<string, string> = {};
-          if (useProto) respHeaders['Sec-WebSocket-Protocol'] = useProto;
-          return new Response(null, { status: 101, webSocket: client, headers: respHeaders });
+        // HMR WebSocket upgrade. Vite's @vite/client opens a WS against
+        // `<base>/__nimbus_hmr` (our custom HMR path); accept it in-DO and
+        // plug it into cirrusReal.hmr so the facet's ws-shim sees a
+        // 'connection' event on its next long-poll.
+        if (isCirrusHmrPath(previewPath)) {
+          return acceptCirrusHmrWs(self, request);
         }
 
         return self.cirrusReal.handleRequest(sanitizeUntrustedRequest(request), previewPath);
       }
 
-      await restorePersistedDevServer(self);
       if (self.viteDevServer?.isRunning) {
         const previewPath = (url.pathname.replace(/^\/preview/, '') || '/') + url.search;
-        return self.viteDevServer.handleRequest(request, previewPath);
+        // Bare `/preview/` is the session preview path — mounted at
+        // `/s/<sid>/preview`.
+        return self.viteDevServer.handleRequest(request, previewPath, self.viteBasePath);
       }
       // Polished placeholder — auto-reloads when vite starts.
       // Checks the VFS for the starter app so we can offer a context-aware hint.
@@ -1155,7 +1241,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     if (portMatch) {
       const port = parseInt(portMatch[1]);
       const path = normalizeForwardedHttpPath(portMatch[2] || '/');
-      return routeToSessionPort(self, port, request, path);
+      return routeToSessionPort(self, port, request, path, portRouteMountBase(request, port));
     }
 
     // ── /api/_diag/cache — per-tier cache observability ───────────────

@@ -120,4 +120,23 @@ const EMPTY = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 assert.equal(readMemoryLimits(EMPTY), null, 'a module without a memory reports none');
 assert.equal(withMemoryLimit(EMPTY, 1 << 20), EMPTY, 'and is returned unchanged');
 
+// A wasi-threads build is exactly this shape: it imports a SHARED memory and
+// names its own ceiling on the build line (`--import-memory --shared-memory
+// --max-memory=<bytes>`). It must pass through byte-identical — rewriting a
+// shared memory's limits, or capping one whose maximum the runtime already
+// reserves against, would break pthread parity rather than protect anything.
+// wat: (module (import "env" "memory" (memory 1 100 shared)))
+const THREADS = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x02, 0x11, 0x01,                               // import section, one entry
+  0x03, 0x65, 0x6e, 0x76,                         // module "env"
+  0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79,       // field  "memory"
+  0x02, 0x03, 0x01, 0x64,                         // memory, flags 3, min 1, max 100
+]);
+const threadsLimits = readMemoryLimits(THREADS);
+assert.equal(threadsLimits.imported, true, 'a threads build imports its memory');
+assert.equal(threadsLimits.flags & 2, 2, 'and that memory is shared');
+assert.equal(withMemoryLimit(THREADS, 128 * 1024 * 1024), THREADS,
+  'so the cap leaves it alone — the host chooses those limits at instantiation');
+
 console.log('wasm-memory-limits: ok');

@@ -89,8 +89,17 @@
  * everyone until it yields. No preemption: scheduling points are the park set,
  * nothing else. For I/O-bound work - per-connection handlers, watchdogs,
  * timeouts - that is the whole of what threads are for here. CPU-parallel work
- * sharing a heap is not available at this level and belongs to the process
- * fabric on peer DOs.
+ * sharing a heap is not available at this level, and it is not available at any
+ * other level either: every resident process is a DO Facet and facet siblings
+ * serialise on CPU, so there is nowhere to offload it to.
+ *
+ * ── 6. The same model, one layer down ──────────────────────────────────────
+ *
+ * runtime/wasi-threads.ts is this contract at the HOST layer: green threads as
+ * multiple wasm instances over one shared linear memory, for guests whose
+ * threads are pthreads rather than fibers. Same park set, same run-to-park
+ * policy, same deadlock verdict, same honest limits. Two implementations of one
+ * concurrency model at two layers - not two models.
  */
 export declare const RUBY_GREEN_THREADS: string;
 //# sourceMappingURL=ruby-green-threads.d.ts.map
