@@ -79,34 +79,40 @@
   // rejects redundant flags). See smoketest-result.md for the
   // empirical chain that established this.
   "compatibility_flags": ["nodejs_compat"],
-  // Versioned preview URLs. `wrangler versions upload` and `wrangler
-  // deploy` each print the per-version URL they created; read it from
-  // that output rather than reconstructing it — the host is derived from
-  // the Worker's workers.dev subdomain, not from a zone this config
-  // names. Without this key, wrangler 4.44+ disables preview URLs and
-  // those requests 404
-  // (https://developers.cloudflare.com/changelog/2025-09-17-update-preview-url-setting/).
+  // BUILD NOTHING ON VERSIONED PREVIEW URLS until someone produces one
+  // that resolves. Measured 2026-08-05, wrangler 4.98.0, on
+  // `nimbus-staging` — `preview_urls` and `workers_dev` both on, the most
+  // favourable case available:
+  //   - `wrangler deploy` printed the workers.dev URL and `Current
+  //     Version ID` and nothing else; `wrangler versions upload` printed
+  //     only `Worker Version ID`. Neither printed a preview URL.
+  //   - `<version-prefix>-nimbus-staging.<subdomain>.workers.dev` 404s
+  //     for a version id that demonstrably exists — as does the same
+  //     shape against the production Worker's live version.
+  // The key stays because removing it can only make previews less
+  // available (wrangler 4.44+ disables them by default:
+  // https://developers.cloudflare.com/changelog/2025-09-17-update-preview-url-setting/).
+  // That is a conservative default, NOT evidence that previews work.
   //
-  // A previous version of this comment claimed the URL was
-  // `<VERSION_PREFIX>-nimbus-os.dev` and that previews were safe in prod
-  // because only someone holding the version prefix could resolve one.
-  // Both are wrong, and three agents in a row acted on them. Measured
-  // 2026-08-04: `<anything>-nimbus-os.dev` is NXDOMAIN (a hyphen where a
-  // subdomain needs a dot — it was never a host), while
+  // Read the above before writing a fifth wrong thing here. The comment
+  // this replaced claimed the URL was `<VERSION_PREFIX>-nimbus-os.dev`
+  // and that previews were safe in prod because only someone holding the
+  // prefix could resolve one. Three agents in a row acted on it. Measured
+  // 2026-08-04: `<anything>-nimbus-os.dev` is NXDOMAIN — a hyphen where a
+  // subdomain needs a dot, so it was never a host — while
   // `deadbeef.nimbus-os.dev` and `zzzznope.nimbus-os.dev` BOTH resolve
   // and BOTH answer 200, because the `*.nimbus-os.dev/*` route below
-  // hands every subdomain to the production Worker. DNS obscurity is not
-  // the protection; Cloudflare's preview infrastructure serves only
-  // version ids it knows and 404s the rest.
+  // hands every subdomain to the production Worker. DNS obscurity was
+  // never the protection.
   //
-  // What actually keeps a test off production is the DEPLOY TARGET, not
-  // the hostname. `wrangler versions upload -e production` and `wrangler
+  // What keeps a test off production is the DEPLOY TARGET, not the
+  // hostname. `wrangler versions upload -e production` and `wrangler
   // deploy -e production` both act on the Worker named `nimbus`: the
   // first appends to the live script's version list, the second shifts
-  // its traffic. Neither is made safe by only visiting a preview URL
-  // afterwards. Isolation is a distinct Worker name — `nimbus-staging`
-  // (env.staging), `nimbus-probe-staging`, or a `nimbus-tw-*` throwaway.
-  // See AGENTS.md § Staging And Promote.
+  // its traffic. Neither is made safe by visiting some URL afterwards.
+  // Isolation is a distinct Worker name — `nimbus-staging` (env.staging),
+  // `nimbus-probe-staging`, or a `nimbus-tw-*` throwaway. See AGENTS.md
+  // § Staging And Promote.
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "preview_urls": true,
   // [W12 — Lever 7 / G4] Smart Placement on the gateway Worker. Per
