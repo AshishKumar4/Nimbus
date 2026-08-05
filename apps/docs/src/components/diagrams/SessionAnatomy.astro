@@ -56,9 +56,9 @@ const nodes = {
 	peers: {
 		title: 'peer DOs',
 		facts: [
-			'Sibling Durable Objects in the coordinator’s own namespace. Each one lends a Worker Loader and a memory budget independent of the coordinator’s.',
-			'Big npm installs shard across peers whenever the fan-out is wider than five. The opencode attach TUI is the one resident process hosted there.',
-			'A peer-hosted facet still sends readFile, writeFile, stdout, and registerPort to the coordinator, so the disk, terminal, and ports never move.',
+			'Sibling Durable Objects in the session’s own namespace. Each one lends a Worker Loader and a CPU budget independent of the session’s.',
+			'Batch work fans out here: big npm installs shard across peers whenever the fan-out is wider than five, up to 32 of them.',
+			'A peer still sends readFile, writeFile, stdout, and registerPort to the session, so the disk, terminal, and ports never move.',
 		],
 	},
 	cache: {
