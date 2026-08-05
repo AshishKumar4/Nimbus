@@ -325,7 +325,7 @@ export function makeWasmRunner(deps) {
                     // lands wrong and every st_size reads back as the nlink field. The
                     // signatures are identical, so nothing traps and nothing is logged.
                     const result = await WebAssembly.instantiate(mod, {
-                        [WASI_ABI_NAMESPACE[abi]]: wasi.wasiImport,
+                        [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
                     });
                     inst = (result instanceof WebAssembly.Instance ? result : result.instance);
                 }
@@ -464,7 +464,14 @@ export function makeWasmRunner(deps) {
         let outcome;
         try {
             const submitArgs = isWasi
-                ? { mode: 'wasi', wasiArgv, wasiEnv, wasiAbi: wasiAbi ?? undefined, wasiFs }
+                ? {
+                    mode: 'wasi',
+                    wasiArgv,
+                    wasiEnv,
+                    wasiAbi: wasiAbi ?? undefined,
+                    wasiNamespace: WASI_ABI_NAMESPACE[wasiAbi ?? 'preview1'],
+                    wasiFs,
+                }
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await pool.submit(facetFn, submitArgs, {
                 wasmModules: { 'user.wasm': buf },

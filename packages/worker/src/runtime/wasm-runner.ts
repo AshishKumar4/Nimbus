@@ -347,6 +347,16 @@ export function makeWasmRunner(deps: {
         wasiArgv?: string[];
         wasiEnv?: Record<string, string>;
         wasiAbi?: WasiAbi;
+        /**
+         * The import namespace to bind, resolved supervisor-side.
+         *
+         * This function is serialized with fn.toString() and evaluated in the
+         * facet isolate, where module imports do not exist — reaching for
+         * WASI_ABI_NAMESPACE here is a ReferenceError at instantiate time that
+         * surfaces as "wasi trap: instantiate failed", with the guest blamed
+         * for a defect in the host. Values the facet needs travel as arguments.
+         */
+        wasiNamespace?: string;
         wasiFs?: {
           root: string;
           preopens: Array<{ wasiPath: string; vfsPath: string }>;
@@ -442,7 +452,7 @@ export function makeWasmRunner(deps: {
           // lands wrong and every st_size reads back as the nlink field. The
           // signatures are identical, so nothing traps and nothing is logged.
           const result: any = await WebAssembly.instantiate(mod as any, {
-            [WASI_ABI_NAMESPACE[abi]]: wasi.wasiImport,
+            [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
           });
           inst = (result instanceof WebAssembly.Instance ? result : result.instance);
         } catch (e: any) {
@@ -594,7 +604,14 @@ export function makeWasmRunner(deps: {
     let outcome: DispatchOutcome;
     try {
       const submitArgs = isWasi
-        ? { mode: 'wasi' as const, wasiArgv, wasiEnv, wasiAbi: wasiAbi ?? undefined, wasiFs }
+        ? {
+            mode: 'wasi' as const,
+            wasiArgv,
+            wasiEnv,
+            wasiAbi: wasiAbi ?? undefined,
+            wasiNamespace: WASI_ABI_NAMESPACE[wasiAbi ?? 'preview1'],
+            wasiFs,
+          }
         : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
       outcome = (await pool.submit(
         facetFn,
