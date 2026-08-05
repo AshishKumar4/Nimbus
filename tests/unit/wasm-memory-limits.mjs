@@ -31,10 +31,6 @@ import { readFileSync } from 'node:fs';
 import {
   readMemoryLimits,
   withMemoryLimit,
-  accountLinearMemory,
-  measureResidentBytes,
-  growWithinLimit,
-  WasmOutOfMemoryError,
   WASM_PAGE_BYTES,
 } from '../../packages/worker/src/runtime/wasm-memory.ts';
 
@@ -87,37 +83,36 @@ assert.throws(
 );
 assert.throws(() => withMemoryLimit(BASH, 0), RangeError, 'a zero cap is refused');
 
-// ── Accounting is exact, and says so by matching the engine ─────────────
-const memory = new WebAssembly.Memory({ initial: 4, maximum: 16 });
-const usage = accountLinearMemory(memory, { minPages: 4, maxPages: 16, flags: 1 });
-assert.equal(usage.bytes, memory.buffer.byteLength,
-  'reported bytes ARE the engine-committed size, not an estimate');
-assert.equal(usage.pages, 4);
-assert.equal(usage.limitBytes, 16 * WASM_PAGE_BYTES);
-assert.equal(accountLinearMemory(memory).limitBytes, null,
-  'with no declared limits the ceiling is reported as unknown, never as a guess');
+// ── The guest actually observes the cap ─────────────────────────────────
+// Everything above asserts the encoding. This asserts the mechanism the
+// encoding exists for: a `memory.grow` executed INSIDE the module must return
+// -1 past the cap, which is what makes dlmalloc hand the program a NULL
+// instead of the engine handing the isolate a death sentence.
+//
+// wat: (module (memory 1) (func (export "g") (param i32) (result i32)
+//                           local.get 0  memory.grow))
+const GROWER = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+  0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f, // type:   (i32) -> i32
+  0x03, 0x02, 0x01, 0x00,                         // func:   one, of type 0
+  0x05, 0x03, 0x01, 0x00, 0x01,                   // memory: min 1, no maximum
+  0x07, 0x05, 0x01, 0x01, 0x67, 0x00, 0x00,       // export: "g" -> func 0
+  0x0a, 0x08, 0x01, 0x06, 0x00, 0x20, 0x00, 0x40, 0x00, 0x0b, // code
+]);
 
-// Residency skips all-zero pages and counts the rest whole.
-assert.equal(measureResidentBytes(memory), 0, 'a fresh memory is entirely zero');
-new Uint8Array(memory.buffer)[2 * WASM_PAGE_BYTES + 17] = 0xff;
-assert.equal(measureResidentBytes(memory), WASM_PAGE_BYTES,
-  'one written byte makes exactly one page resident');
+const uncapped = new WebAssembly.Instance(new WebAssembly.Module(GROWER));
+assert.equal(uncapped.exports.g(20), 1,
+  'uncapped, a 20-page grow succeeds — the shipped default has no ceiling to hit');
 
-// ── Host-initiated growth refuses to cross the cap, as ENOMEM ───────────
-const before = growWithinLimit(memory, 2, 16 * WASM_PAGE_BYTES);
-assert.equal(before, 4, 'growWithinLimit returns the previous size in pages');
-assert.equal(memory.buffer.byteLength, 6 * WASM_PAGE_BYTES);
-
-let refused;
-try {
-  growWithinLimit(memory, 100, 16 * WASM_PAGE_BYTES);
-} catch (e) {
-  refused = e;
-}
-assert.ok(refused instanceof WasmOutOfMemoryError, 'crossing the cap raises WasmOutOfMemoryError');
-assert.equal(refused.code, 'ENOMEM', 'the failure carries an errno a runtime can report');
-assert.equal(memory.buffer.byteLength, 6 * WASM_PAGE_BYTES,
-  'a refused grow leaves the memory untouched');
+const grower = new WebAssembly.Instance(
+  new WebAssembly.Module(withMemoryLimit(GROWER, 8 * WASM_PAGE_BYTES)),
+);
+assert.equal(grower.exports.g(3), 1,
+  'a grow that stays under the cap still succeeds — the cap is a ceiling, not a freeze');
+assert.equal(grower.exports.g(20), -1,
+  'a grow past the cap returns -1 to the GUEST, which is how malloc learns to fail');
+assert.equal(grower.exports.memory, undefined,
+  'and none of this required the module to export its memory');
 
 // ── Modules with no memory, and imported memories, are left alone ───────
 // wat: (module) — the smallest valid module.

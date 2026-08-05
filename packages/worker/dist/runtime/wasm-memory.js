@@ -1,6 +1,5 @@
 /**
- * wasm-memory.ts — linear-memory accounting and allocation control for wasm
- * processes.
+ * wasm-memory.ts — declared allocation limits for wasm processes.
  *
  * What the host can and cannot control
  * ────────────────────────────────────
@@ -24,8 +23,9 @@
  *
  * Scope, stated honestly: this governs the ceiling, not the allocation rate.
  * A guest that stays under the cap is unobserved, and there is no way to
- * observe it — see the module comment in `wasm-process-image.ts` for why
- * page-level demand paging is unreachable for natively-compiled wasm.
+ * observe it — a compiled wasm load or store is a raw machine access with no
+ * host hook, so page-level accounting is unreachable for a natively-compiled
+ * module.
  */
 /** wasm page size. Fixed by the specification. */
 export const WASM_PAGE_BYTES = 65536;
@@ -48,21 +48,6 @@ export const WASM32_MAX_PAGES = 65536;
  * `memory.grow` can see it.
  */
 export const DEFAULT_WASM_PROCESS_LIMIT_BYTES = 128 * 1024 * 1024;
-/** Thrown when a guest allocation cannot be satisfied within its cap. */
-export class WasmOutOfMemoryError extends Error {
-    requestedBytes;
-    limitBytes;
-    currentBytes;
-    code = 'ENOMEM';
-    constructor(requestedBytes, limitBytes, currentBytes) {
-        super(`ENOMEM: cannot grow linear memory to ${requestedBytes} bytes ` +
-            `(current ${currentBytes}, limit ${limitBytes})`);
-        this.requestedBytes = requestedBytes;
-        this.limitBytes = limitBytes;
-        this.currentBytes = currentBytes;
-        this.name = 'WasmOutOfMemoryError';
-    }
-}
 // ── binary walking ───────────────────────────────────────────────────────────
 //
 // Only two sections matter here: the import section (id 2), which tells us
@@ -247,68 +232,4 @@ export function withMemoryLimit(bytes, limitBytes) {
         return out;
     }
     return bytes;
-}
-/**
- * Exact committed linear-memory size. Unlike `estimateSupervisorHeap`, this is
- * not an estimate and has no blind spots: `buffer.byteLength` IS the committed
- * size of the process's address space, straight from the engine.
- */
-export function accountLinearMemory(memory, limits) {
-    const bytes = memory.buffer.byteLength;
-    return {
-        bytes,
-        pages: bytes / WASM_PAGE_BYTES,
-        limitBytes: limits?.maxPages != null ? limits.maxPages * WASM_PAGE_BYTES : null,
-    };
-}
-/**
- * Bytes the process has actually written, measured by skipping all-zero pages.
- *
- * This is an O(size) scan of the whole address space — call it when sizing a
- * swap image or answering a diagnostic, never in a loop. Fresh wasm pages are
- * zero-filled by the specification, so an untouched page is indistinguishable
- * from one deliberately zeroed; this therefore reports an upper bound on
- * untouched memory and, equivalently, a lower bound on live data. That is the
- * honest direction: it never claims a page is cold when the guest is using it.
- */
-export function measureResidentBytes(memory) {
-    const view = new Uint8Array(memory.buffer);
-    let resident = 0;
-    for (let base = 0; base < view.length; base += WASM_PAGE_BYTES) {
-        const end = Math.min(base + WASM_PAGE_BYTES, view.length);
-        for (let i = base; i < end; i++) {
-            if (view[i] !== 0) {
-                resident += end - base;
-                break;
-            }
-        }
-    }
-    return resident;
-}
-/**
- * Grow `memory` by `deltaPages`, refusing to cross `limitBytes`.
- *
- * This governs HOST-initiated growth only — the arena reservations bash makes
- * before starting a process, opentui's buffer sizing, and similar. A guest
- * calling `memory.grow` from inside wasm bypasses this entirely; that path is
- * governed by the declared maximum `withMemoryLimit` installs, which is the
- * only mechanism that reaches it.
- *
- * Returns the previous size in pages, matching `WebAssembly.Memory.prototype.grow`.
- */
-export function growWithinLimit(memory, deltaPages, limitBytes) {
-    const currentBytes = memory.buffer.byteLength;
-    const requestedBytes = currentBytes + deltaPages * WASM_PAGE_BYTES;
-    if (requestedBytes > limitBytes) {
-        throw new WasmOutOfMemoryError(requestedBytes, limitBytes, currentBytes);
-    }
-    try {
-        return memory.grow(deltaPages);
-    }
-    catch {
-        // The engine refused below our own cap — the declared maximum or the
-        // isolate's real ceiling is tighter. Report it as ENOMEM rather than
-        // letting a bare RangeError escape into a runtime that cannot classify it.
-        throw new WasmOutOfMemoryError(requestedBytes, currentBytes, currentBytes);
-    }
 }
