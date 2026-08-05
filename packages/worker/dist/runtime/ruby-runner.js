@@ -204,7 +204,7 @@ export function makeRubyRunnerFactory(deps) {
             const command = formatRubyCommand(binName, argv);
             const result = needsResidentProcess(parsed)
                 ? await spawnRubySocketProcess(facetMgr, facetArgs, command)
-                : await dispatchRubyFacet(facetMgr, facetArgs);
+                : await dispatchRubyFacet(facetMgr, facetArgs, ctx.pid);
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
             if (result.stderr)
@@ -780,7 +780,7 @@ export function buildRubySocketProcessWorker(preamble) {
         '}',
     ].join('\n');
 }
-async function dispatchRubyFacet(facetMgr, args) {
+async function dispatchRubyFacet(facetMgr, args, pid) {
     // The Ruby preamble runs the entire bootstrap at child-facet module-
     // init time (same architecture as Pyodide v2). The wasm Module is
     // instantiated synchronously where workerd permits, _initialize +
@@ -795,6 +795,10 @@ async function dispatchRubyFacet(facetMgr, args) {
     const pool = new NimbusLoaderPool(env, ctx, {
         tag: 'ruby-runner',
         concurrency: 1,
+        // The supervisor derives the write credential from this pid, so a pool
+        // that binds SUPERVISOR without one has a filesystem it can read and
+        // never write — every write-back rejected as an unauthorized process.
+        supervisorPid: pid,
         preamble,
     });
     const facetFn = async function rubyFacetCall(inArgs, facetEnv) {

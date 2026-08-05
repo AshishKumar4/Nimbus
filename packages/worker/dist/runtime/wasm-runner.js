@@ -226,24 +226,6 @@ export function makeWasmRunner(deps) {
         // a Shared variant — TS's overload-resolution narrowing here is
         // overly conservative; cast to ArrayBuffer is correct.
         const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        // Load the pool lazily — its constructor reaches into env.LOADER
-        // which we may not have at every wasm-runner construction site
-        // (e.g. unit tests that mock the registry). Lazy import keeps
-        // module load cheap.
-        const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-        const pool = new NimbusLoaderPool(deps.env, deps.ctx, {
-            tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
-            concurrency: 1,
-            // WASI mode needs the SUPERVISOR binding: it is what backs the
-            // filesystem with the live session VFS instead of a spawn-time copy.
-            // Direct (compute-only) mode has no filesystem at all, so it keeps the
-            // bindings table empty and the facet isolate boots fast.
-            omitSupervisor: !isWasi,
-            // WASI mode: ship the WASI shim source as a module-init preamble
-            // so `__wasiMakeImports` is in scope when the facet fn runs.
-            // Direct mode: no preamble (saves a few KB per submit).
-            preamble: isWasi ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
-        });
         const facetFn = async function wasmFacetCall(args, facetEnv) {
             const wasmTable = globalThis.__NIMBUS_WASM || {};
             const mod = wasmTable['user.wasm'];
@@ -463,6 +445,26 @@ export function makeWasmRunner(deps) {
         }
         let outcome;
         try {
+            // Built here, not earlier: the pool bakes the invoking process's pid
+            // into the SUPERVISOR binding's props, and the pid does not exist until
+            // the process is spawned above. The supervisor derives the write
+            // credential from it, so a pool that binds SUPERVISOR without one has a
+            // filesystem that can read but never write.
+            const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+            const pool = new NimbusLoaderPool(deps.env, deps.ctx, {
+                tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
+                concurrency: 1,
+                // WASI mode needs the SUPERVISOR binding: it is what backs the
+                // filesystem with the live session VFS instead of a spawn-time copy.
+                // Direct (compute-only) mode has no filesystem at all, so it keeps the
+                // bindings table empty and the facet isolate boots fast.
+                omitSupervisor: !isWasi,
+                supervisorPid: pid,
+                // WASI mode: ship the WASI shim source as a module-init preamble
+                // so `__wasiMakeImports` is in scope when the facet fn runs.
+                // Direct mode: no preamble (saves a few KB per submit).
+                preamble: isWasi ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
+            });
             const submitArgs = isWasi
                 ? {
                     mode: 'wasi',
