@@ -250,7 +250,14 @@ never reads `Authorization: Bearer`, so a headless run gets
 where the core router's `POST /new` accepts a `session:create` JWT signed
 with that deployment's `JWT_SECRET`.
 
-Deploy your own disposable one — no shared secret needed:
+Two kinds exist, for two different jobs.
+
+**Staging** is the persistent one and the right answer for "does this change
+work" — `bun run staging:deploy` then `bun run staging:test`. See
+§ Staging And Promote.
+
+**A throwaway** is for a one-off question. No shared secret needed, and gone
+when you are done:
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=<account>
@@ -263,8 +270,11 @@ bun tests/behavioral/_throwaway-target.mjs down           # delete, and confirm 
 `_throwaway-target.mjs session` prints `{base, sessionId, token}` for driving
 one session by hand. Throwaways are named `nimbus-tw-*`, live on
 `workers.dev`, and get their own Durable Object namespace. Delete them when
-you are done. Never deploy to `nimbus-os.dev`, versioned previews included —
-its wildcard route serves live production.
+you are done.
+
+Two Workers are not targets you deploy to. `nimbus` is production. And
+`nimbus-probe` is what the `behavioral` workflow points `BASE` at, so a
+branch pushed there makes CI grade every later run against that branch.
 
 Agent-specific probes:
 
@@ -285,16 +295,24 @@ Agent-specific probes:
 | Bundle worker assets | `bun run bundle` |
 | Dev server | `bun run dev` |
 | Deploy the dev stack (`nimbus-dev`) | `bun run deploy` |
+| Deploy staging (`nimbus-staging` + `nimbus-probe-staging`) | `bun run staging:deploy` |
+| Behavioral suite against staging | `bun run staging:test` |
+| What staging is serving right now | `bun run staging:status` |
 | Deploy production (`nimbus`) | `bun run deploy:production` |
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 
 The root `predev` and `predeploy` scripts regenerate worker bundles.
 
-**Production is `wrangler deploy -e production`, and nothing else.** The
-top-level block of `apps/hosted-demo/wrangler.jsonc` is the DEVELOPMENT
-configuration — Worker `nimbus-dev`, database `nimbus-demo-dev`, its own
-rate-limit namespace. Only `env.production` names production resources.
+**Production is `wrangler deploy -e production`, and nothing else.**
+`apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own
+database, rate-limit namespace and Worker:
+
+| Tier | Worker | Database | Reached by |
+|---|---|---|---|
+| top-level (development) | `nimbus-dev` | `nimbus-demo-dev` | `bun run deploy`, and any `--name` override |
+| `env.staging` | `nimbus-staging` | `nimbus-demo-staging` | `bun run staging:deploy` |
+| `env.production` | `nimbus` | `nimbus-demo` | `bun run deploy:production` |
 
 That split is load-bearing: `wrangler deploy --name foo` overrides ONLY the
 name, and every binding still comes from the block being deployed. Two
@@ -302,19 +320,78 @@ throwaway probes wrote rows into the live demo D1 that way — one deployed from
 `apps/hosted-demo` by hand, one from a copy of the config with `env` stripped
 out. Both looked isolated; neither was.
 
-So **verify a throwaway's bindings before sending it a request, rather than
+So **verify a deploy's bindings before sending it a request, rather than
 trusting the directory it came from.** `bun scripts/deploy-isolation.mjs`
-answers it for the repo's configs, `_throwaway-target.mjs up` runs the same
-check before it invokes wrangler, and `tests/unit/deploy-isolation.mjs` holds
-the line in CI.
+answers it for every target the repo can name — each config's default block
+and each non-production env block, enumerated from the files. The staging and
+throwaway scripts run the same check before they invoke wrangler, and
+`tests/unit/deploy-isolation.mjs` holds the line in CI.
 
-Two things about throwaways that are not obvious, both learned the hard way:
+Two things about deploys that are not obvious, both learned the hard way:
 a deploy that dies during **asset upload still creates the script**, so a
 failed deploy is not "nothing to clean up"; and `wrangler deploy` can fail
-that way and **still exit 0**, so assert `Current Version ID` appears in its
-output before trusting that you probed what you built. Enumerate with
+that way and **still exit 0**, so a green probe run proves nothing about
+which build it ran against. Verify by version id, never by exit status —
+`_deploy-target.mjs`'s `deployAndVerify` reads the active version back from
+the API and refuses a deploy that did not change it. Enumerate scripts with
 `GET /accounts/<id>/workers/scripts` — a 404 on the workers.dev hostname does
 not mean the script is absent.
+
+## Staging And Promote
+
+Staging is two Workers, deployed from one `dist` by one command, because
+production is two surfaces and verifying only one of them is not verifying:
+
+- **`nimbus-staging`** — `apps/hosted-demo`, `env.staging`. The product
+  mirror: same `main`, same `dist/assets` (shell + `/docs`), same inherited
+  smart placement, same cleanup cron, its own D1 and rate-limit namespace.
+  Its `POST /new` is gated on an interactive Cloudflare cookie exactly as
+  production's is, so the demo's own surfaces — login, the anonymous docs
+  terminal, session cleanup — are verified here in a browser.
+- **`nimbus-probe-staging`** — `apps/probe` under a `--name` override. The
+  bearer-token embedder the behavioral suite can drive. It binds no
+  account-level state of its own, so a name override is complete isolation
+  and the preflight proves it; an env block would only copy an identical
+  binding list.
+
+Two known divergences from production, both structural: staging has no zone
+route (it answers on `workers.dev`) and therefore no
+`NIMBUS_PREVIEW_HOST_SUFFIX`, so **host-based port previews**
+(`<port>--<sid>.<suffix>`) are off there. Path-based `/s/<sid>/port/<n>/` is
+unaffected. Verify host previews on prod's zone or a throwaway with a zone
+route.
+
+### Promote
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=<account>
+
+bun run staging:deploy          # build → deploy both → assert version ids
+bun run staging:test --no-retry # the full suite, CI-strict
+# browser-check https://nimbus-staging.<subdomain>.workers.dev — login,
+# /docs terminal, a session — for anything touching apps/hosted-demo/src
+
+git commit && git push          # dist is tracked; commit what the build changed
+bun run deploy:production
+bun run --cwd apps/hosted-demo wrangler deployments status --name nimbus
+```
+
+Rollback is `wrangler versions deploy --name nimbus <previous-version-id>`;
+`wrangler deployments list --name nimbus` has the ids.
+
+**The hazard is the deploy target, never the hostname.** `wrangler versions
+upload -e production` and `wrangler deploy -e production` both act on the
+Worker named `nimbus` — the first appends to the live script's version list,
+the second shifts its traffic — so neither is a way to "test without
+touching prod", and visiting a preview URL afterwards does not make it one.
+Isolation is a distinct Worker name: `nimbus-staging`,
+`nimbus-probe-staging`, or a `nimbus-tw-*` throwaway.
+
+Do not reason about preview hostnames from memory either. Every subdomain of
+`nimbus-os.dev` resolves and answers 200, because the zone's `*` route hands
+it all to the production Worker — measured 2026-08-04 with
+`deadbeef.nimbus-os.dev`. Read the versioned preview URL out of what
+`wrangler deploy` prints.
 
 ## Gotchas
 
