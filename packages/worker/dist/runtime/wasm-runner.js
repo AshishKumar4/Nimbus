@@ -50,7 +50,7 @@
  */
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
-import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { manifestVfs } from './vfs-manifest.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
     '       wasm-runner --version\n' +
@@ -277,8 +277,7 @@ export function makeWasmRunner(deps) {
                     ? __wasiRunStartAsync
                     : null;
                 const initFS = __wasiInitFS;
-                const snapshotFS = __wasiSnapshotFS;
-                if (!mk || !runStart || !initFS || !snapshotFS) {
+                if (!mk || !runStart || !initFS) {
                     return {
                         ok: false,
                         mode: 'wasi',
@@ -286,8 +285,7 @@ export function makeWasmRunner(deps) {
                             'Pool preamble may have failed to load.',
                     };
                 }
-                // Install the snapshotted VFS state into the WASI shim's
-                // virtual filesystem. fd 3 = the user's session root preopen.
+                // Install the seed manifest. fd 3 = the user's session root preopen.
                 // The shim's fd table is reset by initFS each call.
                 if (args.wasiFs) {
                     initFS({
@@ -297,6 +295,8 @@ export function makeWasmRunner(deps) {
                         dirs: args.wasiFs.dirs,
                         modes: args.wasiFs.modes,
                         sizes: args.wasiFs.sizes,
+                        enumeratedRoots: args.wasiFs.enumeratedRoots,
+                        revision: args.wasiFs.revision,
                     });
                     // initFS resets the live state, so adoption has to follow it. From
                     // here the seed is a cache: content it did not carry is fetched on
@@ -357,7 +357,6 @@ export function makeWasmRunner(deps) {
                 // Writes reached the session VFS as they happened; this waits for the
                 // queue so the caller cannot observe a result before the data lands.
                 await __wasiDrainPersist();
-                const fsDiff = snapshotFS();
                 return {
                     ok: r.exitCode === 0 && !r.error,
                     mode: 'wasi',
@@ -366,7 +365,6 @@ export function makeWasmRunner(deps) {
                     exitCode: r.exitCode,
                     exports: Object.keys(inst.exports),
                     error: r.error,
-                    fsDiff: fsDiff || undefined,
                 };
             }
             // ── Direct mode ──
@@ -431,12 +429,13 @@ export function makeWasmRunner(deps) {
         const wasiEnv = isWasi
             ? { ...(opts.env || {}), ...WASM32_WASI_NIMBUS_ABI.env }
             : {};
-        // ── filesystem WASI: snapshot user's session VFS for WASI mode ──
+        // ── filesystem WASI: seed a manifest of the user's session VFS ──
         //
-        // The user's cwd at invocation time is our session-root preopen
-        // anchor. WASI programs see this as fd 3 mapped to '/'. We
-        // snapshot the subtree, ship it as the facet argument, and
-        // flush mutations back after _start returns.
+        // The user's cwd at invocation time is the session-root preopen anchor.
+        // WASI programs see it as fd 3 mapped to '/'. The seed describes the
+        // subtree rather than copying it: content is demand-loaded through the
+        // supervisor on first read and writes go back as they happen, so a
+        // program that never exits still persists.
         //
         // For direct mode there's no FS exposure — wasm runs in pure
         // compute-only mode, no preopens.
@@ -446,26 +445,21 @@ export function makeWasmRunner(deps) {
         if (isWasi) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
             const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            const snap = snapshotVfs(vfs, cwd);
-            if ('error' in snap) {
+            const seed = manifestVfs(vfs, cwd, { revision: vfs.revision(cwd) });
+            if ('error' in seed) {
                 return {
                     exitCode: 1,
                     stdout: '',
-                    stderr: `wasm-runner: ${snap.error}\n`,
+                    stderr: `wasm-runner: ${seed.error}\n`,
                 };
             }
             wasiFs = {
-                root: snap.snapshot.root,
-                preopens: [
-                    // fd 3 → '/' mapping (covers the user's session subtree).
-                    { wasiPath: '/', vfsPath: snap.snapshot.root },
-                ],
-                files: snap.snapshot.files,
-                dirs: snap.snapshot.dirs,
-                modes: snap.snapshot.modes,
+                ...seed.snapshot,
+                // fd 3 → '/' mapping (covers the user's session subtree).
+                preopens: [{ wasiPath: '/', vfsPath: seed.snapshot.root }],
             };
-            wasiFsBytes = snap.bytes;
-            wasiFsFiles = snap.files;
+            wasiFsBytes = seed.bytes;
+            wasiFsFiles = seed.files;
         }
         let outcome;
         try {
@@ -482,17 +476,6 @@ export function makeWasmRunner(deps) {
         }
         catch (e) {
             outcome = { ok: false, error: `dispatch failed: ${e?.message || e}` };
-        }
-        // ── filesystem WASI: flush mutated FS state back into SqliteFS ──
-        if (outcome.mode === 'wasi' && outcome.ok && outcome.fsDiff) {
-            try {
-                flushVfsDiff(vfs, outcome.fsDiff);
-            }
-            catch (e) {
-                // Flush failure is non-fatal; the wasm ran, the user saw stdout.
-                // But surface a diagnostic so they know the FS didn't persist.
-                console.warn('wasm-runner: FS flush failed:', e?.message || e);
-            }
         }
         let exitCode;
         let stdout;

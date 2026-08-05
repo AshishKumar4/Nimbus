@@ -1,32 +1,36 @@
-import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
-import type { VfsCred } from './os-contracts.js';
 /**
- * Minimal VFS shape runtime bridges need. Kept separate from SqliteVFS's
- * concrete type so runtime helpers do not pull supervisor modules into facet
- * preambles or create import cycles.
+ * vfs-snapshot.ts — the by-value filesystem bridge for the runtimes that still
+ * carry a private one.
+ *
+ * bash and python each implement their own filesystem inside their facet, so
+ * neither can demand-load or write through: they take a whole copy of the
+ * subtree at spawn and hand back a diff when they exit. That is the failure
+ * mode the shared WASI layer exists to remove — a resident process that never
+ * exits never persists anything — and this file is scheduled to die with the
+ * last of those two private implementations. Nothing new may be built on it.
  */
-export interface VfsLike {
-    readonly cred: VfsCred;
-    exists(path: string): boolean;
-    isDirectory(path: string): boolean;
-    stat(path: string): {
-        mode: number;
-        uid: number;
-        gid: number;
-        size: number;
-    };
-    readFile(path: string): Uint8Array;
-    writeFile(path: string, content: Uint8Array | string): void;
-    readdir(path: string): {
-        name: string;
-        type: string;
-    }[];
-    mkdir(path: string, opts?: {
-        recursive?: boolean;
-    }): void;
-    unlink(path: string): void;
-    rmdir(path: string): void;
-    chmod(path: string, mode: number): void;
+import type { WasiFsSnapshot } from './wasi-instance.js';
+import type { VfsLike } from './vfs-manifest.js';
+export declare function bytesToB64(bytes: Uint8Array): string;
+export declare function b64ToBytes(b64: string): Uint8Array;
+/**
+ * Mutations a private-filesystem runtime made, reported once at exit.
+ */
+export interface WasiFsDiff {
+    /** New or modified files, base64-encoded. */
+    filesWritten: Record<string, string>;
+    /** Unlinked files. */
+    filesDeleted: string[];
+    /** Created directories. */
+    dirsCreated: string[];
+    /** Removed directories, deepest first. */
+    dirsDeleted: string[];
+    /**
+     * vfsPath → permission bits requested via an in-facet chmod (busybox chmod
+     * through the nimbus_proc.chmod import). Applied durably by flushVfsDiff via
+     * vfs.chmod, where S2a ownership enforcement decides.
+     */
+    modesChanged?: Record<string, number>;
 }
 export interface VfsSnapshotCaps {
     maxBytes?: number;
@@ -39,30 +43,6 @@ export interface VfsSnapshotResult {
     bytes: number;
     files: number;
 }
-/**
- * Describe a VFS subtree without copying it.
- *
- * Same walk as snapshotVfs, but it records each file's SIZE instead of its
- * bytes, so the result is a manifest the WASI layer treats as a cache index:
- * content is demand-loaded through the supervisor on first read, and a path
- * the manifest lacks is genuinely absent (the walk excludes nothing).
- *
- * That last property is why this cannot be a flag on snapshotVfs. snapshotVfs
- * skips node_modules/.cache/.npm/.nimbus and unreadable files, so its output
- * may not describe the subtree completely and must never claim to.
- */
-export declare function manifestVfs(vfs: VfsLike, vfsRoot: string, opts?: {
-    extraRoots?: Iterable<string>;
-    revision?: number;
-}): {
-    snapshot: WasiFsSnapshot;
-    files: number;
-    bytes: number;
-} | {
-    error: string;
-};
-export declare function bytesToB64(bytes: Uint8Array): string;
-export declare function b64ToBytes(b64: string): Uint8Array;
 /**
  * Snapshot a VFS subtree into a JSON-serializable WASI-shaped filesystem.
  *
@@ -82,8 +62,6 @@ export declare function flushVfsDiff(vfs: VfsLike, diff: WasiFsDiff): {
     deleted: number;
     mkdirs: number;
     rmdirs: number;
-    timesTouched: number;
-    symlinks: number;
     chmods: number;
 };
 //# sourceMappingURL=vfs-snapshot.d.ts.map

@@ -37,7 +37,7 @@ import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { flushVfsDiff, manifestVfs } from './vfs-snapshot.js';
+import { manifestVfs } from './vfs-manifest.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -209,8 +209,6 @@ export function makeRubyRunnerFactory(deps) {
                 ctx.stdout.write(result.stdout);
             if (result.stderr)
                 ctx.stderr.write(result.stderr);
-            if (result.fsDiff)
-                flushVfsDiff(vfs, result.fsDiff);
             if (result.error) {
                 ctx.stderr.write(`${binName}: ${result.error}\n`);
                 return 1;
@@ -498,7 +496,6 @@ const RubyFacetResultSchema = z.object({
     stdout: z.string().optional(),
     stderr: z.string().optional(),
     error: z.string().optional(),
-    fsDiff: z.custom().optional(),
 }).passthrough();
 const RubySocketProcessBootResponseSchema = z.object({
     state: z.string().optional(),
@@ -516,7 +513,6 @@ function normalizeRubyFacetResult(raw) {
         stdout: parsed.data.stdout || '',
         stderr: parsed.data.stderr || '',
         error: parsed.data.error,
-        fsDiff: parsed.data.fsDiff,
     };
 }
 async function spawnRubySocketProcess(facetMgr, args, command) {
@@ -589,7 +585,6 @@ async function spawnRubySocketProcess(facetMgr, args, command) {
             exitCode: result.exitCode,
             stdout: result.stdout,
             stderr: result.stderr || result.error || '',
-            fsDiff: result.fsDiff,
         };
     }
     return {
@@ -1537,7 +1532,6 @@ globalThis.__rubyRun = async function __rubyRun(args) {
     exitCode: exitCode,
     stdout: stdoutOut,
     stderr: stderrOut,
-    fsDiff: (typeof __wasiSnapshotFS === 'function' ? __wasiSnapshotFS() : null),
   };
 };
 

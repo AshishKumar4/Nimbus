@@ -26,7 +26,7 @@ import type { RuntimeManifest } from './runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { WasiFsDiff } from './wasi-instance.js';
+import type { WasiFsDiff } from './vfs-snapshot.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export interface BashSlice {
     state: 'need-input' | 'exited' | 'error';
