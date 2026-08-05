@@ -183,4 +183,36 @@ console.log('wasi-live-adoption: all assertions passed');
     'the park deadline must fire below the measured 15-18s suspension ceiling');
 }
 
+// ── 6. A live-backed filesystem with no supervisor must not lose data quietly ──
+// This is what let the exit-time diff be deleted. Write-through is now the only
+// mechanism, so the case where it silently does nothing — a seed built as a
+// CACHE whose runner failed to hand over the stub — has to be an error at the
+// next drain, not a write that evaporates. A SEALED seed (no revision: clang's
+// sysroot, the render backend's empty root) keeps its writes in memory on
+// purpose and must stay quiet.
+{
+  // Live-backed: manifestVfs stamps a revision, so the seed is a cache.
+  P.__wasiInitFS(INIT({ revision: 7 }));
+  const h = host();
+  const created = await h.open('home/user/lost.txt', 1 /* O_CREAT */);
+  await h.write(created.fd, 'this write has nowhere to go');
+  await assert.rejects(
+    () => P.__wasiDrainPersist(),
+    /no supervisor adopted for a live-backed filesystem/,
+    'a mutation with no supervisor on a live-backed seed must surface as data loss',
+  );
+}
+{
+  // Sealed: no revision, so the seed is the whole filesystem and nothing is lost.
+  P.__wasiInitFS(INIT());
+  const h = host();
+  const created = await h.open('home/user/kept.txt', 1 /* O_CREAT */);
+  await h.write(created.fd, 'held in memory on purpose');
+  await P.__wasiDrainPersist();
+  const reopened = await h.open('home/user/kept.txt');
+  assert.equal(reopened.errno, 0);
+  assert.equal((await h.read(reopened.fd)).text, 'held in memory on purpose');
+}
+
 console.log('wasi-live-adoption: watchdog assertions passed');
+console.log('wasi-live-adoption: silent-write-loss assertions passed');

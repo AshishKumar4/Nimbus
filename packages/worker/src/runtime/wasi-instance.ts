@@ -279,9 +279,29 @@ function __wasiAdoptSupervisor(sup) {
   if (sup) __wasiSup = sup;
 }
 
+/**
+ * True when the seed deliberately shipped no content and is relying on a
+ * supervisor to back it. Only manifestVfs stamps a revision, so this is
+ * exactly "the producer expected this filesystem to be live" — as opposed to
+ * a sealed instance, whose seed IS the whole filesystem by design.
+ */
+function __wasiExpectsLiveBacking() {
+  return !!__wasiFS && __wasiFS.revision !== null && __wasiFS.revision !== undefined;
+}
+
 /** Mirror one mutation to the session VFS. Cache is already updated. */
 function __wasiEnqueue(op, run) {
-  if (!__wasiSup) return;
+  if (!__wasiSup) {
+    // A sealed instance keeps its mutations in memory on purpose. One that was
+    // seeded as a CACHE and has no supervisor cannot: the write is already
+    // gone. Recording it makes the next drain throw, which is the whole reason
+    // the exit-time diff could be deleted — silence here would put the data
+    // loss back, just without the second implementation.
+    if (__wasiExpectsLiveBacking()) {
+      __wasiPersistQ.failures.push(op + ': no supervisor adopted for a live-backed filesystem');
+    }
+    return;
+  }
   const entry = { op };
   __wasiPersistQ.pending.push(entry);
   __wasiPersistQ.tail = __wasiPersistQ.tail.then(async () => {
@@ -307,7 +327,10 @@ const __wasiDirty = new Set();
 const __wasiNegative = new Set();
 
 function __wasiPersistFile(vfsPath) {
-  if (!__wasiSup || __wasiDirty.has(vfsPath)) return;
+  // No supervisor check here: __wasiEnqueue is the one place that decides what
+  // a missing one means. Marking the path dirty first also means a burst of
+  // writes to it reports at most once.
+  if (__wasiDirty.has(vfsPath)) return;
   __wasiDirty.add(vfsPath);
   __wasiEnqueue('writeFile ' + vfsPath, async (sup) => {
     __wasiDirty.delete(vfsPath);
