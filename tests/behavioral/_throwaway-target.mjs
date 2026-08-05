@@ -75,6 +75,13 @@ const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
 const NAME_PREFIX = 'nimbus-tw-';
 const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
 
+/**
+ * How long the workers.dev edge may keep serving a deleted script.
+ * Declared here rather than beside its use: the commands run at module
+ * top level, before a `const` further down has initialised.
+ */
+const HOSTNAME_SETTLE_MS = 60_000;
+
 // ── CLI ──────────────────────────────────────────────────────────────
 
 const [command, ...rest] = process.argv.slice(2);
@@ -180,29 +187,53 @@ function list() {
 // ── Teardown ─────────────────────────────────────────────────────────
 
 /**
- * Deletion is only done when Cloudflare stops serving the hostname AND
- * stops listing the script. `wrangler deployments list` is the API-backed
- * half — it exits 0 for a script that exists (even one that never finished
- * deploying) and 1 with `[code: 10007]` once the script is really gone.
+ * Is the script gone?
+ *
+ * The API answers that, and only the API: `wrangler deployments list` exits
+ * 0 for a script that exists — even one that never finished deploying — and
+ * 1 with `[code: 10007]` once it is really gone. A 404 on the workers.dev
+ * hostname is not the same claim and never was, which is why it cannot
+ * stand in for this check.
+ *
+ * The hostname is polled afterwards for the operator's benefit, not as
+ * evidence. It lags: measured 2026-08-05, a deleted Worker kept answering
+ * 200 for ~30s after the API had stopped listing it. Reading it once,
+ * immediately after `wrangler delete`, reported a correct deletion as a
+ * failure — which in CI is a red teardown on every single run.
  */
 async function confirmDeleted(name, account) {
-  const state = readState(statePath(name));
-  const checks = [];
-  if (state?.base) {
-    const response = await fetch(state.base, { redirect: 'manual' }).catch(() => null);
-    if (response && response.status !== 404) {
-      return { ok: false, reason: `${state.base} still answers ${response.status}` };
-    }
-    checks.push('hostname 404s');
-  }
   const listed = wrangle(WRANGLER, ['deployments', 'list', '--name', name], {
     cwd: PROBE_APP,
     account,
     allowFail: true,
   });
-  if (listed.status === 0) return { ok: false, reason: 'script is still listed by the API' };
-  checks.push('the script is not listed');
-  return { ok: true, reason: checks.join(' and ') };
+  if (listed.status === 0) return { ok: false, reason: 'the script is still listed by the API' };
+
+  const base = readState(statePath(name))?.base;
+  if (!base) return { ok: true, reason: 'the script is not listed' };
+
+  const status = await waitForHostnameGone(base);
+  return {
+    ok: true,
+    reason: status === null
+      ? 'the script is not listed and the hostname no longer serves it'
+      : `the script is not listed; ${base} still answers ${status} after `
+        + `${HOSTNAME_SETTLE_MS}ms of edge propagation`,
+  };
+}
+
+/**
+ * Poll until the hostname stops serving the script. Returns null once it
+ * 404s or stops answering at all, otherwise the last status seen.
+ */
+async function waitForHostnameGone(base) {
+  const deadline = Date.now() + HOSTNAME_SETTLE_MS;
+  for (;;) {
+    const status = await fetch(base, { redirect: 'manual' }).then((r) => r.status, () => 404);
+    if (status === 404) return null;
+    if (Date.now() >= deadline) return status;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 }
 
 // ── State ────────────────────────────────────────────────────────────
