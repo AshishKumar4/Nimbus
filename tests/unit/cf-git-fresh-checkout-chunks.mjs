@@ -17,12 +17,14 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
+import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
+
 const execFile = promisify(execFileCallback);
 
 const repoRoot = resolve(import.meta.dirname, '../..');
 const sourcePath = resolve(
   process.env.CF_GIT_SOURCE ||
-    join(repoRoot, 'packages/worker/node_modules/isomorphic-git/index.js'),
+    join(resolvePackageDir('isomorphic-git', { start: join(repoRoot, 'packages/worker') }), 'index.js'),
 );
 const git = await import(`${pathToFileURL(sourcePath).href}?fresh-checkout=${Date.now()}`);
 

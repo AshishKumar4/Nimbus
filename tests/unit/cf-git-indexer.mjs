@@ -14,8 +14,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 
+import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const cfGitDir = resolve(repoRoot, 'packages/worker/node_modules/isomorphic-git');
+const cfGitDir = resolvePackageDir('isomorphic-git', { start: join(repoRoot, 'packages/worker') });
 const sourcePath = resolve(process.env.CF_GIT_SOURCE || join(cfGitDir, 'index.js'));
 const patchPath = resolve(
   repoRoot,

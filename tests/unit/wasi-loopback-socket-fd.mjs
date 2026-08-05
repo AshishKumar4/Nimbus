@@ -10,9 +10,11 @@
 // loopback response arrives, which a synchronous JS bridge can never do.
 //
 // Everything here drives the REAL wasi-instance.ts preamble and the REAL
-// kernel, so it asserts the contract a guest actually sees. Node has no JSPI,
-// so the socket paths return the Promise the Suspending wrapper would await —
-// awaiting it directly is the same observation.
+// kernel, so it asserts the contract a guest actually sees. The imports are
+// built through the preamble's no-JSPI branch (see lib/wasi-imports.mjs) so
+// they can be called from JS: the socket paths return the Promise the
+// Suspending wrapper would park the guest on, and awaiting it directly is the
+// same observation.
 
 import assert from 'node:assert/strict';
 import { writeFileSync, rmSync } from 'node:fs';
@@ -22,6 +24,7 @@ import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
 import { installVirtualSocketKernel } from '../../packages/worker/src/runtime/virtual-socket-kernel.ts';
+import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
 const ESUCCESS = 0, ENOSYS = 52, ESPIPE = 70;
 const FT_SOCKET_STREAM = 6;
@@ -54,7 +57,7 @@ function host(route) {
   });
   const scope = { __nimbusVirtualSocketRouteLoopback: route };
   globalThis.__nimbusVirtualSockets = route ? installVirtualSocketKernel(scope) : undefined;
-  const { wasiImport } = P.__wasiMakeImports({
+  const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['prog'],
     env: {},
     getMemory: () => memory,
