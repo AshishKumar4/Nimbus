@@ -14,6 +14,11 @@
 //   matching tokens. No production auth is relaxed anywhere: the
 //   throwaway simply holds a secret only this machine knows.
 //
+//   Use a throwaway for a one-off question. For verifying a change before
+//   it ships — the whole suite, repeatedly, plus the hosted-demo surfaces
+//   this embedder does not have — use the persistent staging environment:
+//   `_staging-target.mjs`.
+//
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>            # account pin, required
 //   bun tests/behavioral/_throwaway-target.mjs up     # deploy + secret + token
@@ -42,17 +47,27 @@
 //   session, which is how the shared anon pool got exhausted. Self-minted
 //   tokens make that failure mode structurally impossible.
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
-import { assertThrowawaySafe } from '../../scripts/deploy-isolation.mjs';
+import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
+import {
+  ROOT,
+  WRANGLER,
+  createSession,
+  deployAndVerify,
+  parseFlags,
+  putSecret,
+  randomSecret,
+  readState,
+  requireAccountPin,
+  waitForTarget,
+  wrangle,
+  writeState,
+} from './_deploy-target.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const PROBE_APP = join(ROOT, 'apps', 'probe');
-const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
 const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
 
 /** Throwaways are always `<prefix><suffix>` so a stray one is obvious. */
@@ -83,7 +98,7 @@ async function up() {
   // every binding still comes from apps/probe's config. Verify none of them
   // resolve to a production resource rather than remembering that they do
   // not — a probe that skipped this wrote rows into the live demo D1.
-  const isolation = assertThrowawaySafe({
+  const isolation = assertDeployIsolated({
     configPath: 'apps/probe/wrangler.jsonc',
     workerName: name,
     root: ROOT,
@@ -101,19 +116,18 @@ async function up() {
   // script and still fail before it reports a URL, and a name nothing knows
   // about is a name nobody tears down.
   const createdAt = new Date().toISOString();
-  writeState({ name, base: null, secret, createdAt });
+  writeState(statePath(name), { name, base: null, secret, createdAt });
 
   log(`deploying apps/probe as ${name}`);
-  const deploy = wrangle(WRANGLER, ['deploy', '--name', name], { cwd: PROBE_APP, account });
-  const base = workersDevUrl(deploy.stdout + deploy.stderr, name);
-  writeState({ name, base, secret, createdAt });
+  const { base, versionId } = deployAndVerify({
+    cwd: PROBE_APP, account, name, args: ['--name', name],
+  });
+  if (!base) throw new Error(`deploy of ${name} printed no workers.dev URL`);
+  writeState(statePath(name), { name, base, secret, createdAt });
+  log(`version ${versionId} is live at ${base}`);
 
   log(`setting JWT_SECRET on ${name}`);
-  wrangle(WRANGLER, ['secret', 'put', 'JWT_SECRET', '--name', name], {
-    cwd: PROBE_APP,
-    account,
-    input: secret,
-  });
+  putSecret({ cwd: PROBE_APP, account, name, key: 'JWT_SECRET', value: secret });
 
   const jwt = await mintProbeToken(secret, ttlMs());
   await waitForTarget(base, jwt);
@@ -127,12 +141,12 @@ async function up() {
 }
 
 async function token() {
-  const state = readState(resolveName());
+  const state = requireState(resolveName());
   process.stdout.write(await mintProbeToken(state.secret, ttlMs()));
 }
 
 async function session() {
-  const state = readState(resolveName());
+  const state = requireState(resolveName());
   if (!state.base) throw new Error(`${state.name} never finished deploying — run \`down\` and try \`up\` again`);
   const jwt = await mintProbeToken(state.secret, ttlMs());
   const { sessionId, attachPath } = await createSession(state.base, jwt);
@@ -160,92 +174,12 @@ async function down() {
 
 function list() {
   for (const name of listStateNames()) {
-    const state = readState(name);
+    const state = requireState(name);
     process.stdout.write(`${name}\t${state.base ?? '(deploy incomplete)'}\t${state.createdAt}\n`);
   }
 }
 
-// ── Session creation ─────────────────────────────────────────────────
-
-/**
- * `POST /new` with a `session:create` bearer token. The core router
- * answers 302 to the session shell; the Location's bootstrap token is
- * for browsers, so probes keep using the bearer token instead.
- */
-async function createSession(base, jwt) {
-  const response = await fetch(`${base}/new`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { Authorization: `Bearer ${jwt}` },
-  });
-  const location = response.headers.get('location');
-  if (response.status !== 302 || !location) {
-    throw new Error(`POST /new → ${response.status} ${await response.text().catch(() => '')}`);
-  }
-  const match = location.match(/\/s\/([^/?]+)/);
-  if (!match) throw new Error(`POST /new → unexpected Location: ${location}`);
-  return { sessionId: match[1], attachPath: location };
-}
-
-/**
- * A fresh deployment takes a few seconds to answer on its workers.dev
- * hostname. Poll `POST /new` until it authenticates, then release the
- * session so the readiness check leaves nothing behind.
- */
-async function waitForTarget(base, jwt, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = '';
-  while (Date.now() < deadline) {
-    try {
-      const { sessionId } = await createSession(base, jwt);
-      await fetch(`${base}/s/${sessionId}/`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${jwt}` },
-      }).catch(() => {});
-      return;
-    } catch (e) {
-      last = e.message;
-      await new Promise((r) => setTimeout(r, 3000));
-    }
-  }
-  throw new Error(`target never authenticated within ${timeoutMs}ms: ${last}`);
-}
-
-// ── Cloudflare plumbing ──────────────────────────────────────────────
-
-function requireAccountPin() {
-  const account = process.env.CLOUDFLARE_ACCOUNT_ID;
-  if (!account) {
-    console.error(
-      'CLOUDFLARE_ACCOUNT_ID is required so the throwaway lands on the intended account.\n'
-      + 'Pick the account id from `wrangler whoami` and export it before running this script.',
-    );
-    process.exit(2);
-  }
-  return account;
-}
-
-function wrangle(bin, args, { cwd, account, input, allowFail = false }) {
-  const result = spawnSync(bin, args, {
-    cwd,
-    input,
-    encoding: 'utf8',
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: account },
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0 && !allowFail) {
-    process.stderr.write(result.stdout || '');
-    process.stderr.write(result.stderr || '');
-    throw new Error(`${args.join(' ')} exited ${result.status}`);
-  }
-  return result;
-}
-
-function workersDevUrl(output, name) {
-  const match = output.match(/https:\/\/[^\s]*\.workers\.dev/);
-  if (!match) throw new Error(`deploy of ${name} printed no workers.dev URL`);
-  return match[0].replace(/\/$/, '');
-}
+// ── Teardown ─────────────────────────────────────────────────────────
 
 /**
  * Deletion is only done when Cloudflare stops serving the hostname AND
@@ -254,7 +188,7 @@ function workersDevUrl(output, name) {
  * deploying) and 1 with `[code: 10007]` once the script is really gone.
  */
 async function confirmDeleted(name, account) {
-  const state = tryReadState(name);
+  const state = readState(statePath(name));
   const checks = [];
   if (state?.base) {
     const response = await fetch(state.base, { redirect: 'manual' }).catch(() => null);
@@ -279,21 +213,8 @@ function statePath(name) {
   return join(STATE_DIR, `${name}.json`);
 }
 
-function writeState(state) {
-  mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(statePath(state.name), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-}
-
-function tryReadState(name) {
-  try {
-    return JSON.parse(readFileSync(statePath(name), 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function readState(name) {
-  const state = tryReadState(name);
+function requireState(name) {
+  const state = readState(statePath(name));
   if (!state) throw new Error(`no throwaway target recorded for ${name} — run \`up\` first`);
   return state;
 }
@@ -324,25 +245,8 @@ function randomSuffix() {
   return crypto.randomUUID().slice(0, 8);
 }
 
-function randomSecret() {
-  return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
-}
-
 function ttlMs() {
   return flags['ttl-ms'] ? Number(flags['ttl-ms']) : DEFAULT_TTL_MS;
-}
-
-function parseFlags(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (!arg.startsWith('--')) continue;
-    const key = arg.slice(2);
-    if (key.startsWith('no-')) out[key.slice(3)] = false;
-    else if (argv[i + 1] && !argv[i + 1].startsWith('--')) out[key] = argv[++i];
-    else out[key] = true;
-  }
-  return out;
 }
 
 function log(message) {
