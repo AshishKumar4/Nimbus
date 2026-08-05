@@ -1,134 +1,79 @@
 /**
- * process-fabric.ts — the resident-process scheduler (peer-DO placement).
+ * process-fabric.ts — the resident-process scheduler.
  *
  * Every long-lived process Nimbus runs — node servers, python/ruby socket
- * servers, the opencode TUI and its headless server — is a Worker Loader
- * facet. This module owns WHICH workerd process that facet lands in, and it
- * is the only place in the kernel that knows the answer.
+ * servers, the opencode TUI and its headless server — runs as a **DO Facet**
+ * of the user's session Durable Object: a named child actor whose class comes
+ * from a dynamic worker the coordinator loads itself.
  *
- *   local  — the facet is minted from the coordinator session DO's own
- *            env.LOADER, so it shares the coordinator's workerd process
- *            memory envelope with the DO and every other local facet.
- *   peer   — the facet is minted from a sibling DO's loader
- *            (`${coordinatorDoId}:proc:${slot}`), so it gets an INDEPENDENT
- *            workerd memory budget. Measured once on the prod shape under
- *            synthetic load: 8 peers × ~150 MiB held concurrently, and a peer
- *            OOM left its siblings and the coordinator running in 12 of 12
- *            checks. The live opencode gate that followed was weaker — 1 of
- *            its 12 runs reset the session, unattributed. Both numbers come
- *            from probe deployments since deleted; neither report is in the
- *            repo.
+ *   ctx.facets.get(`proc-${pid}`, () => ({
+ *     class: env.LOADER.get(workerKey, buildConfig)
+ *              .getDurableObjectClass('NimbusProcess'),
+ *   }))
  *
- * In BOTH cases the facet's SUPERVISOR binding is minted for the COORDINATOR's
- * doId, so every syscall — VFS read/write, stdout/stderr frames, stdin pump,
- * registerPort, loopback HTTP — lands on the user's session DO. The disk and
- * the terminal never move. Peer placement changes only which workerd process
- * runs the compute and holds the resident memory.
+ * There is ONE placement, so there is nothing to schedule and nothing above
+ * this module may branch on. What a facet buys, all of it measured on the
+ * production compatibility shape:
  *
- * Placement is INVISIBLE above this module. A `ResidentProcessHandle` exposes
- * the same lifecycle for either placement — `booted()` for the boot payload,
- * `done` for death, `kill()` for teardown — so the process table, stdio, the
- * shell and the SDK never learn where a process runs.
+ *   memory   — a facet gets its OWN ~208 MiB envelope, identical whether the
+ *              coordinator holds 0 or 128 MiB; 8 facets + parent held
+ *              1,664 MiB live under one DO. A facet OOM leaves the
+ *              coordinator's memory and boot id intact, and a coordinator OOM
+ *              leaves the facet's.
+ *   spawn    — 8-16 ms warm, against 242-359 ms for a sibling DO (which pays
+ *              a DO create + SQLite open on every single spawn).
+ *   serving  — a facet is addressed by NAME, so the coordinator re-resolves it
+ *              in any later request context and serves inbound HTTP, SSE and
+ *              WebSockets straight through. Sibling DOs cannot: an entrypoint
+ *              to a dynamically-loaded worker may not be transferred between
+ *              Workers.
+ *   payload  — the loader callback runs INSIDE the coordinator, so a boot spec
+ *              never crosses an RPC boundary and workerd's 32 MiB argument
+ *              limit does not apply to it.
  *
- * Inbound HTTP to a peer-hosted process
- * ─────────────────────────────────────
- * A peer-hosted facet serves inbound HTTP through `routeThroughPeer` below:
- * the coordinator's PortRegistry holds one route target per pid and cannot
- * tell peer from local, because the target carries the request's PARTS to
- * `_rpcRouteHostedHttp` on the hosting peer, which re-enters its own facet and
- * returns the response's parts. Bodies are plain ReadableStreams both ways, so
- * nothing is buffered and an SSE or chunked body still streams live.
+ * The honest cost: facets are separate isolates inside the parent's SINGLE
+ * actor thread. A facet awaiting I/O yields it completely — a sibling's RPC
+ * latency while a facet parks on a socket, on stdin or on an outbound call is
+ * indistinguishable from idle — but a facet spending sustained CPU stalls
+ * every sibling AND their syscalls for that duration. Measured on the real
+ * workloads: a python HTTP server at 32-way saturation held siblings under
+ * 1.06 s (median 231 ms, degrading proportionally), the opencode attach TUI
+ * held them at the 77 ms idle baseline with a ~1.4 s boot spike, while a
+ * deliberate 9,956 ms CPU burn in the same placement stalled them for
+ * 9,966 ms. So this fabric hosts I/O-bound resident processes. Nimbus's
+ * CPU-heavy work — clang, esbuild, npm install — does not route through it.
  *
- * This leg was broken until the route call stopped going through
- * `Function.prototype.call`. A dynamic worker's entrypoint declares no
- * `handleHttpRequest`, so the property resolves through workerd's RPC wildcard
- * to a JsRpcProperty, whose prototype is NOT Function.prototype — `.call` on it
- * extends the pipelined path instead, so `method.call(ep, request)` invoked the
- * remote path `handleHttpRequest.call` with `ep` as its first ARGUMENT.
- * Serializing an entrypoint to a dynamically-loaded worker is exactly what
- * workerd refuses, so the call failed before the facet was ever entered. The
- * coordinator never hit it because PortRegistry's target normalization prefers
- * `fetch`, and `ep.fetch` IS a declared method whose `.call` is the real one.
- * See `NimbusLoadedEntrypoint._callHttpHandler` in session/bindings.ts.
- *
- * Policy
- * ──────
- * One field, one policy point. Each launch primitive DECLARES a
- * `processClass` where it is defined, and `startResidentProcess` is the only
- * consumer. There is no command-name or argv matching anywhere in this file.
- * A primitive is `heavy` when it is RESIDENT — it accumulates memory over its
- * lifetime and is worth a whole workerd process. Binding a port is no longer a
- * disqualifier: node servers, the python/ruby socket servers and the opencode
- * attach TUI are all heavy. `opencode serve` is the one resident holdout, kept
- * local until its readiness gate (in-DO `/doc` polls on a 30 s budget) has been
- * measured across the extra hop on a deployed target.
+ * The facet's SUPERVISOR binding is minted from the COORDINATOR's ctx.exports
+ * for the COORDINATOR's doId, so every syscall — VFS read/write, stdout/stderr
+ * frames, stdin pump, registerPort, loopback HTTP — lands on the user's
+ * session DO. Because that binding is minted by an actor rather than by a
+ * stateless entrypoint, it lives as long as the process does; nothing has to
+ * hold a call open to keep it alive.
  *
  * Boot specs
  * ──────────
- * A resident process boots from one of two specs, both small enough to cross
- * the placement boundary:
+ * A resident process boots from one of two specs, and in both cases the module
+ * map is assembled LAZILY inside the loader's cache-miss callback — so the
+ * artifact sources are materialized only when the facet actually starts, and
+ * only for as long as the load takes:
  *
- *   staged — an OpencodeStageSpec. The ~23 MB artifact module map is
- *            assembled by the HOST inside a stateless NimbusLoadedEntrypoint
- *            isolate on the Worker-Loader cache-miss path, never in a session
- *            DO (which OOM-reset at the isolate cap when it did).
- *   code   — a generated module map (node / python / ruby runners). Only
- *            FIXED-SIZE module text rides inline; anything sized by the user's
- *            disk rides BY VFS PATH and is materialized by the HOST from the
- *            coordinator's disk. A ruby server's `ruby+stdlib.wasm` alone is
- *            34.3 MiB and a node facet's disk snapshot reached 44 MB for pi —
- *            both past workerd's 32 MiB RPC argument limit — so shipping bytes
- *            was never an option, and resolving them host-side keeps them out
- *            of the coordinator's isolate entirely.
- *
- * Peer topology
- * ─────────────
- * Peers are sibling NimbusSession DOs named `${coordinatorDoId}:proc:${slot}`
- * (the same posture as the fanout's `nbf:` siblings — the existing DO
- * namespace binding, no new worker, no config change). A peer spawn:
- *
- *   1. Probes the candidate peer for its module-scope isolate token
- *      (`_rpcHostProcessProbe`, one RPC, 2–11 ms warm). Two DOs reporting the
- *      same token share one isolate/process; on collision with the
- *      coordinator's own token or another in-use peer token, the scheduler
- *      moves to the next slot (co-location is rare — 1 pair in 24 fresh
- *      peers). If every probed slot co-locates (e.g. single-process
- *      `wrangler dev`), the last candidate is used anyway: placement
- *      verification is an isolation OPTIMIZATION; lifecycle and routing
- *      semantics do not depend on it.
- *   2. Holds `_rpcHostProcess` open for the process lifetime. The peer boots
- *      the facet from ITS OWN env.LOADER and retains the facet's resources
- *      for as long as that call is open.
- *
- * Failure model
- * ─────────────
- * A peer OOM or silent facet reset severs the held-open RPC, which rejects on
- * the coordinator — the identical surface to a local facet death. The
- * scheduler MAY respawn the process on a FRESH slot (a new machine lottery,
- * impossible when the facet is pinned to the session DO's process); the
- * respawn budget defaults to 1, is gated on the caller's `shouldRespawn`, and
- * is always surfaced through `onRespawn` so a peer death is never silent.
- * A peer death is a PROCESS death, never a session death.
- *
- * Lifecycle
- * ─────────
- * The coordinator holds `_rpcHostProcess` open; if the coordinator DO dies,
- * workerd cancels the inbound call on the peer, the peer disposes the facet's
- * retained resources, and the facet dies with it — a process-hosting peer
- * cannot outlive its parent. Peers store nothing beyond the NimbusSession
- * constructor's isolate-gen counter (the `nbf:` fanout siblings' accepted
- * posture) and idle-evict when their process exits.
+ *   staged — an OpencodeStageSpec; `assembleOpencodeFacetConfig` fetches the
+ *            artifact sources from ASSETS.
+ *   code   — a generated module map (node / python / ruby runners). Fixed-size
+ *            module text rides inline; anything sized by the user's disk is
+ *            named BY VFS PATH and read through the injected disk reader. A
+ *            ruby server's `ruby+stdlib.wasm` alone is 34.3 MiB and a node
+ *            facet's disk snapshot reached 44 MB for pi.
  */
 import { z } from 'zod/v4';
 import { type OpencodeStageSpec } from '../facets/opencode-staging.js';
 import type { RouteableFacetTarget } from '../runtime/port-registry.js';
 /**
- * Memory class of a resident process. Declared by the launch primitive that
- * defines the process kind (`facets/opencode-staging.ts` for the staged
- * opencode modes, `facets/manager.ts` for the node/worker spawn primitives);
- * consumed by exactly one policy point — `ProcessFabric.startResidentProcess`.
+ * The class every generated resident runner exports. One name for every
+ * runtime: the fabric names it unconditionally, so nothing about which program
+ * is running reaches this module.
  */
-export type ProcessClass = 'light' | 'heavy';
+export declare const RESIDENT_PROCESS_CLASS = "NimbusProcess";
 /**
  * Runner contract for `startProcess()`. A property of the generated runner,
  * not of placement:
@@ -136,15 +81,15 @@ export type ProcessClass = 'light' | 'heavy';
  *   lifetime — the call is held open for the process's whole life and settles
  *              only at exit (opencode attached + server, attached-TTY node).
  *   boot     — the call returns a boot payload once the process is up and the
- *              facet stays resident behind its retained resources (node
- *              servers, the python/ruby socket runners).
+ *              facet stays resident as the coordinator's named child actor
+ *              (node servers, the python/ruby socket runners).
  */
 export type StartContract = 'lifetime' | 'boot';
 /**
- * A generated module map in the form that crosses a placement boundary.
- * Only bounded, fixed-size module text rides inline; anything whose size is a
- * function of the user's disk is named by VFS path and read by the
- * NimbusLoadedEntrypoint that loads the facet — never by a session DO.
+ * A generated module map. Only bounded, fixed-size module text rides inline;
+ * anything whose size is a function of the user's disk is named by VFS path
+ * and read when the facet loads, so the bytes are transient rather than
+ * resident in the coordinator's heap.
  */
 export declare const ResidentCodeSpecSchema: z.ZodObject<{
     compatibilityDate: z.ZodString;
@@ -215,15 +160,14 @@ export declare const FACET_IMAGE_DIR = "var/lib/nimbus/facet-images";
  * path.
  *
  * What that actually dedups, measured on a deployed worker rather than
- * assumed: a RESPAWN resolves to the image already there, because the fabric
- * replays one unchanged boot spec onto the fresh peer — and that is the case
- * correctness depends on. Two separate spawns of the same tool do NOT,
- * whenever the generated text carries anything per-process: an attached-TTY
- * spawn bakes `NIMBUS_CP_CHILD_PID` into `__NIMBUS_ARGS`, so `pi` twice wrote
- * two images (2c3a90ad… then c5b74f1a…). A spawn with no attached TTY has no
- * pid in its args and does dedup. Lifting argv/env/pid out of the generated
- * text into `startArgs` would make every image per-PROGRAM and shareable
- * across spawns and sessions; the sweep bounds the store either way.
+ * assumed: a RESTART resolves to the image already there, because the fabric
+ * replays one unchanged boot spec. Two separate spawns of the same tool do
+ * NOT, whenever the generated text carries anything per-process: an
+ * attached-TTY spawn bakes `NIMBUS_CP_CHILD_PID` into `__NIMBUS_ARGS`, so `pi`
+ * twice wrote two images (2c3a90ad… then c5b74f1a…). A spawn with no attached
+ * TTY has no pid in its args and does dedup. Lifting argv/env/pid out of the
+ * generated text into `startArgs` would make every image per-PROGRAM and
+ * shareable across spawns and sessions; the sweep bounds the store either way.
  */
 export declare function facetImageDigest(source: string): Promise<string>;
 export declare function facetImagePath(digest: string): string;
@@ -235,26 +179,8 @@ export declare function facetImagePath(digest: string): string;
  * "Cannot find module" a long way from the corruption.
  */
 export declare function facetImagePathDigest(path: string): string | null;
-/**
- * Distinct peer slots probed before accepting a co-located peer. Co-location
- * is rare (probe: 1 shared pair in 24 fresh peers), so 4 attempts make an
- * undetected-collision spawn vanishingly unlikely while keeping the
- * worst-case spawn overhead to a few warm RPCs.
- */
-export declare const HEAVY_PLACEMENT_MAX_ATTEMPTS = 4;
-/** Default respawn budget for a heavy process whose peer dies under it. */
-export declare const HEAVY_RESPAWN_BUDGET = 1;
-/**
- * Lazy module-scope isolate token. Two Durable Objects that report the same
- * token share one isolate — and, since all NimbusSession DOs run the same
- * script, one workerd process. The scheduler compares peer tokens against its
- * own and those already in use to verify a heavy process landed in a distinct
- * process (the probe-proven placement check).
- */
-export declare function isolateToken(): string;
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
-    startProcess?: (args?: unknown) => Promise<unknown>;
     handleHttpRequest?: (request: Request) => Promise<Response>;
     fetch?(request: Request): Promise<Response>;
 }
@@ -271,126 +197,73 @@ export interface NimbusCtxExports {
             key: string;
             name: string | null;
             depth: number;
-            code: unknown;
             supervisor: {
                 doId: string;
                 pid: number;
                 writerId: string;
             };
             stage?: OpencodeStageSpec;
-            residentCode?: ResidentCodeSpec;
         };
     }) => LoadedWorkerEntrypointStub;
 }
 export declare function getNimbusCtxExports(): NimbusCtxExports;
 /**
- * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. The
- * `supervisor` identity controls where the facet's SUPERVISOR binding routes:
- * a peer host passes the COORDINATOR's doId so every syscall lands on the
- * user's session DO, not the peer.
+ * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. Used by the
+ * one-shot runtime paths, which run a program to completion inside a single
+ * request rather than leaving it resident: their module map is assembled in
+ * that stateless entrypoint's own isolate, never in a session DO.
  */
-export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, code: unknown, supervisor: {
+export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: {
     doId: string;
     pid: number;
     writerId: string;
-}, name?: string | null, key?: string, boot?: ResidentBootSpec): Promise<LoadedWorkerEntrypointStub>;
-/** Everything a host needs to boot one resident process. */
-export interface ResidentHost {
-    /**
-     * The HOSTING DO's own ctx.exports — this is what decides which workerd
-     * process the facet lands in.
-     */
-    ctxExports: NimbusCtxExports;
-    /** Always the COORDINATOR's identity, whichever DO is hosting. */
-    supervisor: {
-        doId: string;
-        pid: number;
-        writerId: string;
-    };
-    workerKey: string;
-}
-/** A booted facet, owned by its host. */
-export interface HostedResidentProcess {
-    /** Invoke the runner's startProcess; see StartContract. */
-    start(args: unknown): Promise<unknown>;
-    /** Re-resolvable inbound-HTTP target for the running facet. */
-    route: RouteableFacetTarget;
-    /** Release the resources pinning the facet — the facet dies with them. */
-    dispose(): void;
+}, stage: OpencodeStageSpec, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
+/**
+ * Reads the members a boot spec named by path off the session's own disk.
+ * Supplied by the session, which owns the filesystem and the credential the
+ * kernel reads its own image store with; the fabric never learns either.
+ */
+export interface ResidentDiskReader {
+    readFile(path: string): Uint8Array;
 }
 /**
- * Boot a resident process's facet on THIS host. Identical code runs on the
- * coordinator (local placement) and on a peer DO (peer placement); the only
- * difference is whose `ctx.exports` — and therefore whose workerd process —
- * is handed in.
- *
- * Both spec kinds take the SAME route: the module map is completed inside the
- * stateless NimbusLoadedEntrypoint that loads it, never in a session DO. That
- * is a workerd requirement as much as a memory one — a dynamic worker loaded
- * directly from a Durable Object cannot be re-entered from a later request
- * ("the system does not know how to reload this Worker from scratch; have the
- * parent Worker expose an entrypoint which constructs the dynamic worker"), so
- * a DO-loaded facet could never serve its registered port.
+ * Complete a resident-process module map: read every member the spec named by
+ * path, verifying each generated image against the digest its own path claims.
+ * Runs inside the loader's cache-miss callback, so the bytes exist only for
+ * the duration of the load.
  */
-export declare function hostResidentProcess(host: ResidentHost, boot: ResidentBootSpec): Promise<HostedResidentProcess>;
-/** Options the coordinator hands a hosting peer. */
-export interface HostProcessOpts {
-    coordinatorDoId: string;
-    pid: number;
-    writerId: string;
-    workerKey: string;
-    startContract: StartContract;
-    startArgs?: unknown;
-}
-interface PeerNamespace {
-    idFromName(name: string): unknown;
-    get(id: unknown): unknown;
-}
-/** Extract the NIMBUS_SESSION peer namespace from a raw env, if present. */
-export declare function peerNamespaceFromEnv(env: unknown): PeerNamespace | undefined;
-type ProcessPlacement = {
-    kind: 'local';
-} | {
-    kind: 'peer';
-    slot: number;
-    peerName: string;
-    isolateToken: string;
-};
+export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader): Promise<Record<string, unknown>>;
+/** The facet name for a process. Unique per pid, and pids never repeat. */
+export declare function residentFacetName(pid: number): string;
 /**
  * Resource handle for one resident process — the whole surface the kernel
- * above this module sees. It is placement-free throughout: `booted`, `done`,
- * `kill` and `routeTarget` all behave identically whether the facet runs in
- * the coordinator's workerd process or a sibling's.
+ * above this module sees: `booted()` for the boot payload, `done` for death,
+ * `kill()` for teardown, `routeTarget` for inbound HTTP.
  *
- * `done` settles when the process's HOST context ends: for a `lifetime`
- * runner that is the process exiting (resolve) or dying (reject); for a
- * `boot` runner it is the facet dying under it, which locally is only
- * observable at kill time and on a peer is the severed host RPC.
+ * `done` settles when the process ends: for a `lifetime` runner that is its
+ * held-open startProcess settling (resolve on exit, reject on facet death);
+ * for a `boot` runner it is the kill that releases the facet.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
- * tracking kills a hosted process exactly the way it kills a local facet.
+ * tracking tears a process down exactly the way it releases any other
+ * per-process resource.
  */
 export declare class ResidentProcessHandle {
     #private;
     readonly done: Promise<void>;
-    readonly processClass: ProcessClass;
     /**
-     * Inbound-HTTP target for PortRegistry; follows the process across respawns
-     * by reading the live placement on every request. Placement-free like the
-     * rest of the handle: on a peer it carries the request's parts to the
-     * hosting peer, locally it is the facet's own entrypoint, and PortRegistry
-     * cannot tell the two apart.
+     * Inbound-HTTP target for PortRegistry: the running facet's own stub. A
+     * facet is a child actor, so its stub stays usable in request contexts long
+     * after the one that created it — which is the whole reason a resident
+     * process can serve a port at all.
      */
     readonly routeTarget: RouteableFacetTarget;
-    /** Peer respawns consumed (heavy only). */
-    respawns: number;
     constructor(init: {
-        processClass: ProcessClass;
-        placement: () => ProcessPlacement;
         done: Promise<void>;
         booted: () => Promise<unknown>;
         routeTarget: RouteableFacetTarget;
         kill: () => void;
+        describe: () => string;
     });
     /**
      * The runner's startProcess payload. The runner is started as part of the
@@ -399,17 +272,12 @@ export declare class ResidentProcessHandle {
      */
     booted(): Promise<unknown>;
     get killed(): boolean;
-    /**
-     * Human-readable placement, for the NIMBUS_DEBUG process-log line. Callers
-     * log the string; they never branch on it — placement stays in here.
-     */
+    /** Human-readable placement, for the NIMBUS_DEBUG process-log line. */
     describePlacement(): string;
-    /** Idempotent: sever the process's RPC chain and block respawn. */
+    /** Idempotent: abort the facet and release its isolate. */
     kill(): void;
 }
 export interface ResidentProcessSpawn {
-    /** Declared by the launch primitive that defines this process kind. */
-    processClass: ProcessClass;
     /** Declared by the runner the primitive generates. */
     startContract: StartContract;
     /** Supervisor-assigned pid of the process entry on the coordinator. */
@@ -418,20 +286,8 @@ export interface ResidentProcessSpawn {
     workerKey: string;
     /** What the facet boots from. */
     boot: ResidentBootSpec;
-    /** Forwarded verbatim to the runner's startProcess, and replayed on respawn. */
+    /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
-    /**
-     * Consulted before a respawn: return true only while the process is still
-     * expected to run (e.g. its ProcessTable entry is 'running'). A killed or
-     * torn-down process must not respawn.
-     */
-    shouldRespawn?: () => boolean;
-    /**
-     * Invoked after a host death when a respawn WILL be attempted, with the
-     * error that killed the previous host. Callers surface it to the process
-     * log so a death-plus-recovery is never silent.
-     */
-    onRespawn?: (cause: unknown) => void;
     /**
      * Called before any concrete host capability can expose this writer.
      * A spawn must not proceed unless the supervisor accepts the authority.
@@ -442,54 +298,23 @@ export interface ResidentProcessSpawn {
 }
 export declare class ProcessFabric {
     private readonly ctx;
-    private readonly ns;
+    private readonly env;
+    private readonly disk;
     private readonly coordDoId;
-    /** pid → isolate token of the peer currently hosting that process. */
-    private readonly tokensInUse;
-    /** Monotonic slot counter: respawns and new spawns land on fresh peers. */
-    private nextSlot;
-    constructor(ctx: DurableObjectState, env: unknown);
+    constructor(ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader);
     /**
-     * Boot a resident process and return its placement-free handle. Resolves
-     * once the facet is hosted and the runner has been started; rejects on
-     * boot/placement failure, matching a local boot failure's surface.
-     *
-     * THE policy point: one field read, no matching of any kind.
+     * Boot a resident process as a facet of this session and return its handle.
+     * Resolves once the facet is up and its runner has been started; rejects on
+     * boot failure.
      */
     startResidentProcess(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle>;
-    private _startLocal;
-    private _localHost;
-    private _requireNs;
-    private _startPeer;
     /**
-     * Drive the process on its peer; on peer death, respawn on a FRESH slot
-     * (new machine lottery) within the bounded budget. The first placement is
-     * pre-verified by _startPeer.
+     * The dynamic worker's Durable Object class, minted in the caller's request
+     * context. `LOADER.get` runs its callback only on a cache miss, so a process
+     * assembles its module map at most once and the bytes never stay resident in
+     * this DO's heap.
      */
-    private _runPeerLifecycle;
-    private _activatePeerWriter;
-    /**
-     * Probe successive slots until one reports an isolate token distinct from
-     * the coordinator's own and every token already hosting a process. Falls
-     * back to the last probed candidate when every attempt co-locates (dev
-     * single-process topologies) — see the module header.
-     */
-    private _placeDistinctPeer;
-    /**
-     * First contact with a possibly-cold sibling DO: retry transient platform
-     * resets with the same bounded policy the fanout peers ship
-     * (fanout-pool.ts PEER_TRANSIENT_RESET_RETRIES). Non-transient failures
-     * propagate on the first hit.
-     */
-    private _probePeer;
-    /**
-     * Deterministic peer kill: a fresh stub to the hosting peer fires
-     * `_rpcCancelHostProcess`, which disposes the peer's retained facet
-     * resources — the exact teardown a local facet gets. The severed RPC then
-     * settles the coordinator-side lifecycle, whose respawn gate sees
-     * `handle.killed` and stops.
-     */
-    private _cancelPeer;
+    private _processClass;
+    private _loaderConfig;
 }
-export {};
 //# sourceMappingURL=process-fabric.d.ts.map

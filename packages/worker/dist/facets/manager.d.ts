@@ -615,13 +615,24 @@ export declare class FacetManager {
      */
     private _noteProcessPlacement;
     /**
+     * The reader the fabric completes a boot spec's by-path members with.
+     *
+     * Reads as CRED_KERNEL because that is who WROTE them: the generated images
+     * are kernel-owned (`_materializeFacetImages`) and the runtime wasm images
+     * are installed by the kernel. Uncached because these are the session's
+     * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
+     * the VFS content LRU for the life of the session is what once crashed the
+     * supervisor.
+     */
+    private _residentDisk;
+    /**
      * Materialize generated module sources in the content-addressed image store
      * and return the `vfsTextModules` map naming them.
      *
-     * A resident process's module map is sized by the user's disk, so it cannot
-     * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
-     * it here, once, is also what lets the coordinator stop holding it: after
-     * this returns, the only thing the DO keeps is a path.
+     * A resident process's module map is sized by the user's disk, so it does
+     * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
+     * Writing it here, once, is what lets the session stop holding it: after
+     * this returns, the only thing it keeps is a path.
      *
      * The store is written by the kernel and read by the process, so nothing
      * here depends on which credential spawned what. Digest collisions are the
@@ -636,25 +647,18 @@ export declare class FacetManager {
      * replacing one, so a watch loop — or simply a session that runs a few
      * different programs — would otherwise leave one bundle-sized file behind
      * per distinct version. The root set is the process table, which is exact:
-     * an image is live for precisely as long as the process that boots from it,
-     * including across a respawn onto a fresh peer, which re-reads that same
-     * image. Nothing is left for a TTL or an eviction heuristic to guess at, and
-     * after a DO reset the table is empty so every orphan goes.
+     * an image is live for precisely as long as the process that boots from it.
+     * Nothing is left for a TTL or an eviction heuristic to guess at, and after
+     * a DO reset the table is empty so every orphan goes.
      */
     private _sweepFacetImages;
     /**
-     * The one way this manager boots a resident process. The caller's primitive
-     * declares its own `processClass`; this method carries it to the fabric's
-     * single policy point and adds nothing of its own. Everything after this
-     * call treats the returned handle identically regardless of where it landed.
+     * The one way this manager boots a resident process. Every resident process
+     * is a facet of this session; there is nothing to place and nothing here
+     * decides anything about where a program runs.
      */
     private _startResidentProcess;
     private _activateProcessVfsWriter;
-    /**
-     * A host death that the fabric recovered from is never silent: it lands in
-     * the process log the user reads with `logs <pid>`.
-     */
-    private _noteHostRespawn;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     private _allocateLoopbackPort;
     /**
@@ -691,21 +695,9 @@ export declare class FacetManager {
      * A resident primitive: the process outlives the call, may bind a port, and
      * accumulates memory for as long as it runs.
      *
-     * Declares `heavy`. Its module map — the snapshot of the user's disk the
-     * facet is built from — is the largest thing Nimbus generates, and it now
-     * travels to the host by VFS path rather than inside the boot spec, which is
-     * what lets the spec cross a DO boundary at all.
-     *
-     * The other question a peer raises is ordering, and it is settled rather
-     * than assumed: a node request handler routinely writes a file and returns a
-     * response asserting the write is already visible. The handler awaits its
-     * durability boundary BEFORE the response exists, and the write goes
-     * straight to the coordinator over SUPERVISOR while only the finished
-     * response takes the extra hop back through the hosting peer — so the extra
-     * hop is entirely downstream of the write. `resident-node-peer-request-
-     * durability` proves that through the real `_rpcRouteHostedHttp` leg — the
-     * part `resident-node-request-vfs-durability` cannot see, because it drives
-     * the generated worker directly.
+     * Its module map — the snapshot of the user's disk the facet is built from —
+     * is the largest thing Nimbus generates, so it travels by VFS path rather
+     * than inside the boot spec and is read only when the facet loads.
      */
     spawnNode(code: string, opts?: {
         argv?: string[];
@@ -728,13 +720,12 @@ export declare class FacetManager {
      * The shared primitive for any runtime that serves over
      * handleHttpRequest(Request) — the python and ruby socket servers today.
      *
-     * Declares `heavy`. The interpreter image it carries is exactly the memory
-     * that should not sit in the coordinator's workerd process — ruby's
-     * interpreter+stdlib alone is 34.3 MiB, and it already travels to the host
-     * BY VFS PATH, so peer placement costs the coordinator nothing it was not
-     * already paying. It has no readiness coupling back into the session: the
-     * runner answers startProcess with its boot payload and the caller waits on
-     * that one promise, so nothing polls the port to decide the process is up.
+     * The interpreter image it carries is the memory that should not sit in the
+     * session's own isolate — ruby's interpreter+stdlib alone is 34.3 MiB — and
+     * a facet's envelope is independent of the session's, so it does not. It has
+     * no readiness coupling back into the session: the runner answers
+     * startProcess with its boot payload and the caller waits on that one
+     * promise, so nothing polls the port to decide the process is up.
      */
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<{
         pid: number;

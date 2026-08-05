@@ -11,53 +11,27 @@ import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import {
-  _rpcHostProcessProbe,
-  _rpcHostProcess,
-  _rpcAwaitHostedBoot,
-  _rpcRouteHostedHttp,
-  _rpcCancelHostProcess,
-} from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
-let residentCode;
 let supervisorFactory = () => ({});
-const routeStub = {
+setCtxExports({ SupervisorRPC: (...args) => supervisorFactory(...args) });
+
+// The spawn goes through the real fabric: the facet's module map is assembled
+// in the loader's cache-miss callback, which is where the generated worker's
+// image is read back off the session disk. This test then exercises that
+// generated source directly.
+const world = createFacetWorld(() => ({
+  async startProcess() { return { ok: true }; },
   async handleHttpRequest() {
     throw new Error('the generated worker is exercised directly in this test');
   },
-};
-
-setCtxExports({
-  SupervisorRPC: (...args) => supervisorFactory(...args),
-  NimbusLoadedEntrypoint: ({ props }) => {
-    if (props.residentCode) residentCode = props.residentCode;
-    return props.residentCode
-      ? { async startProcess() { return { ok: true }; } }
-      : routeStub;
-  },
-});
-
-// spawnNode is heavy, so the spawn places the facet on a peer DO. The peer is
-// wired to the REAL host leg; this test then exercises the generated worker
-// directly, so placement only has to be plumbed, not simulated.
-const peerSelf = { _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
-const peerStub = {
-  _rpcHostProcessProbe: async () => _rpcHostProcessProbe(peerSelf),
-  _rpcHostProcess: (boot, opts) => _rpcHostProcess(peerSelf, boot, opts),
-  _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peerSelf, key),
-  _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peerSelf, key, wire),
-  _rpcCancelHostProcess: async (key) => _rpcCancelHostProcess(peerSelf, key),
-};
+}));
 
 const env = {
-  NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => peerStub },
-  LOADER: {
-    load() { throw new Error('resident processes use NimbusLoadedEntrypoint'); },
-    get() { throw new Error('resident processes use NimbusLoadedEntrypoint'); },
-  },
+  LOADER: world.loader,
   ASSETS: {
     async fetch(request) {
       const path = new URL(request.url).pathname.replace(/^\//, '');
@@ -68,7 +42,7 @@ const env = {
     },
   },
 };
-const ctx = { id: { toString: () => 'request-durability-test' }, waitUntil() {} };
+const ctx = createFacetCtx(world, 'request-durability-test');
 const processes = new SessionProcessSupervisor();
 const ports = new PortRegistry();
 const manager = new FacetManager(ctx, env, processes, ports, {});
@@ -77,10 +51,8 @@ const manager = new FacetManager(ctx, env, processes, ports, {});
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(sessionVfs);
-/** The generated worker source, read back out of the image store by path. */
-const residentWorkerSource = () => sessionVfs
-  .as(CRED_KERNEL)
-  .readFileString(residentCode.vfsTextModules['worker.js'].replace(/^\/+/, ''));
+/** The generated worker source the facet actually booted from. */
+const residentWorkerSource = () => world.boots.at(-1).config.modules['worker.js'];
 const cellText = (content) => content instanceof Uint8Array
   ? new TextDecoder().decode(content)
   : String(content);
@@ -122,8 +94,8 @@ await manager.spawnNode(userCode, {
   cwd: '/home/user',
   port: 4387,
 });
-assert.ok(residentCode?.vfsTextModules?.['worker.js'], 'spawn produced a generated resident worker');
-assert.ok(residentWorkerSource().includes('NimbusNodeProcess'), 'the image holds the generated worker');
+assert.equal(world.boots.length, 1, 'the spawn evaluated the generated worker exactly once');
+assert.ok(residentWorkerSource().includes('NimbusProcess'), 'the facet booted the generated worker');
 
 function withTestAppendAuthority(supervisor) {
   if (
@@ -1070,8 +1042,8 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
 
 async function loadGeneratedWorker() {
   const source = residentWorkerSource().replace(
-    'import { WorkerEntrypoint } from "cloudflare:workers";',
-    'class WorkerEntrypoint { constructor(env, ctx) { this.env = env; this.ctx = ctx; } }',
+    'import { DurableObject } from "cloudflare:workers";',
+    'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }',
   ) + `
 export function __nimbusTestPendingIOLength() {
   return __nimbusRuntime ? __nimbusRuntime.pendingIO.length : -1;
@@ -1113,9 +1085,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
 
   const response = await worker.handleHttpRequest(request());
@@ -1168,9 +1140,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
   const response = await worker.handleHttpRequest(request('sync-append'));
   assert.equal(response.status, 200);
@@ -1203,9 +1175,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
   const response = await worker.handleHttpRequest(request('sync-appends'));
   assert.equal(response.status, 200);
@@ -1226,9 +1198,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: supervisor },
   );
   for (let index = 0; index < 32; index++) {
     const response = await worker.handleHttpRequest(request(`retention-${index}`));
@@ -1263,9 +1235,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: supervisor },
   );
   const first = worker.handleHttpRequest(request('pending-drain'));
   await started;
@@ -1308,9 +1280,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: supervisor },
   );
   const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
 
@@ -1351,9 +1323,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: supervisor },
   );
 
   const raced = worker.handleHttpRequest(request('race'));
@@ -1398,9 +1370,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: supervisor },
   );
 
   const raced = worker.handleHttpRequest(request('same-race'));
@@ -1431,9 +1403,9 @@ function request(path = 'first') {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: supervisor },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: supervisor },
   );
 
   await assert.rejects(
@@ -1518,9 +1490,9 @@ http.createServer((req, res) => {
     async reportExit() {},
   };
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
-    { SUPERVISOR: withTestAppendAuthority(supervisor) },
+  const worker = new generated.NimbusProcess(
     { waitUntil() {} },
+    { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
   const mutationRequest = (path) => new Request(`http://127.0.0.1:${port}/${path}`, {
     headers: { 'X-Nimbus-Port': String(port) },
@@ -1570,7 +1542,8 @@ process.exit(0);
   });
   const reports = [];
   const generated = await loadGeneratedWorker();
-  const worker = new generated.NimbusNodeProcess(
+  const worker = new generated.NimbusProcess(
+    { waitUntil() {} },
     {
       SUPERVISOR: {
         async fsAppend() {
@@ -1584,7 +1557,6 @@ process.exit(0);
         async stderr() {},
       },
     },
-    { waitUntil() {} },
   );
   await assert.rejects(
     worker.startProcess(),

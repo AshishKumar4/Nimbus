@@ -301,7 +301,7 @@ Press Ctrl-D or type `exit` / `.exit` to leave. Probes: `tests/behavioral/repl/`
 
 ## C compilation
 
-`clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate; the user VFS is mounted into a virtual `memfs` so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
+`clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate on the same WASI layer every other non-node runtime uses, so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
 
 What's wired today (v12 sysroot, currently deployed):
 

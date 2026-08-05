@@ -294,21 +294,6 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }): Promise<{
         results: unknown[];
     }>;
-    _hostedProcesses: Map<string, _rpc.HostedProcessRecord>;
-    _hostedProcessWaiters: Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>;
-    _rpcHostProcessProbe(): {
-        isolateToken: string;
-    };
-    _rpcHostProcess(boot: unknown, opts: unknown): Promise<{
-        ok: boolean;
-    }>;
-    _rpcAwaitHostedBoot(workerKey: string): Promise<{
-        payload: unknown;
-    }>;
-    _rpcRouteHostedHttp(workerKey: string, request: _rpc.HostedHttpRequest): Promise<_rpc.HostedHttpResponse>;
-    _rpcCancelHostProcess(workerKey: string): {
-        cancelled: boolean;
-    };
     _rpcCpSpawn(req: any): Promise<{
         childPid: number;
     }>;
