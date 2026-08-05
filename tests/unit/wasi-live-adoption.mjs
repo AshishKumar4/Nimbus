@@ -11,6 +11,7 @@
 import assert from 'node:assert';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +59,7 @@ function mockSupervisor(seed = {}) {
 
 function host() {
   const memory = new WebAssembly.Memory({ initial: 8 });
-  const { wasiImport } = P.__wasiMakeImports({
+  const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['prog'], env: {}, getMemory: () => memory,
     stdoutWrite: () => {}, stderrWrite: () => {},
   });

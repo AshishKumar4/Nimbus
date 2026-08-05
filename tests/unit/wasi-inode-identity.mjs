@@ -14,6 +14,7 @@
 
 import assert from 'node:assert';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
@@ -30,7 +31,7 @@ return { __wasiInitFS, __wasiMakeImports };`)();
     dirs: ['a', 'b'],
     modes: { '': 7, a: 7, b: 7, 'a/one.txt': 6, 'b/two.txt': 6 },
   });
-  const { wasiImport } = P.__wasiMakeImports({
+  const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['probe'], env: {}, abi, getMemory: () => memory,
   });
   const dv = new DataView(memory.buffer);
