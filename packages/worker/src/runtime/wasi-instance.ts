@@ -1888,7 +1888,10 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_SOCKET_STREAM;
       }
       const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
-      return writeFilestat(statPtr, timesPath, ftype, size, t);
+      // A path names the inode when there is one. An fd with no path — stdio,
+      // a socket — is still its own object and must not share an inode with
+      // every other one, so it is named by the fd instead.
+      return writeFilestat(statPtr, timesPath === null ? '\0fd/' + fd : timesPath, ftype, size, t);
     },
     fd_filestat_set_size(fd, size) {
       const entry = fdTable.get(fd);

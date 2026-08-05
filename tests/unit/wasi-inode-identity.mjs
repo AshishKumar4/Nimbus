@@ -50,6 +50,12 @@ return { __wasiInitFS, __wasiMakeImports };`)();
         filetype: dv.getUint8(STAT + 16),
       };
     },
+    /** fd_filestat_get, for the fds that have no path at all. */
+    fstat(fd) {
+      const rc = wasiImport.fd_filestat_get(fd, STAT);
+      assert.equal(rc, 0, `fd_filestat_get(${fd}) => ${rc}`);
+      return { ino: dv.getBigUint64(STAT + 8, true), filetype: dv.getUint8(STAT + 16) };
+    },
   };
 }
 
@@ -84,6 +90,12 @@ for (const abi of ['preview1', 'preview0']) {
   // A relative path resolves against the empty-named preopen — the other half
   // of what made a bare 'main.c' unopenable.
   assert.ok(fs.stat('a/one.txt').ino, `${abi}: relative path resolves`);
+
+  // An fd with no path is still its own object. stdin/stdout/stderr are three
+  // objects, not one, and none of them is the preopen.
+  const fds = [0, 1, 2, 3].map((fd) => fs.fstat(fd).ino);
+  assert.equal(new Set(fds).size, 4, `${abi}: pathless fds need distinct inodes`);
+  for (const ino of fds) assert.notEqual(ino, 0n, `${abi}: fd inode must never be 0`);
 }
 
 console.log('wasi-inode-identity: inodes are distinct, stable and non-zero in both ABIs');

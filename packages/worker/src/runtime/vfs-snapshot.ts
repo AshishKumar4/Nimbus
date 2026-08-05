@@ -13,19 +13,6 @@ import type { WasiFsSnapshot } from './wasi-instance.js';
 import type { VfsLike } from './vfs-manifest.js';
 import { effectiveMode, hasErrorCode } from './vfs-manifest.js';
 
-export function bytesToB64(bytes: Uint8Array): string {
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s);
-}
-
-export function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
 /**
  * Mutations a private-filesystem runtime made, reported once at exit.
  */
@@ -57,6 +44,19 @@ export interface VfsSnapshotResult {
   snapshot: WasiFsSnapshot;
   bytes: number;
   files: number;
+}
+
+export function bytesToB64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+export function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 /**
