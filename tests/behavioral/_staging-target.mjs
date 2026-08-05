@@ -67,6 +67,7 @@ import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isola
 import {
   ROOT,
   activeVersionId,
+  buildDist,
   createSession,
   deployAndVerify,
   parseFlags,
@@ -142,7 +143,7 @@ async function up() {
     log(`${describeTarget(isolation)} resolves no production resource`);
   }
 
-  if (flags.build !== false) buildDist(account);
+  if (flags.build !== false) buildDist({ account, log });
 
   // The probe target first, and not only because it is cheaper: its
   // deploy prints the account's workers.dev subdomain, which is what the
@@ -223,32 +224,6 @@ async function session() {
 }
 
 // ── Deploy ───────────────────────────────────────────────────────────
-
-/**
- * wrangler bundles `dist`, never `src`, and two of the bundlers read
- * `dist` themselves — `bundle:shims` compiles the shim artifact out of
- * the tsc output, so a build/bundle/build fixpoint is what makes the
- * deployed bytes match the working tree. Two src-only fixes shipped as
- * no-ops before this order was understood.
- */
-function buildDist(account) {
-  for (const pkg of ['config', 'sdk', 'worker']) {
-    log(`building packages/${pkg} → dist`);
-    wrangle('bun', ['run', '--cwd', `packages/${pkg}`, 'build'], { cwd: ROOT, account });
-  }
-  log('bundling worker assets (reads dist)');
-  wrangle('bun', ['run', '--cwd', 'packages/worker', 'bundle'], { cwd: ROOT, account });
-  log('rebuilding packages/worker so the regenerated artifacts reach dist');
-  wrangle('bun', ['run', '--cwd', 'packages/worker', 'build'], { cwd: ROOT, account });
-
-  const dirty = spawnSync('git', ['status', '--porcelain', '--', 'packages'], {
-    cwd: ROOT, encoding: 'utf8',
-  }).stdout.trim();
-  if (dirty) {
-    log('NOTE: the build changed tracked files — dist is committed, so commit these too:');
-    for (const line of dirty.split('\n')) log(`  ${line}`);
-  }
-}
 
 /**
  * Deploy one half of staging and make sure it can be talked to. The

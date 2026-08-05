@@ -1,31 +1,39 @@
 name: behavioral
 
-# Drives the full behavioral suite (tests/behavioral/run-all.mjs) against
-# the persistent probe deployment. Two modes:
+# Deploys the commit under test and runs the full behavioral suite
+# (tests/behavioral/run-all.mjs) against it.
 #
-#   - pr-strict: runs on every PR to main. `--no-retry`. Any RED probe
-#     blocks merge (when configured as a required check in repo settings;
-#     see .github/workflows/README.md for the one-time setup).
+# WHY THERE IS A DEPLOY STEP
+#   A Nimbus session is a deployed Worker plus a Durable Object; there is
+#   no local stand-in, so the suite needs something deployed to talk to.
+#   This job used to point BASE at `nimbus-probe` and grade whatever was
+#   already running there. Nothing deployed to it, so from 2026-07-24
+#   onward every green run certified a twelve-day-old deployment — the
+#   PR's code was never executed. A check that cannot fail for the reason
+#   you care about is worse than no check, because it reads as evidence.
 #
-#   - main-with-retry: runs on every push to main. Retry-on-banner
-#     enabled (matches local-dev semantics). Tracks post-merge state and
-#     surfaces flakes without blocking.
+#   So the job now builds this commit, deploys it, and grades that.
 #
-# WHAT IS ACTUALLY UNDER TEST: the Worker currently deployed at BASE —
-# `nimbus-probe` — not the commit being checked out. This job has no
-# deploy step, so a PR whose code was never pushed to that Worker is
-# graded on whatever is already there. Read a green run as "the deployed
-# probe target is healthy", not "this diff is safe".
+# WHY A THROWAWAY AND NOT `nimbus-staging`
+#   Two PRs sharing one target grade each other's code — the same defect
+#   again, only faster and harder to see. A throwaway is named per run,
+#   deleted after it, and mints its own JWT_SECRET, so no token outlives
+#   the Worker it opens and no shared signing secret is needed here at
+#   all. `nimbus-staging` stays what the promote-to-prod runbook needs:
+#   a stable pre-production a human can browser-check, not something CI
+#   redeploys under them on every push. See AGENTS.md § Staging And
+#   Promote.
 #
-# To grade a change, deploy it somewhere first. `bun run staging:deploy`
-# builds and deploys the branch to `nimbus-staging` + `nimbus-probe-staging`
-# and `bun run staging:test` runs this same suite against it. Do NOT point
-# a branch at `nimbus-probe`: that is this job's target, and clobbering it
-# makes CI silently grade the branch on every subsequent run.
+#   `nimbus` (production) and `nimbus-probe` are never deploy targets
+#   here. The throwaway path runs the isolation preflight before it
+#   invokes wrangler, and asserts the deploy landed by version id —
+#   `wrangler deploy` can fail in asset upload and still exit 0.
 #
-# If a sibling deploy clobbers the target mid-run, the runner's built-in
-# retry absorbs short windows; sustained outages surface as a mass-fail
-# (intentional — that's what CI should catch).
+# MODES
+#   pull_request / workflow_dispatch — `--no-retry`. Any RED is a RED.
+#   push to main                     — retry-on-banner, matching local-dev
+#                                      semantics, so a known runtime crash
+#                                      does not read as a regression.
 
 on:
   pull_request:
@@ -36,23 +44,31 @@ on:
 
 # Cancel in-flight runs for the same ref when a new commit arrives.
 # Saves runner minutes when contributors push amend-fix-amend on a PR.
+# A cancelled run may not reach its teardown step; every throwaway this
+# workflow creates is named `nimbus-tw-ci-*`, so
+# `bun tests/behavioral/_throwaway-target.mjs list` finds the strays.
 concurrency:
   group: behavioral-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # The authenticated probe deployment (apps/probe). The public hosted
-  # demo at nimbus-os.dev stays behind interactive
-  # Cloudflare login; CI authenticates here with a freshly minted JWT
-  # (see the "Mint probe token" step).
-  BASE: https://nimbus-probe.ashishkmr472.workers.dev
+  # Two Cloudflare accounts are logged in on the maintainer's machine and
+  # wrangler picks one silently, so every deploy pins the account. The
+  # deploy scripts require the pin; CI supplies it here.
+  CLOUDFLARE_ACCOUNT_ID: f44999d1ddda7012e9a87729eba250f1
+  # One name per run, recorded before the deploy so teardown can find it
+  # even when the deploy fails halfway — a failed deploy still creates the
+  # script. `_throwaway-target.mjs` prefixes `nimbus-tw-`.
+  TARGET_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
-  pr-strict:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    name: PR-strict (no-retry)
+  behavioral:
+    name: behavioral
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ~380 probes run sequentially, plus a build and a deploy. The old
+    # 20-minute cap was never hit because the job died before the suite
+    # started.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,61 +85,38 @@ jobs:
         shell: bash
         run: for f in tests/unit/*.mjs; do echo "== $f"; bun "$f" || exit 1; done
 
-      - name: Resolve skipped probes
-        shell: bash
-        # tests/behavioral/_probe-target-skips.mjs is the one list, shared
-        # with `bun run staging:test`, so the two runs cannot drift.
-        run: echo "NIMBUS_PROBE_SKIP=$(bun tests/behavioral/_probe-target-skips.mjs)" >> "$GITHUB_ENV"
-
-      - name: Mint probe token
+      - name: Require deploy credentials
         shell: bash
         env:
-          NIMBUS_PROBE_JWT_SECRET: ${{ secrets.NIMBUS_PROBE_JWT_SECRET }}
-          # The full suite runs ~1h; the default 1h TTL expires mid-run and
-          # the alphabetical tail fails with 401s at mint-session.
-          NIMBUS_PROBE_TOKEN_TTL_MS: "10800000"
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          TOKEN="$(bun tests/behavioral/_mint-probe-token.mjs)"
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set, so this commit cannot be deployed and there is nothing to grade. Add it as a repo secret (Workers Scripts:Edit, D1:Edit, Workers R2 Storage:Edit, Workers KV Storage:Edit on account $CLOUDFLARE_ACCOUNT_ID). This job fails here deliberately rather than falling back to a shared deployment: grading whatever happened to be deployed elsewhere is what made every earlier green run meaningless."
+            exit 1
+          fi
+
+      - name: Deploy this commit to a throwaway target
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        # `up` builds dist through the build/bundle/build fixpoint, runs the
+        # isolation preflight, deploys apps/probe under the throwaway name,
+        # verifies the active version id changed, sets a freshly generated
+        # JWT_SECRET and mints a matching token. It prints the two exports
+        # on stdout; its progress log goes to stderr.
+        run: |
+          bun tests/behavioral/_throwaway-target.mjs up --name "$TARGET_NAME" > target.env
+          BASE="$(sed -n 's/^export BASE=//p' target.env)"
+          TOKEN="$(sed -n 's/^export NIMBUS_PROBE_TOKEN=//p' target.env)"
+          rm -f target.env
+          if [ -z "$BASE" ] || [ -z "$TOKEN" ]; then
+            echo "::error::the throwaway deploy printed no BASE/token — refusing to run the suite against an unknown target"
+            exit 1
+          fi
           echo "::add-mask::$TOKEN"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
           echo "NIMBUS_PROBE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-
-      - name: Run behavioral suite (strict, no retry)
-        id: run
-        # Explicit `shell: bash` runs with `-o pipefail`, so the
-        # runner's exit code survives the `| tee` pipeline.
-        shell: bash
-        run: bun tests/behavioral/run-all.mjs --no-retry | tee behavioral.log
-        # `| tee` preserves CI live-log AND saves a file we upload on
-        # both PASS and FAIL paths via `if: always()` below.
-
-      - name: Upload run log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: behavioral-log-pr-${{ github.event.pull_request.number || github.run_id }}
-          path: behavioral.log
-          retention-days: 30
-
-  main-with-retry:
-    if: github.event_name == 'push'
-    name: main (with retry-on-banner)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Run unit tests
-        shell: bash
-        run: for f in tests/unit/*.mjs; do echo "== $f"; bun "$f" || exit 1; done
+          echo "grading $BASE (nimbus-tw-$TARGET_NAME), built from $GITHUB_SHA"
 
       - name: Resolve skipped probes
         shell: bash
@@ -131,27 +124,29 @@ jobs:
         # with `bun run staging:test`, so the two runs cannot drift.
         run: echo "NIMBUS_PROBE_SKIP=$(bun tests/behavioral/_probe-target-skips.mjs)" >> "$GITHUB_ENV"
 
-      - name: Mint probe token
+      - name: Run behavioral suite
         shell: bash
-        env:
-          NIMBUS_PROBE_JWT_SECRET: ${{ secrets.NIMBUS_PROBE_JWT_SECRET }}
-          # The full suite runs ~1h; the default 1h TTL expires mid-run and
-          # the alphabetical tail fails with 401s at mint-session.
-          NIMBUS_PROBE_TOKEN_TTL_MS: "10800000"
+        # Explicit `shell: bash` runs with `-o pipefail`, so the runner's
+        # exit code survives the `| tee` pipeline. `| tee` preserves the CI
+        # live-log AND saves a file, uploaded below on both PASS and FAIL.
         run: |
-          TOKEN="$(bun tests/behavioral/_mint-probe-token.mjs)"
-          echo "::add-mask::$TOKEN"
-          echo "NIMBUS_PROBE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
-
-      - name: Run behavioral suite (retry-on-banner enabled)
-        id: run
-        shell: bash
-        run: bun tests/behavioral/run-all.mjs | tee behavioral.log
+          bun tests/behavioral/run-all.mjs \
+            ${{ github.event_name == 'push' && ' ' || '--no-retry' }} | tee behavioral.log
 
       - name: Upload run log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: behavioral-log-main-${{ github.run_id }}
+          name: behavioral-log-${{ github.event_name }}-${{ github.run_id }}
           path: behavioral.log
           retention-days: 90
+
+      - name: Delete the throwaway target
+        if: always()
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        # `down` deletes the script and then confirms it is gone against the
+        # API — a 404 on the hostname alone does not mean the script is
+        # absent. It exits non-zero when it cannot confirm, so a leak is loud.
+        run: bun tests/behavioral/_throwaway-target.mjs down --name "$TARGET_NAME"

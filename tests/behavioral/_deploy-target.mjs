@@ -131,6 +131,40 @@ export function putSecret({ cwd, account, name, key, value }) {
   wrangle(WRANGLER, ['secret', 'put', key, '--name', name], { cwd, account, input: value });
 }
 
+// ── Build ────────────────────────────────────────────────────────────
+
+/**
+ * Build the tree into the bytes wrangler will actually deploy.
+ *
+ * wrangler bundles `dist`, never `src`, and two of the bundlers read
+ * `dist` themselves — `bundle:shims` compiles the shim artifact out of the
+ * tsc output — so a build/bundle/build fixpoint is what makes the deployed
+ * bytes match the working tree. Two src-only fixes shipped as no-ops
+ * before this order was understood.
+ *
+ * Every deploy target runs this same fixpoint. A target that built less
+ * would probe a mix of this tree and the last one, which is the failure
+ * this whole module exists to make impossible.
+ */
+export function buildDist({ account, log }) {
+  for (const pkg of ['config', 'sdk', 'worker']) {
+    log(`building packages/${pkg} → dist`);
+    wrangle('bun', ['run', '--cwd', `packages/${pkg}`, 'build'], { cwd: ROOT, account });
+  }
+  log('bundling worker assets (reads dist)');
+  wrangle('bun', ['run', '--cwd', 'packages/worker', 'bundle'], { cwd: ROOT, account });
+  log('rebuilding packages/worker so the regenerated artifacts reach dist');
+  wrangle('bun', ['run', '--cwd', 'packages/worker', 'build'], { cwd: ROOT, account });
+
+  const dirty = spawnSync('git', ['status', '--porcelain', '--', 'packages'], {
+    cwd: ROOT, encoding: 'utf8',
+  }).stdout.trim();
+  if (dirty) {
+    log('NOTE: the build changed tracked files — dist is committed, so commit these too:');
+    for (const line of dirty.split('\n')) log(`  ${line}`);
+  }
+}
+
 // ── Sessions ─────────────────────────────────────────────────────────
 
 /**
