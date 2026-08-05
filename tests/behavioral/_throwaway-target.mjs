@@ -55,6 +55,7 @@ import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
 import {
   ROOT,
   WRANGLER,
+  buildDist,
   createSession,
   deployAndVerify,
   parseFlags,
@@ -107,10 +108,7 @@ async function up() {
   for (const gap of isolation.missing) log(`WARNING: ${gap}`);
   log(`bindings verified: ${name} resolves no production resource`);
 
-  if (flags.build !== false) {
-    log(`building packages/worker → dist (wrangler bundles dist, not src)`);
-    wrangle('bun', ['run', '--cwd', 'packages/worker', 'build'], { cwd: ROOT, account });
-  }
+  if (flags.build !== false) buildDist({ account, log });
 
   // Recorded before the deploy, not after: `wrangler deploy` can create the
   // script and still fail before it reports a URL, and a name nothing knows

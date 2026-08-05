@@ -272,9 +272,9 @@ one session by hand. Throwaways are named `nimbus-tw-*`, live on
 `workers.dev`, and get their own Durable Object namespace. Delete them when
 you are done.
 
-Two Workers are not targets you deploy to. `nimbus` is production. And
-`nimbus-probe` is what the `behavioral` workflow points `BASE` at, so a
-branch pushed there makes CI grade every later run against that branch.
+This is also what CI runs: the `behavioral` workflow deploys the commit
+under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes
+it. `nimbus` is production and is never a target here.
 
 Agent-specific probes:
 
