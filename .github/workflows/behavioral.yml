@@ -1,7 +1,7 @@
 name: behavioral
 
 # Drives the full behavioral suite (tests/behavioral/run-all.mjs) against
-# the live prod deployment. Two modes:
+# the persistent probe deployment. Two modes:
 #
 #   - pr-strict: runs on every PR to main. `--no-retry`. Any RED probe
 #     blocks merge (when configured as a required check in repo settings;
@@ -11,10 +11,20 @@ name: behavioral
 #     enabled (matches local-dev semantics). Tracks post-merge state and
 #     surfaces flakes without blocking.
 #
-# The prod deployment is the artifact under test — BASE points at the
-# public Workers URL. No secrets, no auth, no local wrangler dev. If a
-# sibling deploy clobbers prod mid-run, the runner's built-in retry
-# absorbs short windows; sustained outages surface as a mass-fail
+# WHAT IS ACTUALLY UNDER TEST: the Worker currently deployed at BASE —
+# `nimbus-probe` — not the commit being checked out. This job has no
+# deploy step, so a PR whose code was never pushed to that Worker is
+# graded on whatever is already there. Read a green run as "the deployed
+# probe target is healthy", not "this diff is safe".
+#
+# To grade a change, deploy it somewhere first. `bun run staging:deploy`
+# builds and deploys the branch to `nimbus-staging` + `nimbus-probe-staging`
+# and `bun run staging:test` runs this same suite against it. Do NOT point
+# a branch at `nimbus-probe`: that is this job's target, and clobbering it
+# makes CI silently grade the branch on every subsequent run.
+#
+# If a sibling deploy clobbers the target mid-run, the runner's built-in
+# retry absorbs short windows; sustained outages surface as a mass-fail
 # (intentional — that's what CI should catch).
 
 on:
@@ -36,13 +46,6 @@ env:
   # Cloudflare login; CI authenticates here with a freshly minted JWT
   # (see the "Mint probe token" step).
   BASE: https://nimbus-probe.ashishkmr472.workers.dev
-  # Skipped probes:
-  #   - frameworks/markflow-*: expensive real-repo installs; run them
-  #     manually/on demand only (operator cost directive).
-  #   - sdk/new/live-sdk-*-smoke + auth/new/hosted-demo-*: exercise
-  #     hosted-demo-only surfaces (demo OAuth, /api/sdk-smoke) that do
-  #     not exist on the probe target.
-  NIMBUS_PROBE_SKIP: frameworks/markflow-clickthrough,frameworks/markflow-real,sdk/new/live-sdk-smoke,sdk/new/live-sdk-remote-smoke,auth/new/hosted-demo-browser-auth,auth/new/hosted-demo-launch-oauth
 
 jobs:
   pr-strict:
@@ -65,6 +68,12 @@ jobs:
       - name: Run unit tests
         shell: bash
         run: for f in tests/unit/*.mjs; do echo "== $f"; bun "$f" || exit 1; done
+
+      - name: Resolve skipped probes
+        shell: bash
+        # tests/behavioral/_probe-target-skips.mjs is the one list, shared
+        # with `bun run staging:test`, so the two runs cannot drift.
+        run: echo "NIMBUS_PROBE_SKIP=$(bun tests/behavioral/_probe-target-skips.mjs)" >> "$GITHUB_ENV"
 
       - name: Mint probe token
         shell: bash
@@ -115,6 +124,12 @@ jobs:
       - name: Run unit tests
         shell: bash
         run: for f in tests/unit/*.mjs; do echo "== $f"; bun "$f" || exit 1; done
+
+      - name: Resolve skipped probes
+        shell: bash
+        # tests/behavioral/_probe-target-skips.mjs is the one list, shared
+        # with `bun run staging:test`, so the two runs cannot drift.
+        run: echo "NIMBUS_PROBE_SKIP=$(bun tests/behavioral/_probe-target-skips.mjs)" >> "$GITHUB_ENV"
 
       - name: Mint probe token
         shell: bash
