@@ -23,20 +23,25 @@
  * counted before they are freed, and LRU bytes are the cap rather than the
  * live footprint.
  *
- * Across components it UNDER-reports, because it can only sum what is
- * instrumented. Allocation sites that neither bump a diag counter nor take
- * a lease via `acquireSupervisorAllocation` are invisible to it, and it has
- * no way to infer their size. Observed consequence: the supervisor DO was
- * reset three times under prefetch-bundle construction while this estimator
- * reported a 9.4 MiB baseline and 35 KB of LRU — the bytes that actually
- * killed it were all in sites listed in HEAP_BLIND_SPOTS below.
+ * Across components it can only sum what is instrumented. Allocation sites
+ * that neither bump a diag counter nor take a lease via
+ * `acquireSupervisorAllocation` are invisible to it, and it has no way to
+ * infer their size — so any site known to be uninstrumented is named in
+ * HEAP_BLIND_SPOTS rather than left silently absent.
  *
- * So `estimatedBytes` and `percentOfCeiling` answer "how much of the
- * ceiling do the instrumented sources account for", NOT "how close is the
- * supervisor to being reset". `blindSpots` is returned alongside them so a
- * reader cannot mistake one question for the other. Closing a blind spot
- * means instrumenting it at its own allocation site and adding it to the
- * breakdown — never estimating it from here.
+ * The prefetch-bundle path used to be exactly that gap, and a large one: the
+ * supervisor DO was reset three times under bundle construction while this
+ * estimator reported a 9.4 MiB baseline and 35 KB of LRU. Both of its sites
+ * are now instrumented where they allocate — the per-exec build leases the
+ * budget it spends (`prefetchBundleBytes`) and the cross-exec cache is bounded
+ * by bytes and reports its retained total (`prefetchCacheBytes`) — so they are
+ * components of the breakdown rather than caveats beside it.
+ *
+ * `blindSpots` is still returned alongside `estimatedBytes` because a list
+ * being empty is a claim that has to be re-earned as the system grows, not a
+ * property of the estimator. Closing a blind spot always means instrumenting
+ * it at its own allocation site and adding it to the breakdown — never
+ * estimating it from here.
  *
  * Eviction-label taxonomy
  * ───────────────────────
@@ -54,11 +59,9 @@
  */
 
 import {
-  BUNDLE_MAX_ENCODED_BYTES,
   PRE_BUNDLE_CONCURRENCY,
   PRE_BUNDLE_SLICE_CAP_BYTES,
   SUPERVISOR_HEAP_CEILING_BYTES,
-  VFS_BUNDLE_MAX_BYTES,
 } from '../constants.js';
 import type { DiagCounters } from './diag-counters.js';
 import {
@@ -105,37 +108,20 @@ export interface HeapBlindSpot {
 /**
  * Supervisor allocation sites known to be unaccounted for.
  *
- * Both entries below are the prefetch-bundle path in facets/manager.ts,
- * which contains no `acquireSupervisorAllocation` call and reports no byte
- * counter. `breakdown.preBundleSliceBytes` does NOT cover them — that
- * component tracks the separate pre-bundle FACET pool via
- * `DiagCounters.preBundleFacet`, and reads 0 while these are at their peak.
+ * Empty: both former entries were the prefetch-bundle path in
+ * facets/manager.ts, and both are now instrumented at their own allocation
+ * sites rather than described from here. `buildPrefetchBundle` takes an
+ * `acquireSupervisorAllocation` lease and reports
+ * `breakdown.prefetchBundleBytes`; `prefetchBundleCache` is bounded by
+ * PREFETCH_CACHE_MAX_BYTES instead of by entry count and reports its live
+ * retained total as `breakdown.prefetchCacheBytes`.
  *
- * Closing these means instrumenting them in facets/manager.ts and moving
- * them into HeapBreakdown. Until then they are named here so the gap is
- * visible in /api/_diag/memory instead of being silently absent.
+ * An empty list says nothing is CURRENTLY known to be missing — it is not a
+ * proof of completeness, which no list can be. Adding an entry is how a newly
+ * discovered gap stays visible in /api/_diag/memory until it is closed the
+ * same way: instrumented where it allocates, then folded into HeapBreakdown.
  */
-export const HEAP_BLIND_SPOTS: readonly HeapBlindSpot[] = [
-  {
-    source: 'facets/manager.ts:buildPrefetchBundle',
-    capBytes: VFS_BUNDLE_MAX_BYTES,
-    reason:
-      'Accumulates raw VFS file contents into an in-heap bundle object on every '
-      + 'foreground exec. Bounded only by a function-local budgetState counter that '
-      + 'is never reported anywhere.',
-  },
-  {
-    source: 'facets/manager.ts:prefetchBundleCache',
-    capBytes: null,
-    reason:
-      'Retains up to PREFETCH_CACHE_MAX (16) FacetVfsState entries ACROSS execs, each '
-      + 'holding both the raw bundle and its serialized source plus manifest/metadata '
-      + `JSON (~${Math.round((VFS_BUNDLE_MAX_BYTES + BUNDLE_MAX_ENCODED_BYTES) / (1024 * 1024))} MiB `
-      + 'per entry at the caps). The LRU is bounded by ENTRY COUNT, not by bytes, so no '
-      + 'finite byte cap exists — 16 entries at the caps exceed the supervisor ceiling '
-      + 'many times over.',
-  },
-];
+export const HEAP_BLIND_SPOTS: readonly HeapBlindSpot[] = [];
 
 /**
  * Supervisor heap snapshot. Components are PEAK-OR-CURRENT bytes from
@@ -201,6 +187,19 @@ export interface HeapBreakdown {
    * decrementing on its failure path — a leak worth fixing.
    */
   streamingBuffersBytes: number;
+  /**
+   * Bytes reserved by prefetch-bundle builds in flight (diag-counters
+   * `prefetchBundleBytes`). Transient: each build leases the enrichment budget
+   * for its duration and releases it on the way out, success or failure.
+   */
+  prefetchBundleBytes: number;
+  /**
+   * Bytes retained by the FacetManager's prefetch-bundle LRU (diag-counters
+   * `prefetchCacheBytes`). Unlike every other component here these persist
+   * across execs, and unlike the transient ones they are a measurement of what
+   * the cache holds rather than a reservation it might use.
+   */
+  prefetchCacheBytes: number;
   /**
    * Shared-budget occupancy not already represented by the named transient
    * counters. This covers full-budget owners and keeps cross-DO module-local
@@ -282,16 +281,22 @@ export function estimateSupervisorHeap(
 ): HeapEstimate {
   const allocationBudget = readSupervisorAllocationBudget();
   const preBundleSliceBytes = estimatePreBundleSliceBytes(c);
+  // The prefetch build holds a lease, so its bytes are already inside
+  // allocationBudget.current — naming it here moves it out of the
+  // unattributed remainder rather than adding to the total twice.
   const transientAttributedBytes =
     vfs.inFlightWriteBytes +
     preBundleSliceBytes +
-    c.inFlightRpcPayloadBytes;
+    c.inFlightRpcPayloadBytes +
+    c.prefetchBundleBytes;
   const breakdown: HeapBreakdown = {
     supervisorBaselineBytes: SUPERVISOR_BASELINE_BYTES,
     vfsLruBytes: vfs.cacheHotBytes,
     vfsInFlightBytes: vfs.inFlightWriteBytes,
     preBundleSliceBytes,
     streamingBuffersBytes: c.inFlightRpcPayloadBytes,
+    prefetchBundleBytes: c.prefetchBundleBytes,
+    prefetchCacheBytes: c.prefetchCacheBytes,
     unattributedReservationBytes: Math.max(
       0,
       allocationBudget.current - transientAttributedBytes,
@@ -304,6 +309,8 @@ export function estimateSupervisorHeap(
     breakdown.vfsInFlightBytes +
     breakdown.preBundleSliceBytes +
     breakdown.streamingBuffersBytes +
+    breakdown.prefetchBundleBytes +
+    breakdown.prefetchCacheBytes +
     breakdown.unattributedReservationBytes;
 
   const percentOfCeiling = Math.round(

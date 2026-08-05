@@ -19,12 +19,13 @@ import { promisify } from 'node:util';
 import { GIT_BUNDLE_CODE } from '../../packages/worker/src/git-bundle.generated.ts';
 import { decodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
+import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
 
 const execFile = promisify(execFileCallback);
 const repoRoot = resolve(import.meta.dirname, '../..');
 const cfGitSource = resolve(
   process.env.CF_GIT_SOURCE ||
-    join(repoRoot, 'packages/worker/node_modules/isomorphic-git/index.js'),
+    join(resolvePackageDir('isomorphic-git', { start: join(repoRoot, 'packages/worker') }), 'index.js'),
 );
 const git = await import(`${pathToFileURL(cfGitSource).href}?facet-perf=${Date.now()}`);
 const temp = await mkdtemp(join(os.tmpdir(), 'nimbus-git-facet-perf-'));

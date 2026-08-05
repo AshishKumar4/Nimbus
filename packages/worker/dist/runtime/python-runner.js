@@ -649,7 +649,7 @@ export function buildPythonSocketProcessWorker(preamble, sideModules) {
         sideModuleImports.push(`globalThis.__NIMBUS_WASM[${JSON.stringify(mod.moduleKey)}] = __NIMBUS_WASM_${id};`);
     }
     return [
-        'import { WorkerEntrypoint } from "cloudflare:workers";',
+        'import { DurableObject } from "cloudflare:workers";',
         "import __NIMBUS_WASM_pyodide_asm_wasm from './pyodide.asm.wasm';",
         'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
         "globalThis.__NIMBUS_WASM['pyodide.asm.wasm'] = __NIMBUS_WASM_pyodide_asm_wasm;",
@@ -754,7 +754,7 @@ export function buildPythonSocketProcessWorker(preamble, sideModules) {
         '  const supervisor = env && env.SUPERVISOR;',
         '  if (supervisor) globalThis.__nimbusPythonSupervisor = supervisor;',
         '}',
-        'export default class NimbusPythonProcess extends WorkerEntrypoint {',
+        'export class NimbusProcess extends DurableObject {',
         '  async startProcess(args) {',
         '    __nimbusAdoptPythonSupervisor(this.env);',
         '    return __nimbusStartPythonProcess(args || {});',

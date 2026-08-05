@@ -1,94 +1,118 @@
 #!/usr/bin/env bun
 // heap-estimate-blind-spots — the supervisor heap estimate must not present
-// itself as a total when it is a lower bound.
+// itself as a total when it is a lower bound, and must not caveat what it can
+// simply measure.
 //
 // estimateSupervisorHeap sums only INSTRUMENTED allocation sources. The
-// prefetch-bundle path in facets/manager.ts contains no
-// acquireSupervisorAllocation call and bumps no diag counter, so its bytes
-// are invisible. Observed consequence: the supervisor DO was reset three
-// times under prefetch-bundle construction while the estimate reported a
-// 9.4 MiB baseline and 35 KB of LRU — a reading of ~15% of ceiling taken
-// moments before a memory kill.
+// prefetch-bundle path was the large uninstrumented one: the supervisor DO was
+// reset three times under bundle construction while the estimate reported a
+// 9.4 MiB baseline and 35 KB of LRU — ~15% of ceiling, moments before a memory
+// kill. Naming it as a blind spot was the first fix; measuring it is the real
+// one, and a measured site belongs in the breakdown, not beside it.
 //
-// Pre-fix the returned estimate carried no signal that anything was
-// missing, and constants.ts asserted the opposite ("Every supervisor
-// allocation site is accounted for"). This test pins the honesty, not a
-// number: whatever the estimator can see, it must also say what it cannot.
+// This test pins both halves: every reported blind spot is actionable, and the
+// prefetch path is no longer one because it now has components of its own.
 
 import assert from 'node:assert/strict';
 import {
   estimateSupervisorHeap,
   HEAP_BLIND_SPOTS,
 } from '../../packages/worker/src/observability/heap-estimate.ts';
-import { readDiagCounters } from '../../packages/worker/src/observability/diag-counters.ts';
 import {
-  BUNDLE_MAX_ENCODED_BYTES,
-  SUPERVISOR_HEAP_CEILING_BYTES,
-  VFS_BUNDLE_MAX_BYTES,
-} from '../../packages/worker/src/constants.ts';
+  readDiagCounters,
+  prefetchBundleStart,
+  prefetchBundleEnd,
+  setPrefetchCacheBytes,
+} from '../../packages/worker/src/observability/diag-counters.ts';
+import { SUPERVISOR_HEAP_CEILING_BYTES } from '../../packages/worker/src/constants.ts';
 
-const estimate = estimateSupervisorHeap(readDiagCounters(), {
-  cacheHotBytes: 35 * 1024,
-  inFlightWriteBytes: 0,
-});
+const vfsInputs = { cacheHotBytes: 35 * 1024, inFlightWriteBytes: 0 };
+const estimate = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
 
-// ── The estimate declares its own incompleteness ────────────────────────
+// ── The estimate still declares its own coverage ────────────────────────
 assert.ok(Array.isArray(estimate.blindSpots), 'estimate carries a blind-spot list');
-assert.ok(estimate.blindSpots.length > 0,
-  'the prefetch-bundle path is unaccounted for, so the list cannot be empty');
 assert.equal(estimate.blindSpots, HEAP_BLIND_SPOTS);
 
+// Whatever is listed must be actionable — a blind spot that does not name its
+// site is indistinguishable from a shrug.
 for (const spot of estimate.blindSpots) {
-  assert.equal(typeof spot.source, 'string');
   assert.ok(spot.source.length > 0, 'a blind spot names its allocation site');
+  assert.ok(spot.source.includes(':'), 'blind spots are module-qualified');
   assert.ok(spot.reason.length > 0, 'a blind spot explains what it allocates');
   assert.ok(spot.capBytes === null || spot.capBytes > 0,
     'capBytes is a positive bound or null for unbounded');
 }
 
-// ── The unaccounted path is named specifically ──────────────────────────
-// Naming it is the difference between "this number is incomplete" and "go
-// instrument buildPrefetchBundle". Both entries must point at manager.ts,
-// which is where the missing acquireSupervisorAllocation call belongs.
+// ── The prefetch path is measured, not caveated ─────────────────────────
 const sources = estimate.blindSpots.map((s) => s.source);
-assert.ok(sources.some((s) => s.includes('buildPrefetchBundle')),
-  'the per-exec bundle build is named');
-assert.ok(sources.some((s) => s.includes('prefetchBundleCache')),
-  'the cross-exec bundle cache is named');
-assert.ok(sources.every((s) => s.startsWith('facets/manager.ts:')),
-  'blind spots are module-qualified so they are actionable');
+assert.equal(sources.some((s) => s.includes('buildPrefetchBundle')), false,
+  'the per-exec bundle build leases its budget, so it is no longer a blind spot');
+assert.equal(sources.some((s) => s.includes('prefetchBundleCache')), false,
+  'the cross-exec bundle cache is byte-bounded and reports its total');
 
-// ── An unbounded blind spot forbids a finite worst case ─────────────────
-// prefetchBundleCache is an LRU bounded by ENTRY COUNT, not bytes, so no
-// finite ceiling can honestly be stated. Reporting a number here would be
-// the same class of lie the module is being fixed for.
-const unbounded = estimate.blindSpots.filter((s) => s.capBytes === null);
-assert.ok(unbounded.length > 0, 'the entry-count-bounded cache is unbounded in bytes');
-assert.equal(estimate.blindSpotCeilingBytes, null,
-  'an unbounded blind spot must yield a null worst case, not a number');
+assert.equal(typeof estimate.breakdown.prefetchBundleBytes, 'number',
+  'the build has a breakdown component of its own');
+assert.equal(typeof estimate.breakdown.prefetchCacheBytes, 'number',
+  'so does the retained cache');
 
-// ── The gap dwarfs what the estimator does see ──────────────────────────
-// This is the whole point: a single retained cache entry can hold more than
-// the entire supervisor ceiling the estimate is being measured against.
-const perCacheEntryBytes = VFS_BUNDLE_MAX_BYTES + BUNDLE_MAX_ENCODED_BYTES;
-assert.ok(perCacheEntryBytes > estimate.estimatedBytes,
-  'one unaccounted cache entry exceeds the entire instrumented estimate');
-assert.ok(perCacheEntryBytes * 16 > SUPERVISOR_HEAP_CEILING_BYTES,
-  'a full cache exceeds the supervisor ceiling many times over');
+// With nothing unbounded left, a finite worst case can honestly be stated.
+assert.equal(estimate.blindSpotCeilingBytes, 0,
+  'no unbounded blind spot remains, so the worst case is a number and it is zero');
+
+// ── The reported bytes are the counters, not a guess ────────────────────
+{
+  const buildBytes = 3 * 1024 * 1024;
+  const cacheBytes = 5 * 1024 * 1024;
+  prefetchBundleStart(buildBytes);
+  setPrefetchCacheBytes(cacheBytes);
+  try {
+    const live = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
+    assert.equal(live.breakdown.prefetchBundleBytes, buildBytes,
+      'an in-flight build is visible while it is in flight');
+    assert.equal(live.breakdown.prefetchCacheBytes, cacheBytes,
+      'the retained cache total is reported live');
+    assert.equal(
+      live.estimatedBytes - estimate.estimatedBytes,
+      buildBytes + cacheBytes,
+      'both land in the total — this is the pressure the estimator used to miss',
+    );
+  } finally {
+    prefetchBundleEnd(buildBytes);
+    setPrefetchCacheBytes(0);
+  }
+  const settled = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
+  assert.equal(settled.breakdown.prefetchBundleBytes, 0,
+    'a finished build releases its reservation');
+  assert.equal(settled.estimatedBytes, estimate.estimatedBytes);
+}
+
+// A leased build is inside the allocation budget already, so attributing it
+// must move bytes out of the unattributed remainder rather than count twice.
+{
+  const leased = 2 * 1024 * 1024;
+  prefetchBundleStart(leased);
+  try {
+    const live = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
+    const b = live.breakdown;
+    const sum =
+      b.supervisorBaselineBytes + b.vfsLruBytes + b.vfsInFlightBytes +
+      b.preBundleSliceBytes + b.streamingBuffersBytes + b.prefetchBundleBytes +
+      b.prefetchCacheBytes + b.unattributedReservationBytes;
+    assert.equal(live.estimatedBytes, sum, 'estimatedBytes equals the breakdown sum');
+    assert.ok(b.unattributedReservationBytes >= 0, 'attribution never goes negative');
+  } finally {
+    prefetchBundleEnd(leased);
+  }
+}
 
 // ── The instrumented sum is still coherent ──────────────────────────────
-// Honesty about coverage must not break the arithmetic that already worked.
 const b = estimate.breakdown;
 const sum =
   b.supervisorBaselineBytes + b.vfsLruBytes + b.vfsInFlightBytes +
-  b.preBundleSliceBytes + b.streamingBuffersBytes + b.unattributedReservationBytes;
+  b.preBundleSliceBytes + b.streamingBuffersBytes + b.prefetchBundleBytes +
+  b.prefetchCacheBytes + b.unattributedReservationBytes;
 assert.equal(estimate.estimatedBytes, sum, 'estimatedBytes still equals the breakdown sum');
 assert.equal(estimate.ceilingBytes, SUPERVISOR_HEAP_CEILING_BYTES);
 assert.equal(b.vfsLruBytes, 35 * 1024, 'VFS LRU input is passed through');
-
-// The blind spots are NOT folded into estimatedBytes — inventing a number
-// for something unmeasured would replace one lie with another.
-assert.ok(estimate.estimatedBytes < perCacheEntryBytes,
-  'unmeasured bytes are never guessed into the total');
 
 console.log('heap-estimate-blind-spots: OK');

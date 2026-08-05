@@ -3,20 +3,20 @@
  *
  * Architecture (compile-link-run, two facet calls):
  *
- *   compile  : clang.wasm + memfs.wasm + sysroot subset for C includes
- *              + user .c → produces .o bytes (returned to supervisor).
- *   link     : lld.wasm + memfs.wasm + sysroot subset for link
- *              (crt1.o + libc.a) + .o from compile → produces .wasm
- *              executable.
+ *   compile  : clang.wasm + sysroot subset for C includes + user .c
+ *              → produces .o bytes (returned to supervisor).
+ *   link     : lld.wasm + sysroot subset for link (crt1.o + libc.a)
+ *              + .o from compile → produces .wasm executable.
  *   write    : final .wasm flushed to user VFS at the requested path.
+ *
+ * The filesystem both halves see is the one WASI layer every other
+ * non-node runtime uses (wasi-instance.ts), seeded and sealed.
  *
  * Splitting compile and link into separate LOADER calls keeps each
  * call under the empirical loader payload ceiling. Each ships:
  *
- *   - compile: 31 MiB clang.wasm + 0.35 MiB memfs + ~1.3 MiB sysroot
- *              subset (C includes) = ~32.6 MiB.
- *   - link   : 19 MiB lld.wasm + 0.35 MiB memfs + ~0.75 MiB libs +
- *              tiny .o = ~20 MiB.
+ *   - compile: 31 MiB clang.wasm + ~1.3 MiB sysroot subset (C includes).
+ *   - link   : 19 MiB lld.wasm + ~0.75 MiB libs + tiny .o.
  *
  * Sysroot subset extraction happens supervisor-side via a small ustar
  * parser. The full sysroot.tar is parsed once when the clang runtime
@@ -28,6 +28,7 @@
 import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export function makeClangRunnerFactory(deps) {
@@ -40,7 +41,6 @@ export function makeClangRunnerFactory(deps) {
         };
         const clangVfsPath = findFile('bin/clang');
         const lldVfsPath = findFile('bin/wasm-ld');
-        const memfsVfsPath = findFile('share/clang/memfs.wasm');
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
         let runtimePromise = null;
         return async function clangBinHandler(ctx) {
@@ -62,10 +62,6 @@ export function makeClangRunnerFactory(deps) {
             }
             const isLinker = binKind === 'linker' || binName === 'wasm-ld';
             // Resolve bundle paths.
-            if (!memfsVfsPath || !runtimeVfs.exists(memfsVfsPath)) {
-                ctx.stderr.write(`${binName}: memfs.wasm missing from install (re-run 'nimbus install clang')\n`);
-                return 127;
-            }
             if (!sysrootVfsPath || !runtimeVfs.exists(sysrootVfsPath)) {
                 ctx.stderr.write(`${binName}: sysroot.tar missing from install\n`);
                 return 127;
@@ -87,7 +83,7 @@ export function makeClangRunnerFactory(deps) {
                 return 2;
             }
             // Validate all user-supplied source inputs exist in the user's
-            // session VFS. Collect their bytes for memfs population.
+            // session VFS. Collect their bytes to seed the filesystem.
             const userSourceFiles = {};
             // Pre-built objects/archives the user passed (e.g. extra.o, libfoo.a)
             // — shipped to the LINK step only (not compile).
@@ -111,7 +107,7 @@ export function makeClangRunnerFactory(deps) {
                 }
                 else {
                     // .o / .a — pass through to link as a pre-built input. The
-                    // path inside memfs is the user-supplied relative path.
+                    // path in the seeded filesystem is the user-supplied relative path.
                     preBuiltLinkInputs.push(input);
                 }
             }
@@ -125,7 +121,6 @@ export function makeClangRunnerFactory(deps) {
                     runtimePromise = createClangFacetRuntime(facetMgr, {
                         clangVfsPath,
                         lldVfsPath,
-                        memfsVfsPath,
                         sysrootVfsPath,
                         vfs: runtimeVfs,
                     });
@@ -141,15 +136,15 @@ export function makeClangRunnerFactory(deps) {
             // and any sibling headers users typically expect to be visible
             // to #include "..." resolution. Real clang/gcc auto-search the
             // dir of the including source for quote-form includes; we ship
-            // those files to memfs at their relative-to-cwd paths so the
-            // memfs layout reproduces the user's working tree.
+            // those files at their relative-to-cwd paths so the seeded
+            // filesystem reproduces the user's working tree.
             //
             // Size-capped (4 MiB, 200 files, depth 8) so accidental
             // huge-projects don't OOM the facet. Real C-tutorial projects
             // are vastly under the cap.
             const userIncludeBundle = collectIncludeBundle(vfs, cwd.replace(/^\/+/, ''));
             // ── COMPILE PHASE ────────────────────────────────────────────
-            // Reuse the warm clang/memfs pool and ship only the C-include
+            // Reuse the warm clang pool and ship only the C-include
             // subset plus user source/header files for this invocation.
             // Build -I flag list. We pass each user -I path verbatim AND add
             // an implicit '.' (cwd) for quote-form lookup. wasm-clang's -cc1
@@ -167,7 +162,7 @@ export function makeClangRunnerFactory(deps) {
             // Compile each source to its own .o. Object file naming: replace
             // the source extension with .o. Collisions across cwd subdirs
             // (e.g. src/foo.c and lib/foo.c both → foo.o) are avoided by
-            // keeping the directory component (memfs preserves user layout).
+            // keeping the directory component (the seed preserves user layout).
             const objPaths = [];
             const objBytesMap = {};
             for (const src of sourceInputs) {
@@ -192,7 +187,7 @@ export function makeClangRunnerFactory(deps) {
                 ];
                 // Per compile we ship: the current source file + the user's
                 // header bundle. Multi-TU is handled at link time, not compile,
-                // so sibling sources stay out of memfs (smaller payload, no
+                // so sibling sources stay out of the seed (smaller payload, no
                 // surface for unintended cross-TU textual inclusion via -I.).
                 const oneSourceFile = { [src]: userSourceFiles[src] };
                 const compileResult = await dispatchClangFacet(runtime.compile, {
@@ -257,7 +252,7 @@ export function makeClangRunnerFactory(deps) {
                 preBuiltBytesMap[lp] = userSourceFiles[lp];
             }
             // ── LINK PHASE ───────────────────────────────────────────────
-            // Reuse the warm wasm-ld/memfs pool and ship only the link
+            // Reuse the warm wasm-ld pool and ship only the link
             // sysroot subset plus object/archive inputs for this invocation.
             const stackSize = 1024 * 1024;
             // User-supplied -L paths and -l libraries flow through. The user
@@ -432,7 +427,7 @@ function isHeaderExt(name) {
 /**
  * Walk a VFS directory recursively to collect headers + (optionally)
  * source files, with bounded depth and total size cap, returning a
- * map of memfs-relative-path → bytes.
+ * map of root-relative-path → bytes.
  *
  * Layout convention: paths returned are RELATIVE TO `rootVfsPath`, so
  * a header at `home/user/sub/foo.h` (when rootVfsPath is `home/user`)
@@ -516,7 +511,7 @@ function errorMessage(error) {
 // ── ustar parser (supervisor-side) ───────────────────────────────────
 /**
  * Parse a POSIX ustar archive into a path→bytes map. Trims the
- * leading "/" from paths so memfs sees them as "include/stdio.h"
+ * leading "/" from paths so they are seen as "include/stdio.h"
  * (not "/include/stdio.h"). Directories are NOT recorded — only
  * regular file entries.
  */
@@ -623,7 +618,7 @@ function filterSysrootForLink(all) {
     return out;
 }
 async function createClangFacetRuntime(facetMgr, args) {
-    if (!args.clangVfsPath || !args.lldVfsPath || !args.memfsVfsPath || !args.sysrootVfsPath) {
+    if (!args.clangVfsPath || !args.lldVfsPath || !args.sysrootVfsPath) {
         throw new Error('installed clang manifest is missing required files');
     }
     // Hand the file's own backing buffer to the loader when the Uint8Array
@@ -639,7 +634,6 @@ async function createClangFacetRuntime(facetMgr, args) {
     // and pin ~32 MiB of clang chunks resident in the DO heap for the whole
     // session — a primary cause of supervisor-DO memory pressure that tips
     // heavy sessions into an OOM reset mid-compile.
-    const memfsBytes = args.vfs.readFileUncached(args.memfsVfsPath);
     const clangBytes = args.vfs.readFileUncached(args.clangVfsPath);
     const lldBytes = args.vfs.readFileUncached(args.lldVfsPath);
     const sysroot = parseUstar(args.vfs.readFileUncached(args.sysrootVfsPath));
@@ -655,10 +649,7 @@ async function createClangFacetRuntime(facetMgr, args) {
             omitSupervisor: true,
             cacheScope: 'global',
             preamble: CLANG_RUNNER_PREAMBLE,
-            wasmModules: {
-                'memfs.wasm': toAB(memfsBytes),
-                'primary.wasm': toAB(primaryBytes),
-            },
+            wasmModules: { 'primary.wasm': toAB(primaryBytes) },
         }),
     });
     return {
@@ -674,14 +665,12 @@ async function dispatchClangFacet(target, args) {
         filesB64[path] = uint8ToBase64(bytes);
     }
     const facetFn = async function clangFacetCall(inArgs) {
-        const wasmTable = globalThis.__NIMBUS_WASM || {};
-        const memfsMod = wasmTable['memfs.wasm'];
-        const primaryMod = wasmTable['primary.wasm'];
-        if (!memfsMod || !primaryMod) {
+        const primaryMod = (globalThis.__NIMBUS_WASM || {})['primary.wasm'];
+        if (!primaryMod) {
             return {
                 exitCode: 127, stdout: '', stderr: '',
                 outputFiles: {},
-                error: 'clang-runner: __NIMBUS_WASM missing memfs.wasm or primary.wasm',
+                error: 'clang-runner: __NIMBUS_WASM missing primary.wasm',
             };
         }
         const fn = globalThis.__clangRun;
@@ -697,7 +686,6 @@ async function dispatchClangFacet(target, args) {
             argv: inArgs.argv,
             filesB64: inArgs.filesB64,
             outputPaths: inArgs.outputPaths,
-            memfsMod,
             primaryMod,
         });
     };
@@ -749,333 +737,89 @@ function uint8ToBase64(u8) {
     return btoa(s);
 }
 // ── Facet preamble ───────────────────────────────────────────────────
-export const CLANG_RUNNER_PREAMBLE = `
-// ── BEGIN: clang-runner preamble (binji/wasm-clang port, v1.1) ─────
-
-const __ESUCCESS = 0;
-const __EBADF    = 8;
-const __ENOSYS   = 52;
-
-class __ProcExit {
-  constructor(code) { this.code = code | 0; this.message = 'process exited ' + code; this.name = 'ProcExit'; }
-}
-
-function __readStr(u8, o, len) {
-  if (typeof len !== 'number' || len < 0) len = -1;
-  let str = '';
-  let end = u8.length;
-  if (len !== -1) end = o + len;
-  for (let i = o; i < end && u8[i] !== 0; i++) str += String.fromCharCode(u8[i]);
-  return str;
-}
-
-function __writeStr(u8, off, s) {
-  for (let i = 0; i < s.length; i++) u8[off + i] = s.charCodeAt(i) & 0xff;
-  u8[off + s.length] = 0;
-  return s.length + 1;
-}
-
-class __HostMem {
-  constructor(memory) { this.memory = memory; }
-  get buffer() { return this.memory.buffer; }
-  check() { /* no-op */ }
-  read32(off) { return new DataView(this.memory.buffer).getUint32(off, true); }
-  write32(off, v) { new DataView(this.memory.buffer).setUint32(off, v >>> 0, true); }
-  write64(off, v) {
-    const dv = new DataView(this.memory.buffer);
-    if (typeof v === 'bigint') {
-      dv.setBigUint64(off, v, true);
-    } else {
-      dv.setUint32(off, (v >>> 0), true);
-      dv.setUint32(off + 4, Math.floor(v / 0x100000000) >>> 0, true);
-    }
-  }
-  readStr(off, len) { return __readStr(new Uint8Array(this.memory.buffer), off, len); }
-  writeStr(off, s) { return __writeStr(new Uint8Array(this.memory.buffer), off, s); }
-  write(off, bytes) {
-    const u8 = new Uint8Array(this.memory.buffer);
-    if (typeof bytes === 'string') {
-      for (let i = 0; i < bytes.length; i++) u8[off + i] = bytes.charCodeAt(i) & 0xff;
-    } else {
-      u8.set(bytes, off);
-    }
-  }
-}
-
-/**
- * Add a single file to memfs at the given path. Recursively creates
- * parent directories — binji's memfs only auto-creates direct parents
- * when AddFileNode is called, so we walk path segments first.
- */
-function __memfsAddFile(memfsExports, memfsMem, path, bytes) {
-  // Strip a leading slash if present; memfs stores rootless paths.
-  const p = path.replace(/^\\/+/, '');
-  // Create parent dirs.
-  const parts = p.split('/');
-  for (let i = 1; i < parts.length; i++) {
-    const dir = parts.slice(0, i).join('/');
-    if (!dir) continue;
-    const pBuf = memfsExports.GetPathBuf();
-    const m = new Uint8Array(memfsMem.buffer);
-    for (let j = 0; j < dir.length; j++) m[pBuf + j] = dir.charCodeAt(j) & 0xff;
-    // Try to add — memfs ignores duplicate adds.
-    try { memfsExports.AddDirectoryNode(dir.length); } catch { /* may already exist */ }
-  }
-  // Now the file itself.
-  const pBuf = memfsExports.GetPathBuf();
-  const m1 = new Uint8Array(memfsMem.buffer);
-  for (let i = 0; i < p.length; i++) m1[pBuf + i] = p.charCodeAt(i) & 0xff;
-  const inode = memfsExports.AddFileNode(p.length, bytes.length);
-  const addr = memfsExports.GetFileNodeAddress(inode);
-  if (bytes.length > 0) {
-    new Uint8Array(memfsMem.buffer).set(bytes, addr);
-  }
-}
-
-/**
- * Decode base64 → Uint8Array (chunked-safe).
- */
-function __b64decode(b64) {
-  const bin = atob(b64);
-  const u8 = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-  return u8;
-}
-
-/**
- * Encode Uint8Array → base64 (chunked-safe).
- */
-function __b64encode(u8) {
-  const CHUNK = 0x8000;
-  let s = '';
-  for (let i = 0; i < u8.length; i += CHUNK) {
-    let chunk = '';
-    const end = Math.min(i + CHUNK, u8.length);
-    for (let j = i; j < end; j++) chunk += String.fromCharCode(u8[j]);
-    s += chunk;
-  }
-  return btoa(s);
-}
+const CLANG_RUNNER_PREAMBLE_TAIL = `
+// ── BEGIN: clang-runner preamble ──────────────────────────────────────
+//
+// The toolchain is a plain wasi_unstable (preview0) guest: clang.wasm
+// declares 27 imports and wasm-ld 25, every one of them in that namespace
+// and every one of them implemented by the WASI layer above. Its filesystem
+// is that layer's, seeded with the sysroot subset and the translation unit
+// and sealed — no supervisor is bound, so a compile cannot reach or disturb
+// the session VFS, and the named outputs are read back out at the end.
 
 globalThis.__clangRun = async function __clangRun(args) {
-  const stdoutChunks = [];
-  const stderrChunks = [];
-  const hostWrite = (s) => { stdoutChunks.push(s); };
-  const hostWriteErr = (s) => { stderrChunks.push(s); };
+  const stdout = [];
+  const stderr = [];
 
-  // 1. Instantiate memfs.wasm with the binji-shaped env imports.
-  let memfsInst;
-  let memfsMem;
-  const memfsHandle = { mem: null, hostMem: null, stdinStr: '', stdinPos: 0 };
-  const memfsImports = {
-    env: {
-      abort: () => { throw new Error('memfs: abort'); },
-      host_write: (fd, iovs, iovs_len, nwritten_out) => {
-        const hm = memfsHandle.hostMem;
-        if (!hm) return __EBADF;
-        let size = 0;
-        let str = '';
-        for (let i = 0; i < iovs_len; i++) {
-          const buf = hm.read32(iovs); iovs += 4;
-          const len = hm.read32(iovs); iovs += 4;
-          str += hm.readStr(buf, len);
-          size += len;
-        }
-        hm.write32(nwritten_out, size);
-        if (fd === 2) hostWriteErr(str); else hostWrite(str);
-        return __ESUCCESS;
-      },
-      host_read: (fd, iovs, iovs_len, nread) => {
-        const hm = memfsHandle.hostMem;
-        if (!hm) return __EBADF;
-        let size = 0;
-        for (let i = 0; i < iovs_len; i++) {
-          const buf = hm.read32(iovs); iovs += 4;
-          const len = hm.read32(iovs); iovs += 4;
-          const remain = memfsHandle.stdinStr.length - memfsHandle.stdinPos;
-          const toWrite = Math.min(len, remain);
-          if (toWrite === 0) break;
-          hm.write(buf, memfsHandle.stdinStr.substr(memfsHandle.stdinPos, toWrite));
-          size += toWrite;
-          memfsHandle.stdinPos += toWrite;
-          if (toWrite !== len) break;
-        }
-        hm.write32(nread, size);
-        return __ESUCCESS;
-      },
-      memfs_log: (buf, len) => {
-        const m = new Uint8Array(memfsHandle.mem.buffer);
-        const s = __readStr(m, buf, len);
-        hostWriteErr('[memfs] ' + s + '\\n');
-      },
-      copy_in: (memfs_dst, src, size) => {
-        const dst = new Uint8Array(memfsHandle.mem.buffer, memfs_dst, size);
-        const srcU8 = new Uint8Array(memfsHandle.hostMem.buffer, src, size);
-        dst.set(srcU8);
-      },
-      copy_out: (host_dst, memfs_src, size) => {
-        const dst = new Uint8Array(memfsHandle.hostMem.buffer, host_dst, size);
-        const srcU8 = new Uint8Array(memfsHandle.mem.buffer, memfs_src, size);
-        dst.set(srcU8);
-      },
-    },
-  };
-  try {
-    const r = await WebAssembly.instantiate(args.memfsMod, memfsImports);
-    memfsInst = (r instanceof WebAssembly.Instance ? r : r.instance);
-  } catch (e) {
-    return { exitCode: 1, stdout: '', stderr: '', outputFiles: {}, error: 'memfs instantiate failed: ' + (e && e.message) };
-  }
-  memfsMem = memfsInst.exports.memory;
-  memfsHandle.mem = memfsMem;
-  memfsInst.exports.init();
-
-  // 2. Populate memfs from filesB64 (sysroot subset + user inputs).
-  for (const [path, b64] of Object.entries(args.filesB64 || {})) {
-    const bytes = __b64decode(b64);
-    try {
-      __memfsAddFile(memfsInst.exports, memfsMem, path, bytes);
-    } catch (e) {
-      hostWriteErr('[clang-runner] failed to add ' + path + ' to memfs: ' + (e && e.message) + '\\n');
+  // Everything the seed carries is readable; directories are traversable.
+  // The layer denies by default for a mapped inode with no mode, and the
+  // producer here is a tar, which has no cred to project.
+  const modes = {};
+  const dirs = new Set();
+  for (const path of Object.keys(args.filesB64 || {})) {
+    const canon = path.replace(/^\\/+/, '');
+    modes[canon] = 6;
+    const parts = canon.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join('/');
+      dirs.add(dir);
+      modes[dir] = 7;
     }
   }
+  modes[''] = 7;
 
-  // 3. Build wasi_unstable imports for the primary.
-  const argv = args.argv || [];
-  const environ = ['USER=user', 'HOME=/', 'PWD=/'];
-  const primaryHandle = { mem: null };
-  const primaryWasi = {
-    proc_exit: (code) => { throw new __ProcExit(code); },
-    args_get: (argv_ptrs, argv_buf) => {
-      const hm = primaryHandle.mem;
-      for (const a of argv) {
-        hm.write32(argv_ptrs, argv_buf);
-        argv_ptrs += 4;
-        argv_buf += hm.writeStr(argv_buf, a);
-      }
-      hm.write32(argv_ptrs, 0);
-      return __ESUCCESS;
-    },
-    args_sizes_get: (argc_out, argv_buf_size_out) => {
-      const hm = primaryHandle.mem;
-      let size = 0;
-      for (const a of argv) size += a.length + 1;
-      hm.write64(argc_out, argv.length);
-      hm.write64(argv_buf_size_out, size);
-      return __ESUCCESS;
-    },
-    environ_get: (environ_ptrs, environ_buf) => {
-      const hm = primaryHandle.mem;
-      for (const e of environ) {
-        hm.write32(environ_ptrs, environ_buf);
-        environ_ptrs += 4;
-        environ_buf += hm.writeStr(environ_buf, e);
-      }
-      hm.write32(environ_ptrs, 0);
-      return __ESUCCESS;
-    },
-    environ_sizes_get: (count_out, size_out) => {
-      const hm = primaryHandle.mem;
-      let size = 0;
-      for (const e of environ) size += e.length + 1;
-      hm.write64(count_out, environ.length);
-      hm.write64(size_out, size);
-      return __ESUCCESS;
-    },
-    random_get: (buf, len) => {
-      const hm = primaryHandle.mem;
-      const data = new Uint8Array(hm.memory.buffer, buf, len);
-      crypto.getRandomValues(data);
-      return __ESUCCESS;
-    },
-    clock_time_get: (clock_id, precision, time_out) => {
-      const hm = primaryHandle.mem;
-      const ns = BigInt(Date.now()) * 1000000n;
-      hm.write64(time_out, ns);
-      return __ESUCCESS;
-    },
-    poll_oneoff: () => __ENOSYS,
-  };
-  // Compose: memfs.exports satisfies fd_*/path_* fns; host overrides
-  // proc_exit/args_*/environ_*/random_get/clock_time_get/poll_oneoff.
-  const wasi_unstable = Object.assign({}, memfsInst.exports);
-  Object.assign(wasi_unstable, primaryWasi);
-
-  // env namespace for the primary — stub canvas_*, etc.
-  const primaryEnv = new Proxy({}, {
-    get(_t, _prop) {
-      return function envStub() {
-        return 0;
-      };
-    },
+  __wasiInitFS({
+    root: '',
+    // One preopen with the EMPTY name. That is what makes a bare relative
+    // input resolve: this toolchain's wasi-libc predates cwd support, so a
+    // relative path is matched only against a zero-length preopen name, and
+    // an absolute one ('-isysroot /' puts the sysroot at /include) against
+    // the same entry with the leading slash stripped. Naming it '/' serves
+    // the absolute paths and silently loses every relative one — the input
+    // file then fails to open with no path_open ever reaching this layer.
+    preopens: [{ wasiPath: '', vfsPath: '' }],
+    files: args.filesB64 || {},
+    dirs: Array.from(dirs).filter(Boolean),
+    modes,
   });
 
-  // 4. Instantiate primary.
-  let primaryInst;
+  let memory = null;
+  const wasi = __wasiMakeImports({
+    abi: 'preview0',
+    argv: args.argv || [],
+    env: { USER: 'user', HOME: '/', PWD: '/' },
+    getMemory: () => memory,
+    stdoutWrite: (s) => { stdout.push(s); },
+    stderrWrite: (s) => { stderr.push(s); },
+  });
+
+  let instance;
   try {
     const r = await WebAssembly.instantiate(args.primaryMod, {
-      wasi_unstable,
-      env: primaryEnv,
+      ${WASI_ABI_NAMESPACE.preview0}: wasi.wasiImport,
     });
-    primaryInst = (r instanceof WebAssembly.Instance ? r : r.instance);
+    instance = (r instanceof WebAssembly.Instance ? r : r.instance);
   } catch (e) {
     return {
-      exitCode: 1, stdout: stdoutChunks.join(''), stderr: stderrChunks.join(''),
-      outputFiles: {},
+      exitCode: 1, stdout: stdout.join(''), stderr: stderr.join(''), outputFiles: {},
       error: 'primary (' + args.primaryName + ') instantiate failed: ' + (e && e.message),
     };
   }
-  const pmem = primaryInst.exports.memory;
-  primaryHandle.mem = new __HostMem(pmem);
-  memfsHandle.hostMem = primaryHandle.mem;
+  memory = instance.exports.memory;
 
-  // 5. Run _start.
-  let exitCode = 0;
-  try {
-    primaryInst.exports._start();
-  } catch (exn) {
-    if (exn instanceof __ProcExit) {
-      exitCode = exn.code;
-    } else {
-      hostWriteErr('[clang-runner] ' + args.primaryName + ' trapped: ' + (exn && exn.message) + '\\n');
-      exitCode = 1;
-    }
-  }
-
-  // 6. Harvest output files.
-  const outputs = {};
-  for (const path of args.outputPaths || []) {
-    // memfs paths are rootless.
-    const p = path.replace(/^\\/+/, '');
-    const pBuf = memfsInst.exports.GetPathBuf();
-    const m = new Uint8Array(memfsMem.buffer);
-    for (let j = 0; j < p.length; j++) m[pBuf + j] = p.charCodeAt(j) & 0xff;
-    try {
-      const inode = memfsInst.exports.FindNode(p.length);
-      if (inode > 0) {
-        const addr = memfsInst.exports.GetFileNodeAddress(inode);
-        const sz = memfsInst.exports.GetFileNodeSize(inode);
-        if (sz > 0) {
-          const bytes = new Uint8Array(memfsMem.buffer, addr, sz);
-          // Copy out (slice) because the next memfs op may invalidate
-          // the view if memory grows.
-          const copy = new Uint8Array(sz);
-          copy.set(bytes);
-          outputs[path] = __b64encode(copy);
-        } else {
-          outputs[path] = '';
-        }
-      }
-    } catch { /* not found */ }
+  const run = await __wasiRunStartAsync(instance, { memory });
+  if (run.error) {
+    stderr.push('[clang-runner] ' + args.primaryName + ' trapped: ' + run.error + '\\n');
   }
 
   return {
-    exitCode,
-    stdout: stdoutChunks.join(''),
-    stderr: stderrChunks.join(''),
-    outputFiles: outputs,
+    exitCode: run.exitCode,
+    stdout: stdout.join(''),
+    stderr: stderr.join(''),
+    outputFiles: __wasiReadFilesB64(args.outputPaths || []),
   };
 };
 
 // ── END: clang-runner preamble ────────────────────────────────────────
 `;
+export const CLANG_RUNNER_PREAMBLE = `${WASI_INSTANCE_PREAMBLE_SRC}\n${CLANG_RUNNER_PREAMBLE_TAIL}`;

@@ -8,7 +8,7 @@
 // PROBE-CLEANUP (2026-05-12): the version string + on-disk layout used
 // to be hardcoded `binji-2020`. The clang-sysroot-swap wave (Path C)
 // shipped a new version `wasi-libc-modern` while keeping the same
-// `clang` and `memfs.wasm` binaries — only the sysroot blob changed.
+// `clang` binary — only the sysroot blob changed.
 // Pre-fix the probe asserted on the literal `binji-2020` path and went
 // failing everywhere even though the install was correct. Discover the
 // installed version dynamically and assert on its layout.
@@ -84,19 +84,6 @@ const RUNTIME_DIR = `~/.nimbus/runtimes/clang/${installedVersion}`;
     parsed ? `version=${parsed.version}` : '');
 }
 
-// 4. share/clang/memfs.wasm sha-pinned size. The `clang` and
-//    `memfs.wasm` binaries are CONTENT-HASH-IDENTICAL across the
-//    binji-2020 → wasi-libc-modern swap (only sysroot.tar changed),
-//    so the byte size remains exactly 345442. If a future version
-//    legitimately changes this binary, update this constant.
-{
-  const { output } = await t.run(`ls -la ${RUNTIME_DIR}/share/clang/`, 15_000);
-  const stripped = stripAnsi(output);
-  const m = stripped.match(/^\s*-\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s.*memfs\.wasm/m);
-  const sz = m ? m[1] : null;
-  a.check('share/clang/memfs.wasm size === 345442 (sha-pinned wasm binary)',
-    sz === '345442', `parsed size=${sz}`);
-}
 
 // 5. bin/clang sha-pinned 31214472 — same rationale as #4.
 {

@@ -705,6 +705,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
     return _rpc._rpcFsReadRange(this as any, path, offset, length, pid);
   }
+  async _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]> {
+    return _rpc._rpcFsReadBatch(this as any, requests, pid);
+  }
   async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number> {
     return _rpc._rpcFsWriteRange(this as any, path, offset, bytes, pid);
   }
@@ -765,29 +768,6 @@ export class NimbusSession extends CloudflareDurableObject {
     },
   ): Promise<{ results: unknown[] }> {
     return _rpc._rpcFanoutExecute(this as any, fnSource, args, poolOpts);
-  }
-
-  // process fabric: peer-DO host leg of the resident-process scheduler —
-  // processes THIS DO hosts on behalf of a coordinator sibling, keyed by
-  // workerKey. `_hostedProcessWaiters` lets the boot-payload and routed-HTTP
-  // legs arrive before the host leg has registered without racing it.
-  _hostedProcesses = new Map<string, _rpc.HostedProcessRecord>();
-  _hostedProcessWaiters = new Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>();
-  _rpcHostProcessProbe(): { isolateToken: string } { return _rpc._rpcHostProcessProbe(this as any); }
-  async _rpcHostProcess(boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
-    return _rpc._rpcHostProcess(this as any, boot, opts);
-  }
-  async _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }> {
-    return _rpc._rpcAwaitHostedBoot(this as any, workerKey);
-  }
-  async _rpcRouteHostedHttp(
-    workerKey: string,
-    request: _rpc.HostedHttpRequest,
-  ): Promise<_rpc.HostedHttpResponse> {
-    return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
-  }
-  _rpcCancelHostProcess(workerKey: string): { cancelled: boolean } {
-    return _rpc._rpcCancelHostProcess(this as any, workerKey);
   }
 
   // W8 child_process RPC
