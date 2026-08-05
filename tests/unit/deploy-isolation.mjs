@@ -18,9 +18,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DEPLOYABLE_CONFIGS,
-  assertThrowawaySafe,
+  assertDeployIsolated,
   checkAll,
   checkConfig,
+  deployableTargets,
   loadConfig,
   missingCapabilities,
   resolveWorkerName,
@@ -43,18 +44,44 @@ const PROD_D1 = {
   database_id: '8e2ecc37-d975-49d8-96b7-885d45734a53',
 };
 
-// [1] THE INVARIANT: every deployable's default block is disjoint from
-// production. This is the check that would have stopped the incident.
+// [1] THE INVARIANT: EVERY non-production deploy target — each config's
+// default block and each of its non-production env blocks — is disjoint
+// from production. This is the check that would have stopped the incident,
+// and enumerating env blocks is what keeps it standing over `env.staging`
+// without anyone having to remember to add it.
 {
   const results = checkAll();
   const failures = results.filter((r) => r.violations.length > 0);
   assert.deepEqual(
-    failures.map((f) => `${f.config}: ${f.violations.join('; ')}`),
+    failures.map((f) => `${f.config}${f.env ? ` (env.${f.env})` : ''}: ${f.violations.join('; ')}`),
     [],
-    'a default (non-production) deploy resolves a production resource',
+    'a non-production deploy resolves a production resource',
   );
-  assert.equal(results.length, DEPLOYABLE_CONFIGS.length);
-  console.log(`  [1] ${results.length} deployable configs: no default deploy reaches production`);
+  assert.equal(results.length, deployableTargets().length);
+  assert.ok(results.length > DEPLOYABLE_CONFIGS.length, 'env blocks are enumerated, not just defaults');
+  assert.ok(
+    results.some((r) => r.config === 'apps/hosted-demo/wrangler.jsonc' && r.env === 'staging'),
+    'the staging environment is one of the checked targets',
+  );
+  console.log(`  [1] ${results.length} deploy targets: none reaches production`);
+}
+
+// [1b] The three tiers of apps/hosted-demo name three different databases
+// and three different rate-limit namespaces. [1] only proves staging and
+// dev stay off PRODUCTION; this pins that they also stay off each other,
+// so a throwaway inheriting the dev block cannot write rows into the
+// environment a release is being verified against.
+{
+  const config = loadConfig('apps/hosted-demo/wrangler.jsonc');
+  const tiers = [config, config.env.staging, config.env.production];
+  for (const [field, read] of [
+    ['database_id', (b) => b.d1_databases[0].database_id],
+    ['rate-limit namespace_id', (b) => b.ratelimits[0].namespace_id],
+    ['worker name', (b) => b.name],
+  ]) {
+    assert.equal(new Set(tiers.map(read)).size, 3, `dev, staging and production share a ${field}`);
+  }
+  console.log('  [1b] dev, staging and production are disjoint from each other, not just from production');
 }
 
 // [2] The production D1 is named ONLY under env.production. This is the
@@ -97,7 +124,7 @@ const PROD_D1 = {
 
   // And a throwaway deploying from it is refused by name.
   assert.throws(
-    () => assertThrowawaySafe({ configPath: 'wrangler.jsonc', workerName: 'nimbus-fswt-livegate', ...opts }),
+    () => assertDeployIsolated({ configPath: 'wrangler.jsonc', workerName: 'nimbus-fswt-livegate', ...opts }),
     /nimbus-fswt-livegate[\s\S]*8e2ecc37/,
     'the preflight names both the throwaway and the production resource',
   );
@@ -116,11 +143,44 @@ const PROD_D1 = {
   });
   const opts = { root, configs: ['wrangler.jsonc'] };
   assert.deepEqual(checkConfig('wrangler.jsonc', opts).violations, []);
-  const ok = assertThrowawaySafe({ configPath: 'wrangler.jsonc', workerName: 'nimbus-tw-x', ...opts });
+  const ok = assertDeployIsolated({ configPath: 'wrangler.jsonc', workerName: 'nimbus-tw-x', ...opts });
   assert.equal(ok.target, 'nimbus-tw-x');
   // The production deploy itself is never flagged against its own resources.
   assert.deepEqual(checkConfig('wrangler.jsonc', { ...opts, envName: 'production' }).violations, []);
   console.log('  [4] an isolated default block passes, and production is not flagged against itself');
+}
+
+// [4b] An env block that reaches production is caught by `checkAll`, not
+// merely by someone thinking to ask about it. Without the enumeration, a
+// staging block could bind the production database and every check here
+// would still be green — the default block, which is what used to be
+// checked, would be perfectly clean.
+{
+  const root = fixture({
+    'wrangler.jsonc': {
+      name: 'app-dev',
+      d1_databases: [{ binding: 'DEMO_DB', database_name: 'app-dev', database_id: 'dev-id' }],
+      env: {
+        staging: { name: 'app-staging', d1_databases: [PROD_D1] },
+        production: { name: 'app', d1_databases: [PROD_D1] },
+      },
+    },
+  });
+  const opts = { root, configs: ['wrangler.jsonc'] };
+  assert.deepEqual(checkConfig('wrangler.jsonc', opts).violations, [], 'the default block is clean');
+
+  const targets = deployableTargets(opts);
+  assert.deepEqual(targets.map((t) => t.envName), [null, 'staging'], 'production is not a target');
+
+  const staging = checkAll(opts).find((r) => r.env === 'staging');
+  assert.ok(staging.violations.some((v) => v.includes(PROD_D1.database_id)),
+    'the staging block is measured against production too');
+  assert.throws(
+    () => assertDeployIsolated({ configPath: 'wrangler.jsonc', envName: 'staging', ...opts }),
+    /app-staging[\s\S]*8e2ecc37/,
+    'the preflight names the environment and the production resource it would reach',
+  );
+  console.log('  [4b] a non-production env block is enumerated and checked, not just the default');
 }
 
 // [5] Production is an ACCOUNT-level fact, not a per-file one: a config with
@@ -194,6 +254,14 @@ const PROD_D1 = {
 {
   assert.deepEqual(missingCapabilities(loadConfig('apps/probe/wrangler.jsonc')), [],
     'apps/probe carries every load-bearing binding');
+
+  // `assets` is inheritable, so an env block that omits it still gets it.
+  // Reading the block literally reported nimbus-staging as assets-free —
+  // a loud warning on every staging deploy, about a Worker that serves
+  // the docs site. env.production omits `assets` the same way and
+  // production serves them, which is the proof.
+  assert.deepEqual(checkAll().find((r) => r.env === 'staging').missing, [],
+    'env.staging inherits the top-level assets binding');
 
   const stripped = missingCapabilities({ durable_objects: {}, worker_loaders: [] });
   assert.equal(stripped.length, 2);
