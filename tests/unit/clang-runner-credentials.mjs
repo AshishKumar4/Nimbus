@@ -17,7 +17,6 @@ const MANIFEST = {
   files: [
     { path: 'bin/clang' },
     { path: 'bin/wasm-ld' },
-    { path: 'share/clang/memfs.wasm' },
     { path: 'share/clang/sysroot.tar' },
   ],
 };
@@ -32,7 +31,6 @@ function makeInvocationVfs() {
   root.mkdir('runtime/clang/share/clang', { recursive: true });
   root.writeFile('runtime/clang/bin/clang', new Uint8Array([0]), { mode: 0o600 });
   root.writeFile('runtime/clang/bin/wasm-ld', new Uint8Array([0]), { mode: 0o600 });
-  root.writeFile('runtime/clang/share/clang/memfs.wasm', new Uint8Array([0]), { mode: 0o600 });
   root.writeFile('runtime/clang/share/clang/sysroot.tar', new Uint8Array(1024), { mode: 0o600 });
 
   root.mkdir('home/user', { recursive: true, mode: 0o777 });
