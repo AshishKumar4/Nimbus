@@ -16,6 +16,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -214,8 +215,42 @@ export async function waitForTarget(base, jwt, timeoutMs = 90_000) {
 
 // ── State ────────────────────────────────────────────────────────────
 //
-// Signing secrets live under `.wrangler/` (gitignored) at mode 600, so
-// later commands need no environment beyond the account pin.
+// Signing secrets are written at mode 600 so later commands need no
+// environment beyond the account pin. Where the file lives follows the
+// lifetime of what it describes. A throwaway belongs to the checkout
+// that deployed it, so its state stays under that checkout's
+// `.wrangler/` (gitignored). Staging is ONE environment shared by every
+// checkout on the machine, so its state is machine state.
+//
+// That distinction is not cosmetic. Measured 2026-08-05: four worktrees
+// held three different `nimbus-probe-staging` secrets, because each one
+// deployed with no local record of the environment, minted a fresh
+// secret and pushed it — invalidating every token the other checkouts
+// were mid-suite with. Same host, same Worker, three answers.
+
+export const MACHINE_STATE_DIR = join(
+  process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'),
+  'nimbus',
+);
+
+/**
+ * Refuse to mint a new signing secret for a target that is already
+ * provisioned and whose secret this machine has lost. Rotating it is a
+ * legitimate operation — it is just never one to perform by accident,
+ * because every client holding the old secret starts failing every
+ * session-creating request with a bare 401.
+ */
+export function assertCredentialHeld({ name, hasSecret, provisioned, rotate }) {
+  if (rotate || hasSecret || !provisioned) return;
+  throw new Error(
+    `${name} is already deployed, but this machine holds no signing secret for it.\n`
+    + `Deploying now would mint a new one and push it, which invalidates every token\n`
+    + `minted from the old secret — including any suite running against ${name} right now.\n`
+    + `  • to recover the secret: copy this machine's ${MACHINE_STATE_DIR} state from\n`
+    + `    wherever the environment was last deployed from;\n`
+    + `  • to rotate deliberately: re-run with --rotate-secrets.`,
+  );
+}
 
 export function readState(path) {
   try {

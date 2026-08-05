@@ -42,11 +42,43 @@ export function wsHeaders() {
 
 const sessionAttachPaths = new Map();
 
+/**
+ * Why `POST /new` produced no session, in terms an operator can act on.
+ *
+ * A rejected credential is not a probe failure, but it presents as one:
+ * measured 2026-08-05, a redeploy elsewhere on this machine rotated the
+ * target's `JWT_SECRET` mid-suite and 360 probes failed in 35 seconds
+ * with `no Location (status 401)` — the whole suite red, no Nimbus code
+ * reached, hours spent looking for the bug in Nimbus. The credential is
+ * the first thing this message names.
+ */
+function newSessionFailure(status, body) {
+  const detail = body.trim().split('\n')[0].slice(0, 200);
+  if (status !== 401 && status !== 403) {
+    return `POST ${BASE}/new → ${status}, no Location${detail ? `: ${detail}` : ''}`;
+  }
+  if (AUTH_TOKEN) {
+    return (
+      `POST ${BASE}/new → ${status}: the target rejected this probe's bearer token.\n`
+      + `The token is signed with a JWT_SECRET the target no longer has — a redeploy of\n`
+      + `the target (\`staging:deploy --rotate-secrets\`, or a throwaway redeployed under\n`
+      + `the same name) replaced it, or the token has simply expired.\n`
+      + `Re-mint against the current environment: \`bun run staging:status\` to see what is\n`
+      + `deployed, \`bun tests/behavioral/_staging-target.mjs token\` for a fresh token.`
+    );
+  }
+  return (
+    `POST ${BASE}/new → ${status}: no probe credential was sent.\n`
+    + `Export NIMBUS_PROBE_TOKEN (\`bun tests/behavioral/_staging-target.mjs token\`) or\n`
+    + `NIMBUS_PROBE_COOKIE before running probes against a deployed target.`
+  );
+}
+
 /** POST /new → 302 → sid. The only session-creation surface. */
 export async function mintSession() {
   const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual', headers: requestHeaders() });
   const loc = r.headers.get('location');
-  if (!loc) throw new Error(`POST /new returned no Location (status ${r.status})`);
+  if (!loc) throw new Error(newSessionFailure(r.status, await r.text().catch(() => '')));
   const m = loc.match(/\/s\/([^/]+)/);
   if (!m) throw new Error(`unexpected Location: ${loc}`);
   sessionAttachPaths.set(m[1], loc);
