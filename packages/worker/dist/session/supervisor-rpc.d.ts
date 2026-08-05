@@ -20,6 +20,7 @@
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
+ *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -29,6 +30,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
@@ -108,6 +110,20 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * hibernation and never rewrite whole files for partial updates.
      */
     fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+    /**
+     * Read many ranges in ONE round trip — the read-side counterpart to
+     * writeBatchStream, and for the same reason: a per-item round trip is the
+     * whole cost of a filesystem workload, not the storage lookup behind it.
+     * A file the caller knows is small is one entry; a large one is a run of
+     * entries over the same path.
+     *
+     * Entries come back positionally, each carrying exactly what the
+     * equivalent fsReadRange would have returned. The batch is bounded by
+     * FS_READ_BATCH_PATH_LIMIT paths and FS_READ_BATCH_REQUEST_BYTES of
+     * requested range, and the supervisor rejects anything past either — never
+     * a short result, which a caller could mistake for a short file.
+     */
+    fsReadBatch(requests: FsReadBatchRequest[]): Promise<FsReadBatchEntry[]>;
     fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number>;
     fsAppend(path: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
     fsAppendAck(moduleId: string, operationId: string): Promise<void>;

@@ -14,7 +14,7 @@
  *   - Top-level `catalog/v1.json` lists known runtimes.
  *
  * For `clang binji-2020`, the upstream is:
- *   https://raw.githubusercontent.com/binji/wasm-clang/master/{clang,lld,memfs,sysroot.tar}
+ *   https://raw.githubusercontent.com/binji/wasm-clang/master/{clang,lld,sysroot.tar}
  *
  * The script:
  *   1. Downloads each upstream file to /tmp.
@@ -88,7 +88,6 @@ const VERSION = positionalArgs[1];
  * For `clang binji-2020`:
  *   - VFS path `bin/clang`          ← upstream `clang`         (31.2 MB)
  *   - VFS path `bin/wasm-ld`        ← upstream `lld`           (19.5 MB)
- *   - VFS path `share/clang/memfs.wasm` ← upstream `memfs`     (345 KB)
  *   - VFS path `share/clang/sysroot.tar`← upstream `sysroot.tar` (9.3 MB)
  *   - VFS path `LICENSE`            ← bundled APACHE-2.0 text
  */
@@ -100,7 +99,6 @@ const SPECS = {
     files: [
       { src: 'clang',       vfs: 'bin/clang',                  mode: 'exec',   runner: 'clang-runner', binName: 'clang' },
       { src: 'lld',         vfs: 'bin/wasm-ld',                mode: 'exec',   runner: 'clang-runner', binName: 'wasm-ld', kind: 'linker' },
-      { src: 'memfs',       vfs: 'share/clang/memfs.wasm' },
       { src: 'sysroot.tar', vfs: 'share/clang/sysroot.tar' },
     ],
     // Bundled LICENSE text — Apache 2.0 with LLVM exception (full text below).
@@ -238,7 +236,7 @@ const SPECS = {
   // `ingest_only: true` SUPPRESSES the manifest write AND the catalog
   // auto-flip at the bottom of the script. The swap wave owns those
   // operations (it composes a new manifest that inherits bin/clang,
-  // bin/wasm-ld, memfs.wasm from binji-2020 and references this
+  // bin/wasm-ld from binji-2020 and references this
   // prep'd sysroot.tar blob, then flips `clang.default`).
   //
   // `repackage` describes a download+extract+retar pre-step that

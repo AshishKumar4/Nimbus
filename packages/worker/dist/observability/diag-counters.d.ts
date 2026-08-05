@@ -49,6 +49,32 @@ export interface DiagCounters {
      * the W7 chunk size (a few KiB), not by the total payload.
      */
     inFlightRpcPayloadBytes: number;
+    /**
+     * Bytes reserved by prefetch-bundle builds currently in flight.
+     *
+     * `buildPrefetchBundle` accumulates raw VFS file contents into an in-heap
+     * bundle object, and used to do so with nothing observing it: the estimator
+     * read 9.4 MiB while those bytes were resetting the DO. Each build now takes
+     * an `acquireSupervisorAllocation` lease for the budget it may use and bumps
+     * this alongside it, so the reservation is ATTRIBUTED to the bundle path
+     * rather than landing in `unattributedReservationBytes`.
+     *
+     * Surfaced as `breakdown.prefetchBundleBytes`. Back to zero between builds.
+     */
+    prefetchBundleBytes: number;
+    /**
+     * Bytes retained by the FacetManager's prefetch-bundle LRU right now.
+     *
+     * Unlike the counter above these bytes persist ACROSS execs — each entry
+     * holds the raw bundle plus its serialized source, manifest and metadata.
+     * The LRU used to be bounded by entry count alone, which bounded nothing:
+     * 16 pi-sized entries exceed the supervisor ceiling several times over. It
+     * is now bounded by PREFETCH_CACHE_MAX_BYTES and reports its live total
+     * here, so the retained cost is a measurement rather than a cap.
+     *
+     * Surfaced as `breakdown.prefetchCacheBytes`. A gauge, not a delta.
+     */
+    prefetchCacheBytes: number;
     /** Install-facet counters. Populated by npm-installer after a
      *  successful batch-facet dispatch returns. Confirms the install ran
      *  in the facet (tarballsCompleted > 0) and surfaces the
@@ -135,6 +161,20 @@ export declare function rpcPayloadStart(bytes: number): void;
  * hit is a bug worth investigating.
  */
 export declare function rpcPayloadEnd(bytes: number): void;
+/**
+ * Track an in-flight prefetch-bundle build. Call with the byte reservation the
+ * build took from the supervisor allocation budget, and pair with
+ * `prefetchBundleEnd` in the matching `finally` so it returns to zero whether
+ * the build succeeded or threw.
+ */
+export declare function prefetchBundleStart(bytes: number): void;
+/** Release an in-flight prefetch-bundle reservation. Floors at 0. */
+export declare function prefetchBundleEnd(bytes: number): void;
+/**
+ * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache
+ * owns the number and reports it whenever it admits or evicts an entry.
+ */
+export declare function setPrefetchCacheBytes(bytes: number): void;
 /** Fold facet-returned counters into the supervisor's diag state.
  *  Called by npm-installer after the batch-facet returns; aggregates
  *  rather than replaces so multiple install runs in the same DO

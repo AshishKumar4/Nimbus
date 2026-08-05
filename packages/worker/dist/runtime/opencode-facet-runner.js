@@ -644,10 +644,12 @@ export function generateOpencodeRunnerCode(opts) {
     const attachedTty = mode === 'attached';
     const resident = mode === 'attached' || mode === 'server';
     return `
-// WorkerEntrypoint base: the attached-TTY TUI runs as a resident process whose
-// startProcess() holds the facet open via this.ctx.waitUntil — the same
-// lifecycle the long-running node path (manager.ts) uses.
-import { WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
+// Two bases for two lifecycles, over one module scope. A resident run (the
+// attached TUI, opencode serve) is a DO Facet of the session, so NimbusProcess
+// extends DurableObject and its startProcess() holds the process open. A
+// one-shot run is a single fetch into a stateless entrypoint, which cannot be a
+// Durable Object; it keeps the WorkerEntrypoint default export.
+import { DurableObject as __NimbusDurableObject, WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
 
 // ── sql.js wasm + glue factory (module-init scope) ─────────────────────────
 // The pre-compiled WebAssembly.Module rides in via the module map; the glue
@@ -1177,7 +1179,7 @@ async function __ocDispatchHttp(request) {
   return globalThis.__nimbusServeHttp(request);
 }
 
-class NimbusOpencodeProcess extends __NimbusWorkerEntrypoint {
+export class NimbusProcess extends __NimbusDurableObject {
   async startProcess() {
     __supervisor = (this.env && this.env.SUPERVISOR) || null;
     // Run the resident lifecycle and hold THIS RPC open until it exits — the
@@ -1192,15 +1194,13 @@ class NimbusOpencodeProcess extends __NimbusWorkerEntrypoint {
     await __lifecycle;
     return { ok: true };
   }
-  async fetch(request) {
-    // Routed HTTP (X-Nimbus-Port) → serve it from the in-facet opencode server;
-    // otherwise this is the one-shot run entrypoint.
-    if (request.headers.has("X-Nimbus-Port")) return __ocDispatchHttp(request);
-    return __ocOneShotFetch(request, this.env);
-  }
+  async fetch(request) { return __ocDispatchHttp(request); }
   async handleHttpRequest(request) { return __ocDispatchHttp(request); }
 }
-export default NimbusOpencodeProcess;
+
+export default class NimbusOpencodeOneShot extends __NimbusWorkerEntrypoint {
+  async fetch(request) { return __ocOneShotFetch(request, this.env); }
+}
 
 // Headless resident lifecycle for the opencode serve command. Boots the
 // bundle's serve command (nimbusMain), whose http server binds via listen() → it

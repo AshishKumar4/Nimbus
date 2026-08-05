@@ -51,3 +51,19 @@ export function parentVfsPath(path) {
 export function stripLeadingSlashes(p) {
     return p.replace(/^\/+/, '');
 }
+/**
+ * The basename's extension including its leading dot, or an empty string when
+ * there is none. A dot that opens the basename belongs to the name (`.bashrc`)
+ * rather than to an extension, matching Node's `path.extname`.
+ *
+ * `endsWith` and `split('.').pop()` are not substitutes for callers deciding
+ * how to PARSE a file: neither can say "this path has no extension", and the
+ * latter answers `js/bin/tsc` for `home/user.js/bin/tsc`. Extensionless files
+ * are the shape of nearly every npm `bin` script, so that answer is
+ * load-bearing rather than an edge case.
+ */
+export function vfsPathExtension(path) {
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(dot) : '';
+}

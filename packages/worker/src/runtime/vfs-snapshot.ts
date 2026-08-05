@@ -1,23 +1,36 @@
-import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
-import type { VfsCred } from './os-contracts.js';
+/**
+ * vfs-snapshot.ts — the by-value filesystem bridge for the runtimes that still
+ * carry a private one.
+ *
+ * bash and python each implement their own filesystem inside their facet, so
+ * neither can demand-load or write through: they take a whole copy of the
+ * subtree at spawn and hand back a diff when they exit. That is the failure
+ * mode the shared WASI layer exists to remove — a resident process that never
+ * exits never persists anything — and this file is scheduled to die with the
+ * last of those two private implementations. Nothing new may be built on it.
+ */
+import type { WasiFsSnapshot } from './wasi-instance.js';
+import type { VfsLike } from './vfs-manifest.js';
+import { effectiveMode, hasErrorCode } from './vfs-manifest.js';
 
 /**
- * Minimal VFS shape runtime bridges need. Kept separate from SqliteVFS's
- * concrete type so runtime helpers do not pull supervisor modules into facet
- * preambles or create import cycles.
+ * Mutations a private-filesystem runtime made, reported once at exit.
  */
-export interface VfsLike {
-  readonly cred: VfsCred;
-  exists(path: string): boolean;
-  isDirectory(path: string): boolean;
-  stat(path: string): { mode: number; uid: number; gid: number };
-  readFile(path: string): Uint8Array;
-  writeFile(path: string, content: Uint8Array | string): void;
-  readdir(path: string): { name: string; type: string }[];
-  mkdir(path: string, opts?: { recursive?: boolean }): void;
-  unlink(path: string): void;
-  rmdir(path: string): void;
-  chmod(path: string, mode: number): void;
+export interface WasiFsDiff {
+  /** New or modified files, base64-encoded. */
+  filesWritten: Record<string, string>;
+  /** Unlinked files. */
+  filesDeleted: string[];
+  /** Created directories. */
+  dirsCreated: string[];
+  /** Removed directories, deepest first. */
+  dirsDeleted: string[];
+  /**
+   * vfsPath → permission bits requested via an in-facet chmod (busybox chmod
+   * through the nimbus_proc.chmod import). Applied durably by flushVfsDiff via
+   * vfs.chmod, where S2a ownership enforcement decides.
+   */
+  modesChanged?: Record<string, number>;
 }
 
 export interface VfsSnapshotCaps {
@@ -44,17 +57,6 @@ export function b64ToBytes(b64: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
-}
-
-function effectiveMode(mode: number, uid: number, gid: number, cred: VfsCred): number {
-  if (cred.uid === 0) return 0o6 | ((mode & 0o111) !== 0 ? 0o1 : 0);
-  if (cred.uid === uid) return (mode >> 6) & 0o7;
-  if (cred.gid === gid || cred.groups.includes(gid)) return (mode >> 3) & 0o7;
-  return mode & 0o7;
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 
 /**
@@ -202,13 +204,11 @@ export function snapshotVfs(
 export function flushVfsDiff(
   vfs: VfsLike,
   diff: WasiFsDiff,
-): { written: number; deleted: number; mkdirs: number; rmdirs: number; timesTouched: number; symlinks: number; chmods: number } {
+): { written: number; deleted: number; mkdirs: number; rmdirs: number; chmods: number } {
   let written = 0;
   let deleted = 0;
   let mkdirs = 0;
   let rmdirs = 0;
-  let timesTouched = 0;
-  let symlinks = 0;
   let chmods = 0;
 
   for (const path of diff.dirsCreated) {
@@ -250,8 +250,5 @@ export function flushVfsDiff(
     } catch {}
   }
 
-  if (diff.timesChanged) timesTouched = Object.keys(diff.timesChanged).length;
-  if (diff.symlinksCreated) symlinks = Object.keys(diff.symlinksCreated).length;
-  if (diff.symlinksDeleted) symlinks += diff.symlinksDeleted.length;
-  return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks, chmods };
+  return { written, deleted, mkdirs, rmdirs, chmods };
 }

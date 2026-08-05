@@ -22,7 +22,6 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
-import { type ResidentCodeSpec } from '../loaders/process-fabric.js';
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`
  * and we serve the file from VFS under `<vfsRoot>/<assetsDir>/<pathname>`.
@@ -56,22 +55,12 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
     key: z.ZodString;
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     depth: z.ZodOptional<z.ZodNumber>;
-    code: z.ZodOptional<z.ZodUnknown>;
     supervisor: z.ZodOptional<z.ZodObject<{
         doId: z.ZodString;
         pid: z.ZodNumber;
         writerId: z.ZodString;
     }, z.core.$strip>>;
     stage: z.ZodOptional<z.ZodUnknown>;
-    residentCode: z.ZodOptional<z.ZodObject<{
-        compatibilityDate: z.ZodString;
-        compatibilityFlags: z.ZodArray<z.ZodString>;
-        mainModule: z.ZodString;
-        modules: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
-            wasm: z.ZodCustom<ArrayBuffer, ArrayBuffer>;
-        }, z.core.$strip>]>>;
-        vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
-    }, z.core.$strip>>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
@@ -128,17 +117,7 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint {
 export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     _props(): NimbusLoadedEntrypointProps;
     _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown>;
-    _codeWithSupervisor(props: NimbusLoadedEntrypointProps, includeSupervisor: boolean): Promise<unknown>;
-    /**
-     * Complete a resident-process module map in THIS isolate: read each wasm
-     * image off the coordinator's disk through the facet's own supervisor, in
-     * RPC-safe ranges (the images are larger than a single RPC value).
-     */
-    _residentCodeConfig(spec: ResidentCodeSpec, supervisorBinding: unknown): Promise<Record<string, unknown>>;
-    _resolveEntrypoint(options: {
-        includeSupervisor: boolean;
-    }): Promise<any>;
-    startProcess(args: any): Promise<any>;
+    _resolveEntrypoint(): Promise<any>;
     /**
      * Relay the inner entrypoint's Response to the caller with a LIVE body.
      * The body streams through an identity pipe and the entrypoint stub is

@@ -253,6 +253,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsClose(handleId: number, pid?: number): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+    _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
@@ -293,21 +294,6 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }): Promise<{
         results: unknown[];
     }>;
-    _hostedProcesses: Map<string, _rpc.HostedProcessRecord>;
-    _hostedProcessWaiters: Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>;
-    _rpcHostProcessProbe(): {
-        isolateToken: string;
-    };
-    _rpcHostProcess(boot: unknown, opts: unknown): Promise<{
-        ok: boolean;
-    }>;
-    _rpcAwaitHostedBoot(workerKey: string): Promise<{
-        payload: unknown;
-    }>;
-    _rpcRouteHostedHttp(workerKey: string, request: _rpc.HostedHttpRequest): Promise<_rpc.HostedHttpResponse>;
-    _rpcCancelHostProcess(workerKey: string): {
-        cancelled: boolean;
-    };
     _rpcCpSpawn(req: any): Promise<{
         childPid: number;
     }>;

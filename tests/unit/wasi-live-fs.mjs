@@ -15,8 +15,9 @@
 //   7. A metadata miss with a supervisor present goes live (stat) instead of
 //      returning a snapshot-frozen ENOENT.
 //
-// Node/bun have no JSPI; Suspending-wrapped imports return the Promise the
-// wrapper would await — awaiting it directly is the same observation.
+// The imports are built through the preamble's no-JSPI branch (see
+// lib/wasi-imports.mjs) so they can be called from JS: same bodies, and
+// awaiting what one returns is the observation the guest makes.
 
 import assert from 'node:assert/strict';
 import { writeFileSync, rmSync } from 'node:fs';
@@ -25,6 +26,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
 const ESUCCESS = 0, ENOENT = 44;
 
@@ -121,7 +123,7 @@ function host(initOpts, supervisor) {
   const memory = new WebAssembly.Memory({ initial: 8 });
   P.__wasiInitFS(initOpts);
   if (supervisor) P.__wasiAdoptSupervisor(supervisor);
-  const { wasiImport } = P.__wasiMakeImports({
+  const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['prog'],
     env: {},
     getMemory: () => memory,

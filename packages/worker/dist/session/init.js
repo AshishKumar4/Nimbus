@@ -67,6 +67,7 @@ import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
+import { VITE_CONFIG_KEY } from './keys.js';
 function resolveNpmPrefix(prefix, cwd) {
     return prefix.startsWith('/')
         ? normalizeVfsPath(prefix)
@@ -1084,7 +1085,7 @@ export function initSession(self, ws) {
             }
             catch { }
             try {
-                await self.ctx.storage.put('vite-config', { root: distRoot, basePath: previewBasePath, port: previewPort });
+                await self.ctx.storage.put(VITE_CONFIG_KEY, { root: distRoot, basePath: previewBasePath, port: previewPort });
             }
             catch { }
             ctx.stdout.write('Serving at ' + previewBasePath + '/ \x1b[2m(pid=' + previewProcEntry.pid + ', port=' + previewPort + ')\x1b[0m\n');
@@ -1102,7 +1103,7 @@ export function initSession(self, ws) {
                 self.viteDevServer.stop();
                 self.viteDevServer = null;
                 try {
-                    await self.ctx.storage.delete('vite-config');
+                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
                 }
                 catch { }
                 stopped = true;
@@ -1372,7 +1373,7 @@ export function initSession(self, ws) {
         });
         self.viteDevServer.start();
         try {
-            await self.ctx.storage.put('vite-config', {
+            await self.ctx.storage.put(VITE_CONFIG_KEY, {
                 root: vfsRoot, aliases: viteConfig.alias, define: viteDefine,
                 injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
                 port: resolvedPort,
@@ -2595,7 +2596,7 @@ export function initSession(self, ws) {
                     self.viteDevServer.stop();
                     self.viteDevServer = null;
                     try {
-                        await self.ctx.storage.delete('vite-config');
+                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
                     }
                     catch { }
                 }

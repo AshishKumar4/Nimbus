@@ -35,7 +35,8 @@ import {
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
+import type { WasiFsSnapshot } from './wasi-instance.js';
+import type { WasiFsDiff } from './vfs-snapshot.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '../_shared/esbuild-facet-shim.js';
@@ -813,7 +814,7 @@ export function buildPythonSocketProcessWorker(preamble: string, sideModules: Py
     sideModuleImports.push(`globalThis.__NIMBUS_WASM[${JSON.stringify(mod.moduleKey)}] = __NIMBUS_WASM_${id};`);
   }
   return [
-    'import { WorkerEntrypoint } from "cloudflare:workers";',
+    'import { DurableObject } from "cloudflare:workers";',
     "import __NIMBUS_WASM_pyodide_asm_wasm from './pyodide.asm.wasm';",
     'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
     "globalThis.__NIMBUS_WASM['pyodide.asm.wasm'] = __NIMBUS_WASM_pyodide_asm_wasm;",
@@ -918,7 +919,7 @@ export function buildPythonSocketProcessWorker(preamble: string, sideModules: Py
     '  const supervisor = env && env.SUPERVISOR;',
     '  if (supervisor) globalThis.__nimbusPythonSupervisor = supervisor;',
     '}',
-    'export default class NimbusPythonProcess extends WorkerEntrypoint {',
+    'export class NimbusProcess extends DurableObject {',
     '  async startProcess(args) {',
     '    __nimbusAdoptPythonSupervisor(this.env);',
     '    return __nimbusStartPythonProcess(args || {});',
