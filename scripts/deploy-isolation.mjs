@@ -27,9 +27,15 @@
  * kind breaks this check until the kind is classified — rather than
  * silently opening a new path to production.
  *
+ * The invariant stands over every deploy target the repo can name: each
+ * config's default block AND each of its non-production env blocks, all
+ * enumerated from the files rather than listed. Adding `env.staging` put
+ * it under this check with no second step.
+ *
  * Used by:
  *   - tests/unit/deploy-isolation.mjs   (CI enforces the invariant)
  *   - tests/behavioral/_throwaway-target.mjs (preflight before deploying)
+ *   - tests/behavioral/_staging-target.mjs   (preflight, both halves)
  *   - `bun scripts/deploy-isolation.mjs` (CLI)
  */
 
@@ -244,20 +250,44 @@ function stripJsonc(text) {
 }
 
 /**
- * Resolve the bindings a deploy of `envName` actually gets.
- *
- * Every key this module classifies as a binding is *non-inheritable* in
- * wrangler: when an env block is targeted, its own value is used and the
- * top-level value is NOT merged in. That is precisely why
- * apps/hosted-demo/wrangler.jsonc redeclares each of them under
- * env.production, and it is what makes the two blocks independently
- * auditable.
+ * Keys wrangler does NOT inherit into an env block: every binding kind,
+ * plus the two that look like bindings and behave like them. An env block
+ * must redeclare each of these or the deployed Worker simply lacks it.
  * https://developers.cloudflare.com/workers/wrangler/configuration/#non-inheritable-keys
+ *
+ * `worker_loaders` is here on evidence rather than on the docs list:
+ * `wrangler deploy -e production --dry-run` warns that it is not inherited
+ * and asks for it to be redeclared.
  */
-export function resolveEnvironment(config, envName = null) {
+const NON_INHERITABLE_KEYS = new Set([
+  ...SHARED_STATE_KEYS, 'durable_objects', 'vars', 'secrets', 'worker_loaders',
+]);
+
+/**
+ * Resolve what a deploy of `envName` actually gets.
+ *
+ * By default this is the env block alone, which is the right answer for the
+ * isolation check: every key it classifies as a binding is non-inheritable,
+ * so the block names, by itself, every shared resource the deploy can
+ * reach. That is what makes the blocks independently auditable, and why
+ * apps/hosted-demo/wrangler.jsonc redeclares each binding under each env.
+ *
+ * `inherit: true` fills in the keys wrangler DOES carry down — `assets`,
+ * `main`, `placement`, `alias` — which is the right answer for asking what
+ * the deploy can DO. env.production omits `assets` and production serves
+ * them, so reading an env block literally reports capabilities it has.
+ */
+export function resolveEnvironment(config, envName = null, { inherit = false } = {}) {
   const block = envName ? (config.env?.[envName] ?? null) : config;
   if (!block) throw new Error(`no env block "${envName}" in config`);
-  return block;
+  if (!inherit || !envName) return block;
+
+  const merged = { ...block };
+  for (const [key, value] of Object.entries(config)) {
+    if (key === 'env' || key in merged || NON_INHERITABLE_KEYS.has(key)) continue;
+    merged[key] = value;
+  }
+  return merged;
 }
 
 /** The Worker name a deploy of `envName` lands on. */
@@ -339,6 +369,26 @@ export function productionIdentifiers({ root = REPO_ROOT, configs = DEPLOYABLE_C
   return { ids, names };
 }
 
+/**
+ * Every (config, env) pair a deploy can target, except production itself.
+ *
+ * Enumerated from the files rather than kept as a list: an env block nobody
+ * remembered to add to a list is exactly the one that ships bound to a
+ * production resource. Adding `env.staging` therefore puts it under the same
+ * CI check as the default block, with no second step to forget.
+ */
+export function deployableTargets({ root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS } = {}) {
+  const targets = [];
+  for (const relPath of configs) {
+    const config = loadConfig(relPath, root);
+    targets.push({ config: relPath, envName: null });
+    for (const envName of Object.keys(config.env ?? {})) {
+      if (envName !== PRODUCTION_ENV) targets.push({ config: relPath, envName });
+    }
+  }
+  return targets;
+}
+
 export function checkConfig(relPath, {
   root = REPO_ROOT, envName = null, workerName = null, configs = DEPLOYABLE_CONFIGS,
 } = {}) {
@@ -352,7 +402,7 @@ export function checkConfig(relPath, {
 
   if (isProductionDeploy) {
     return {
-      config: relPath, violations, shared: [], missing: [],
+      config: relPath, env: envName, violations, shared: [], missing: [],
       production: prodName, target: targetName,
     };
   }
@@ -382,47 +432,59 @@ export function checkConfig(relPath, {
     );
   }
 
-  const missing = missingCapabilities(resolveEnvironment(config, envName));
-  return { config: relPath, violations, shared, missing, production: prodName, target: targetName };
+  const missing = missingCapabilities(resolveEnvironment(config, envName, { inherit: true }));
+  return {
+    config: relPath, env: envName, violations, shared, missing,
+    production: prodName, target: targetName,
+  };
 }
 
-export function checkAll({ root = REPO_ROOT } = {}) {
-  return DEPLOYABLE_CONFIGS.map((c) => checkConfig(c, { root }));
+export function checkAll({ root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS } = {}) {
+  return deployableTargets({ root, configs })
+    .map(({ config, envName }) => checkConfig(config, { root, envName, configs }));
 }
 
 /**
- * Preflight for a throwaway deploy. Throws before wrangler is invoked.
+ * Preflight for any non-production deploy — a `--name` throwaway, the
+ * persistent staging environment, or a bare default-block deploy. Throws
+ * before wrangler is invoked.
  */
-export function assertThrowawaySafe({
-  configPath, workerName, envName = null, root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS,
+export function assertDeployIsolated({
+  configPath, workerName = null, envName = null, root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS,
 }) {
   const result = checkConfig(configPath, { root, envName, workerName, configs });
   if (result.violations.length > 0) {
     throw new Error(
-      `refusing to deploy throwaway "${workerName}" from ${configPath} — it would ` +
-      `reach production state:\n` +
+      `refusing to deploy "${result.target}" from ${configPath}${envName ? ` (env.${envName})` : ''} ` +
+      `— it would reach production state:\n` +
       result.violations.map((v) => `  - ${v}`).join('\n') +
-      `\n\nA throwaway must not share account-level resources with production. ` +
-      `Move the production identifier under env.${PRODUCTION_ENV} only, or point ` +
-      `the default block at a development resource.`,
+      `\n\nA non-production deploy must not share account-level resources with ` +
+      `production. Move the production identifier under env.${PRODUCTION_ENV} only, ` +
+      `or point this block at its own resource.`,
     );
   }
   return result;
 }
 
+/** How a result names the thing it checked, for logs and CLI output. */
+export function describeTarget(result) {
+  return `${result.config}${result.env ? ` (env.${result.env})` : ''} → ${result.target}`;
+}
+
 if (import.meta.main) {
   let failed = false;
   for (const result of checkAll()) {
+    const where = describeTarget(result);
     if (result.violations.length > 0) {
       failed = true;
-      console.error(`FAIL ${result.config} — default deploy reaches production:`);
+      console.error(`FAIL ${where} — this deploy reaches production:`);
       for (const v of result.violations) console.error(`  - ${v}`);
     } else {
-      console.log(`ok  ${result.config} (production: ${result.production})`);
+      console.log(`ok  ${where} (production: ${result.production})`);
     }
     // Not a failure: a minimal probe may legitimately lack these. Printed so
     // a stripped-down config does not fail cryptically from inside a session.
-    for (const m of result.missing ?? []) console.warn(`warn  ${result.config} — ${m}`);
+    for (const m of result.missing ?? []) console.warn(`warn  ${where} — ${m}`);
   }
   process.exit(failed ? 1 : 0);
 }
