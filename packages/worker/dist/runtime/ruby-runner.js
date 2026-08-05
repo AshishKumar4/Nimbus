@@ -596,7 +596,7 @@ async function spawnRubySocketProcess(facetMgr, args, command) {
 }
 export function buildRubySocketProcessWorker(preamble) {
     return [
-        'import { WorkerEntrypoint } from "cloudflare:workers";',
+        'import { DurableObject } from "cloudflare:workers";',
         "import __NIMBUS_WASM_ruby_stdlib from './ruby+stdlib.wasm';",
         'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
         "globalThis.__NIMBUS_WASM['ruby+stdlib.wasm'] = __NIMBUS_WASM_ruby_stdlib;",
@@ -761,7 +761,7 @@ export function buildRubySocketProcessWorker(preamble) {
         '  await __wasiRevalidateFS();',
         '  return value;',
         '}',
-        'export default class NimbusRubyProcess extends WorkerEntrypoint {',
+        'export class NimbusProcess extends DurableObject {',
         '  async startProcess(args) {',
         '    __nimbusAdoptRubySupervisor(this.env);',
         '    return __nimbusParkRuby(await __nimbusStartRubyProcess(args || {}));',
