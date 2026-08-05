@@ -197,7 +197,6 @@ export interface NimbusCtxExports {
             key: string;
             name: string | null;
             depth: number;
-            code: unknown;
             supervisor: {
                 doId: string;
                 pid: number;
@@ -214,11 +213,11 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
  * request rather than leaving it resident: their module map is assembled in
  * that stateless entrypoint's own isolate, never in a session DO.
  */
-export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, code: unknown, supervisor: {
+export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: {
     doId: string;
     pid: number;
     writerId: string;
-}, name?: string | null, key?: string, stage?: OpencodeStageSpec): Promise<LoadedWorkerEntrypointStub>;
+}, stage: OpencodeStageSpec, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /**
  * Reads the members a boot spec named by path off the session's own disk.
  * Supplied by the session, which owns the filesystem and the credential the

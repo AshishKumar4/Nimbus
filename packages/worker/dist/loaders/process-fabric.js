@@ -177,12 +177,18 @@ export function getNimbusCtxExports() {
  * request rather than leaving it resident: their module map is assembled in
  * that stateless entrypoint's own isolate, never in a session DO.
  */
-export async function createLoadedWorkerEntrypoint(ctxExports, code, supervisor, name = null, key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`, stage) {
+export async function createLoadedWorkerEntrypoint(ctxExports, supervisor, stage, name = null) {
     if (!ctxExports.NimbusLoadedEntrypoint) {
         throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
     }
     return await ctxExports.NimbusLoadedEntrypoint({
-        props: { key, name, depth: 0, code, supervisor, ...(stage ? { stage } : {}) },
+        props: {
+            key: `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
+            name,
+            depth: 0,
+            supervisor,
+            stage,
+        },
     });
 }
 /**
