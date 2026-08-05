@@ -37,10 +37,11 @@ const stub = {
   async _rpcStartProcess(command, options) {
     calls.push(['startProcess', command, options]);
     return {
-      command, exitCode: 0, success: true, stdout: '', stderr: '', duration: 1, timestamp: Date.now(),
+      command,
       pid: 7,
       process: { pid: 7, command, argv: command.split(/\s+/), cwd: options.cwd, state: 'running', exitCode: null, startTime: 1, endTime: null, longRunning: true },
       ports: [{ port: 3000, pid: 7, registeredAt: 1 }],
+      startedAt: 1,
     };
   },
   async _rpcRunCode(code, options) {
@@ -178,6 +179,12 @@ a.check('capabilities report allowed runtimes without generic native overclaim',
     && provider.capabilities.includes('clang_wasi')
     && !provider.capabilities.includes('native_binary'),
   JSON.stringify(provider.capabilities));
+
+const started = await box.startProcess('node server.js');
+a.check('startProcess returns a live handle, not an exec result',
+  started.pid === 7 && started.process.state === 'running'
+  && !('exitCode' in started) && !('stdout' in started),
+  JSON.stringify(started));
 
 const stat = await box.files.stat('/home/user/project/a.txt');
 a.check('files.stat exposes VFS stat', stat?.type === 'file' && stat.size === 4);
