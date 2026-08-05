@@ -418,7 +418,7 @@ function __wasiCanonicalize(p) {
 //
 // A guest is entitled to treat (st_dev, st_ino) as an identity: LLVM's
 // FileManager keys its directory cache on exactly that pair, GNU make and
-// find -samefile compares it, and rsync uses it to detect hardlinks. Emitting
+// find -samefile compare it, and rsync uses it to detect hardlinks. Emitting
 // a constant zero collapses every inode into one — clang then searched a
 // single include directory and reported every system header missing. FNV-1a
 // over the canonical path is stable across calls within a run and across
@@ -1887,7 +1887,10 @@ function __wasiMakeImports(opts) {
         ftype = __WASI_FT_SOCKET_STREAM;
       }
       const t = (timesPath && __wasiFS.times.get(timesPath)) || { mtime: 0n, atime: 0n, ctime: 0n };
-      return writeFilestat(statPtr, timesPath, ftype, size, t);
+      // A path names the inode when there is one. An fd with no path — stdio,
+      // a socket — is still its own object and must not share an inode with
+      // every other one, so it is named by the fd instead.
+      return writeFilestat(statPtr, timesPath === null ? '\0fd/' + fd : timesPath, ftype, size, t);
     },
     fd_filestat_set_size(fd, size) {
       const entry = fdTable.get(fd);

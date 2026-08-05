@@ -11,8 +11,6 @@
  */
 import type { WasiFsSnapshot } from './wasi-instance.js';
 import type { VfsLike } from './vfs-manifest.js';
-export declare function bytesToB64(bytes: Uint8Array): string;
-export declare function b64ToBytes(b64: string): Uint8Array;
 /**
  * Mutations a private-filesystem runtime made, reported once at exit.
  */
@@ -43,6 +41,8 @@ export interface VfsSnapshotResult {
     bytes: number;
     files: number;
 }
+export declare function bytesToB64(bytes: Uint8Array): string;
+export declare function b64ToBytes(b64: string): Uint8Array;
 /**
  * Snapshot a VFS subtree into a JSON-serializable WASI-shaped filesystem.
  *
