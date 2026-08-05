@@ -203,7 +203,9 @@ const box = nimbus.sandbox('session-or-job-id', {
 
 await box.ready();
 await box.exec('node -e "console.log(2 + 2)"');
-await box.startProcess('node --watch /home/user/app/server.js');
+const proc = await box.startProcess('node --watch /home/user/app/server.js');
+// returns immediately with proc.pid; poll box.processes.logs(proc.pid) for
+// output and the exit record, or box.processes.kill(proc.pid) to stop it
 await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
 
 await box.files.write('/home/user/app/a.txt', 'hello');

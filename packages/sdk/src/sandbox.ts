@@ -117,10 +117,18 @@ export interface NimbusDestroyResult {
   reason: string | null;
 }
 
-export interface NimbusStartResult extends NimbusExecResult {
-  pid: number | null;
-  process: NimbusProcess | null;
+/**
+ * A started background process. It is still running when `startProcess`
+ * returns, so there is no exit code or captured output here — poll
+ * `processes.logs(pid)` (which carries the exit record once it lands),
+ * `processes.list()`, or `processes.attach(pid)`.
+ */
+export interface NimbusStartResult {
+  command: string;
+  pid: number;
+  process: NimbusProcess;
   ports: NimbusPort[];
+  startedAt: number;
 }
 
 export interface NimbusProcess {
@@ -323,10 +331,12 @@ const PortSchema = z.object({
   registeredAt: z.number(),
 });
 
-const StartResultSchema = ExecResultSchema.extend({
-  pid: z.number().nullable(),
-  process: ProcessSchema.nullable(),
+const StartResultSchema = z.object({
+  command: z.string(),
+  pid: z.number(),
+  process: ProcessSchema,
   ports: z.array(PortSchema),
+  startedAt: z.number(),
 });
 
 const FileStatSchema = z.object({
@@ -632,6 +642,10 @@ export class NimbusSandbox {
     return this.rpc(this.stub()._rpcExec(command, this.execOptions(options)));
   }
 
+  /**
+   * Start a command in the background. Returns as soon as the process has a
+   * pid — it does not wait for the command to finish.
+   */
   async startProcess(command: string, options: NimbusExecOptions = {}): Promise<NimbusStartResult> {
     await this.ready();
     return this.rpc(this.stub()._rpcStartProcess(command, this.execOptions(options)));

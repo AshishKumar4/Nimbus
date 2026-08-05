@@ -20,6 +20,8 @@ export interface ProcessEntry {
   startTime: number;
   endTime: number | null;
   cred: VfsCred;
+  /** Spawning process, when the spawn declared one. Roots have none. */
+  parentPid?: number;
   /** Explicit long-running flag set when a command is handed to a
    *  long-lived Worker Loader or shell execution path. */
   longRunning?: boolean;
@@ -94,6 +96,7 @@ export class ProcessTable {
       startTime: Date.now(),
       endTime: null,
       cred: immutableCred(options.cred ?? inheritedCred),
+      parentPid: options.parentPid,
     };
     this.processes.set(pid, entry);
     return entry;
@@ -174,6 +177,26 @@ export class ProcessTable {
 
   getAll(): ProcessEntry[] {
     return [...this.processes.values()];
+  }
+
+  /**
+   * Every process spawned under `pid`, transitively, oldest first.
+   *
+   * Output attribution needs this: a command's console output can land in a
+   * child's log ring (an npm bin, a facet-backed runtime) rather than on the
+   * caller's streams, and a start-time window is not a safe substitute when
+   * several commands run concurrently in one session.
+   */
+  descendantsOf(pid: number): ProcessEntry[] {
+    const found: ProcessEntry[] = [];
+    const frontier = new Set<number>([pid]);
+    for (const entry of [...this.processes.values()].sort((a, b) => a.startTime - b.startTime)) {
+      if (entry.parentPid !== undefined && frontier.has(entry.parentPid)) {
+        frontier.add(entry.pid);
+        found.push(entry);
+      }
+    }
+    return found;
   }
 
   /** Clean up exited processes older than maxAge ms. */
