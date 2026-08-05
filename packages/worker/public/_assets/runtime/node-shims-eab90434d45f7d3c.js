@@ -506,20 +506,40 @@ const __fsMod = (() => {
     return err;
   }
 
+  /**
+   * Turn a failed supervisor call into a filesystem error the caller can
+   * branch on. Every exit from here carries a code, a syscall, a path and an
+   * errno, because that is the shape everything written against node:fs
+   * expects — `err.code === 'ENOENT'` is how programs make decisions.
+   *
+   * An error does not cross the RPC boundary intact. Structured clone carries
+   * an Error's name, message and stack and drops every own property, so the
+   * code the authority set is already gone by the time this sees it; the
+   * message is the only thing that survived. Recovering the code from its
+   * `CODE:` prefix is therefore not a fallback beside a better path, it IS
+   * the transport — every authority-side error carries that prefix by
+   * construction (_fsErr here, fsError in the runtime-fs bridge, vfsError in
+   * the VFS all format it). Carrying the fields in the RPC payload instead
+   * would be the real repair; that needs the supervisor surface to return a
+   * failure envelope rather than throw, and is noted for whoever owns it.
+   *
+   * What this does fix: a failure with no errno spelling at all — the object
+   * was reset, the RPC disconnected, a quota was hit — used to be returned
+   * UNCHANGED, carrying no code. A program branching on err.code then matched
+   * no arm at all, so an I/O failure presented as a hang rather than an
+   * error. EIO is the honest answer: the operation failed, and no more
+   * specific reason is known. The authority's own words stay in the message
+   * so classifying the failure does not cost the reason for it.
+   */
   function _mapSupervisorError(error, syscall, p) {
-    if (error && typeof error === "object" && typeof error.code === "string") {
-      if (error.syscall === undefined) error.syscall = syscall;
-      if (error.path === undefined) error.path = String(p);
-      const errno = Number(__constantsMod[error.code]);
-      if (!Number.isInteger(error.errno) && Number.isInteger(errno)) error.errno = -errno;
-      return error;
-    }
     const message = error && typeof error.message === "string" ? error.message : String(error);
-    const match = /^([A-Z][A-Z0-9]+):/.exec(message);
-    if (match && Number.isInteger(Number(__constantsMod[match[1]]))) {
-      return _fsErr(match[1], syscall, p);
-    }
-    return error;
+    const declared = error && typeof error === "object" && typeof error.code === "string"
+      ? error.code
+      : (/^([A-Z][A-Z0-9]+):/.exec(message) || [])[1];
+    const known = declared !== undefined && Number.isInteger(Number(__constantsMod[declared]));
+    const mapped = _fsErr(known ? declared : "EIO", syscall, p);
+    if (!known && message) mapped.message += " — " + message;
+    return mapped;
   }
 
   async function _fsRpc(promise, syscall, p, use) {
@@ -7452,7 +7472,23 @@ globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specif
     return new URL(text, current ? "file:///" + current : "file:///").href;
   }
   const resolved = __resolveFrom(text, fromDir);
-  return resolved ? "file:///" + resolved.replace(/^\/+/, "") : text;
+  // Node throws ERR_MODULE_NOT_FOUND rather than answering with the specifier
+  // it could not resolve, and packages are written against that: the standard
+  // shape is a try/catch that reports something the user can act on. Handing
+  // back the bare specifier passes the "unresolved" case off as a URL, so
+  // fileURLToPath downstream yields a path that was never on disk and the
+  // eventual error names a phantom file instead of the missing package.
+  // typescript@7 does exactly this: with the specifier echoed back it reports
+  // "Executable not found: @typescript/typescript-linux-x64/lib/tsc", where
+  // its own catch would have said the platform package is missing.
+  if (!resolved) {
+    const err = new Error(
+      "Cannot find package '" + text + "' imported from " + (current || fromDir || "<unknown>"),
+    );
+    err.code = "ERR_MODULE_NOT_FOUND";
+    throw err;
+  }
+  return "file:///" + resolved.replace(/^\/+/, "");
 };
 
 /**

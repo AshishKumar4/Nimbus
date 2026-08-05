@@ -46,7 +46,6 @@ const missingRuntimeVfs = {
     files: [
       { path: 'bin/clang' },
       { path: 'bin/wasm-ld' },
-      { path: 'share/clang/memfs.wasm' },
       { path: 'share/clang/sysroot.tar' },
     ],
   };
@@ -57,7 +56,7 @@ const missingRuntimeVfs = {
   const invocation = outputContext(['main.c', '--version']);
   assert.equal(await runClang(invocation.ctx), 127);
   assert.doesNotMatch(invocation.output().stdout, /^Nimbus wasm-clang/);
-  assert.match(invocation.output().stderr, /memfs\.wasm missing/);
+  assert.match(invocation.output().stderr, /sysroot\.tar missing/);
 }
 
 console.log('runtime-leading-flags: ok');

@@ -83,6 +83,13 @@ export interface EsmBundleEntry {
 export interface UserModuleTransformEntry {
   /** VFS path of the source module (e.g. "home/user/projects/src/App.tsx"). */
   vfsPath: string;
+  /**
+   * Mount base the transform was built for ('' for a root-mounted request,
+   * e.g. '/s/otter-4271/preview' for the session preview path). The transform
+   * bakes the base (router basename, BASE_URL, module URLs), so it is part of
+   * the key: the same source served under two mounts has two rows.
+   */
+  base: string;
   /** SHA-256 (base64url) of the source bytes the transform was built from. */
   contentHash: string;
   /** BUNDLER_VERSION the transform output was produced with. */
@@ -167,12 +174,29 @@ export class NpmCache {
       input_hash  TEXT NOT NULL DEFAULT ''
     )`);
 
+    // A transform is keyed by (vfs_path, base): the served output bakes the
+    // mount base, so one source served under two mounts is two rows. The
+    // `base` column is part of the PRIMARY KEY, which SQLite cannot add via
+    // ALTER. This is a regenerable cache, so a table predating the column is
+    // dropped and recreated — the transforms rebuild on first request.
+    let hasBaseColumn = true;
+    try {
+      const cols = [...this.sql.exec(`PRAGMA table_info(user_module_transforms)`)];
+      if (cols.length > 0) {
+        hasBaseColumn = cols.some((r) => String((r as any).name) === 'base');
+      }
+    } catch { hasBaseColumn = true; /* table absent — CREATE below handles it */ }
+    if (!hasBaseColumn) {
+      try { this.sql.exec(`DROP TABLE user_module_transforms`); } catch { /* non-fatal */ }
+    }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS user_module_transforms (
-      vfs_path        TEXT PRIMARY KEY,
+      vfs_path        TEXT NOT NULL,
+      base            TEXT NOT NULL DEFAULT '',
       content_hash    TEXT NOT NULL,
       bundler_version TEXT NOT NULL,
       code            TEXT NOT NULL,
-      built_at        INTEGER NOT NULL DEFAULT 0
+      built_at        INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (vfs_path, base)
     )`);
 
     this.initialized = true;
@@ -448,14 +472,15 @@ export class NpmCache {
    */
   getUserModuleTransform(
     vfsPath: string,
+    base: string,
     contentHash: string,
     bundlerVersion: string,
   ): UserModuleTransformEntry | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT vfs_path, content_hash, bundler_version, code, built_at
-       FROM user_module_transforms WHERE vfs_path = ?`,
-      vfsPath,
+      `SELECT vfs_path, base, content_hash, bundler_version, code, built_at
+       FROM user_module_transforms WHERE vfs_path = ? AND base = ?`,
+      vfsPath, base,
     )];
     if (rows.length === 0) return null;
     const r = rows[0];
@@ -464,6 +489,7 @@ export class NpmCache {
     }
     return {
       vfsPath: String(r.vfs_path),
+      base: String(r.base),
       contentHash: String(r.content_hash),
       bundlerVersion: String(r.bundler_version),
       code: String(r.code),
@@ -471,19 +497,20 @@ export class NpmCache {
     };
   }
 
-  /** Persist a transformed user module (INSERT OR REPLACE on vfs_path). */
+  /** Persist a transformed user module (INSERT OR REPLACE on (vfs_path, base)). */
   putUserModuleTransform(entry: UserModuleTransformEntry): void {
     this.ensureSchema();
     this.sql.exec(
       `INSERT OR REPLACE INTO user_module_transforms
-       (vfs_path, content_hash, bundler_version, code, built_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      entry.vfsPath, entry.contentHash, entry.bundlerVersion,
+       (vfs_path, base, content_hash, bundler_version, code, built_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      entry.vfsPath, entry.base, entry.contentHash, entry.bundlerVersion,
       entry.code, entry.builtAt,
     );
   }
 
-  /** Drop a persisted transform (e.g. when a file is deleted). */
+  /** Drop persisted transforms for a path across every mount base (e.g. when
+   *  a file is deleted). */
   deleteUserModuleTransform(vfsPath: string): void {
     this.ensureSchema();
     this.sql.exec(`DELETE FROM user_module_transforms WHERE vfs_path = ?`, vfsPath);

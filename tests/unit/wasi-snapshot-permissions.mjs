@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
 const ESUCCESS = 0;
 const EACCES = 2;
@@ -39,7 +40,7 @@ function host(snapshot) {
   });
 
   const memory = new WebAssembly.Memory({ initial: 2 });
-  const wasi = preamble.__wasiMakeImports({
+  const wasi = makeImportsWithoutJSPI(preamble, {
     argv: ['probe'],
     env: {},
     getMemory: () => memory,

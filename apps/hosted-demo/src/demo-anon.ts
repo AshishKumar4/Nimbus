@@ -43,6 +43,13 @@ export async function handleAnonSessionCreate(request: Request, env: any): Promi
   if (!limiter) {
     throw new Error('ANON_RATE_LIMITER ratelimit binding is required for anonymous demo sessions');
   }
+  // Checked here rather than where the token is minted, which is after the
+  // capacity-guarded INSERT: a deployment without the secret would otherwise
+  // leave one live `demo_sessions` row per request, and DEMO_ANON_MAX_ACTIVE
+  // slots would drain until their TTL expired.
+  if (typeof env?.JWT_SECRET !== 'string' || env.JWT_SECRET.length === 0) {
+    throw new Error('JWT_SECRET is required for anonymous demo sessions (set via `wrangler secret put JWT_SECRET`)');
+  }
   const { success } = await limiter.limit({ key: request.headers.get('CF-Connecting-IP') ?? 'unknown' });
   if (!success) {
     return anonRejection(429, 'E_ANON_RATE_LIMITED',

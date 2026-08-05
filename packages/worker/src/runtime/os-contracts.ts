@@ -315,7 +315,8 @@ export type RuntimeAbiCapability =
   | 'symlink'
   | 'hardlink'
   | 'poll'
-  | 'outbound-tcp-devtcp';
+  | 'outbound-tcp-devtcp'
+  | 'wasi.threads';
 
 export interface RuntimeAbiDescriptor {
   os: typeof NIMBUS_OS_NAME;
@@ -348,6 +349,8 @@ export const WASM32_WASI_NIMBUS_ABI: RuntimeAbiDescriptor = {
     'hardlink',
     'poll',
     'outbound-tcp-devtcp',
+    // Cooperative, correct, and not parallel — see runtime/wasi-threads.ts.
+    'wasi.threads',
   ]),
 };
 

@@ -28,6 +28,7 @@ export declare const FACET_TIMEOUT_MS = 30000;
 export declare const VFS_BUNDLE_MAX_FILES = 4000;
 export declare const VFS_BUNDLE_MAX_BYTES: number;
 export declare const BUNDLE_MAX_ENCODED_BYTES: number;
+export declare const PREFETCH_CACHE_MAX_BYTES: number;
 export declare const CWD_SNAPSHOT_MAX_FILE_BYTES: number;
 export declare const NPM_REGISTRY = "https://registry.npmjs.org";
 export declare const NPM_CONCURRENCY = 12;

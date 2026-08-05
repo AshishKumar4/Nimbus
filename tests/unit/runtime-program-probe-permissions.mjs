@@ -123,7 +123,10 @@ function runtimeVfs(runtimeFiles, deniedPath) {
     },
   };
   registerShellEntrypointCommands(
-    { register: (name, handler) => commands.set(name, handler) },
+    {
+      has: (name) => commands.has(name),
+      register: (name, handler) => commands.set(name, handler),
+    },
     { async execute() { throw new Error('denied script must not execute'); } },
     vfs,
   );
