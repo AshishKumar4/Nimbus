@@ -387,11 +387,14 @@ touching prod", and visiting a preview URL afterwards does not make it one.
 Isolation is a distinct Worker name: `nimbus-staging`,
 `nimbus-probe-staging`, or a `nimbus-tw-*` throwaway.
 
-Do not reason about preview hostnames from memory either. Every subdomain of
-`nimbus-os.dev` resolves and answers 200, because the zone's `*` route hands
-it all to the production Worker — measured 2026-08-04 with
-`deadbeef.nimbus-os.dev`. Read the versioned preview URL out of what
-`wrangler deploy` prints.
+Versioned preview URLs are not a verification path here, whatever the
+`preview_urls` key suggests. Measured 2026-08-05 on `nimbus-staging` with
+wrangler 4.98.0: neither `wrangler deploy` nor `wrangler versions upload`
+prints one, and `<version-prefix>-<worker>.<subdomain>.workers.dev` 404s for
+version ids that exist. Nor is a hostname ever the isolation: every
+subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
+`*` route hands them all to the production Worker (measured 2026-08-04,
+`deadbeef.nimbus-os.dev`).
 
 ## Gotchas
 
