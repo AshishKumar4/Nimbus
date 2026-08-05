@@ -160,7 +160,9 @@ Nimbus is not yet a complete OS replacement:
 - No general Python extension build pipeline inside Nimbus.
 - No complete Bundler-compatible resolver.
 - No native Ruby extension build pipeline inside Nimbus.
-- No general pthread or `wasi-threads` support.
+- pthread / `wasi-threads` support is cooperative: correct mutual exclusion,
+  condition variables, join and TLS, but no parallelism and no preemption of a
+  thread that never blocks.
 - No raw inbound TCP listener. HTTP preview ports are supported; raw local TCP
   servers need Nimbus virtual sockets or a runtime adapter.
 
@@ -910,16 +912,17 @@ Target:
 
 Non-goal:
 
-- Linux process model, fork, ptrace, arbitrary device IO, or pthreads unless
-  the platform exposes correct shared-memory support.
+- Linux process model, fork, ptrace, arbitrary device IO, or PARALLEL
+  pthreads. Threads are correct and serial; a shared-CPU substrate is what the
+  platform does not have.
 
 Correct engineering path:
 
 1. Keep expanding WASI hostcalls by behavior, not by name count.
 2. Move WASI file operations from snapshot-only to the live FS bridge where
    JSPI/Suspending and host constraints allow it.
-3. Keep `wasi-threads` unsupported until shared linear memory across required
-   runtime boundaries is actually available.
+3. Extend `wasi-threads` from correct-and-serial toward preemption, via
+   back-edge yield fuel in the module build.
 4. Publish a `wasm32-wasi-nimbus` ABI label for packages and compiled tools.
 
 ### Node And Agentic CLIs

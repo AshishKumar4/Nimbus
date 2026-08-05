@@ -55,6 +55,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import type { WasiAbi } from './wasi-instance.js';
+import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { manifestVfs } from './vfs-manifest.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 
@@ -66,6 +67,7 @@ declare const __wasiMakeImports: (opts: {
   argv?: string[];
   env?: Record<string, string>;
   abi?: WasiAbi;
+  threads?: boolean;
   getMemory: () => WebAssembly.Memory | null;
   stdoutWrite?: (s: string) => void;
   stderrWrite?: (s: string) => void;
@@ -74,6 +76,22 @@ declare const __wasiMakeImports: (opts: {
   getStdout: () => string;
   getStderr: () => string;
 };
+/** The green-thread scheduler — see runtime/wasi-threads.ts. */
+interface WasiThreadScheduler {
+  hostImports: () => Record<string, WebAssembly.ModuleImports>;
+}
+declare const __wasiThreadsCreate: (opts: {
+  memory: WebAssembly.Memory;
+  startThread: (tid: number, startArg: number) => () => Promise<unknown>;
+}) => WasiThreadScheduler;
+declare const __wasiThreadsStarter: (
+  module: WebAssembly.Module,
+  importObject: Record<string, WebAssembly.ModuleImports>,
+) => (tid: number, startArg: number) => () => Promise<unknown>;
+declare const __wasiRunStartThreads: (
+  instance: WebAssembly.Instance,
+  sched: WasiThreadScheduler,
+) => Promise<{ exitCode: number; error?: string }>;
 declare const __wasiRunStart: (
   instance: WebAssembly.Instance,
   ctx: { memory: WebAssembly.Memory },
@@ -135,6 +153,10 @@ export const WASM_RUNNER_HELP =
   '  - filesystem access is rooted at the current Nimbus VFS subtree and\n' +
   '    flushed back after process exit.\n' +
   '  - fd 0 (stdin) returns EOF immediately.\n' +
+  '  - pthreads / wasi-threads run CORRECTLY but never in parallel: one core,\n' +
+  '    one thread at a time. Build with --target=wasm32-wasip1-threads -pthread\n' +
+  '    -Wl,--import-memory,--shared-memory,--max-memory=<bytes> and link\n' +
+  '    runtime-contracts/nimbus-threads.c; other threads builds are rejected.\n' +
   '  - Transport: bytes ship via the LOADER modules map, NOT\n' +
   '    WebAssembly.instantiate(bytes) at request time (CSP-blocked).';
 
@@ -240,6 +262,25 @@ export function makeWasmRunner(deps: {
     const wasiAbi = detectWasiAbi(bytes);
     const isWasi = wasiAbi !== null;
 
+    // Threads are decided here, from the binary, so an unsupported build is
+    // rejected before a facet is ever spawned and the diagnosis names the
+    // build line rather than a trap deep inside libc.
+    const threadsInfo = inspectWasmThreads(bytes);
+    const threadsError = wasiThreadsLoadError(threadsInfo);
+    if (threadsError) {
+      return { exitCode: 1, stdout: '', stderr: `wasm-runner: ${threadsError}\n` };
+    }
+    const threads = threadsInfo.spawns && threadsInfo.memory
+      ? {
+          memory: {
+            module: threadsInfo.memory.module,
+            name: threadsInfo.memory.name,
+            initial: threadsInfo.memory.initial,
+            maximum: threadsInfo.memory.maximum as number,
+          },
+        }
+      : undefined;
+
     let exportName: string | undefined;
     let parsedArgs: number[] = [];
     let wasiArgv: string[] = [];
@@ -298,6 +339,10 @@ export function makeWasmRunner(deps: {
     // could have run is a worse outcome than the OOM this prevents, and the
     // supervisor cannot report a compile failure as usefully as the guest can
     // report its own allocation failure.
+    //
+    // A wasi-threads build is untouched: it imports its shared memory and
+    // names the ceiling on its own build line (`--max-memory`), so there is no
+    // memory section to rewrite and no unbounded growth to prevent.
     let limited = bytes;
     try {
       limited = withMemoryLimit(bytes, DEFAULT_WASM_PROCESS_LIMIT_BYTES);
@@ -361,6 +406,15 @@ export function makeWasmRunner(deps: {
          * for a defect in the host. Values the facet needs travel as arguments.
          */
         wasiNamespace?: string;
+        /**
+         * Present only for a wasi-threads build. Carries the imported memory's
+         * declared limits, which the host must reproduce exactly — read from
+         * the binary supervisor-side because the JS API exposes an import's
+         * name but not its type.
+         */
+        threads?: {
+          memory: { module: string; name: string; initial: number; maximum: number };
+        };
         wasiFs?: {
           root: string;
           preopens: Array<{ wasiPath: string; vfsPath: string }>;
@@ -444,20 +498,62 @@ export function makeWasmRunner(deps: {
           argv: args.wasiArgv || [],
           env: args.wasiEnv || {},
           abi,
+          threads: !!args.threads,
           getMemory: () => memRef.mem,
         });
+        // Bind ONLY the namespace this module actually imports, with the
+        // import table built for that ABI. Aliasing one preview1 table onto
+        // both names — which this did until the encodings were checked
+        // against the binaries — gives a preview0 guest inverted fd_seek
+        // whence and a 64-byte filestat it decodes as 56, so every lseek
+        // lands wrong and every st_size reads back as the nlink field. The
+        // signatures are identical, so nothing traps and nothing is logged.
+        const importObject: Record<string, WebAssembly.ModuleImports> = {
+          [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
+        };
+        // A threads build imports its memory instead of defining one, because
+        // every thread is another instance and they must all address the same
+        // bytes. The host creates it — shared, at the module's declared limits
+        // — and the scheduler, the syscall layer and each thread instance all
+        // read through this one object.
+        let sched: WasiThreadScheduler | null = null;
+        if (args.threads) {
+          let shared: WebAssembly.Memory;
+          try {
+            shared = new WebAssembly.Memory({
+              initial: args.threads.memory.initial,
+              maximum: args.threads.memory.maximum,
+              shared: true,
+            });
+          } catch (e: any) {
+            // A shared memory reserves its MAXIMUM up front, so an over-large
+            // --max-memory fails here rather than when the program grows into
+            // it. Say which number did it; the alternative message is a bare
+            // RangeError with no link to the build line that chose it.
+            return {
+              ok: false,
+              mode: 'wasi',
+              error:
+                `wasi-threads: could not reserve the shared memory this module declares `
+                + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
+                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${e?.message || e}. `
+                + 'A shared memory reserves its maximum immediately — lower --max-memory.',
+            };
+          }
+          memRef.mem = shared;
+          importObject[args.threads.memory.module] = {
+            ...(importObject[args.threads.memory.module] || {}),
+            [args.threads.memory.name]: shared,
+          };
+          sched = __wasiThreadsCreate({
+            memory: shared,
+            startThread: __wasiThreadsStarter(mod as WebAssembly.Module, importObject),
+          });
+          Object.assign(importObject, sched.hostImports());
+        }
         let inst: WebAssembly.Instance;
         try {
-          // Bind ONLY the namespace this module actually imports, with the
-          // import table built for that ABI. Aliasing one preview1 table onto
-          // both names — which this did until the encodings were checked
-          // against the binaries — gives a preview0 guest inverted fd_seek
-          // whence and a 64-byte filestat it decodes as 56, so every lseek
-          // lands wrong and every st_size reads back as the nlink field. The
-          // signatures are identical, so nothing traps and nothing is logged.
-          const result: any = await WebAssembly.instantiate(mod as any, {
-            [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
-          });
+          const result: any = await WebAssembly.instantiate(mod as any, importObject);
           inst = (result instanceof WebAssembly.Instance ? result : result.instance);
         } catch (e: any) {
           return {
@@ -466,7 +562,7 @@ export function makeWasmRunner(deps: {
             error: `instantiate failed: ${e?.message || e}`,
           };
         }
-        memRef.mem = (inst.exports as any).memory as WebAssembly.Memory;
+        if (!memRef.mem) memRef.mem = (inst.exports as any).memory as WebAssembly.Memory;
         if (!memRef.mem) {
           return {
             ok: false,
@@ -481,9 +577,11 @@ export function makeWasmRunner(deps: {
         // non-suspending programs too. Legacy preambles (pre-WASI socket and polling support)
         // that ship without __wasiRunStartAsync still work via the
         // sync runStart path.
-        const r = runStartAsync
-          ? await runStartAsync(inst, { memory: memRef.mem })
-          : runStart(inst, { memory: memRef.mem });
+        const r = sched
+          ? await __wasiRunStartThreads(inst, sched)
+          : runStartAsync
+            ? await runStartAsync(inst, { memory: memRef.mem })
+            : runStart(inst, { memory: memRef.mem });
         // Writes reached the session VFS as they happened; this waits for the
         // queue so the caller cannot observe a result before the data lands.
         await __wasiDrainPersist();
@@ -635,6 +733,7 @@ export function makeWasmRunner(deps: {
             wasiEnv,
             wasiAbi: wasiAbi ?? undefined,
             wasiNamespace: WASI_ABI_NAMESPACE[wasiAbi ?? 'preview1'],
+            threads,
             wasiFs,
           }
         : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };

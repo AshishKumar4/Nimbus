@@ -56,6 +56,13 @@ export interface EsmBundleEntry {
 export interface UserModuleTransformEntry {
     /** VFS path of the source module (e.g. "home/user/projects/src/App.tsx"). */
     vfsPath: string;
+    /**
+     * Mount base the transform was built for ('' for a root-mounted request,
+     * e.g. '/s/otter-4271/preview' for the session preview path). The transform
+     * bakes the base (router basename, BASE_URL, module URLs), so it is part of
+     * the key: the same source served under two mounts has two rows.
+     */
+    base: string;
     /** SHA-256 (base64url) of the source bytes the transform was built from. */
     contentHash: string;
     /** BUNDLER_VERSION the transform output was produced with. */
@@ -137,10 +144,11 @@ export declare class NpmCache {
      * VFS event the dev server missed still invalidates here, because the
      * content hash no longer matches.
      */
-    getUserModuleTransform(vfsPath: string, contentHash: string, bundlerVersion: string): UserModuleTransformEntry | null;
-    /** Persist a transformed user module (INSERT OR REPLACE on vfs_path). */
+    getUserModuleTransform(vfsPath: string, base: string, contentHash: string, bundlerVersion: string): UserModuleTransformEntry | null;
+    /** Persist a transformed user module (INSERT OR REPLACE on (vfs_path, base)). */
     putUserModuleTransform(entry: UserModuleTransformEntry): void;
-    /** Drop a persisted transform (e.g. when a file is deleted). */
+    /** Drop persisted transforms for a path across every mount base (e.g. when
+     *  a file is deleted). */
     deleteUserModuleTransform(vfsPath: string): void;
     getStats(): {
         registryEntries: number;

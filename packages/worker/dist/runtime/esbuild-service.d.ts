@@ -43,8 +43,13 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
  *        pkg_esm_bundles.input_hash. Prevents reusing a lucide-react
  *        bundle synthesized for one icon set after user source imports
  *        additional icons.
+ *   v8 — pkg_esm_bundles now stores RAW esbuild output (base-independent);
+ *        the module-URL rewrite that used to be baked in is applied per
+ *        request at serve time so one bundle serves every mount base. v7
+ *        rows hold post-rewrite text and must be re-bundled. user_module_
+ *        transforms is likewise re-keyed by mount base.
  */
-export declare const BUNDLER_VERSION = "v7";
+export declare const BUNDLER_VERSION = "v8";
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
  * `specifier` so that React / React-DOM / Scheduler share a single instance
