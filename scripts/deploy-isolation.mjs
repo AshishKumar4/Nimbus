@@ -39,7 +39,7 @@
  *   - `bun scripts/deploy-isolation.mjs` (CLI)
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,6 +50,32 @@ export const DEPLOYABLE_CONFIGS = [
   'apps/hosted-demo/wrangler.jsonc',
   'apps/probe/wrangler.jsonc',
 ];
+
+/** Directories a Worker config can live in. */
+const APP_DIRS = 'apps';
+
+/**
+ * Every wrangler config on disk, whether or not anything claims it.
+ *
+ * The list above is what the invariant is checked against; this is what
+ * exists. A config missing from the list is not audited by anything, and
+ * `apps/hosted-demo/wrangler.iso.json` sat there for two days that way —
+ * a second Worker with its own D1, committed as a drive-by in an unrelated
+ * merge, invisible to this module. Comparing the two is how that stays a
+ * one-time event rather than a recurring one.
+ */
+export function discoverConfigs({ root = REPO_ROOT } = {}) {
+  const found = [];
+  for (const app of readdirSync(join(root, APP_DIRS), { withFileTypes: true })) {
+    if (!app.isDirectory()) continue;
+    for (const entry of readdirSync(join(root, APP_DIRS, app.name), { withFileTypes: true })) {
+      if (entry.isFile() && /^wrangler(\..+)?\.(jsonc?|toml)$/.test(entry.name)) {
+        found.push(`${APP_DIRS}/${app.name}/${entry.name}`);
+      }
+    }
+  }
+  return found.sort();
+}
 
 /** The environment whose bindings define "production". */
 export const PRODUCTION_ENV = 'production';

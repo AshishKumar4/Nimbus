@@ -22,6 +22,7 @@ import {
   checkAll,
   checkConfig,
   deployableTargets,
+  discoverConfigs,
   loadConfig,
   missingCapabilities,
   resolveWorkerName,
@@ -281,6 +282,21 @@ const PROD_D1 = {
   assert.deepEqual(result.violations, [], 'a minimal probe is isolated, not rejected');
   assert.equal(result.missing.length, 2, 'but its missing capabilities are still reported');
   console.log('  [10] load-bearing bindings warn when absent without failing the check');
+}
+
+// [11] Every wrangler config on disk is one this module audits. The checks
+// above are only as wide as DEPLOYABLE_CONFIGS, and that list is hand-kept:
+// `apps/hosted-demo/wrangler.iso.json` — Worker `nimbus-pigate-iso`, its own
+// D1 — rode in on an unrelated merge and nothing ever looked at it. A config
+// the repo can deploy from but nothing audits is the entire hazard, so
+// discovering them and comparing is what keeps the list honest.
+{
+  assert.deepEqual(
+    discoverConfigs(), [...DEPLOYABLE_CONFIGS].sort(),
+    'every wrangler config under apps/ must be classified in DEPLOYABLE_CONFIGS — '
+    + 'add it there so it is audited, or delete it',
+  );
+  console.log('  [11] no wrangler config escapes the audit list');
 }
 
 console.log('deploy-isolation: all tests passed');
