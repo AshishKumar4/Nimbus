@@ -1,3 +1,4 @@
+import { effectiveMode, hasErrorCode } from './vfs-manifest.js';
 export function bytesToB64(bytes) {
     let s = '';
     for (let i = 0; i < bytes.length; i++)
@@ -10,18 +11,6 @@ export function b64ToBytes(b64) {
     for (let i = 0; i < bin.length; i++)
         out[i] = bin.charCodeAt(i);
     return out;
-}
-function effectiveMode(mode, uid, gid, cred) {
-    if (cred.uid === 0)
-        return 0o6 | ((mode & 0o111) !== 0 ? 0o1 : 0);
-    if (cred.uid === uid)
-        return (mode >> 6) & 0o7;
-    if (cred.gid === gid || cred.groups.includes(gid))
-        return (mode >> 3) & 0o7;
-    return mode & 0o7;
-}
-function hasErrorCode(error, code) {
-    return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 /**
  * Snapshot a VFS subtree into a JSON-serializable WASI-shaped filesystem.
@@ -169,8 +158,6 @@ export function flushVfsDiff(vfs, diff) {
     let deleted = 0;
     let mkdirs = 0;
     let rmdirs = 0;
-    let timesTouched = 0;
-    let symlinks = 0;
     let chmods = 0;
     for (const path of diff.dirsCreated) {
         try {
@@ -214,11 +201,5 @@ export function flushVfsDiff(vfs, diff) {
         }
         catch { }
     }
-    if (diff.timesChanged)
-        timesTouched = Object.keys(diff.timesChanged).length;
-    if (diff.symlinksCreated)
-        symlinks = Object.keys(diff.symlinksCreated).length;
-    if (diff.symlinksDeleted)
-        symlinks += diff.symlinksDeleted.length;
-    return { written, deleted, mkdirs, rmdirs, timesTouched, symlinks, chmods };
+    return { written, deleted, mkdirs, rmdirs, chmods };
 }

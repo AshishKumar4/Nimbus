@@ -1,8 +1,9 @@
 ---
 /**
- * PeerFacet — where a facet runs versus where its syscalls land. A peer DO
- * lends a loader and a memory budget; the SUPERVISOR binding it mints carries
- * the coordinator's doId, so the disk, terminal, and port registry never move.
+ * ProcessFacet — where a process runs versus where its syscalls land. A facet
+ * is a named child actor of the session with a memory envelope of its own; the
+ * SUPERVISOR binding it receives carries the session's doId, so the disk,
+ * terminal, and port registry never move.
  */
 import Diagram from './Diagram.astro';
 interface Props {
@@ -12,7 +13,7 @@ const { caption } = Astro.props;
 ---
 
 <Diagram
-	label="A facet hosted on a peer Durable Object routes its filesystem, terminal, and port calls back to the coordinator session DO, which holds the disk, terminal, and port registry"
+	label="A process facet routes its filesystem, terminal, and port calls back to the session Durable Object, which holds the disk, terminal, and port registry"
 	caption={caption}
 >
 	<svg viewBox="0 0 940 330" xmlns="http://www.w3.org/2000/svg">
@@ -26,7 +27,7 @@ const { caption } = Astro.props;
 		</defs>
 
 		<rect class="dgzone" x="14" y="18" width="380" height="300" rx="12" />
-		<text class="dgtag" x="34" y="42">coordinator do</text>
+		<text class="dgtag" x="34" y="42">session do</text>
 
 		<rect class="dghero" x="34" y="54" width="340" height="98" rx="10" />
 		<text class="dgt" x="50" y="82">session DO</text>
@@ -36,27 +37,27 @@ const { caption } = Astro.props;
 		<line class="dgedge" x1="204" y1="152" x2="204" y2="196" marker-end="url(#pf-arr)" marker-start="url(#pf-arr)" />
 
 		<rect class="dgnode" x="34" y="196" width="340" height="114" rx="9" />
-		<text class="dgt" x="50" y="224">local facet</text>
-		<text class="dgs" x="50" y="246">minted by this DO's env.LOADER</text>
-		<text class="dgs" x="50" y="268">shares its workerd memory envelope</text>
-		<text class="dgnote" x="50" y="292">everything that binds a port runs here</text>
+		<text class="dgt" x="50" y="224">one-shot facet</text>
+		<text class="dgs" x="50" y="246">minted by env.LOADER, run, dropped</text>
+		<text class="dgs" x="50" y="268">a single command, a single request</text>
+		<text class="dgnote" x="50" y="292">node script.js · clang · esbuild</text>
 
 		<rect class="dgzone" x="560" y="178" width="366" height="140" rx="12" />
-		<text class="dgtag" x="580" y="202">peer do</text>
-		<text class="dgs" x="636" y="202">&lt;coordinator&gt;:proc:0</text>
+		<text class="dgtag" x="580" y="202">child actor</text>
+		<text class="dgs" x="648" y="202">ctx.facets.get('proc-&lt;pid&gt;')</text>
 
 		<rect class="dgnode2" x="580" y="214" width="326" height="96" rx="9" />
-		<text class="dgt" x="596" y="240">heavy facet</text>
-		<text class="dgs" x="596" y="260">minted by the peer's env.LOADER</text>
-		<text class="dgs" x="596" y="280">independent memory budget</text>
-		<text class="dgnote" x="596" y="300">today: the opencode attach TUI</text>
+		<text class="dgt" x="596" y="240">process facet</text>
+		<text class="dgs" x="596" y="260">its own ~208 MiB envelope</text>
+		<text class="dgs" x="596" y="280">addressed by name, so it serves ports</text>
+		<text class="dgnote" x="596" y="300">node servers · python · ruby · opencode</text>
 
 		<path class="dgedge-accent" d="M 574,244 C 486,244 470,150 382,128" marker-end="url(#pf-arr-accent)" />
 
 		<text class="dgtag" x="560" y="42">what crosses back</text>
-		<text class="dgs dgaccent" x="560" y="70">SUPERVISOR binding · props.doId = coordinator</text>
+		<text class="dgs dgaccent" x="560" y="70">SUPERVISOR binding · props.doId = session</text>
 		<text class="dgs" x="560" y="94">readFile · writeFile · registerPort</text>
 		<text class="dgs" x="560" y="114">stdout · stderr frames · stdin pump</text>
-		<text class="dgnote" x="560" y="140">the peer lends a loader and a budget, nothing else</text>
+		<text class="dgnote" x="560" y="140">compute and memory move; the disk never does</text>
 	</svg>
 </Diagram>
