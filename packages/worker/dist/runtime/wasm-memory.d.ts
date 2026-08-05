@@ -1,6 +1,5 @@
 /**
- * wasm-memory.ts — linear-memory accounting and allocation control for wasm
- * processes.
+ * wasm-memory.ts — declared allocation limits for wasm processes.
  *
  * What the host can and cannot control
  * ────────────────────────────────────
@@ -24,8 +23,9 @@
  *
  * Scope, stated honestly: this governs the ceiling, not the allocation rate.
  * A guest that stays under the cap is unobserved, and there is no way to
- * observe it — see the module comment in `wasm-process-image.ts` for why
- * page-level demand paging is unreachable for natively-compiled wasm.
+ * observe it — a compiled wasm load or store is a raw machine access with no
+ * host hook, so page-level accounting is unreachable for a natively-compiled
+ * module.
  */
 /** wasm page size. Fixed by the specification. */
 export declare const WASM_PAGE_BYTES = 65536;
@@ -56,14 +56,6 @@ export interface WasmMemoryLimits {
     /** Raw limits flags. Bit 0 = has-maximum, bit 1 = shared, bit 2 = memory64. */
     readonly flags: number;
 }
-/** Thrown when a guest allocation cannot be satisfied within its cap. */
-export declare class WasmOutOfMemoryError extends Error {
-    readonly requestedBytes: number;
-    readonly limitBytes: number;
-    readonly currentBytes: number;
-    readonly code = "ENOMEM";
-    constructor(requestedBytes: number, limitBytes: number, currentBytes: number);
-}
 /**
  * Read the module's linear-memory declaration.
  *
@@ -89,40 +81,4 @@ export declare function readMemoryLimits(bytes: Uint8Array): (WasmMemoryLimits &
  * failure than the one we are preventing.
  */
 export declare function withMemoryLimit(bytes: Uint8Array, limitBytes: number): Uint8Array;
-/** Exact, cheap linear-memory accounting for one wasm process. */
-export interface LinearMemoryUsage {
-    readonly bytes: number;
-    readonly pages: number;
-    /** Declared ceiling in bytes, or `null` when the module declares none. */
-    readonly limitBytes: number | null;
-}
-/**
- * Exact committed linear-memory size. Unlike `estimateSupervisorHeap`, this is
- * not an estimate and has no blind spots: `buffer.byteLength` IS the committed
- * size of the process's address space, straight from the engine.
- */
-export declare function accountLinearMemory(memory: WebAssembly.Memory, limits?: WasmMemoryLimits | null): LinearMemoryUsage;
-/**
- * Bytes the process has actually written, measured by skipping all-zero pages.
- *
- * This is an O(size) scan of the whole address space — call it when sizing a
- * swap image or answering a diagnostic, never in a loop. Fresh wasm pages are
- * zero-filled by the specification, so an untouched page is indistinguishable
- * from one deliberately zeroed; this therefore reports an upper bound on
- * untouched memory and, equivalently, a lower bound on live data. That is the
- * honest direction: it never claims a page is cold when the guest is using it.
- */
-export declare function measureResidentBytes(memory: WebAssembly.Memory): number;
-/**
- * Grow `memory` by `deltaPages`, refusing to cross `limitBytes`.
- *
- * This governs HOST-initiated growth only — the arena reservations bash makes
- * before starting a process, opentui's buffer sizing, and similar. A guest
- * calling `memory.grow` from inside wasm bypasses this entirely; that path is
- * governed by the declared maximum `withMemoryLimit` installs, which is the
- * only mechanism that reaches it.
- *
- * Returns the previous size in pages, matching `WebAssembly.Memory.prototype.grow`.
- */
-export declare function growWithinLimit(memory: WebAssembly.Memory, deltaPages: number, limitBytes: number): number;
 //# sourceMappingURL=wasm-memory.d.ts.map
