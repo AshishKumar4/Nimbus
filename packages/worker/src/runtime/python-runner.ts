@@ -35,7 +35,8 @@ import {
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import type { WasiFsDiff, WasiFsSnapshot } from './wasi-instance.js';
+import type { WasiFsSnapshot } from './wasi-instance.js';
+import type { WasiFsDiff } from './vfs-snapshot.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '../_shared/esbuild-facet-shim.js';
