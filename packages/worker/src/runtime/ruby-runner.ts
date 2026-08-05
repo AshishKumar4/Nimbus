@@ -930,7 +930,11 @@ async function dispatchRubyFacet(
       ((s: unknown) => void) | undefined;
     const drain = Reflect.get(globalThis, '__wasiDrainPersist') as
       (() => Promise<void>) | undefined;
-    adopt?.(facetEnv && facetEnv.SUPERVISOR);
+    const supervisor = facetEnv && facetEnv.SUPERVISOR;
+    // Published where __rubyRun re-adopts it after the mount; adopting only
+    // here would be undone by __wasiInitFS.
+    if (supervisor) Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
+    adopt?.(supervisor);
     try {
       return await fn({
         userCode: inArgs.userCode,
@@ -1441,6 +1445,13 @@ globalThis.__rubyRun = async function __rubyRun(args) {
 
   try {
     __nimbusInstallRubyFsSnapshot(args.fsSnapshot);
+    // AFTER the mount, never before. __wasiInitFS deliberately drops the
+    // supervisor so a pooled isolate cannot serve the previous tenant's
+    // filesystem, which means adopting first — as both ruby entry points do,
+    // since they must adopt before they know whether a mount is coming —
+    // leaves the seed with no backing store for the whole script load.
+    // Every require then read a manifest entry with nothing behind it.
+    __wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor);
   } catch (e) {
     globalThis.__nimbusRubyStderr.push('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');
   }
