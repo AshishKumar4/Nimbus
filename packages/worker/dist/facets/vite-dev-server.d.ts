@@ -192,7 +192,25 @@ export declare class ViteDevServer {
     /** Detect TailwindCSS usage in the project */
     private detectTailwind;
     /**
-     * Rewrite absolute paths in HTML so they resolve under the basePath.
+     * Normalise a per-request mount base to the canonical form used for URL
+     * rewriting and cache keys: '' for a root-mounted request (the served app
+     * lives at the origin root, as on a `<port>--<sid>` host), otherwise the
+     * prefix with any trailing slash stripped (e.g. '/s/otter-4271/preview').
+     */
+    private normBase;
+    /** import.meta.env.BASE_URL for a mount base — always a trailing-slash URL. */
+    private baseUrlValue;
+    /** esbuild define set for a request served under `base`. */
+    private defineFor;
+    /**
+     * Module-cache key for `key` under mount base `base`. The transformed text
+     * embeds the base (module URLs, <base href>, BASE_URL, router basename), so
+     * a module built for one base must never be served for another. NUL is used
+     * as the separator because it cannot occur in a base or a VFS path.
+     */
+    private ck;
+    /**
+     * Rewrite absolute paths in HTML so they resolve under `base`.
      */
     private rewriteHtmlPaths;
     /** Start the dev server (subscribe to VFS events for HMR). */
@@ -243,7 +261,7 @@ export declare class ViteDevServer {
      * reached subscribers and the user saw a frozen tab. Markflow
      * regression on prod 0a488bab.
      */
-    handleRequest(request: Request, pathname: string): Promise<Response>;
+    handleRequest(request: Request, pathname: string, mountBase?: string): Promise<Response>;
     private _handleRequestInner;
     private serveIndexHtml;
     private getBarrelModuleCacheInfo;

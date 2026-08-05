@@ -21,6 +21,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
 // ── WASI errno / flag constants (preview1) ───────────────────────────────────
 const ESUCCESS = 0, EBADF = 8, EISDIR = 31, ELOOP = 32;
@@ -64,7 +65,7 @@ function host(fs) {
     symlinks: fs.symlinks || {},
   });
   const mem = new WebAssembly.Memory({ initial: 8 });
-  const wasi = P.__wasiMakeImports({ argv: ['prog'], env: {}, getMemory: () => mem });
+  const wasi = makeImportsWithoutJSPI(P, { argv: ['prog'], env: {}, getMemory: () => mem });
   const u8 = () => new Uint8Array(mem.buffer);
   const dv = () => new DataView(mem.buffer);
   // Bump allocator over the raw linear memory (well past page 0).

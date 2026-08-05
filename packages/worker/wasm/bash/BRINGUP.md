@@ -87,3 +87,17 @@ export BASH_SRC=/path/to/bash-5.2.37     # from ftp.gnu.org/gnu/bash
 ```
 `cross.cache` + `nimbus-proc.h` + `nimbus-proc.c` are the Nimbus-specific inputs;
 everything else is stock bash + wasi-sdk.
+
+## Pending rebuild: the Asyncify allowlist gained `poll_oneoff`
+
+`build-bash.sh` now instruments `wasi_snapshot_preview1.poll_oneoff` alongside
+`fd_read`/`fd_write`. It was missing while `bash-runner.ts` already armed an
+unwind from inside `poll_oneoff` — the park taken when nothing is ready and a
+blockable fd-read subscription is pending — so that unwind ran through frames
+`--asyncify` had never instrumented and whose locals were therefore never
+spilled to `MAIN_BUF`. It is latent rather than constant only because
+`poll_oneoff` normally finds an event ready and returns through its fast path.
+
+The committed `bash.async.wasm` predates the fix and still carries the old
+instrumentation set. Rebuilding needs wasi-sdk-25 + binaryen (see Reproduce
+above); until then the park path in `poll_oneoff` remains as it has been.

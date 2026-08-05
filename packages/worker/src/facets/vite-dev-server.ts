@@ -1351,19 +1351,16 @@ export class ViteDevServer {
     // process.env.NODE_ENV is set explicitly so bundled CJS packages (like React's
     // `if (process.env.NODE_ENV !== "production")` guards) get the correct branch.
     // Without this, many packages emit warnings or fail when evaluated in the browser.
-    // BASE_URL reflects the actual URL prefix we're mounted at. With
-    // per-session routing this becomes e.g. `/s/nimble-otter-4271/preview/`,
-    // which user code that does `new URL(path, import.meta.env.BASE_URL)`
-    // or `<img src={import.meta.env.BASE_URL + 'logo.png'}>` needs to work.
-    const baseUrlValue = JSON.stringify(
-      (this.basePath === '' || this.basePath === '/') ? '/' : this.basePath + '/'
-    );
+    // BASE_URL is per-request, not baked here: the same server answers under
+    // different mount prefixes depending on the door a request came through
+    // (the `/s/<sid>/preview/` path vs the root of a `<port>--<sid>` host).
+    // It is folded into the define set per request via `defineFor(base)`; the
+    // rest of the defines are base-independent and computed once.
     this.define = {
       'import.meta.env.DEV': 'true',
       'import.meta.env.PROD': 'false',
       'import.meta.env.MODE': '"development"',
       'import.meta.env.SSR': 'false',
-      'import.meta.env.BASE_URL': baseUrlValue,
       'process.env.NODE_ENV': '"development"',
       'global': 'globalThis',
       ...(opts.define || {}),
@@ -1449,12 +1446,42 @@ export class ViteDevServer {
   }
 
   /**
-   * Rewrite absolute paths in HTML so they resolve under the basePath.
+   * Normalise a per-request mount base to the canonical form used for URL
+   * rewriting and cache keys: '' for a root-mounted request (the served app
+   * lives at the origin root, as on a `<port>--<sid>` host), otherwise the
+   * prefix with any trailing slash stripped (e.g. '/s/otter-4271/preview').
    */
-  private rewriteHtmlPaths(html: string): string {
-    if (!this.basePath || this.basePath === '/') return html;
+  private normBase(base: string | undefined): string {
+    if (!base || base === '/') return '';
+    return base.replace(/\/+$/, '');
+  }
 
-    const base = this.basePath;
+  /** import.meta.env.BASE_URL for a mount base — always a trailing-slash URL. */
+  private baseUrlValue(base: string): string {
+    return JSON.stringify(base === '' ? '/' : base + '/');
+  }
+
+  /** esbuild define set for a request served under `base`. */
+  private defineFor(base: string): Record<string, string> {
+    return { ...this.define, 'import.meta.env.BASE_URL': this.baseUrlValue(base) };
+  }
+
+  /**
+   * Module-cache key for `key` under mount base `base`. The transformed text
+   * embeds the base (module URLs, <base href>, BASE_URL, router basename), so
+   * a module built for one base must never be served for another. NUL is used
+   * as the separator because it cannot occur in a base or a VFS path.
+   */
+  private ck(base: string, key: string): string {
+    return base + '\x00' + key;
+  }
+
+  /**
+   * Rewrite absolute paths in HTML so they resolve under `base`.
+   */
+  private rewriteHtmlPaths(html: string, base: string): string {
+    if (!base) return html;
+
     html = html.replace(
       /(\s(?:src|href|action)=)(["'])(\/(?!\/)[^"']*)\2/gi,
       (match, attr, quote, path) => {
@@ -1537,10 +1564,17 @@ export class ViteDevServer {
       if (event.type === 'addDir' || event.type === 'unlinkDir') continue;
       const path = event.path;
 
-      this.moduleCache.delete(path);
-      this.moduleCache.delete(this.root + '/' + path);
+      // Cache keys are base-qualified (`<base>\x00<path>`), so a changed file
+      // must be dropped across every base it was served under. Match on the
+      // path suffix after the NUL separator.
+      const pathVariants = new Set<string>([path, this.root + '/' + path]);
       if (path.startsWith(this.root + '/')) {
-        this.moduleCache.delete(path.substring(this.root.length + 1));
+        pathVariants.add(path.substring(this.root.length + 1));
+      }
+      for (const key of [...this.moduleCache.keys()]) {
+        const sep = key.indexOf('\x00');
+        const inner = sep >= 0 ? key.substring(sep + 1) : key;
+        if (pathVariants.has(inner)) this.moduleCache.delete(key);
       }
 
       // Drop persisted transforms for removed paths so they don't orphan.
@@ -1569,7 +1603,9 @@ export class ViteDevServer {
     if (nodeModulesChanged) {
       const toDelete: string[] = [];
       for (const key of this.moduleCache.keys()) {
-        if (key.startsWith('@modules/')) toDelete.push(key);
+        const sep = key.indexOf('\x00');
+        const inner = sep >= 0 ? key.substring(sep + 1) : key;
+        if (inner.startsWith('@modules/')) toDelete.push(key);
       }
       for (const k of toDelete) this.moduleCache.delete(k);
     }
@@ -1606,9 +1642,14 @@ export class ViteDevServer {
    * reached subscribers and the user saw a frozen tab. Markflow
    * regression on prod 0a488bab.
    */
-  async handleRequest(request: Request, pathname: string): Promise<Response> {
+  async handleRequest(request: Request, pathname: string, mountBase?: string): Promise<Response> {
     const t0 = Date.now();
-    const resp = await this._handleRequestInner(request, pathname);
+    // The mount base is a property of the route the request arrived on, not of
+    // the server: `/s/<sid>/preview/` serves under that prefix, a
+    // `<port>--<sid>` host serves at the root. Callers that omit it fall back
+    // to the construction-time basePath.
+    const base = this.normBase(mountBase ?? this.basePath);
+    const resp = await this._handleRequestInner(request, pathname, base);
     const elapsed = Date.now() - t0;
     // Strip query for the log line — keeps it scannable. The original
     // pathname (with query) is what was served; we trim purely for
@@ -1619,7 +1660,7 @@ export class ViteDevServer {
     return resp;
   }
 
-  private async _handleRequestInner(request: Request, pathname: string): Promise<Response> {
+  private async _handleRequestInner(request: Request, pathname: string, base: string): Promise<Response> {
     const safePath = this.sanitizePath(pathname);
     if (!safePath) {
       return new Response('400 Bad Request', { status: 400 });
@@ -1669,18 +1710,18 @@ export class ViteDevServer {
         const specifier = pathname.substring('/@modules/'.length);
         // Check if this is actually an alias that got misrouted
         if (this.aliases) {
-          const resolved = resolveAliasSpecifier(specifier, this.aliases, this.basePath);
+          const resolved = resolveAliasSpecifier(specifier, this.aliases, base);
           if (resolved) {
             // Redirect to the correct path
             return new Response(null, { status: 302, headers: { ...headers, 'Location': resolved } });
           }
         }
-        return this.serveModule(specifier, headers);
+        return this.serveModule(specifier, headers, base);
       }
 
       // / → serve index.html
       if (pathname === '/' || pathname === '/index.html') {
-        return this.serveIndexHtml(headers);
+        return this.serveIndexHtml(headers, base);
       }
 
       // public/ directory — serve static assets as-is
@@ -1694,7 +1735,7 @@ export class ViteDevServer {
       }
 
       // Serve from VFS (with transforms for TS/TSX/JSX)
-      return this.serveFile(request, pathname, query, headers);
+      return this.serveFile(request, pathname, query, headers, base);
     } catch (e: any) {
       return new Response(`500 Internal Server Error: ${e?.message}`, {
         status: 500, headers: { ...headers, 'Content-Type': 'text/plain' },
@@ -1704,7 +1745,7 @@ export class ViteDevServer {
 
   // ── index.html ────────────────────────────────────────────────────────
 
-  private serveIndexHtml(headers: Record<string, string>): Response {
+  private serveIndexHtml(headers: Record<string, string>, base: string): Response {
     const htmlPath = this.root + '/index.html';
     if (!this.vfs.exists(htmlPath)) {
       return new Response('<!DOCTYPE html><html><body><h1>No index.html found</h1><p>Create index.html in your project root.</p></body></html>', {
@@ -1720,9 +1761,12 @@ export class ViteDevServer {
     // Build head injections
     let headInjections = '';
 
-    // 1. <base> tag for SPA router support
-    if (this.basePath && this.basePath !== '/') {
-      headInjections += `<base href="${this.basePath}/">\n`;
+    // 1. <base> tag for SPA router support. A root-mounted request (base '',
+    //    e.g. a `<port>--<sid>` host) needs no <base> — assets already resolve
+    //    against the origin root; injecting `<base href="/preview/">` there is
+    //    exactly what 404'd every asset before this became per-request.
+    if (base) {
+      headInjections += `<base href="${base}/">\n`;
     }
 
     // 2. Tailwind: serve the vendored Play CDN bundle from our edge.
@@ -1735,8 +1779,7 @@ export class ViteDevServer {
     //    cache headers. The tailwind.config inline-script is still
     //    placed AFTER the bundle script so the IIFE picks it up.
     if (this.hasTailwind) {
-      const twUrl = (this.basePath && this.basePath !== '/' ? this.basePath : '') +
-        '/__nimbus_assets/tailwind-play.js';
+      const twUrl = base + '/__nimbus_assets/tailwind-play.js';
       headInjections += `<script src="${twUrl}"></script>\n`;
       if (this.tailwindConfigJs) {
         // Inject tailwind config
@@ -1763,8 +1806,8 @@ export class ViteDevServer {
       html = headInjections + html;
     }
 
-    // Rewrite absolute paths to include basePath prefix
-    html = this.rewriteHtmlPaths(html);
+    // Rewrite absolute paths to include the mount-base prefix
+    html = this.rewriteHtmlPaths(html, base);
 
     return new Response(html, {
       headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
@@ -1798,9 +1841,9 @@ export class ViteDevServer {
     return !!barrelInfo.inputHash && inputHash === barrelInfo.inputHash;
   }
 
-  private async serveModule(specifier: string, headers: Record<string, string>): Promise<Response> {
+  private async serveModule(specifier: string, headers: Record<string, string>, base: string): Promise<Response> {
     const JS_CT = 'application/javascript; charset=utf-8';
-    const cacheKey = `@modules/${specifier}`;
+    const cacheKey = this.ck(base, `@modules/${specifier}`);
     const barrelInfo = this.getBarrelModuleCacheInfo(specifier);
 
     // 1. In-memory cache (hot path — already bundled)
@@ -1830,10 +1873,12 @@ export class ViteDevServer {
         this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo)
       ) {
         let code = esmBundle.esmCode;
+        // The persisted bundle is base-independent raw esbuild output; the
+        // base-dependent rewrites (module URLs) are applied here, per request.
         // Rewrite __require("external") calls to ESM imports so externalized
         // packages (react, scheduler) actually work in the browser.
-        code = rewriteExternalRequires(code, this.basePath);
-        code = rewriteAllImports(code, this.aliases, this.basePath);
+        code = rewriteExternalRequires(code, base);
+        code = rewriteAllImports(code, this.aliases, base);
         code = synthesizeCjsNamedExports(code);
         this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
         return new Response(code, {
@@ -1852,7 +1897,7 @@ export class ViteDevServer {
     const inflight = this.pendingBundles.get(cacheKey);
     if (inflight) return inflight;
     const coldPromise = this.onDemandGate.run((admit) =>
-      this.serveModuleCold(specifier, headers, barrelInfo, admit),
+      this.serveModuleCold(specifier, headers, base, barrelInfo, admit),
     );
     this.pendingBundles.set(cacheKey, coldPromise);
     coldPromise.finally(() => {
@@ -1879,11 +1924,12 @@ export class ViteDevServer {
   private async serveModuleCold(
     specifier: string,
     headers: Record<string, string>,
+    base: string,
     knownBarrelInfo: BarrelModuleCacheInfo | null = null,
     admit?: (bytes: number) => Promise<void>,
   ): Promise<Response> {
     const JS_CT = 'application/javascript; charset=utf-8';
-    const cacheKey = `@modules/${specifier}`;
+    const cacheKey = this.ck(base, `@modules/${specifier}`);
     // 3. On-demand bundle (cold path — resolve from node_modules, bundle via esbuild)
     //
     // Architecture: this used to call this.esbuild.build(...) in the
@@ -2061,7 +2107,10 @@ export class ViteDevServer {
               externals,
               slice: slice.slice,
               bundlerVersion: BUNDLER_VERSION,
-              define: this.define,
+              // Base-neutral: the @modules bundle is persisted raw and shared
+              // across mounts, so BASE_URL is fixed to '/' here (module URLs
+              // get the per-request base applied at serve time, not baked in).
+              define: this.defineFor(''),
             };
             slice = null;
             let result: any = null;
@@ -2091,7 +2140,8 @@ export class ViteDevServer {
             format: 'esm',
             platform: 'browser',
             target: 'esnext',
-            define: this.define,
+            // Base-neutral (see the pooled build above).
+            define: this.defineFor(''),
             external: externals.length > 0 ? externals : undefined,
           });
           if (result.outputFiles?.length) {
@@ -2103,38 +2153,37 @@ export class ViteDevServer {
       }
 
       if (bundled !== null) {
-        let code = bundled;
-        // Convert `__require("external")` calls (from CJS source with esbuild
-        // externals) into ESM `import * as` + dispatch. Without this, the
-        // browser throws when it hits __require("react") at runtime.
-        code = rewriteExternalRequires(code, this.basePath);
-        // Rewrite any bare imports that esbuild marked external (e.g., from
-        // the VFS plugin's exports-field-unaware fallback). Without this, a
-        // bundled output like `import X from "scheduler"` would 404 in the
-        // browser because the specifier doesn't include the base prefix.
-        code = rewriteAllImports(code, this.aliases, this.basePath);
+        // Persist the RAW esbuild output. It is base-independent — the only
+        // base-dependent step is the module-URL rewrite below, applied at
+        // serve time — so one persisted bundle serves every mount (the
+        // `/preview/` path and the `<port>--<sid>` host alike). Caching the
+        // post-rewrite text instead would pin the bundle to whichever base
+        // built it first and 404 the other. Cache ONLY successful bundles;
+        // a failed build left `bundled` null and never reaches here.
+        if (this.npmCache) {
+          try {
+            this.npmCache.putEsmBundle({
+              specifier,
+              bundleHash: BUNDLER_VERSION,
+              esmCode: bundled,
+              builtAt: Date.now(),
+              inputHash: barrelInfo?.inputHash ?? '',
+            });
+          } catch { /* non-fatal */ }
+        }
 
+        // Convert `__require("external")` calls (from CJS source with esbuild
+        // externals) into ESM `import * as` + dispatch, and rewrite any bare
+        // imports esbuild marked external so they carry the mount base.
+        // Without the base prefix, `import X from "scheduler"` 404s.
+        let code = rewriteExternalRequires(bundled, base);
+        code = rewriteAllImports(code, this.aliases, base);
         // For CJS-only packages (react, react-dom), esbuild's __commonJS
         // wrapper only emits `export default` — named imports like
         // `import { createRoot } from "react-dom/client"` would fail. Statically
         // scan the bundled source for CJS export patterns and synthesize
         // named exports.
         code = synthesizeCjsNamedExports(code);
-
-        // Cache ONLY successful bundles. Caching a failed build (where
-        // `code` was the raw unbundled source) would poison the cache
-        // and break the module forever.
-        if (this.npmCache) {
-          try {
-            this.npmCache.putEsmBundle({
-              specifier,
-              bundleHash: BUNDLER_VERSION,
-              esmCode: code,
-              builtAt: Date.now(),
-              inputHash: barrelInfo?.inputHash ?? '',
-            });
-          } catch { /* non-fatal */ }
-        }
 
         this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
         return new Response(code, {
@@ -2507,7 +2556,7 @@ export class ViteDevServer {
     return false;
   }
 
-  private async serveFile(request: Request, pathname: string, query: string, headers: Record<string, string>): Promise<Response> {
+  private async serveFile(request: Request, pathname: string, query: string, headers: Record<string, string>, base: string): Promise<Response> {
     let vfsPath = this.root + pathname;
 
     // If the exact path doesn't exist, try Vite-style extension resolution.
@@ -2528,7 +2577,7 @@ export class ViteDevServer {
             status: 404, headers: { ...headers, 'Content-Type': 'text/plain' },
           });
         }
-        return this.serveIndexHtml(headers);
+        return this.serveIndexHtml(headers, base);
       }
     }
 
@@ -2539,7 +2588,7 @@ export class ViteDevServer {
         if (html.includes('</head>')) {
           html = html.replace('</head>', ERROR_OVERLAY_CLIENT + '\n' + HMR_CLIENT + '\n</head>');
         }
-        html = this.rewriteHtmlPaths(html);
+        html = this.rewriteHtmlPaths(html, base);
         return new Response(html, {
           headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
         });
@@ -2562,7 +2611,7 @@ export class ViteDevServer {
 
     // Transform TS/TSX/JSX/MTS/CTS files
     if (ext === '.ts' || ext === '.tsx' || ext === '.jsx' || ext === '.mts' || ext === '.cts') {
-      return this.serveTransformed(vfsPath, ext, headers);
+      return this.serveTransformed(vfsPath, ext, headers, base);
     }
 
     // CSS handling
@@ -2591,7 +2640,7 @@ export class ViteDevServer {
       if (query.includes('import')) {
         const escapedCss = css.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
         const jsCode = `(function() {
-  var id = ${JSON.stringify(this.basePath + pathname)};
+  var id = ${JSON.stringify(base + pathname)};
   var existing = document.querySelector('style[data-vite-dev-id="' + id + '"]');
   if (existing) { existing.textContent = \`${escapedCss}\`; return; }
   var s = document.createElement('style');
@@ -2629,7 +2678,8 @@ export class ViteDevServer {
 
     // JS files: rewrite imports (cached)
     if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
-      const cached = this.moduleCache.get(vfsPath);
+      const jsKey = this.ck(base, vfsPath);
+      const cached = this.moduleCache.get(jsKey);
       if (cached) {
         return new Response(cached.code, {
           headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
@@ -2644,9 +2694,9 @@ export class ViteDevServer {
           root: this.root,
           vfs: this.vfs,
         };
-        code = rewriteAllImports(code, this.aliases, this.basePath, importerCtx);
+        code = rewriteAllImports(code, this.aliases, base, importerCtx);
       }
-      this.moduleCache.set(vfsPath, { code, timestamp: Date.now() });
+      this.moduleCache.set(jsKey, { code, timestamp: Date.now() });
       return new Response(code, {
         headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
       });
@@ -2654,7 +2704,7 @@ export class ViteDevServer {
 
     // Asset imports from JS: serve as URL-exporting module
     if (ASSET_EXTS.has(ext) && query.includes('import')) {
-      const url = this.basePath + pathname;
+      const url = base + pathname;
       const code = `export default ${JSON.stringify(url)};`;
       return new Response(code, {
         headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
@@ -2672,8 +2722,10 @@ export class ViteDevServer {
     vfsPath: string,
     ext: string,
     headers: Record<string, string>,
+    base: string,
   ): Promise<Response> {
-    const cached = this.moduleCache.get(vfsPath);
+    const memKey = this.ck(base, vfsPath);
+    const cached = this.moduleCache.get(memKey);
     if (cached) {
       return new Response(cached.code, {
         headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
@@ -2684,13 +2736,15 @@ export class ViteDevServer {
 
     // Persistent transform cache (survives DO hibernation; content-hashed
     // so a write whose VFS event was missed still invalidates). Keyed on
-    // (vfsPath, contentHash, BUNDLER_VERSION). On hit, repopulate the
-    // in-memory cache and serve without re-running esbuild.
+    // (vfsPath, base, contentHash, BUNDLER_VERSION) — the transform bakes the
+    // mount base (router basename, BASE_URL, module URLs), so each base gets
+    // its own row. On hit, repopulate the in-memory cache and serve without
+    // re-running esbuild.
     const contentHash = this.npmCache ? await sha256Base64Url(code) : null;
     if (this.npmCache && contentHash) {
-      const persisted = this.npmCache.getUserModuleTransform(vfsPath, contentHash, BUNDLER_VERSION);
+      const persisted = this.npmCache.getUserModuleTransform(vfsPath, base, contentHash, BUNDLER_VERSION);
       if (persisted) {
-        this.moduleCache.set(vfsPath, { code: persisted.code, timestamp: Date.now() });
+        this.moduleCache.set(memKey, { code: persisted.code, timestamp: Date.now() });
         return new Response(persisted.code, {
           headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
         });
@@ -2704,7 +2758,7 @@ export class ViteDevServer {
     // vite.config.ts nimbusInjectBasename: false).
     if (this.injectBasename && shouldProcessForRouter(vfsPath)) {
       try {
-        code = injectRouterBasename(code, this.basePath);
+        code = injectRouterBasename(code, base);
       } catch (e: any) {
         // Never let the transform break serving — log and continue with original.
         console.warn('[vite-dev] basename injection skipped for', vfsPath, ':', e?.message);
@@ -2723,7 +2777,7 @@ export class ViteDevServer {
         format: 'esm',
         target: 'esnext',
         ...jsxOpts,
-        define: this.define,
+        define: this.defineFor(base),
         sourcemap: 'inline',
       });
       code = result.code;
@@ -2755,14 +2809,15 @@ if (!document.getElementById('nimbus-error-overlay')) {
         root: this.root,
         vfs: this.vfs,
       };
-      code = rewriteAllImports(code, this.aliases, this.basePath, importerCtx);
+      code = rewriteAllImports(code, this.aliases, base, importerCtx);
     }
 
-    this.moduleCache.set(vfsPath, { code, timestamp: Date.now() });
+    this.moduleCache.set(memKey, { code, timestamp: Date.now() });
     if (this.npmCache && contentHash) {
       try {
         this.npmCache.putUserModuleTransform({
           vfsPath,
+          base,
           contentHash,
           bundlerVersion: BUNDLER_VERSION,
           code,

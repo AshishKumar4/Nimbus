@@ -25,7 +25,6 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
 import { assembleOpencodeFacetConfig } from '../facets/opencode-staging.js';
-import { ResidentCodeSpecSchema, type ResidentCodeSpec } from '../loaders/process-fabric.js';
 
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
@@ -219,65 +218,22 @@ const _NIMBUS_LOADED_CODES: Map<string, any> = new Map();
 const _LOADED_CODES_MAX = 32;
 let _loadedCodesEvictions = 0;
 
-/**
- * Read a whole file through a SupervisorRPC binding. Ranged because the files
- * this exists for — a ruby interpreter+stdlib image is 34.3 MiB — exceed what
- * one RPC value may carry.
- */
-const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
-
-async function readSupervisorFile(
-  fs: {
-    stat(path: string): Promise<{ size?: number } | null>;
-    fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-  },
-  path: string,
-): Promise<ArrayBuffer> {
-  const stat = await fs.stat(path);
-  const size = Number(stat?.size);
-  if (!Number.isSafeInteger(size) || size < 0) {
-    throw new Error(`Nimbus: cannot size '${path}' for a resident process's module map`);
-  }
-  const out = new Uint8Array(size);
-  for (let offset = 0; offset < size;) {
-    const chunk = await fs.fsReadRange(path, offset, Math.min(RESIDENT_READ_RANGE_BYTES, size - offset));
-    if (!chunk || chunk.byteLength === 0) {
-      throw new Error(`Nimbus: '${path}' returned no bytes at offset ${offset}`);
-    }
-    out.set(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk), offset);
-    offset += chunk.byteLength;
-  }
-  return out.buffer as ArrayBuffer;
-}
-
 const NimbusLoadedEntrypointPropsSchema = z.object({
   key: z.string().min(1),
   name: z.string().nullable().optional(),
   depth: z.number().int().nonnegative().optional(),
-  code: z.unknown().optional(),
   supervisor: z.object({
     doId: z.string().min(1),
     pid: z.number().int().nonnegative(),
     writerId: z.string().uuid(),
   }).optional(),
   /**
-   * Staged-artifact spec (opencode). When present (and `code` is not), the
-   * facet's ~23 MB module map is assembled HERE — in this stateless
-   * entrypoint's isolate — on the Worker-Loader cache-miss path, so the
-   * supervisor DO never materializes the artifact sources (it OOM-reset at
-   * the 128 MiB isolate cap when it did). Validated by the assembler.
+   * Staged-artifact spec (opencode), for a ONE-SHOT run. The ~23 MB module map
+   * is assembled HERE — in this stateless entrypoint's isolate — on the
+   * Worker-Loader cache-miss path, so a one-shot run never materializes the
+   * artifact sources anywhere else. Validated by the assembler.
    */
   stage: z.unknown().optional(),
-  /**
-   * Generated-module-map spec for a resident process (node / python / ruby).
-   * Like `stage` it is COMPLETED here rather than in a session DO: its wasm
-   * images are named by VFS path and read through this entrypoint's own
-   * SUPERVISOR binding, which routes to the coordinator wherever this
-   * entrypoint runs. Ruby's interpreter+stdlib image alone is 34.3 MiB, past
-   * what any RPC value may carry, so by-path is the only way it can reach a
-   * peer at all — and it keeps the bytes out of every session DO's heap.
-   */
-  residentCode: ResidentCodeSpecSchema.optional(),
 }).passthrough();
 
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
@@ -480,75 +436,17 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     return await factory({ props: props.supervisor });
   }
 
-  async _codeWithSupervisor(props: NimbusLoadedEntrypointProps, includeSupervisor: boolean): Promise<unknown> {
-    if (props.code === undefined) return undefined;
-    if (!includeSupervisor) return props.code;
-    const supervisorBinding = await this._supervisorBinding(props);
-    if (!supervisorBinding) return props.code;
-    if (!props.code || typeof props.code !== 'object' || Array.isArray(props.code)) {
-      throw new Error('Nimbus: loaded worker config must be an object when supervisor binding is requested');
-    }
-    const config = props.code as Record<string, unknown>;
-    const env = config.env && typeof config.env === 'object' && !Array.isArray(config.env)
-      ? config.env as Record<string, unknown>
-      : {};
-    return {
-      ...config,
-      env: {
-        ...env,
-        SUPERVISOR: supervisorBinding,
-      },
-    };
-  }
-
-  /**
-   * Complete a resident-process module map in THIS isolate: read each wasm
-   * image off the coordinator's disk through the facet's own supervisor, in
-   * RPC-safe ranges (the images are larger than a single RPC value).
-   */
-  async _residentCodeConfig(
-    spec: ResidentCodeSpec,
-    supervisorBinding: unknown,
-  ): Promise<Record<string, unknown>> {
-    const wasmModules: Record<string, { wasm: ArrayBuffer }> = {};
-    const paths = Object.entries(spec.vfsWasmModules ?? {});
-    if (paths.length > 0) {
-      const fs = supervisorBinding as {
-        stat(path: string): Promise<{ size?: number } | null>;
-        fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-      } | undefined;
-      if (!fs) throw new Error('Nimbus: resident process wasm images need a SUPERVISOR binding to read them');
-      for (const [moduleName, path] of paths) {
-        wasmModules[moduleName] = { wasm: await readSupervisorFile(fs, path) };
-      }
-    }
-    return {
-      compatibilityDate: spec.compatibilityDate,
-      compatibilityFlags: spec.compatibilityFlags,
-      mainModule: spec.mainModule,
-      modules: { ...spec.modules, ...wasmModules },
-      ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-    };
-  }
-
-  async _resolveEntrypoint(options: { includeSupervisor: boolean }): Promise<any> {
+  async _resolveEntrypoint(): Promise<any> {
     const props = this._props();
     const outerLoader = (this.env as any)?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    const code = await this._codeWithSupervisor(props, options.includeSupervisor);
     let outerStub;
-    if (code !== undefined) {
-      outerStub = outerLoader.get(props.key, async () => code);
-    } else if (props.residentCode !== undefined) {
-      const spec = props.residentCode;
-      outerStub = outerLoader.get(props.key, async () =>
-        this._residentCodeConfig(spec, await this._supervisorBinding(props)));
-    } else if (props.stage !== undefined) {
+    if (props.stage !== undefined) {
       // Staged artifact (opencode): assemble the full module map lazily, ONLY
       // on a loader miss, in THIS stateless isolate. The facet's SUPERVISOR
       // binding is created in this request context — the caller holds the
-      // call open for the facet's lifetime (startProcess / one-shot fetch),
-      // which is what keeps the binding's context alive.
+      // one-shot fetch open for the whole run, which keeps that context
+      // alive.
       const stage = props.stage;
       outerStub = outerLoader.get(props.key, async () => {
         const assembled = await assembleOpencodeFacetConfig(this.env as { ASSETS?: { fetch(req: Request): Promise<Response> } }, stage);
@@ -557,12 +455,11 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
         return { ...assembled, env: { SUPERVISOR: supervisorBinding } };
       });
     } else {
-      // No code in props: resolve the ALREADY-LOADED worker. First the inner
+      // No spec in props: resolve the ALREADY-LOADED worker. First the inner
       // Worker Loader shim's code map (nimbus-in-nimbus), else the outer
-      // loader's own cache. The cache-miss callback fails loud: code-free
-      // stubs are routing handles to a RUNNING facet (e.g. opencode serve) —
-      // re-loading from code would boot an empty isolate whose server isn't
-      // listening, a silent wrong answer.
+      // loader's own cache. The cache-miss callback fails loud: a spec-free
+      // stub is a handle on a worker someone else loaded — re-loading it from
+      // code would boot an empty isolate, a silent wrong answer.
       outerStub = _resolveStubInCurrentContext(outerLoader, props.key)
         ?? outerLoader.get(props.key, async () => {
           throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
@@ -571,18 +468,6 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     const outer = await outerStub;
     if (!outer) throw new Error('Nimbus: loaded worker code missing');
     return await (props.name ? outer.getEntrypoint(props.name) : outer.getEntrypoint());
-  }
-
-  async startProcess(args: any): Promise<any> {
-    const ep = await this._resolveEntrypoint({ includeSupervisor: true });
-    try {
-      if (typeof ep.startProcess !== 'function') {
-        throw new Error('Nimbus: loaded worker entrypoint has no startProcess method');
-      }
-      return await useRpcResource(ep.startProcess(args), (result) => result);
-    } finally {
-      disposeRpcResource(ep);
-    }
   }
 
   /**
@@ -643,7 +528,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
   }
 
   async handleHttpRequest(request: Request): Promise<Response> {
-    const ep = await this._resolveEntrypoint({ includeSupervisor: false });
+    const ep = await this._resolveEntrypoint();
     try {
       if (typeof ep.handleHttpRequest !== 'function' && typeof ep.fetch !== 'function') {
         disposeRpcResource(ep);
@@ -664,7 +549,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
    * cross-request-I/O limitation.
    */
   async fetch(request: Request): Promise<Response> {
-    const ep = await this._resolveEntrypoint({ includeSupervisor: false });
+    const ep = await this._resolveEntrypoint();
     try {
       const response = await ep.fetch(await materializeNestedRpcRequest(request));
       return this._relayNestedRpcResponse(ep, response);

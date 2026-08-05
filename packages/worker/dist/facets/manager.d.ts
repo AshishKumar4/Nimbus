@@ -139,7 +139,29 @@ interface FacetVfsState {
     serializedMetadata?: string;
     /** Move the bundle out of the main module when combined state exceeds its ceiling. */
     bundleSideModulesRequired?: boolean;
+    /**
+     * Memoized `bundleUsesNodeSqlite(entryCode, bundle)`. Answered while the raw
+     * cells are still in hand so `releaseSerializedSources` can drop them — it is
+     * the only thing anything downstream still wanted them for.
+     */
+    usesNodeSqlite?: boolean;
 }
+/**
+ * Drop the raw forms of everything that has been serialized, in place.
+ *
+ * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
+ * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
+ * a state carrying both from one carrying only the serialized halves, because
+ * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * Holding both doubles the cost of a cached entry for its whole lifetime, and
+ * that lifetime spans execs.
+ *
+ * Only for states that are about to be RETAINED. `spawnNode` and
+ * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
+ * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
+ * neither goes through here.
+ */
+export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
 interface FacetVfsBundleSource {
     expression: string;
     imports: string;
@@ -400,6 +422,8 @@ export declare class FacetManager {
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
+    /** pid → the boot images its facet loads from; the image sweep's root set. */
+    private residentImages;
     private timedOutProcessIds;
     private _pairedServeFacet;
     /**
@@ -428,6 +452,8 @@ export declare class FacetManager {
      */
     private prefetchBundleCache;
     private static readonly PREFETCH_CACHE_MAX;
+    /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
+    private prefetchCacheBytes;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
@@ -447,6 +473,17 @@ export declare class FacetManager {
      * stored so subsequent hits skip rebuilding them too.
      */
     private _buildPrefetchBundleCached;
+    /**
+     * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
+     * entry count and its byte bound.
+     *
+     * The count alone bounded nothing — each entry holds a raw bundle plus its
+     * serialized source, manifest and metadata, so sixteen of them could hold
+     * several times the supervisor ceiling. That is the same defect that let
+     * pi's 44 MB boot payload through: a thing sized by count when what matters
+     * is bytes.
+     */
+    private _admitPrefetchCacheEntry;
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
      * WebAssembly.Module into a facet, when that facet imports node:sqlite.
@@ -578,18 +615,50 @@ export declare class FacetManager {
      */
     private _noteProcessPlacement;
     /**
-     * The one way this manager boots a resident process. The caller's primitive
-     * declares its own `processClass`; this method carries it to the fabric's
-     * single policy point and adds nothing of its own. Everything after this
-     * call treats the returned handle identically regardless of where it landed.
+     * The reader the fabric completes a boot spec's by-path members with.
+     *
+     * Reads as CRED_KERNEL because that is who WROTE them: the generated images
+     * are kernel-owned (`_materializeFacetImages`) and the runtime wasm images
+     * are installed by the kernel. Uncached because these are the session's
+     * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
+     * the VFS content LRU for the life of the session is what once crashed the
+     * supervisor.
+     */
+    private _residentDisk;
+    /**
+     * Materialize generated module sources in the content-addressed image store
+     * and return the `vfsTextModules` map naming them.
+     *
+     * A resident process's module map is sized by the user's disk, so it does
+     * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
+     * Writing it here, once, is what lets the session stop holding it: after
+     * this returns, the only thing it keeps is a path.
+     *
+     * The store is written by the kernel and read by the process, so nothing
+     * here depends on which credential spawned what. Digest collisions are the
+     * hash's problem; everything else is idempotent — an image already present
+     * at its own digest is already the bytes we were about to write.
+     */
+    private _materializeFacetImages;
+    /**
+     * Drop every image no running process boots from.
+     *
+     * Content addressing means a changed program writes a NEW image rather than
+     * replacing one, so a watch loop — or simply a session that runs a few
+     * different programs — would otherwise leave one bundle-sized file behind
+     * per distinct version. The root set is the process table, which is exact:
+     * an image is live for precisely as long as the process that boots from it.
+     * Nothing is left for a TTL or an eviction heuristic to guess at, and after
+     * a DO reset the table is empty so every orphan goes.
+     */
+    private _sweepFacetImages;
+    /**
+     * The one way this manager boots a resident process. Every resident process
+     * is a facet of this session; there is nothing to place and nothing here
+     * decides anything about where a program runs.
      */
     private _startResidentProcess;
     private _activateProcessVfsWriter;
-    /**
-     * A host death that the fabric recovered from is never silent: it lands in
-     * the process log the user reads with `logs <pid>`.
-     */
-    private _noteHostRespawn;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     private _allocateLoopbackPort;
     /**
@@ -626,16 +695,9 @@ export declare class FacetManager {
      * A resident primitive: the process outlives the call, may bind a port, and
      * accumulates memory for as long as it runs.
      *
-     * Declares `light`, and the reason is ordering, not placement. A node
-     * request handler routinely writes a file and returns a response that
-     * asserts the write is already visible; `resident-node-request-vfs-durability`
-     * pins that. Locally the write and the response settle against one VFS in
-     * one workerd process. On a peer the write travels back over SUPERVISOR
-     * while the response travels forward over the route target — two independent
-     * paths — and nothing today orders them. Until that ordering is re-proven
-     * across the extra hop rather than assumed, node stays in the coordinator's
-     * process. Its image is also the cheapest of the resident runtimes, so it
-     * has the least to gain from a peer.
+     * Its module map — the snapshot of the user's disk the facet is built from —
+     * is the largest thing Nimbus generates, so it travels by VFS path rather
+     * than inside the boot spec and is read only when the facet loads.
      */
     spawnNode(code: string, opts?: {
         argv?: string[];
@@ -658,13 +720,12 @@ export declare class FacetManager {
      * The shared primitive for any runtime that serves over
      * handleHttpRequest(Request) — the python and ruby socket servers today.
      *
-     * Declares `heavy`. The interpreter image it carries is exactly the memory
-     * that should not sit in the coordinator's workerd process — ruby's
-     * interpreter+stdlib alone is 34.3 MiB, and it already travels to the host
-     * BY VFS PATH, so peer placement costs the coordinator nothing it was not
-     * already paying. It has no readiness coupling back into the session: the
-     * runner answers startProcess with its boot payload and the caller waits on
-     * that one promise, so nothing polls the port to decide the process is up.
+     * The interpreter image it carries is the memory that should not sit in the
+     * session's own isolate — ruby's interpreter+stdlib alone is 34.3 MiB — and
+     * a facet's envelope is independent of the session's, so it does not. It has
+     * no readiness coupling back into the session: the runner answers
+     * startProcess with its boot payload and the caller waits on that one
+     * promise, so nothing polls the port to decide the process is up.
      */
     spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<{
         pid: number;

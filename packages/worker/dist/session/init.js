@@ -34,14 +34,13 @@ import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler } from '../runtime/runtime-registry.js';
 import { parseViteConfigSource } from '../runtime/vite-config-parser.js';
-import { rewriteCirrusViteConfigBundle } from '../runtime/cirrus-vite-config-rewriter.js';
+import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { installPathExecResolver, } from '../shell/exec-dispatch.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
-import { CirrusReal, shouldUseRealVite } from '../facets/cirrus-real.js';
+import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '../runtime/long-running-handle.js';
-import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, } from './helpers.js';
 import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
@@ -67,6 +66,7 @@ import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
+import { VITE_CONFIG_KEY } from './keys.js';
 function resolveNpmPrefix(prefix, cwd) {
     return prefix.startsWith('/')
         ? normalizeVfsPath(prefix)
@@ -1084,7 +1084,7 @@ export function initSession(self, ws) {
             }
             catch { }
             try {
-                await self.ctx.storage.put('vite-config', { root: distRoot, basePath: previewBasePath, port: previewPort });
+                await self.ctx.storage.put(VITE_CONFIG_KEY, { root: distRoot, basePath: previewBasePath, port: previewPort });
             }
             catch { }
             ctx.stdout.write('Serving at ' + previewBasePath + '/ \x1b[2m(pid=' + previewProcEntry.pid + ', port=' + previewPort + ')\x1b[0m\n');
@@ -1102,7 +1102,7 @@ export function initSession(self, ws) {
                 self.viteDevServer.stop();
                 self.viteDevServer = null;
                 try {
-                    await self.ctx.storage.delete('vite-config');
+                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
                 }
                 catch { }
                 stopped = true;
@@ -1183,112 +1183,24 @@ export function initSession(self, ws) {
         const sessionEnv = (ctx && ctx.env) || {};
         const useReal = shouldUseRealVite({ env: sessionEnv, viteConfig });
         if (useReal) {
-            if (self.cirrusReal?.isRunning)
-                self.cirrusReal.stop(self.ctx);
             const vitePort = resolvedPort;
             const previewBasePath = self.viteBasePath;
-            // Reserve the full supervisor allocation budget so a fire-and-forget
-            // pre-bundle or VFS payload cannot overlap the cirrus-real boot
-            // payload (user-vite-config esbuild bundle ~few MiB, plugin-react
-            // bundle, syntheticCode string with snapshotFiles inlined ~few
-            // MiB, LOADER.load worker bundle). With concurrent allocations
-            // and a shared isolate (Mini-PRD: DO shared isolate issues), peak
-            // pressure is what kills us — not steady-state. Released right
-            // after cirrusReal.start() in a finally so a throw in the boot
-            // path doesn't permanently hold the shared byte budget.
-            const heavyAllocRelease = await acquireHeavyAlloc(ctx.signal);
-            try {
-                // Pre-bundle the user's vite.config.ts if present. Must handle
-                // plugin imports — @vitejs/plugin-react, vite-plugin-svgr, etc.
-                // — which live in the project's node_modules. esbuild resolves
-                // those against the VFS via our existing EsbuildService, then
-                // emits an ESM string the facet imports as user-vite-config.js.
-                let userConfigBundle = null;
-                // Extra synthetic files to seed into the facet's fs snapshot.
-                // Populated below when pre-bundling plugin-react — it does
-                // fs.readFileSync(_require.resolve('./refreshUtils.js')) at
-                // transform time and expects to find that file on disk.
-                const extraSyntheticFiles = {};
-                const cfgPath = [cwd + '/vite.config.ts', cwd + '/vite.config.js', cwd + '/vite.config.mjs']
-                    .find(p => kernelFs.exists(p));
-                if (cfgPath) {
-                    try {
-                        if (!self.esbuildService)
-                            self.esbuildService = new EsbuildService(self.sqliteFs);
-                        const bundleResult = await self.esbuildService.build([cfgPath], {
-                            bundle: true,
-                            format: 'esm',
-                            target: 'es2022',
-                            platform: 'neutral',
-                            // Path C externals:
-                            //   - vite: the facet provides vite-config-helper.js
-                            //     re-exporting the prebundled vite.bundle.js.
-                            //   - @vitejs/plugin-react: the facet provides a
-                            //     prebundled cirrus-plugin-react.js (built by
-                            //     scripts/bundle-plugin-react.mjs at build time;
-                            //     includes babel, react-refresh, inlined assets).
-                            //   - @vitejs/plugin-react/jsx-runtime: same bundle.
-                            // Any OTHER plugin the user imports (plugin-vue,
-                            // plugin-svgr, etc.) falls through to esbuild bundling,
-                            // which may or may not work depending on whether its
-                            // assets can be fully inlined.
-                            external: [
-                                'node:*', 'fs', 'path', 'url', 'util', 'os', 'crypto',
-                                'events', 'stream', 'buffer', 'module', 'perf_hooks',
-                                'esbuild', 'esbuild-wasm',
-                                'vite', 'vite/*',
-                                '@vitejs/plugin-react', '@vitejs/plugin-react/*',
-                            ],
-                            // Give bundled user config a stable module URL so plugins that
-                            // resolve files relative to import.meta.url can find their own
-                            // synthetic install location.
-                            define: {
-                                'import.meta.url': JSON.stringify('file:///user-vite-config.js'),
-                            },
-                            keepNames: true,
-                        });
-                        const out = bundleResult.outputFiles?.[0];
-                        if (out) {
-                            userConfigBundle = rewriteCirrusViteConfigBundle(String(out.contents));
-                            if (bundleResult.errors?.length) {
-                                console.warn('[vite-cmd] esbuild bundle errors:', bundleResult.errors);
-                            }
-                        }
-                        else {
-                            console.warn('[vite-cmd] esbuild.build produced no output');
-                        }
-                    }
-                    catch (e) {
-                        ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + (e?.message || e) + '\n');
-                        ctx.stderr.write('  Real-vite will run with default config.\n');
-                    }
-                }
-                const cirrusReal = new CirrusReal({
-                    env: self.env,
-                    port: vitePort,
-                    root: vfsRoot,
-                    basePath: previewBasePath,
-                    vfs: self.sqliteFs,
-                    vfsEvents: self.sqliteFs.events,
-                    userConfigBundle,
-                    extraSyntheticFiles,
-                });
-                self.cirrusReal = cirrusReal;
-                // Reserve a PID so `ps`/logs show it like any other facet.
-                const entry = self.processes.spawn('vite (real, ' + vfsRoot + ')', [], vfsRoot, { longRunning: true });
-                // [sdk-phase-1] start() is now async because it ASSETS-fetches
-                // the large Vite/plugin-react bundles on first invocation
-                // (cached per-isolate after). The enclosing function is async.
-                await cirrusReal.start(self.ctx, entry.pid);
-                // Primitive #3 — register the cirrus-real port the same way
-                // the default-Cirrus shim does. Same single hook; the only
-                // difference is which handler.handleRequest the stub forwards
-                // into.
-                const cirrusStub = makeLongRunningPortStub(cirrusReal);
-                self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
-                self.portRegistry.register(vitePort, entry.pid);
-                self._viteShimPid = entry.pid;
-                self._viteShimPort = vitePort;
+            // One boot path, shared with hibernation-restore (start-real-vite.ts):
+            // pre-bundles the user's vite.config, boots the facet, registers the
+            // port, and persists the vite-config so a woken session rebuilds the
+            // same real-vite server. Only the banner below is command-specific.
+            const { cirrusReal, userConfigBundle, cfgPath } = await startRealVite(self, {
+                root: vfsRoot,
+                port: vitePort,
+                basePath: previewBasePath,
+                configDir: cwd,
+                signal: ctx.signal,
+                onConfigError: (msg) => {
+                    ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + msg + '\n');
+                    ctx.stderr.write('  Real-vite will run with default config.\n');
+                },
+            });
+            {
                 // ── Boot banner (§4.3 of PHASE2-REAL-VITE-PLAN.md) ──────
                 const snap = cirrusReal.stats.snapshot;
                 ctx.stdout.write('\n\x1b[1;36m  Nimbus: real-vite mode\x1b[0m \x1b[2m(experimental, Phase 1-4)\x1b[0m\n\n');
@@ -1312,11 +1224,6 @@ export function initSession(self, ws) {
                 ctx.stdout.write('  \x1b[2mBlocked:\x1b[0m vite build (rolldown needs node:wasi). Use cirrus for build.\n');
                 ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mNIMBUS_REAL_VITE=0 vite\x1b[2m for Cirrus.\x1b[0m\n\n');
                 return 0;
-            }
-            finally {
-                // Cirrus-real boot allocation done (or threw). Always restore the
-                // shared capacity so queued allocators can resume.
-                heavyAllocRelease();
             }
         }
         if (!self.esbuildService)
@@ -1372,7 +1279,7 @@ export function initSession(self, ws) {
         });
         self.viteDevServer.start();
         try {
-            await self.ctx.storage.put('vite-config', {
+            await self.ctx.storage.put(VITE_CONFIG_KEY, {
                 root: vfsRoot, aliases: viteConfig.alias, define: viteDefine,
                 injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
                 port: resolvedPort,
@@ -2595,7 +2502,7 @@ export function initSession(self, ws) {
                     self.viteDevServer.stop();
                     self.viteDevServer = null;
                     try {
-                        await self.ctx.storage.delete('vite-config');
+                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
                     }
                     catch { }
                 }

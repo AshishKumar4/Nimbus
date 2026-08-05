@@ -105,7 +105,7 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | Binary file round-trip via `fs.writeFileSync` / `readFileSync` | ✅ |
 | Session recovery — WebSocket drop → reconnect preserves cwd, env, files | ✅ |
 | WASI preview1 — 45 of 46 spec functions; outbound TCP via `path_open('/dev/tcp/<host>/<port>')` (JSPI); full `poll_oneoff` (fd / clock / socket subscriptions) | ✅ |
-| `wasi-threads` (`thread_spawn`) — refused at link time, by design | ⛔ ([why](docs/wasi-threads.md)) |
+| `wasi-threads` / pthreads — mutex, condvar, `pthread_join`, TLS, barriers, semaphores; cooperative, never parallel | ✅ ([how](docs/wasi-threads.md)) |
 
 ### Status: alpha
 
@@ -301,7 +301,7 @@ Press Ctrl-D or type `exit` / `.exit` to leave. Probes: `tests/behavioral/repl/`
 
 ## C compilation
 
-`clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate; the user VFS is mounted into a virtual `memfs` so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
+`clang` compiles C to the `wasm32-wasi-nimbus` ABI in-session, then `wasm-ld` links. Both binaries run in a child-facet isolate on the same WASI layer every other non-node runtime uses, so `#include "your-header.h"` and `fopen("./data.txt", "r")` work.
 
 What's wired today (v12 sysroot, currently deployed):
 
@@ -316,7 +316,7 @@ The stdio/atexit behavior is covered by the v13 probes in `tests/behavioral/clan
 
 Probes: `tests/behavioral/clang/`, `tests/behavioral/clang-includes/`, `tests/behavioral/clang-stdio/`, `tests/behavioral/wasi-paths/`.
 
-`-pthread` / `wasi-threads` is intentionally not supported — see [docs/wasi-threads.md](docs/wasi-threads.md) for why a partial implementation would silently corrupt user data.
+`-pthread` / `wasi-threads` programs run correctly but never in parallel: one core, one thread at a time. Build them with `--import-memory --shared-memory` and the futex shim — see [docs/wasi-threads.md](docs/wasi-threads.md).
 
 ## Performance
 
