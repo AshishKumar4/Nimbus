@@ -573,6 +573,10 @@ class __WasiThreadScheduler {
    * A blocking WASI import parked the running thread on a host promise. Give
    * the token up while it waits, and take it back — through the run queue, not
    * ahead of it — once the host answers.
+   *
+   * The promise is the one \`withParkDeadline\` already guarded, so it always
+   * settles; an unsettleable park would leave pendingIo raised and suppress
+   * the deadlock verdict, which is exactly what that watchdog exists to stop.
    */
   parkIo(promise) {
     const t = this.current;

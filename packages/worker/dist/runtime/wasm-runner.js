@@ -338,11 +338,28 @@ export function makeWasmRunner(deps) {
                 // read through this one object.
                 let sched = null;
                 if (args.threads) {
-                    const shared = new WebAssembly.Memory({
-                        initial: args.threads.memory.initial,
-                        maximum: args.threads.memory.maximum,
-                        shared: true,
-                    });
+                    let shared;
+                    try {
+                        shared = new WebAssembly.Memory({
+                            initial: args.threads.memory.initial,
+                            maximum: args.threads.memory.maximum,
+                            shared: true,
+                        });
+                    }
+                    catch (e) {
+                        // A shared memory reserves its MAXIMUM up front, so an over-large
+                        // --max-memory fails here rather than when the program grows into
+                        // it. Say which number did it; the alternative message is a bare
+                        // RangeError with no link to the build line that chose it.
+                        return {
+                            ok: false,
+                            mode: 'wasi',
+                            error: `wasi-threads: could not reserve the shared memory this module declares `
+                                + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
+                                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${e?.message || e}. `
+                                + 'A shared memory reserves its maximum immediately — lower --max-memory.',
+                        };
+                    }
                     memRef.mem = shared;
                     importObject[args.threads.memory.module] = {
                         ...(importObject[args.threads.memory.module] || {}),
