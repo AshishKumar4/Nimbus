@@ -3572,9 +3572,7 @@ export class FacetManager {
     try {
       this._activateProcessVfsWriter(staged.pid, writerId);
       writerActivated = true;
-      entrypoint = await createLoadedWorkerEntrypoint(
-        ctxExports, undefined, supervisor, null, undefined, staged.stageSpec,
-      );
+      entrypoint = await createLoadedWorkerEntrypoint(ctxExports, supervisor, staged.stageSpec);
       if (typeof entrypoint.fetch !== 'function') {
         throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
       }
@@ -3691,10 +3689,8 @@ export class FacetManager {
   ): Promise<StagedArtifactExecResult> {
     let handle: ResidentProcessHandle | undefined;
     try {
-      // Keyed, stage-carrying resident process through the fabric's single
-      // placement policy point. The opencode runner holds its startProcess
-      // open for the process's whole life, so the held RPC chain IS the
-      // lifecycle — the same contract at either placement.
+      // The opencode runner holds its startProcess open for the process's
+      // whole life, so that one call IS the lifecycle.
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
       handle = await this.processFabric.startResidentProcess({
         startContract: 'lifetime',
@@ -3832,10 +3828,8 @@ export class FacetManager {
     let resourcesTracked = false;
     try {
       const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-      // Stage-carrying resident process through the fabric: the module map is
-      // assembled in a stateless NimbusLoadedEntrypoint isolate on the
-      // Worker-Loader cache-miss path, and the held-open startProcess RPC owns
-      // the facet's SUPERVISOR binding for the process lifetime.
+      // The module map is assembled on the Worker-Loader cache-miss path, so
+      // the artifact sources exist only while this facet is loading.
       handle = await this.processFabric.startResidentProcess({
         startContract: 'lifetime',
         pid,
@@ -3896,20 +3890,6 @@ export class FacetManager {
   }
 
   /**
-   * Materialize generated module sources in the content-addressed image store
-   * and return the `vfsTextModules` map naming them.
-   *
-   * A resident process's module map is sized by the user's disk, so it cannot
-   * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
-   * it here, once, is also what lets the coordinator stop holding it: after
-   * this returns, the only thing the DO keeps is a path.
-   *
-   * The store is written by the kernel and read by the process, so nothing
-   * here depends on which credential spawned what. Digest collisions are the
-   * hash's problem; everything else is idempotent — an image already present
-   * at its own digest is already the bytes we were about to write.
-   */
-  /**
    * The reader the fabric completes a boot spec's by-path members with.
    *
    * Reads as CRED_KERNEL because that is who WROTE them: the generated images
@@ -3928,6 +3908,20 @@ export class FacetManager {
     return { readFile: (path) => fs.readFileUncached(path) };
   }
 
+  /**
+   * Materialize generated module sources in the content-addressed image store
+   * and return the `vfsTextModules` map naming them.
+   *
+   * A resident process's module map is sized by the user's disk, so it does
+   * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
+   * Writing it here, once, is what lets the session stop holding it: after
+   * this returns, the only thing it keeps is a path.
+   *
+   * The store is written by the kernel and read by the process, so nothing
+   * here depends on which credential spawned what. Digest collisions are the
+   * hash's problem; everything else is idempotent — an image already present
+   * at its own digest is already the bytes we were about to write.
+   */
   private async _materializeFacetImages(
     pid: number,
     modules: Record<string, string>,
@@ -3971,10 +3965,9 @@ export class FacetManager {
    * replacing one, so a watch loop — or simply a session that runs a few
    * different programs — would otherwise leave one bundle-sized file behind
    * per distinct version. The root set is the process table, which is exact:
-   * an image is live for precisely as long as the process that boots from it,
-   * including across a facet restart, which re-reads that same image. Nothing
-   * is left for a TTL or an eviction heuristic to guess at, and
-   * after a DO reset the table is empty so every orphan goes.
+   * an image is live for precisely as long as the process that boots from it.
+   * Nothing is left for a TTL or an eviction heuristic to guess at, and after
+   * a DO reset the table is empty so every orphan goes.
    */
   private _sweepFacetImages(fs: CredentialedVfs): void {
     const live = new Set<string>();

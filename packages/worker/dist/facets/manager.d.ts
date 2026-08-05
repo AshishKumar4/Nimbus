@@ -615,20 +615,6 @@ export declare class FacetManager {
      */
     private _noteProcessPlacement;
     /**
-     * Materialize generated module sources in the content-addressed image store
-     * and return the `vfsTextModules` map naming them.
-     *
-     * A resident process's module map is sized by the user's disk, so it cannot
-     * ride inside the boot spec — see ResidentCodeSpec.vfsTextModules. Writing
-     * it here, once, is also what lets the coordinator stop holding it: after
-     * this returns, the only thing the DO keeps is a path.
-     *
-     * The store is written by the kernel and read by the process, so nothing
-     * here depends on which credential spawned what. Digest collisions are the
-     * hash's problem; everything else is idempotent — an image already present
-     * at its own digest is already the bytes we were about to write.
-     */
-    /**
      * The reader the fabric completes a boot spec's by-path members with.
      *
      * Reads as CRED_KERNEL because that is who WROTE them: the generated images
@@ -639,6 +625,20 @@ export declare class FacetManager {
      * supervisor.
      */
     private _residentDisk;
+    /**
+     * Materialize generated module sources in the content-addressed image store
+     * and return the `vfsTextModules` map naming them.
+     *
+     * A resident process's module map is sized by the user's disk, so it does
+     * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
+     * Writing it here, once, is what lets the session stop holding it: after
+     * this returns, the only thing it keeps is a path.
+     *
+     * The store is written by the kernel and read by the process, so nothing
+     * here depends on which credential spawned what. Digest collisions are the
+     * hash's problem; everything else is idempotent — an image already present
+     * at its own digest is already the bytes we were about to write.
+     */
     private _materializeFacetImages;
     /**
      * Drop every image no running process boots from.
@@ -647,10 +647,9 @@ export declare class FacetManager {
      * replacing one, so a watch loop — or simply a session that runs a few
      * different programs — would otherwise leave one bundle-sized file behind
      * per distinct version. The root set is the process table, which is exact:
-     * an image is live for precisely as long as the process that boots from it,
-     * including across a facet restart, which re-reads that same image. Nothing
-     * is left for a TTL or an eviction heuristic to guess at, and
-     * after a DO reset the table is empty so every orphan goes.
+     * an image is live for precisely as long as the process that boots from it.
+     * Nothing is left for a TTL or an eviction heuristic to guess at, and after
+     * a DO reset the table is empty so every orphan goes.
      */
     private _sweepFacetImages;
     /**

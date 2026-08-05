@@ -441,12 +441,11 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
             });
         }
         else {
-            // No code in props: resolve the ALREADY-LOADED worker. First the inner
+            // No spec in props: resolve the ALREADY-LOADED worker. First the inner
             // Worker Loader shim's code map (nimbus-in-nimbus), else the outer
-            // loader's own cache. The cache-miss callback fails loud: code-free
-            // stubs are routing handles to a RUNNING facet (e.g. opencode serve) —
-            // re-loading from code would boot an empty isolate whose server isn't
-            // listening, a silent wrong answer.
+            // loader's own cache. The cache-miss callback fails loud: a spec-free
+            // stub is a handle on a worker someone else loaded — re-loading it from
+            // code would boot an empty isolate, a silent wrong answer.
             outerStub = _resolveStubInCurrentContext(outerLoader, props.key)
                 ?? outerLoader.get(props.key, async () => {
                     throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);

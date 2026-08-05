@@ -213,7 +213,6 @@ export interface NimbusCtxExports {
       key: string;
       name: string | null;
       depth: number;
-      code: unknown;
       supervisor: { doId: string; pid: number; writerId: string };
       stage?: OpencodeStageSpec;
     };
@@ -236,17 +235,21 @@ export function getNimbusCtxExports(): NimbusCtxExports {
  */
 export async function createLoadedWorkerEntrypoint(
   ctxExports: NimbusCtxExports,
-  code: unknown,
   supervisor: { doId: string; pid: number; writerId: string },
+  stage: OpencodeStageSpec,
   name: string | null = null,
-  key = `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
-  stage?: OpencodeStageSpec,
 ): Promise<LoadedWorkerEntrypointStub> {
   if (!ctxExports.NimbusLoadedEntrypoint) {
     throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
   }
   return await ctxExports.NimbusLoadedEntrypoint({
-    props: { key, name, depth: 0, code, supervisor, ...(stage ? { stage } : {}) },
+    props: {
+      key: `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
+      name,
+      depth: 0,
+      supervisor,
+      stage,
+    },
   });
 }
 
