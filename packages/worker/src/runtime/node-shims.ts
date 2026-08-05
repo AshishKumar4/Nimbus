@@ -230,18 +230,59 @@ async function __nimbusUseRpcResultUnref(promise, use) {
     headers.set("user-agent", "node");
     return __origFetch(input, { ...(init || {}), headers });
   };
+  // Coherence at the outbound-fetch boundary (§0.2 witness 2 of the VFS
+  // coherence protocol). A facet's fetch does not go through the supervisor:
+  // the facet inherits the parent worker's network, so the response resumes
+  // user code with no supervisor message an invalidation could ride on, and
+  // an external third party can carry a happens-before edge between two
+  // facets that never touches the authority.
+  //
+  // Both halves are sited here:
+  //   RELEASE — this facet's parked writes are flushed before the request
+  //     leaves, so nothing outside can observe an effect of a write the
+  //     authority has not got yet.
+  //   ACQUIRE — performed when the response lands, before the awaiting user
+  //     code runs.
+  //
+  // ACQUIRE has to be AFTER the response, and the earlier design saying it
+  // could ride concurrently with the request — free, hidden under the network
+  // — was wrong, which a test caught rather than an argument. A concurrent
+  // ACQUIRE is serviced at request time, so it reports the world as of when
+  // the request left. The whole anomaly is that the RESPONSE encodes "the
+  // write happened", so an ACQUIRE older than the response is exactly the one
+  // that cannot see the write it is there to catch. That costs a real
+  // supervisor round trip per outbound request, not a hidden one. It is the
+  // price of the guarantee.
+  //
+  // The barriers live on globalThis because the fs module installs them and
+  // is evaluated after this one; a facet with no supervisor bound has none,
+  // and there is nothing to be coherent with.
+  const __resumeCoherent = async (pending) => {
+    const value = await pending;
+    const acquire = globalThis.__nimbusVfsAcquireBarrier;
+    if (typeof acquire === "function") await acquire();
+    return value;
+  };
+  const __barriered = async (input, init) => {
+    const release = globalThis.__nimbusVfsReleaseBarrier;
+    if (typeof release === "function") await release();
+    return __resumeCoherent(__dispatch(input, init));
+  };
   globalThis.fetch = function fetch(input, init) {
-    return __nimbusTrackOp(__dispatch(input, init));
+    return __nimbusTrackOp(__barriered(input, init));
   };
   // A fetch settles once the headers arrive; reading the body is a SECOND
   // in-flight operation on the same connection, and \`const r = await
   // fetch(u); const j = await r.json()\` is the shape most programs use.
+  // It is also a second resumption from the network, so it takes the same
+  // ACQUIRE: a program that reads a file after parsing a response body is no
+  // less entitled to current bytes than one that reads after the headers.
   for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
     const __orig = Response.prototype[__name];
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        return __nimbusTrackOp(__orig.apply(this, args));
+        return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -886,12 +927,45 @@ const __fsMod = (() => {
     await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
   }
 
-  // Every untrusted resumption — a facet-local timer, a relayed socket frame
-  // — runs user code with no supervisor message behind it, so it cannot have
-  // carried an invalidation (see _UNBARRIERED_RESUMPTIONS). The shim owns
-  // these entry points, so it manufactures the missing barrier: the user
-  // callback is preceded by a completed ACQUIRE-and-refetch. After it, a
-  // synchronous read in the callback is as fresh as an async read at the
+  /**
+   * ACQUIRE at an untrusted resumption boundary, with the supervisor
+   * resolved at call time.
+   *
+   * Late resolution is load-bearing, not defensive. The opencode runner
+   * evaluates this module with \`__supervisor\` still null and assigns it in
+   * its fetch handler; binding the supervisor when the wrappers are
+   * installed would silently leave every resident-TUI timer unbarriered.
+   *
+   * Published on globalThis because the two other untrusted resumptions —
+   * an outbound fetch response and a relayed socket frame — are delivered
+   * by code outside this closure. One barrier, three boundaries.
+   */
+  async function _resumptionAcquire() {
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
+    await _acquireAndRefetch(supervisor);
+  }
+
+  /**
+   * RELEASE: this facet's parked writes reach the authority before an
+   * effect of them can be observed from outside the facet.
+   *
+   * Sited at every boundary where the facet's own action becomes externally
+   * visible — an outbound request, a frame sent on a relayed socket. Without
+   * it a peer can observe the effect of a write ("the build finished") and
+   * then read the pre-write bytes, which breaks causal consistency rather
+   * than merely linearizability.
+   */
+  async function _resumptionRelease() {
+    await __nimbusFlushVfsWriteBack(_supervisor());
+  }
+
+  // Every untrusted resumption — a facet-local timer, an outbound fetch
+  // response, a relayed socket frame — runs user code with no supervisor
+  // message behind it, so it cannot have carried an invalidation. The shim
+  // owns these entry points, so it manufactures the missing barrier: the
+  // user callback is preceded by a completed ACQUIRE-and-refetch. After it,
+  // a synchronous read in the callback is as fresh as an async read at the
   // same instant — the owner's invariant, met for the sync path.
   //
   // Correctness is unconditional and costs one supervisor round trip per
@@ -900,22 +974,22 @@ const __fsMod = (() => {
   // removable only by a proactive revision push whose delivery ordering is
   // an unrun workerd probe, never by weakening the barrier.
   function _installResumptionBarriers() {
-    const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
     if (globalThis.__nimbusResumptionBarriersInstalled) return;
     globalThis.__nimbusResumptionBarriersInstalled = true;
+    globalThis.__nimbusVfsAcquireBarrier = _resumptionAcquire;
+    globalThis.__nimbusVfsReleaseBarrier = _resumptionRelease;
     const _setTimeout = globalThis.setTimeout;
     const _setInterval = globalThis.setInterval;
     if (typeof _setTimeout === "function") {
       globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
         if (typeof cb !== "function") return _setTimeout(cb, ms);
-        return _setTimeout(() => { _acquireAndRefetch(supervisor).then(() => cb(...args)); }, ms);
+        return _setTimeout(() => { _resumptionAcquire().then(() => cb(...args)); }, ms);
       };
     }
     if (typeof _setInterval === "function") {
       globalThis.setInterval = function setInterval(cb, ms, ...args) {
         if (typeof cb !== "function") return _setInterval(cb, ms);
-        return _setInterval(() => { _acquireAndRefetch(supervisor).then(() => cb(...args)); }, ms);
+        return _setInterval(() => { _resumptionAcquire().then(() => cb(...args)); }, ms);
       };
     }
   }
