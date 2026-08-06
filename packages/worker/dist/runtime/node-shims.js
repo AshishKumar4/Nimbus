@@ -583,8 +583,12 @@ const __fsMod = (() => {
    * instead of awaiting the read that would return it.
    */
   function _notResidentError(absPath, displayPath, syscall, asyncForm) {
-    const st = _statResolved(absPath, displayPath, { throwIfNoEntry: false });
-    if (st === undefined) return _fsErr("ENOENT", syscall, displayPath);
+    const st = _statLadder(absPath);
+    if (st === undefined) {
+      return _absenceIsKnown(absPath)
+        ? _fsErr("ENOENT", syscall, displayPath)
+        : _unmappedError(absPath, displayPath, syscall, asyncForm);
+    }
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
     _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
@@ -623,11 +627,33 @@ const __fsMod = (() => {
   const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
     || (globalThis.__nimbusVfsResidencyMisses = new Set());
 
-  function _recordResidencyMiss(absPath) {
-    const k = _strip(absPath);
+  function _recordMiss(k) {
     if (k === "" || _residencyMisses.has(k)) return;
     _residencyMisses.add(k);
     _stats.misses++;
+  }
+
+  /**
+   * Repairs already issued, so each one costs one round trip.
+   *
+   * Kept apart from the ledger above because the two answer different
+   * questions and a path can need both: the same file can be refused first
+   * for being unmapped, which is repaired by fetching its parent's listing,
+   * and then for having no resident content, which is repaired by fetching
+   * the file. Sharing one set let the second repair be swallowed by the
+   * first, and the read never became answerable.
+   */
+  const _faulted = new Set();
+  function _faultOnce(kind, k) {
+    const token = kind + ":" + k;
+    if (_faulted.has(token)) return false;
+    _faulted.add(token);
+    return true;
+  }
+
+  function _recordResidencyMiss(absPath) {
+    const k = _strip(absPath);
+    _recordMiss(k);
     _faultIn(k);
   }
 
@@ -654,8 +680,168 @@ const __fsMod = (() => {
    * cost of not doing so is one read the program was going to need anyway.
    */
   function _faultIn(k) {
-    if (!_supervisor()) return;
-    try { _liveReadFile("/" + k, undefined).catch(() => {}); } catch { /* the fill is speculative */ }
+    if (!_supervisor() || !_faultOnce("content", k)) return;
+    // Swallowed here rather than at the settle: a repair nobody asked for
+    // must not surface as an unhandled rejection, and a failed one is simply
+    // a path that stays unanswered and stays in the ledger.
+    try { _repairs.push(_liveReadFile("/" + k, undefined).catch(() => {})); }
+    catch { /* the fill is speculative */ }
+  }
+
+  /**
+   * Repairs in flight, and the wait the exit report owes them.
+   *
+   * A refusal and the fetch that answers it are one event seen from two
+   * sides, so a program that ends between them has not been denied anything
+   * yet — it simply has not waited. Deciding the run was dishonest at that
+   * moment reports a failure the very next turn would have retracted, which
+   * for a short command is most of them. So the ledger is read only after
+   * every outstanding repair has landed and every proven absence has been
+   * retired. Published on globalThis because the runner that reports is
+   * outside this closure, the same way the resumption barriers are.
+   */
+  const _repairs = [];
+  globalThis.__nimbusVfsResidencySettle = async () => {
+    while (_repairs.length > 0) {
+      await Promise.allSettled(_repairs.splice(0));
+    }
+    _settleProvenAbsences();
+  };
+
+  /**
+   * Has this directory's content been enumerated, or merely mentioned?
+   *
+   * __vfsManifest is a walk of SELECTED roots — the cwd subtree, its
+   * node_modules, the entry script's own package — not of the filesystem. A
+   * directory with an entry there was listed by that walk, so its child list
+   * is complete and a name that is not in it is genuinely not there. A
+   * directory with no entry was never opened, and knows nothing. __vfsDirs
+   * holds the directories this process created itself, which it therefore
+   * knows the contents of by construction.
+   *
+   * Conflating the two is what let a synchronous readdir of a real directory
+   * outside the walk answer with an empty array — not an error, not a refusal,
+   * a positive assertion that a populated directory is empty. Every caller
+   * that used to end in "not found, so absent" goes through here first.
+   */
+  function _dirEnumerated(k) {
+    return (!!__vfsManifest && k in __vfsManifest) || (!!__vfsDirs && k in __vfsDirs);
+  }
+
+  /** Does the content bundle itself describe children under this directory? */
+  function _bundleHasChildren(k) {
+    if (!__vfsBundle) return false;
+    const prefix = k ? k + "/" : "";
+    for (const bk in __vfsBundle) if (bk.startsWith(prefix)) return true;
+    return false;
+  }
+
+  /**
+   * Can the view say this path is ABSENT, as opposed to say nothing at all?
+   *
+   * With no supervisor bound there is no authority to be ignorant of: the
+   * staged tables ARE the filesystem, the async form reads out of those same
+   * tables, and a name that is not in them is not anywhere. Ignorance is a
+   * property of the gap between a process and an authority it cannot reach
+   * synchronously, so where there is no authority there is no gap.
+   */
+  function _absenceIsKnown(absPath) {
+    if (!_supervisor()) return true;
+    const k = _strip(absPath);
+    if (k === "") return true;
+    const segments = k.split("/");
+    // Deepest enumerated ancestor, because that is the only one that can
+    // testify. Walking up rather than looking only at the immediate parent is
+    // what makes a whole missing subtree answerable from one listing: if
+    // $HOME was enumerated and holds no .config, then nothing under .config
+    // is there either, and a program probing three levels down deserves that
+    // answer rather than three refusals.
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const dir = segments.slice(0, i).join("/");
+      if (!_dirEnumerated(dir)) continue;
+      const child = segments.slice(0, i + 1).join("/");
+      const children = (__vfsManifest && __vfsManifest[dir]) || [];
+      const present = children.indexOf(segments[i]) !== -1
+        || (!!__vfsDirs && child in __vfsDirs)
+        || (!!__vfsBundle && child in __vfsBundle);
+      // The component is not in a directory that was listed: absent, and so is
+      // everything below it. If it IS there, only its own enumeration settles
+      // what it contains, so nothing short of the immediate parent will do.
+      if (!present) return true;
+      return i === segments.length - 1;
+    }
+    return false;
+  }
+
+  /**
+   * The refusal for a path the sync view never mapped.
+   *
+   * Sibling of _notResidentError and the same bargain: the file may well be
+   * there, the process simply cannot look without blocking. What it must not
+   * do is answer. A false from existsSync, an ENOENT from statSync and an
+   * empty array from readdirSync are all the same fabrication — absence
+   * invented out of ignorance — and the last one is the worst, because a
+   * program cannot even detect it. A scaffolder was told its template
+   * directory was empty, wrote nothing, and exited 0.
+   *
+   * So: refuse, record it beside the residency misses, and pull the enclosing
+   * listing in so the next touch is answered from knowledge. The async form
+   * already reaches the authority and already writes what it learns back into
+   * the manifest, which is why the two views converge instead of drifting.
+   */
+  function _unmappedError(absPath, displayPath, syscall, asyncForm) {
+    const k = _strip(absPath);
+    const slash = k.lastIndexOf("/");
+    // A listing wants the path's own contents; everything else wants to know
+    // whether the name is in the enclosing directory.
+    _recordMiss(k);
+    if (syscall === "scandir") {
+      _faultInDirectory(k);
+    } else {
+      // Both repairs, because the caller wanted the file and the enclosing
+      // listing is what makes its absence answerable if it turns out not to
+      // exist. Fetching one and then the other would refuse the same read
+      // twice: once for being unmapped, once for having no resident content.
+      _faultInDirectory(slash > 0 ? k.slice(0, slash) : "");
+      _faultIn(k);
+    }
+    const err = _fsErr("EAGAIN", syscall, displayPath);
+    err.message += " — '" + String(displayPath) + "' lies outside the filesystem view "
+      + "staged into the process, so a synchronous call cannot tell whether it exists, "
+      + "and synchronous I/O cannot block to find out"
+      + (_supervisor() ? "; " + asyncForm + " answers from the live filesystem" : "");
+    return err;
+  }
+
+  /**
+   * Pull a directory listing in. _readdirAsync already records what it learns
+   * into __vfsManifest, so one call both answers the fault and converges the
+   * sync view on the async one — there is no second merge path to keep honest.
+   */
+  function _faultInDirectory(k) {
+    if (!_supervisor() || _dirEnumerated(k) || !_faultOnce("listing", k)) return;
+    try { _repairs.push(_readdirAsync("/" + k, undefined).catch(() => {})); }
+    catch { /* speculative */ }
+  }
+
+  /**
+   * Retire the refusals a repair turned into honest absence.
+   *
+   * A refusal is only a wrong answer when the path was THERE and the process
+   * was denied it. Where the listing comes back and shows the name is simply
+   * not present, the program's not-found branch was the right branch all
+   * along — it merely reached it through the wrong errno — and failing the run
+   * over that would fail every module resolver, which probes dozens of paths
+   * that do not exist by design. So what stays in the ledger is exactly the
+   * harmful set: content that exists and was not served.
+   */
+  function _settleProvenAbsences() {
+    if (_residencyMisses.size === 0) return;
+    for (const k of [..._residencyMisses]) {
+      const absPath = "/" + k;
+      if (_statLadder(absPath) !== undefined) continue;
+      if (_absenceIsKnown(absPath)) _residencyMisses.delete(k);
+    }
   }
 
   function _fsErr(code, syscall, p) {
@@ -1482,6 +1668,23 @@ const __fsMod = (() => {
         // directory this very process has enumerated. Names only — size, mode
         // and ownership are not observable here and are never invented.
         if (__vfsManifest) __vfsManifest[key] = entries.map((entry) => entry.name);
+        // Which of the children are directories IS observable here, and it is
+        // the one fact a later synchronous listing cannot recover on its own —
+        // an unwalked subdirectory has no manifest entry, so without this it
+        // reads back as a file. A directory's size is 0 in this filesystem, so
+        // recording it invents nothing; file children are left alone, because
+        // their size is not knowable from a listing and must not be guessed.
+        const metadataTable = _metadataTable();
+        if (metadataTable) {
+          for (const entry of entries) {
+            if (entry.type !== "directory") continue;
+            const child = prefix + entry.name;
+            if (child in metadataTable) continue;
+            metadataTable[child] = {
+              type: "directory", size: 0, mode: 0o755, uid: cred.uid, gid: cred.gid,
+            };
+          }
+        }
         if (opts?.withFileTypes) {
           return entries
             .map((entry) => _direntObject(entry.name, entry.type))
@@ -1753,7 +1956,10 @@ const __fsMod = (() => {
     _ensureAncestorsTraversable(absPath, syscall, p);
     const cell = _bundleLookup(absPath);
     const meta = _metadata(absPath);
-    if (meta !== undefined || cell !== undefined || existsSync(absPath)) {
+    // The ladder rather than existsSync: a write to a path outside the staged
+    // view is a legitimate create, and must not be turned into a refusal by
+    // the check that guards it.
+    if (meta !== undefined || cell !== undefined || _statLadder(absPath) !== undefined) {
       const denial = _denialCode(cell);
       if (denial || !_modeAllows(meta, 2)) throw _fsErr(denial || "EACCES", syscall, p);
       return;
@@ -1918,6 +2124,14 @@ const __fsMod = (() => {
       const prefix = k + "/";
       for (const bk in __vfsBundle) { if (bk.startsWith(prefix) || bk === k) return true; }
     }
+    // Nothing found — which is only an answer if the enclosing directory was
+    // enumerated. Node's existsSync never throws, and that contract is exactly
+    // what makes a fabricated false unanswerable: the caller has nowhere to
+    // put a doubt, so it takes the not-there branch and is silently wrong.
+    // Refusing is louder than the API expects and quieter than being wrong.
+    if (!_absenceIsKnown(absPath)) {
+      throw _unmappedError(absPath, absPath, "access", "fs.promises.access");
+    }
     return false;
   }
 
@@ -1933,6 +2147,26 @@ const __fsMod = (() => {
   // classify a miss without redoing the resolve and ancestor walk it just
   // performed — that path runs on every module-resolution probe.
   function _statResolved(absPath, p, opts) {
+    const stat = _statLadder(absPath);
+    if (stat !== undefined) return stat;
+    // Nothing in the view describes the path, and there are two very different
+    // reasons for that. Only one of them means the file is not there.
+    if (!_absenceIsKnown(absPath)) {
+      throw _unmappedError(absPath, p, "stat", "fs.promises.stat");
+    }
+    // Node's statSync honors { throwIfNoEntry: false } by returning undefined
+    // for a missing path instead of throwing.
+    if (opts && opts.throwIfNoEntry === false) return undefined;
+    throw _fsErr("ENOENT", "stat", p);
+  }
+
+  /**
+   * The stat ladder itself: everything the sync view can say about a path, or
+   * undefined when it has nothing to say. It never decides what "nothing"
+   * MEANS — absence and ignorance are different answers and only one of them
+   * is a condition a program can act on, so the callers classify.
+   */
+  function _statLadder(absPath) {
     const k = _strip(absPath);
     // Content written this exec session is newer than the spawn-time
     // metadata snapshot, so it — not __vfsMetadata — is authoritative for
@@ -1990,10 +2224,7 @@ const __fsMod = (() => {
         }
       }
     }
-    // Node's statSync honors { throwIfNoEntry: false } by returning undefined
-    // for a missing path instead of throwing.
-    if (opts && opts.throwIfNoEntry === false) return undefined;
-    throw _fsErr("ENOENT", "stat", p);
+    return undefined;
   }
 
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
@@ -2010,6 +2241,20 @@ const __fsMod = (() => {
     const metadata = _metadata(absPath);
     if (metadata && !_modeAllows(metadata, 4)) throw _fsErr("EACCES", "scandir", p);
     const k = _strip(absPath);
+    // A listing is the one answer with no way to express doubt: an array is a
+    // complete enumeration by definition, so returning what happens to be
+    // known asserts that nothing else is there. Only a directory the walk
+    // enumerated, or one this process created, can honestly be listed.
+    if (!_dirEnumerated(k) && !_bundleHasChildren(k)) {
+      // An authority exists that this call cannot reach, so an empty array
+      // would be a claim about a directory nothing ever opened. Refuse, and
+      // pull the listing in for the next one.
+      if (_supervisor()) throw _unmappedError(absPath, p, "scandir", "fs.promises.readdir");
+      // No authority: the staged tables are the whole filesystem. A path they
+      // do not describe is missing, and one they describe with no children is
+      // genuinely empty.
+      if (_statLadder(absPath) === undefined) throw _fsErr("ENOENT", "scandir", p);
+    }
     const prefix = k ? k + "/" : "";
     const names = new Set();
     // 1. Manifest-supplied children (the authoritative source for installed pkgs).
@@ -2052,9 +2297,14 @@ const __fsMod = (() => {
       return arr.map(n => {
         const fp = prefix + n;
         // Manifest is the definitive isDir source; fall back to bundle scan.
+        // The metadata record sits between them: a directory that was listed
+        // but never walked has no manifest entry of its own, and calling it a
+        // file is how a template tree full of subdirectories reads back as a
+        // tree full of nothing.
         const isDir =
           (!!__vfsManifest && fp in __vfsManifest) ||
           (!!__vfsDirs && fp in __vfsDirs) ||
+          _metadata(fp)?.type === "directory" ||
           (!!__vfsBundle && Object.keys(__vfsBundle).some(bk => bk.startsWith(fp + "/")));
         return { name: n, isFile: () => !isDir, isDirectory: () => isDir, isSymbolicLink: () => false };
       });
