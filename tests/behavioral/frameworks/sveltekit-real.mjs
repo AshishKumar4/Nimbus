@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// frameworks/sveltekit-real — honest-boundary probe for `sv create`.
+// frameworks/sveltekit-real — `sv create` scaffolds a real SvelteKit project.
 //
 // Category: R (runtime-behavioral)
 //
@@ -12,23 +12,26 @@
 // non-interactive form ("Provide --template, --types, --add, and
 // --install (or --no-install) to skip prompts entirely").
 //
-// What this probe PROVES (the real, useful capability): sv resolves+
-// installs its own dependency tree, launches its CLI as a facet, and
-// reaches its scaffold entry — printing "Welcome to the Svelte CLI!"
-// (clack's intro). The npm resolver + facet spawn + drain all work.
+// What this proves: sv resolves and installs its own dependency tree,
+// launches its CLI as a facet, runs its `@clack/prompts` group flow to
+// completion with no TTY, and writes the project into the VFS.
 //
-// Boundary (documented, not faked): sv's `create` runs its scaffold
-// through a `@clack/prompts` group flow. Even with every value supplied
-// on the CLI (so no step actually prompts), the clack group machinery
-// sets up an interactive readline session over stdin; under the facet's
-// no-TTY environment the flow does not complete — sv prints the intro
-// box and exits WITHOUT writing a project (no package.json, no files).
-// This is the same interactive-CLI boundary documented for nuxt-real:
-// the tool's scaffold path is gated behind clack's interactive session,
-// which has no TTY to drive in a facet. A running SvelteKit dev server
-// is therefore out of reach for this tool until sv exposes a fully
-// non-interactive (clack-free) scaffold path, or Nimbus provides a TTY
-// that satisfies clack's group session.
+// This probe used to assert the opposite. Until 2026-08-05 it recorded a
+// boundary: clack's group machinery opened an interactive readline session
+// over stdin, and under the facet's no-TTY environment the flow never
+// completed — sv printed its intro box and exited without writing a single
+// file. That boundary is gone. Measured on that date sv runs through to
+// "You're all set!" and leaves a complete project: package.json depending on
+// @sveltejs/kit and svelte, vite.config.ts, tsconfig.json, and
+// src/routes/+page.svelte.
+//
+// So it was red for the best possible reason — the product outgrew the
+// limitation the probe was pinning. Asserting the capability is what stops
+// it regressing back to the intro box.
+//
+// NOT proven here: a RUNNING SvelteKit dev server. `--no-install` leaves the
+// toolchain unfetched, so that needs a full SvelteKit + vite install on top
+// of this. That is the next milestone and this probe does not claim it.
 
 import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 
@@ -59,15 +62,25 @@ try {
   a.check('sv launches and reaches its scaffold intro (npm resolver + facet spawn + drain)',
     reachedIntro, JSON.stringify(createOut.split(/\r?\n/).slice(-6).join(' | ')));
 
-  // The honest boundary: the clack group scaffold flow does not complete
-  // non-interactively in the facet — no project is produced.
+  // The clack group flow runs to completion with no TTY and writes the
+  // project. Asserted on the files a SvelteKit app cannot be without, not on
+  // sv's own success banner — a tool that prints "You're all set!" and
+  // scaffolds nothing is exactly the failure this probe exists to catch.
   const proj = await t.run(
-    `node -e "const fs=require('fs');console.log('PKG='+fs.existsSync('mvp/package.json'));console.log('DIR='+fs.existsSync('mvp'));"`,
+    `node -e "const fs=require('fs');const p='mvp/';const pkg=fs.existsSync(p+'package.json')?JSON.parse(fs.readFileSync(p+'package.json','utf8')):null;`
+    + `const d={...(pkg&&pkg.dependencies||{}),...(pkg&&pkg.devDependencies||{})};`
+    + `console.log('KIT='+('@sveltejs/kit' in d));console.log('SVELTE='+('svelte' in d));`
+    + `console.log('VITECFG='+fs.existsSync(p+'vite.config.ts'));`
+    + `console.log('TSCFG='+fs.existsSync(p+'tsconfig.json'));`
+    + `console.log('PAGE='+fs.existsSync(p+'src/routes/+page.svelte'));"`,
     20_000,
   );
   const projOut = stripAnsi(proj.output);
-  a.check('honest boundary: sv\'s clack scaffold produces no project non-interactively (no package.json)',
-    /PKG=false/.test(projOut), JSON.stringify(projOut.slice(-200)));
+  a.check('sv writes a complete SvelteKit project with no TTY to drive clack',
+    /KIT=true/.test(projOut) && /SVELTE=true/.test(projOut)
+      && /VITECFG=true/.test(projOut) && /TSCFG=true/.test(projOut)
+      && /PAGE=true/.test(projOut),
+    JSON.stringify(projOut.slice(-300)));
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);
