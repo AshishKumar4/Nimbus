@@ -1689,12 +1689,7 @@ function buildManifest(
   // recursion below each stops immediately.
   {
     const segments = cwdStripped ? cwdStripped.split('/') : [];
-    // From the first component down, never the root itself. The root's listing
-    // is the one thing here that this system perturbs by running: a facet
-    // image lands under /var, so enumerating / would make the manifest — and
-    // therefore the content-addressed image built from it — change as a side
-    // effect of having built one. The facet learns the root on demand instead.
-    for (let i = 1; i < segments.length; i++) {
+    for (let i = 0; i < segments.length; i++) {
       walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH);
     }
   }
@@ -3243,7 +3238,17 @@ export class FacetManager {
     this.debugEnabled = debugVar === '1' || debugVar === 'true';
   }
 
-  setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
+  setVfs(vfs: SqliteVFS) {
+    this.vfs = vfs;
+    // The image store owns its directory, so it creates it on the way up
+    // rather than on first write. Creating it lazily made the store perturb
+    // the filesystem view every manifest is built from: the root listing
+    // gained an entry the moment an image was written, so the next spawn of
+    // an identical program generated different text and addressed a different
+    // image. A directory that exists before the first walk is stable.
+    try { vfs.as(CRED_KERNEL).mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 }); }
+    catch { /* a session whose disk is not writable has no images to store */ }
+  }
   /**
    * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
    * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
