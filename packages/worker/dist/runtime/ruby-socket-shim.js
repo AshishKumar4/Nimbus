@@ -49,31 +49,14 @@ module Nimbus
         ''
       end
 
-      # Park the process until the next inbound request resumes it. This is
-      # what "blocking" means here: a wasm-stack suspension cannot outlive the
-      # request context that created it, so waiting has to happen in a fiber,
-      # whose state is Ruby's own memory.
-      def park(condition = nil)
-        Nimbus::Threading.park(condition)
+      # Park the process until the next inbound request resumes it, or until a
+      # deadline passes. This is what "blocking" means here: a wasm-stack
+      # suspension cannot outlive the request context that created it, so
+      # waiting has to happen in a fiber, whose state is Ruby's own memory.
+      def park(condition = nil, deadline = nil)
+        Nimbus::Threading.park(condition, deadline)
       rescue FiberError
         raise IOError, 'Nimbus sockets can only block inside a Nimbus process'
-      end
-
-      # ruby.wasm has no threads, so Timeout.timeout's watchdog Thread.new
-      # raises NotImplementedError on every call — which is what actually
-      # stopped Net::HTTP, before it reached a socket at all. Nothing in this
-      # runtime can interrupt a running block, so run it directly. Every
-      # loopback request is still bounded by the kernel's own response timer,
-      # so an unresponsive port cannot wedge the process.
-      def install_timeout_shim
-        return unless defined?(::Timeout)
-        return if ::Timeout.respond_to?(:__nimbus_threadless_timeout)
-        ::Timeout.singleton_class.class_eval do
-          define_method(:__nimbus_threadless_timeout) { true }
-          define_method(:timeout) do |sec = nil, _klass = nil, _message = nil, &block|
-            block ? block.call(sec) : nil
-          end
-        end
       end
 
     end
@@ -504,18 +487,30 @@ class << IO
     alias_method :__nimbus_original_select, :select
   end
 
+  # select is two waits wearing one name, and a timeout is load-bearing in
+  # both: waiting for a Nimbus socket to become readable, and waiting for
+  # nothing at all, which is how a great deal of stdlib code spells sleep. Both
+  # go through the scheduler, because a caller that waits by watching the clock
+  # here never gets to see it move.
   def select(reads, writes = nil, errors = nil, timeout = nil)
     read_list = Array(reads)
     write_list = Array(writes)
     error_list = Array(errors)
+    if read_list.empty? && write_list.empty? && error_list.empty?
+      Kernel.sleep(timeout)
+      return nil
+    end
     virtual_reads = read_list.select { |io| io.respond_to?(:__nimbus_socket_ready?) }
     if virtual_reads.any?
-      ready = virtual_reads.select { |io| io.__nimbus_socket_ready? }
-      return [ready, write_list, []] if ready.any?
-      return nil if timeout == 0
-      Nimbus::VirtualSocket.park(-> { virtual_reads.any? { |io| io.__nimbus_socket_ready? } })
-      ready = virtual_reads.select { |io| io.__nimbus_socket_ready? }
-      return ready.any? ? [ready, write_list, []] : nil
+      deadline = timeout ? Time.now + timeout : nil
+      loop do
+        ready = virtual_reads.select { |io| io.__nimbus_socket_ready? }
+        return [ready, write_list, []] if ready.any?
+        return nil if deadline && Time.now >= deadline
+        Nimbus::VirtualSocket.park(
+          -> { virtual_reads.any? { |io| io.__nimbus_socket_ready? } }, deadline
+        )
+      end
     end
     __nimbus_original_select(reads, writes, errors, timeout)
   end
@@ -543,11 +538,11 @@ module Kernel
       return false
     end
     loaded = __nimbus_original_require(path)
-    Nimbus::VirtualSocket.install_timeout_shim if path == 'timeout' || path.start_with?('net/')
+    Nimbus::Threading.install_timeout_shim if path == 'timeout' || path.start_with?('net/')
     loaded
   end
 end
 
 $LOADED_FEATURES << 'socket.rb' unless $LOADED_FEATURES.include?('socket.rb')
-Nimbus::VirtualSocket.install_timeout_shim
+Nimbus::Threading.install_timeout_shim
 `;

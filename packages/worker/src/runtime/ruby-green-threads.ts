@@ -40,10 +40,35 @@
  *   Thread#join, Thread#value                    here
  *   Queue#pop (empty), SizedQueue#push (full)    here
  *   Mutex#lock (held), ConditionVariable#wait    here
- *   sleep, inside a spawned thread               here
+ *   sleep, on a thread or the main body          here
+ *   Timeout.timeout's deadline                   here
  *   TCPServer#accept                             ruby-socket-shim
- *   IO.select over Nimbus sockets                ruby-socket-shim
+ *   IO.select, over Nimbus sockets or a timeout  ruby-socket-shim
  *   IO.pipe read on an empty pipe                ruby-socket-shim
+ *
+ * ── 2a. Why a timed wait cannot wait here ──────────────────────────────────
+ *
+ * workerd freezes the clock inside a turn - a deliberate timing-attack
+ * mitigation, measured at 0ms elapsed across 200,000 Time.now reads. So a wait
+ * that watches the clock can never end: it consumes the process's whole CPU
+ * budget and the invocation is killed with nothing to show for it. Ruby's own
+ * sleep is exactly that loop, which is why nothing here calls it.
+ *
+ * The clock belongs to the host, so a deadline is something to hand back
+ * rather than something to watch. A parked thread records when it wants
+ * waking; the main body hands the earliest such moment to the host and yields;
+ * the host waits on a real timer and resumes the process with the clock moved
+ * on. Every wait shape above therefore takes a deadline, and one that has no
+ * deadline and nothing that could ever satisfy it is reported as a deadlock.
+ *
+ * That clock also has a RESOLUTION - Date.now, whole milliseconds - and a
+ * deadline landing between two of them is one it can never report reaching.
+ * `Time.now + 0.2` is exactly that deadline, because the double nearest 0.2 is
+ * 0.2000000000000000111: measured on workerd, the host resumes the process at
+ * precisely +200ms and the guest finds itself 1.1e-17s short, re-arms for the
+ * remainder, is resumed again with the clock unmoved, and burns the budget one
+ * round trip at a time. So a deadline is rounded UP onto the clock's grid as
+ * it enters the scheduler, which is the only form of it that can be reached.
  *
  * Ruby exports the synchronisation primitives under two names each - ::Queue
  * and Thread::Queue - and defines both itself. BOTH have to resolve to the
@@ -93,6 +118,12 @@
  * other level either: every resident process is a DO Facet and facet siblings
  * serialise on CPU, so there is nowhere to offload it to.
  *
+ * The sharp edge of no preemption is a hand-rolled busy-wait: `until Time.now
+ * - t0 > 0.05; end` has no scheduling point, so nothing can reach it, and
+ * because the clock is frozen (§2a) it does not merely spin - it never ends.
+ * That is the one wait shape the scheduler cannot rescue. A program that wants
+ * to wait has to say so, through one of the park-set entries above.
+ *
  * ── 6. The same model, one layer down ──────────────────────────────────────
  *
  * runtime/wasi-threads.ts is this contract at the HOST layer: green threads as
@@ -112,11 +143,28 @@ module Nimbus
     class << self
       attr_accessor :running
 
-      # A process becomes host-driven the moment it listens: from then on
-      # inbound requests resume it, so waiting means handing control back to
-      # the host. Until then nothing outside will ever resume this process, so
-      # waiting has to happen on the wall clock right here.
+      # A process becomes host-driven the moment it listens: from then on an
+      # inbound request can resume it, so a wait with nothing else to wake it
+      # is still a wait rather than a deadlock.
       attr_accessor :host_driven
+
+      # The main body is not a GreenThread, so the scheduler holds its wait
+      # state: when it wants waking, and any Timeout deadline armed over it.
+      attr_accessor :main_deadline
+
+      # The clock reports whole milliseconds and nothing finer, so a deadline
+      # between two of them is unreachable and its wait never ends. Round up
+      # onto the grid: rounding down would let a wait return early, and any
+      # deadline built as now + a Float is a hair above one almost every time.
+      CLOCK_RESOLUTION = Rational(1, 1000)
+
+      def on_the_clock(deadline)
+        Time.at((deadline.to_r / CLOCK_RESOLUTION).ceil * CLOCK_RESOLUTION)
+      end
+
+      def main_timeouts
+        @main_timeouts ||= []
+      end
 
       def threads
         @threads ||= []
@@ -131,9 +179,75 @@ module Nimbus
         threads.any? { |t| !t.finished? && t.runnable? }
       end
 
-      # The soonest moment a sleeping thread wants to wake, or nil.
+      # The soonest moment any waiting context wants to be woken: its own
+      # deadline, and any Timeout deadline armed over it. A wake is only ever a
+      # chance to re-check, so waking early costs a turn and waking late misses
+      # a deadline - which is why every deadline in the process is in here.
+      def wake_moments
+        moments = [main_deadline]
+        main_timeouts.each { |entry| moments << entry[0] }
+        threads.each do |thread|
+          next if thread.finished?
+          moments << thread.deadline
+          thread.timeouts.each { |entry| moments << entry[0] }
+        end
+        moments
+      end
+
       def earliest_deadline
-        threads.map { |t| t.finished? ? nil : t.deadline }.compact.min
+        wake_moments.compact.min
+      end
+
+      # The deadlines Timeout has armed over whichever context is running.
+      def timeouts
+        running ? running.timeouts : main_timeouts
+      end
+
+      # Timeout can only fire where the block yields: nothing here can
+      # interrupt code that does not. So the deadline is registered against the
+      # context running the block and delivered at its next park - which is
+      # every entry in the park set, and so every point at which the block was
+      # going to be slow.
+      def with_timeout(seconds, error_class, message)
+        entry = [on_the_clock(Time.now + seconds), error_class, message]
+        armed = timeouts
+        armed << entry
+        begin
+          yield
+        ensure
+          armed.delete(entry)
+        end
+      end
+
+      # Ruby's own Timeout raises INTO the thread running the block, from a
+      # watchdog thread. The main body is the fiber the host resumes rather
+      # than a thread anything can raise into, so that delivery has nowhere to
+      # land. Registering the deadline here delivers it at the block's next
+      # wait instead, which is every point where the block was going to be
+      # slow, and the only point anything here can interrupt it at all.
+      def install_timeout_shim
+        return unless defined?(::Timeout)
+        return if ::Timeout.respond_to?(:__nimbus_scheduled_timeout)
+        ::Timeout.singleton_class.class_eval do
+          define_method(:__nimbus_scheduled_timeout) { true }
+          define_method(:timeout) do |sec = nil, klass = nil, message = nil, &block|
+            raise LocalJumpError, 'no block given (yield)' unless block
+            return block.call(sec) if sec.nil? || sec.to_f <= 0
+            Nimbus::Threading.with_timeout(
+              sec.to_f, klass || ::Timeout::Error, message || 'execution expired'
+            ) { block.call(sec) }
+          end
+        end
+      end
+
+      # Deliver a deadline that has passed for the context now running. Called
+      # at every scheduling point, which is the whole of when it can be.
+      def check_timeouts
+        armed = timeouts
+        entry = armed.find { |candidate| Time.now >= candidate[0] }
+        return nil unless entry
+        armed.delete(entry)
+        raise entry[1], entry[2]
       end
 
       # One scheduling pass: every runnable thread, in creation order, gets a
@@ -148,48 +262,63 @@ module Nimbus
         ran
       end
 
-      # Wait. What that means depends on who is waiting.
+      # Wait, optionally until a deadline. What waiting means depends on who is
+      # waiting.
       #
       # A spawned thread yields to the scheduler, recording what would unblock
-      # it. The main body has no scheduler above it, so it runs its peers
-      # instead; if none of them can move either, it waits on real time when a
-      # sleeper is due, and otherwise yields out to the host, which resumes the
-      # process once the world has changed.
-      def park(condition = nil)
+      # it and when it wants waking. The main body has no scheduler above it,
+      # so it runs its peers instead; if none of them can move either, it hands
+      # the earliest deadline in the process to the host and yields, because
+      # the host is what owns the clock and what advances it.
+      def park(condition = nil, deadline = nil)
+        deadline = on_the_clock(deadline) if deadline
+        wait = if condition && deadline
+                 -> { condition.call || Time.now >= deadline }
+               elsif deadline
+                 -> { Time.now >= deadline }
+               else
+                 condition
+               end
         thread = running
         if thread
-          thread.blocked_on = condition
+          thread.blocked_on = wait
+          thread.deadline = deadline
           begin
             Fiber.yield
           ensure
             thread.blocked_on = nil
+            thread.deadline = nil
           end
+          check_timeouts
           return nil
         end
-        progressed = run_others
-        return nil if condition && condition.call
-        return nil if progressed
-        return nil if condition.nil?
-        deadline = earliest_deadline
-        unless host_driven
-          # Nothing outside will resume this process, so wait here.
-          if deadline
-            remaining = deadline - Time.now
-            Kernel.__nimbus_wall_sleep(remaining) if remaining > 0
-            return nil
-          end
-          # Every thread is blocked on something none of them can produce, and
-          # no request will arrive to change that. Say so instead of hanging.
-          raise ThreadError, 'deadlock: every thread is blocked and nothing can wake them'
-        end
-        # Tell the host how long until the earliest sleeper is due and hand
-        # control back: the host owns the clock, so it can serve other inbound
-        # connections meanwhile instead of the process sitting in one sleep.
-        $__nimbus_wake_after = deadline ? [deadline - Time.now, 0.0].max : nil
+        previous = main_deadline
+        self.main_deadline = deadline
         begin
-          Fiber.yield
+          progressed = run_others
+          check_timeouts
+          return nil if wait && wait.call
+          return nil if progressed
+          return nil if wait.nil?
+          soonest = earliest_deadline
+          # Nothing in the process is due, and no request will arrive to change
+          # that. Every context is blocked on something none of them can
+          # produce, so say so instead of hanging.
+          unless soonest || host_driven
+            raise ThreadError, 'deadlock: every thread is blocked and nothing can wake them'
+          end
+          # Hand the host the earliest deadline and give control back: it owns
+          # the clock, so it can serve other inbound connections meanwhile
+          # instead of the process sitting in one sleep.
+          $__nimbus_wake_after = soonest ? [soonest - Time.now, 0.0].max : nil
+          begin
+            Fiber.yield
+          ensure
+            $__nimbus_wake_after = nil
+          end
+          check_timeouts
         ensure
-          $__nimbus_wake_after = nil
+          self.main_deadline = previous
         end
         nil
       end
@@ -203,15 +332,23 @@ module Nimbus
         else
           run_others
         end
+        check_timeouts
         nil
       end
 
       # Process exit: unwind every surviving thread so its ensure blocks run
       # and its descriptors close. Ruby's own semantics for the main thread
       # ending, and the reason a parked fiber never leaks a socket.
+      #
+      # The scheduler's own state goes with them. A pooled VM runs one program
+      # after another, and a deadline, an armed timeout or a host-driven flag
+      # left behind would belong to the program before.
       def shutdown
         threads.dup.each { |t| t.kill unless t.finished? }
         threads.clear
+        main_timeouts.clear
+        self.main_deadline = nil
+        self.host_driven = false
         nil
       end
     end
@@ -219,9 +356,8 @@ module Nimbus
 
   # One green thread: a fiber, what it is waiting for, and its result.
   class GreenThread
-    attr_accessor :blocked_on
+    attr_accessor :blocked_on, :deadline
     attr_accessor :name, :abort_on_exception, :report_on_exception
-    attr_reader :deadline
 
     def initialize(*args, &block)
       @locals = {}
@@ -255,19 +391,14 @@ module Nimbus
       $stderr.write(error.full_message(highlight: false, order: :top))
     end
 
-    # Sleep without stopping the world: park with a deadline the scheduler can
-    # see, so peers keep running and the main body knows when to wake us.
-    def sleep_until(deadline)
-      @deadline = deadline
-      begin
-        Nimbus::Threading.park(-> { Time.now >= deadline })
-      ensure
-        @deadline = nil
-      end
+    # Deadlines Timeout has armed over this thread, innermost last.
+    def timeouts
+      @timeouts ||= []
     end
 
     def runnable?
       return false if @finished
+      return true if timeouts.any? { |entry| Time.now >= entry[0] }
       return true if @blocked_on.nil?
       @blocked_on.call
     end
@@ -291,7 +422,7 @@ module Nimbus
       deadline = limit ? Time.now + limit : nil
       until finished?
         return nil if deadline && Time.now >= deadline
-        Nimbus::Threading.park(-> { finished? })
+        Nimbus::Threading.park(-> { finished? }, deadline)
       end
       # Kernel.raise, not Thread#raise: this class defines the latter, which
       # would deliver the error back INTO the finished thread instead of
@@ -663,7 +794,7 @@ class NimbusMutex
   def sleep(timeout = nil)
     unlock
     begin
-      timeout ? Kernel.sleep(timeout) : Nimbus::Threading.park
+      Kernel.sleep(timeout)
     ensure
       lock
     end
@@ -682,7 +813,7 @@ class NimbusConditionVariable
       target = @signalled + 1
       until @signalled >= target
         break if deadline && Time.now >= deadline
-        Nimbus::Threading.park(-> { @signalled >= target })
+        Nimbus::Threading.park(-> { @signalled >= target }, deadline)
       end
     ensure
       mutex.lock
@@ -727,28 +858,47 @@ Object.send(:remove_const, :ThreadGroup) if Object.const_defined?(:ThreadGroup, 
 Object.const_set(:ThreadGroup, NimbusThreadGroup)
 
 module Kernel
-  # The real sleep suspends the whole wasm stack, stopping every green thread
-  # with it. A spawned thread therefore sleeps by parking with a deadline so
-  # its peers keep running; the main body still sleeps for real, once its peers
-  # have nothing left to do.
+  # Ruby's own sleep waits by watching the clock, which is frozen inside a
+  # turn: it cannot end, and consumes the process's whole CPU budget trying. So
+  # sleeping is parking with a deadline, and the host is what waits.
   #
-  # Guard on BOTH visibilities: module_function below makes the alias public,
+  # With no duration, sleep means "until something wakes me". A thread parks on
+  # a condition only Thread#wakeup can clear. The main body has no such caller,
+  # so it keeps running its peers - and if none of them can move either, park
+  # reports the deadlock rather than waiting for a caller that cannot exist.
+  #
+  # Guard on BOTH visibilities: module_function below makes the method public,
   # so a private-only check would fail on a second application and re-alias
-  # __nimbus_wall_sleep onto the override, recursing until the stack dies.
-  unless method_defined?(:__nimbus_wall_sleep) || private_method_defined?(:__nimbus_wall_sleep)
-    alias_method :__nimbus_wall_sleep, :sleep
-    module_function :__nimbus_wall_sleep
-    public :__nimbus_wall_sleep
-
-    def sleep(seconds = nil)
-      thread = Nimbus::Threading.running
-      if thread && seconds
-        thread.sleep_until(Time.now + seconds)
-        return seconds
+  # sleep onto itself, recursing until the stack dies.
+  unless method_defined?(:__nimbus_scheduled_sleep) || private_method_defined?(:__nimbus_scheduled_sleep)
+    def __nimbus_scheduled_sleep(seconds = nil)
+      started = Time.now
+      if seconds.nil?
+        if Nimbus::Threading.running
+          Nimbus::Threading.park(-> { false })
+        else
+          loop { Nimbus::Threading.park(-> { false }) }
+        end
+      else
+        # Park first, then test: a zero or already-elapsed duration is Ruby's
+        # spelling of "give someone else a turn", and returning without one
+        # turns that idiom into a busy loop.
+        deadline = started + seconds
+        loop do
+          Nimbus::Threading.park(nil, deadline)
+          break if Time.now >= deadline
+        end
       end
-      Nimbus::Threading.run_others
-      seconds.nil? ? __nimbus_wall_sleep : __nimbus_wall_sleep(seconds)
+      (Time.now - started).round
     end
+    module_function :__nimbus_scheduled_sleep
+    public :__nimbus_scheduled_sleep
+
+    # Kernel.sleep is a SEPARATE copy taken when Ruby ran module_function on
+    # its own sleep, so redefining the instance method leaves callers of the
+    # module function on the original - the one that cannot end.
+    alias_method :sleep, :__nimbus_scheduled_sleep
+    module_function :sleep
   end
 end
 `;
