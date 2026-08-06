@@ -106,6 +106,52 @@ try {
     JSON.stringify(stuck.slice(-600)),
   );
 
+  // 6. The other side of that line: an unsettled PROMISE is not work in
+  //    flight. Node exits on live handles, not on pending promises, so a
+  //    program whose last act adopts a promise nothing will ever settle
+  //    prints its output and exits 0. Counting promises made this exact
+  //    shape — which npm CLIs produce routinely — burn the whole facet
+  //    lifetime and then report that the program had not finished.
+  const unsettled = await t.run(
+    `node -e 'Promise.resolve().then(() => new Promise(() => {})); console.log("PENDING-OK");' ; echo "EXIT=$?"`,
+    90_000,
+  );
+  const unsettledOut = stripAnsi(unsettled.output);
+  a.check(
+    'an unsettled promise does not keep the program alive',
+    /PENDING-OK/.test(unsettledOut) && /EXIT=0\b/.test(unsettledOut)
+      && !/facet lifetime limit/.test(unsettledOut),
+    JSON.stringify(unsettledOut.slice(-600)),
+  );
+
+  // 7. process.exit is immediate whatever is outstanding — a live interval
+  //    and an unsettleable promise both, here.
+  const explicitExit = await t.run(
+    `node -e 'setInterval(() => {}, 1000); Promise.resolve().then(() => new Promise(() => {})); (async () => { await new Promise(r => setTimeout(r, 200)); process.exit(3); })();' ; echo "EXIT=$?"`,
+    90_000,
+  );
+  const explicitExitOut = stripAnsi(explicitExit.output);
+  a.check(
+    'process.exit wins over everything still outstanding',
+    /EXIT=3\b/.test(explicitExitOut) && !/facet lifetime limit/.test(explicitExitOut),
+    JSON.stringify(explicitExitOut.slice(-600)),
+  );
+
+  // 8. Exiting early must not exit before the writes land. A synchronous
+  //    write can only park bytes in the facet, so the exit path is what
+  //    carries them to the authority — shortening the program's life must
+  //    not shorten that.
+  const syncWrite = stripAnsi((await t.run(
+    `node -e 'require("fs").writeFileSync("/home/user/drain-sync.txt","persisted-bytes"); Promise.resolve().then(() => new Promise(() => {}));'`,
+    90_000,
+  )).output);
+  const readBackSync = stripAnsi((await t.run('cat /home/user/drain-sync.txt; echo', 60_000)).output);
+  a.check(
+    'a program that returns early still persists what it wrote',
+    /persisted-bytes/.test(readBackSync) && !/facet lifetime limit/.test(syncWrite),
+    JSON.stringify(readBackSync.slice(-600)),
+  );
+
   // 5. execSync cannot be honoured in a facet and says so, loudly, instead of
   //    returning before the child has run.
   const sync = stripAnsi((await t.run(
