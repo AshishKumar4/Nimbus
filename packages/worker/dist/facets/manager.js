@@ -313,6 +313,43 @@ async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises, de
 }
 `;
 /**
+ * The report a program owes when it finishes on an unanswered read.
+ *
+ * A facet has no synchronous I/O primitive, so a sync read of content that
+ * was never staged into the process raises EAGAIN — honest, but a code no
+ * program branches on, because it cannot arise from a POSIX regular file.
+ * Whatever catch block receives it was written for a missing file, so the
+ * reader proceeds on the answer it prepared for that. The result looks like
+ * success and is not.
+ *
+ * So a run that ends with entries still in the shim's residency ledger is
+ * failed here, and the files are named. Silence is the one outcome that must
+ * not be available: the miss is either repaired (the next bundle stages what
+ * the supervisor learned from the same ledger) or it is loud.
+ *
+ * Both generators call it — a one-shot exec folds it into its envelope, a
+ * resident process into its final exit report — because a program's exit is
+ * the only place that knows whether a miss was ever answered.
+ */
+const RESIDENCY_MISS_REPORT = `
+const __NIMBUS_RESIDENCY_NAMED_MAX = 20;
+function __nimbusResidencyMissReport() {
+  const __missed = globalThis.__nimbusVfsResidencyMisses;
+  if (!__missed || __missed.size === 0) return "";
+  const __paths = [];
+  for (const __k of __missed) __paths.push("/" + __k);
+  const __named = __paths.slice(0, __NIMBUS_RESIDENCY_NAMED_MAX);
+  const __rest = __paths.length - __named.length;
+  return "node: " + __paths.length + " file(s) were read synchronously but their content was "
+    + "never staged into the process, so every one of those reads failed and the program "
+    + "carried on without the bytes. Failing rather than reporting a result built on them:\\n"
+    + __named.map((__p) => "  " + __p + "\\n").join("")
+    + (__rest > 0 ? "  ... and " + __rest + " more\\n" : "")
+    + "The files exist and an async read (fs.promises.readFile) returns them now; the next "
+    + "run of the same command stages them up front.\\n";
+}
+`;
+/**
  * Static `import * as __real_X from 'node:X'` block. Prepended to generated
  * runtime workers so the shims can forward to workerd's real `node:*` builtins.
  * See src/_shared/real-node-imports.ts for the rationale and matrix.
@@ -487,6 +524,7 @@ ${shims}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
 ${ENTRYPOINT_STARTUP_DRAIN}
+${RESIDENCY_MISS_REPORT}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
@@ -573,6 +611,16 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       }
     }
 
+    // Sited before the drain, like the lifetime-limit diagnostic above, so
+    // the queued stderr write is one of the writes the drain settles rather
+    // than an orphan dropped at teardown.
+    const __residencyReport = __nimbusResidencyMissReport();
+    if (__residencyReport) {
+      stderr += __residencyReport;
+      if (exitCode === 0) exitCode = 1;
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __residencyReport);
+    }
+
     await __drainPendingIO();
 
     if (__supervisor) {
@@ -615,6 +663,10 @@ ${ENTRYPOINT_STARTUP_DRAIN}
       stdout: (__supervisor && !captureOutput) ? "" : stdout,
       stderr: (__supervisor && !captureOutput) ? "" : stderr,
       vfsWrites: __supervisor ? {} : __vfsWrites,
+      // Unconditional, unlike diag: the supervisor stages these paths into
+      // the next bundle for the same entry, so withholding them behind a
+      // debug flag would leave the miss to repeat forever.
+      residencyMisses: [...(globalThis.__nimbusVfsResidencyMisses || [])],
       ...(__diag ? { diag: { drainPasses: __drainPasses, rpcWrites: __rpcWriteCount, fsRpcReads: globalThis.__nimbusFsRpcReads || 0 } } : {}),
     });
   }
@@ -778,6 +830,7 @@ ${shims}
 
 ${ENTRYPOINT_PROMISE_TRACKER}
 ${ENTRYPOINT_STARTUP_DRAIN}
+${RESIDENCY_MISS_REPORT}
 
     if (__supervisor && !captureOutput) {
       __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
@@ -866,6 +919,14 @@ ${ENTRYPOINT_STARTUP_DRAIN}
 
     const __nimbusReportFinalExit = async (code, reason) => {
       if (!__supervisor || __nimbusProcessExitReported) return;
+      // Every resident exit path funnels through here, so the unanswered-read
+      // report is sited once and cannot be reached around.
+      const __residencyReport = __nimbusResidencyMissReport();
+      if (__residencyReport) {
+        stderr += __residencyReport;
+        if (Number(code ?? 0) === 0) code = 1;
+        try { await __supervisor.stderr(__residencyReport); } catch {}
+      }
       await __supervisor.reportExit(code, reason || "");
       __nimbusProcessExitReported = true;
     };
@@ -2152,6 +2213,65 @@ export function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundl
     }
     return { added };
 }
+/**
+ * Stage the paths an earlier run of the same entry read synchronously and did
+ * not have.
+ *
+ * The speculative passes are all proxies for intent — a call shape, a package
+ * layout, a filename — and each one silently drops whatever its author did
+ * not think of. A miss is the opposite: direct evidence, from the program
+ * itself, that the bundle was wrong about one specific path. So the only
+ * policy here is a budget. There is no extension rule and no per-file size
+ * rule; a file that does not fit inside the bundle's memory bound is one no
+ * policy can stage, and the facet says so by name when it is read again.
+ *
+ * Admitted smallest-first for the same reason as the entry-package walk: the
+ * budget is shared, so ordering by size maximizes the number of misses a
+ * fixed number of bytes repairs.
+ */
+export function addObservedReads(vfs, observed, bundle, requiredPaths, budgetState) {
+    if (!observed || observed.size === 0)
+        return { added: 0 };
+    const candidates = [];
+    for (const path of observed) {
+        if (path === '' || bundle[path] !== undefined)
+            continue;
+        let stat;
+        try {
+            stat = vfs.lstat(path);
+        }
+        catch {
+            continue;
+        }
+        if (stat.type === 'directory')
+            continue;
+        candidates.push({ path, size: stat.size });
+    }
+    candidates.sort((a, b) => a.size - b.size);
+    let added = 0;
+    for (const candidate of candidates) {
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
+            break;
+        if (budgetState.totalBytes + candidate.size > VFS_BUNDLE_MAX_BYTES)
+            continue;
+        let content;
+        try {
+            content = _readBundleCell(vfs, candidate.path);
+        }
+        catch {
+            continue;
+        }
+        const cellLen = _bundleCellLength(content);
+        if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
+            continue;
+        bundle[candidate.path] = content;
+        requiredPaths.add(candidate.path);
+        budgetState.totalBytes += cellLen;
+        budgetState.fileCount++;
+        added++;
+    }
+    return { added };
+}
 const RUNTIME_PACKAGE_EXCLUDED_ROOT_DIRS = new Set([
     'docs',
     'doc',
@@ -2582,7 +2702,7 @@ async function transformEsmInBundle(bundle, esbuild) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE) {
+export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
     // resetting the DO three times. Take the budget the enrichment passes are
@@ -2592,14 +2712,14 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile);
+        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads);
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE) {
+async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
@@ -2608,11 +2728,21 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     const bundle = { ...prefetch.bundle };
     const requiredPaths = new Set(Object.keys(prefetch.bundle));
     let truncated = false;
+    const budgetState = { totalBytes: 0, fileCount: 0 };
+    // 1.5 Observed reads. Every pass below this line guesses what a program
+    //     will read — from a call shape, a package layout, a string literal —
+    //     and each of them is wrong for whatever it did not anticipate. These
+    //     paths are not a guess: an earlier run of the same entry asked for
+    //     them synchronously and the bundle did not have them. So they are
+    //     admitted first, ahead of every guess, and they join the required set
+    //     rather than the evictable one, because a file evicted here misses
+    //     again on the next run and the loop never closes.
+    const observedAdd = addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState);
+    void observedAdd;
     // 2. Greedy oversample — every installed pkg's pkg.json + main.
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
     //    regex prefetch misses. Its budget is independent from the complete
     //    static require closure, which is correctness-critical.
-    const budgetState = { totalBytes: 0, fileCount: 0 };
     const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState);
     // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
     //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
@@ -2815,6 +2945,25 @@ export class FacetManager {
     static PREFETCH_CACHE_MAX = 16;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     prefetchCacheBytes = 0;
+    /**
+     * What each entry was observed to read and not have, keyed exactly like the
+     * prefetch cache above so a profile can only ever seed the bundle it was
+     * measured against.
+     *
+     * Lifetime is the supervisor incarnation's, same as the cache — a restart
+     * costs one more loud failure and then relearns. Persisting it would be a
+     * schema and a migration bought with nothing the in-memory form does not
+     * already deliver for the case that matters: running the command again.
+     */
+    residencyProfiles = new Map();
+    static RESIDENCY_PROFILE_MAX_ENTRIES = 16;
+    /**
+     * A program that reads a directory of data files misses once per file, so
+     * the cap has to clear a real working set. Past it the profile stops
+     * growing and the surplus stays loud — a bounded map that admits the first
+     * N is honest; an unbounded one in a Durable Object is a leak.
+     */
+    static RESIDENCY_PROFILE_MAX_PATHS = 4096;
     // NOTE: the opencode artifact sources (entry bundle, chunk pack, TUI worker
     // sources, wasm sidecars) are never materialized on the spawn path — this
     // manager only builds the small OpencodeStageSpec (argv/env/VFS snapshot).
@@ -2861,7 +3010,8 @@ export class FacetManager {
             this.prefetchBundleCache.set(key, cached);
             return { ...cached.vfsState, cacheHit: true };
         }
-        const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile);
+        const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile, this.residencyProfiles.get(key));
+        vfsState.bundleKey = key;
         vfsState.bundleSource = buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
         vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
@@ -2895,6 +3045,47 @@ export class FacetManager {
      * pi's 44 MB boot payload through: a thing sized by count when what matters
      * is bytes.
      */
+    /**
+     * File what a process could not read against the bundle that failed it.
+     *
+     * A miss the supervisor never hears about is a miss the next run repeats,
+     * so this is the whole of the repair: record the path, then drop the cached
+     * bundle for that key so the next build is a real one and stages it. The
+     * program that hit the miss is already gone — nothing here rescues it, and
+     * nothing here needs to, because the facet failed loudly on the way out.
+     */
+    _recordResidencyMisses(key, misses) {
+        if (!key || !misses || misses.length === 0)
+            return;
+        let profile = this.residencyProfiles.get(key);
+        if (profile)
+            this.residencyProfiles.delete(key);
+        else
+            profile = new Set();
+        this.residencyProfiles.set(key, profile);
+        let learned = 0;
+        for (const path of misses) {
+            if (profile.size >= FacetManager.RESIDENCY_PROFILE_MAX_PATHS)
+                break;
+            if (typeof path !== 'string' || path === '' || profile.has(path))
+                continue;
+            profile.add(path);
+            learned++;
+        }
+        for (const oldest of this.residencyProfiles.keys()) {
+            if (this.residencyProfiles.size <= FacetManager.RESIDENCY_PROFILE_MAX_ENTRIES)
+                break;
+            this.residencyProfiles.delete(oldest);
+        }
+        if (learned === 0)
+            return;
+        const cached = this.prefetchBundleCache.get(key);
+        if (!cached)
+            return;
+        this.prefetchBundleCache.delete(key);
+        this.prefetchCacheBytes -= cached.bytes;
+        setPrefetchCacheBytes(this.prefetchCacheBytes);
+    }
     _admitPrefetchCacheEntry(key, revision, vfsState) {
         const previous = this.prefetchBundleCache.get(key);
         if (previous)
@@ -3038,6 +3229,7 @@ export class FacetManager {
         try {
             const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink), entry, () => abortController.abort());
             this._flushVfsWrites(result, entry.pid);
+            this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
             this.processes.exit(entry.pid, result.exitCode);
             if (result.exitCode !== 0) {
                 this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
