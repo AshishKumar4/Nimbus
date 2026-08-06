@@ -12,6 +12,12 @@
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "preview_urls": false,
   "vars": {
+    // Where every resident process in this deployment runs: "facet" (a child
+    // actor of the user's own session DO) or "peer" (a child actor of a
+    // sibling DO — CPU independence at ~20x the spawn cost). One value for the
+    // whole deployment; nothing per-process chooses. See
+    // packages/worker/src/loaders/process-host.ts.
+    "NIMBUS_PROCESS_HOST": "facet",
     // Same public OAuth client as the hosted demo so the session agent
     // surface (and its probes) behave identically here. Client id and
     // scopes are public PKCE values, not secrets.

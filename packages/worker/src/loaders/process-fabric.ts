@@ -1,52 +1,53 @@
 /**
- * process-fabric.ts — the resident-process scheduler.
+ * process-fabric.ts — the resident-process scheduler, and the process half of
+ * the substrate it runs on.
  *
  * Every long-lived process Nimbus runs — node servers, python/ruby socket
- * servers, the opencode TUI and its headless server — runs as a **DO Facet**
- * of the user's session Durable Object: a named child actor whose class comes
- * from a dynamic worker the coordinator loads itself.
+ * servers, the opencode TUI and its headless server — runs as a **DO Facet**:
+ * a named child actor whose class comes from a dynamic worker, opened by
+ * `openResidentFacet` below.
  *
  *   ctx.facets.get(`proc-${pid}`, () => ({
  *     class: env.LOADER.get(workerKey, buildConfig)
  *              .getDurableObjectClass('NimbusProcess'),
  *   }))
  *
- * There is ONE placement, so there is nothing to schedule and nothing above
- * this module may branch on. What a facet buys, all of it measured on the
- * production compatibility shape:
+ * There is ONE process implementation. What varies is WHOSE `ctx` and `env`
+ * that call runs against — the user's own session DO, or a sibling DO acting
+ * as a host — and that choice is a single deployment-wide config value read in
+ * `loaders/process-host.ts`. Nothing here, and nothing above here, branches on
+ * which program is running: no spawn site picks its own substrate, and no
+ * program name, mode or payload size reaches the selection.
  *
- *   memory   — a facet gets its OWN ~208 MiB envelope, identical whether the
- *              coordinator holds 0 or 128 MiB; 8 facets + parent held
- *              1,664 MiB live under one DO. A facet OOM leaves the
- *              coordinator's memory and boot id intact, and a coordinator OOM
- *              leaves the facet's.
- *   spawn    — 8-16 ms warm, against 242-359 ms for a sibling DO (which pays
- *              a DO create + SQLite open on every single spawn).
- *   serving  — a facet is addressed by NAME, so the coordinator re-resolves it
- *              in any later request context and serves inbound HTTP, SSE and
- *              WebSockets straight through. Sibling DOs cannot: an entrypoint
- *              to a dynamically-loaded worker may not be transferred between
- *              Workers.
- *   payload  — the loader callback runs INSIDE the coordinator, so a boot spec
- *              never crosses an RPC boundary and workerd's 32 MiB argument
- *              limit does not apply to it.
+ * What each substrate costs, all of it measured on the production
+ * compatibility shape (see `loaders/process-host.ts` for the operator-facing
+ * version of this table):
  *
- * The honest cost: facets are separate isolates inside the parent's SINGLE
- * actor thread. A facet awaiting I/O yields it completely — a sibling's RPC
- * latency while a facet parks on a socket, on stdin or on an outbound call is
- * indistinguishable from idle — but a facet spending sustained CPU stalls
- * every sibling AND their syscalls for that duration. Measured on the real
- * workloads: a python HTTP server at 32-way saturation held siblings under
- * 1.06 s (median 231 ms, degrading proportionally), the opencode attach TUI
- * held them at the 77 ms idle baseline with a ~1.4 s boot spike, while a
- * deliberate 9,956 ms CPU burn in the same placement stalled them for
- * 9,966 ms. So this fabric hosts I/O-bound resident processes. Nimbus's
- * CPU-heavy work — clang, esbuild, npm install — does not route through it.
+ *   facet  — spawn 8-16 ms warm. Memory independent: its OWN ~208 MiB
+ *            envelope, identical whether the coordinator holds 0 or 128 MiB,
+ *            with 1,664 MiB live across 8 facets + parent. CPU SHARED with
+ *            its siblings, because facets are separate isolates inside one
+ *            actor thread: awaiting I/O yields that thread completely (a
+ *            sibling's RPC latency while a facet parks on a socket, on stdin
+ *            or on an outbound call is indistinguishable from idle) but
+ *            sustained CPU stalls every sibling for its full duration —
+ *            a python HTTP server at 32-way saturation held siblings under
+ *            1.06 s (p50 231 ms), the opencode attach TUI held them at the
+ *            77 ms idle baseline, and a deliberate 9,956 ms CPU burn stalled
+ *            them for 9,966 ms.
+ *   peer   — spawn 242-359 ms, because every spawn pays a DO create plus a
+ *            SQLite open. Memory AND CPU both independent: the process runs
+ *            in a different workerd process, verified per placement rather
+ *            than assumed (see `_placeDistinctPeer`).
  *
- * The facet's SUPERVISOR binding is minted from the COORDINATOR's ctx.exports
- * for the COORDINATOR's doId, so every syscall — VFS read/write, stdout/stderr
- * frames, stdin pump, registerPort, loopback HTTP — lands on the user's
- * session DO. Because that binding is minted by an actor rather than by a
+ * Both give the process its own SQLite. Neither changes what the process is:
+ * the runner, the boot spec, the class name, the writer handshake and the
+ * lifecycle contract are the same code either way.
+ *
+ * The facet's SUPERVISOR binding is minted for the COORDINATOR's doId, so
+ * every syscall — VFS read/write, stdout/stderr frames, stdin pump,
+ * registerPort, loopback HTTP — lands on the user's session DO wherever the
+ * process runs. Because that binding is minted by an actor rather than by a
  * stateless entrypoint, it lives as long as the process does; nothing has to
  * hold a call open to keep it alive.
  *
@@ -64,6 +65,12 @@
  *            named BY VFS PATH and read through the injected disk reader. A
  *            ruby server's `ruby+stdlib.wasm` alone is 34.3 MiB and a node
  *            facet's disk snapshot reached 44 MB for pi.
+ *
+ * By-path is what lets a boot spec reach EITHER substrate. Inline, pi's node
+ * snapshot serialized to 44,252,709 bytes and died at workerd's 32 MiB RPC
+ * ceiling the moment it had to cross to a peer; named by path it sends zero
+ * bytes, and the host reads them off the coordinator's own disk through the
+ * `ResidentDiskReader` it was given.
  */
 
 import { z } from 'zod/v4';
@@ -256,12 +263,18 @@ export async function createLoadedWorkerEntrypoint(
 // ── Module-map assembly ─────────────────────────────────────────────────────
 
 /**
- * Reads the members a boot spec named by path off the session's own disk.
- * Supplied by the session, which owns the filesystem and the credential the
- * kernel reads its own image store with; the fabric never learns either.
+ * Reads the members a boot spec named by path off the SESSION's disk — the
+ * coordinator's, always, whichever substrate is doing the reading.
+ *
+ * The session supplies it, because it owns the filesystem and the credential
+ * the kernel reads its own image store with; the fabric never learns either.
+ * A host that runs inside the coordinator answers synchronously off the local
+ * VFS; a host that runs elsewhere answers over the supervisor RPC. That is the
+ * whole of the difference, and it is why the return type is widened rather
+ * than the reader duplicated.
  */
 export interface ResidentDiskReader {
-  readFile(path: string): Uint8Array;
+  readFile(path: string): Uint8Array | Promise<Uint8Array>;
 }
 
 /**
@@ -276,7 +289,7 @@ export async function residentLoaderConfig(
 ): Promise<Record<string, unknown>> {
   const resolved: Record<string, string | { wasm: ArrayBuffer }> = {};
   for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
-    const bytes = disk.readFile(path);
+    const bytes = await disk.readFile(path);
     resolved[moduleName] = {
       wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     };
@@ -304,7 +317,7 @@ async function readFacetImage(disk: ResidentDiskReader, path: string): Promise<s
   if (!expected) {
     throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
   }
-  const source = new TextDecoder().decode(disk.readFile(path));
+  const source = new TextDecoder().decode(await disk.readFile(path));
   const actual = await facetImageDigest(source);
   if (actual !== expected) {
     throw new Error(
@@ -315,35 +328,95 @@ async function readFacetImage(disk: ResidentDiskReader, path: string): Promise<s
   return source;
 }
 
-// ── Facet host surface ──────────────────────────────────────────────────────
+// ── The hosting substrate ───────────────────────────────────────────────────
 
-/** The subset of a facet stub a resident process exposes to its coordinator. */
+/**
+ * The identity a resident process's SUPERVISOR binding is minted for. Always
+ * the COORDINATOR's — a process hosted somewhere else still reads and writes
+ * the user's disk, and still reports to the user's process table.
+ */
+export interface ResidentSupervisorProps {
+  doId: string;
+  pid: number;
+  writerId: string;
+}
+
+/** Everything a host needs to run one process. Substrate-free by construction. */
+export interface ProcessHostParams {
+  /** Supervisor-assigned pid of the process entry on the coordinator. */
+  pid: number;
+  /** Keyed dynamic-worker identity (`nimbus-process:${doId}:${pid}`). */
+  workerKey: string;
+  /** What the process boots from. */
+  boot: ResidentBootSpec;
+  /** Binds the facet-local append sequence to this concrete incarnation. */
+  writerId: string;
+  /** Forwarded verbatim to the runner's startProcess. */
+  startArgs: unknown;
+}
+
+/**
+ * One resident process, as its coordinator sees it. Identical in meaning on
+ * every substrate — that identity IS the abstraction, so a divergence here is
+ * a bug rather than a documented difference.
+ */
+export interface HostedProcess {
+  /**
+   * The runner's startProcess payload. The runner is started as part of
+   * opening the host, so this is a handle on that one boot — awaiting it twice
+   * is safe and never re-starts anything. A `lifetime` runner settles it at
+   * exit; a host that dies before then rejects it.
+   */
+  readonly started: Promise<unknown>;
+  /** Inbound HTTP for the process's registered ports. */
+  handleHttpRequest(request: Request): Promise<Response>;
+  /**
+   * Idempotent teardown. Settles only once the process is actually gone —
+   * on a remote host that is a round trip, and the writer identity this
+   * incarnation holds may not be retired before it completes.
+   */
+  release(): Promise<void>;
+  /** Human-readable placement, for the NIMBUS_DEBUG process-log line. */
+  describe(): string;
+}
+
+/**
+ * The substrate a resident process runs on. One implementation per hosting
+ * mechanism, one selection for the whole deployment — see
+ * `loaders/process-host.ts`.
+ */
+export interface ProcessHost {
+  open(params: ProcessHostParams): Promise<HostedProcess>;
+}
+
+/** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
   handleHttpRequest(request: Request): Promise<Response>;
 }
 
-/** `ctx.facets` — this Durable Object's named child actors. */
-interface FacetHost {
+/** `ctx.facets` — a Durable Object's named child actors. */
+interface FacetContainer {
   get(name: string, start: () => Promise<{ class: unknown }>): ResidentFacetStub;
   abort(name: string, reason?: unknown): void;
   delete(name: string): void;
 }
 
-/** `env.LOADER` — the Worker Loader binding, as used from inside the DO. */
+/** `env.LOADER` — the Worker Loader binding, as used from inside a DO. */
 interface WorkerLoaderBinding {
   get(id: string, code: () => Promise<unknown>): { getDurableObjectClass(name: string): unknown };
 }
 
-interface ProcessFabricEnv extends Partial<OpencodeAssetsEnv> {
+/** The bindings `openResidentFacet` needs off whichever DO is hosting. */
+export interface ResidentFacetEnv extends Partial<OpencodeAssetsEnv> {
   LOADER?: WorkerLoaderBinding;
 }
 
-function facetHost(ctx: DurableObjectState): FacetHost {
-  const facets = (ctx as { facets?: unknown }).facets as FacetHost | undefined;
+function facetContainer(ctx: DurableObjectState): FacetContainer {
+  const facets = (ctx as { facets?: unknown }).facets as FacetContainer | undefined;
   if (!facets || typeof facets.get !== 'function') {
     throw new Error(
-      'Nimbus: ctx.facets is unavailable in this session Durable Object; '
+      'Nimbus: ctx.facets is unavailable in this Durable Object; '
         + 'resident processes cannot be hosted',
     );
   }
@@ -355,16 +428,129 @@ export function residentFacetName(pid: number): string {
   return `proc-${pid}`;
 }
 
+/** What `openResidentFacet` hands back: a running process, minus its placement. */
+export type ResidentFacet = Omit<HostedProcess, 'describe'>;
+
+/**
+ * Open a resident process as a facet of the actor whose `ctx` and `env` are
+ * given, and start its runner.
+ *
+ * This is the ONE way a resident process comes into existence, and every
+ * substrate goes through it: the facet host calls it with the coordinator's
+ * own `ctx`, the peer host calls it — over one RPC — with a sibling session
+ * DO's. Everything a substrate could plausibly want to special-case is a
+ * PARAMETER here rather than a branch: which actor hosts the child, and how
+ * the boot spec's by-path members are read.
+ */
+export function openResidentFacet(
+  ctx: DurableObjectState,
+  env: ResidentFacetEnv,
+  disk: () => ResidentDiskReader,
+  supervisor: ResidentSupervisorProps,
+  params: ProcessHostParams,
+): ResidentFacet {
+  const facets = facetContainer(ctx);
+  const name = residentFacetName(params.pid);
+  // The start callback is the ONLY way this facet is ever created, and it
+  // fires AT MOST ONCE. Every later use goes through the stub below, so the
+  // callback running a second time means the facet was released or died —
+  // and re-running it would evaluate the user's program again, answering a
+  // request from a process they never started while the one they did start
+  // is gone. Both cases are reported instead.
+  let evaluated = false;
+  let released = false;
+  const start = async (): Promise<{ class: unknown }> => {
+    if (released) {
+      throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
+    }
+    if (evaluated) {
+      throw new Error(
+        `Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
+          + 'it is not restarted',
+      );
+    }
+    evaluated = true;
+    return { class: residentProcessClass(env, disk, supervisor, params) };
+  };
+  const facet: ResidentFacetStub = facets.get(name, start);
+
+  let disposed = false;
+  const release = async () => {
+    if (disposed) return;
+    disposed = true;
+    released = true;
+    try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
+    try { facets.delete(name); } catch { /* already gone */ }
+  };
+
+  let started: Promise<unknown>;
+  try {
+    started = facet.startProcess(params.startArgs);
+  } catch (error) {
+    void release();
+    throw error;
+  }
+  // A caller reads whichever of `started` and the lifecycle it needs, so keep
+  // the runtime from reporting the other as an unhandled rejection.
+  started.catch(() => {});
+  return {
+    started,
+    handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
+    release,
+  };
+}
+
+/**
+ * The dynamic worker's Durable Object class, minted in the caller's request
+ * context. `LOADER.get` runs its callback only on a cache miss, so a process
+ * assembles its module map at most once and the bytes never stay resident in
+ * the hosting DO's heap.
+ */
+function residentProcessClass(
+  env: ResidentFacetEnv,
+  disk: () => ResidentDiskReader,
+  supervisor: ResidentSupervisorProps,
+  params: ProcessHostParams,
+): unknown {
+  const loader = env.LOADER;
+  if (!loader || typeof loader.get !== 'function') {
+    throw new Error(
+      'Nimbus: env.LOADER binding missing or invalid. Resident processes require '
+        + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
+    );
+  }
+  return loader
+    .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+    .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+}
+
+async function residentWorkerConfig(
+  env: ResidentFacetEnv,
+  disk: () => ResidentDiskReader,
+  supervisor: ResidentSupervisorProps,
+  boot: ResidentBootSpec,
+): Promise<Record<string, unknown>> {
+  const config = boot.kind === 'staged'
+    ? await assembleOpencodeFacetConfig(env, boot.stage)
+    : await residentLoaderConfig(boot.code, disk());
+  const ctxExports = getNimbusCtxExports();
+  if (!ctxExports.SupervisorRPC) {
+    throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+  }
+  return { ...config, env: { SUPERVISOR: ctxExports.SupervisorRPC({ props: supervisor }) } };
+}
+
 // ── Handle ──────────────────────────────────────────────────────────────────
 
 /**
  * Resource handle for one resident process — the whole surface the kernel
  * above this module sees: `booted()` for the boot payload, `done` for death,
- * `kill()` for teardown, `routeTarget` for inbound HTTP.
+ * `kill()` for teardown, `routeTarget` for inbound HTTP. Substrate-free: the
+ * kernel cannot tell from it where the process is running, and never asks.
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
- * held-open startProcess settling (resolve on exit, reject on facet death);
- * for a `boot` runner it is the kill that releases the facet.
+ * held-open startProcess settling (resolve on exit, reject on host death);
+ * for a `boot` runner it is the kill that releases the host.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other
@@ -460,123 +646,67 @@ function heldUntilKilled(): { promise: Promise<void>; release: () => void } {
 }
 
 export class ProcessFabric {
-  private readonly ctx: DurableObjectState;
-  private readonly env: ProcessFabricEnv;
-  private readonly disk: () => ResidentDiskReader;
-  private readonly coordDoId: string;
-
-  constructor(ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader) {
-    this.ctx = ctx;
-    this.env = (env ?? {}) as ProcessFabricEnv;
-    this.disk = disk;
-    this.coordDoId = ctx.id.toString();
-  }
+  constructor(private readonly host: ProcessHost) {}
 
   /**
-   * Boot a resident process as a facet of this session and return its handle.
-   * Resolves once the facet is up and its runner has been started; rejects on
-   * boot failure.
+   * Boot a resident process on this deployment's substrate and return its
+   * handle. Resolves once the process is up and its runner has been started;
+   * rejects on boot failure.
+   *
+   * There is no decision in here. The substrate was chosen once, for the
+   * deployment, and the only thing this method knows about it is the
+   * `ProcessHost` interface.
    */
   async startResidentProcess(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle> {
     // The facet-local append sequence starts at one when its module evaluates.
     // Bind that sequence to this concrete incarnation, then retire it only
-    // after the facet is released; a later incarnation must use a fresh one.
+    // after the host is released; a later incarnation must use a fresh one.
     const writerId = crypto.randomUUID();
     spawn.onWriterActivated(writerId);
 
-    const facets = facetHost(this.ctx);
-    const name = residentFacetName(spawn.pid);
-    // The start callback is the ONLY way this facet is ever created, and it
-    // fires AT MOST ONCE. Every later use goes through the stub below, so the
-    // callback running a second time means the facet was released or died —
-    // and re-running it would evaluate the user's program again, answering a
-    // request from a process they never started while the one they did start
-    // is gone. Both cases are reported instead.
-    let evaluated = false;
-    let released = false;
-    const start = async (): Promise<{ class: unknown }> => {
-      if (released) {
-        throw new Error(`Nimbus: resident process ${spawn.pid} is no longer running`);
-      }
-      if (evaluated) {
-        throw new Error(
-          `Nimbus: resident process ${spawn.pid} is no longer loaded (its facet was lost); `
-            + 'it is not restarted',
-        );
-      }
-      evaluated = true;
-      return { class: this._processClass(spawn, writerId) };
-    };
-    const facet: ResidentFacetStub = facets.get(name, start);
-
-    const release = () => {
-      released = true;
-      try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
-      try { facets.delete(name); } catch { /* already gone */ }
-      spawn.onWriterRetired(writerId);
-    };
-
-    let started: Promise<unknown>;
+    let hosted: HostedProcess;
     try {
-      started = facet.startProcess(spawn.startArgs);
+      hosted = await this.host.open({
+        pid: spawn.pid,
+        workerKey: spawn.workerKey,
+        boot: spawn.boot,
+        writerId,
+        startArgs: spawn.startArgs,
+      });
     } catch (error) {
-      release();
+      spawn.onWriterRetired(writerId);
       throw error;
     }
+
     const held = heldUntilKilled();
+    // Runs at most once, however it is reached — the lifecycle ending, a kill,
+    // or both. Retiring the writer twice would revoke an identity a later
+    // incarnation had already been granted.
+    let releasing: Promise<void> | null = null;
+    const release = (): Promise<void> => {
+      if (!releasing) {
+        releasing = (async () => {
+          try { await hosted.release(); } finally { spawn.onWriterRetired(writerId); }
+        })();
+        releasing.catch(() => {});
+      }
+      return releasing;
+    };
     // `lifetime`: the runner's startProcess IS the process, so its settlement
-    // is the lifecycle. `boot`: the runner returns once it is up and the facet
-    // stays resident as this session's named child actor, so residency ends
-    // only when the facet is released (kill) or the boot failed.
+    // is the lifecycle. `boot`: the runner returns once it is up and the
+    // process stays resident on its host, so residency ends only when the host
+    // is released (kill) or the boot failed.
     const done = (spawn.startContract === 'lifetime'
-      ? started.then(() => undefined)
-      : started.then(() => held.promise)
-    ).finally(release);
-    // A caller reads whichever of these it needs — `booted()` for a boot
-    // payload, `done` for the lifecycle — so keep the runtime from reporting
-    // the other as an unhandled rejection when a boot fails.
-    started.catch(() => {});
+      ? hosted.started.then(() => undefined)
+      : hosted.started.then(() => held.promise)
+    ).finally(() => release());
     done.catch(() => {});
     return new ResidentProcessHandle({
       done,
-      booted: () => started,
-      routeTarget: { handleHttpRequest: (request: Request) => facet.handleHttpRequest(request) },
-      kill: () => { held.release(); release(); },
-      describe: () => `facet '${name}' of session ${this.coordDoId.slice(-12)}`,
+      booted: () => hosted.started,
+      routeTarget: { handleHttpRequest: (request: Request) => hosted.handleHttpRequest(request) },
+      kill: () => { held.release(); void release(); },
+      describe: () => hosted.describe(),
     });
-  }
-
-  /**
-   * The dynamic worker's Durable Object class, minted in the caller's request
-   * context. `LOADER.get` runs its callback only on a cache miss, so a process
-   * assembles its module map at most once and the bytes never stay resident in
-   * this DO's heap.
-   */
-  private _processClass(spawn: ResidentProcessSpawn, writerId: string): unknown {
-    const loader = this.env.LOADER;
-    if (!loader || typeof loader.get !== 'function') {
-      throw new Error(
-        'Nimbus: env.LOADER binding missing or invalid. Resident processes require '
-          + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
-      );
-    }
-    const supervisor = { doId: this.coordDoId, pid: spawn.pid, writerId };
-    return loader
-      .get(spawn.workerKey, () => this._loaderConfig(spawn.boot, supervisor))
-      .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
-  }
-
-  private async _loaderConfig(
-    boot: ResidentBootSpec,
-    supervisor: { doId: string; pid: number; writerId: string },
-  ): Promise<Record<string, unknown>> {
-    const config = boot.kind === 'staged'
-      ? await assembleOpencodeFacetConfig(this.env, boot.stage)
-      : await residentLoaderConfig(boot.code, this.disk());
-    const ctxExports = getNimbusCtxExports();
-    if (!ctxExports.SupervisorRPC) {
-      throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
-    }
-    return { ...config, env: { SUPERVISOR: ctxExports.SupervisorRPC({ props: supervisor }) } };
   }
 }

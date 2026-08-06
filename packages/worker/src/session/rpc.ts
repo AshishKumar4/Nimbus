@@ -31,6 +31,19 @@ import { EsbuildService } from '../runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import {
+  ResidentBootSpecSchema,
+  getNimbusCtxExports,
+  openResidentFacet,
+  type ResidentDiskReader,
+  type ResidentFacet,
+  type ResidentSupervisorProps,
+} from '../loaders/process-fabric.js';
+import {
+  isolateToken,
+  type HostedHttpRequest,
+  type HostedHttpResponse,
+} from '../loaders/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
@@ -1410,6 +1423,319 @@ export async function _rpcFanoutExecute(
   } finally {
     try { pool.dispose(); } catch { /* best-effort */ }
   }
+}
+
+// ── Process fabric: the peer host leg ───────────────────────────────────────
+//
+// THIS DO instance acts as a process host for a sibling coordinator session:
+// it opens the process as a facet of ITSELF — the same `openResidentFacet`
+// call the coordinator makes when it hosts one directly — so the facet lands
+// in THIS DO's workerd process, with its own memory AND its own CPU. The
+// facet's SUPERVISOR binding is minted for the COORDINATOR's doId, so every
+// syscall routes back to the user's session. Same trust and routing posture as
+// _rpcFanoutExecute's INSTALL-HONESTY override.
+//
+// Nothing here knows what the process is, and nothing here decides anything: a
+// coordinator reaches this leg only because its deployment set
+// NIMBUS_PROCESS_HOST=peer. See loaders/process-host.ts.
+
+const HostProcessOptsSchema = z.object({
+  /** Full doId of the coordinator session (SUPERVISOR routing target). */
+  coordinatorDoId: z.string().min(1),
+  /** Supervisor-assigned pid of the process entry on the coordinator. */
+  pid: z.number().int().positive(),
+  /** Trusted identity of this concrete resident-host incarnation. */
+  writerId: z.string().uuid(),
+  /** Keyed dynamic-worker identity on THIS peer's loader. */
+  workerKey: z.string().min(1),
+  /** Opaque arguments forwarded to the runner's startProcess. */
+  startArgs: z.unknown().optional(),
+});
+
+/**
+ * One process this peer hosts for a coordinator sibling. Registered
+ * synchronously by `_rpcHostProcess` before any await, so the boot-payload and
+ * routed-HTTP legs — which the coordinator may issue concurrently — always
+ * find the record and simply await it.
+ */
+export interface HostedProcessRecord {
+  facet: Promise<ResidentFacet>;
+  started: Promise<unknown>;
+  /** Settles when the coordinator cancels or the process is torn down. */
+  cancelled: Promise<void>;
+  cancel(): void;
+}
+
+/**
+ * How long a boot-payload or routed-HTTP leg waits for its process's host
+ * record. Normally zero: the coordinator issues `_rpcHostProcess` first and it
+ * registers before its first await. The wait exists so neither leg can lose a
+ * race with RPC delivery order.
+ */
+const HOSTED_RECORD_WAIT_MS = 30_000;
+
+/**
+ * Whole-file reads for a boot spec's by-path members, in ranges. This is the
+ * one thing a peer does differently from a coordinator, and it is a PARAMETER
+ * of `openResidentFacet` rather than a branch inside it: the coordinator reads
+ * its own disk synchronously, a peer reads the same disk over the supervisor.
+ *
+ * Ranged because these are the session's largest files — a ruby
+ * interpreter+stdlib image is 34.3 MiB — and workerd's 32 MiB ceiling applies
+ * to each returned VALUE, not to the call.
+ */
+const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
+
+interface SupervisorFileReader {
+  stat(path: string): Promise<{ size?: number } | null>;
+  fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+}
+
+function peerDiskReader(supervisor: ResidentSupervisorProps): ResidentDiskReader {
+  const ctxExports = getNimbusCtxExports();
+  if (!ctxExports.SupervisorRPC) {
+    throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+  }
+  const fs = ctxExports.SupervisorRPC({ props: supervisor }) as unknown as SupervisorFileReader;
+  return { readFile: (path) => readSupervisorFile(fs, path) };
+}
+
+async function readSupervisorFile(fs: SupervisorFileReader, path: string): Promise<Uint8Array> {
+  const stat = await fs.stat(path);
+  const size = Number(stat?.size);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error(`Nimbus: cannot size '${path}' for a resident process's module map`);
+  }
+  const out = new Uint8Array(size);
+  for (let offset = 0; offset < size;) {
+    const chunk = await fs.fsReadRange(path, offset, Math.min(RESIDENT_READ_RANGE_BYTES, size - offset));
+    if (!chunk || chunk.byteLength === 0) {
+      throw new Error(`Nimbus: '${path}' returned no bytes at offset ${offset}`);
+    }
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function hostedRecords(self: RpcHost): Map<string, HostedProcessRecord> {
+  return self._hostedProcesses;
+}
+
+function hostedWaiters(self: RpcHost): Map<string, Set<(record: HostedProcessRecord) => void>> {
+  return self._hostedProcessWaiters;
+}
+
+function registerHostedRecord(self: RpcHost, workerKey: string, record: HostedProcessRecord): void {
+  hostedRecords(self).set(workerKey, record);
+  const waiters = hostedWaiters(self).get(workerKey);
+  if (!waiters) return;
+  hostedWaiters(self).delete(workerKey);
+  for (const notify of waiters) notify(record);
+}
+
+function awaitHostedRecord(self: RpcHost, workerKey: string): Promise<HostedProcessRecord> {
+  const existing = hostedRecords(self).get(workerKey);
+  if (existing) return Promise.resolve(existing);
+  return new Promise<HostedProcessRecord>((resolve, reject) => {
+    const waiters = hostedWaiters(self).get(workerKey) ?? new Set<(record: HostedProcessRecord) => void>();
+    const notify = (record: HostedProcessRecord) => { clearTimeout(timer); resolve(record); };
+    const timer = setTimeout(() => {
+      waiters.delete(notify);
+      if (waiters.size === 0) hostedWaiters(self).delete(workerKey);
+      reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
+    }, HOSTED_RECORD_WAIT_MS);
+    waiters.add(notify);
+    hostedWaiters(self).set(workerKey, waiters);
+  });
+}
+
+/**
+ * RPC: placement probe. Returns this peer's module-scope isolate token so the
+ * coordinator can verify the peer landed in a distinct workerd process — the
+ * same token means a shared process, which is the CPU sharing a peer exists to
+ * escape.
+ */
+export function _rpcProcessHostProbe(_self: RpcHost): { isolateToken: string } {
+  return { isolateToken: isolateToken() };
+}
+
+/**
+ * RPC: host a resident process. Held open by the coordinator for the process's
+ * whole life, and it is that held call which keeps this DO resident — nothing
+ * arms an alarm to wake a host back up. Resolves when the coordinator releases
+ * the process; rejects if it could not be opened at all.
+ *
+ * The runner's start CONTRACT never crosses. The coordinator's fabric decides
+ * from it when the process is over and releases, which cancels this call — so
+ * this leg holds uniformly and has no idea whether it is hosting a TUI or a
+ * server.
+ *
+ * If the coordinator dies, workerd cancels this inbound call, the facet is
+ * released in the `finally` below, and the process dies with it: a hosting
+ * peer never outlives its parent session.
+ */
+export async function _rpcHostProcess(
+  self: RpcHost,
+  boot: unknown,
+  opts: unknown,
+): Promise<{ ok: boolean }> {
+  const hostOpts = HostProcessOptsSchema.parse(opts);
+  const spec = ResidentBootSpecSchema.parse(boot);
+  const { workerKey } = hostOpts;
+  const supervisor: ResidentSupervisorProps = {
+    doId: hostOpts.coordinatorDoId,
+    pid: hostOpts.pid,
+    writerId: hostOpts.writerId,
+  };
+
+  let cancel = () => {};
+  const cancelled = new Promise<void>((resolve) => { cancel = resolve; });
+  let settleFacet: (f: ResidentFacet) => void = () => {};
+  let failFacet: (e: unknown) => void = () => {};
+  const facetPromise = new Promise<ResidentFacet>((resolve, reject) => {
+    settleFacet = resolve;
+    failFacet = reject;
+  });
+  let settleStarted: (v: unknown) => void = () => {};
+  let failStarted: (e: unknown) => void = () => {};
+  const startedPromise = new Promise<unknown>((resolve, reject) => {
+    settleStarted = resolve;
+    failStarted = reject;
+  });
+  // Nothing awaits these unless a leg asks for them; keep the runtime from
+  // reporting them as unhandled while the process is healthy.
+  facetPromise.catch(() => {});
+  startedPromise.catch(() => {});
+  registerHostedRecord(self, workerKey, {
+    facet: facetPromise,
+    started: startedPromise,
+    cancelled,
+    cancel,
+  });
+
+  let facet: ResidentFacet | undefined;
+  try {
+    facet = openResidentFacet(
+      self.ctx,
+      self.env,
+      () => peerDiskReader(supervisor),
+      supervisor,
+      {
+        pid: hostOpts.pid,
+        workerKey,
+        boot: spec,
+        writerId: hostOpts.writerId,
+        startArgs: hostOpts.startArgs,
+      },
+    );
+    settleFacet(facet);
+    facet.started.then(settleStarted, failStarted);
+    await cancelled;
+    return { ok: true };
+  } catch (e) {
+    failFacet(e);
+    failStarted(e);
+    throw e;
+  } finally {
+    // The record OUTLIVES the process on purpose, and a peer hosts exactly one
+    // (its name carries the pid), so this is one entry per host for the life of
+    // the instance. Dropping it would make a request that arrives after a kill
+    // wait out `HOSTED_RECORD_WAIT_MS` and then blame the wrong thing; keeping
+    // it routes that request into the released facet, which is exactly what a
+    // coordinator-hosted one does — it says the process is no longer running.
+    await facet?.release();
+  }
+}
+
+/**
+ * RPC: settle once the process is OPEN on this peer, or reject with whatever
+ * stopped it from opening.
+ *
+ * This exists so a host failure surfaces at the same place on both substrates.
+ * Opening a facet of your own DO either throws or does not, before the fabric
+ * has a handle; opening one on a peer is a message, and without this the
+ * coordinator would return a handle for a process that never existed and only
+ * discover it later, through `done`. A caller must not have to know which
+ * substrate it is on to know what a successful spawn means.
+ */
+export async function _rpcAwaitHostedOpen(self: RpcHost, workerKey: string): Promise<{ ok: boolean }> {
+  const record = await awaitHostedRecord(self, workerKey);
+  await record.facet;
+  return { ok: true };
+}
+
+/**
+ * RPC: read back the runner's startProcess payload. `_rpcHostProcess` started
+ * it; this never starts anything, so a coordinator asking twice gets the same
+ * answer a local facet would have returned inline — and for a `lifetime`
+ * runner it settles at exit, exactly as the local one does.
+ */
+export async function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): Promise<{ payload: unknown }> {
+  const record = await awaitHostedRecord(self, workerKey);
+  return { payload: await record.started };
+}
+
+/**
+ * RPC: inbound HTTP for a port owned by a process this peer hosts.
+ *
+ * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
+ * rejects it with "Entrypoints to dynamically-loaded workers cannot be
+ * transferred to other Workers", because the object belongs to the
+ * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
+ * body is a plain ReadableStream, which RPC transfers with flow control. So
+ * the leg carries the parts and rebuilds the object on each side: no
+ * buffering, no size ceiling, and an SSE or chunked body still flows live.
+ *
+ * The response body is re-piped through an identity stream owned by THIS
+ * isolate before it is returned, for the same reason the parts exist at all:
+ * what leaves here must not be an object the loaded worker owns.
+ */
+export async function _rpcRouteHostedHttp(
+  self: RpcHost,
+  workerKey: string,
+  wire: HostedHttpRequest,
+): Promise<HostedHttpResponse> {
+  const record = await awaitHostedRecord(self, workerKey);
+  const facet = await record.facet;
+  const headers = new Headers();
+  for (const [k, v] of wire.headers) headers.append(k, v);
+  const init: RequestInit & { duplex?: 'half' } = { method: wire.method, headers };
+  if (wire.body) { init.body = wire.body; init.duplex = 'half'; }
+  const response = await facet.handleHttpRequest(new Request(wire.url, init));
+  const responseHeaders: [string, string][] = [];
+  response.headers.forEach((v, k) => { responseHeaders.push([k, v]); });
+  let body: ReadableStream | null = null;
+  if (response.body) {
+    const { readable, writable } = new IdentityTransformStream();
+    self.ctx.waitUntil(response.body.pipeTo(writable).catch(() => {}));
+    body = readable;
+  }
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    headers: responseHeaders,
+    body,
+  };
+}
+
+/**
+ * RPC: deterministic kill of a hosted process — the same teardown a
+ * coordinator applies to a facet of its own, and it does not answer until it
+ * has happened. The facet is released HERE rather than left to the held call's
+ * `finally`, because a caller that has to guess whether the process is really
+ * gone cannot retire the writer identity behind it.
+ */
+export async function _rpcCancelHostProcess(
+  self: RpcHost,
+  workerKey: string,
+): Promise<{ cancelled: boolean }> {
+  const record = hostedRecords(self).get(workerKey);
+  if (!record) return { cancelled: false };
+  const facet = await record.facet.catch(() => null);
+  await facet?.release();
+  try { record.cancel(); } catch { /* best-effort */ }
+  return { cancelled: true };
 }
 
 // ── Cache-observability stats forward (cache metrics support) ──────

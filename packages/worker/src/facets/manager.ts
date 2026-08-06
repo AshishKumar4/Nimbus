@@ -48,6 +48,7 @@ import {
   type ResidentDiskReader,
   type StartContract,
 } from '../loaders/process-fabric.js';
+import { processHostFor } from '../loaders/process-host.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
@@ -3231,7 +3232,7 @@ export class FacetManager {
     this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
-    this.processFabric = new ProcessFabric(ctx, env, () => this._residentDisk());
+    this.processFabric = new ProcessFabric(processHostFor(ctx, env, () => this._residentDisk()));
     const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
