@@ -60,11 +60,11 @@ function newSessionFailure(status, body) {
   if (AUTH_TOKEN) {
     return (
       `POST ${BASE}/new → ${status}: the target rejected this probe's bearer token.\n`
-      + `The token is signed with a JWT_SECRET the target no longer has — a redeploy of\n`
-      + `the target (\`staging:deploy --rotate-secrets\`, or a throwaway redeployed under\n`
-      + `the same name) replaced it, or the token has simply expired.\n`
-      + `Re-mint against the current environment: \`bun run staging:status\` to see what is\n`
-      + `deployed, \`bun tests/behavioral/_staging-target.mjs token\` for a fresh token.`
+      + `The token is signed with a JWT_SECRET the target no longer has — the target was\n`
+      + `redeployed with a rotated secret — or the token has expired. No probe code ran.\n`
+      + `Re-mint a token for the target BASE points at:\n`
+      + `  staging   → bun tests/behavioral/_staging-target.mjs token\n`
+      + `  throwaway → bun tests/behavioral/_throwaway-target.mjs token --name <name>`
     );
   }
   return (
