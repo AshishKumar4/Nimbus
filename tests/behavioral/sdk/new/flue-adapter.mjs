@@ -31,7 +31,7 @@ const stub = {
   async _rpcExists(path) { calls.push(['exists', path]); return path !== '/missing'; },
   async _rpcMkdir(path) { calls.push(['mkdir', path]); },
   async _rpcDeleteFile(path, options) { calls.push(['deleteFile', path, options]); },
-  async _rpcStartProcess(command, options) { calls.push(['startProcess', command, options]); return { command, exitCode: 0, success: true, stdout: '', stderr: '', duration: 1, timestamp: 1, pid: null, process: null, ports: [] }; },
+  async _rpcStartProcess(command, options) { calls.push(['startProcess', command, options]); return { command, pid: 7, process: { pid: 7, command, argv: command.split(/\s+/), cwd: options?.cwd ?? '/home/user', state: 'running', exitCode: null, startTime: 1, endTime: null, longRunning: true }, ports: [], startedAt: 1 }; },
   async _rpcRunCode(code, options) { calls.push(['runCode', code, options]); return { command: code, exitCode: 0, success: true, stdout: '', stderr: '', duration: 1, timestamp: 1 }; },
   async _rpcInstallRuntime(spec, options) { calls.push(['installRuntime', spec, options]); return { spec }; },
   async _rpcEnsureRuntimes(specs, options) { calls.push(['ensureRuntimes', specs, options]); return []; },

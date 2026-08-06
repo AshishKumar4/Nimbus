@@ -72,11 +72,21 @@ assert.equal(processes.cred(other.pid).umask, 0o022, 'umask changes are process-
 
 for (const call of [
   () => rpc._rpcAccess(host, '/user.txt', 0, 0),
-  () => rpc._rpcChown(host, '/user.txt', 0, 0),
+  () => rpc._rpcChown(host, '/user.txt', 0, 0, 0),
+  () => rpc._rpcSetUmask(host, 0o022, 0),
+  // umask is process state: a caller with no process has none to set.
   () => rpc._rpcSetUmask(host, 0o022),
 ]) {
-  await assert.rejects(call, /process|pid/i, 'missing or zero pid cannot infer kernel credentials');
+  await assert.rejects(call, /process|pid/i, 'an invalid pid cannot infer kernel credentials');
 }
+
+// A pid-less host caller (the SDK, the remote /rpc dispatcher) acts as the
+// unprivileged session user, so privileged operations stay denied.
+await assert.rejects(
+  rpc._rpcChown(host, '/user.txt', 0, 0),
+  (error) => error?.code === 'EPERM',
+  'a pid-less host caller cannot take ownership as root',
+);
 
 const supervisorSource = readFileSync(fileURLToPath(
   new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url),

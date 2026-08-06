@@ -70,8 +70,8 @@ await assert.rejects(
 );
 await assert.rejects(
   _rpcFsOpen(host, '/private/root.txt', { read: true }),
-  /process|pid/i,
-  'missing pid cannot default-open the VFS',
+  /EACCES/,
+  'a pid-less host caller acts as the unprivileged session user, never as the kernel',
 );
 
 console.log('session RPC process filesystem isolation: ok');
