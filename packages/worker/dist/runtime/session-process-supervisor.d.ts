@@ -51,6 +51,8 @@ export declare class SessionProcessSupervisor {
     private readonly table;
     private readonly input;
     private logs;
+    /** Terminators for processes whose work is a promise this session owns. */
+    private terminators;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     private logActivity;
     /** Allocate a PID and register a new process. */
@@ -62,6 +64,16 @@ export declare class SessionProcessSupervisor {
     get(pid: number): ProcessEntry | undefined;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
+    /** Every process spawned under `pid`, transitively, oldest first. */
+    descendantsOf(pid: number): ProcessEntry[];
+    /**
+     * Register how to stop the work behind `pid`. Background jobs started
+     * through the programmatic API run as a promise held by this session, so
+     * `kill` has to abort them rather than only marking the table entry.
+     * Cleared once the process reaches a terminal state.
+     */
+    setTerminator(pid: number, terminate: () => void): void;
+    private terminate;
     cred(pid: number): VfsCred;
     setUmask(pid: number, umask: number): number;
     /** Mark a process as exited. First terminal state wins. */

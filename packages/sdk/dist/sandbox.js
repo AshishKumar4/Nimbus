@@ -64,10 +64,12 @@ const PortSchema = z.object({
     pid: z.number(),
     registeredAt: z.number(),
 });
-const StartResultSchema = ExecResultSchema.extend({
-    pid: z.number().nullable(),
-    process: ProcessSchema.nullable(),
+const StartResultSchema = z.object({
+    command: z.string(),
+    pid: z.number(),
+    process: ProcessSchema,
     ports: z.array(PortSchema),
+    startedAt: z.number(),
 });
 const FileStatSchema = z.object({
     type: z.string(),
@@ -246,6 +248,10 @@ export class NimbusSandbox {
             _rpcReadFileBytes: (path) => this.remoteRpc('readFileBytes', [path], Uint8ArrayOrNullSchema),
             _rpcWriteFile: (path, content) => this.remoteRpc('writeFile', [path, content], UndefinedResultSchema),
             _rpcStat: (path) => this.remoteRpc('stat', [path], FileStatSchema.nullable()),
+            _rpcLstat: (path) => this.remoteRpc('lstat', [path], FileStatSchema.nullable()),
+            _rpcRename: (from, to) => this.remoteRpc('rename', [from, to], UndefinedResultSchema),
+            _rpcChmod: (path, mode) => this.remoteRpc('chmod', [path, mode], UndefinedResultSchema),
+            _rpcFsReadRange: (path, offset, length) => this.remoteRpc('readRange', [path, offset, length], Uint8ArrayOrNullSchema),
             _rpcReaddir: (path) => this.remoteRpc('readdir', [path], z.array(DirectoryEntrySchema)),
             _rpcExists: (path) => this.remoteRpc('exists', [path], BooleanResultSchema),
             _rpcMkdir: (path) => this.remoteRpc('mkdir', [path], UndefinedResultSchema),
@@ -328,6 +334,10 @@ export class NimbusSandbox {
         await this.ready();
         return this.rpc(this.stub()._rpcExec(command, this.execOptions(options)));
     }
+    /**
+     * Start a command in the background. Returns as soon as the process has a
+     * pid — it does not wait for the command to finish.
+     */
     async startProcess(command, options = {}) {
         await this.ready();
         return this.rpc(this.stub()._rpcStartProcess(command, this.execOptions(options)));
@@ -364,6 +374,24 @@ export class NimbusSandbox {
         stat: async (path) => {
             await this.ready();
             return this.rpc(this.stub()._rpcStat(path));
+        },
+        /** stat without following a symlink leaf. */
+        lstat: async (path) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcLstat(path));
+        },
+        rename: async (from, to) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcRename(from, to));
+        },
+        chmod: async (path, mode) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcChmod(path, mode));
+        },
+        /** Read `length` bytes at `offset` without materializing the whole file. */
+        readRange: async (path, offset, length) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcFsReadRange(path, offset, length));
         },
         list: async (path = this.root) => {
             await this.ready();

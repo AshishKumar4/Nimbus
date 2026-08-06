@@ -494,6 +494,12 @@ export declare class FacetManager {
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     private revokeProcessVfsWriters;
+    /**
+     * True while a resident facet holds this pid — it was adopted through the
+     * bin-spawn contract and now owns the process lifecycle, reporting its own
+     * exit. A caller that launched the command must not record an exit for it.
+     */
+    hasResidentProcess(pid: number): boolean;
     noteProcessReportedExit(pid: number, exitCode: number): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
