@@ -1,6 +1,14 @@
 #!/usr/bin/env bun
 // agentic-cli/new/attached-process-tab-browser — attached npm-bin process
 // tabs open an xterm, focus it, and preserve TTY output.
+//
+// The entry in the process sidebar is `.proc-item`. It was `.logs-tab` until
+// b9e2806 (2026-07-21) rebuilt the panel on the VS Code terminal model, and
+// this probe kept querying the class that commit deleted — so from that day
+// it failed on a selector that could never match again, while the behaviour
+// it names went untested. The xterm and its TTY output were fine throughout;
+// what was genuinely broken was focus, which the lazily-booting editor stole
+// back from the attached terminal.
 
 import { deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
 import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
@@ -78,7 +86,7 @@ try {
   ].join('\n'));
 
   await page.waitForFunction(() => {
-    const activeTab = document.querySelector('.logs-tab.active');
+    const activeTab = document.querySelector('.proc-item.active');
     const activeView = document.querySelector('.logs-view.active.terminal-view');
     const rows = activeView?.querySelector('.xterm-rows')?.innerText || activeView?.innerText || '';
     const activeElement = document.activeElement;
@@ -90,7 +98,7 @@ try {
   }, { timeout: 75_000 });
 
   const state = await page.evaluate(() => {
-    const activeTab = document.querySelector('.logs-tab.active');
+    const activeTab = document.querySelector('.proc-item.active');
     const activeView = document.querySelector('.logs-view.active.terminal-view');
     return {
       activeTab: activeTab?.textContent || '',
