@@ -31,6 +31,7 @@ import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { createLoadedWorkerEntrypoint, getNimbusCtxExports, ProcessFabric, FACET_IMAGE_DIR, facetImageDigest, facetImagePath, } from '../loaders/process-fabric.js';
+import { processHostFor } from '../loaders/process-host.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '../runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '../runtime/bundle-profile.js';
@@ -2955,7 +2956,7 @@ export class FacetManager {
         this.processes = processes;
         this.portRegistry = portRegistry;
         this.hooks = hooks;
-        this.processFabric = new ProcessFabric(ctx, env, () => this._residentDisk());
+        this.processFabric = new ProcessFabric(processHostFor(ctx, env, () => this._residentDisk()));
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
             : undefined;
