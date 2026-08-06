@@ -1060,13 +1060,25 @@
           try { FileTree.setSelected(path); FileTree.markDirty(path, false); } catch {}
         }
         if (isMarkdownPath(path)) {
-          showMarkdownPreview(path, content).catch((e) => {
+          // A file the user asked for takes the preview panel. The boot-time
+          // default does not take it from something live: Monaco loads lazily,
+          // so `openDefaultWelcome` can land seconds after a dev server the
+          // user started has already filled the panel, and stealing it there
+          // reads as the preview jumping to welcome.md on its own.
+          const focus = !options.deferredDefault || !previewFocusIsClaimed();
+          showMarkdownPreview(path, content, { focus }).catch((e) => {
             setStatusFlash('markdown preview failed: ' + (e?.message || e));
           });
         } else if (!options.keepMarkdownPreview) {
           showAppPreview();
         }
-        editor.focus();
+        // Same rule as the preview panel above, for the other thing this
+        // takes. The boot default lands whenever Monaco finishes loading, so
+        // it must not pull the keyboard out of whatever already has it — the
+        // shell, or an attached TUI's xterm the user is typing into. Opening
+        // a file the user asked for still focuses the editor.
+        const holdsFocus = document.activeElement && document.activeElement !== document.body;
+        if (!options.deferredDefault || !holdsFocus) editor.focus();
       }
 
       async function save() {
@@ -1215,7 +1227,7 @@
 
       function openDefaultWelcome() {
         if (openPath) return Promise.resolve();
-        return openFile(DEFAULT_WELCOME_PATH);
+        return openFile(DEFAULT_WELCOME_PATH, { deferredDefault: true });
       }
 
       function refreshMarkdownPreview() {
@@ -1832,6 +1844,17 @@
       return parts[parts.length - 1] || 'Markdown';
     }
 
+    /**
+     * Has something with a real claim taken the preview panel? A running dev
+     * server, worker or exposed port has; the idle placeholder and a markdown
+     * preview have not. Read off the active tab rather than tracked
+     * alongside it, so it cannot drift from what the user is looking at.
+     */
+    function previewFocusIsClaimed() {
+      const active = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
+      return !!active && !!active.running;
+    }
+
     function appTabFor(kind) {
       const appKind = kind === 'worker' ? 'worker' : 'vite';
       return {
@@ -1989,7 +2012,7 @@
       activatePreviewTab(firstAppTabId());
     }
 
-    async function showMarkdownPreview(path, markdown) {
+    async function showMarkdownPreview(path, markdown, options = {}) {
       const id = 'markdown:' + path;
       ensurePreviewTab({
         id,
@@ -2000,6 +2023,10 @@
         markdown: markdown || '',
         running: false,
       });
+      // The tab is always created; taking focus is the caller's to decide.
+      // A deferred boot declines it when something live already holds the
+      // panel, and the tab stays one click away with its content ready.
+      if (options.focus === false) return;
       activatePreviewTab(id);
       if (activePreviewTabId !== id) return;
       await paintMarkdownPreview(markdown || '');
