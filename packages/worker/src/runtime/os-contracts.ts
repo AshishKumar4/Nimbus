@@ -14,6 +14,23 @@ export const CRED_KERNEL: VfsCred = Object.freeze({
   umask: 0o022,
 });
 
+/**
+ * The session's unprivileged login identity — `user` in /etc/passwd, the
+ * credential every process inherits unless it deliberately transitions.
+ *
+ * It is also the credential the embedder-facing surfaces act with: the SDK
+ * filesystem API, the remote `/rpc` file ops, and the static asset server are
+ * host callers, not processes, and files they create must be owned by the same
+ * identity `exec` runs as. Never CRED_KERNEL — a pid-less caller must never
+ * gain more authority than the shell it is writing files for.
+ */
+export const CRED_SESSION_USER: VfsCred = Object.freeze({
+  uid: 1000,
+  gid: 1000,
+  groups: Object.freeze([1000]),
+  umask: 0o022,
+});
+
 export function requireVfsCred(value: unknown, source: string): VfsCred {
   if (typeof value !== 'object' || value === null) {
     throw new Error(`${source} requires process credentials`);
@@ -131,7 +148,25 @@ export interface RuntimeFsBridge {
    * under it mutated, so consumers can cache without global invalidation.
    */
   revision(path?: string): Promise<number>;
+  /**
+   * The cache-coherence barrier. A caller holding a resident cache stamped
+   * at `(epoch, cursor)` gets back every path mutated since, and re-stamps.
+   *
+   * `poison` means the view cannot be repaired incrementally — a different
+   * supervisor incarnation, or a cursor older than the retained log — and
+   * the caller must drop its entire resident set. That costs a cold cache;
+   * the alternative would be serving a stale byte.
+   */
+  acquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
   subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
+}
+
+/** Result of a {@link RuntimeFsBridge.acquire} barrier. */
+export interface VfsAcquireResult {
+  epoch: string;
+  rev: number;
+  paths: string[];
+  poison: boolean;
 }
 
 export interface RuntimeProcessBridge {

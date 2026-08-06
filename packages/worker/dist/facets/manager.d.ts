@@ -122,6 +122,20 @@ interface FacetVfsState {
     bundle: FacetVfsBundle;
     manifest: Record<string, string[]>;
     metadata: Record<string, FacetVfsMetadata>;
+    /**
+     * The VFS cursor these cells were read at.
+     *
+     * Without it a facet's first ACQUIRE carries a null epoch, which the
+     * authority can only answer with a poison — "drop everything" — so the
+     * first timer, fetch or frame in every facet threw away the entire resident
+     * set and tried to refetch it in one turn. Stamping the bundle with the
+     * cursor it was actually built at makes that first ACQUIRE an ordinary
+     * delta, which is what it always was.
+     */
+    cursor?: {
+        epoch: string;
+        rev: number;
+    };
     /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
     reachableCount: number;
     /** Diagnostics: was the bundle truncated by the encoded-size cap? */
@@ -494,6 +508,12 @@ export declare class FacetManager {
     private trackProcessRpcResources;
     private releaseProcessRpcResources;
     private revokeProcessVfsWriters;
+    /**
+     * True while a resident facet holds this pid — it was adopted through the
+     * bin-spawn contract and now owns the process lifecycle, reporting its own
+     * exit. A caller that launched the command must not record an exit for it.
+     */
+    hasResidentProcess(pid: number): boolean;
     noteProcessReportedExit(pid: number, exitCode: number): void;
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.

@@ -562,7 +562,12 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt, vfsCursor } = args;
+    // The cursor this facet's bundle was read at. Without it the first
+    // ACQUIRE carries a null epoch, which the authority can only answer
+    // with a poison — so the first timer, fetch or frame threw the whole
+    // resident set away and tried to refetch it in one turn.
+    if (vfsCursor) globalThis.__nimbusVfsCursor = { epoch: vfsCursor.epoch, rev: vfsCursor.rev };
     // What is left of this facet's lifetime, measured from the supervisor's
     // own timeout timer rather than from whenever the drain happens to start
     // — a slow module init must not be able to push the drain past the kill
@@ -1140,6 +1145,17 @@ interface FacetVfsState {
   bundle: FacetVfsBundle;
   manifest: Record<string, string[]>;
   metadata: Record<string, FacetVfsMetadata>;
+  /**
+   * The VFS cursor these cells were read at.
+   *
+   * Without it a facet's first ACQUIRE carries a null epoch, which the
+   * authority can only answer with a poison — "drop everything" — so the
+   * first timer, fetch or frame in every facet threw away the entire resident
+   * set and tried to refetch it in one turn. Stamping the bundle with the
+   * cursor it was actually built at makes that first ACQUIRE an ordinary
+   * delta, which is what it always was.
+   */
+  cursor?: { epoch: string; rev: number };
   /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
   reachableCount: number;
   /** Diagnostics: was the bundle truncated by the encoded-size cap? */
@@ -2784,6 +2800,10 @@ async function _buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
 ): Promise<FacetVfsState> {
+  // Read the cursor BEFORE the walk: a mutation that lands while the bundle
+  // is being assembled must be reported as invalidated, not silently missed.
+  const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
+
   // 1. Static reachable-set walk from entry.
   const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
   const bundle: Record<string, string | Uint8Array> = { ...prefetch.bundle };
@@ -2947,6 +2967,7 @@ async function _buildPrefetchBundle(
     bundle,
     manifest,
     metadata,
+    cursor,
     reachableCount: fileCount,
     truncated,
     bundleSideModulesRequired,
@@ -3211,6 +3232,15 @@ export class FacetManager {
     this.vfs?.revokeAppendWriters(pid);
   }
 
+  /**
+   * True while a resident facet holds this pid — it was adopted through the
+   * bin-spawn contract and now owns the process lifecycle, reporting its own
+   * exit. A caller that launched the command must not record an exit for it.
+   */
+  hasResidentProcess(pid: number): boolean {
+    return this.processRpcResources.has(pid);
+  }
+
   noteProcessReportedExit(pid: number, exitCode: number): void {
     this.portRegistry.unregisterByPid(pid);
     this.processes.exit(pid, exitCode);
@@ -3471,6 +3501,7 @@ export class FacetManager {
       // facet runs (module map build, LOADER.load, the RPC hop) only makes
       // this earlier than the kill, which is the safe direction.
       entryDeadlineAt: Date.now() + FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESERVE_MS,
+      vfsCursor: vfsState.cursor,
       ...(diagSink ? { diag: true } : {}),
     });
 

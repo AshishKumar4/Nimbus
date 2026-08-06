@@ -311,6 +311,9 @@ export class SqliteRuntimeFsBridge {
         const p = this.resolveDataPath(path, true) ?? normalizeVfsPath(path);
         return this.rawVfs.revision(p);
     }
+    async acquire(epoch, cursor) {
+        return this.rawVfs.invalidatedSince(epoch, cursor);
+    }
     subscribe(path, listener) {
         return this.rawVfs.events.onPath(normalizeVfsPath(path), listener);
     }

@@ -63,6 +63,8 @@ export class SessionProcessSupervisor {
   private readonly table = new ProcessTable();
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
+  /** Terminators for processes whose work is a promise this session owns. */
+  private terminators = new Map<number, () => void>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
   private logActivity: (() => void) | null = null;
 
@@ -98,6 +100,28 @@ export class SessionProcessSupervisor {
     return this.table.getAll();
   }
 
+  /** Every process spawned under `pid`, transitively, oldest first. */
+  descendantsOf(pid: number): ProcessEntry[] {
+    return this.table.descendantsOf(pid);
+  }
+
+  /**
+   * Register how to stop the work behind `pid`. Background jobs started
+   * through the programmatic API run as a promise held by this session, so
+   * `kill` has to abort them rather than only marking the table entry.
+   * Cleared once the process reaches a terminal state.
+   */
+  setTerminator(pid: number, terminate: () => void): void {
+    this.terminators.set(pid, terminate);
+  }
+
+  private terminate(pid: number): void {
+    const terminator = this.terminators.get(pid);
+    if (!terminator) return;
+    this.terminators.delete(pid);
+    try { terminator(); } catch { /* the process is going away regardless */ }
+  }
+
   cred(pid: number): VfsCred {
     return this.table.credOf(pid);
   }
@@ -109,6 +133,7 @@ export class SessionProcessSupervisor {
   /** Mark a process as exited. First terminal state wins. */
   exit(pid: number, exitCode: number): void {
     this.table.exit(pid, exitCode);
+    this.terminators.delete(pid);
   }
 
   /**
@@ -117,6 +142,7 @@ export class SessionProcessSupervisor {
    */
   kill(pid: number): boolean {
     const killed = this.table.kill(pid);
+    this.terminate(pid);
     this.input.close(pid);
     return killed;
   }

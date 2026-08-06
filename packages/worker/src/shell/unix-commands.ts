@@ -15,6 +15,7 @@ import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
+import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { fileTypeChar, isCharacterDevice } from '../substrate/lifo/kernel/vfs/index.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
@@ -71,6 +72,24 @@ function fsErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+/** `drwxr-xr-x`-style permission string, shared by `ls -l` and `stat %A`. */
+function unixModeString(mode: number, isDir: boolean, isLink: boolean): string {
+  if (isLink) return 'lrwxrwxrwx';
+  const prefix = fileTypeChar(mode, isDir ? 'directory' : 'file');
+  const bits = [
+    mode & 0o400 ? 'r' : '-',
+    mode & 0o200 ? 'w' : '-',
+    mode & 0o100 ? 'x' : '-',
+    mode & 0o040 ? 'r' : '-',
+    mode & 0o020 ? 'w' : '-',
+    mode & 0o010 ? 'x' : '-',
+    mode & 0o004 ? 'r' : '-',
+    mode & 0o002 ? 'w' : '-',
+    mode & 0o001 ? 'x' : '-',
+  ].join('');
+  return prefix + bits;
 }
 
 function unixUserLabel(vfs: UnixVfs, uid: number): string {
@@ -2359,23 +2378,6 @@ function mkLs(vfs: UnixVfs): CmdFn {
     const reg = vfs.symlinks;
     const kvfs: any = (ctx as any).vfs;
 
-    function modeStr(mode: number, isDir: boolean, isLink: boolean): string {
-      if (isLink) return 'lrwxrwxrwx';
-      const prefix = fileTypeChar(mode, isDir ? 'directory' : 'file');
-      const bits = [
-        mode & 0o400 ? 'r' : '-',
-        mode & 0o200 ? 'w' : '-',
-        mode & 0o100 ? 'x' : '-',
-        mode & 0o040 ? 'r' : '-',
-        mode & 0o020 ? 'w' : '-',
-        mode & 0o010 ? 'x' : '-',
-        mode & 0o004 ? 'r' : '-',
-        mode & 0o002 ? 'w' : '-',
-        mode & 0o001 ? 'x' : '-',
-      ].join('');
-      return prefix + bits;
-    }
-
     function fmtTime(mtime: number): string {
       const d = new Date(mtime);
       const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
@@ -2481,7 +2483,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       if (!long) return e.name;
       const isDir = e.type === 'directory';
       const isLink = e.type === 'symlink';
-      const mode = modeStr(e.mode, isDir, isLink);
+      const mode = unixModeString(e.mode, isDir, isLink);
       const size = String(e.size).padStart(6, ' ');
       const time = fmtTime(e.mtime);
       const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
@@ -2719,12 +2721,277 @@ function mkTouch(vfs: UnixVfs): CmdFn {
   };
 }
 
-function mkStat(vfs: UnixVfs): CmdFn {
+/**
+ * `stat` formatting.
+ *
+ * Every GNU directive is answered, using what this filesystem actually knows:
+ *
+ *   - inode (%i): paths are the identity here — there are no hard links, so a
+ *     path maps to exactly one file. %i is a stable hash of the path, which
+ *     gives (dev,ino) comparisons the right answer instead of the zero an
+ *     inode-less filesystem would otherwise report for everything.
+ *   - link count (%h) is always 1, device numbers are 0: one store, no
+ *     hard links, no device nodes.
+ *   - birth time (%w/%W) prints `-`/`0`, GNU's own convention for a
+ *     filesystem that does not record it. Change time (%z/%Z) tracks mtime.
+ *   - SELinux context (%C) prints `?`, as GNU does where there is none.
+ */
+const STAT_TERSE_FORMAT = '%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %W %o %C';
+const STATFS_TERSE_FORMAT = '%n %i %l %t %s %S %b %f %a %c %d';
+/** Longest component the VFS accepts, reported by %l and `Namelen`. */
+const STAT_NAME_MAX = 255;
+/** Reported by %o: the VFS reads and writes in 64 KiB chunks. */
+const STAT_IO_BLOCK_SIZE = 65536;
+/** %b/%B count 512-byte units, as GNU does. */
+const STAT_BLOCK_UNIT = 512;
+
+interface StatFacts {
+  size: number;
+  type: string;
+  mode: number;
+  uid: number;
+  gid: number;
+  atime: number;
+  mtime: number;
+  ctime?: number;
+}
+
+interface StatFsFacts {
+  blockSize: number;
+  totalBlocks: number;
+  freeBlocks: number;
+  totalInodes: number;
+  freeInodes: number;
+}
+
+/** Stable 53-bit identity for a path — see the %i note above. */
+function statPathId(path: string): number {
+  let high = 0xdeadbeef;
+  let low = 0x41c6ce57;
+  for (let i = 0; i < path.length; i++) {
+    const code = path.charCodeAt(i);
+    high = Math.imul(high ^ code, 2654435761);
+    low = Math.imul(low ^ code, 1597334677);
+  }
+  high = Math.imul(high ^ (high >>> 16), 2246822507) >>> 0;
+  low = Math.imul(low ^ (low >>> 13), 3266489909) >>> 0;
+  return high * 0x200000 + (low >>> 11);
+}
+
+function statDirective(
+  directive: string,
+  stat: StatFacts,
+  path: string,
+  labels: { user: string; group: string },
+): string | null {
+  const isDir = stat.type === 'directory';
+  const isLink = stat.type === 'symlink';
+  const changeTime = stat.ctime ?? stat.mtime;
+  switch (directive) {
+    case 'n': return path;
+    case 'N': return `'${path}'`;
+    case 's': return String(stat.size);
+    case 'b': return String(Math.ceil(stat.size / STAT_BLOCK_UNIT));
+    case 'B': return String(STAT_BLOCK_UNIT);
+    case 'o': return String(STAT_IO_BLOCK_SIZE);
+    case 'a': return (stat.mode & 0o7777).toString(8);
+    case 'A': return unixModeString(stat.mode, isDir, isLink);
+    case 'f': return (stat.mode >>> 0).toString(16);
+    case 'u': return String(stat.uid);
+    case 'U': return labels.user;
+    case 'g': return String(stat.gid);
+    case 'G': return labels.group;
+    case 'F':
+      if (isDir) return 'directory';
+      if (isLink) return 'symbolic link';
+      return isCharacterDevice(stat.mode) ? 'character special file' : 'regular file';
+    case 'h': return '1';
+    case 'i': return String(statPathId(path));
+    case 'd': return '0';
+    case 'D': return '0';
+    case 't': return '0';
+    case 'T': return '0';
+    case 'm': return '/';
+    case 'C': return '?';
+    case 'w': return '-';
+    case 'W': return '0';
+    case 'Y': return String(Math.floor(stat.mtime / 1000));
+    case 'y': return new Date(stat.mtime).toISOString();
+    case 'X': return String(Math.floor(stat.atime / 1000));
+    case 'x': return new Date(stat.atime).toISOString();
+    case 'Z': return String(Math.floor(changeTime / 1000));
+    case 'z': return new Date(changeTime).toISOString();
+    case '%': return '%';
+    default: return null;
+  }
+}
+
+function statFsDirective(directive: string, fs: StatFsFacts, path: string): string | null {
+  switch (directive) {
+    case 'n': return path;
+    case 'i': return String(statPathId('/'));
+    case 'l': return String(STAT_NAME_MAX);
+    case 't': return '0';
+    case 'T': return 'nimbus-sqlite';
+    case 's': return String(fs.blockSize);
+    case 'S': return String(fs.blockSize);
+    case 'b': return String(fs.totalBlocks);
+    case 'f': return String(fs.freeBlocks);
+    case 'a': return String(fs.freeBlocks);
+    case 'c': return String(fs.totalInodes);
+    case 'd': return String(fs.freeInodes);
+    case '%': return '%';
+    default: return null;
+  }
+}
+
+function expandStatFormat(
+  format: string,
+  expand: (directive: string) => string | null,
+): { text: string } | { error: string } {
+  let out = '';
+  for (let i = 0; i < format.length; i++) {
+    const ch = format[i];
+    if (ch === '\\' && i + 1 < format.length) {
+      const escape = format[++i];
+      out += escape === 'n' ? '\n' : escape === 't' ? '\t' : escape === '0' ? '\0' : escape;
+      continue;
+    }
+    if (ch !== '%') {
+      out += ch;
+      continue;
+    }
+    const directive = format[++i];
+    if (directive === undefined) return { error: "stat: trailing '%' in format" };
+    const expanded = expand(directive);
+    if (expanded === null) return { error: `stat: unrecognized format directive '%${directive}'` };
+    out += expanded;
+  }
+  return { text: out };
+}
+
+const STAT_USAGE = [
+  'Usage: stat [OPTION]... FILE...',
+  'Display file or file system status.',
+  '',
+  '  -L, --dereference     follow links (Nimbus always follows)',
+  '  -f, --file-system     display file system status instead of file status',
+  '  -c, --format=FORMAT   use the specified FORMAT instead of the default',
+  '      --printf=FORMAT   like --format, but interpret escapes and omit the newline',
+  '  -t, --terse           print the information in terse form',
+  '      --cached=MODE     always|default|never (Nimbus attributes are never cached)',
+  '      --help            display this help and exit',
+  '      --version         output version information and exit',
+  '',
+].join('\n');
+
+function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
   return (ctx) => {
+    let format: string | null = null;
+    // `--printf` differs from `-c` only in not appending a newline.
+    let formatAddsNewline = true;
+    let fileSystemMode = false;
+    let terse = false;
+    const files: string[] = [];
+    const args = ctx.args;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === '-c' || arg === '--format' || arg === '--printf') {
+        const value = args[++i];
+        if (value === undefined) {
+          ctx.stderr.write(`stat: option '${arg}' requires an argument\n`);
+          return 1;
+        }
+        format = value;
+        formatAddsNewline = arg !== '--printf';
+      } else if (arg.startsWith('--format=') || arg.startsWith('--printf=')) {
+        format = arg.slice(arg.indexOf('=') + 1);
+        formatAddsNewline = !arg.startsWith('--printf=');
+      } else if (arg === '-f' || arg === '--file-system') {
+        fileSystemMode = true;
+      } else if (arg === '-t' || arg === '--terse') {
+        terse = true;
+      } else if (arg === '-L' || arg === '--dereference') {
+        // Symlinks are already followed; accept the flag rather than drop it.
+      } else if (arg.startsWith('--cached=')) {
+        const mode = arg.slice('--cached='.length);
+        if (mode !== 'always' && mode !== 'default' && mode !== 'never') {
+          ctx.stderr.write(`stat: invalid argument '${mode}' for '--cached'\n`);
+          return 1;
+        }
+        // Attributes are read live from the VFS, which satisfies every mode.
+      } else if (arg === '--help') {
+        ctx.stdout.write(STAT_USAGE);
+        return 0;
+      } else if (arg === '--version') {
+        ctx.stdout.write(`stat (nimbus coreutils) ${NIMBUS_VERSION}\n`);
+        return 0;
+      } else if (arg === '--') {
+        files.push(...args.slice(i + 1));
+        break;
+      } else if (arg.startsWith('-') && arg !== '-') {
+        ctx.stderr.write(`stat: invalid option '${arg}'\n`);
+        ctx.stderr.write(STAT_USAGE);
+        return 1;
+      } else {
+        files.push(arg);
+      }
+    }
+
+    if (files.length === 0) {
+      ctx.stderr.write('stat: missing operand\n');
+      return 1;
+    }
+
+    const write = (text: string) => {
+      ctx.stdout.write(formatAddsNewline ? text + '\n' : text);
+    };
+
+    if (fileSystemMode) {
+      const stats = sqliteVfs.getStats();
+      const facts: StatFsFacts = {
+        blockSize: STAT_IO_BLOCK_SIZE,
+        totalBlocks: Math.floor(stats.capacityBytes / STAT_IO_BLOCK_SIZE),
+        freeBlocks: Math.max(
+          0,
+          Math.floor((stats.capacityBytes - stats.usedBytes) / STAT_IO_BLOCK_SIZE),
+        ),
+        totalInodes: stats.files + stats.directories,
+        freeInodes: 0,
+      };
+      const activeFormat = format ?? (terse ? STATFS_TERSE_FORMAT : null);
+      for (const f of files) {
+        const displayPath = f.startsWith('/') ? f : resolvePath(ctx.cwd, f).replace(/^\/*/, '/');
+        if (activeFormat !== null) {
+          const expanded = expandStatFormat(
+            activeFormat,
+            (directive) => statFsDirective(directive, facts, displayPath),
+          );
+          if ('error' in expanded) {
+            ctx.stderr.write(expanded.error + '\n');
+            return 1;
+          }
+          write(expanded.text);
+          continue;
+        }
+        ctx.stdout.write(`  File: "${displayPath}"\n`);
+        ctx.stdout.write(`    ID: 0        Namelen: ${STAT_NAME_MAX}     Type: nimbus-sqlite\n`);
+        ctx.stdout.write(
+          `Block size: ${facts.blockSize}       Fundamental block size: ${facts.blockSize}\n`,
+        );
+        ctx.stdout.write(
+          `Blocks: Total: ${facts.totalBlocks}  Free: ${facts.freeBlocks}  Available: ${facts.freeBlocks}\n`,
+        );
+        ctx.stdout.write(`Inodes: Total: ${facts.totalInodes}  Free: ${facts.freeInodes}\n`);
+      }
+      return 0;
+    }
+
+    const activeFormat = format ?? (terse ? STAT_TERSE_FORMAT : null);
     // shell compatibility follow-up: try Kernel.VFS (ctx.vfs) first so /dev
     // mount paths resolve. Same pattern as mkCat.
     const kvfs: any = (ctx as any).vfs;
-    for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
+    for (const f of files) {
       let st: any = null;
       let displayPath = f;
       // Try Kernel.VFS first (sees mounts).
@@ -2741,18 +3008,42 @@ function mkStat(vfs: UnixVfs): CmdFn {
           st = vfs.stat(fp);
           displayPath = '/' + fp;
         } catch (_e) {
-          ctx.stderr.write(`stat: '${f}': No such file\n`);
+          ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`);
           return 1;
         }
+      }
+      const uid = st.uid ?? ctx.cred.uid;
+      const gid = st.gid ?? ctx.cred.gid;
+      const labels = {
+        user: unixUserLabel(vfs, uid),
+        group: unixGroupLabel(vfs, gid),
+      };
+      const facts: StatFacts = {
+        size: st.size,
+        type: st.type,
+        mode: st.mode,
+        uid,
+        gid,
+        atime: st.atime ?? st.mtime,
+        mtime: st.mtime,
+        ctime: st.ctime,
+      };
+      if (activeFormat !== null) {
+        const expanded = expandStatFormat(
+          activeFormat,
+          (directive) => statDirective(directive, facts, displayPath, labels),
+        );
+        if ('error' in expanded) {
+          ctx.stderr.write(expanded.error + '\n');
+          return 1;
+        }
+        write(expanded.text);
+        continue;
       }
       ctx.stdout.write(`  File: ${displayPath}\n`);
       const kind = isCharacterDevice(st.mode) ? 'character special file' : st.type;
       ctx.stdout.write(`  Size: ${st.size}\tType: ${kind}\n`);
-      const uid = st.uid ?? ctx.cred.uid;
-      const gid = st.gid ?? ctx.cred.gid;
-      const user = unixUserLabel(vfs, uid);
-      const group = unixGroupLabel(vfs, gid);
-      ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${user})   Gid: (${gid}/${group})\n`);
+      ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${labels.user})   Gid: (${gid}/${labels.group})\n`);
       ctx.stdout.write(`Modify: ${new Date(st.mtime).toISOString()}\n`);
     }
     return 0;
@@ -3402,7 +3693,7 @@ export function registerUnixCommands(
   registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));
   registry.register('rm', wrap(withInvocationVfs(sqliteVfs, mkRm)));
   registry.register('touch', wrap(withInvocationVfs(sqliteVfs, mkTouch)));
-  registry.register('stat', wrap(withInvocationVfs(sqliteVfs, mkStat)));
+  registry.register('stat', wrap(withInvocationVfs(sqliteVfs, (v) => mkStat(v, sqliteVfs))));
   registry.register('base64', wrap(withInvocationVfs(sqliteVfs, mkBase64)));
   registry.register('seq', wrap(mkSeq()));
   registry.register('sleep', wrap(mkSleep()));

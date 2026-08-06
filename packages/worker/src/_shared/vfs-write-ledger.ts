@@ -205,6 +205,68 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
   return undefined;
 }
 
+/**
+ * Write back everything parked, keeping any failure for the exit drain.
+ *
+ * The write-back sites that are not the exit drain — the debounce below and
+ * the RELEASE barrier ahead of egress — have no caller who could act on a
+ * failure: there is no user frame to throw into, and rejecting the fetch that
+ * happened to trigger the flush would blame the wrong operation. Retaining
+ * the failure in the channel \`__nimbusDrainVfsMutations\` already drains means
+ * the exit path still reports it, so a lost write is loud exactly once and
+ * never silent.
+ */
+async function __nimbusFlushVfsWriteBack(supervisor) {
+  if (!supervisor) return;
+  try {
+    await __nimbusDrainVfsWrites(supervisor);
+  } catch (error) {
+    if (!__nimbusHasPendingVfsMutationFailure) {
+      __nimbusHasPendingVfsMutationFailure = true;
+      __nimbusPendingVfsMutationFailure = error;
+    }
+  }
+}
+
+/**
+ * A synchronous write can only park bytes in \`__vfsWrites\`: a sync syscall
+ * has no channel to the authority. Something else therefore has to carry
+ * them across, and the only thing that did was the drain at process exit —
+ * so a resident server that writes synchronously never wrote back at all,
+ * and a peer reading the same path got the pre-write bytes for the whole
+ * life of the process. Measured, not theorised: \`writeFileSync\` then 50 ms
+ * left the authority at null with zero write RPCs issued.
+ *
+ * Flushing on every write is not the repair — 500 sync writes would become
+ * 500 round trips, and an npm install writes thousands. Debounce instead:
+ * parking a cell schedules one write-back, and every write that lands before
+ * it fires joins that same batch. Steady state costs no more round trips
+ * than the exit drain already paid; what changes is when they happen.
+ *
+ * The timer is the raw platform one, captured before the shims wrap
+ * \`setTimeout\` with the VFS resumption barrier: a write-back is the shim's
+ * own infrastructure, not a user resumption, and must not pay an ACQUIRE to
+ * deliver an ACQUIRE.
+ */
+const __NIMBUS_VFS_WRITE_BACK_DELAY_MS = 10;
+const __nimbusRawTimer = globalThis.setTimeout;
+let __nimbusVfsWriteBackTimer = null;
+function __nimbusScheduleVfsWriteBack() {
+  if (__nimbusVfsWriteBackTimer !== null) return;
+  if (typeof __nimbusRawTimer !== 'function') return;
+  __nimbusVfsWriteBackTimer = __nimbusRawTimer(() => {
+    __nimbusVfsWriteBackTimer = null;
+    const supervisor = typeof __supervisor !== 'undefined' ? __supervisor : null;
+    if (!supervisor) return;
+    // Not registered in __nimbusPendingVfsMutations: each write it starts
+    // registers itself there through __nimbusQueueVfsMutation, so the exit
+    // drain already awaits the work. Registering the orchestration too would
+    // add an entry nothing ever removes, and that set is drained by a
+    // while-loop on its size.
+    void __nimbusFlushVfsWriteBack(supervisor);
+  }, __NIMBUS_VFS_WRITE_BACK_DELAY_MS);
+}
+
 async function __nimbusDrainVfsWrites(supervisor) {
   const paths = Object.keys(__vfsWrites);
   const outcomes = await Promise.allSettled([
@@ -240,6 +302,11 @@ const __vfsWrites = new Proxy(Object.create(null), {
     target[path] = value;
     delete __vfsAppendWrites[path];
     __vfsWriteGenerations[path] = (__vfsWriteGenerations[path] || 0) + 1;
+    // Parking a cell is the only signal a synchronous write leaves. It is
+    // therefore the one place a write-back can be scheduled from, and it
+    // covers every sync mutation — writeFileSync, appendFileSync, the fd
+    // writes, rename — with no per-call-site duplication.
+    __nimbusScheduleVfsWriteBack();
     return true;
   },
   deleteProperty(target, path) {

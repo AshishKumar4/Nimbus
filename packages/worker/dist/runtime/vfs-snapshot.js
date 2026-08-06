@@ -159,6 +159,7 @@ export function flushVfsDiff(vfs, diff) {
     let mkdirs = 0;
     let rmdirs = 0;
     let chmods = 0;
+    let symlinks = 0;
     for (const path of diff.dirsCreated) {
         try {
             vfs.mkdir(path, { recursive: true });
@@ -201,5 +202,19 @@ export function flushVfsDiff(vfs, diff) {
         }
         catch { }
     }
-    return { written, deleted, mkdirs, rmdirs, chmods };
+    for (const [path, target] of Object.entries(diff.symlinksCreated ?? {})) {
+        try {
+            const lastSlash = path.lastIndexOf('/');
+            if (lastSlash > 0) {
+                try {
+                    vfs.mkdir(path.substring(0, lastSlash), { recursive: true });
+                }
+                catch { }
+            }
+            vfs.symlink(target, path);
+            symlinks++;
+        }
+        catch { }
+    }
+    return { written, deleted, mkdirs, rmdirs, chmods, symlinks };
 }

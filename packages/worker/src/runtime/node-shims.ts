@@ -230,18 +230,59 @@ async function __nimbusUseRpcResultUnref(promise, use) {
     headers.set("user-agent", "node");
     return __origFetch(input, { ...(init || {}), headers });
   };
+  // Coherence at the outbound-fetch boundary (§0.2 witness 2 of the VFS
+  // coherence protocol). A facet's fetch does not go through the supervisor:
+  // the facet inherits the parent worker's network, so the response resumes
+  // user code with no supervisor message an invalidation could ride on, and
+  // an external third party can carry a happens-before edge between two
+  // facets that never touches the authority.
+  //
+  // Both halves are sited here:
+  //   RELEASE — this facet's parked writes are flushed before the request
+  //     leaves, so nothing outside can observe an effect of a write the
+  //     authority has not got yet.
+  //   ACQUIRE — performed when the response lands, before the awaiting user
+  //     code runs.
+  //
+  // ACQUIRE has to be AFTER the response, and the earlier design saying it
+  // could ride concurrently with the request — free, hidden under the network
+  // — was wrong, which a test caught rather than an argument. A concurrent
+  // ACQUIRE is serviced at request time, so it reports the world as of when
+  // the request left. The whole anomaly is that the RESPONSE encodes "the
+  // write happened", so an ACQUIRE older than the response is exactly the one
+  // that cannot see the write it is there to catch. That costs a real
+  // supervisor round trip per outbound request, not a hidden one. It is the
+  // price of the guarantee.
+  //
+  // The barriers live on globalThis because the fs module installs them and
+  // is evaluated after this one; a facet with no supervisor bound has none,
+  // and there is nothing to be coherent with.
+  const __resumeCoherent = async (pending) => {
+    const value = await pending;
+    const acquire = globalThis.__nimbusVfsAcquireBarrier;
+    if (typeof acquire === "function") await acquire();
+    return value;
+  };
+  const __barriered = async (input, init) => {
+    const release = globalThis.__nimbusVfsReleaseBarrier;
+    if (typeof release === "function") await release();
+    return __resumeCoherent(__dispatch(input, init));
+  };
   globalThis.fetch = function fetch(input, init) {
-    return __nimbusTrackOp(__dispatch(input, init));
+    return __nimbusTrackOp(__barriered(input, init));
   };
   // A fetch settles once the headers arrive; reading the body is a SECOND
   // in-flight operation on the same connection, and \`const r = await
   // fetch(u); const j = await r.json()\` is the shape most programs use.
+  // It is also a second resumption from the network, so it takes the same
+  // ACQUIRE: a program that reads a file after parsing a response body is no
+  // less entitled to current bytes than one that reads after the headers.
   for (const __name of ["arrayBuffer", "blob", "bytes", "formData", "json", "text"]) {
     const __orig = Response.prototype[__name];
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        return __nimbusTrackOp(__orig.apply(this, args));
+        return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -706,6 +747,275 @@ const __fsMod = (() => {
     globalThis.__nimbusVfsMayBeStale = true;
   }
 
+  // ══ Cache coherence: ACQUIRE + read-through fill ═════════════════════
+  //
+  // The supervisor's SQLite VFS is the only authority. Everything in this
+  // facet — __vfsBundle, __vfsMetadata, __vfsManifest, __vfsDirs — is a
+  // cache of it, and __vfsWrites is this process's own not-yet-flushed
+  // mutations.
+  //
+  // INVARIANT: a cell may be served synchronously only if no write to its
+  // path has been committed by the supervisor AND DELIVERED to this facet
+  // since the cell was fetched. Delivery happens in _acquireBarrier.
+  //
+  // THE HARD CASE. A node sync read has no synchronous channel to the
+  // authority — Atomics.wait is disabled, SharedArrayBuffer cannot cross a
+  // Worker-Loader boundary, and a pure-JS stack cannot JSPI-suspend. So a
+  // sync read cannot itself fetch; it can only serve what is already local.
+  // Coherence therefore has to be established at the RESUMPTION boundary,
+  // before user code runs, not inside the read.
+  //
+  // Three resumptions reached a facet with no supervisor in the path (all
+  // measured live): a facet-local timer, a direct outbound fetch, and an
+  // unsolicited inbound WebSocket frame. Each is barriered by manufacturing
+  // the missing supervisor round trip at the boundary the shim owns:
+  //   - timer:  setTimeout/setInterval callbacks run behind an awaited
+  //             _acquireAndRefetch (see _installResumptionBarriers).
+  //   - fetch:  the dispatcher flushes W ahead of egress and ACQUIREs when
+  //             the response lands — after it, never concurrently with the
+  //             request, because the response is what encodes the write.
+  //   - socket: the supervisor terminates the socket and relays frames, so
+  //             a frame arrives as a supervisor reply the same barrier
+  //             rides on (see the relayed WebSocket below).
+  //
+  // Keep this list empty. An entry here is a documented hole in the owner's
+  // invariant, not a TODO: it means some process can be woken by something
+  // this system does not mediate, and its next synchronous read can serve
+  // bytes the authority has already replaced.
+  //
+  // Correctness is unconditional and costs one supervisor round trip per
+  // resumption — a setTimeout(0) poll-and-read loop pays one RTT per
+  // iteration. That cost is removable only by a proactive revision push
+  // whose delivery ordering is a workerd property, never by weakening the
+  // barrier.
+  const _UNBARRIERED_RESUMPTIONS = [];
+
+  const _cursor = globalThis.__nimbusVfsCursor
+    || (globalThis.__nimbusVfsCursor = { epoch: null, rev: 0 });
+
+  // Whether any of this is working is a measurement, not an opinion: a fill
+  // rate and an invalidation count. Same shape and the same reporting path
+  // as __nimbusFsRpcReads, which the runner already folds into the exec-diag
+  // envelope — there is no reason to invent a second surface for it.
+  const _stats = globalThis.__nimbusVfsCoherence
+    || (globalThis.__nimbusVfsCoherence = { fills: 0, filledBytes: 0, invalidations: 0, poisons: 0 });
+
+  /**
+   * Drop a path from the sync CONTENT views, leaving the existence views
+   * alone.
+   *
+   * Deliberate asymmetry. An invalidation says "what you hold is no longer
+   * known-good"; it does not say whether the path was modified or removed,
+   * and the facet cannot tell them apart from the path alone. Dropping the
+   * name as well would make existsSync answer false for a file that was
+   * merely rewritten — a fabricated ENOENT, which is worse than the honest
+   * refusal, because it sends the caller down an error path built for a
+   * different condition. Keeping the name means the next sync read reports
+   * EAGAIN ("exists, not resident") and the async read that follows returns
+   * either the new bytes or a truthful ENOENT.
+   *
+   * __vfsWrites is never dropped: this process's own unflushed writes are
+   * strictly newer than anything the supervisor can report, and discarding
+   * them would break read-your-writes.
+   */
+  function _evictResident(k) {
+    let evicted = false;
+    if (__vfsBundle && k in __vfsBundle) { delete __vfsBundle[k]; evicted = true; }
+    const metadata = _metadataTable();
+    if (metadata && k in metadata) { delete metadata[k]; evicted = true; }
+    return evicted;
+  }
+
+  /**
+   * Install bytes the supervisor just served as the resident cell for a
+   * path, at the cursor they were served under.
+   *
+   * This is a correctness obligation before it is an optimization. An async
+   * read that returns v2 while leaving the resident cell at v1 makes the
+   * NEXT synchronous read go backwards in time relative to a value the
+   * program has already seen, which no amount of invalidation discipline
+   * catches — the supervisor never learns what the facet's own read
+   * returned, so it has nothing to invalidate. The bytes are already paid
+   * for; caching them costs one map insert.
+   *
+   * The parent's manifest entry gains the name too, so the existence view
+   * cannot go on denying a file whose bytes this process is holding.
+   */
+  function _installResident(absPath, bytes) {
+    if (!__vfsBundle) return;
+    const k = _strip(absPath);
+    if (k === "") return;
+    __vfsBundle[k] = bytes;
+    // Keep the stat view consistent with the bytes now held. Without this
+    // the content view is fresh while statSync still reports the
+    // spawn-time length, so a program can read N bytes and be told the
+    // file is M — an inconsistency introduced BY the fill. Only the size
+    // is corrected: type, mode, ownership and timestamps stay as the
+    // authority last reported them, so mtime-based change detection
+    // (make, tsc --build, watchers) does not see every read as a change.
+    const metadata = _metadataTable();
+    if (metadata && k in metadata) {
+      metadata[k] = { ...metadata[k], size: _byteLen(bytes) };
+    }
+    if (__vfsManifest) {
+      const slash = k.lastIndexOf("/");
+      const parent = slash >= 0 ? k.slice(0, slash) : "";
+      const name = slash >= 0 ? k.slice(slash + 1) : k;
+      const siblings = __vfsManifest[parent];
+      if (Array.isArray(siblings) && siblings.indexOf(name) === -1) siblings.push(name);
+    }
+    _stats.fills++;
+    _stats.filledBytes += _byteLen(bytes);
+  }
+
+  /**
+   * ACQUIRE. Apply every invalidation the supervisor has for this facet,
+   * then re-stamp the cursor.
+   *
+   * Awaited before the async fs operation that carries it returns, so user
+   * code never resumes holding a cell the supervisor has already told us
+   * to drop.
+   *
+   * A poison result means the delta cannot repair the view — a different
+   * supervisor incarnation, or a cursor older than the retained log — so
+   * the whole resident content view goes. That costs a cold cache; the
+   * alternative is a stale byte.
+   */
+  async function _acquireBarrier(supervisor) {
+    if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
+    let result;
+    try { result = await supervisor.fsAcquire(_cursor.epoch, _cursor.rev); }
+    catch { return []; }
+    if (!result || typeof result.rev !== "number") return [];
+    // Paths that held content before this eviction are the ones worth
+    // refetching at a resumption boundary — a later sync read of any of them
+    // would otherwise miss. Collected before the delete so the membership
+    // test is against the pre-eviction bundle.
+    const wereResident = [];
+    if (result.poison) {
+      if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
+      _stats.poisons++;
+    } else if (Array.isArray(result.paths)) {
+      for (const k of result.paths) {
+        const held = !!(__vfsBundle && k in __vfsBundle);
+        if (_evictResident(k)) _stats.invalidations++;
+        if (held) wereResident.push(k);
+      }
+    }
+    _cursor.epoch = result.epoch;
+    _cursor.rev = result.rev;
+    return wereResident;
+  }
+
+  /**
+   * ACQUIRE, then repopulate the working set the invalidation just dropped.
+   *
+   * The barrier used at every UNTRUSTED resumption — a timer firing, a
+   * relayed socket frame — where user code is about to run synchronously
+   * with no supervisor message to have carried an invalidation. Manufacture
+   * that message: apply the delta, then live-read every path that was
+   * resident and is now stale so a synchronous read inside the callback
+   * sees exactly what an async read issued at this instant would.
+   *
+   * Eviction alone is not enough here. An async fs op evicts and then reads
+   * its own path live, so a dropped cell repairs itself; a timer callback
+   * has no such follow-up, so a dropped-but-not-refetched cell would raise
+   * EAGAIN on the next sync read — the unhandleable error §7 warns about.
+   * Under the owner's no-price-ceiling mandate we pay the refetch.
+   *
+   * This closes staleness of RESIDENT cells across an untrusted resumption.
+   * A first synchronous touch of a NON-resident path is the separate
+   * residency floor and is unaffected — it still raises EAGAIN, correctly.
+   */
+  async function _acquireAndRefetch(supervisor) {
+    const stale = await _acquireBarrier(supervisor);
+    if (stale.length === 0) return;
+    await Promise.all(stale.map((k) => _liveReadFile("/" + k, undefined, true).catch(() => {})));
+  }
+
+  /**
+   * ACQUIRE at an untrusted resumption boundary, with the supervisor
+   * resolved at call time.
+   *
+   * Late resolution is load-bearing, not defensive. The opencode runner
+   * evaluates this module with \`__supervisor\` still null and assigns it in
+   * its fetch handler; binding the supervisor when the wrappers are
+   * installed would silently leave every resident-TUI timer unbarriered.
+   *
+   * Published on globalThis because the two other untrusted resumptions —
+   * an outbound fetch response and a relayed socket frame — are delivered
+   * by code outside this closure. One barrier, three boundaries.
+   */
+  async function _resumptionAcquire() {
+    const supervisor = _supervisor();
+    if (!supervisor || typeof supervisor.fsAcquire !== "function") return;
+    await _acquireAndRefetch(supervisor);
+  }
+
+  /**
+   * RELEASE: this facet's parked writes reach the authority before an
+   * effect of them can be observed from outside the facet.
+   *
+   * Sited at every boundary where the facet's own action becomes externally
+   * visible — an outbound request, a frame sent on a relayed socket. Without
+   * it a peer can observe the effect of a write ("the build finished") and
+   * then read the pre-write bytes, which breaks causal consistency rather
+   * than merely linearizability.
+   */
+  async function _resumptionRelease() {
+    await __nimbusFlushVfsWriteBack(_supervisor());
+  }
+
+  // Every untrusted resumption — a facet-local timer, an outbound fetch
+  // response, a relayed socket frame — runs user code with no supervisor
+  // message behind it, so it cannot have carried an invalidation. The shim
+  // owns these entry points, so it manufactures the missing barrier: the
+  // user callback is preceded by a completed ACQUIRE-and-refetch. After it,
+  // a synchronous read in the callback is as fresh as an async read at the
+  // same instant — the owner's invariant, met for the sync path.
+  //
+  // Correctness is unconditional and costs one supervisor round trip per
+  // resumption. That cost is real (a setTimeout(0) poll-and-read loop pays
+  // one RTT per iteration) and is the number to hand the owner; it is
+  // removable only by a proactive revision push whose delivery ordering is
+  // an unrun workerd probe, never by weakening the barrier.
+  function _installResumptionBarriers() {
+    if (globalThis.__nimbusResumptionBarriersInstalled) return;
+    globalThis.__nimbusResumptionBarriersInstalled = true;
+    globalThis.__nimbusVfsAcquireBarrier = _resumptionAcquire;
+    globalThis.__nimbusVfsReleaseBarrier = _resumptionRelease;
+    const _setTimeout = globalThis.setTimeout;
+    const _setInterval = globalThis.setInterval;
+    // The barrier moves the user callback BEHIND an awaited round trip, and
+    // the timer bookkeeping counts a timer as done the moment its closure
+    // starts. So between the ACQUIRE and the callback the facet looks idle,
+    // and a one-shot facet could tear itself down in that window — the work
+    // the timer was scheduled for simply never ran, silently. Counting the
+    // deferred chain as an in-flight operation is what holds the facet open
+    // across it; __nimbusPendingOps is the counter the drain consults for
+    // exactly this, since an awaited chain is invisible to promise tracking.
+    // Only the ACQUIRE is counted, never the callback that follows it. A
+    // callback is free to be a long-lived thing — an SSE writer that returns
+    // when the client disconnects — and counting it as an in-flight operation
+    // would make a resident facet's drain wait for it, which buffers an open
+    // response body. The window that needs holding is exactly the round trip.
+    const _barriered = (cb, args) => {
+      __nimbusTrackOp(_resumptionAcquire()).then(() => cb(...args));
+    };
+    if (typeof _setTimeout === "function") {
+      globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
+        if (typeof cb !== "function") return _setTimeout(cb, ms);
+        return _setTimeout(() => { _barriered(cb, args); }, ms);
+      };
+    }
+    if (typeof _setInterval === "function") {
+      globalThis.setInterval = function setInterval(cb, ms, ...args) {
+        if (typeof cb !== "function") return _setInterval(cb, ms);
+        return _setInterval(() => { _barriered(cb, args); }, ms);
+      };
+    }
+  }
+
   // Directories mkdirSync created that the authority has not been told about.
   // A sync syscall cannot make an RPC, so mkdirSync can only record the
   // directory in the sync view (__vfsDirs) — and the write-back then flushed
@@ -976,11 +1286,15 @@ const __fsMod = (() => {
     return parts;
   }
 
-  async function _liveReadFile(p, opts) {
+  async function _liveReadFile(p, opts, skipAcquire) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
     if (!supervisor) throw _fsErr("ENOENT", "open", p);
+    // The refetch step of _acquireAndRefetch has already acquired against a
+    // fresh cursor, so re-acquiring here would be a redundant round trip
+    // that always returns "still R". Every other caller acquires.
+    if (!skipAcquire) await _acquireBarrier(supervisor);
 
     if (typeof supervisor.fsReadRange === "function") {
       // Chunked: the caller wants the whole file, but nothing upstream has
@@ -1009,6 +1323,7 @@ const __fsMod = (() => {
         break;
       }
       const bytes = parts.length === 1 ? parts[0] : _concatBytes(parts, total);
+      _installResident(absPath, bytes);
       return encoding ? _asString(bytes) : __BufferMod.from(bytes);
     }
 
@@ -1016,6 +1331,7 @@ const __fsMod = (() => {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       const text = await _fsReadRpc(supervisor.readFile(absPath), "open", p, (result) => result);
       if (text !== null && text !== undefined) {
+        _installResident(absPath, text);
         return encoding ? _asString(text) : __BufferMod.from(text);
       }
     }
@@ -1046,6 +1362,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.stat === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _acquireBarrier(supervisor);
       const meta = await _fsRpc(supervisor.stat(absPath), "stat", p, (result) => result);
       if (meta) return _statObject(meta);
       throw _fsErr("ENOENT", "stat", p);
@@ -1058,6 +1375,7 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.lstat === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
+      await _acquireBarrier(supervisor);
       const meta = await _fsRpc(supervisor.lstat(absPath), "lstat", p, (result) => result);
       if (meta) return _statObject(meta);
       throw _fsErr("ENOENT", "lstat", p);
@@ -1071,6 +1389,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
+      await _acquireBarrier(supervisor);
       await _flushLocalPathToSupervisor(absPath, supervisor);
       for (const localPath of Object.keys(__vfsWrites || {})) {
         if (localPath !== key && localPath.startsWith(prefix)) {
@@ -2574,8 +2893,256 @@ const __fsMod = (() => {
   __defLazyStream("WriteStream", __getWriteStream);
   __defLazyStream("FileReadStream", __getReadStream);
   __defLazyStream("FileWriteStream", __getWriteStream);
+  _installResumptionBarriers();
   return __fsExports;
 })();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  WebSocket: relayed through the supervisor ───────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The last resumption that reached a facet without a supervisor message.
+// A directly-connected socket delivers \`onmessage\` as a bare resumption:
+// an arbitrary third party wakes the facet at a time of its own choosing,
+// and a synchronous read in that handler serves whatever the facet was
+// holding when it last heard from the authority. Two facets connected to
+// any common external endpoint had a full-duplex channel that never
+// touched the supervisor, which breaks causal consistency and not merely
+// linearizability.
+//
+// Proxying the bytes would not have fixed it. The frame has to arrive AS a
+// supervisor reply, so the supervisor terminates the socket and this class
+// receives frames as replies to a poll it is already blocked on. Then the
+// frame handler takes the same ACQUIRE the timer and fetch boundaries take,
+// and \`_UNBARRIERED_RESUMPTIONS\` is empty.
+//
+// This is a listener registry rather than an EventTarget subclass on
+// purpose: it dispatches plain event-shaped objects, which is what a
+// relayed frame can carry across RPC, and it keeps \`onmessage\` and
+// \`addEventListener\` served by one path instead of two.
+const __NimbusRelayedWebSocket = (() => {
+  const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
+  class NimbusWebSocket {
+    constructor(url, protocols) {
+      const supervisor = _nimbusSupervisor();
+      if (!supervisor || typeof supervisor.wsOpen !== "function") {
+        // Not a fallback to the platform socket, deliberately. An
+        // unmediated socket is exactly the incoherence this class exists
+        // to remove, and opening one quietly would put the guarantee back
+        // to being conditional on which facet you happened to be in.
+        throw new Error(
+          "WebSocket: no supervisor is bound to this process, so a socket " +
+          "cannot be relayed; a directly-connected socket would deliver " +
+          "frames outside the filesystem coherence barrier",
+        );
+      }
+      this.url = String(url);
+      this.readyState = CONNECTING;
+      this.protocol = "";
+      this.extensions = "";
+      this.binaryType = "arraybuffer";
+      this.bufferedAmount = 0;
+      this.onopen = null; this.onmessage = null;
+      this.onerror = null; this.onclose = null;
+      this._listeners = new Map();
+      this._id = null;
+      this._done = false;
+      this._sends = Promise.resolve();
+      const requested = protocols === undefined ? []
+        : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      this._ready = this._connect(supervisor, requested);
+    }
+
+    async _connect(supervisor, protocols) {
+      try {
+        const opened = await __nimbusUseRpcResultUnref(
+          supervisor.wsOpen(this.url, protocols),
+          (result) => result,
+        );
+        this._id = opened.id;
+        this.protocol = opened.protocol || "";
+        this._pump(supervisor);
+      } catch (error) {
+        this._fail(error);
+      }
+    }
+
+    async _pump(supervisor) {
+      while (!this._done) {
+        let events;
+        try {
+          events = await __nimbusUseRpcResultUnref(
+            supervisor.wsPoll(this._id, 5000),
+            (result) => result,
+          );
+        } catch (error) { this._fail(error); return; }
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          if (this._done) return;
+          // The barrier the whole relay exists for. Every frame is now a
+          // supervisor reply, so it can carry the invalidation delta, and
+          // user code runs only after the resident set has caught up.
+          const acquire = globalThis.__nimbusVfsAcquireBarrier;
+          if (typeof acquire === "function") await acquire();
+          this._deliver(event);
+        }
+      }
+    }
+
+    _deliver(event) {
+      if (event.kind === "open") {
+        this.readyState = OPEN;
+        this._emit({ type: "open", target: this });
+        return;
+      }
+      if (event.kind === "message") {
+        const data = event.text !== null && event.text !== undefined
+          ? event.text
+          : (this.binaryType === "arraybuffer"
+            ? _nimbusToArrayBuffer(event.bytes)
+            : event.bytes);
+        this._emit({ type: "message", data, target: this });
+        return;
+      }
+      if (event.kind === "error") {
+        this._emit({ type: "error", message: event.message, target: this });
+        return;
+      }
+      if (event.kind === "close") {
+        this._done = true;
+        this.readyState = CLOSED;
+        this._emit({
+          type: "close", code: event.code, reason: event.reason,
+          wasClean: event.code === 1000, target: this,
+        });
+      }
+    }
+
+    _fail(error) {
+      if (this._done) return;
+      this._done = true;
+      this.readyState = CLOSED;
+      const message = (error && error.message) || String(error);
+      this._emit({ type: "error", message, target: this });
+      this._emit({ type: "close", code: 1006, reason: message, wasClean: false, target: this });
+    }
+
+    _emit(event) {
+      const handler = this["on" + event.type];
+      if (typeof handler === "function") {
+        try { handler.call(this, event); } catch (error) { _nimbusReportListenerError(error); }
+      }
+      const listeners = this._listeners.get(event.type);
+      if (!listeners) return;
+      for (const listener of [...listeners]) {
+        try {
+          if (typeof listener === "function") listener.call(this, event);
+          else if (listener && typeof listener.handleEvent === "function") listener.handleEvent(event);
+        } catch (error) { _nimbusReportListenerError(error); }
+      }
+    }
+
+    addEventListener(type, listener) {
+      const key = String(type);
+      if (!this._listeners.has(key)) this._listeners.set(key, new Set());
+      this._listeners.get(key).add(listener);
+    }
+
+    removeEventListener(type, listener) {
+      const listeners = this._listeners.get(String(type));
+      if (listeners) listeners.delete(listener);
+    }
+
+    dispatchEvent(event) { this._emit(event); return true; }
+
+    send(data) {
+      if (this.readyState === CLOSED || this.readyState === CLOSING) {
+        throw new Error("WebSocket: send on a socket that is already closing");
+      }
+      const text = typeof data === "string" ? data : null;
+      const bytes = text === null ? _nimbusToBytes(data) : null;
+      const size = text !== null ? text.length : (bytes ? bytes.byteLength : 0);
+      this.bufferedAmount += size;
+      // A frame leaving this facet is an outward-visible effect of whatever
+      // it just wrote, so the parked writes go first. Otherwise the peer
+      // that reads this frame can act on a write the authority does not
+      // have yet, which is the causal edge the protocol closes.
+      this._sends = this._sends.then(async () => {
+        const supervisor = _nimbusSupervisor();
+        if (!supervisor || this._done) return;
+        const release = globalThis.__nimbusVfsReleaseBarrier;
+        if (typeof release === "function") await release();
+        await this._ready;
+        if (this._id === null || this._done) return;
+        await __nimbusUseRpcResultUnref(
+          supervisor.wsSend(this._id, text, bytes),
+          () => undefined,
+        );
+      }).then(
+        () => { this.bufferedAmount -= size; },
+        (error) => { this.bufferedAmount -= size; this._fail(error); },
+      );
+      __nimbusTrackOp(this._sends);
+    }
+
+    close(code, reason) {
+      if (this._done || this.readyState === CLOSING) return;
+      this.readyState = CLOSING;
+      const supervisor = _nimbusSupervisor();
+      const closing = (async () => {
+        await this._ready.catch(() => {});
+        if (this._id === null || !supervisor) return;
+        await __nimbusUseRpcResultUnref(
+          supervisor.wsClose(this._id, code, reason),
+          () => undefined,
+        );
+      })().catch(() => {}).then(() => {
+        this._done = true;
+        this.readyState = CLOSED;
+        this._emit({
+          type: "close", code: code === undefined ? 1000 : code,
+          reason: reason === undefined ? "" : String(reason),
+          wasClean: true, target: this,
+        });
+      });
+      __nimbusTrackOp(closing);
+    }
+  }
+  for (const [name, value] of [["CONNECTING", CONNECTING], ["OPEN", OPEN], ["CLOSING", CLOSING], ["CLOSED", CLOSED]]) {
+    NimbusWebSocket[name] = value;
+    NimbusWebSocket.prototype[name] = value;
+  }
+  return NimbusWebSocket;
+})();
+
+function _nimbusSupervisor() {
+  try { return typeof __supervisor !== "undefined" ? __supervisor : null; }
+  catch { return null; }
+}
+
+function _nimbusToBytes(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return new TextEncoder().encode(String(data));
+}
+
+function _nimbusToArrayBuffer(bytes) {
+  if (!bytes) return new ArrayBuffer(0);
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return view.buffer.byteLength === view.byteLength
+    ? view.buffer
+    : view.slice().buffer;
+}
+
+// A listener that throws is the program's bug, but swallowing it silently
+// would make a relayed socket behave differently from a direct one. Route it
+// to the same place an uncaught async failure goes.
+function _nimbusReportListenerError(error) {
+  queueMicrotask(() => { throw error; });
+}
+
+globalThis.WebSocket = __NimbusRelayedWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  constants module (framework-fixes-F1) ───────────────────────────

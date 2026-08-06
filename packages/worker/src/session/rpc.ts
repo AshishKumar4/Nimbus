@@ -43,7 +43,13 @@ import {
   rpcPayloadEnd,
   rpcPayloadStart,
 } from '../observability/diag-counters.js';
-import { CRED_KERNEL, type RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import {
+  CRED_KERNEL,
+  CRED_SESSION_USER,
+  type RuntimeOpenFlags,
+  type VfsAcquireResult,
+  type VfsCred,
+} from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import {
@@ -85,6 +91,12 @@ const WriteBatchPayloadSchema = z.object({
   deletePaths: z.array(z.string()).optional(),
 }).passthrough();
 
+/**
+ * Bridge key for the pid-less (host caller) filesystem view. ProcessTable
+ * allocates pids from 1 upwards, so 0 can never collide with a process.
+ */
+const HOST_CALLER_KEY = 0;
+
 function processPid(pid: unknown): number {
   if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
     throw new Error('filesystem RPC requires a valid process pid');
@@ -92,21 +104,33 @@ function processPid(pid: unknown): number {
   return pid;
 }
 
+/**
+ * Resolve the credential a filesystem RPC acts with.
+ *
+ * A pid identifies an in-sandbox process and always wins: SupervisorRPC stamps
+ * it from its own `ctx.props`, so a process can neither choose nor drop it.
+ * `undefined` means the caller is not a process at all — the SDK over the DO
+ * binding, the remote `/rpc` dispatcher, the static asset server — and those
+ * act as the unprivileged session user, the same identity `exec` runs as.
+ * A supplied-but-invalid pid still throws: only an absent pid is a host call.
+ */
+function callerCred(self: RpcHost, pid: unknown): VfsCred {
+  return pid === undefined ? CRED_SESSION_USER : self.processes.cred(processPid(pid));
+}
+
 function processVfs(self: RpcHost, pid: unknown): CredentialedVfs {
-  const processId = processPid(pid);
   self.ensureSqliteFs();
-  const cred = self.processes.cred(processId);
-  return self.sqliteFs!.as(cred);
+  return self.sqliteFs!.as(callerCred(self, pid));
 }
 
 function runtimeFs(self: RpcHost, pid: unknown): SqliteRuntimeFsBridge {
-  const processId = processPid(pid);
-  const vfs = processVfs(self, processId);
+  const key = pid === undefined ? HOST_CALLER_KEY : processPid(pid);
+  const vfs = processVfs(self, pid);
   if (!self.runtimeFsBridges) self.runtimeFsBridges = new Map<number, SqliteRuntimeFsBridge>();
-  let bridge = self.runtimeFsBridges.get(processId);
+  let bridge = self.runtimeFsBridges.get(key);
   if (!bridge) {
     bridge = new SqliteRuntimeFsBridge(vfs, self.sqliteFs!);
-    self.runtimeFsBridges.set(processId, bridge);
+    self.runtimeFsBridges.set(key, bridge);
   } else {
     bridge.updateCredential(vfs);
   }
@@ -391,8 +415,96 @@ const FsTruncateArgsSchema = z.object({
   size: FsRangeOffsetSchema,
 });
 
+// A facet supplies its own cursor, so it is untrusted input. A null epoch is
+// the legitimate first call from a facet that has never acquired.
+const FsAcquireArgsSchema = z.object({
+  epoch: z.string().max(64).nullable(),
+  cursor: z.number().int().min(0),
+});
+
 export async function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number> {
     return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
+}
+
+/**
+ * The facet's WebSocket relay. A facet does not open its own sockets: the
+ * supervisor terminates them, so an inbound frame arrives as a reply to a
+ * poll the facet is already blocked on and can carry the same cache
+ * invalidation every other supervisor-delivered resumption carries. See
+ * session/ws-relay.ts for why mediating the transport is not enough.
+ *
+ * The URL is untrusted input, so it is parsed rather than pattern-matched and
+ * only the two WebSocket schemes are accepted. Nothing else about the request
+ * comes from the facet — no facet-supplied header is forwarded, so the
+ * supervisor cannot be induced to attach its own ambient credentials to a
+ * destination the facet chose.
+ */
+const WsOpenArgsSchema = z.object({
+  url: z.string().max(2048).refine(
+    (value) => {
+      let parsed: URL;
+      try { parsed = new URL(value); } catch { return false; }
+      return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+    },
+    { message: 'a relayed socket needs a ws: or wss: URL' },
+  ),
+  protocols: z.array(z.string().max(64)).max(8),
+});
+
+export async function _rpcWsOpen(
+  self: RpcHost,
+  url: string,
+  protocols: string[],
+  pid?: number,
+): Promise<{ id: number; protocol: string }> {
+  const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [] });
+  return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols);
+}
+
+export async function _rpcWsPoll(
+  self: RpcHost,
+  id: number,
+  waitMs: number,
+  pid?: number,
+): Promise<unknown[]> {
+  return self._ensureWebSocketRelay().poll(processPid(pid), Number(id), Number(waitMs) || 0);
+}
+
+export async function _rpcWsSend(
+  self: RpcHost,
+  id: number,
+  text: string | null,
+  bytes: Uint8Array | null,
+  pid?: number,
+): Promise<void> {
+  self._ensureWebSocketRelay().send(processPid(pid), Number(id), text ?? null, bytes ?? null);
+}
+
+export async function _rpcWsClose(
+  self: RpcHost,
+  id: number,
+  code?: number,
+  reason?: string,
+  pid?: number,
+): Promise<void> {
+  self._ensureWebSocketRelay().close(processPid(pid), Number(id), code, reason);
+}
+
+/**
+ * The facet cache-coherence barrier: what changed since `cursor`.
+ *
+ * Returned as payload, never on an Error — custom Error properties do not
+ * survive structured clone across the RPC boundary, so a cursor carried that
+ * way would silently arrive as undefined.
+ */
+export async function _rpcFsAcquire(
+  self: RpcHost,
+  epoch: string | null,
+  cursor: number,
+  pid?: number,
+): Promise<VfsAcquireResult> {
+  const args = FsAcquireArgsSchema.parse({ epoch, cursor });
+  return runtimeFs(self, pid).acquire(args.epoch, args.cursor);
 }
 
 export async function _rpcFsReadRange(
@@ -795,6 +907,10 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
       return;
     }
     try { self.processes.closeInput(pid); } catch {}
+    // A relayed socket is held open by the supervisor on the process's behalf,
+    // so it does not die when the facet does. Nothing else would ever close
+    // it, and a live one keeps buffering into the supervisor's heap.
+    try { self.webSocketRelay?.closeForPid(pid); } catch {}
     self.runtimeFsBridges?.delete(pid);
     if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -950,6 +1066,10 @@ export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
     if (self.processes.getExit(pid)) return;
     try { self.processes.closeInput(pid); } catch {}
+    // A relayed socket is held open by the supervisor on the process's behalf,
+    // so it does not die when the facet does. Nothing else would ever close
+    // it, and a live one keeps buffering into the supervisor's heap.
+    try { self.webSocketRelay?.closeForPid(pid); } catch {}
     self.runtimeFsBridges?.delete(pid);
     if (reason) {
       self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);

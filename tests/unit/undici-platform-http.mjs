@@ -14,6 +14,7 @@
 // throw with the limitation named rather than answer wrongly.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
 
@@ -39,12 +40,12 @@ function bootFacet({ env = {}, origin } = {}) {
   });
 
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
     'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + generateShimsCode() + '\n;return __require;',
+    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return __require;',
   );
   const require = factory(
-    {}, {}, {}, {}, {}, supervisor,
+    {}, {}, {}, {}, supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     '/home/user', [], env, '/home/user/main.mjs', '/home/user',
   );

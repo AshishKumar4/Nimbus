@@ -126,6 +126,14 @@ export interface CredentialedVfs {
     }): Promise<WriteBatchStreamResult>;
     mkdirBatch(paths: string[]): number;
     revision(path?: string): number;
+    /**
+     * This VFS incarnation's identity. Paired with `revision()` it is the
+     * cache-coherence cursor a facet is stamped with when its bundle is built,
+     * so the facet's first ACQUIRE is an ordinary delta. Without the pairing a
+     * bare revision is meaningless across a supervisor restart, since the
+     * revision clock is in memory and restarts at zero.
+     */
+    readonly epoch: string;
 }
 /** Entry for bulk chunk creation via writeBatch(). */
 export interface BatchChunkEntry {
@@ -193,6 +201,12 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
+    private readonly _epoch;
+    private _invalidations;
+    private _invalidationBytes;
+    private static readonly INVALIDATION_LOG_MAX_BYTES;
+    /** Identifies this supervisor incarnation. Never reused across restarts. */
+    get epoch(): string;
     private readonly exclusiveMutationLeases;
     private activeMutationOwner;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -294,8 +308,43 @@ export declare class SqliteVFS {
      * global clock by construction (every mutation stamps all ancestors).
      */
     revision(path?: string): number;
-    /** Advance the clock once and stamp every path + its ancestors. */
+    /**
+     * Advance the clock once, stamp every path + its ancestors, and record
+     * the mutation in the invalidation log.
+     *
+     * This is the single mutation chokepoint for coherence purposes. Five
+     * mutation paths bypass the `_writeBatchOnce` funnel — `_mkdirSingle`,
+     * `utimes`, `chmod`, `chown`, `rename` — but all of them reach here, so
+     * a hook sited anywhere else silently misses renames, which is the
+     * mutation most likely to break a build tool.
+     *
+     * The log records the mutated path AND its parent. A facet's content
+     * cells key on the exact path; its directory-shape view keys on the
+     * parent. Recording only the path would let a facet observe a file's
+     * bytes coherently while still believing the file does not exist.
+     * Recording every ancestor would cost O(depth) entries per write for no
+     * additional coverage, since no facet view keys on a grandparent.
+     */
     private bumpRevision;
+    /** UTF-16 payload plus a flat allowance for the entry object itself. */
+    private static entryBytes;
+    private _record;
+    /**
+     * The paths mutated since `cursor`, for a facet holding a cache stamped
+     * at `(epoch, cursor)`.
+     *
+     * Returns `poison` — meaning "drop the whole resident set" — when the
+     * caller's view cannot be repaired incrementally: a different supervisor
+     * incarnation (its revisions are unrelated to ours), or a cursor older
+     * than the retained log (entries it needed have been dropped). Both
+     * degrade to a cold cache, never to a stale byte.
+     */
+    invalidatedSince(epoch: string | null, cursor: number): {
+        epoch: string;
+        rev: number;
+        paths: string[];
+        poison: boolean;
+    };
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
