@@ -242,6 +242,15 @@ async function readFacetImage(disk, path) {
     }
     return source;
 }
+/**
+ * Total bytes a dynamic Worker's module map may carry, across every member of
+ * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
+ * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
+ * size of 67108864 bytes", confirmed at five sizes with two trials each. The
+ * budget is shared, so a ruby process is already 34.3 MiB down before its disk
+ * is counted.
+ */
+export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
 function facetContainer(ctx) {
     const facets = ctx.facets;
     if (!facets || typeof facets.get !== 'function') {
