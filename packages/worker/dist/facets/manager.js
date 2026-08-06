@@ -2961,19 +2961,33 @@ export class FacetManager {
             : undefined;
         this.debugEnabled = debugVar === '1' || debugVar === 'true';
     }
-    setVfs(vfs) {
-        this.vfs = vfs;
-        // The image store owns its directory, so it creates it on the way up
-        // rather than on first write. Creating it lazily made the store perturb
-        // the filesystem view every manifest is built from: the root listing
-        // gained an entry the moment an image was written, so the next spawn of
-        // an identical program generated different text and addressed a different
-        // image. A directory that exists before the first walk is stable.
+    setVfs(vfs) { this.vfs = vfs; }
+    /**
+     * The image store's directory, created before the first filesystem view is
+     * built rather than on the first image write.
+     *
+     * Lazily created, it made the store perturb the very view every manifest is
+     * built from: the root listing gained an entry the moment an image landed,
+     * so the next spawn of an identical program generated different text and
+     * addressed a different image. Existing before the first walk makes it
+     * stable.
+     *
+     * Sited on the exec path and not in setVfs, because setVfs runs while the
+     * Durable Object is coming up — including on every wake — and a synchronous
+     * filesystem write there costs the session its startup. Measured: a
+     * throwaway built that way stopped accepting terminal connections at all,
+     * while the same build without it served them.
+     */
+    _ensureImageStoreDir(vfs) {
+        if (this.imageStoreDirReady)
+            return;
+        this.imageStoreDirReady = true;
         try {
             vfs.as(CRED_KERNEL).mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
         }
         catch { /* a session whose disk is not writable has no images to store */ }
     }
+    imageStoreDirReady = false;
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -3209,6 +3223,8 @@ export class FacetManager {
         }
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
+        if (this.vfs)
+            this._ensureImageStoreDir(this.vfs);
         const processVfs = this.vfs?.as(entry.cred);
         const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
         const vfsState = processVfs
@@ -3507,6 +3523,8 @@ export class FacetManager {
         // directory manifest so readdir/stat are coherent. opencode creates its
         // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
         // other writes flush live through the SUPERVISOR RPC bridge.
+        if (this.vfs)
+            this._ensureImageStoreDir(this.vfs);
         const processVfs = this.vfs?.as(entry.cred);
         const vfsState = processVfs
             ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined)
@@ -4079,6 +4097,8 @@ export class FacetManager {
                 this.esbuild = null;
             }
         }
+        if (this.vfs)
+            this._ensureImageStoreDir(this.vfs);
         const processVfs = this.vfs?.as(entry.cred);
         const vfsState = processVfs
             ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
