@@ -99,3 +99,134 @@ export function createFacetCtx(world, doId = 'do-test') {
     waited,
   };
 }
+
+// ── Substrates ──────────────────────────────────────────────────────────────
+//
+// A `ProcessHost` of either kind, over the SAME facet world, so one suite can
+// be run twice and the two substrates compared assertion for assertion. The
+// peer arm is not a mock of the peer leg: it wires the real `_rpcHostProcess`
+// / `_rpcAwaitHostedOpen` / `_rpcAwaitHostedBoot` / `_rpcRouteHostedHttp` /
+// `_rpcCancelHostProcess` behind a fake `NIMBUS_SESSION` namespace, so what is
+// under test on that arm is the shipped code.
+
+import {
+  _rpcAwaitHostedBoot,
+  _rpcAwaitHostedOpen,
+  _rpcCancelHostProcess,
+  _rpcHostProcess,
+  _rpcRouteHostedHttp,
+} from '../../packages/worker/src/session/rpc.ts';
+import { isolateToken, processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+
+/** The two settings of NIMBUS_PROCESS_HOST, for suites that run under both. */
+export const PROCESS_HOST_MODES = ['facet', 'peer'];
+
+/**
+ * A `ProcessHost` for `mode`, hosting `world`'s facets.
+ *
+ * `env` is the hosting DO's bindings — on the peer arm they are the PEER's,
+ * which is the point: a coordinator with no loader at all still runs processes
+ * when its peers have one.
+ *
+ * `colocated: true` makes every fake peer report the COORDINATOR's isolate,
+ * which is the single-process topology placement has to fall back through.
+ */
+export function createProcessHost(mode, world, disk, {
+  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false,
+} = {}) {
+  const calls = [];
+  const stubs = [];
+  const hostEnv = env ?? {
+    LOADER: world.loader,
+    ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
+  };
+  if (mode === 'facet') {
+    return processHostFor(createFacetCtx(world, coordDoId), hostEnv, () => disk);
+  }
+  // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
+  // does; a second stub for the same name must see the same hosted records.
+  const peers = new Map();
+  const peerFor = (name) => {
+    let peer = peers.get(name);
+    if (!peer) {
+      const ctx = createFacetCtx(world, name);
+      // A hosting sibling that cannot host: the failure a peer suffers where a
+      // coordinator would have thrown before any handle existed.
+      if (peerWithoutFacets) delete ctx.facets;
+      peer = {
+        ctx,
+        env: hostEnv,
+        _hostedProcesses: new Map(),
+        _hostedProcessWaiters: new Map(),
+        // A peer is a DIFFERENT Durable Object, so it reports a different
+        // isolate. Modelling that matters: `isolateToken()` is a module
+        // singleton, so calling the real probe in-process would make every
+        // fake peer look co-located with the coordinator, placement would
+        // exhaust its attempts every time, and the production happy path —
+        // accepting the first candidate — would never run under test.
+        isolateToken: colocated ? isolateToken() : `peer-isolate-${peers.size}`,
+      };
+      // The held host leg is the peer's life. `die()` severs it exactly as a
+      // Durable Object reset severs an inbound call.
+      peer.death = new Promise((_, reject) => { peer.die = reject; });
+      peer.death.catch(() => {});
+      peers.set(name, peer);
+    }
+    return peer;
+  };
+  const ns = {
+    idFromName: (name) => name,
+    get(name) {
+      const peer = peerFor(name);
+      calls.push(name);
+      // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
+      // release one is visible rather than merely invisible.
+      stubs.push({ name, disposed: false });
+      const record = stubs[stubs.length - 1];
+      return {
+        [Symbol.dispose]() { record.disposed = true; },
+        _rpcProcessHostProbe: () => Promise.resolve({ isolateToken: peer.isolateToken }),
+        _rpcHostProcess: (boot, opts) => Promise.race([_rpcHostProcess(peer, boot, opts), peer.death]),
+        _rpcAwaitHostedOpen: (key) => _rpcAwaitHostedOpen(peer, key),
+        _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peer, key),
+        _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peer, key, wire),
+        _rpcCancelHostProcess: (key) => _rpcCancelHostProcess(peer, key),
+      };
+    },
+  };
+  const host = processHostFor(
+    createFacetCtx(world, coordDoId),
+    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    () => disk,
+  );
+  host.peers = peers;
+  host.namesResolved = calls;
+  host.stubs = stubs;
+  return host;
+}
+
+/**
+ * `ctx.exports` for a suite that runs on both substrates. `SupervisorRPC` is
+ * both the facet's syscall binding (asserted through `props`) and the ranged
+ * file reader a peer completes a by-path boot spec with.
+ */
+export function createCtxExports(readFile) {
+  return {
+    SupervisorRPC(options) {
+      return {
+        props: options.props,
+        async stat(path) { return { size: readFile(path).byteLength }; },
+        async fsReadRangeUncached(path, offset, length) {
+          return readFile(path).subarray(offset, offset + length);
+        },
+      };
+    },
+  };
+}
+
+/**
+ * workerd's `IdentityTransformStream` under bun. The peer leg re-pipes a
+ * response body through one so what crosses the hop is not an object the
+ * loaded worker owns; a plain TransformStream is that same identity pipe.
+ */
+if (!globalThis.IdentityTransformStream) globalThis.IdentityTransformStream = TransformStream;

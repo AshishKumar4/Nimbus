@@ -22,6 +22,7 @@ import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import * as _rpc from './rpc.js';
+import type { HostedHttpRequest, HostedHttpResponse } from '../loaders/process-host.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
@@ -266,6 +267,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsClose(handleId: number, pid?: number): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+    _rpcFsReadRangeUncached(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
@@ -306,6 +308,24 @@ export declare class NimbusSession extends CloudflareDurableObject {
         omitSupervisor?: boolean;
     }): Promise<{
         results: unknown[];
+    }>;
+    _hostedProcesses: Map<string, _rpc.HostedProcessRecord>;
+    _hostedProcessWaiters: Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>;
+    _rpcProcessHostProbe(): {
+        isolateToken: string;
+    };
+    _rpcHostProcess(boot: unknown, opts: unknown): Promise<{
+        ok: boolean;
+    }>;
+    _rpcAwaitHostedOpen(workerKey: string): Promise<{
+        ok: boolean;
+    }>;
+    _rpcAwaitHostedBoot(workerKey: string): Promise<{
+        payload: unknown;
+    }>;
+    _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
+    _rpcCancelHostProcess(workerKey: string): Promise<{
+        cancelled: boolean;
     }>;
     _rpcCpSpawn(req: any): Promise<{
         childPid: number;

@@ -99,12 +99,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     path: string,
     offset: number,
     length: number,
-    options: { followSymlinks?: boolean } = {},
+    options: { followSymlinks?: boolean; cached?: boolean } = {},
   ): Promise<Uint8Array | null> {
     const p = this.resolveDataPath(path, options.followSymlinks !== false);
     if (!p) return null;
     try {
-      return this.vfs.readRange(p, offset, length);
+      return options.cached === false
+        ? this.vfs.readRangeUncached(p, offset, length)
+        : this.vfs.readRange(p, offset, length);
     } catch (error) {
       if (hasErrorCode(error, 'ENOENT')) return null;
       throw error;

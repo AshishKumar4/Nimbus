@@ -65,6 +65,8 @@ Core files:
 | `packages/worker/src/runtime/os-contracts.ts` | Shared Runtime OS contracts for filesystem/process/ports/package ABI/diagnostics. |
 | `packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts` | Runtime filesystem bridge over `SqliteVFS`. |
 | `packages/worker/src/facets/process.ts` | Supervisor-side `child_process` broker. |
+| `packages/worker/src/loaders/process-fabric.ts` | Resident-process scheduler, boot specs, and `openResidentFacet` — the one way a process becomes a running facet. |
+| `packages/worker/src/loaders/process-host.ts` | Which actor hosts that facet: the user's own session DO, or a sibling. Two implementations, one deployment-wide choice. |
 | `packages/worker/src/vfs/sqlite-vfs.ts` | SQLite-backed VFS. |
 | `packages/worker/src/npm/installer.ts` | npm install pipeline. |
 | `packages/worker/src/runtime/package-manager.ts` | `nimbus install` runtime package manager. |
@@ -82,6 +84,24 @@ processes. `fs.promises.open` FileHandles and live appends use the stateless
 range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which rewrite only the
 touched 64 KiB chunks; VFS revisions are per-path subtree watermarks
 (`SqliteVFS.revision(path?)`).
+
+Every resident process — node servers, python/ruby socket servers, the opencode
+TUI and its headless server — is a DO Facet named `proc-<pid>`. **Which actor
+hosts that facet is one deployment-wide var, `NIMBUS_PROCESS_HOST`:**
+
+| Value | Where the process runs | Spawn | Memory | CPU |
+|---|---|---|---|---|
+| `facet` (default) | a child actor of the user's own session DO | ~250 ms p50 | independent | shared with siblings |
+| `peer` | a child actor of a sibling session DO | ~1,400 ms p50 | independent | independent |
+
+Both give the process its own SQLite, and both run the same code — a peer opens
+it by calling the same `openResidentFacet` on its own `ctx`. Peer routing costs
+one extra DO hop, measured at +13 ms per request. Nothing per-process chooses:
+no spawn site, program name, mode or payload size reaches the selection, and an
+unrecognised value is refused rather than defaulted. Flip it on a target with
+`bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
+and read back where a process actually landed by also setting
+`--var NIMBUS_DEBUG:1` and watching the process log.
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
@@ -271,6 +291,11 @@ bun tests/behavioral/_throwaway-target.mjs down           # delete, and confirm 
 one session by hand. Throwaways are named `nimbus-tw-*`, live on
 `workers.dev`, and get their own Durable Object namespace. Delete them when
 you are done.
+
+`up --var KEY:VALUE` overrides a config var for that deploy, which is how one
+build gets stood up twice to compare two settings of it. Redeploying the same
+name with a different `--var` keeps the secret, so tokens already minted stay
+valid across the flip.
 
 This is also what CI runs: the `behavioral` workflow deploys the commit
 under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes

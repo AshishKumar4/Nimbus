@@ -624,6 +624,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsReadRange(path, offset, length, pid) {
         return _rpc._rpcFsReadRange(this, path, offset, length, pid);
     }
+    async _rpcFsReadRangeUncached(path, offset, length, pid) {
+        return _rpc._rpcFsReadRangeUncached(this, path, offset, length, pid);
+    }
     async _rpcFsReadBatch(requests, pid) {
         return _rpc._rpcFsReadBatch(this, requests, pid);
     }
@@ -661,6 +664,28 @@ export class NimbusSession extends CloudflareDurableObject {
     // two-tier-fanout: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
     async _rpcFanoutExecute(fnSource, args, poolOpts) {
         return _rpc._rpcFanoutExecute(this, fnSource, args, poolOpts);
+    }
+    // process fabric: the peer host leg. Populated only while THIS DO is hosting
+    // a resident process for a sibling coordinator — see session/rpc.ts.
+    _hostedProcesses = new Map();
+    _hostedProcessWaiters = new Map();
+    _rpcProcessHostProbe() {
+        return _rpc._rpcProcessHostProbe(this);
+    }
+    async _rpcHostProcess(boot, opts) {
+        return _rpc._rpcHostProcess(this, boot, opts);
+    }
+    async _rpcAwaitHostedOpen(workerKey) {
+        return _rpc._rpcAwaitHostedOpen(this, workerKey);
+    }
+    async _rpcAwaitHostedBoot(workerKey) {
+        return _rpc._rpcAwaitHostedBoot(this, workerKey);
+    }
+    async _rpcRouteHostedHttp(workerKey, request) {
+        return _rpc._rpcRouteHostedHttp(this, workerKey, request);
+    }
+    async _rpcCancelHostProcess(workerKey) {
+        return _rpc._rpcCancelHostProcess(this, workerKey);
     }
     // W8 child_process RPC
     async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
