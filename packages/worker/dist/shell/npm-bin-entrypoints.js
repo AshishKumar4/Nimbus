@@ -369,12 +369,30 @@ const ATTACHED_TTY_DEPENDENCIES = new Set([
 const ATTACHED_TTY_DEPENDENCY_PREFIXES = [
     '@opentui/',
 ];
-function looksLongRunningNpmBin(binName, argv) {
+/**
+ * Whether this invocation stays resident. Only the keyed long-running facet
+ * exposes a re-resolvable route stub, so getting this wrong for a server means
+ * its port is never reachable — it runs in the one-shot facet until the facet
+ * lifetime expires and reports the limit it hit.
+ *
+ * A server-shaped CLI serves by default; the exception is the subcommand that
+ * ends. `build` is that verb, and it means the same thing in every one of
+ * these CLIs: produce an artifact, exit. `preview` does not end — it binds a
+ * port and serves the built output, exactly as `dev` binds one and serves the
+ * source.
+ *
+ * The exclusion stays narrow because the two errors are not symmetric. A
+ * missed server costs a dead port for one facet lifetime; a resident process
+ * that exits 0 is never reaped (`handedOffToLongRunningFacet` above), so it
+ * stays `running` in `ps` for the life of the session. Only verbs that
+ * certainly terminate belong here.
+ */
+export function looksLongRunningNpmBin(binName, argv) {
     if (LONG_RUNNING_BIN_NAMES.has(binName)) {
         for (const arg of argv) {
             if (isNonInteractiveBinArg(arg))
                 return false;
-            if (arg === 'build' || arg === 'preview')
+            if (arg === 'build')
                 return false;
         }
         return true;
