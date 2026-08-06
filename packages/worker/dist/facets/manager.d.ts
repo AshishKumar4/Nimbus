@@ -37,6 +37,16 @@ export interface FacetExecResult {
      */
     vfsWrites?: Record<string, string | Uint8Array | Record<string, number>>;
     /**
+     * VFS paths whose content the process read synchronously and did not have.
+     *
+     * The facet cannot serve those reads and cannot recover from them, so the
+     * only place the knowledge is useful is here: the next bundle built for the
+     * same entry stages them, and the miss stops recurring. Reported on every
+     * exec, not behind the diag flag — a residency repair that only happens
+     * when debugging is switched on is not a repair.
+     */
+    residencyMisses?: string[];
+    /**
      * Exec telemetry, populated only when NIMBUS_DIAG_EXEC=1. drainPasses,
      * rpcWrites and fsRpcReads originate inside the facet (see
      * exec-telemetry.ts); the supervisor folds them with its own phase timings
@@ -175,6 +185,13 @@ interface FacetVfsState {
     truncated: boolean;
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
+    /**
+     * Identity of the bundle these cells came from, so a residency miss the
+     * process reports can be filed against the exact build that missed. Carried
+     * on the state rather than recomputed at the exec site, where the inputs
+     * would have to be threaded through a second time and could drift.
+     */
+    bundleKey?: string;
     /**
      * Memoized Worker Loader source for the bundle. Oversized bundles are
      * split across bounded side modules so the complete require closure does
@@ -405,6 +422,28 @@ export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: s
     added: number;
 };
 /**
+ * Stage the paths an earlier run of the same entry read synchronously and did
+ * not have.
+ *
+ * The speculative passes are all proxies for intent — a call shape, a package
+ * layout, a filename — and each one silently drops whatever its author did
+ * not think of. A miss is the opposite: direct evidence, from the program
+ * itself, that the bundle was wrong about one specific path. So the only
+ * policy here is a budget. There is no extension rule and no per-file size
+ * rule; a file that does not fit inside the bundle's memory bound is one no
+ * policy can stage, and the facet says so by name when it is read again.
+ *
+ * Admitted smallest-first for the same reason as the entry-package walk: the
+ * budget is shared, so ordering by size maximizes the number of misses a
+ * fixed number of bytes repairs.
+ */
+export declare function addObservedReads(vfs: CredentialedVfs, observed: ReadonlySet<string> | undefined, bundle: Record<string, string | Uint8Array>, requiredPaths: Set<string>, budgetState: {
+    totalBytes: number;
+    fileCount: number;
+}): {
+    added: number;
+};
+/**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
  * The static walker supplies the complete known require closure. Separate
@@ -420,7 +459,7 @@ export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: s
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -501,8 +540,45 @@ export declare class FacetManager {
     private static readonly PREFETCH_CACHE_MAX;
     /** Live sum of the entries' `bytes`, mirrored to the diag gauge on change. */
     private prefetchCacheBytes;
+    /**
+     * What each entry was observed to read and not have, keyed exactly like the
+     * prefetch cache above so a profile can only ever seed the bundle it was
+     * measured against.
+     *
+     * Lifetime is the supervisor incarnation's, same as the cache — a restart
+     * costs one more loud failure and then relearns. Persisting it would be a
+     * schema and a migration bought with nothing the in-memory form does not
+     * already deliver for the case that matters: running the command again.
+     */
+    private residencyProfiles;
+    private static readonly RESIDENCY_PROFILE_MAX_ENTRIES;
+    /**
+     * A program that reads a directory of data files misses once per file, so
+     * the cap has to clear a real working set. Past it the profile stops
+     * growing and the surplus stays loud — a bounded map that admits the first
+     * N is honest; an unbounded one in a Durable Object is a leak.
+     */
+    private static readonly RESIDENCY_PROFILE_MAX_PATHS;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
+    /**
+     * The image store's directory, created before the first filesystem view is
+     * built rather than on the first image write.
+     *
+     * Lazily created, it made the store perturb the very view every manifest is
+     * built from: the root listing gained an entry the moment an image landed,
+     * so the next spawn of an identical program generated different text and
+     * addressed a different image. Existing before the first walk makes it
+     * stable.
+     *
+     * Sited on the exec path and not in setVfs, because setVfs runs while the
+     * Durable Object is coming up — including on every wake — and a synchronous
+     * filesystem write there costs the session its startup. Measured: a
+     * throwaway built that way stopped accepting terminal connections at all,
+     * while the same build without it served them.
+     */
+    private _ensureImageStoreDir;
+    private imageStoreDirReady;
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -530,6 +606,16 @@ export declare class FacetManager {
      * pi's 44 MB boot payload through: a thing sized by count when what matters
      * is bytes.
      */
+    /**
+     * File what a process could not read against the bundle that failed it.
+     *
+     * A miss the supervisor never hears about is a miss the next run repeats,
+     * so this is the whole of the repair: record the path, then drop the cached
+     * bundle for that key so the next build is a real one and stages it. The
+     * program that hit the miss is already gone — nothing here rescues it, and
+     * nothing here needs to, because the facet failed loudly on the way out.
+     */
+    private _recordResidencyMisses;
     private _admitPrefetchCacheEntry;
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
