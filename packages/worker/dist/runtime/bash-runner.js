@@ -1170,18 +1170,40 @@ function emitReady(s, proc, dv, outPtr, subs) {
   }
   return n;
 }
-// Spend a clock subscription's interval the only way a host with no event loop
-// can: run whatever else is runnable, and otherwise wait out the deadline.
-// Returns once something is ready or the earliest deadline has passed.
+// Spend a clock subscription's interval by running whatever else is runnable.
+//
+// It cannot be spent waiting. This facet's clock does not advance during
+// synchronous execution — 50M spin iterations move both Date.now() and
+// performance.now() by exactly 0ms, which is the platform's timing-attack
+// mitigation rather than a quirk. A busy-wait therefore never terminates, and
+// a poll that returns no events leaves the guest spinning on the same frozen
+// clock. Running the scheduler is the only progress available; past that the
+// deadline is reported as reached. A host whose clock does advance gets a real
+// wait, and honouring one in-facet needs poll_oneoff to become async — that is
+// the migration onto runtime/wasi-instance.ts, not something a synchronous
+// implementation can express.
+// FROZEN_PROBE is a measurement, not a timeout: if the clock has not moved by
+// a single nanosecond after this many iterations, it is not going to.
+const FROZEN_PROBE = 200000;
 function waitForDeadline(s, proc, subs) {
   const clocks = subs.filter((x) => x.tag === 0 && !x.bad);
   if (!clocks.length) return;
-  for (;;) {
-    if (clocks.some(clockExpired)) return;
+  const startedNs = realtimeNs();
+  let spins = 0;
+  while (!clocks.some(clockExpired)) {
+    if (s.rootExit !== null) return;
     if (subs.some((x) => x.tag === 1 && (fdReadReady(s, proc, x.fd) || { ready: true }).ready)) return;
     if (s.runnable.length) { pumpOne(s); continue; }
-    if (s.rootExit !== null) return;
+    if (++spins > FROZEN_PROBE && realtimeNs() === startedNs) return;
   }
+}
+// Report every live clock subscription as fired. Reached only once the wait
+// above can make no further progress: the alternative is an eventless success,
+// which poll_oneoff may not return and which a guest cannot act on.
+function emitClocks(dv, outPtr, subs) {
+  let n = 0;
+  for (const sub of subs) if (sub.tag === 0 && !sub.bad) writeEvent(dv, outPtr, n++, sub, 0, 0);
+  return n;
 }
 
 function blockTarget(s, proc, fd) {
@@ -1252,7 +1274,7 @@ function makeProc(s, pid, ppid, fds) {
       const blockSub = subs.find((x) => x.tag === 1 && blockTarget(s, proc, x.fd));
       if (!blockSub) {
         waitForDeadline(s, proc, subs);
-        emitted = emitReady(s, proc, dv, outPtr, subs);
+        emitted = emitReady(s, proc, dv, outPtr, subs) || emitClocks(dv, outPtr, subs);
         dv.setUint32(retPtr, emitted, true);
         return 0;
       }
@@ -1517,7 +1539,7 @@ function doExec(s, proc) {
       let emitted = emitReady(s, proc, dv, outPtr, subs);
       if (emitted === 0) {
         waitForDeadline(s, proc, subs);
-        emitted = emitReady(s, proc, dv, outPtr, subs);
+        emitted = emitReady(s, proc, dv, outPtr, subs) || emitClocks(dv, outPtr, subs);
       }
       dv.setUint32(retPtr, emitted, true);
       return 0;

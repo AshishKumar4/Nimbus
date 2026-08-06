@@ -69,13 +69,24 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
 }
 
 // ── a clock subscription is a deadline, not an event ──────────────────────
-// poll_oneoff used to report every clock subscription ready immediately, so
-// sleep(1) returned in single-digit milliseconds and any timed wait spun.
+// poll_oneoff used to report every clock subscription ready immediately,
+// ignoring its timeout entirely. It now computes a real deadline and reports
+// the subscription only once that deadline has passed.
+//
+// READ THIS BEFORE TRUSTING IT IN PRODUCTION. What this asserts holds on a
+// host whose clock advances during synchronous execution, which is where the
+// unit suite runs. It does NOT hold inside a facet: workerd freezes both
+// Date.now() and performance.now() for the whole synchronous block (measured:
+// 50M spin iterations, 0ms elapsed), so no synchronous implementation can wait
+// a deadline out there, and poll_oneoff reports the timeout instead of
+// hanging. Making sleep(1) genuinely take a second in-facet requires
+// poll_oneoff to become async, which is the migration onto wasi-instance.ts.
+// The deadline arithmetic under test is the part that migration will keep.
 {
   const started = Date.now();
   const r = runScript('sleep 1; echo done');
   const elapsed = Date.now() - started;
-  check('poll_oneoff clock subscription does not fire instantly',
+  check('poll_oneoff honours a clock deadline where the clock advances',
     r.stdout === 'done\n' && elapsed >= 900,
     `sleep 1 took ${elapsed}ms, stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
 }
