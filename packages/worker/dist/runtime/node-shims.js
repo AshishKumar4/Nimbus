@@ -2102,27 +2102,27 @@ const __fsMod = (() => {
   function existsSync(p) {
     const absPath = _resolve(p);
     const k = _strip(absPath);
-    if (_metadata(absPath) !== undefined) return true;
-    if (__vfsBundle && k in __vfsBundle) return true;
-    if (__vfsWrites && k in __vfsWrites) return true;
-    if (__vfsDirs && k in __vfsDirs) return true;
+    if (_metadata(absPath) !== undefined) { _residencySatisfied(absPath); return true; }
+    if (__vfsBundle && k in __vfsBundle) { _residencySatisfied(absPath); return true; }
+    if (__vfsWrites && k in __vfsWrites) { _residencySatisfied(absPath); return true; }
+    if (__vfsDirs && k in __vfsDirs) { _residencySatisfied(absPath); return true; }
     // W2.5b root-cause fix: consult the manifest BEFORE falling back to
     // the O(N) bundle-prefix scan. The manifest is uncapped and always
     // reflects the real directory shape, even when the file content for
     // a directory's contents was excluded by the 4 MiB / 500-file content
     if (__vfsManifest) {
-      if (k in __vfsManifest) return true;
+      if (k in __vfsManifest) { _residencySatisfied(absPath); return true; }
       // Path may be a file listed by its parent's manifest entry.
       const slash = k.lastIndexOf("/");
       const parent = slash >= 0 ? k.slice(0, slash) : "";
       const name = slash >= 0 ? k.slice(slash + 1) : k;
       const sib = __vfsManifest[parent];
-      if (sib && sib.indexOf(name) !== -1) return true;
+      if (sib && sib.indexOf(name) !== -1) { _residencySatisfied(absPath); return true; }
     }
     // Last-resort: bundle dir entries
     if (__vfsBundle) {
       const prefix = k + "/";
-      for (const bk in __vfsBundle) { if (bk.startsWith(prefix) || bk === k) return true; }
+      for (const bk in __vfsBundle) { if (bk.startsWith(prefix) || bk === k) { _residencySatisfied(absPath); return true; } }
     }
     // Nothing found — which is only an answer if the enclosing directory was
     // enumerated. Node's existsSync never throws, and that contract is exactly
@@ -2132,6 +2132,7 @@ const __fsMod = (() => {
     if (!_absenceIsKnown(absPath)) {
       throw _unmappedError(absPath, absPath, "access", "fs.promises.access");
     }
+    _residencySatisfied(absPath);
     return false;
   }
 
@@ -2139,7 +2140,13 @@ const __fsMod = (() => {
   function statSync(p, opts) {
     const absPath = _resolve(p);
     _ensureAncestorsTraversable(absPath, "stat", p);
-    return _statResolved(absPath, p, opts);
+    const stat = _statResolved(absPath, p, opts);
+    // Reached only when the view had an answer, refusals having thrown. Any
+    // answer settles the path, including the honest "not there" — what the
+    // ledger is for is reads that went unanswered, not reads that came back
+    // with news the caller did not want.
+    _residencySatisfied(absPath);
+    return stat;
   }
 
   // The stat ladder for a path whose ancestors the caller has already
@@ -2292,6 +2299,7 @@ const __fsMod = (() => {
         }
       }
     }
+    _residencySatisfied(absPath);
     const arr = [...names].sort();
     if (opts?.withFileTypes) {
       return arr.map(n => {
