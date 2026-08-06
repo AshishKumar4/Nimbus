@@ -103,6 +103,7 @@ import {
 } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
+import type { HostedHttpRequest, HostedHttpResponse } from '../loaders/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from './ws-relay.js';
@@ -785,6 +786,29 @@ export class NimbusSession extends CloudflareDurableObject {
     },
   ): Promise<{ results: unknown[] }> {
     return _rpc._rpcFanoutExecute(this as any, fnSource, args, poolOpts);
+  }
+
+  // process fabric: the peer host leg. Populated only while THIS DO is hosting
+  // a resident process for a sibling coordinator — see session/rpc.ts.
+  _hostedProcesses = new Map<string, _rpc.HostedProcessRecord>();
+  _hostedProcessWaiters = new Map<string, Set<(record: _rpc.HostedProcessRecord) => void>>();
+  _rpcProcessHostProbe(): { isolateToken: string } {
+    return _rpc._rpcProcessHostProbe(this as any);
+  }
+  async _rpcHostProcess(boot: unknown, opts: unknown): Promise<{ ok: boolean }> {
+    return _rpc._rpcHostProcess(this as any, boot, opts);
+  }
+  async _rpcAwaitHostedOpen(workerKey: string): Promise<{ ok: boolean }> {
+    return _rpc._rpcAwaitHostedOpen(this as any, workerKey);
+  }
+  async _rpcAwaitHostedBoot(workerKey: string): Promise<{ payload: unknown }> {
+    return _rpc._rpcAwaitHostedBoot(this as any, workerKey);
+  }
+  async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
+    return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
+  }
+  async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
+    return _rpc._rpcCancelHostProcess(this as any, workerKey);
   }
 
   // W8 child_process RPC
