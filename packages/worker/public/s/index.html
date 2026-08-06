@@ -1072,7 +1072,13 @@
         } else if (!options.keepMarkdownPreview) {
           showAppPreview();
         }
-        editor.focus();
+        // Same rule as the preview panel above, for the other thing this
+        // takes. The boot default lands whenever Monaco finishes loading, so
+        // it must not pull the keyboard out of whatever already has it — the
+        // shell, or an attached TUI's xterm the user is typing into. Opening
+        // a file the user asked for still focuses the editor.
+        const holdsFocus = document.activeElement && document.activeElement !== document.body;
+        if (!options.deferredDefault || !holdsFocus) editor.focus();
       }
 
       async function save() {
