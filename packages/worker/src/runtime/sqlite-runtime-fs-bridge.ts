@@ -84,11 +84,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     path: string,
     bytes: string | Uint8Array,
     options: { createParents?: boolean; expectedRevision?: number } = {},
-  ): Promise<void> {
+  ): Promise<number> {
     const p = this.resolveMutationPath(path, true, 'write');
     this.assertExpectedRevision(p, options.expectedRevision);
     if (options.createParents !== false) this.ensureParent(p);
     this.vfs.writeFile(p, bytes);
+    // Read back in the same synchronous turn as the mutation, so nothing can
+    // interleave: this is exactly the revision this write produced. Asking
+    // again after an await would report a peer's clock as our own.
+    return this.rawVfs.revision();
   }
 
   async readRange(

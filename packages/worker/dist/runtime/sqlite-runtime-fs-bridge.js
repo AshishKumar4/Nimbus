@@ -80,6 +80,10 @@ export class SqliteRuntimeFsBridge {
         if (options.createParents !== false)
             this.ensureParent(p);
         this.vfs.writeFile(p, bytes);
+        // Read back in the same synchronous turn as the mutation, so nothing can
+        // interleave: this is exactly the revision this write produced. Asking
+        // again after an await would report a peer's clock as our own.
+        return this.rawVfs.revision();
     }
     async readRange(path, offset, length, options = {}) {
         const p = this.resolveDataPath(path, options.followSymlinks !== false);

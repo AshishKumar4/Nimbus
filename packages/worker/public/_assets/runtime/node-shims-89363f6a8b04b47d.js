@@ -728,7 +728,9 @@ const __fsMod = (() => {
   // as __nimbusFsRpcReads, which the runner already folds into the exec-diag
   // envelope — there is no reason to invent a second surface for it.
   const _stats = globalThis.__nimbusVfsCoherence
-    || (globalThis.__nimbusVfsCoherence = { fills: 0, filledBytes: 0, invalidations: 0, poisons: 0 });
+    || (globalThis.__nimbusVfsCoherence = {
+      fills: 0, filledBytes: 0, invalidations: 0, poisons: 0, selfWrites: 0,
+    });
 
   /**
    * Drop a path from the sync CONTENT views, leaving the existence views
@@ -750,6 +752,7 @@ const __fsMod = (() => {
    */
   function _evictResident(k) {
     let evicted = false;
+    delete __vfsBundleRevisions[k];
     if (__vfsBundle && k in __vfsBundle) { delete __vfsBundle[k]; evicted = true; }
     const metadata = _metadataTable();
     if (metadata && k in metadata) { delete metadata[k]; evicted = true; }
@@ -776,6 +779,11 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     if (k === "") return;
     __vfsBundle[k] = bytes;
+    // A read carries no revision, so the cell it installs is unstamped and
+    // the next report of this path evicts it. Dropping any stamp a previous
+    // write left is the point: these bytes are not the ones that stamp
+    // described, and keeping it would vouch for content it never saw.
+    delete __vfsBundleRevisions[k];
     // Keep the stat view consistent with the bytes now held. Without this
     // the content view is fresh while statSync still reports the
     // spawn-time length, so a program can read N bytes and be told the
@@ -810,6 +818,15 @@ const __fsMod = (() => {
    * supervisor incarnation, or a cursor older than the retained log — so
    * the whole resident content view goes. That costs a cold cache; the
    * alternative is a stale byte.
+   *
+   * A path the facet itself wrote is skipped, and only at the revision its
+   * own flush produced. The invalidation log records what changed, not who
+   * changed it, so a facet that writes N files is handed all N of them back
+   * on its next barrier and drops the bytes it is holding — measurably, 40
+   * writes cost 41 invalidations and 40 refetches of content that never
+   * left. Comparing revisions rather than names keeps the peer case intact:
+   * a peer writing the same path afterwards reports a HIGHER revision than
+   * our stamp, so that invalidation still lands.
    */
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
@@ -826,7 +843,9 @@ const __fsMod = (() => {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       _stats.poisons++;
     } else if (Array.isArray(result.paths)) {
-      for (const k of result.paths) {
+      for (const entry of result.paths) {
+        const k = entry.path;
+        if (__vfsBundleRevisions[k] >= entry.rev) { _stats.selfWrites++; continue; }
         const held = !!(__vfsBundle && k in __vfsBundle);
         if (_evictResident(k)) _stats.invalidations++;
         if (held) wereResident.push(k);

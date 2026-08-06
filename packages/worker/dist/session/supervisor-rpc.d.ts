@@ -29,6 +29,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
+import type { VfsAcquireResult } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
@@ -77,7 +78,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * object/pack files where the text readFile would corrupt content.
      */
     readFileBytes(path: string): Promise<Uint8Array | null>;
-    writeFile(path: string, content: string | Uint8Array): Promise<void>;
+    writeFile(path: string, content: string | Uint8Array): Promise<number>;
     stat(path: string): Promise<any>;
     lstat(path: string): Promise<any>;
     hasLegacySymlinkUnder(path: string): Promise<boolean>;
@@ -110,12 +111,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * and enveloping the existing returns would break `useRpcResource`
      * disposal, which targets the returned value.
      */
-    fsAcquire(epoch: string | null, cursor: number): Promise<{
-        epoch: string;
-        rev: number;
-        paths: string[];
-        poison: boolean;
-    }>;
+    fsAcquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
     fsRevision(path?: string): Promise<number>;
     /**
      * WebSocket relay. A facet does not open its own sockets: the supervisor
