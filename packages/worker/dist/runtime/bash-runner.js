@@ -1650,6 +1650,7 @@ function composeFsDiff(s) {
     // Deepest-first so the flush rmdirs children before their parents.
     dirsDeleted: [...s.fs.dirsDeleted].sort((a, b) => b.length - a.length),
     modesChanged: Object.fromEntries(s.fs.modesChanged),
+    symlinksCreated: Object.fromEntries(s.fs.symlinksCreated),
   };
 }
 
