@@ -435,7 +435,12 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt, vfsCursor } = args;
+    // The cursor this facet's bundle was read at. Without it the first
+    // ACQUIRE carries a null epoch, which the authority can only answer
+    // with a poison — so the first timer, fetch or frame threw the whole
+    // resident set away and tried to refetch it in one turn.
+    if (vfsCursor) globalThis.__nimbusVfsCursor = { epoch: vfsCursor.epoch, rev: vfsCursor.rev };
     // What is left of this facet's lifetime, measured from the supervisor's
     // own timeout timer rather than from whenever the drain happens to start
     // — a slow module init must not be able to push the drain past the kill
@@ -2595,6 +2600,9 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     }
 }
 async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE) {
+    // Read the cursor BEFORE the walk: a mutation that lands while the bundle
+    // is being assembled must be reported as invalidated, not silently missed.
+    const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
     // 1. Static reachable-set walk from entry.
     const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
     const bundle = { ...prefetch.bundle };
@@ -2748,6 +2756,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         bundle,
         manifest,
         metadata,
+        cursor,
         reachableCount: fileCount,
         truncated,
         bundleSideModulesRequired,
@@ -3137,6 +3146,7 @@ export class FacetManager {
             // facet runs (module map build, LOADER.load, the RPC hop) only makes
             // this earlier than the kill, which is the safe direction.
             entryDeadlineAt: Date.now() + FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESERVE_MS,
+            vfsCursor: vfsState.cursor,
             ...(diagSink ? { diag: true } : {}),
         });
         if (diagSink) {

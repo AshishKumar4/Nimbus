@@ -182,6 +182,14 @@ export interface CredentialedVfs {
   ): Promise<WriteBatchStreamResult>;
   mkdirBatch(paths: string[]): number;
   revision(path?: string): number;
+  /**
+   * This VFS incarnation's identity. Paired with `revision()` it is the
+   * cache-coherence cursor a facet is stamped with when its bundle is built,
+   * so the facet's first ACQUIRE is an ordinary delta. Without the pairing a
+   * bare revision is meaningless across a supervisor restart, since the
+   * revision clock is in memory and restarts at zero.
+   */
+  readonly epoch: string;
 }
 
 /** Entry for bulk chunk creation via writeBatch(). */
@@ -1290,6 +1298,7 @@ export class SqliteVFS {
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
       revision: (path) => this.revision(path),
+      epoch: this._epoch,
     };
   }
 

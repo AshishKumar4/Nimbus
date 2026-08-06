@@ -16,6 +16,12 @@ import {
 } from '../../packages/worker/src/constants.ts';
 
 class FakeVfs {
+  // The bundle is stamped with the cursor it was read at, so a stand-in
+  // for the real VFS has to answer for one. A fake never mutates, so the
+  // revision never moves.
+  epoch = 'fake-vfs-epoch';
+  revision() { return 0; }
+
   constructor(files) {
     this.files = new Map(Object.entries(files));
     this.dirs = new Set();
