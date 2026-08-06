@@ -64,11 +64,13 @@ import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { isTransientDoReset } from '../observability/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
 import {
+  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   openResidentFacet,
   residentFacetName,
   type HostedProcess,
   type ProcessHost,
   type ProcessHostParams,
+  type ProcessImageDelivery,
   type ResidentBootSpec,
   type ResidentDiskReader,
   type ResidentFacetEnv,
@@ -114,6 +116,18 @@ export function processHostFor(
 // ── facet: the process is a child of the user's own session DO ──────────────
 
 class FacetProcessHost implements ProcessHost {
+  /**
+   * The process shares its session's Durable Object, so the session's own
+   * store is reachable by copy-on-write — and its storage budget is the same
+   * budget. Both halves of that follow from the one fact, and neither is
+   * optional.
+   */
+  readonly imageDelivery: ProcessImageDelivery = {
+    reflink: 'same-object',
+    moduleCeilingBytes: DYNAMIC_WORKER_CODE_LIMIT_BYTES,
+    storageSharedWithSession: true,
+  };
+
   private readonly env: ResidentFacetEnv;
   private readonly coordDoId: string;
 
@@ -136,9 +150,20 @@ class FacetProcessHost implements ProcessHost {
     return {
       ...facet,
       describe: () =>
-        `facet '${residentFacetName(params.pid)}' of session ${this.coordDoId.slice(-12)}`,
+        `facet '${residentFacetName(params.pid)}' of session ${this.coordDoId.slice(-12)}`
+        + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
   }
+}
+
+/**
+ * The operator-facing half of the substrate difference, on the one line an
+ * operator actually reads. A comment in this file would not have told anyone
+ * who flipped the config that the image path changed under them.
+ */
+function describeImageDelivery(delivery: ProcessImageDelivery): string {
+  return `fs image: reflink ${delivery.reflink}, module map ≤ ${delivery.moduleCeilingBytes}B, `
+    + `storage ${delivery.storageSharedWithSession ? 'shared with the session' : 'its own'}`;
 }
 
 // ── peer: the process is a child of a sibling session DO ────────────────────
@@ -239,6 +264,17 @@ interface PeerPlacement {
 }
 
 class PeerProcessHost implements ProcessHost {
+  /**
+   * A peer buys independent CPU and its own storage budget, and pays for both
+   * with the image path: nothing crosses a Durable Object boundary by
+   * reference, so the whole session filesystem has to travel as bytes.
+   */
+  readonly imageDelivery: ProcessImageDelivery = {
+    reflink: 'impossible',
+    moduleCeilingBytes: DYNAMIC_WORKER_CODE_LIMIT_BYTES,
+    storageSharedWithSession: false,
+  };
+
   private readonly ns: PeerNamespace;
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
@@ -305,7 +341,8 @@ class PeerProcessHost implements ProcessHost {
         }
       },
       describe: () =>
-        `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`,
+        `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
+        + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
   }
 
@@ -313,31 +350,35 @@ class PeerProcessHost implements ProcessHost {
    * Probe successive sibling names until one reports an isolate token distinct
    * from this coordinator's and from every peer already hosting a process. A
    * peer that co-located bought nothing — it shares the CPU it was chosen to
-   * escape — so placement verifies rather than assumes. When every attempt
-   * co-locates (single-process dev topologies) the last candidate is used: a
-   * co-located peer still runs the process correctly.
+   * escape — so placement verifies rather than assumes.
    */
   private async _place(pid: number): Promise<PeerPlacement> {
     const denied = new Set<string>([isolateToken(), ...this.tokensInUse.values()]);
-    let colocated: PeerPlacement | null = null;
-    for (let attempt = 0; attempt < PEER_PLACEMENT_MAX_ATTEMPTS; attempt++) {
-      const peerName = `${this.coordDoId}:proc:${pid}:${attempt}`;
-      let resource: unknown;
-      try {
-        resource = this.ns.get(this.ns.idFromName(peerName));
-        const stub = processPeerStub(resource, peerName);
-        const probe = await this._probe(stub, peerName);
-        const candidate: PeerPlacement = { stub, peerName, isolateToken: probe.isolateToken };
-        if (colocated) disposeRpcResource(colocated.stub);
-        if (!denied.has(probe.isolateToken)) return candidate;
-        colocated = candidate;
-      } catch (error) {
-        disposeRpcResource(resource);
-        if (colocated) disposeRpcResource(colocated.stub);
-        throw error;
-      }
+    for (let attempt = 0; attempt < PEER_PLACEMENT_MAX_ATTEMPTS - 1; attempt++) {
+      const candidate = await this._probePlacement(pid, attempt);
+      if (!denied.has(candidate.isolateToken)) return candidate;
+      disposeRpcResource(candidate.stub);
     }
-    return colocated as PeerPlacement;
+    // Every attempt co-located, which happens in single-process topologies. Use
+    // the last one anyway: it runs the process correctly, it just shares the
+    // CPU it was chosen to escape, and the placement line names the isolate it
+    // landed in so that is visible rather than assumed.
+    return this._probePlacement(pid, PEER_PLACEMENT_MAX_ATTEMPTS - 1);
+  }
+
+  /** One sibling name, resolved and probed. Leaks nothing on failure. */
+  private async _probePlacement(pid: number, attempt: number): Promise<PeerPlacement> {
+    const peerName = `${this.coordDoId}:proc:${pid}:${attempt}`;
+    let resource: unknown;
+    try {
+      resource = this.ns.get(this.ns.idFromName(peerName));
+      const stub = processPeerStub(resource, peerName);
+      const probe = await this._probe(stub, peerName);
+      return { stub, peerName, isolateToken: probe.isolateToken };
+    } catch (error) {
+      disposeRpcResource(resource);
+      throw error;
+    }
   }
 
   /**

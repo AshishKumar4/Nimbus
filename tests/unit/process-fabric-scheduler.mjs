@@ -28,6 +28,7 @@
 
 import assert from 'node:assert/strict';
 import {
+  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   ProcessFabric,
   ResidentProcessHandle,
   RESIDENT_PROCESS_CLASS,
@@ -318,6 +319,38 @@ for (const mode of PROCESS_HOST_MODES) {
     'peer hosting without the sibling namespace fails loud',
   );
   console.log('  case9: one value picks the substrate, and an unknown one is refused');
+}
+
+// ── (10) the one thing the substrates do NOT share is stated, not hidden ────
+//
+// Everything above asserts the two substrates behave identically. Whole-session
+// filesystem delivery is where they do not, and an abstraction that let that
+// difference go unsaid would be lying to whoever flips the config: a facet can
+// receive the session's SQLite by same-object copy-on-write, and a peer can
+// never receive it that way at all — clone and bookmarks are both
+// same-Durable-Object, and workerd has no VACUUM INTO, ATTACH or
+// sqlite3_backup to reach across one. The cost runs the other way too, so
+// neither substrate simply wins: a facet spends the session's storage budget,
+// a peer brings its own.
+{
+  const world = createFacetWorld(makeProgram());
+  const disk = () => setupDisk([]).reader;
+  const facetHost = processHostFor(createFacetCtx(world, 'coord-do-id'), { LOADER: world.loader }, disk);
+  const peerHost = createProcessHost('peer', world, setupDisk([]).reader);
+
+  assert.equal(facetHost.imageDelivery.reflink, 'same-object');
+  assert.equal(peerHost.imageDelivery.reflink, 'impossible');
+  assert.equal(facetHost.imageDelivery.storageSharedWithSession, true);
+  assert.equal(peerHost.imageDelivery.storageSharedWithSession, false);
+  // The module map is the channel that works on BOTH, and its ceiling is a
+  // property of the dynamic-Worker loader rather than of either substrate.
+  assert.equal(
+    facetHost.imageDelivery.moduleCeilingBytes,
+    peerHost.imageDelivery.moduleCeilingBytes,
+    'the module map is the one whole-image channel both substrates share',
+  );
+  assert.equal(facetHost.imageDelivery.moduleCeilingBytes, DYNAMIC_WORKER_CODE_LIMIT_BYTES);
+  console.log('  case10: the substrates state where they are not interchangeable');
 }
 
 console.log('process-fabric-scheduler: all cases passed on both substrates');
