@@ -50,6 +50,9 @@ import { initSession as _w11InitSession } from './init.js';
 import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
+// The supervisor terminates a facet's outbound sockets so inbound frames
+// arrive as supervisor replies (VFS coherence witness 3).
+import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
 // Programmatic SDK RPC surface.
@@ -242,6 +245,12 @@ export class NimbusSession extends CloudflareDurableObject {
     facetManager = null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
     facetProcessManager = null;
+    /**
+     * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
+     * so an inbound frame reaches it as a supervisor reply — the only shape a
+     * cache invalidation can ride on. Lazy: most sessions open none.
+     */
+    webSocketRelay = null;
     esbuildService = null;
     viteDevServer = null;
     /**
@@ -589,6 +598,21 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReadlink(path, pid) { return _rpc._rpcReadlink(this, path, pid); }
     async _rpcSymlink(target, path, pid) { return _rpc._rpcSymlink(this, target, path, pid); }
     async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
+    async _rpcFsAcquire(epoch, cursor, pid) {
+        return _rpc._rpcFsAcquire(this, epoch, cursor, pid);
+    }
+    async _rpcWsOpen(url, protocols, pid) {
+        return _rpc._rpcWsOpen(this, url, protocols, pid);
+    }
+    async _rpcWsPoll(id, waitMs, pid) {
+        return _rpc._rpcWsPoll(this, id, waitMs, pid);
+    }
+    async _rpcWsSend(id, text, bytes, pid) {
+        return _rpc._rpcWsSend(this, id, text, bytes, pid);
+    }
+    async _rpcWsClose(id, code, reason, pid) {
+        return _rpc._rpcWsClose(this, id, code, reason, pid);
+    }
     async _rpcFsOpen(path, flags, pid) { return _rpc._rpcFsOpen(this, path, flags, pid); }
     async _rpcFsRead(handleId, offset, length, pid) {
         return _rpc._rpcFsRead(this, handleId, offset, length, pid);
@@ -825,6 +849,16 @@ export class NimbusSession extends CloudflareDurableObject {
                 this.facetManager.setEsbuildService(this.esbuildService);
             }
         }
+    }
+    /**
+     * The supervisor-owned WebSocket relay. Lazy, because most sessions never
+     * open a socket and the sockets it holds are live objects that must not
+     * outlive the session.
+     */
+    _ensureWebSocketRelay() {
+        if (!this.webSocketRelay)
+            this.webSocketRelay = new WebSocketRelay();
+        return this.webSocketRelay;
     }
     /**
      * W8: lazily construct the FacetProcessManager when the first cp* RPC

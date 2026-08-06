@@ -7,6 +7,7 @@
 // through to real fetch with the Node default UA preserved.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const routed = [];
@@ -29,12 +30,12 @@ globalThis.fetch = (input, init) => {
 
 const code = generateShimsCode();
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
   'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + code + '\n;return null;',
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return null;',
 );
 factory(
-  {}, {}, {}, {}, {}, supervisor,
+  {}, {}, {}, {}, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
 );

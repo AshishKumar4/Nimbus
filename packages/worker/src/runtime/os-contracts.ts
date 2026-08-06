@@ -148,7 +148,25 @@ export interface RuntimeFsBridge {
    * under it mutated, so consumers can cache without global invalidation.
    */
   revision(path?: string): Promise<number>;
+  /**
+   * The cache-coherence barrier. A caller holding a resident cache stamped
+   * at `(epoch, cursor)` gets back every path mutated since, and re-stamps.
+   *
+   * `poison` means the view cannot be repaired incrementally — a different
+   * supervisor incarnation, or a cursor older than the retained log — and
+   * the caller must drop its entire resident set. That costs a cold cache;
+   * the alternative would be serving a stale byte.
+   */
+  acquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
   subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
+}
+
+/** Result of a {@link RuntimeFsBridge.acquire} barrier. */
+export interface VfsAcquireResult {
+  epoch: string;
+  rev: number;
+  paths: string[];
+  poison: boolean;
 }
 
 export interface RuntimeProcessBridge {

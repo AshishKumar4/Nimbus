@@ -99,7 +99,39 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     unlink(path: string): Promise<void>;
     readlink(path: string): Promise<string | null>;
     symlink(target: string, path: string): Promise<void>;
+    /**
+     * ACQUIRE: the paths mutated since the facet's cursor, plus a fresh
+     * cursor. The facet drops those cells from its resident set before
+     * running further user code.
+     *
+     * A separate call rather than a field stamped onto every RPC reply:
+     * SupervisorRPC runs in a different isolate from the DO that owns the
+     * revision clock, so stamping here would cost its own round trip anyway,
+     * and enveloping the existing returns would break `useRpcResource`
+     * disposal, which targets the returned value.
+     */
+    fsAcquire(epoch: string | null, cursor: number): Promise<{
+        epoch: string;
+        rev: number;
+        paths: string[];
+        poison: boolean;
+    }>;
     fsRevision(path?: string): Promise<number>;
+    /**
+     * WebSocket relay. A facet does not open its own sockets: the supervisor
+     * terminates them and hands frames back through `wsPoll`, so an inbound
+     * frame is a supervisor reply and the facet's frame handler can take the
+     * same ACQUIRE every other supervisor-delivered resumption takes. Without
+     * it a third party wakes the facet at a time of its own choosing and the
+     * facet's next synchronous read serves bytes the authority has replaced.
+     */
+    wsOpen(url: string, protocols: string[]): Promise<{
+        id: number;
+        protocol: string;
+    }>;
+    wsPoll(id: number, waitMs: number): Promise<unknown[]>;
+    wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
+    wsClose(id: number, code?: number, reason?: string): Promise<void>;
     fsOpen(path: string, flags: any): Promise<any>;
     fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array>;
     fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number>;

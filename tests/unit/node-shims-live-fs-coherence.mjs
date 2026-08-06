@@ -115,25 +115,50 @@ assert.deepEqual(observed, {
   statSize: current.length,
   names: ['late.txt', 'resident.txt'],
   late: 'created-after-spawn',
-  // NOT 'ENOENT'. The async readdir above enumerated late.txt and the async
-  // read returned its bytes, so this process knows the file exists. A sync
-  // read still cannot fetch content — a facet has no way to block on the
-  // supervisor — but answering "no such file" would send the caller looking
-  // for a file that is right there. EAGAIN is the same answer the fd path
-  // (readSync/writeSync) has always given for a non-resident file.
-  syncLateAfterAsync: 'EAGAIN',
+  // FLIPPED from 'EAGAIN' when async reads began writing through into the
+  // resident set. This assertion used to encode the defect: the async read
+  // on line 81 had ALREADY fetched these bytes and paid the round trip for
+  // them, and the shims then threw them away, so the very next synchronous
+  // read of the same path refused. Refusing to serve bytes you are holding
+  // is not honesty about a limit — a facet genuinely cannot block to FETCH
+  // content, which is why a never-touched path still raises EAGAIN below,
+  // but that has never been a reason to discard content already in hand.
+  //
+  // Do not revert this to EAGAIN. If it starts failing, the write-through
+  // in _installResident regressed; the fix is there, not here.
+  syncLateAfterAsync: 'created-after-spawn',
   handle: current,
   ranged: current,
   stream: current,
 });
 
-// The refusal has to be actionable on its own: name the file, say why it
+// A path this process has never observed cannot be served synchronously, and
+// that refusal has to be actionable on its own: name the file, say why it
 // could not be served, and name the call that will serve it.
-assert.match(syncLateError.message, /late\.txt/);
-assert.match(syncLateError.message, /not resident/);
-assert.match(syncLateError.message, /fs\.promises\.readFile/);
-assert.equal(syncLateError.path, late);
-assert.equal(syncLateError.syscall, 'open');
+const neverTouched = `${dir}/never-touched.txt`;
+vfs.writeFile(neverTouched, enc.encode('only-in-the-authority'));
+// The manifest learned the name from the async readdir above, so the sync
+// existence view knows the path while the content view does not — which is
+// exactly the case EAGAIN exists to distinguish from a genuine ENOENT.
+await fsp.readdir(dir);
+let untouchedError = null;
+try {
+  fs.readFileSync(neverTouched, 'utf8');
+} catch (error) {
+  untouchedError = error;
+}
+assert.ok(untouchedError, 'a never-observed path cannot be served synchronously');
+assert.equal(untouchedError.code, 'EAGAIN');
+assert.match(untouchedError.message, /never-touched\.txt/);
+assert.match(untouchedError.message, /not resident/);
+assert.match(untouchedError.message, /fs\.promises\.readFile/);
+assert.equal(untouchedError.path, neverTouched);
+assert.equal(untouchedError.syscall, 'open');
+
+// ...and once it IS read asynchronously, the sync path serves it. The bytes
+// were paid for; a second round trip to re-fetch them would be waste.
+assert.equal(await fsp.readFile(neverTouched, 'utf8'), 'only-in-the-authority');
+assert.equal(fs.readFileSync(neverTouched, 'utf8'), 'only-in-the-authority');
 
 // existsSync and readFileSync must agree about the same path. Reporting the
 // file as present while the read reports it as absent is incoherent whatever
@@ -179,7 +204,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   await fsp.readdir(dir),
-  ['access-created.txt', 'late.txt', 'resident.txt', 'same-facet-dir'],
+  ['access-created.txt', 'late.txt', 'never-touched.txt', 'resident.txt', 'same-facet-dir'],
 );
 assert.equal(vfs.stat(`${dir}/same-facet-dir`)?.type, 'directory');
 
