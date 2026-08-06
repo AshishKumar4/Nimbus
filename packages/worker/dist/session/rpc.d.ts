@@ -100,6 +100,13 @@ export type FsReadBatchEntry = {
     error: FsReadBatchEntryError;
 };
 export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
+export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], pid?: number): Promise<{
+    id: number;
+    protocol: string;
+}>;
+export declare function _rpcWsPoll(self: RpcHost, id: number, waitMs: number, pid?: number): Promise<unknown[]>;
+export declare function _rpcWsSend(self: RpcHost, id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
+export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, reason?: string, pid?: number): Promise<void>;
 /**
  * The facet cache-coherence barrier: what changed since `cursor`.
  *

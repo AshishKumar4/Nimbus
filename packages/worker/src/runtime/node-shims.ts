@@ -765,24 +765,30 @@ const __fsMod = (() => {
   // Coherence therefore has to be established at the RESUMPTION boundary,
   // before user code runs, not inside the read.
   //
-  // Three resumptions reach a facet with no supervisor in the path (all
+  // Three resumptions reached a facet with no supervisor in the path (all
   // measured live): a facet-local timer, a direct outbound fetch, and an
   // unsolicited inbound WebSocket frame. Each is barriered by manufacturing
   // the missing supervisor round trip at the boundary the shim owns:
   //   - timer:  setTimeout/setInterval callbacks run behind an awaited
-  //             _acquireAndRefetch (see _installResumptionBarriers). CLOSED.
-  //   - fetch:  the dispatcher fires fsAcquire concurrently with egress and
-  //             flushes W ahead of it; the RTT hides under the network. CLOSED.
-  //   - socket: needs the supervisor to OWN the socket (terminate it and
-  //             relay frames), so the frame delivery is a supervisor message
-  //             the same barrier can ride. Designed, NOT yet built.
+  //             _acquireAndRefetch (see _installResumptionBarriers).
+  //   - fetch:  the dispatcher flushes W ahead of egress and ACQUIREs when
+  //             the response lands — after it, never concurrently with the
+  //             request, because the response is what encodes the write.
+  //   - socket: the supervisor terminates the socket and relays frames, so
+  //             a frame arrives as a supervisor reply the same barrier
+  //             rides on (see the relayed WebSocket below).
   //
-  // Correctness of the timer barrier is unconditional and costs one
-  // supervisor round trip per resumption — a setTimeout(0) poll-and-read
-  // loop pays one RTT per iteration. That cost is removable only by a
-  // proactive revision push whose delivery ordering is an unrun workerd
-  // probe, never by weakening the barrier.
-  const _UNBARRIERED_RESUMPTIONS = ["websocket-frame"]; // socket relay pending; see above
+  // Keep this list empty. An entry here is a documented hole in the owner's
+  // invariant, not a TODO: it means some process can be woken by something
+  // this system does not mediate, and its next synchronous read can serve
+  // bytes the authority has already replaced.
+  //
+  // Correctness is unconditional and costs one supervisor round trip per
+  // resumption — a setTimeout(0) poll-and-read loop pays one RTT per
+  // iteration. That cost is removable only by a proactive revision push
+  // whose delivery ordering is a workerd property, never by weakening the
+  // barrier.
+  const _UNBARRIERED_RESUMPTIONS = [];
 
   const _cursor = globalThis.__nimbusVfsCursor
     || (globalThis.__nimbusVfsCursor = { epoch: null, rev: 0 });
@@ -2874,6 +2880,253 @@ const __fsMod = (() => {
   _installResumptionBarriers();
   return __fsExports;
 })();
+
+// ═══════════════════════════════════════════════════════════════════════
+// ──  WebSocket: relayed through the supervisor ───────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The last resumption that reached a facet without a supervisor message.
+// A directly-connected socket delivers \`onmessage\` as a bare resumption:
+// an arbitrary third party wakes the facet at a time of its own choosing,
+// and a synchronous read in that handler serves whatever the facet was
+// holding when it last heard from the authority. Two facets connected to
+// any common external endpoint had a full-duplex channel that never
+// touched the supervisor, which breaks causal consistency and not merely
+// linearizability.
+//
+// Proxying the bytes would not have fixed it. The frame has to arrive AS a
+// supervisor reply, so the supervisor terminates the socket and this class
+// receives frames as replies to a poll it is already blocked on. Then the
+// frame handler takes the same ACQUIRE the timer and fetch boundaries take,
+// and \`_UNBARRIERED_RESUMPTIONS\` is empty.
+//
+// This is a listener registry rather than an EventTarget subclass on
+// purpose: it dispatches plain event-shaped objects, which is what a
+// relayed frame can carry across RPC, and it keeps \`onmessage\` and
+// \`addEventListener\` served by one path instead of two.
+const __NimbusRelayedWebSocket = (() => {
+  const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
+  class NimbusWebSocket {
+    constructor(url, protocols) {
+      const supervisor = _nimbusSupervisor();
+      if (!supervisor || typeof supervisor.wsOpen !== "function") {
+        // Not a fallback to the platform socket, deliberately. An
+        // unmediated socket is exactly the incoherence this class exists
+        // to remove, and opening one quietly would put the guarantee back
+        // to being conditional on which facet you happened to be in.
+        throw new Error(
+          "WebSocket: no supervisor is bound to this process, so a socket " +
+          "cannot be relayed; a directly-connected socket would deliver " +
+          "frames outside the filesystem coherence barrier",
+        );
+      }
+      this.url = String(url);
+      this.readyState = CONNECTING;
+      this.protocol = "";
+      this.extensions = "";
+      this.binaryType = "arraybuffer";
+      this.bufferedAmount = 0;
+      this.onopen = null; this.onmessage = null;
+      this.onerror = null; this.onclose = null;
+      this._listeners = new Map();
+      this._id = null;
+      this._done = false;
+      this._sends = Promise.resolve();
+      const requested = protocols === undefined ? []
+        : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      this._ready = this._connect(supervisor, requested);
+    }
+
+    async _connect(supervisor, protocols) {
+      try {
+        const opened = await __nimbusUseRpcResultUnref(
+          supervisor.wsOpen(this.url, protocols),
+          (result) => result,
+        );
+        this._id = opened.id;
+        this.protocol = opened.protocol || "";
+        this._pump(supervisor);
+      } catch (error) {
+        this._fail(error);
+      }
+    }
+
+    async _pump(supervisor) {
+      while (!this._done) {
+        let events;
+        try {
+          events = await __nimbusUseRpcResultUnref(
+            supervisor.wsPoll(this._id, 5000),
+            (result) => result,
+          );
+        } catch (error) { this._fail(error); return; }
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          if (this._done) return;
+          // The barrier the whole relay exists for. Every frame is now a
+          // supervisor reply, so it can carry the invalidation delta, and
+          // user code runs only after the resident set has caught up.
+          const acquire = globalThis.__nimbusVfsAcquireBarrier;
+          if (typeof acquire === "function") await acquire();
+          this._deliver(event);
+        }
+      }
+    }
+
+    _deliver(event) {
+      if (event.kind === "open") {
+        this.readyState = OPEN;
+        this._emit({ type: "open", target: this });
+        return;
+      }
+      if (event.kind === "message") {
+        const data = event.text !== null && event.text !== undefined
+          ? event.text
+          : (this.binaryType === "arraybuffer"
+            ? _nimbusToArrayBuffer(event.bytes)
+            : event.bytes);
+        this._emit({ type: "message", data, target: this });
+        return;
+      }
+      if (event.kind === "error") {
+        this._emit({ type: "error", message: event.message, target: this });
+        return;
+      }
+      if (event.kind === "close") {
+        this._done = true;
+        this.readyState = CLOSED;
+        this._emit({
+          type: "close", code: event.code, reason: event.reason,
+          wasClean: event.code === 1000, target: this,
+        });
+      }
+    }
+
+    _fail(error) {
+      if (this._done) return;
+      this._done = true;
+      this.readyState = CLOSED;
+      const message = (error && error.message) || String(error);
+      this._emit({ type: "error", message, target: this });
+      this._emit({ type: "close", code: 1006, reason: message, wasClean: false, target: this });
+    }
+
+    _emit(event) {
+      const handler = this["on" + event.type];
+      if (typeof handler === "function") {
+        try { handler.call(this, event); } catch (error) { _nimbusReportListenerError(error); }
+      }
+      const listeners = this._listeners.get(event.type);
+      if (!listeners) return;
+      for (const listener of [...listeners]) {
+        try {
+          if (typeof listener === "function") listener.call(this, event);
+          else if (listener && typeof listener.handleEvent === "function") listener.handleEvent(event);
+        } catch (error) { _nimbusReportListenerError(error); }
+      }
+    }
+
+    addEventListener(type, listener) {
+      const key = String(type);
+      if (!this._listeners.has(key)) this._listeners.set(key, new Set());
+      this._listeners.get(key).add(listener);
+    }
+
+    removeEventListener(type, listener) {
+      const listeners = this._listeners.get(String(type));
+      if (listeners) listeners.delete(listener);
+    }
+
+    dispatchEvent(event) { this._emit(event); return true; }
+
+    send(data) {
+      if (this.readyState === CLOSED || this.readyState === CLOSING) {
+        throw new Error("WebSocket: send on a socket that is already closing");
+      }
+      const text = typeof data === "string" ? data : null;
+      const bytes = text === null ? _nimbusToBytes(data) : null;
+      const size = text !== null ? text.length : (bytes ? bytes.byteLength : 0);
+      this.bufferedAmount += size;
+      // A frame leaving this facet is an outward-visible effect of whatever
+      // it just wrote, so the parked writes go first. Otherwise the peer
+      // that reads this frame can act on a write the authority does not
+      // have yet, which is the causal edge the protocol closes.
+      this._sends = this._sends.then(async () => {
+        const supervisor = _nimbusSupervisor();
+        if (!supervisor || this._done) return;
+        const release = globalThis.__nimbusVfsReleaseBarrier;
+        if (typeof release === "function") await release();
+        await this._ready;
+        if (this._id === null || this._done) return;
+        await __nimbusUseRpcResultUnref(
+          supervisor.wsSend(this._id, text, bytes),
+          () => undefined,
+        );
+      }).then(
+        () => { this.bufferedAmount -= size; },
+        (error) => { this.bufferedAmount -= size; this._fail(error); },
+      );
+      __nimbusTrackOp(this._sends);
+    }
+
+    close(code, reason) {
+      if (this._done || this.readyState === CLOSING) return;
+      this.readyState = CLOSING;
+      const supervisor = _nimbusSupervisor();
+      const closing = (async () => {
+        await this._ready.catch(() => {});
+        if (this._id === null || !supervisor) return;
+        await __nimbusUseRpcResultUnref(
+          supervisor.wsClose(this._id, code, reason),
+          () => undefined,
+        );
+      })().catch(() => {}).then(() => {
+        this._done = true;
+        this.readyState = CLOSED;
+        this._emit({
+          type: "close", code: code === undefined ? 1000 : code,
+          reason: reason === undefined ? "" : String(reason),
+          wasClean: true, target: this,
+        });
+      });
+      __nimbusTrackOp(closing);
+    }
+  }
+  for (const [name, value] of [["CONNECTING", CONNECTING], ["OPEN", OPEN], ["CLOSING", CLOSING], ["CLOSED", CLOSED]]) {
+    NimbusWebSocket[name] = value;
+    NimbusWebSocket.prototype[name] = value;
+  }
+  return NimbusWebSocket;
+})();
+
+function _nimbusSupervisor() {
+  try { return typeof __supervisor !== "undefined" ? __supervisor : null; }
+  catch { return null; }
+}
+
+function _nimbusToBytes(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return new TextEncoder().encode(String(data));
+}
+
+function _nimbusToArrayBuffer(bytes) {
+  if (!bytes) return new ArrayBuffer(0);
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return view.buffer.byteLength === view.byteLength
+    ? view.buffer
+    : view.slice().buffer;
+}
+
+// A listener that throws is the program's bug, but swallowing it silently
+// would make a relayed socket behave differently from a direct one. Route it
+// to the same place an uncaught async failure goes.
+function _nimbusReportListenerError(error) {
+  queueMicrotask(() => { throw error; });
+}
+
+globalThis.WebSocket = __NimbusRelayedWebSocket;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  constants module (framework-fixes-F1) ───────────────────────────
