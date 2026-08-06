@@ -242,19 +242,40 @@ console.log(`BASE=${process.env.BASE}${NO_RETRY ? '  [--no-retry]' : ''}`);
 console.log('');
 
 /**
- * Known runtime-crash banners (stderr) that indicate the probe spawn
- * itself died, not the probe's assertions. Match → retry once.
+ * Signatures of the runtime ITSELF dying, as opposed to the probe failing.
+ * Match → retry once.
  *
- * Currently only the bun runtime crash banner. Add new entries here
- * if other runtime crashes surface.
+ * This used to match `/Bun v\d+\.\d+\.\d+ \([^)]+\)/` — the version banner
+ * alone. Bun prints that banner after an ORDINARY uncaught error too, so the
+ * classifier matched essentially every failing probe: each one ran twice, and
+ * the "FLAKE ... → retry" line replaced its real stderr in the output. That
+ * is why a red baseline could accumulate while looking like noise, and it
+ * corrupts any historical "flaky" verdict in this repo.
+ *
+ * Measured 2026-08-05 before narrowing it, so this is not a guess:
+ *   - 10 classifier firings across three full-suite runs: 0 carried a panic
+ *     marker. 9 of the 10 ended FAIL on the retry; 4 of those were then
+ *     root-caused as 100%-reproducible defects.
+ *   - `measure-flakes` re-ran four probes 3× each: 12 runs, 0 runtime
+ *     crashes, and `npm-bin-explicit-process-exit` failed 3/3 at 32.2/32.3/
+ *     32.4s — perfectly deterministic, and labelled FLAKE every time.
+ *   - `heap-correctness/diag-reports-stream-retention`, cited above as the
+ *     reason retry exists, passed cleanly at 168.8s.
+ *
+ * A real bun crash names itself; an uncaught error never does. Requiring
+ * that name keeps the retry for the hazard it was built for and stops it
+ * laundering deterministic failures into flakes.
  */
-const RETRYABLE_STDERR_PATTERNS = [
-  /Bun v\d+\.\d+\.\d+ \([^)]+\)/,
+const RUNTIME_CRASH_PATTERNS = [
+  /panic\(/,
+  /oh no: Bun has crashed/i,
+  /Segmentation fault at address/i,
+  /illegal instruction at address/i,
 ];
 
 function isRetryableCrash(stderr, exitCode) {
   if (exitCode === 0) return false;
-  for (const pat of RETRYABLE_STDERR_PATTERNS) {
+  for (const pat of RUNTIME_CRASH_PATTERNS) {
     if (pat.test(stderr)) return true;
   }
   return false;
@@ -327,7 +348,18 @@ for (const probe of targets) {
   if (!r.ok) {
     const lines = r.stdout.split('\n').filter((l) => l.startsWith('  ✗') || l.includes('fail'));
     for (const l of lines.slice(-5)) console.log('    ' + l);
-    if (r.stderr.trim()) console.log('    stderr: ' + r.stderr.split('\n').slice(-3).join(' | '));
+    // The last few lines of a bun stderr are the version banner and blanks,
+    // so a naive tail prints "Bun v1.3.1 (Linux x64)" and nothing that says
+    // what went wrong. Drop the banner and the empty lines first: for an
+    // uncaught error the message and its top frame are what identify the
+    // failure, and they sit just above it.
+    const stderrLines = r.stderr
+      .split('\n')
+      .map((l) => l.trimEnd())
+      .filter((l) => l.trim() && !/^Bun v\d+\.\d+\.\d+ \([^)]+\)$/.test(l));
+    if (stderrLines.length > 0) {
+      console.log('    stderr: ' + stderrLines.slice(-4).join(' | '));
+    }
   }
 
   results.push({ probe, ok: r.ok, elapsed: Number(elapsedS), retried });
