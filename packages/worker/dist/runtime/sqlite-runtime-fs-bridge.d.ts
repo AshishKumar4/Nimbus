@@ -20,6 +20,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): Promise<number>;
     readRange(path: string, offset: number, length: number, options?: {
         followSymlinks?: boolean;
+        cached?: boolean;
     }): Promise<Uint8Array | null>;
     writeRange(path: string, offset: number, bytes: Uint8Array, options?: {
         createParents?: boolean;

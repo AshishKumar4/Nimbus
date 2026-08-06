@@ -114,10 +114,9 @@ import {
   _rpcAwaitHostedOpen,
   _rpcCancelHostProcess,
   _rpcHostProcess,
-  _rpcProcessHostProbe,
   _rpcRouteHostedHttp,
 } from '../../packages/worker/src/session/rpc.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { isolateToken, processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 
 /** The two settings of NIMBUS_PROCESS_HOST, for suites that run under both. */
 export const PROCESS_HOST_MODES = ['facet', 'peer'];
@@ -128,8 +127,15 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
  * `env` is the hosting DO's bindings — on the peer arm they are the PEER's,
  * which is the point: a coordinator with no loader at all still runs processes
  * when its peers have one.
+ *
+ * `colocated: true` makes every fake peer report the COORDINATOR's isolate,
+ * which is the single-process topology placement has to fall back through.
  */
-export function createProcessHost(mode, world, disk, { env, coordDoId = 'coord-do-id' } = {}) {
+export function createProcessHost(mode, world, disk, {
+  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false,
+} = {}) {
+  const calls = [];
+  const stubs = [];
   const hostEnv = env ?? {
     LOADER: world.loader,
     ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
@@ -143,12 +149,27 @@ export function createProcessHost(mode, world, disk, { env, coordDoId = 'coord-d
   const peerFor = (name) => {
     let peer = peers.get(name);
     if (!peer) {
+      const ctx = createFacetCtx(world, name);
+      // A hosting sibling that cannot host: the failure a peer suffers where a
+      // coordinator would have thrown before any handle existed.
+      if (peerWithoutFacets) delete ctx.facets;
       peer = {
-        ctx: createFacetCtx(world, name),
+        ctx,
         env: hostEnv,
         _hostedProcesses: new Map(),
         _hostedProcessWaiters: new Map(),
+        // A peer is a DIFFERENT Durable Object, so it reports a different
+        // isolate. Modelling that matters: `isolateToken()` is a module
+        // singleton, so calling the real probe in-process would make every
+        // fake peer look co-located with the coordinator, placement would
+        // exhaust its attempts every time, and the production happy path —
+        // accepting the first candidate — would never run under test.
+        isolateToken: colocated ? isolateToken() : `peer-isolate-${peers.size}`,
       };
+      // The held host leg is the peer's life. `die()` severs it exactly as a
+      // Durable Object reset severs an inbound call.
+      peer.death = new Promise((_, reject) => { peer.die = reject; });
+      peer.death.catch(() => {});
       peers.set(name, peer);
     }
     return peer;
@@ -157,9 +178,15 @@ export function createProcessHost(mode, world, disk, { env, coordDoId = 'coord-d
     idFromName: (name) => name,
     get(name) {
       const peer = peerFor(name);
+      calls.push(name);
+      // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
+      // release one is visible rather than merely invisible.
+      stubs.push({ name, disposed: false });
+      const record = stubs[stubs.length - 1];
       return {
-        _rpcProcessHostProbe: () => Promise.resolve(_rpcProcessHostProbe(peer)),
-        _rpcHostProcess: (boot, opts) => _rpcHostProcess(peer, boot, opts),
+        [Symbol.dispose]() { record.disposed = true; },
+        _rpcProcessHostProbe: () => Promise.resolve({ isolateToken: peer.isolateToken }),
+        _rpcHostProcess: (boot, opts) => Promise.race([_rpcHostProcess(peer, boot, opts), peer.death]),
         _rpcAwaitHostedOpen: (key) => _rpcAwaitHostedOpen(peer, key),
         _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peer, key),
         _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peer, key, wire),
@@ -167,11 +194,15 @@ export function createProcessHost(mode, world, disk, { env, coordDoId = 'coord-d
       };
     },
   };
-  return processHostFor(
+  const host = processHostFor(
     createFacetCtx(world, coordDoId),
     { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
     () => disk,
   );
+  host.peers = peers;
+  host.namesResolved = calls;
+  host.stubs = stubs;
+  return host;
 }
 
 /**
@@ -185,7 +216,7 @@ export function createCtxExports(readFile) {
       return {
         props: options.props,
         async stat(path) { return { size: readFile(path).byteLength }; },
-        async fsReadRange(path, offset, length) {
+        async fsReadRangeUncached(path, offset, length) {
           return readFile(path).subarray(offset, offset + length);
         },
       };

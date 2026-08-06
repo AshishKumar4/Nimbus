@@ -119,6 +119,21 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
 export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
 /**
+ * The same read, through the same process credential and the same bridge, with
+ * the LRU content cache bypassed.
+ *
+ * For a boot spec's by-path members and nothing else. Those are the largest
+ * files a session holds — a ruby interpreter image is 34.3 MiB against a 32 MiB
+ * cache — and a host reads each one once, in slices, to hand to a Worker Loader
+ * module map. Serving them through the demand-paging path would evict the
+ * user's entire hot working set and pin the blob in this DO's heap for the rest
+ * of the session, which is the pathology `readFileUncached` was added to stop
+ * when clang crashed the supervisor. A process hosted on this DO already reads
+ * them uncached; one hosted elsewhere has to be able to say so too, or the
+ * substrate that was supposed to relieve the coordinator damages it instead.
+ */
+export declare function _rpcFsReadRangeUncached(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+/**
  * Read many ranges in ONE round trip.
  *
  * Every entry is the same read `_rpcFsReadRange` performs, through the same

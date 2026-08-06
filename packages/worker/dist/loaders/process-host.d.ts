@@ -103,4 +103,16 @@ export interface HostedHttpResponse {
     headers: [string, string][];
     body: ReadableStream | null;
 }
+/**
+ * Headers as pairs, with every `Set-Cookie` kept separate.
+ *
+ * Iterating a `Headers` combines same-named fields into one comma-joined
+ * value, and for `Set-Cookie` that is not reversible — `append` cannot split
+ * `a=1; Path=/, b=2; Path=/` back into two cookies, and a browser reading the
+ * merged form sets one malformed cookie instead of two. Every other field
+ * combines by comma legally, so only this one needs the separate accessor.
+ * A user's server setting two cookies must not depend on which substrate its
+ * process happened to run on.
+ */
+export declare function headerPairs(headers: Headers): [string, string][];
 //# sourceMappingURL=process-host.d.ts.map

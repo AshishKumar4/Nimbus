@@ -90,7 +90,9 @@ export class SqliteRuntimeFsBridge {
         if (!p)
             return null;
         try {
-            return this.vfs.readRange(p, offset, length);
+            return options.cached === false
+                ? this.vfs.readRangeUncached(p, offset, length)
+                : this.vfs.readRange(p, offset, length);
         }
         catch (error) {
             if (hasErrorCode(error, 'ENOENT'))

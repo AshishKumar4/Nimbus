@@ -723,6 +723,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
     return _rpc._rpcFsReadRange(this as any, path, offset, length, pid);
   }
+  async _rpcFsReadRangeUncached(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
+    return _rpc._rpcFsReadRangeUncached(this as any, path, offset, length, pid);
+  }
   async _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]> {
     return _rpc._rpcFsReadBatch(this as any, requests, pid);
   }

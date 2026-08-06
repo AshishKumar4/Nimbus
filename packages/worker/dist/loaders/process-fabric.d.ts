@@ -38,7 +38,7 @@
  *   peer   — spawn 242-359 ms, because every spawn pays a DO create plus a
  *            SQLite open. Memory AND CPU both independent: the process runs
  *            in a different workerd process, verified per placement rather
- *            than assumed (see `_placeDistinctPeer`).
+ *            than assumed (see `_place` in `loaders/process-host.ts`).
  *
  * Both give the process its own SQLite. Neither changes what the process is:
  * the runner, the boot spec, the class name, the writer handshake and the
@@ -282,6 +282,19 @@ export interface HostedProcess {
      * exit; a host that dies before then rejects it.
      */
     readonly started: Promise<unknown>;
+    /**
+     * Rejects if the HOST dies under a process that is already up — the one
+     * failure a substrate can suffer that the process itself never reports.
+     *
+     * It is not symmetric, and pretending otherwise is what leaks a process. A
+     * facet dies only with the Durable Object that owns it, which takes the
+     * coordinator and this handle with it, so there is nothing to observe and
+     * this never settles; its death shows up at the next use, loudly. A peer can
+     * die on its own, the held host leg says so, and throwing that away would
+     * leave a `boot`-contract process routing to a corpse until someone killed
+     * it by hand.
+     */
+    readonly lost: Promise<never>;
     /** Inbound HTTP for the process's registered ports. */
     handleHttpRequest(request: Request): Promise<Response>;
     /**
@@ -327,12 +340,25 @@ export interface ProcessImageDelivery {
      *   across one. A peer-hosted process can only ever receive an image
      *   through `moduleCeilingBytes` below, or by streaming it.
      *
-     * NOT reachable on this build either way: `ctx.facets.clone` landed in
-     * workerd 1.20260619.1 and is typed from @cloudflare/workers-types 5.x,
-     * while this repo pins 1.20260603.1 and 4.20260605.1 — the facets binding
-     * here declares `get`/`abort`/`delete` and nothing else. So the fast path is
-     * a facet-substrate PROPERTY, not a facet-substrate behaviour, until those
-     * are bumped.
+     * Reachable in PRODUCTION but not from a type checker or `wrangler dev`, and
+     * the difference is worth stating precisely because inferring one from the
+     * other is how a wrong claim gets written down. `@cloudflare/workers-types`
+     * 4.20260605.1 declares `get`/`abort`/`delete` and no `clone`, and the pinned
+     * workerd is 1.20260603.1 — but the deployed runtime is Cloudflare's, not the
+     * one wrangler bundles, and there it is present and works: enumerating the
+     * binding on a live Worker at this repo's own compatibility_date returns
+     * `["abort","clone","constructor","delete","get"]`, and a clone into a
+     * destination of a DIFFERENT class had all 500 seeded files readable from the
+     * destination's CONSTRUCTOR. No compat-date gate. So calling it is a
+     * lockfile-and-types problem, not a platform one.
+     *
+     * The hazard that comes with it, measured rather than assumed: ANY `src`
+     * that does not resolve to a populated facet — a typo, a name not created
+     * yet, not merely the obvious `''`/`'.'`/`'/'` — silently EMPTIES the
+     * destination and reports success. Validation has to be positive on both
+     * ends: the source exists and is populated before, the destination is
+     * non-empty after. A blocklist of bad names would pass a typo straight
+     * through and wipe a process's filesystem while returning ok.
      */
     readonly reflink: 'same-object' | 'impossible';
     /**
