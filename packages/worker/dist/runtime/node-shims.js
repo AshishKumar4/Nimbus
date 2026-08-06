@@ -975,16 +975,32 @@ const __fsMod = (() => {
     globalThis.__nimbusVfsReleaseBarrier = _resumptionRelease;
     const _setTimeout = globalThis.setTimeout;
     const _setInterval = globalThis.setInterval;
+    // The barrier moves the user callback BEHIND an awaited round trip, and
+    // the timer bookkeeping counts a timer as done the moment its closure
+    // starts. So between the ACQUIRE and the callback the facet looks idle,
+    // and a one-shot facet could tear itself down in that window — the work
+    // the timer was scheduled for simply never ran, silently. Counting the
+    // deferred chain as an in-flight operation is what holds the facet open
+    // across it; __nimbusPendingOps is the counter the drain consults for
+    // exactly this, since an awaited chain is invisible to promise tracking.
+    // Only the ACQUIRE is counted, never the callback that follows it. A
+    // callback is free to be a long-lived thing — an SSE writer that returns
+    // when the client disconnects — and counting it as an in-flight operation
+    // would make a resident facet's drain wait for it, which buffers an open
+    // response body. The window that needs holding is exactly the round trip.
+    const _barriered = (cb, args) => {
+      __nimbusTrackOp(_resumptionAcquire()).then(() => cb(...args));
+    };
     if (typeof _setTimeout === "function") {
       globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
         if (typeof cb !== "function") return _setTimeout(cb, ms);
-        return _setTimeout(() => { _resumptionAcquire().then(() => cb(...args)); }, ms);
+        return _setTimeout(() => { _barriered(cb, args); }, ms);
       };
     }
     if (typeof _setInterval === "function") {
       globalThis.setInterval = function setInterval(cb, ms, ...args) {
         if (typeof cb !== "function") return _setInterval(cb, ms);
-        return _setInterval(() => { _resumptionAcquire().then(() => cb(...args)); }, ms);
+        return _setInterval(() => { _barriered(cb, args); }, ms);
       };
     }
   }

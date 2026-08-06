@@ -46,8 +46,27 @@ async function peerWrite(path, content) {
   if (!r.ok) throw new Error(`peer write failed: ${r.status} ${await r.text().catch(() => '')}`);
 }
 
-const read = async (path) =>
-  stripAnsi((await t.run(`cat ${path}`, 20_000)).output).replace(/\r/g, '');
+/**
+ * A one-shot facet has a bounded lifetime and a synchronous write is written
+ * back on a debounce, so a result file can be a moment behind the process that
+ * produced it. Retry briefly rather than encode a sleep that is either flaky
+ * or slow.
+ */
+const read = async (path, attempts = 6) => {
+  let out = '';
+  for (let i = 0; i < attempts; i++) {
+    out = stripAnsi((await t.run(`cat ${path}`, 20_000)).output).replace(/\r/g, '');
+    if (!/No such file or directory/.test(out)) return out;
+    await sleep(500);
+  }
+  return out;
+};
+
+// Warm the session first. A one-shot facet has a fixed lifetime budget, and
+// on a cold session most of it goes to booting — a program that arms a timer
+// and then writes its answer can lose the write to the teardown, which is a
+// facet-lifetime property and not the coherence being measured here.
+await t.run('node -e \'console.log("warm")\'', 45_000);
 
 // ── 1. the timer resumption ─────────────────────────────────────────────
 {
@@ -59,10 +78,10 @@ const read = async (path) =>
     `fs.readFileSync("${path}","utf8");`,
     'setTimeout(()=>{',
     `fs.writeFileSync("${result}","TIMER_SAW["+fs.readFileSync("${path}","utf8")+"]");`,
-    '},2500);',
+    '},1200);',
   ].join('');
   const running = t.run(`node -e '${program}'`, 40_000);
-  await sleep(900);
+  await sleep(500);
   await peerWrite(path, 'PEER_WROTE');
   await running;
   const out = await read(result);
@@ -115,10 +134,10 @@ const read = async (path) =>
     'await fetch("https://cloudflare-dns.com/dns-query?name=example.com",',
     '{headers:{accept:"application/dns-json"}}).catch(()=>{});',
     `fs.writeFileSync("${result}","FETCH_SAW["+fs.readFileSync("${path}","utf8")+"]");`,
-    '})();},1500);',
+    '})();},900);',
   ].join('');
   const running = t.run(`node -e '${program}'`, 40_000);
-  await sleep(1100);
+  await sleep(500);
   await peerWrite(path, 'PEER_WROTE');
   await running;
   const out = await read(result);
