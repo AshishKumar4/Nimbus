@@ -57,6 +57,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } 
 import type { WasiAbi } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { manifestVfs } from './vfs-manifest.js';
+import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -326,6 +327,32 @@ export function makeWasmRunner(deps: {
       }
     }
 
+    // Install a declared memory maximum before the bytes leave for the
+    // loader. Modules built by wasi-sdk declare a minimum and no maximum, so
+    // an unbounded `memory.grow` runs until the facet isolate is killed and
+    // the guest never learns it ran out of memory. With a maximum in place
+    // the grow instruction returns -1 instead, malloc gets NULL, and the
+    // program fails through its own error path with the isolate intact.
+    //
+    // A module that declares a tighter maximum keeps it, and one whose
+    // minimum exceeds the cap is left alone: refusing to run a program we
+    // could have run is a worse outcome than the OOM this prevents, and the
+    // supervisor cannot report a compile failure as usefully as the guest can
+    // report its own allocation failure.
+    //
+    // A wasi-threads build is untouched: it imports its shared memory and
+    // names the ceiling on its own build line (`--max-memory`), so there is no
+    // memory section to rewrite and no unbounded growth to prevent.
+    let limited = bytes;
+    try {
+      limited = withMemoryLimit(bytes, DEFAULT_WASM_PROCESS_LIMIT_BYTES);
+    } catch (e: unknown) {
+      console.warn(
+        `wasm-runner: leaving '${opts.filename}' uncapped: ` +
+        (e instanceof Error ? e.message : String(e)),
+      );
+    }
+
     // Convert Uint8Array (SqliteVFS native) into ArrayBuffer.
     // structuredClone-safe ArrayBuffer is required by the pool's
     // wasmModules contract; sub-views aren't accepted by workerd's
@@ -333,9 +360,9 @@ export function makeWasmRunner(deps: {
     // ArrayBuffer regardless of whether bytes.buffer was originally
     // a Shared variant — TS's overload-resolution narrowing here is
     // overly conservative; cast to ArrayBuffer is correct.
-    const buf = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength,
+    const buf = limited.buffer.slice(
+      limited.byteOffset,
+      limited.byteOffset + limited.byteLength,
     ) as ArrayBuffer;
 
     // The submitted function runs INSIDE the facet isolate. It reads
