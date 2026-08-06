@@ -7,6 +7,7 @@
  */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, listInstalledRuntimes, } from '../runtime/package-manager.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
@@ -99,48 +100,101 @@ export async function ensureProgrammaticReady(self, options = {}) {
     }
     return { ok: true, preinstalled: preinstall };
 }
-export async function rpcExec(self, command, options = {}) {
-    await ensureProgrammaticReady(self, options);
+function startShellJob(self, command, options, job) {
     const shell = self.shell;
     if (!shell)
         throw new Error('Nimbus shell did not initialize');
+    const line = String(command);
+    const cwd = options.cwd ?? shell.getCwd?.() ?? '/home/user';
+    const entry = self.processes.spawn(line, [line], cwd, { longRunning: job.background });
+    const pid = entry.pid;
+    if (job.background)
+        self.processes.openInput(pid);
+    const controller = new AbortController();
+    self.processes.setTerminator(pid, () => {
+        try {
+            controller.abort();
+        }
+        catch { /* already settled */ }
+    });
+    const emit = (stream, sink) => (data) => {
+        const text = String(data);
+        if (job.background) {
+            try {
+                self.processes.appendOutput(pid, stream, text);
+            }
+            catch { /* ring gone */ }
+        }
+        sink?.(text);
+    };
+    const run = shell.execute(line, {
+        cwd,
+        env: { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
+        onStdout: emit('stdout', job.onStdout),
+        onStderr: emit('stderr', job.onStderr),
+        signal: controller.signal,
+        stdin: options.stdin,
+        // A background job must not mutate the interactive shell's cwd, env, or
+        // options; a foreground exec stays stateful, as it always has been.
+        isolateShellState: job.background,
+        commandContext: {
+            pid,
+            cred: entry.cred,
+            setUmask: (mask) => self.processes.setUmask(pid, mask),
+            ...(job.background
+                ? {
+                    __nimbusBinSpawn: {
+                        skipSpawn: true,
+                        callerPid: pid,
+                        command: line,
+                        forceLongRunning: true,
+                    },
+                }
+                : {}),
+        },
+    });
+    return { pid, entry, run, abort: () => { try {
+            controller.abort();
+        }
+        catch { } } };
+}
+export async function rpcExec(self, command, options = {}) {
+    await ensureProgrammaticReady(self, options);
     const stdout = [];
     const stderr = [];
     const started = Date.now();
-    const beforePids = new Set(self.processes.getAll().map((p) => p.pid));
-    const controller = new AbortController();
     let timeout = null;
     let timedOut = false;
-    const run = shell.execute(String(command), {
-        cwd: options.cwd ?? shell.getCwd?.() ?? '/home/user',
-        env: { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
-        onStdout: (d) => stdout.push(String(d)),
-        onStderr: (d) => stderr.push(String(d)),
-        signal: controller.signal,
-        stdin: options.stdin,
+    const job = startShellJob(self, command, options, {
+        background: false,
+        onStdout: (d) => stdout.push(d),
+        onStderr: (d) => stderr.push(d),
     });
-    const result = options.timeoutMs && options.timeoutMs > 0
-        ? await Promise.race([
-            run,
-            new Promise((resolve) => {
-                timeout = setTimeout(() => {
-                    timedOut = true;
-                    try {
-                        controller.abort();
-                    }
-                    catch { }
-                    resolve({ exitCode: 124 });
-                }, options.timeoutMs);
-            }),
-        ])
-        : await run;
-    if (timeout)
-        clearTimeout(timeout);
+    let result;
+    try {
+        result = options.timeoutMs && options.timeoutMs > 0
+            ? await Promise.race([
+                job.run,
+                new Promise((resolve) => {
+                    timeout = setTimeout(() => {
+                        timedOut = true;
+                        job.abort();
+                        resolve({ exitCode: 124 });
+                    }, options.timeoutMs);
+                }),
+            ])
+            : await job.run;
+    }
+    finally {
+        if (timeout)
+            clearTimeout(timeout);
+    }
     const exitCode = Number(result.exitCode ?? (timedOut ? 124 : 0));
+    self.processes.exit(job.pid, exitCode);
     if (timedOut) {
         stderr.push(`command timed out after ${options.timeoutMs}ms\n`);
     }
-    const logged = collectNewProcessOutput(self, beforePids);
+    const logged = collectJobOutput(self, job.pid);
     if (stdout.length === 0 && logged.stdout)
         stdout.push(logged.stdout);
     if (stderr.length === 0 && logged.stderr)
@@ -155,14 +209,21 @@ export async function rpcExec(self, command, options = {}) {
         timestamp: Date.now(),
     };
 }
-function collectNewProcessOutput(self, beforePids) {
-    const created = self.processes.getAll()
-        .filter((p) => !beforePids.has(p.pid))
-        .sort((a, b) => a.startTime - b.startTime);
+/**
+ * Output a command produced through a log ring instead of the caller's
+ * streams — an npm bin, a facet-backed runtime, an adopted long-running
+ * process. Attribution follows the process tree rooted at the job's own pid:
+ * a start-time window would also sweep up the output of commands issued
+ * concurrently against the same session.
+ */
+function collectJobOutput(self, pid) {
     const stdout = [];
     const stderr = [];
-    for (const entry of created) {
-        const chunks = self.processes.allLogs(Number(entry.pid));
+    const owned = [self.processes.get(pid), ...self.processes.descendantsOf(pid)];
+    for (const entry of owned) {
+        if (!entry)
+            continue;
+        const chunks = self.processes.allLogs(entry.pid);
         for (const chunk of chunks) {
             if (chunk.stream === 'stderr')
                 stderr.push(String(chunk.data));
@@ -172,20 +233,66 @@ function collectNewProcessOutput(self, beforePids) {
     }
     return { stdout: stdout.join(''), stderr: stderr.join('') };
 }
+/**
+ * Start a command in the background and return its handle immediately.
+ *
+ * The command runs for as long as it needs to: the session holds its work
+ * open through `ctx.waitUntil`, the same contract a long-running facet uses.
+ * Status, incremental output, and termination are read back through the
+ * process surface (`listProcesses`, `processLogs`, `killProcess`).
+ */
 export async function rpcStartProcess(self, command, options = {}) {
     await ensureProgrammaticReady(self, options);
-    const before = new Set(self.processes.getAll().map((p) => p.pid));
-    const result = await rpcExec(self, command, options);
-    const created = self.processes.getAll()
-        .filter((p) => !before.has(p.pid))
-        .sort((a, b) => b.startTime - a.startTime);
-    const running = created.find((p) => p.state === 'running') ?? null;
-    const pid = running?.pid ?? created[0]?.pid ?? null;
-    const process = pid != null ? serializeProcess(self.processes.get(pid)) : null;
-    const ports = pid != null
-        ? self.portRegistry.getAll().filter((p) => p.pid === pid).map(serializePort)
-        : [];
-    return { ...result, pid, process, ports };
+    const job = startShellJob(self, command, options, { background: true });
+    const line = String(command);
+    notifyTerminalEvent(self.terminal ?? null, {
+        type: 'spawn', pid: job.pid, command: line, longRunning: true, attachedTty: false,
+    });
+    let timeout = null;
+    if (options.timeoutMs && options.timeoutMs > 0) {
+        timeout = setTimeout(() => {
+            self.processes.appendOutput(job.pid, 'stderr', `command timed out after ${options.timeoutMs}ms\n`);
+            job.abort();
+        }, options.timeoutMs);
+    }
+    const lifecycle = job.run
+        .then((result) => Number(result?.exitCode ?? 0))
+        .catch((error) => {
+        const message = error instanceof Error ? (error.stack || error.message) : String(error);
+        try {
+            self.processes.appendOutput(job.pid, 'stderr', message + '\n');
+        }
+        catch { }
+        return 1;
+    })
+        .then((exitCode) => {
+        if (timeout)
+            clearTimeout(timeout);
+        finishBackgroundJob(self, job.pid, line, exitCode);
+    });
+    self.ctx.waitUntil?.(lifecycle);
+    return {
+        command: line,
+        pid: job.pid,
+        process: serializeProcess(job.entry),
+        ports: self.portRegistry.getAll().filter((p) => p.pid === job.pid).map(serializePort),
+        startedAt: job.entry.startTime,
+    };
+}
+/**
+ * Record a background command's exit — unless a resident facet adopted the
+ * pid through the bin-spawn contract. Then the shell call returning is only
+ * the handoff, the facet is the live process, and it reports its own exit.
+ */
+function finishBackgroundJob(self, pid, command, exitCode) {
+    if (exitCode === 0 && self.facetManager?.hasResidentProcess(pid))
+        return;
+    self.processes.exit(pid, exitCode);
+    if (!self.processes.getExit(pid))
+        self.processes.markExit(pid, exitCode);
+    notifyTerminalEvent(self.terminal ?? null, {
+        type: 'exit', pid, code: exitCode, command,
+    });
 }
 export async function rpcRunCode(self, code, options = {}) {
     const language = options.language ?? 'javascript';
