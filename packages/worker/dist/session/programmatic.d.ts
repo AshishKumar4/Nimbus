@@ -7,6 +7,7 @@
  */
 import { type MinShellRegistry } from '../runtime/package-manager.js';
 import type { ProcessLogReadOptions } from '../runtime/process-logs.js';
+import { type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
@@ -26,9 +27,13 @@ interface ProgrammaticShellExecuteOptions {
     onStderr?: (data: string) => void;
     signal?: AbortSignal;
     stdin?: string;
+    isolateShellState?: boolean;
+    commandContext?: Record<string, unknown>;
 }
 interface ProgrammaticContext {
     getWebSockets?(tag?: string): WebSocket[];
+    /** Holds a background process's work open for the life of the process. */
+    waitUntil?(promise: Promise<unknown>): void;
     storage: {
         delete(key: string): Promise<void>;
         deleteAll(): Promise<void>;
@@ -38,6 +43,7 @@ interface ProgrammaticContext {
 }
 interface ProgrammaticFacetManager {
     kill(pid: number): boolean;
+    hasResidentProcess(pid: number): boolean;
 }
 interface ProgrammaticViteServer {
     isRunning: boolean;
@@ -65,10 +71,10 @@ export interface ProgrammaticHost {
     _cirrusHmrWsClients?: {
         clear(): void;
     } | null;
-    terminal?: {
+    terminal?: (TerminalLike & {
         write(text: string): void;
         close(): void;
-    } | null;
+    }) | null;
     kernel?: unknown;
     facetProcessManager?: unknown;
     esbuildService?: unknown;
@@ -117,10 +123,17 @@ export interface ProgrammaticExecResult {
     duration: number;
     timestamp: number;
 }
-export interface ProgrammaticStartResult extends ProgrammaticExecResult {
-    pid: number | null;
-    process: SerializedProcess | null;
+/**
+ * A started background process. There is no exit code or output here — the
+ * process is still running when this returns. Read both back through
+ * `processLogs(pid)`, which carries the exit record once it lands.
+ */
+export interface ProgrammaticStartResult {
+    command: string;
+    pid: number;
+    process: SerializedProcess;
     ports: SerializedPort[];
+    startedAt: number;
 }
 export interface SerializedProcess {
     pid: number;
@@ -144,6 +157,14 @@ export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?
     preinstalled: string[];
 }>;
 export declare function rpcExec(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticExecResult>;
+/**
+ * Start a command in the background and return its handle immediately.
+ *
+ * The command runs for as long as it needs to: the session holds its work
+ * open through `ctx.waitUntil`, the same contract a long-running facet uses.
+ * Status, incremental output, and termination are read back through the
+ * process surface (`listProcesses`, `processLogs`, `killProcess`).
+ */
 export declare function rpcStartProcess(self: ProgrammaticHost, command: string, options?: ProgrammaticExecOptions): Promise<ProgrammaticStartResult>;
 export declare function rpcRunCode(self: ProgrammaticHost, code: string, options?: ProgrammaticExecOptions & {
     language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
