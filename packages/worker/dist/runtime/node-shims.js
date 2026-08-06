@@ -586,6 +586,7 @@ const __fsMod = (() => {
     const st = _statResolved(absPath, displayPath, { throwIfNoEntry: false });
     if (st === undefined) return _fsErr("ENOENT", syscall, displayPath);
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
+    _recordResidencyMiss(absPath);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' exists but its content is not " +
       "resident in this facet, and synchronous I/O cannot block to fetch it" +
@@ -594,6 +595,67 @@ const __fsMod = (() => {
       // it would return the bytes would be its own lie.
       (_supervisor() ? "; " + asyncForm + " reads it from the live filesystem" : "");
     return err;
+  }
+
+  /**
+   * Every path a synchronous access asked for and did not get.
+   *
+   * EAGAIN is the honest code, and it is still one no program branches on:
+   * it cannot arise from a read of a real POSIX regular file, so no library
+   * has a handler for it. Whatever catch block does receive it was written
+   * for a file that is missing, and the reader carries on with the answer it
+   * prepared for that — a wrong answer, silently. Throwing alone therefore
+   * cannot be the whole behaviour; the miss is recorded too, and two
+   * consumers read the record for different reasons:
+   *
+   *   - The runner, at exit: an entry that survived to the end was never
+   *     answered, so the program's result rests on a read that failed. It
+   *     names the files and exits non-zero rather than let that report
+   *     success.
+   *   - The supervisor, from the exit envelope: the next bundle built for
+   *     the same entry stages exactly these paths, so the miss stops
+   *     recurring. Observation, not a guess about what a program will read.
+   *
+   * An entry clears only when the PROGRAM is handed the bytes for that path.
+   * Residency repaired behind its back does not un-answer the access that
+   * already failed.
+   */
+  const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
+    || (globalThis.__nimbusVfsResidencyMisses = new Set());
+
+  function _recordResidencyMiss(absPath) {
+    const k = _strip(absPath);
+    if (k === "" || _residencyMisses.has(k)) return;
+    _residencyMisses.add(k);
+    _stats.misses++;
+    _faultIn(k);
+  }
+
+  function _residencySatisfied(absPath) {
+    if (_residencyMisses.size === 0) return;
+    _residencyMisses.delete(_strip(absPath));
+  }
+
+  /**
+   * Fault the page in.
+   *
+   * The access that missed cannot be served — no continuation exists to
+   * suspend — but the bytes can be resident before the next one. A program
+   * that retries, a later phase that reaches the same file, a second module
+   * reading the same data: all of those are refused a second time for a
+   * reason that was already repairable after the first.
+   *
+   * One round trip per path, ever: the ledger above is the dedupe, so a read
+   * loop over a non-resident file costs one fetch rather than one per turn.
+   *
+   * Nothing awaits the fill, but it rides the same RPC accounting every other
+   * read does, so the drain settles it before teardown. That is the behaviour
+   * to want: an isolate torn down mid-fetch leaves the repair undone, and the
+   * cost of not doing so is one read the program was going to need anyway.
+   */
+  function _faultIn(k) {
+    if (!_supervisor()) return;
+    try { _liveReadFile("/" + k, undefined).catch(() => {}); } catch { /* the fill is speculative */ }
   }
 
   function _fsErr(code, syscall, p) {
@@ -787,7 +849,9 @@ const __fsMod = (() => {
   // as __nimbusFsRpcReads, which the runner already folds into the exec-diag
   // envelope — there is no reason to invent a second surface for it.
   const _stats = globalThis.__nimbusVfsCoherence
-    || (globalThis.__nimbusVfsCoherence = { fills: 0, filledBytes: 0, invalidations: 0, poisons: 0 });
+    || (globalThis.__nimbusVfsCoherence = {
+      fills: 0, filledBytes: 0, invalidations: 0, poisons: 0, misses: 0,
+    });
 
   /**
    * Drop a path from the sync CONTENT views, leaving the existence views
@@ -1341,7 +1405,9 @@ const __fsMod = (() => {
       typeof supervisor.fsReadRange === "function" ||
       typeof supervisor.readFile === "function"
     )) {
-      return _liveReadFile(p, opts);
+      const out = await _liveReadFile(p, opts);
+      _residencySatisfied(_resolve(p));
+      return out;
     }
     return readFileSync(p, opts);
   }
@@ -1734,6 +1800,7 @@ const __fsMod = (() => {
     }
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
+    _residencySatisfied(absPath);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
       // text encoding requested — produce a string regardless of cell shape.
@@ -2229,6 +2296,7 @@ const __fsMod = (() => {
       if (cell === undefined) return undefined;
       const denial = _denialCode(cell);
       if (denial) throw _fsErr(denial, syscall, this._path);
+      _residencySatisfied(this._abs);
       return _asBytes(cell);
     }
     _notResident(syscall) {
