@@ -121,6 +121,7 @@ assert.ok(
   [...globalThis.__nimbusVfsResidencyMisses].some((k) => ('/' + k).startsWith(TEMPLATES)),
   'a refusal the program swallows must still reach the exit report',
 );
+const stillMissed = () => [...globalThis.__nimbusVfsResidencyMisses];
 
 // ── 4. The async view was always right, and the sync view converges on it ───
 assert.deepEqual(
@@ -161,6 +162,16 @@ assert.equal(fs.readFileSync(`${MINIMAL}/meta.json`, 'utf8'), '{"name":"minimal"
     'the refusal must pull the listing in, so the next call is answered',
   );
 }
+
+// ── 6b. A refusal the program later gets an answer for is retired ───────────
+// The ledger exists to fail a run whose result rests on a read that never
+// happened. Once the same call comes back with the listing, the stat and the
+// existence answer, nothing rests on a failure any more, and reporting one
+// would fail every program that simply asked twice.
+assert.deepEqual(
+  stillMissed().filter((k) => ('/' + k) === MINIMAL), [],
+  'a directory the program went on to read is not an unanswered read',
+);
 
 // ── 7. Absence inside a walked directory is real, and stays cheap ───────────
 // The repair must not turn every missing file into a refusal. Where the walk
