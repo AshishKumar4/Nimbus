@@ -307,6 +307,16 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /**
+   * The same read with the session's content cache bypassed, for a boot spec's
+   * by-path members. They are read once, in slices, straight into a module map;
+   * caching one evicts the user's hot working set and pins tens of MiB in the
+   * session's heap for the rest of its life.
+   */
+  async fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null> {
+    return this._call(this._getStub()._rpcFsReadRangeUncached(path, offset, length, this._pid()));
+  }
+
+  /**
    * Read many ranges in ONE round trip — the read-side counterpart to
    * writeBatchStream, and for the same reason: a per-item round trip is the
    * whole cost of a filesystem workload, not the storage lookup behind it.

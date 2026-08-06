@@ -21,6 +21,8 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import { type ResidentFacet } from '../loaders/process-fabric.js';
+import { type HostedHttpRequest, type HostedHttpResponse } from '../loaders/process-host.js';
 import { type RuntimeOpenFlags, type VfsAcquireResult } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
@@ -116,6 +118,21 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  */
 export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+/**
+ * The same read, through the same process credential and the same bridge, with
+ * the LRU content cache bypassed.
+ *
+ * For a boot spec's by-path members and nothing else. Those are the largest
+ * files a session holds — a ruby interpreter image is 34.3 MiB against a 32 MiB
+ * cache — and a host reads each one once, in slices, to hand to a Worker Loader
+ * module map. Serving them through the demand-paging path would evict the
+ * user's entire hot working set and pin the blob in this DO's heap for the rest
+ * of the session, which is the pathology `readFileUncached` was added to stop
+ * when clang crashed the supervisor. A process hosted on this DO already reads
+ * them uncached; one hosted elsewhere has to be able to say so too, or the
+ * substrate that was supposed to relieve the coordinator damages it instead.
+ */
+export declare function _rpcFsReadRangeUncached(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
 /**
  * Read many ranges in ONE round trip.
  *
@@ -373,6 +390,95 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     supervisorPid?: number;
 }): Promise<{
     results: unknown[];
+}>;
+/**
+ * One process this peer hosts for a coordinator sibling. Registered
+ * synchronously by `_rpcHostProcess` before any await, so the boot-payload and
+ * routed-HTTP legs — which the coordinator may issue concurrently — always
+ * find the record and simply await it.
+ */
+export interface HostedProcessRecord {
+    facet: Promise<ResidentFacet>;
+    started: Promise<unknown>;
+    /** Settles when the coordinator cancels or the process is torn down. */
+    cancelled: Promise<void>;
+    cancel(): void;
+}
+/**
+ * RPC: placement probe. Returns this peer's module-scope isolate token so the
+ * coordinator can verify the peer landed in a distinct workerd process — the
+ * same token means a shared process, which is the CPU sharing a peer exists to
+ * escape.
+ */
+export declare function _rpcProcessHostProbe(_self: RpcHost): {
+    isolateToken: string;
+};
+/**
+ * RPC: host a resident process. Held open by the coordinator for the process's
+ * whole life, and it is that held call which keeps this DO resident — nothing
+ * arms an alarm to wake a host back up. Resolves when the coordinator releases
+ * the process; rejects if it could not be opened at all.
+ *
+ * The runner's start CONTRACT never crosses. The coordinator's fabric decides
+ * from it when the process is over and releases, which cancels this call — so
+ * this leg holds uniformly and has no idea whether it is hosting a TUI or a
+ * server.
+ *
+ * If the coordinator dies, workerd cancels this inbound call, the facet is
+ * released in the `finally` below, and the process dies with it: a hosting
+ * peer never outlives its parent session.
+ */
+export declare function _rpcHostProcess(self: RpcHost, boot: unknown, opts: unknown): Promise<{
+    ok: boolean;
+}>;
+/**
+ * RPC: settle once the process is OPEN on this peer, or reject with whatever
+ * stopped it from opening.
+ *
+ * This exists so a host failure surfaces at the same place on both substrates.
+ * Opening a facet of your own DO either throws or does not, before the fabric
+ * has a handle; opening one on a peer is a message, and without this the
+ * coordinator would return a handle for a process that never existed and only
+ * discover it later, through `done`. A caller must not have to know which
+ * substrate it is on to know what a successful spawn means.
+ */
+export declare function _rpcAwaitHostedOpen(self: RpcHost, workerKey: string): Promise<{
+    ok: boolean;
+}>;
+/**
+ * RPC: read back the runner's startProcess payload. `_rpcHostProcess` started
+ * it; this never starts anything, so a coordinator asking twice gets the same
+ * answer a local facet would have returned inline — and for a `lifetime`
+ * runner it settles at exit, exactly as the local one does.
+ */
+export declare function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): Promise<{
+    payload: unknown;
+}>;
+/**
+ * RPC: inbound HTTP for a port owned by a process this peer hosts.
+ *
+ * A `Request`/`Response` cannot cross a sibling-DO hop by reference — workerd
+ * rejects it with "Entrypoints to dynamically-loaded workers cannot be
+ * transferred to other Workers", because the object belongs to the
+ * dynamically-loaded facet on the other side. Their PARTS travel fine, and a
+ * body is a plain ReadableStream, which RPC transfers with flow control. So
+ * the leg carries the parts and rebuilds the object on each side: no
+ * buffering, no size ceiling, and an SSE or chunked body still flows live.
+ *
+ * The response body is re-piped through an identity stream owned by THIS
+ * isolate before it is returned, for the same reason the parts exist at all:
+ * what leaves here must not be an object the loaded worker owns.
+ */
+export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
+/**
+ * RPC: deterministic kill of a hosted process — the same teardown a
+ * coordinator applies to a facet of its own, and it does not answer until it
+ * has happened. The facet is released HERE rather than left to the held call's
+ * `finally`, because a caller that has to guess whether the process is really
+ * gone cannot retire the writer identity behind it.
+ */
+export declare function _rpcCancelHostProcess(self: RpcHost, workerKey: string): Promise<{
+    cancelled: boolean;
 }>;
 import { type CacheTier, type CacheKind } from '../_shared/cache-stats.js';
 export type CacheStatEvent = {

@@ -141,6 +141,12 @@
     // packages/worker/src/vfs/sqlite-vfs.ts
     // (cheap, hot-path-clean) for future investigations.
 	    "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+	    // Where every resident process in this deployment runs: "facet" (a
+	    // child actor of the user's own session DO) or "peer" (a child actor
+	    // of a sibling DO — CPU independence at ~20x the spawn cost). One
+	    // value for the whole deployment; nothing per-process chooses. See
+	    // packages/worker/src/loaders/process-host.ts.
+	    "NIMBUS_PROCESS_HOST": "facet",
 	    "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
 	    "NIMBUS_AGENT_GATEWAY_ID": "default",
 	    "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
@@ -337,6 +343,7 @@
       "workers_dev": true,
       "vars": {
         "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+        "NIMBUS_PROCESS_HOST": "facet",
         "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
         "NIMBUS_AGENT_GATEWAY_ID": "default",
         "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",
@@ -412,6 +419,7 @@
       ],
 	      "vars": {
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+	        "NIMBUS_PROCESS_HOST": "facet",
 	        "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
 	        "NIMBUS_AGENT_GATEWAY_ID": "default",
 	        "NIMBUS_AGENT_REQUIRE_USER_OAUTH": "1",

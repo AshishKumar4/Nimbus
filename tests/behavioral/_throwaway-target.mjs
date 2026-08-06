@@ -31,6 +31,8 @@
 //
 // COMMANDS
 //   up      [--name <n>] [--no-build] [--ttl-ms <ms>] [--rotate-secrets]
+//           [--var KEY:VALUE ...]  override a config var for this deploy —
+//           how one build is stood up twice to compare two settings of it
 //   token   [--name <n>] [--ttl-ms <ms>]
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //   down    [--name <n>] | --all
@@ -92,6 +94,8 @@ const HOSTNAME_SETTLE_MS = 60_000;
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseFlags(rest);
+/** `--var KEY:VALUE`, repeatable — forwarded to wrangler verbatim. */
+const varOverrides = rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []));
 
 const COMMANDS = { up, token, session, down, list };
 const run = COMMANDS[command];
@@ -151,8 +155,9 @@ async function up() {
   writeState(statePath(name), { name, base: null, secret, secretPushed: reuseSecret, createdAt });
 
   log(`deploying apps/probe as ${name}`);
+  for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
   const { base, versionId } = deployAndVerify({
-    cwd: PROBE_APP, account, name, args: ['--name', name],
+    cwd: PROBE_APP, account, name, args: ['--name', name, ...varOverrides],
   });
   if (!base) throw new Error(`deploy of ${name} printed no workers.dev URL`);
   writeState(statePath(name), { name, base, secret, secretPushed: reuseSecret, createdAt });
