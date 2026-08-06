@@ -927,6 +927,7 @@ export class SqliteVFS {
             writeStream: (stream, options) => this.writeStream(stream, options, bound),
             mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
             revision: (path) => this.revision(path),
+            epoch: this._epoch,
         };
     }
     accessInode(inode, want, cred) {
