@@ -562,6 +562,24 @@ export declare class FacetManager {
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
+     * The image store's directory, created before the first filesystem view is
+     * built rather than on the first image write.
+     *
+     * Lazily created, it made the store perturb the very view every manifest is
+     * built from: the root listing gained an entry the moment an image landed,
+     * so the next spawn of an identical program generated different text and
+     * addressed a different image. Existing before the first walk makes it
+     * stable.
+     *
+     * Sited on the exec path and not in setVfs, because setVfs runs while the
+     * Durable Object is coming up — including on every wake — and a synchronous
+     * filesystem write there costs the session its startup. Measured: a
+     * throwaway built that way stopped accepting terminal connections at all,
+     * while the same build without it served them.
+     */
+    private _ensureImageStoreDir;
+    private imageStoreDirReady;
+    /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
      * for the user-shell `node` runtime; sharing avoids paying init twice.
