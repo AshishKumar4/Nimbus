@@ -19,7 +19,7 @@ import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
-import { CRED_KERNEL, CRED_SESSION_USER, type VfsCred } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireResult, type VfsCred } from '../runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -661,7 +661,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcReadFile(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid); }
   async _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
-  async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<void> { return _rpc._rpcWriteFile(this as any, path, content, pid); }
+  async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid); }
   async _rpcStat(path: string, pid?: number): Promise<any> { return _rpc._rpcStat(this as any, path, pid); }
   async _rpcLstat(path: string, pid?: number): Promise<any> { return _rpc._rpcLstat(this as any, path, pid); }
   async _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean> {
@@ -696,7 +696,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcReadlink(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid); }
   async _rpcSymlink(target: string, path: string, pid?: number): Promise<void> { return _rpc._rpcSymlink(this as any, target, path, pid); }
   async _rpcFsRevision(path?: string, pid?: number): Promise<number> { return _rpc._rpcFsRevision(this as any, path, pid); }
-  async _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<any> {
+  async _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult> {
     return _rpc._rpcFsAcquire(this as any, epoch, cursor, pid);
   }
   async _rpcWsOpen(url: string, protocols: string[], pid?: number): Promise<any> {

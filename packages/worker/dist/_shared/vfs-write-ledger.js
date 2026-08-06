@@ -164,9 +164,47 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure) {
         delete __vfsBundle[snapshot.key];
       }
       delete __vfsWrites[snapshot.key];
+      __nimbusStampFlushedCell(snapshot, value);
     }
     return value;
   }, retainFailure);
+}
+
+/**
+ * Record the authority revision a just-flushed cell is known-good at.
+ *
+ * The barrier reports back every path mutated since the facet's cursor,
+ * which includes the facet's OWN writes — the invalidation log has no way
+ * to know who caused an entry. Without a stamp the facet drops the cells it
+ * authored the instant it flushes them, and a resumption then refetches
+ * bytes it is already holding: a self-inflicted cold cache on exactly the
+ * files a scaffolder or a build just wrote.
+ *
+ * A "skip paths I wrote" rule would be unsound — a peer may write the same
+ * path after us, and that invalidation is real. The revision separates
+ * them: a report AT our revision is our own write coming back, a report
+ * ABOVE it is somebody else's and still evicts.
+ *
+ * Guarded on cell identity rather than on the flush alone. A read that
+ * raced the flush may have refilled the cell from an older revision, and
+ * stamping that with our newer one would pin a stale byte — the one
+ * outcome this whole protocol exists to prevent.
+ *
+ * Only the written path is stamped, never its parent — deliberately, and it
+ * is why a batch of writes still costs ONE invalidation rather than none.
+ * Every mutation reports its parent directory too, so stamping the parent
+ * here looks like the obvious way to reach zero. It is not: the same
+ * revision on the directory would also vouch for a peer's earlier change to
+ * the DIRECTORY ITSELF — a chmod at a revision this facet never acquired —
+ * and that stale mode would then survive the barrier. The write knows what
+ * it did to the file and nothing about the directory. Do not "finish" this
+ * by stamping the parent.
+ */
+function __nimbusStampFlushedCell(snapshot, revision) {
+  if (typeof revision !== "number") return;
+  if (typeof __vfsBundle === "undefined" || !__vfsBundle) return;
+  if (__vfsBundle[snapshot.key] !== snapshot.content) return;
+  __vfsBundleRevisions[snapshot.key] = revision;
 }
 
 function __nimbusFlushVfsWrite(path, mutation, retainFailure = true) {
@@ -220,8 +258,9 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
     }
     return __nimbusVfsAppendRangeResult;
   }
-  await supervisor.writeFile(path, content);
-  return undefined;
+  // The revision this write produced. It is what lets the ACQUIRE barrier
+  // tell this facet's own mutation apart from a peer's.
+  return supervisor.writeFile(path, content);
 }
 
 /**
@@ -314,6 +353,12 @@ async function __nimbusDrainVfsWrites(supervisor) {
 `.trim();
 export const VFS_WRITE_LEDGER_SOURCE = `
 const __vfsWriteGenerations = Object.create(null);
+// Per-path: the authority revision the resident cell in __vfsBundle is
+// known-good at. Only a flush of this facet's own bytes sets one, and the
+// ACQUIRE barrier is the only reader. An unstamped cell is simply evicted,
+// so a mutation path that forgets to stamp costs a refetch and never a
+// stale byte.
+const __vfsBundleRevisions = Object.create(null);
 const __vfsAppendWrites = Object.create(null);
 const __vfsWrites = new Proxy(Object.create(null), {
   set(target, path, value) {

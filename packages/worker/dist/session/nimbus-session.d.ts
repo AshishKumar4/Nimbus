@@ -12,6 +12,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
+import { type VfsAcquireResult } from '../runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -233,7 +234,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcReadFile(path: string, pid?: number): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;
-    _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<void>;
+    _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<number>;
     _rpcStat(path: string, pid?: number): Promise<any>;
     _rpcLstat(path: string, pid?: number): Promise<any>;
     _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean>;
@@ -255,7 +256,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcReadlink(path: string, pid?: number): Promise<string | null>;
     _rpcSymlink(target: string, path: string, pid?: number): Promise<void>;
     _rpcFsRevision(path?: string, pid?: number): Promise<number>;
-    _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<any>;
+    _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
     _rpcWsOpen(url: string, protocols: string[], pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;

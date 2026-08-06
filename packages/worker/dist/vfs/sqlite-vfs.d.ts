@@ -40,7 +40,7 @@
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
-import { type VfsCred } from '../runtime/os-contracts.js';
+import { type VfsCred, type VfsInvalidatedPath } from '../runtime/os-contracts.js';
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -338,11 +338,19 @@ export declare class SqliteVFS {
      * incarnation (its revisions are unrelated to ours), or a cursor older
      * than the retained log (entries it needed have been dropped). Both
      * degrade to a cold cache, never to a stale byte.
+     *
+     * Each path carries the revision it was last mutated at inside the window,
+     * not just its name. That is what lets a caller keep a cell it wrote
+     * itself: it holds the revision its own write produced, so a report at
+     * that same revision is its own mutation coming back, while a peer's
+     * later write to the same path reports a HIGHER revision and still
+     * invalidates. A name alone cannot separate those two, and the difference
+     * between them is a whole resident set thrown away on every flush.
      */
     invalidatedSince(epoch: string | null, cursor: number): {
         epoch: string;
         rev: number;
-        paths: string[];
+        paths: VfsInvalidatedPath[];
         poison: boolean;
     };
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
