@@ -82,7 +82,11 @@ interface NimbusSessionRpcStub {
   _rpcReadFileBytes(path: string): Promise<unknown>;
   _rpcWriteFile(path: string, content: string | Uint8Array): Promise<unknown>;
   _rpcStat(path: string): Promise<unknown>;
+  _rpcLstat(path: string): Promise<unknown>;
   _rpcReaddir(path: string): Promise<unknown>;
+  _rpcRename(from: string, to: string): Promise<unknown>;
+  _rpcChmod(path: string, mode: number): Promise<unknown>;
+  _rpcFsReadRange(path: string, offset: number, length: number): Promise<unknown>;
   _rpcExists(path: string): Promise<unknown>;
   _rpcMkdir(path: string): Promise<unknown>;
   _rpcDeleteFile(path: string, options?: Record<string, unknown>): Promise<unknown>;
@@ -318,6 +322,18 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), fileContentArg(args[1]));
     case 'stat':
       return ctx.stub._rpcStat(stringArg(args[0], 'path'));
+    case 'lstat':
+      return ctx.stub._rpcLstat(stringArg(args[0], 'path'));
+    case 'rename':
+      return ctx.stub._rpcRename(stringArg(args[0], 'from'), stringArg(args[1], 'to'));
+    case 'chmod':
+      return ctx.stub._rpcChmod(stringArg(args[0], 'path'), numberArg(args[1], 'mode'));
+    case 'readRange':
+      return ctx.stub._rpcFsReadRange(
+        stringArg(args[0], 'path'),
+        numberArg(args[1], 'offset'),
+        numberArg(args[2], 'length'),
+      );
     case 'readdir':
       return ctx.stub._rpcReaddir(stringArg(args[0], 'path'));
     case 'exists':

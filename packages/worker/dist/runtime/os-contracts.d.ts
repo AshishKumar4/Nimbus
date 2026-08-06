@@ -6,6 +6,17 @@ export interface VfsCred {
     readonly umask: number;
 }
 export declare const CRED_KERNEL: VfsCred;
+/**
+ * The session's unprivileged login identity — `user` in /etc/passwd, the
+ * credential every process inherits unless it deliberately transitions.
+ *
+ * It is also the credential the embedder-facing surfaces act with: the SDK
+ * filesystem API, the remote `/rpc` file ops, and the static asset server are
+ * host callers, not processes, and files they create must be owned by the same
+ * identity `exec` runs as. Never CRED_KERNEL — a pid-less caller must never
+ * gain more authority than the shell it is writing files for.
+ */
+export declare const CRED_SESSION_USER: VfsCred;
 export declare function requireVfsCred(value: unknown, source: string): VfsCred;
 export type RuntimeFileType = 'file' | 'directory' | 'symlink';
 export interface RuntimeVfsStat {

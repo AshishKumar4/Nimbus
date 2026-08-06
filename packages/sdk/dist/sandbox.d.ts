@@ -85,10 +85,18 @@ export interface NimbusDestroyResult {
     destroyedAt: number;
     reason: string | null;
 }
-export interface NimbusStartResult extends NimbusExecResult {
-    pid: number | null;
-    process: NimbusProcess | null;
+/**
+ * A started background process. It is still running when `startProcess`
+ * returns, so there is no exit code or captured output here — poll
+ * `processes.logs(pid)` (which carries the exit record once it lands),
+ * `processes.list()`, or `processes.attach(pid)`.
+ */
+export interface NimbusStartResult {
+    command: string;
+    pid: number;
+    process: NimbusProcess;
     ports: NimbusPort[];
+    startedAt: number;
 }
 export interface NimbusProcess {
     pid: number;
@@ -178,10 +186,14 @@ interface NimbusSessionStub {
     _rpcReadFileBytes(path: string): Promise<Uint8Array | null>;
     _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string): Promise<NimbusFileStat | null>;
+    _rpcLstat(path: string): Promise<NimbusFileStat | null>;
     _rpcReaddir(path: string): Promise<{
         name: string;
         type: string;
     }[]>;
+    _rpcRename(from: string, to: string): Promise<void>;
+    _rpcChmod(path: string, mode: number): Promise<void>;
+    _rpcFsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     _rpcExists(path: string): Promise<boolean>;
     _rpcMkdir(path: string): Promise<void>;
     _rpcDeleteFile(path: string, options?: {
@@ -282,6 +294,10 @@ export declare class NimbusSandbox {
     private remoteRpc;
     ready(): Promise<void>;
     exec(command: string, options?: NimbusExecOptions): Promise<NimbusExecResult>;
+    /**
+     * Start a command in the background. Returns as soon as the process has a
+     * pid — it does not wait for the command to finish.
+     */
     startProcess(command: string, options?: NimbusExecOptions): Promise<NimbusStartResult>;
     runCode(code: string, options?: NimbusExecOptions & {
         language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell';
@@ -293,6 +309,12 @@ export declare class NimbusSandbox {
         readBytes: (path: string) => Promise<Uint8Array | null>;
         write: (path: string, content: string | Uint8Array) => Promise<void>;
         stat: (path: string) => Promise<NimbusFileStat | null>;
+        /** stat without following a symlink leaf. */
+        lstat: (path: string) => Promise<NimbusFileStat | null>;
+        rename: (from: string, to: string) => Promise<void>;
+        chmod: (path: string, mode: number) => Promise<void>;
+        /** Read `length` bytes at `offset` without materializing the whole file. */
+        readRange: (path: string, offset: number, length: number) => Promise<Uint8Array | null>;
         list: (path?: string) => Promise<{
             name: string;
             type: string;

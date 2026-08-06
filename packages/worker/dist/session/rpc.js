@@ -34,7 +34,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observabilit
 import { classifyError } from '../observability/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-coord.js';
 import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
 import { routeSessionLoopback } from './loopback.js';
@@ -60,27 +60,43 @@ const WriteBatchPayloadSchema = z.object({
     chunks: z.array(WriteBatchChunkSchema).default([]),
     deletePaths: z.array(z.string()).optional(),
 }).passthrough();
+/**
+ * Bridge key for the pid-less (host caller) filesystem view. ProcessTable
+ * allocates pids from 1 upwards, so 0 can never collide with a process.
+ */
+const HOST_CALLER_KEY = 0;
 function processPid(pid) {
     if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
         throw new Error('filesystem RPC requires a valid process pid');
     }
     return pid;
 }
+/**
+ * Resolve the credential a filesystem RPC acts with.
+ *
+ * A pid identifies an in-sandbox process and always wins: SupervisorRPC stamps
+ * it from its own `ctx.props`, so a process can neither choose nor drop it.
+ * `undefined` means the caller is not a process at all — the SDK over the DO
+ * binding, the remote `/rpc` dispatcher, the static asset server — and those
+ * act as the unprivileged session user, the same identity `exec` runs as.
+ * A supplied-but-invalid pid still throws: only an absent pid is a host call.
+ */
+function callerCred(self, pid) {
+    return pid === undefined ? CRED_SESSION_USER : self.processes.cred(processPid(pid));
+}
 function processVfs(self, pid) {
-    const processId = processPid(pid);
     self.ensureSqliteFs();
-    const cred = self.processes.cred(processId);
-    return self.sqliteFs.as(cred);
+    return self.sqliteFs.as(callerCred(self, pid));
 }
 function runtimeFs(self, pid) {
-    const processId = processPid(pid);
-    const vfs = processVfs(self, processId);
+    const key = pid === undefined ? HOST_CALLER_KEY : processPid(pid);
+    const vfs = processVfs(self, pid);
     if (!self.runtimeFsBridges)
         self.runtimeFsBridges = new Map();
-    let bridge = self.runtimeFsBridges.get(processId);
+    let bridge = self.runtimeFsBridges.get(key);
     if (!bridge) {
         bridge = new SqliteRuntimeFsBridge(vfs, self.sqliteFs);
-        self.runtimeFsBridges.set(processId, bridge);
+        self.runtimeFsBridges.set(key, bridge);
     }
     else {
         bridge.updateCredential(vfs);

@@ -211,8 +211,10 @@ expose the virtual port:
 
 ```ts
 await box.files.write('/home/user/app/server.js', serverSource);
-await box.startProcess('node --watch /home/user/app/server.js');
+const proc = await box.startProcess('node --watch /home/user/app/server.js');
 const port = await box.ports.expose(3000);
+// proc.pid is live immediately: box.processes.logs(proc.pid) streams output,
+// box.processes.kill(proc.pid) stops it
 ```
 
 ## Session Agent

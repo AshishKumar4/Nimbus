@@ -55,7 +55,11 @@ interface NimbusSessionRpcStub {
     _rpcReadFileBytes(path: string): Promise<unknown>;
     _rpcWriteFile(path: string, content: string | Uint8Array): Promise<unknown>;
     _rpcStat(path: string): Promise<unknown>;
+    _rpcLstat(path: string): Promise<unknown>;
     _rpcReaddir(path: string): Promise<unknown>;
+    _rpcRename(from: string, to: string): Promise<unknown>;
+    _rpcChmod(path: string, mode: number): Promise<unknown>;
+    _rpcFsReadRange(path: string, offset: number, length: number): Promise<unknown>;
     _rpcExists(path: string): Promise<unknown>;
     _rpcMkdir(path: string): Promise<unknown>;
     _rpcDeleteFile(path: string, options?: Record<string, unknown>): Promise<unknown>;

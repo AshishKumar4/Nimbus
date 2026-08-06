@@ -31,6 +31,7 @@ export interface VfsLike {
     mkdir(path: string, opts?: {
         recursive?: boolean;
     }): void;
+    symlink(target: string, path: string): void;
     unlink(path: string): void;
     rmdir(path: string): void;
     chmod(path: string, mode: number): void;
