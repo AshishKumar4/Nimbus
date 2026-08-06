@@ -31,6 +31,13 @@ export interface WasiFsDiff {
    * vfs.chmod, where S2a ownership enforcement decides.
    */
   modesChanged?: Record<string, number>;
+  /**
+   * vfsPath → target string for symlinks created during the run. Stored
+   * verbatim: a symlink target is a string, not a resolved path, and is
+   * allowed to dangle. Without this channel a link created in-facet resolves
+   * for the rest of the run and then silently disappears at exit.
+   */
+  symlinksCreated?: Record<string, string>;
 }
 
 export interface VfsSnapshotCaps {
@@ -204,12 +211,13 @@ export function snapshotVfs(
 export function flushVfsDiff(
   vfs: VfsLike,
   diff: WasiFsDiff,
-): { written: number; deleted: number; mkdirs: number; rmdirs: number; chmods: number } {
+): { written: number; deleted: number; mkdirs: number; rmdirs: number; chmods: number; symlinks: number } {
   let written = 0;
   let deleted = 0;
   let mkdirs = 0;
   let rmdirs = 0;
   let chmods = 0;
+  let symlinks = 0;
 
   for (const path of diff.dirsCreated) {
     try {
@@ -250,5 +258,16 @@ export function flushVfsDiff(
     } catch {}
   }
 
-  return { written, deleted, mkdirs, rmdirs, chmods };
+  for (const [path, target] of Object.entries(diff.symlinksCreated ?? {})) {
+    try {
+      const lastSlash = path.lastIndexOf('/');
+      if (lastSlash > 0) {
+        try { vfs.mkdir(path.substring(0, lastSlash), { recursive: true }); } catch {}
+      }
+      vfs.symlink(target, path);
+      symlinks++;
+    } catch {}
+  }
+
+  return { written, deleted, mkdirs, rmdirs, chmods, symlinks };
 }
