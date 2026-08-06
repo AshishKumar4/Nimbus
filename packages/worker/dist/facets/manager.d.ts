@@ -122,6 +122,20 @@ interface FacetVfsState {
     bundle: FacetVfsBundle;
     manifest: Record<string, string[]>;
     metadata: Record<string, FacetVfsMetadata>;
+    /**
+     * The VFS cursor these cells were read at.
+     *
+     * Without it a facet's first ACQUIRE carries a null epoch, which the
+     * authority can only answer with a poison — "drop everything" — so the
+     * first timer, fetch or frame in every facet threw away the entire resident
+     * set and tried to refetch it in one turn. Stamping the bundle with the
+     * cursor it was actually built at makes that first ACQUIRE an ordinary
+     * delta, which is what it always was.
+     */
+    cursor?: {
+        epoch: string;
+        rev: number;
+    };
     /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
     reachableCount: number;
     /** Diagnostics: was the bundle truncated by the encoded-size cap? */

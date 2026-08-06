@@ -21,6 +21,7 @@ import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import * as _rpc from './rpc.js';
+import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
 export { detectCloudflareWorkersProject } from '../runtime/project-detect.js';
@@ -53,6 +54,12 @@ export declare class NimbusSession extends CloudflareDurableObject {
     facetManager: FacetManager | null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
     facetProcessManager: any;
+    /**
+     * Supervisor-owned outbound WebSockets. A facet's socket is terminated here
+     * so an inbound frame reaches it as a supervisor reply — the only shape a
+     * cache invalidation can ride on. Lazy: most sessions open none.
+     */
+    webSocketRelay: WebSocketRelay | null;
     esbuildService: EsbuildService | null;
     viteDevServer: ViteDevServer | null;
     /**
@@ -248,6 +255,11 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcReadlink(path: string, pid?: number): Promise<string | null>;
     _rpcSymlink(target: string, path: string, pid?: number): Promise<void>;
     _rpcFsRevision(path?: string, pid?: number): Promise<number>;
+    _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<any>;
+    _rpcWsOpen(url: string, protocols: string[], pid?: number): Promise<any>;
+    _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
+    _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
+    _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void>;
     _rpcFsOpen(path: string, flags: any, pid?: number): Promise<any>;
     _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
     _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
@@ -460,6 +472,12 @@ export declare class NimbusSession extends CloudflareDurableObject {
     /** Snapshot + persist OOM ring. Delegator → ./nimbus-session-diag.ts (S10). */
     _w5PersistRing(): Promise<void> | null;
     ensureFacetManager(): void;
+    /**
+     * The supervisor-owned WebSocket relay. Lazy, because most sessions never
+     * open a socket and the sockets it holds are live objects that must not
+     * outlive the session.
+     */
+    _ensureWebSocketRelay(): WebSocketRelay;
     /**
      * W8: lazily construct the FacetProcessManager when the first cp* RPC
      * arrives. Wired with adapters that bridge the Nimbus shell command
