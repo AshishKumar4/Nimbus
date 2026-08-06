@@ -54,10 +54,14 @@
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //
 // STATE
-//   `.wrangler/staging-target.json` (gitignored, mode 600) holds each
-//   Worker's URL and signing secret. Lose it and the next `up` mints new
-//   secrets and pushes them — the environment self-heals; it just
-//   invalidates tokens minted from the old ones.
+//   `~/.local/state/nimbus/staging-target.json` (mode 600) holds each
+//   Worker's URL and signing secret. Machine state, not checkout state:
+//   staging is one environment, and every worktree on this machine
+//   deploys and drives the same two Workers. Keeping the record per
+//   checkout is what let four worktrees hold three different secrets,
+//   each `up` silently rotating the previous one out from under whatever
+//   suite was mid-run. `up` now refuses to replace the secret of a
+//   Worker that already exists unless `--rotate-secrets` says to.
 
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -66,8 +70,10 @@ import { mintProbeToken } from './_mint-probe-token.mjs';
 import { PROBE_TARGET_SKIPS } from './_probe-target-skips.mjs';
 import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isolation.mjs';
 import {
+  MACHINE_STATE_DIR,
   ROOT,
   activeVersionId,
+  assertCredentialHeld,
   buildDist,
   createSession,
   deployAndVerify,
@@ -82,7 +88,7 @@ import {
   writeState,
 } from './_deploy-target.mjs';
 
-const STATE_PATH = join(ROOT, '.wrangler', 'staging-target.json');
+const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
 
 /**
  * The two halves of staging. `envName` vs `nameOverride` is not a style
@@ -129,6 +135,11 @@ async function up() {
   const account = requireAccountPin();
   const state = flags['rotate-secrets'] ? {} : (readState(STATE_PATH) ?? {});
 
+  if (flags['rotate-secrets']) {
+    log('WARNING: --rotate-secrets — every token minted from the current secrets stops');
+    log('WARNING: working the moment the new ones land, including in suites running now');
+  }
+
   // Before wrangler is invoked at all. Both blocks are also checked in CI
   // by tests/unit/deploy-isolation.mjs; this is the same function, run
   // against the same files, at the moment it matters.
@@ -142,6 +153,17 @@ async function up() {
     for (const note of isolation.shared) log(`${target.label}: shared with production — ${note}`);
     for (const gap of isolation.missing) log(`${target.label}: WARNING: ${gap}`);
     log(`${describeTarget(isolation)} resolves no production resource`);
+
+    // Also before the build: a rotation this machine did not ask for is
+    // an outage for every other client of the environment, and finding
+    // that out after a three-minute build is finding it out too late.
+    assertCredentialHeld({
+      name: target.name,
+      statePath: STATE_PATH,
+      hasSecret: Boolean(state[keyOf(target)]?.secret),
+      provisioned: Boolean(activeVersionId(target.name, { cwd: target.dir, account })),
+      rotate: Boolean(flags['rotate-secrets']),
+    });
   }
 
   if (flags.build !== false) buildDist({ account, log });

@@ -19,7 +19,7 @@ import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
-import { CRED_KERNEL, type VfsCred } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, type VfsCred } from '../runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
@@ -136,13 +136,6 @@ import {
   _classifyCommand,
 } from './helpers.js';
 import { z } from 'zod/v4';
-
-const SESSION_USER_CRED: VfsCred = Object.freeze({
-  uid: 1000,
-  gid: 1000,
-  groups: Object.freeze([1000]),
-  umask: 0o022,
-});
 
 const CpFacetDirectPayloadSchema = z.object({
   command: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
@@ -1482,7 +1475,7 @@ export class NimbusSession extends CloudflareDurableObject {
   // ── Filesystem seeding ────────────────────────────────────────────────
 
   ensureGlobalPrefixDirs(prefix: string): void {
-    const fs = this.sqliteFs!.as(SESSION_USER_CRED);
+    const fs = this.sqliteFs!.as(CRED_SESSION_USER);
     const dirs = [
       prefix,
       `${prefix}/lib`,
@@ -1495,7 +1488,7 @@ export class NimbusSession extends CloudflareDurableObject {
   }
 
   seedFilesystem() {
-    const fs = this.sqliteFs!.as(SESSION_USER_CRED);
+    const fs = this.sqliteFs!.as(CRED_SESSION_USER);
     const rootFs = this.sqliteFs!.as(CRED_KERNEL);
     const dirs = [
       'bin', 'home', 'home/user', 'home/user/.config',
@@ -1519,14 +1512,14 @@ export class NimbusSession extends CloudflareDurableObject {
 
     if (!rootFs.exists('etc/hostname')) {
       rootFs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
-      rootFs.chown('etc/hostname', SESSION_USER_CRED.uid, SESSION_USER_CRED.gid);
+      rootFs.chown('etc/hostname', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
     }
     if (!rootFs.exists('etc/os-release')) {
       rootFs.writeFile('etc/os-release',
         `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
         'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n'
       );
-      rootFs.chown('etc/os-release', SESSION_USER_CRED.uid, SESSION_USER_CRED.gid);
+      rootFs.chown('etc/os-release', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
     }
     const seedRootAccountFile = (path: string, content: string): void => {
       if (!rootFs.exists(path)) rootFs.writeFile(path, content, { mode: 0o644 });
@@ -1547,7 +1540,7 @@ export class NimbusSession extends CloudflareDurableObject {
     const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
     if (!rootFs.exists('etc/profile')) {
       rootFs.writeFile('etc/profile', defaultProfile);
-      rootFs.chown('etc/profile', SESSION_USER_CRED.uid, SESSION_USER_CRED.gid);
+      rootFs.chown('etc/profile', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
     } else if (dec.decode(rootFs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
       rootFs.writeFile('etc/profile', defaultProfile);
     }
@@ -1572,7 +1565,7 @@ export class NimbusSession extends CloudflareDurableObject {
       }
       if (needsWrite) {
         rootFs.writeFile('etc/motd', expectedMotd);
-        if (!exists) rootFs.chown('etc/motd', SESSION_USER_CRED.uid, SESSION_USER_CRED.gid);
+        if (!exists) rootFs.chown('etc/motd', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
       }
     }
     if (!fs.exists('home/user/hello.js')) {

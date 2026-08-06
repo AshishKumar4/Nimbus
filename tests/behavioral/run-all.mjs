@@ -10,6 +10,9 @@
 //   --no-retry     Disable retry-on-banner (CI-strict mode). Default
 //                  is retry-once when the spawn crashes with a known
 //                  runtime-crash banner.
+//   --allow-concurrent
+//                  Run even though another suite already holds this
+//                  machine's run lock. See "Serialization" below.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -59,18 +62,29 @@
 //   That is why a banner-crashed browser probe can stay FAIL after the
 //   retry: the retry inherits the leaked Chrome.
 //
-//   The runner reaps any orphaned puppeteer Chrome between probes. Since
-//   probes run strictly sequentially, no probe is in flight at the reap
-//   point, so any Chrome carrying puppeteer's temp-profile + `--headless`
-//   signature is an orphan from a crashed probe and is killed. This keeps
-//   each probe (and each retry) starting from a clean process baseline.
-//   The user's own desktop Chrome is never matched (real profile dir, not
-//   headless). Reaping is system infrastructure, not assertion logic.
+//   The runner reaps between probes. Probes run strictly sequentially,
+//   so nothing of this run's is in flight at the reap point — but other
+//   suites on this host are, which is why the reap is scoped to browsers
+//   carrying THIS run's profile directory (`_probe-browser.mjs`) rather
+//   than to every headless Chrome on the machine. Reaping is system
+//   infrastructure, not assertion logic.
+//
+// Serialization:
+//   Two full suites on one host interfere: they contend for CPU and
+//   memory, and each redeploy of a shared target rotates the other's
+//   credential out from under it. The runner therefore takes a
+//   machine-wide lock and refuses to start while another run holds it,
+//   naming the holder so the operator can wait or kill it. A lock whose
+//   holder is gone is stale and taken over. `--allow-concurrent` runs
+//   anyway, for the deliberate case.
 
-import { spawn, spawnSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, basename } from 'node:path';
+
+import { RUN_ID, cleanupRunProfiles, reapRunBrowsers } from './_probe-browser.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -81,6 +95,90 @@ if (!process.env.BASE) {
 
 const NO_RETRY = process.argv.includes('--no-retry')
   || process.env.NIMBUS_RUNNER_NO_RETRY === '1';
+
+const ALLOW_CONCURRENT = process.argv.includes('--allow-concurrent');
+
+// Probes inherit the runner's environment, so exporting the run id is
+// what makes every browser they launch identifiable as this run's.
+process.env.NIMBUS_PROBE_RUN_ID = RUN_ID;
+
+// ── Run lock ─────────────────────────────────────────────────────────
+
+const LOCK_PATH = join(tmpdir(), 'nimbus-behavioral-run.lock');
+
+function readLock() {
+  try {
+    return JSON.parse(readFileSync(LOCK_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function holderIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+/**
+ * Take the machine-wide run lock, or explain who has it and stop. The
+ * lock is created exclusively (`wx`), so two runners racing for a free
+ * lock cannot both win; a lock whose holder has exited is stale and is
+ * removed before the single retry.
+ */
+function acquireRunLock() {
+  const mine = {
+    pid: process.pid,
+    runId: RUN_ID,
+    base: process.env.BASE,
+    cwd: process.cwd(),
+    startedAt: new Date().toISOString(),
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(LOCK_PATH, `${JSON.stringify(mine, null, 2)}\n`, { flag: 'wx' });
+      process.on('exit', releaseRunLock);
+      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+        process.on(signal, () => process.exit(130));
+      }
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    const holder = readLock();
+    if (holder && holderIsAlive(holder.pid)) {
+      const heldFor = Math.round((Date.now() - Date.parse(holder.startedAt)) / 1000);
+      console.error(
+        `FATAL: another behavioral suite is already running on this machine.\n`
+        + `  pid ${holder.pid} — started ${holder.startedAt} (${heldFor}s ago)\n`
+        + `  BASE ${holder.base}\n`
+        + `  cwd  ${holder.cwd}\n`
+        + `Two concurrent suites contend for this host's CPU and memory, and a\n`
+        + `redeploy in one rotates the other's credential out from under it.\n`
+        + `Wait for it to finish, or pass --allow-concurrent to run anyway.`,
+      );
+      process.exit(3);
+    }
+    rmSync(LOCK_PATH, { force: true });
+  }
+  throw new Error(`could not take the run lock at ${LOCK_PATH}`);
+}
+
+function releaseRunLock() {
+  if (readLock()?.pid === process.pid) rmSync(LOCK_PATH, { force: true });
+}
+
+if (ALLOW_CONCURRENT) {
+  const holder = readLock();
+  if (holder && holderIsAlive(holder.pid)) {
+    console.log(`[--allow-concurrent] running alongside pid ${holder.pid} (BASE=${holder.base})`);
+  }
+} else {
+  acquireRunLock();
+}
 
 /**
  * Recursively walk `root`, yielding absolute paths of files whose
@@ -163,48 +261,17 @@ function isRetryableCrash(stderr, exitCode) {
 }
 
 /**
- * puppeteer launches Chrome with a temp profile under this prefix and
- * `--headless`. A normal desktop Chrome has neither, so matching both is
- * a safe signature for "Chrome that a probe spawned". The match is keyed
- * on the chrome executable in argv[0] so a shell line that merely mentions
- * the flags is never killed.
+ * Kill any browser THIS run leaked — a crashed probe skips its own
+ * teardown. Scoped by profile directory, so a sibling suite's Chrome is
+ * never a candidate. Loud: logs when it reaps anything so an operator
+ * sees that a crash leaked a browser.
  */
-const PUPPETEER_PROFILE_PREFIX = '--user-data-dir=/tmp/puppeteer_dev_chrome_profile';
-
-function findOrphanedProbeBrowsers() {
-  const res = spawnSync('ps', ['-eo', 'pid=,args='], {
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  if (res.status !== 0 || !res.stdout) return [];
-  const pids = [];
-  for (const line of res.stdout.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\S+)\s*(.*)$/);
-    if (!m) continue;
-    const [, pid, argv0, rest] = m;
-    if (!/chrome/i.test(argv0)) continue;
-    const full = `${argv0} ${rest}`;
-    if (!full.includes('--headless')) continue;
-    if (!full.includes(PUPPETEER_PROFILE_PREFIX)) continue;
-    pids.push(Number(pid));
+function reapLeakedBrowsers() {
+  const reaped = reapRunBrowsers();
+  if (reaped > 0) {
+    console.log(`    reaped ${reaped} orphaned probe browser process${reaped === 1 ? '' : 'es'} (crashed probe leaked Chrome)`);
   }
-  return pids;
-}
-
-/**
- * Kill any orphaned puppeteer Chrome left behind by a crashed probe.
- * Killing the main Chrome process cascades to its renderer children
- * (same process group). Returns the number reaped. Loud — logs when it
- * reaps anything so an operator sees that a crash leaked a browser.
- */
-function reapOrphanedProbeBrowsers() {
-  const pids = findOrphanedProbeBrowsers();
-  if (pids.length === 0) return 0;
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
-  }
-  console.log(`    reaped ${pids.length} orphaned probe browser process${pids.length === 1 ? '' : 'es'} (crashed probe leaked Chrome)`);
-  return pids.length;
+  return reaped;
 }
 
 /**
@@ -248,7 +315,7 @@ for (const probe of targets) {
     // have leaked a browser (no `finally` on a hard crash); reap it so
     // the retry starts from a clean process baseline rather than
     // inheriting the resource pressure that caused the crash.
-    reapOrphanedProbeBrowsers();
+    reapLeakedBrowsers();
     process.stdout.write(`FLAKE (${(r.elapsedMs/1000).toFixed(1)}s) → retry... `);
     retried = true;
     r = await runProbeOnce(probePath);
@@ -267,8 +334,10 @@ for (const probe of targets) {
 
   // Reap any browser the probe leaked (a hard crash bypasses the probe's
   // own teardown). Probes run sequentially, so nothing is in flight here.
-  reapOrphanedProbeBrowsers();
+  reapLeakedBrowsers();
 }
+
+cleanupRunProfiles();
 
 const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
 const pass = results.filter((r) => r.ok).length;

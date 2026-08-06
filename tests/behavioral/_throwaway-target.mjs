@@ -30,7 +30,7 @@
 //     BASE=<url> NIMBUS_PROBE_TOKEN=<jwt> bun tests/behavioral/run-all.mjs
 //
 // COMMANDS
-//   up      [--name <n>] [--no-build] [--ttl-ms <ms>]
+//   up      [--name <n>] [--no-build] [--ttl-ms <ms>] [--rotate-secrets]
 //   token   [--name <n>] [--ttl-ms <ms>]
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //   down    [--name <n>] | --all
@@ -39,7 +39,11 @@
 // STATE
 //   `.wrangler/throwaway-targets/<name>.json` (gitignored) holds the
 //   target's name, URL and signing secret so later commands need no
-//   environment beyond the account pin.
+//   environment beyond the account pin. A throwaway belongs to the
+//   checkout that stood it up, so the record stays with that checkout —
+//   and `up` reuses the secret it finds there rather than replacing it,
+//   which is what lets a target be redeployed under a suite that is
+//   already running against it.
 //
 // TOKEN LIFETIME
 //   Default 3h, matching CI. The docs terminal's anonymous token lives
@@ -55,6 +59,8 @@ import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
 import {
   ROOT,
   WRANGLER,
+  activeVersionId,
+  assertCredentialHeld,
   buildDist,
   createSession,
   deployAndVerify,
@@ -100,7 +106,16 @@ await run();
 async function up() {
   const account = requireAccountPin();
   const name = flags.name ? qualify(flags.name) : `${NAME_PREFIX}${randomSuffix()}`;
-  const secret = randomSecret();
+
+  // Redeploying a throwaway under a name it already has is routine — a
+  // fix, a rebuild, another round. Minting a fresh secret for it is not:
+  // that 401s every token already handed out, including the ones the
+  // suite running against this very target is holding. Keep the live
+  // secret unless there is none to keep or a rotation was asked for.
+  const recorded = readState(statePath(name));
+  const reuseSecret = !flags['rotate-secrets'] && Boolean(recorded?.secretPushed);
+  const secret = reuseSecret ? recorded.secret : randomSecret();
+  const createdAt = recorded?.createdAt ?? new Date().toISOString();
 
   // Before wrangler is invoked at all: `--name` overrides only the name, so
   // every binding still comes from apps/probe's config. Verify none of them
@@ -115,24 +130,41 @@ async function up() {
   for (const gap of isolation.missing) log(`WARNING: ${gap}`);
   log(`bindings verified: ${name} resolves no production resource`);
 
+  // Also before the build: a name already standing that this checkout
+  // holds no secret for belongs to somebody else's run, and taking it
+  // over is the one thing `up` must not do by accident.
+  assertCredentialHeld({
+    name,
+    statePath: statePath(name),
+    hasSecret: reuseSecret,
+    provisioned: Boolean(activeVersionId(name, { cwd: PROBE_APP, account })),
+    rotate: Boolean(flags['rotate-secrets']),
+  });
+
   if (flags.build !== false) buildDist({ account, log });
 
   // Recorded before the deploy, not after: `wrangler deploy` can create the
   // script and still fail before it reports a URL, and a name nothing knows
-  // about is a name nobody tears down.
-  const createdAt = new Date().toISOString();
-  writeState(statePath(name), { name, base: null, secret, createdAt });
+  // about is a name nobody tears down. `secretPushed` stays false until the
+  // secret is on the Worker, so a crashed `up` is retried with a secret that
+  // gets pushed rather than one only this machine believes in.
+  writeState(statePath(name), { name, base: null, secret, secretPushed: reuseSecret, createdAt });
 
   log(`deploying apps/probe as ${name}`);
   const { base, versionId } = deployAndVerify({
     cwd: PROBE_APP, account, name, args: ['--name', name],
   });
   if (!base) throw new Error(`deploy of ${name} printed no workers.dev URL`);
-  writeState(statePath(name), { name, base, secret, createdAt });
+  writeState(statePath(name), { name, base, secret, secretPushed: reuseSecret, createdAt });
   log(`version ${versionId} is live at ${base}`);
 
-  log(`setting JWT_SECRET on ${name}`);
-  putSecret({ cwd: PROBE_APP, account, name, key: 'JWT_SECRET', value: secret });
+  if (reuseSecret) {
+    log(`keeping the JWT_SECRET already on ${name} — tokens minted earlier stay valid`);
+  } else {
+    log(`setting JWT_SECRET on ${name}`);
+    putSecret({ cwd: PROBE_APP, account, name, key: 'JWT_SECRET', value: secret });
+    writeState(statePath(name), { name, base, secret, secretPushed: true, createdAt });
+  }
 
   const jwt = await mintProbeToken(secret, ttlMs());
   await waitForTarget(base, jwt);
