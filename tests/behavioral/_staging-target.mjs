@@ -159,6 +159,7 @@ async function up() {
     // that out after a three-minute build is finding it out too late.
     assertCredentialHeld({
       name: target.name,
+      statePath: STATE_PATH,
       hasSecret: Boolean(state[keyOf(target)]?.secret),
       provisioned: Boolean(activeVersionId(target.name, { cwd: target.dir, account })),
       rotate: Boolean(flags['rotate-secrets']),
