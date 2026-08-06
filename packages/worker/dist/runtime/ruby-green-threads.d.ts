@@ -40,10 +40,35 @@
  *   Thread#join, Thread#value                    here
  *   Queue#pop (empty), SizedQueue#push (full)    here
  *   Mutex#lock (held), ConditionVariable#wait    here
- *   sleep, inside a spawned thread               here
+ *   sleep, on a thread or the main body          here
+ *   Timeout.timeout's deadline                   here
  *   TCPServer#accept                             ruby-socket-shim
- *   IO.select over Nimbus sockets                ruby-socket-shim
+ *   IO.select, over Nimbus sockets or a timeout  ruby-socket-shim
  *   IO.pipe read on an empty pipe                ruby-socket-shim
+ *
+ * ── 2a. Why a timed wait cannot wait here ──────────────────────────────────
+ *
+ * workerd freezes the clock inside a turn - a deliberate timing-attack
+ * mitigation, measured at 0ms elapsed across 200,000 Time.now reads. So a wait
+ * that watches the clock can never end: it consumes the process's whole CPU
+ * budget and the invocation is killed with nothing to show for it. Ruby's own
+ * sleep is exactly that loop, which is why nothing here calls it.
+ *
+ * The clock belongs to the host, so a deadline is something to hand back
+ * rather than something to watch. A parked thread records when it wants
+ * waking; the main body hands the earliest such moment to the host and yields;
+ * the host waits on a real timer and resumes the process with the clock moved
+ * on. Every wait shape above therefore takes a deadline, and one that has no
+ * deadline and nothing that could ever satisfy it is reported as a deadlock.
+ *
+ * That clock also has a RESOLUTION - Date.now, whole milliseconds - and a
+ * deadline landing between two of them is one it can never report reaching.
+ * `Time.now + 0.2` is exactly that deadline, because the double nearest 0.2 is
+ * 0.2000000000000000111: measured on workerd, the host resumes the process at
+ * precisely +200ms and the guest finds itself 1.1e-17s short, re-arms for the
+ * remainder, is resumed again with the clock unmoved, and burns the budget one
+ * round trip at a time. So a deadline is rounded UP onto the clock's grid as
+ * it enters the scheduler, which is the only form of it that can be reached.
  *
  * Ruby exports the synchronisation primitives under two names each - ::Queue
  * and Thread::Queue - and defines both itself. BOTH have to resolve to the
@@ -92,6 +117,12 @@
  * sharing a heap is not available at this level, and it is not available at any
  * other level either: every resident process is a DO Facet and facet siblings
  * serialise on CPU, so there is nowhere to offload it to.
+ *
+ * The sharp edge of no preemption is a hand-rolled busy-wait: `until Time.now
+ * - t0 > 0.05; end` has no scheduling point, so nothing can reach it, and
+ * because the clock is frozen (§2a) it does not merely spin - it never ends.
+ * That is the one wait shape the scheduler cannot rescue. A program that wants
+ * to wait has to say so, through one of the park-set entries above.
  *
  * ── 6. The same model, one layer down ──────────────────────────────────────
  *

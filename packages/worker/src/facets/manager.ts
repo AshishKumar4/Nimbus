@@ -209,16 +209,6 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
   return { LOADER: loader, ASSETS: assets };
 }
 
-// `await` on a promise created inside an async entrypoint bypasses the
-// monkey-patched Promise.prototype.then, so sequential awaited work (timers,
-// retry backoffs, giget template fetches) leaves __tracked empty and the
-// drain would exit early — abandoning real in-flight work (create-astro /
-// nuxi settle their CLI through setTimeout-driven steps). The drain therefore
-// also keeps going while __nimbusPendingTimers > 0. It subscribes to the exit
-// promise ONCE (a per-pass exitPromise.then() would leak a never-settling
-// tracked promise each iteration, which the timers-pending condition would
-// spin on until OOM) and yields via the untracked raw setTimeout so its own
-// ticks don't inflate the pending-timer count it watches.
 /**
  * Reserve held back from a one-shot facet's lifetime so a program that runs
  * out of time is still alive to say so.
@@ -258,108 +248,114 @@ export const ONE_SHOT_ENTRY_DEADLINE_MS = FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESER
  */
 export const RESIDENT_BOOT_SETTLE_MS = 1000;
 
-export const ENTRYPOINT_PROMISE_TRACKER = `
-function __makeEntrypointPromiseTracker() {
-  const __tracked = new Set();
-  const __origThen = Promise.prototype.then;
-  const __origCatch = Promise.prototype.catch;
-  const __origFinally = Promise.prototype.finally;
-  let __active = false;
-  const __track = (p) => {
-    if (!p || typeof p.then !== "function") return p;
-    __tracked.add(p);
-    try {
-      __origThen.call(p, () => { __tracked.delete(p); }, () => { __tracked.delete(p); });
-    } catch {
-      __tracked.delete(p);
-    }
-    return p;
-  };
-  return {
-    start() {
-      __active = true;
-      try {
-        Promise.prototype.then = function(...args) {
-          const __next = __origThen.apply(this, args);
-          if (__active) __track(__next);
-          return __next;
-        };
-        Promise.prototype.catch = function(...args) {
-          const __next = __origCatch.apply(this, args);
-          if (__active) __track(__next);
-          return __next;
-        };
-        Promise.prototype.finally = function(...args) {
-          const __next = __origFinally.apply(this, args);
-          if (__active) __track(__next);
-          return __next;
-        };
-      } catch {
-        __active = false;
-      }
-    },
-    stop() {
-      __active = false;
-      try {
-        Promise.prototype.then = __origThen;
-        Promise.prototype.catch = __origCatch;
-        Promise.prototype.finally = __origFinally;
-      } catch {}
-    },
-    track: __track,
-    // Drain floating entry work until it settles, the process exits, or the
-    // deadline passes. Three kinds of pending work, mirroring Node's loop:
-    //
-    //   - Unsettled tracked PROMISES are microtask chains (create-vite's
-    //     clack scaffold, c3 / create-astro streaming a project to the live
-    //     VFS). Per Node a pending promise does not by itself keep a process
-    //     alive, but a floating \`.then\` chain is the only handle we have on
-    //     an entrypoint that has not returned its work, so it counts.
-    //   - Pending macrotask TIMERS/intervals (\`__nimbusPendingTimers\`).
-    //   - In-flight ASYNC OPERATIONS (\`__nimbusPendingOps\`): a fetch, a
-    //     response body read, an fs/child_process RPC. \`await\` never calls
-    //     the patched Promise.prototype.then, so a floating async entrypoint
-    //     is invisible to promise tracking — this counter is how awaited work
-    //     is seen at all. See the shim's __nimbusTrackOp.
-    //
-    // The bound is a REAL wall-clock deadline, armed as a timer rather than
-    // compared against \`Date.now()\`: a \`setTimeout(0)\` turn in workerd costs
-    // ~5µs, so the pass budget this loop used to carry (50k) expired after
-    // ~150ms and silently overrode every longer deadline the callers declared
-    // — anything slower than that, including an ordinary network fetch, was
-    // abandoned mid-flight and reported as a clean exit.
-    //
-    // The yield gap follows what is being waited on: a settling promise chain
-    // advances once per event-loop turn, so it is yielded at 0ms; a timer or
-    // an in-flight I/O op is wall-clock bound, so spinning at 0ms would just
-    // burn the isolate's CPU for the whole deadline.
-    async drain(exitPromise, deadlineMs = 5000, minPasses = 0) {
-      const __count = (name) => (typeof globalThis[name] === "number" ? globalThis[name] : 0);
-      const __pending = () => __tracked.size + __count("__nimbusPendingTimers") + __count("__nimbusPendingOps");
-      let __exited = false;
-      if (exitPromise && typeof exitPromise.then === "function") {
-        exitPromise.then(() => { __exited = true; }, () => { __exited = true; });
-      }
-      const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
-        ? globalThis.__nimbusRawSetTimeout
-        : globalThis.setTimeout;
-      const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === "function")
-        ? globalThis.__nimbusRawClearTimeout
-        : globalThis.clearTimeout;
-      let __expired = false;
-      const __deadline = __rawSetTimeout(() => { __expired = true; }, deadlineMs);
-      let __pass = 0;
-      while (!__exited && !__expired && (__pass < minPasses || __pending() > 0)) {
-        await new Promise((resolve) => __rawSetTimeout(resolve, __tracked.size > 0 ? 0 : 1));
-        __pass++;
-      }
-      try { __rawClearTimeout(__deadline); } catch {}
-      // \`pending\` is what the caller reports when it gives up: a one-shot
-      // program that still has work in flight did NOT finish, and exiting 0
-      // would claim it did.
-      return { passes: __pass, pending: __exited ? 0 : __pending() };
-    },
-  };
+/**
+ * The event loop a generated entrypoint runs on.
+ *
+ * Node exits when its loop has no live HANDLES left — timers, sockets,
+ * servers, requests in flight. A promise is not a handle: a program whose
+ * last act leaves `new Promise(() => {})` unsettled prints its output and
+ * exits 0. Counting unsettled promises as work was a real divergence from
+ * that — such a program burned the whole facet lifetime and was then
+ * reported as having not finished.
+ *
+ * Three kinds of handle, each owned by the shim that creates them:
+ *
+ *   - macrotask TIMERS and intervals (`__nimbusPendingTimers`), from the
+ *     timer tracker below.
+ *   - ASYNC OPERATIONS in flight (`__nimbusPendingOps`): a fetch, a response
+ *     body read, an fs/child_process RPC. `await` resolves through
+ *     PerformPromiseThen and surfaces nowhere else, so this counter is how
+ *     awaited work is seen at all. See the shim's __nimbusTrackOp.
+ *   - listening SERVERS (`__portRegistry`), open until the program closes
+ *     them.
+ *
+ * The bound is a REAL wall-clock deadline, armed as a timer rather than
+ * compared against `Date.now()`: a `setTimeout(0)` turn in workerd costs
+ * ~5µs, so the pass budget this loop used to carry (50k) expired after
+ * ~150ms and silently overrode every longer deadline the callers declared —
+ * anything slower than that, including an ordinary network fetch, was
+ * abandoned mid-flight and reported as a clean exit.
+ *
+ * The loop subscribes to the exit promise ONCE — a per-pass
+ * `exitPromise.then()` allocates a promise every iteration — and yields
+ * through the raw setTimeout so its own ticks don't inflate the timer count
+ * it watches.
+ */
+export const ENTRYPOINT_EVENT_LOOP = `
+function __nimbusHandleCount(__name) {
+  const __value = globalThis[__name];
+  return typeof __value === "number" ? __value : 0;
+}
+
+// Work an entrypoint's STARTUP has to settle before it can be called booted.
+function __nimbusPendingStartupWork() {
+  return __nimbusHandleCount("__nimbusPendingTimers") + __nimbusHandleCount("__nimbusPendingOps");
+}
+
+// The above, plus the handles a program holds open on purpose. A bound port
+// keeps a Node process alive, and it keeps a one-shot facet alive too.
+function __nimbusLiveHandles() {
+  const __servers = globalThis.__portRegistry;
+  const __bound = __servers && typeof __servers.size === "number" ? __servers.size : 0;
+  return __nimbusPendingStartupWork() + __bound;
+}
+
+async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {
+  let __exited = false;
+  if (__exitPromise && typeof __exitPromise.then === "function") {
+    __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });
+  }
+  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
+    ? globalThis.__nimbusRawSetTimeout
+    : globalThis.setTimeout;
+  const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === "function")
+    ? globalThis.__nimbusRawClearTimeout
+    : globalThis.clearTimeout;
+  let __expired = false;
+  const __deadline = __rawSetTimeout(() => { __expired = true; }, __deadlineMs);
+  let __pass = 0;
+  while (!__exited && !__expired && (__pass < __minPasses || __countHandles() > 0)) {
+    // The warm-up passes give a settling microtask chain its turns and cost
+    // ~5µs each; past them the loop is waiting on wall-clock work, where
+    // spinning at 0ms would burn the isolate's CPU for the whole deadline.
+    await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));
+    __pass++;
+  }
+  try { __rawClearTimeout(__deadline); } catch {}
+  // \`pending\` is what the caller reports when it gives up: a one-shot program
+  // still holding a handle did NOT finish, and exiting 0 would claim it did.
+  return { passes: __pass, pending: __exited ? 0 : __countHandles() };
+}
+
+// An ESM entry's own evaluation promise (top-level await) is the one promise
+// that IS a handle — the module has not finished loading until it settles.
+// Answers true when process.exit won the race instead.
+async function __nimbusAwaitEntryEvaluation(__entryResult) {
+  if (!__entryResult || typeof __entryResult.then !== "function") return false;
+  const __exit = {};
+  const __raced = await Promise.race([
+    __entryResult.then(() => null),
+    __nimbusProcessExitPromise.then(() => __exit, () => __exit),
+  ]);
+  return __raced === __exit;
+}
+
+// A one-shot facet's lifetime IS the loop: it runs the program until Node
+// would exit, or until the lifetime budget runs out.
+async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
+  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
+  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);
+}
+
+// A resident facet keeps running after the call that boots it returns, so it
+// settles startup and nothing more. The handles it holds open deliberately —
+// its listening port — are the point of it, not a reason to make the shell's
+// prompt wait.
+async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
+  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };
+  return await __nimbusRunEventLoop(
+    __nimbusPendingStartupWork, __nimbusProcessExitPromise, __deadlineMs, 4,
+  );
 }
 `;
 
@@ -393,31 +389,6 @@ const ENTRYPOINT_TIMER_TRACKER = `
     g.clearInterval = function(id){ if (iv.delete(id)) g.__nimbusPendingTimers--; return ci(id); };
   }
 })(globalThis);
-`;
-
-/**
- * Await an ESM entry's own evaluation promise (top-level await), then drain
- * whatever it left floating.
- *
- * `deadlineMs` is the caller's contract, and the two callers want different
- * things. A one-shot exec facet lives exactly as long as this drain, so it
- * passes a lifetime budget and reports what was still pending if it runs out.
- * A resident facet is only settling its startup here — it keeps running
- * afterwards, and its boot response is awaited by `spawnNode`, so it passes a
- * short budget: an idle keep-alive timer must not hold the shell's prompt.
- */
-const ENTRYPOINT_STARTUP_DRAIN = `
-async function __nimbusDrainEntrypointStartup(__entryResult, __entryPromises, deadlineMs) {
-  if (__entryResult && typeof __entryResult.then === "function") {
-    const __exit = {};
-    const __result = await Promise.race([
-      __entryResult.then(() => null),
-      __nimbusProcessExitPromise.then(() => __exit, () => __exit),
-    ]);
-    if (__result === __exit) return { passes: 0, pending: 0 };
-  }
-  return await __entryPromises.drain(__nimbusProcessExitPromise, deadlineMs, 4);
-}
 `;
 
 /**
@@ -612,8 +583,7 @@ ${VFS_WRITE_LEDGER_SOURCE}
 ${ENTRYPOINT_TIMER_TRACKER}
 ${shims}
 
-${ENTRYPOINT_PROMISE_TRACKER}
-${ENTRYPOINT_STARTUP_DRAIN}
+${ENTRYPOINT_EVENT_LOOP}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
@@ -648,25 +618,15 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     try {
       if (__entryCompileFailure) throw new Error(__entryCompileFailure);
       if (!__compiledFn) throw new Error("entrypoint compile failed");
-      const __entryPromises = __makeEntrypointPromiseTracker();
-      let __entryResult;
-      __entryPromises.start();
-      try {
-        __entryResult = __compiledFn(
-          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
-        );
-      } finally {
-        __entryPromises.stop();
-      }
-      __entryPromises.track(__entryResult);
-      const __drain = await __nimbusDrainEntrypointStartup(
-        __entryResult, __entryPromises, __entryBudgetMs,
+      const __entryResult = __compiledFn(
+        mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
+      const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
-      // This facet's lifetime IS the drain, so work still in flight when the
-      // deadline passes is work that will never run. Reporting exit 0 there
-      // is the silent-truncation failure: name the limit that was hit and fail.
+      // This facet's lifetime IS the event loop, so a handle still open when
+      // the deadline passes is work that will never run. Reporting exit 0
+      // there is the silent-truncation failure: name the limit and fail.
       else if (__drain.pending > 0) {
         const __why = "node: reached the ${FACET_TIMEOUT_MS / 1000}s facet lifetime limit with " +
           __drain.pending + " operation(s) still in flight; the rest of the program did not run. " +
@@ -919,8 +879,7 @@ ${VFS_WRITE_LEDGER_SOURCE}
 ${ENTRYPOINT_TIMER_TRACKER}
 ${shims}
 
-${ENTRYPOINT_PROMISE_TRACKER}
-${ENTRYPOINT_STARTUP_DRAIN}
+${ENTRYPOINT_EVENT_LOOP}
 
     if (__supervisor && !captureOutput) {
       __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
@@ -958,26 +917,20 @@ ${ENTRYPOINT_STARTUP_DRAIN}
     try {
       if (__entryCompileFailure) throw new Error(__entryCompileFailure);
       if (!__compiledFn) throw new Error("entrypoint compile failed");
-      const __entryPromises = __makeEntrypointPromiseTracker();
-      let __entryResult;
-      __entryPromises.start();
-      try {
-        __entryResult = __compiledFn(
-          mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
-        );
-      } finally {
-        __entryPromises.stop();
-      }
-      __entryPromises.track(__entryResult);
-      if (__entryResult && typeof __entryResult.then === "function") {
-        if (attachedTty) __attachedCompletion = __entryResult;
-      }
+      const __entryResult = __compiledFn(
+        mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
+      );
       if (attachedTty) {
-        await __entryPromises.drain(__nimbusProcessExitPromise, ${RESIDENT_BOOT_SETTLE_MS}, 8);
-      } else {
-        await __nimbusDrainEntrypointStartup(
-          __entryResult, __entryPromises, ${RESIDENT_BOOT_SETTLE_MS},
+        // An attached entry owns the terminal until it returns, so its own
+        // completion is awaited by the exit lifecycle below, never here.
+        if (__entryResult && typeof __entryResult.then === "function") {
+          __attachedCompletion = __entryResult;
+        }
+        await __nimbusRunEventLoop(
+          __nimbusPendingStartupWork, __nimbusProcessExitPromise, ${RESIDENT_BOOT_SETTLE_MS}, 8,
         );
+      } else {
+        await __nimbusSettleEntrypointStartup(__entryResult, ${RESIDENT_BOOT_SETTLE_MS});
         if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     } catch (e) {
