@@ -1,7 +1,8 @@
 # `pi --help` — the lost-exit hang
 
 > Edited & maintained by Claude, presented as-is. Investigation notes, not a
-> design doc. Written 2026-07-25 against `main` @ `86600af`.
+> design doc. Written 2026-07-25 against `main` @ `86600af`, re-measured
+> 2026-08-06 against `main` @ `efbf831`.
 
 An open handoff. The defect is characterised and reproducible; it is **not
 fixed**, and I did not ship a speculative fix because the locus sits in the
@@ -9,6 +10,64 @@ shell/bin exec path and staged-facet lifetime rather than in the node shim.
 
 Failing probe: `tests/behavioral/agentic-cli/new/pi-coding-agent-npm-bin.mjs`,
 at the `pi --help` step.
+
+---
+
+## 2026-08-06: the missing signal, measured
+
+The 2026-07-25 notes below end at "a facet killed by the platform cannot call
+`reportExit`, which fits, but I have no direct signal". There is now a direct
+signal. `wrangler tail --format json` over a live reproduction on a throwaway
+gives, in 1005 events:
+
+```
+Counter({'ok': 988, 'canceled': 11, 'responseStreamDisconnected': 3, 'exceededMemory': 3})
+
+01:43:25  exceededMemory  /s/cheerful-spruce-6747/ws     ← terminal 1's socket
+01:44:54  exceededMemory  alarm (scheduledTime 01:44:54) ← the moment `pi --help` was sent
+01:46:54  exceededMemory  /s/cheerful-spruce-6747/ws     ← terminal 2's socket
+```
+
+**The session Durable Object is killed for memory, and it is the `/ws` request
+itself that carries the `exceededMemory` outcome.** That single fact explains
+every observation below at once:
+
+- The connection goes silent with an open socket: the WebSocket survives, but
+  the execution context driving it is gone.
+- A fresh socket to the same sid works: it gets a new context on the restarted
+  DO.
+- Nothing reports a reason: `BIN_DISPATCH_TIMEOUT_MS` cannot fire, because the
+  timer arming that bound died with the context it was armed in. **No bound
+  that lives inside the DO can ever report this failure.** That is the design
+  constraint any fix has to start from — the reporting has to come from the
+  restarted DO or from the client, not from a timeout in the request that is
+  being killed.
+
+Two further measurements separate the two failures that were previously
+conflated:
+
+- **`pi --help` alone, as the first invocation after the install: it does not
+  wedge — it is simply slower than a one-shot facet's life.** Measured 34.4s
+  wall, killed at the 30s `FACET_TIMEOUT_MS` bound, and the shell reports it
+  honestly: `exited with code 124` / `[process killed: timeout after 30s]`.
+  So `pi --help` never renders its help surface within budget at all, before
+  memory enters the picture.
+- **A second `pi --help` in that same session returns in 5.0s with `[bin
+  started: pid=…]`, no output, and exit 0.** A ghost: the invocation reports
+  success without running. Separate defect again, and the one that turns a
+  loud failure into a silent one.
+
+`node/cwd-data-file-session-survival.mjs` — the "cheap form" named below — now
+**passes** (4/4, 5.9s), so the 20 MiB-cwd prefetch-bundle path is no longer
+the trigger. The memory ceiling is now reached by pi's own module map (17.4
+MiB, the largest observed) being materialised a second time in one session.
+
+### Confirmed not the entry drain, again
+
+Re-A/B'd 2026-08-06 with the handle-based entry loop deployed (the fix for
+`npm-bin-explicit-process-exit`, where an unsettled promise used to burn the
+whole facet lifetime). `pi --help` hangs identically. The two defects share
+nothing but a symptom.
 
 ---
 
@@ -99,20 +158,30 @@ deterministic on the command. `pi --help` is simply an expensive invocation
 - **Not local-only or config-related.** Clean on `wrangler dev`, fails on a
   real Worker.
 
-## Not yet established
+## Answered 2026-08-06 (see the section at the top)
 
-- Why the bin facet stops producing output and never reports exit. A facet
-  killed by the platform (memory, CPU) cannot call `reportExit`, which fits,
-  but I have no direct signal — `wrangler tail` captured `canceled` outcomes
-  and **no exceptions**, and `observability/oom-classify.ts` folds CPU
-  exhaustion into the `'oom'` bucket, so the ring buffer would not distinguish
-  them either.
-- Whether the first-invocation residue is memory, a retained facet/isolate
-  (the per-owner dynamic-worker LRU cap is 50), or a process-table/exec-slot
-  entry that is never released.
-- Why the *first* terminal cannot even echo, when the process table shows the
-  command never started. The block is upstream of command execution, in that
-  connection's input/exec serialisation.
+- Why the bin facet stops producing output and never reports exit — and why
+  the *first* terminal cannot even echo. Both are the same thing: the `/ws`
+  request's execution context is killed with `outcome: exceededMemory`. The
+  socket stays open with nothing driving it. `wrangler tail` shows no
+  exception because a memory kill is an outcome, not a throw, which is why
+  the earlier pass reading only `exceptions` came up empty.
+
+## Still not established
+
+- **What the memory is.** `exceededMemory` names the budget, not the holder.
+  Whether the residue from the first invocation is the module map itself, a
+  retained facet/isolate (the per-owner dynamic-worker LRU cap is 50), a
+  serialized bundle held alongside its source, or an exec-slot entry never
+  released — that is the next measurement, and it is the same question the
+  bundle-pressure / facet-serialization work is already asking.
+- **Why `pi --help` needs more than 30s at all**, when `pi --version` on the
+  same 17.4 MiB module map returns in 16-20s. Help rendering pulls in the
+  provider/model catalogue; whether that is module-init cost or work done
+  after init has not been separated.
+- **Why the second `pi --help` returns exit 0 in 5s having produced nothing.**
+  A warm path answering for a run that never happened is worse than the hang
+  it replaces, because it reports success.
 
 ## A distinct finding: the shell waits forever with no diagnostic
 
@@ -124,11 +193,16 @@ recovery is opening a new connection — which nothing tells them to do.
 
 Note that the one-shot `node` path already has the honest version of this:
 `FACET_TIMEOUT_MS` bounds it and the session reports exit 124 with
-`[process killed: timeout after 30s]`. The npm-bin/staged path evidently
-reaches a state where neither that bound nor the facet's own exit reporting
-fires. Worth fixing on its own merits even before the underlying cause is
-found, because it converts a permanent silent wedge into a bounded, explained
-failure.
+`[process killed: timeout after 30s]`. `pi --help` on a cold session takes
+exactly that path and reports exactly that, measured 2026-08-06.
+
+What the 2026-08-06 tail adds is *why* the bound stops working once the DO is
+the thing being killed: `BIN_DISPATCH_TIMEOUT_MS` is a timer inside the same
+execution context, so the kill takes the reporter along with the reported. A
+diagnostic for this cannot be another in-DO timeout. The two places it can
+come from are the **restarted DO** — a process-table row with no exit is a
+run that was killed, and the next connection can say so — and the **client**,
+which is the only party that can observe "socket open, nothing arriving".
 
 ## Where to look
 
