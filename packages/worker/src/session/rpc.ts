@@ -407,6 +407,70 @@ export async function _rpcFsRevision(self: RpcHost, path: string | undefined, pi
 }
 
 /**
+ * The facet's WebSocket relay. A facet does not open its own sockets: the
+ * supervisor terminates them, so an inbound frame arrives as a reply to a
+ * poll the facet is already blocked on and can carry the same cache
+ * invalidation every other supervisor-delivered resumption carries. See
+ * session/ws-relay.ts for why mediating the transport is not enough.
+ *
+ * The URL is untrusted input, so it is parsed rather than pattern-matched and
+ * only the two WebSocket schemes are accepted. Nothing else about the request
+ * comes from the facet — no facet-supplied header is forwarded, so the
+ * supervisor cannot be induced to attach its own ambient credentials to a
+ * destination the facet chose.
+ */
+const WsOpenArgsSchema = z.object({
+  url: z.string().max(2048).refine(
+    (value) => {
+      let parsed: URL;
+      try { parsed = new URL(value); } catch { return false; }
+      return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+    },
+    { message: 'a relayed socket needs a ws: or wss: URL' },
+  ),
+  protocols: z.array(z.string().max(64)).max(8),
+});
+
+export async function _rpcWsOpen(
+  self: RpcHost,
+  url: string,
+  protocols: string[],
+  pid?: number,
+): Promise<{ id: number; protocol: string }> {
+  const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [] });
+  return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols);
+}
+
+export async function _rpcWsPoll(
+  self: RpcHost,
+  id: number,
+  waitMs: number,
+  pid?: number,
+): Promise<unknown[]> {
+  return self._ensureWebSocketRelay().poll(processPid(pid), Number(id), Number(waitMs) || 0);
+}
+
+export async function _rpcWsSend(
+  self: RpcHost,
+  id: number,
+  text: string | null,
+  bytes: Uint8Array | null,
+  pid?: number,
+): Promise<void> {
+  self._ensureWebSocketRelay().send(processPid(pid), Number(id), text ?? null, bytes ?? null);
+}
+
+export async function _rpcWsClose(
+  self: RpcHost,
+  id: number,
+  code?: number,
+  reason?: string,
+  pid?: number,
+): Promise<void> {
+  self._ensureWebSocketRelay().close(processPid(pid), Number(id), code, reason);
+}
+
+/**
  * The facet cache-coherence barrier: what changed since `cursor`.
  *
  * Returned as payload, never on an Error — custom Error properties do not
@@ -823,6 +887,10 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
       return;
     }
     try { self.processes.closeInput(pid); } catch {}
+    // A relayed socket is held open by the supervisor on the process's behalf,
+    // so it does not die when the facet does. Nothing else would ever close
+    // it, and a live one keeps buffering into the supervisor's heap.
+    try { self.webSocketRelay?.closeForPid(pid); } catch {}
     self.runtimeFsBridges?.delete(pid);
     if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -978,6 +1046,10 @@ export function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code
 export function _reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
     if (self.processes.getExit(pid)) return;
     try { self.processes.closeInput(pid); } catch {}
+    // A relayed socket is held open by the supervisor on the process's behalf,
+    // so it does not die when the facet does. Nothing else would ever close
+    // it, and a live one keeps buffering into the supervisor's heap.
+    try { self.webSocketRelay?.closeForPid(pid); } catch {}
     self.runtimeFsBridges?.delete(pid);
     if (reason) {
       self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);

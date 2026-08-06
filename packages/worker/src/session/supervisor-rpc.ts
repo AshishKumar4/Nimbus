@@ -258,6 +258,30 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._getStub()._rpcFsRevision(path, this._pid()));
   }
 
+  /**
+   * WebSocket relay. A facet does not open its own sockets: the supervisor
+   * terminates them and hands frames back through `wsPoll`, so an inbound
+   * frame is a supervisor reply and the facet's frame handler can take the
+   * same ACQUIRE every other supervisor-delivered resumption takes. Without
+   * it a third party wakes the facet at a time of its own choosing and the
+   * facet's next synchronous read serves bytes the authority has replaced.
+   */
+  async wsOpen(url: string, protocols: string[]): Promise<{ id: number; protocol: string }> {
+    return this._call(this._getStub()._rpcWsOpen(url, protocols, this._pid()));
+  }
+
+  async wsPoll(id: number, waitMs: number): Promise<unknown[]> {
+    return this._call(this._getStub()._rpcWsPoll(id, waitMs, this._pid()));
+  }
+
+  async wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void> {
+    return this._call(this._getStub()._rpcWsSend(id, text, bytes, this._pid()));
+  }
+
+  async wsClose(id: number, code?: number, reason?: string): Promise<void> {
+    return this._call(this._getStub()._rpcWsClose(id, code, reason, this._pid()));
+  }
+
   async fsOpen(path: string, flags: any): Promise<any> {
     return this._call(this._getStub()._rpcFsOpen(path, flags, this._pid()));
   }
