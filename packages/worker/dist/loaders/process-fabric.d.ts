@@ -294,11 +294,73 @@ export interface HostedProcess {
     describe(): string;
 }
 /**
+ * Total bytes a dynamic Worker's module map may carry, across every member of
+ * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
+ * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
+ * size of 67108864 bytes", confirmed at five sizes with two trials each. The
+ * budget is shared, so a ruby process is already 34.3 MiB down before its disk
+ * is counted.
+ */
+export declare const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67108864;
+/**
+ * How a whole session-filesystem image can reach a process on a substrate, and
+ * what stops it.
+ *
+ * This is the one place the two substrates are NOT interchangeable, so it is
+ * stated rather than smoothed over. Everything else about a process is the
+ * same code either way; this is not, and an operator flipping the config is
+ * changing it.
+ */
+export interface ProcessImageDelivery {
+    /**
+     * Whether the hosting actor can hand a process its whole SQLite by
+     * copy-on-write, present before the process's first instruction.
+     *
+     * `same-object` — possible in principle: the host and the source live in one
+     *   Durable Object, which is the only scope `ctx.facets.clone` works in.
+     *   Measured on production workerd at 18-31 ms for a 45.73 MB pi-shaped
+     *   corpus and 34-54 ms for 1 GB — flat across a 256x size range, because
+     *   nothing is copied.
+     * `impossible` — and not for want of an implementation. Clone is
+     *   same-Durable-Object, bookmarks are same-Durable-Object, and workerd
+     *   exposes no `VACUUM INTO`, no `ATTACH` and no `sqlite3_backup` to reach
+     *   across one. A peer-hosted process can only ever receive an image
+     *   through `moduleCeilingBytes` below, or by streaming it.
+     *
+     * NOT reachable on this build either way: `ctx.facets.clone` landed in
+     * workerd 1.20260619.1 and is typed from @cloudflare/workers-types 5.x,
+     * while this repo pins 1.20260603.1 and 4.20260605.1 — the facets binding
+     * here declares `get`/`abort`/`delete` and nothing else. So the fast path is
+     * a facet-substrate PROPERTY, not a facet-substrate behaviour, until those
+     * are bumped.
+     */
+    readonly reflink: 'same-object' | 'impossible';
+    /**
+     * Bytes one process's whole module map may carry — the channel that does
+     * work today, on both substrates, because the loader runs on whichever actor
+     * hosts the facet. Enforced where the map is assembled, since the loader's
+     * own refusal names no member.
+     */
+    readonly moduleCeilingBytes: number;
+    /**
+     * Whether the process's SQLite is spent out of the SESSION's storage budget
+     * or its own. This cuts the opposite way from `reflink` and is why neither
+     * substrate simply wins: a facet shares roughly 10 GiB with the session root
+     * and every sibling and clone under it, with no copy-on-write credit — N
+     * forks of an X-byte image need X*(N+1) — and crossing it does not raise an
+     * error, it resets the object with "Internal error in Durable Object storage
+     * caused object to be reset". A peer brings its own budget per host.
+     */
+    readonly storageSharedWithSession: boolean;
+}
+/**
  * The substrate a resident process runs on. One implementation per hosting
  * mechanism, one selection for the whole deployment — see
  * `loaders/process-host.ts`.
  */
 export interface ProcessHost {
+    /** What this substrate can and cannot deliver, for operators and callers. */
+    readonly imageDelivery: ProcessImageDelivery;
     open(params: ProcessHostParams): Promise<HostedProcess>;
 }
 /** `env.LOADER` — the Worker Loader binding, as used from inside a DO. */
