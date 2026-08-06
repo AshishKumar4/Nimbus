@@ -31,7 +31,7 @@ import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { ResidentBootSpecSchema, getNimbusCtxExports, openResidentFacet, } from '../loaders/process-fabric.js';
-import { isolateToken, } from '../loaders/process-host.js';
+import { headerPairs, isolateToken, } from '../loaders/process-host.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-coord.js';
@@ -376,6 +376,25 @@ export async function _rpcFsReadRange(self, path, offset, length, pid) {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });
     const fs = runtimeFs(self, pid);
     return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length));
+}
+/**
+ * The same read, through the same process credential and the same bridge, with
+ * the LRU content cache bypassed.
+ *
+ * For a boot spec's by-path members and nothing else. Those are the largest
+ * files a session holds — a ruby interpreter image is 34.3 MiB against a 32 MiB
+ * cache — and a host reads each one once, in slices, to hand to a Worker Loader
+ * module map. Serving them through the demand-paging path would evict the
+ * user's entire hot working set and pin the blob in this DO's heap for the rest
+ * of the session, which is the pathology `readFileUncached` was added to stop
+ * when clang crashed the supervisor. A process hosted on this DO already reads
+ * them uncached; one hosted elsewhere has to be able to say so too, or the
+ * substrate that was supposed to relieve the coordinator damages it instead.
+ */
+export async function _rpcFsReadRangeUncached(self, path, offset, length, pid) {
+    const args = FsReadRangeArgsSchema.parse({ path, offset, length });
+    const fs = runtimeFs(self, pid);
+    return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length, { cached: false }));
 }
 /**
  * Read many ranges in ONE round trip.
@@ -1209,7 +1228,17 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
  *
  * Ranged because these are the session's largest files — a ruby
  * interpreter+stdlib image is 34.3 MiB — and workerd's 32 MiB ceiling applies
- * to each returned VALUE, not to the call.
+ * to each returned VALUE, not to the call. UNCACHED for the same reason the
+ * coordinator's own reader is: caching a 34 MiB blob in a 32 MiB LRU evicts
+ * everything the session was using and holds the blob for the session's life.
+ *
+ * The credential is the PROCESS's, not the kernel's, because that is what a
+ * supervisor RPC carries and no substrate should be able to read more than the
+ * process it hosts. Boot-spec members are reachable under it by construction:
+ * the image store is kernel-owned mode 0644 precisely so any process can read
+ * it, and the installed runtime images are world-readable too — which is not
+ * an assumption, it is what makes ruby, python and node boot on a peer in the
+ * live gates.
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 function peerDiskReader(supervisor) {
@@ -1228,7 +1257,7 @@ async function readSupervisorFile(fs, path) {
     }
     const out = new Uint8Array(size);
     for (let offset = 0; offset < size;) {
-        const chunk = await fs.fsReadRange(path, offset, Math.min(RESIDENT_READ_RANGE_BYTES, size - offset));
+        const chunk = await fs.fsReadRangeUncached(path, offset, Math.min(RESIDENT_READ_RANGE_BYTES, size - offset));
         if (!chunk || chunk.byteLength === 0) {
             throw new Error(`Nimbus: '${path}' returned no bytes at offset ${offset}`);
         }
@@ -1237,36 +1266,50 @@ async function readSupervisorFile(fs, path) {
     }
     return out;
 }
-function hostedRecords(self) {
-    return self._hostedProcesses;
-}
-function hostedWaiters(self) {
-    return self._hostedProcessWaiters;
-}
 function registerHostedRecord(self, workerKey, record) {
-    hostedRecords(self).set(workerKey, record);
-    const waiters = hostedWaiters(self).get(workerKey);
-    if (!waiters)
+    const records = self._hostedProcesses;
+    records.set(workerKey, record);
+    const waiters = self._hostedProcessWaiters;
+    const pending = waiters.get(workerKey);
+    if (!pending)
         return;
-    hostedWaiters(self).delete(workerKey);
-    for (const notify of waiters)
+    waiters.delete(workerKey);
+    for (const notify of pending)
         notify(record);
 }
+/**
+ * The record for `workerKey`, waiting briefly if the host leg has not landed
+ * yet — the coordinator issues it first and it registers before its first
+ * await, so normally there is nothing to wait for, but RPC delivery order is
+ * not a guarantee.
+ *
+ * A host runs exactly ONE process: its Durable Object name carries the pid
+ * (`<doId>:proc:<pid>:<attempt>`) and pids never repeat, being strided by
+ * generation. So a key this host is not hosting is a key it never will host,
+ * and parking a waiter for it would let anyone holding a NIMBUS_SESSION stub
+ * accumulate map entries and 30-second timers here by the thousand. Once
+ * something is known, an unknown key is refused immediately instead.
+ */
 function awaitHostedRecord(self, workerKey) {
-    const existing = hostedRecords(self).get(workerKey);
+    const records = self._hostedProcesses;
+    const existing = records.get(workerKey);
     if (existing)
         return Promise.resolve(existing);
+    const waiters = self._hostedProcessWaiters;
+    if (records.size > 0 || (waiters.size > 0 && !waiters.has(workerKey))) {
+        return Promise.reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
+    }
     return new Promise((resolve, reject) => {
-        const waiters = hostedWaiters(self).get(workerKey) ?? new Set();
+        const pending = waiters.get(workerKey) ?? new Set();
         const notify = (record) => { clearTimeout(timer); resolve(record); };
         const timer = setTimeout(() => {
-            waiters.delete(notify);
-            if (waiters.size === 0)
-                hostedWaiters(self).delete(workerKey);
+            pending.delete(notify);
+            if (pending.size === 0)
+                waiters.delete(workerKey);
             reject(new Error(`Nimbus: peer hosts no process for key '${workerKey}'`));
         }, HOSTED_RECORD_WAIT_MS);
-        waiters.add(notify);
-        hostedWaiters(self).set(workerKey, waiters);
+        pending.add(notify);
+        waiters.set(workerKey, pending);
     });
 }
 /**
@@ -1408,8 +1451,6 @@ export async function _rpcRouteHostedHttp(self, workerKey, wire) {
         init.duplex = 'half';
     }
     const response = await facet.handleHttpRequest(new Request(wire.url, init));
-    const responseHeaders = [];
-    response.headers.forEach((v, k) => { responseHeaders.push([k, v]); });
     let body = null;
     if (response.body) {
         const { readable, writable } = new IdentityTransformStream();
@@ -1419,7 +1460,7 @@ export async function _rpcRouteHostedHttp(self, workerKey, wire) {
     return {
         status: response.status,
         statusText: response.statusText,
-        headers: responseHeaders,
+        headers: headerPairs(response.headers),
         body,
     };
 }
@@ -1431,7 +1472,8 @@ export async function _rpcRouteHostedHttp(self, workerKey, wire) {
  * gone cannot retire the writer identity behind it.
  */
 export async function _rpcCancelHostProcess(self, workerKey) {
-    const record = hostedRecords(self).get(workerKey);
+    const records = self._hostedProcesses;
+    const record = records.get(workerKey);
     if (!record)
         return { cancelled: false };
     const facet = await record.facet.catch(() => null);

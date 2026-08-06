@@ -95,6 +95,8 @@ export interface CredentialedVfs {
     /** Whole-file read that bypasses the LRU content cache (see SqliteVFS.readFileUncached). */
     readFileUncached(path: string): Uint8Array;
     readRange(path: string, offset: number, length: number): Uint8Array;
+    /** Ranged read that bypasses the LRU content cache (see SqliteVFS.readRange). */
+    readRangeUncached(path: string, offset: number, length: number): Uint8Array;
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     appendOnce(path: string, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
     acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
@@ -385,6 +387,19 @@ export declare class SqliteVFS {
      * Read `length` bytes at `offset` without assembling the whole file —
      * only the chunks overlapping the range are touched. Reads past EOF
      * are clamped; missing spans retain the existing zero-fill range semantics.
+     */
+    /**
+     * `cached: false` reads the range straight from SQL, neither consulting nor
+     * populating the LRU — the ranged counterpart of `readFileUncached`, and it
+     * exists for the same reason. A boot spec's by-path members are the largest
+     * files a session holds (a ruby interpreter image is 34.3 MiB against a
+     * 32 MiB LRU) and each is read once and handed to a Worker Loader module
+     * map, so demand-paging semantics are simply wrong for them: caching one
+     * evicts the user's whole hot working set and pins the blob in this DO's
+     * heap for the rest of the session. Ranged rather than whole-file because a
+     * host that is not this DO reads them in slices that fit an RPC value, and
+     * re-reading the whole file per slice would multiply the SQL work by the
+     * slice count.
      */
     private readRange;
     /**

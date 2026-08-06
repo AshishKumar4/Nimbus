@@ -38,7 +38,7 @@
  *   peer   — spawn 242-359 ms, because every spawn pays a DO create plus a
  *            SQLite open. Memory AND CPU both independent: the process runs
  *            in a different workerd process, verified per placement rather
- *            than assumed (see `_placeDistinctPeer`).
+ *            than assumed (see `_place` in `loaders/process-host.ts`).
  *
  * Both give the process its own SQLite. Neither changes what the process is:
  * the runner, the boot spec, the class name, the writer handshake and the
@@ -325,6 +325,9 @@ export function openResidentFacet(ctx, env, disk, supervisor, params) {
     started.catch(() => { });
     return {
         started,
+        // A facet cannot die without taking its Durable Object — and this object —
+        // with it, so there is no independent death to report.
+        lost: new Promise(() => { }),
         handleHttpRequest: (request) => facet.handleHttpRequest(request),
         release,
     };
@@ -482,12 +485,13 @@ export class ProcessFabric {
             return releasing;
         };
         // `lifetime`: the runner's startProcess IS the process, so its settlement
-        // is the lifecycle. `boot`: the runner returns once it is up and the
-        // process stays resident on its host, so residency ends only when the host
-        // is released (kill) or the boot failed.
+        // is the lifecycle — a host that dies under it rejects `started`.
+        // `boot`: the runner returns once it is up and the process stays resident
+        // on its host, so residency ends at a kill — or at the host dying, which
+        // is the same thing happening to the process without anyone asking for it.
         const done = (spawn.startContract === 'lifetime'
             ? hosted.started.then(() => undefined)
-            : hosted.started.then(() => held.promise)).finally(() => release());
+            : hosted.started.then(() => Promise.race([held.promise, hosted.lost]))).finally(() => release());
         done.catch(() => { });
         return new ResidentProcessHandle({
             done,

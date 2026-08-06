@@ -215,6 +215,20 @@ export interface HostedHttpResponse {
   body: ReadableStream | null;
 }
 
+/**
+ * Every method a hosting sibling must answer. Checked as a set at first
+ * contact: a stub that has the probe but not the router is a deployment skew,
+ * and finding that out mid-process is finding it out too late.
+ */
+const PROCESS_PEER_METHODS = [
+  '_rpcProcessHostProbe',
+  '_rpcHostProcess',
+  '_rpcAwaitHostedOpen',
+  '_rpcAwaitHostedBoot',
+  '_rpcRouteHostedHttp',
+  '_rpcCancelHostProcess',
+] as const;
+
 /** The host-process surface a sibling session DO exposes. */
 interface ProcessPeerStub {
   _rpcProcessHostProbe(): Promise<{ isolateToken: string }>;
@@ -250,9 +264,14 @@ function processPeerStub(value: unknown, peerName: string): ProcessPeerStub {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
     throw new BindingError(`ProcessFabric: NIMBUS_SESSION.get() returned no stub for peer '${peerName}'.`);
   }
-  if (typeof Reflect.get(value, '_rpcHostProcess') !== 'function'
-    || typeof Reflect.get(value, '_rpcProcessHostProbe') !== 'function') {
-    throw new BindingError(`ProcessFabric: peer '${peerName}' does not expose the host-process RPC surface.`);
+  for (const method of PROCESS_PEER_METHODS) {
+    if (typeof Reflect.get(value, method) !== 'function') {
+      throw new BindingError(
+        `ProcessFabric: peer '${peerName}' does not expose ${method}(). `
+          + 'A sibling that answers some of the host-process surface and not the rest '
+          + 'would fail somewhere inside a running process instead of here.',
+      );
+    }
   }
   return value as unknown as ProcessPeerStub;
 }
@@ -320,14 +339,21 @@ class PeerProcessHost implements ProcessHost {
       ]);
     } catch (error) {
       this.tokensInUse.delete(params.pid);
-      this._cancel(params.workerKey, placement.peerName);
-      disposeRpcResource(placement.stub);
+      // Awaited, not fired off: a spawn that rejects must mean nothing was
+      // left running, which is what a throw from `openResidentFacet` means on
+      // the other substrate.
+      try { await this._cancel(params.workerKey, placement.peerName); }
+      finally { disposeRpcResource(placement.stub); }
       throw error;
     }
 
     let released = false;
     return {
       started,
+      // The held leg IS the process's residency here. It settles cleanly when
+      // the coordinator releases; anything else is the host going away under a
+      // process that was up, and the fabric ends the process on it.
+      lost: hostLeg.then(() => new Promise<never>(() => {})),
       handleHttpRequest: (request: Request) =>
         routeThroughPeer(placement.stub, params.workerKey, request),
       release: async () => {
@@ -435,12 +461,10 @@ async function routeThroughPeer(
   workerKey: string,
   request: Request,
 ): Promise<Response> {
-  const headers: [string, string][] = [];
-  request.headers.forEach((value, key) => { headers.push([key, value]); });
   const result = await stub._rpcRouteHostedHttp(workerKey, {
     method: request.method,
     url: request.url,
-    headers,
+    headers: headerPairs(request.headers),
     body: request.method === 'GET' || request.method === 'HEAD' ? null : request.body,
   });
   const responseHeaders = new Headers();
@@ -450,4 +474,28 @@ async function routeThroughPeer(
     statusText: result.statusText,
     headers: responseHeaders,
   });
+}
+
+/**
+ * Headers as pairs, with every `Set-Cookie` kept separate.
+ *
+ * Iterating a `Headers` combines same-named fields into one comma-joined
+ * value, and for `Set-Cookie` that is not reversible — `append` cannot split
+ * `a=1; Path=/, b=2; Path=/` back into two cookies, and a browser reading the
+ * merged form sets one malformed cookie instead of two. Every other field
+ * combines by comma legally, so only this one needs the separate accessor.
+ * A user's server setting two cookies must not depend on which substrate its
+ * process happened to run on.
+ */
+export function headerPairs(headers: Headers): [string, string][] {
+  const pairs: [string, string][] = [];
+  headers.forEach((value, key) => {
+    if (key.toLowerCase() !== 'set-cookie') pairs.push([key, value]);
+  });
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const cookies = typeof getSetCookie === 'function'
+    ? getSetCookie.call(headers)
+    : (headers.get('set-cookie') ? [headers.get('set-cookie') as string] : []);
+  for (const cookie of cookies) pairs.push(['set-cookie', cookie]);
+  return pairs;
 }
