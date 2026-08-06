@@ -101,3 +101,15 @@ spilled to `MAIN_BUF`. It is latent rather than constant only because
 The committed `bash.async.wasm` predates the fix and still carries the old
 instrumentation set. Rebuilding needs wasi-sdk-25 + binaryen (see Reproduce
 above); until then the park path in `poll_oneoff` remains as it has been.
+
+Measured 2026-08-05, against the committed binary: bash parks in `fd_read`,
+not `poll_oneoff`. Driving the runner with an open, empty stdin (`read line`,
+`stdinClosed: false`) and logging every arming site, the only park recorded is
+`fd_read` — the interactive read that returns `need-input` and resumes
+correctly on feed. So the un-instrumented unwind is reachable in principle but
+is not on the path this binary takes, which is what "latent" above means. The
+WASI correctness pass of the same date narrowed it further: a clock-only
+`poll_oneoff` now always returns events rather than arming an unwind, so the
+remaining way in is a blockable fd subscription with no clock, which this
+binary services through `fd_read` anyway. The drift is real and still owed a
+rebuild; it is not currently believed to be live.

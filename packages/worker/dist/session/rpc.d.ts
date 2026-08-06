@@ -21,7 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { type RuntimeOpenFlags } from '../runtime/os-contracts.js';
+import { type RuntimeOpenFlags, type VfsAcquireResult } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
@@ -100,6 +100,21 @@ export type FsReadBatchEntry = {
     error: FsReadBatchEntryError;
 };
 export declare function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number>;
+export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], pid?: number): Promise<{
+    id: number;
+    protocol: string;
+}>;
+export declare function _rpcWsPoll(self: RpcHost, id: number, waitMs: number, pid?: number): Promise<unknown[]>;
+export declare function _rpcWsSend(self: RpcHost, id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
+export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, reason?: string, pid?: number): Promise<void>;
+/**
+ * The facet cache-coherence barrier: what changed since `cursor`.
+ *
+ * Returned as payload, never on an Error — custom Error properties do not
+ * survive structured clone across the RPC boundary, so a cursor carried that
+ * way would silently arrive as undefined.
+ */
+export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
 /**
  * Read many ranges in ONE round trip.

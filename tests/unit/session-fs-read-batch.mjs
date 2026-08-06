@@ -190,10 +190,21 @@ function makeHost() {
   );
 
   await assert.rejects(_rpcFsReadBatch(host, [], user.pid), 'an empty batch was accepted');
-  await assert.rejects(
-    _rpcFsReadBatch(host, [{ path: '/home/user/many/f0.txt', offset: 0, length: 16 }]),
-    /process|pid/i,
-    'a batch read without a pid cannot default-open the VFS',
+  // A batch with no pid comes from the host — the SDK, the remote /rpc
+  // dispatcher — not from a process. It reads as the unprivileged session
+  // user, never as the kernel, so a root-only path stays denied.
+  const hostBatch = await _rpcFsReadBatch(
+    host,
+    [
+      { path: '/home/user/many/f0.txt', offset: 0, length: 16 },
+      { path: '/private/root.txt', offset: 0, length: 8 },
+    ],
+  );
+  assert.equal(dec.decode(hostBatch[0].bytes), 'file-0-');
+  assert.match(
+    hostBatch[1].error.code ?? hostBatch[1].error.message,
+    /EACCES/,
+    'a pid-less batch read must not reach a root-only file',
   );
 }
 

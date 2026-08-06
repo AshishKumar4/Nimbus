@@ -9,6 +9,7 @@
 // user's own real provider key is not ours and goes to that provider.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { createCurlCommand } from '../../packages/worker/src/substrate/lifo/commands/net/curl.ts';
 import { handleSessionAiRequest, storeSessionAiCredential } from '../../packages/worker/src/session/ai.ts';
@@ -60,12 +61,12 @@ function installShims(env) {
     },
   };
   const factory = new Function(
-    '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest', '__supervisor',
+    '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest', '__supervisor',
     'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + generateShimsCode() + '\n;return null;',
+    '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() + '\n;return null;',
   );
   factory(
-    {}, {}, {}, {}, {}, supervisor,
+    {}, {}, {}, {}, supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     '/home/user', [], env, '/home/user/main.mjs', '/home/user',
   );
