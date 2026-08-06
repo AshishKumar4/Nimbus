@@ -39,6 +39,7 @@ container sandbox ([where Nimbus fits](/docs/start/where-it-fits/)).
 | `node`/`bun` REPL declarations don't persist | workerd CSP; scripts unaffected; Python/Ruby REPLs fully stateful |
 | 75,000+-object clones | index-pack CPU headroom in progress |
 | git transport | HTTPS only, no SSH |
+| A native wasm binary's linear memory | 128 MiB. Past it `malloc` returns NULL and the program reports its own allocation failure, instead of the session dying without one |
 | opencode TUI | serve half boots and streams SSE; attach half renders frames from a facet with its own memory envelope, still hardening |
 | Hosted demo | evaluation only — no SLA, may be reset, not for secrets |
 
