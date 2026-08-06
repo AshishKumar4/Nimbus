@@ -21,25 +21,51 @@ function __nimbusVfsPathKey(path) {
 }
 
 /**
+ * Errno values that are the filesystem ANSWERING the syscall: the path is not
+ * there, it is a directory, the descriptor is closed. The operation did not
+ * apply, no bytes were in flight, and nothing the program believes is saved
+ * has been lost. Node hands these to the caller and lets it decide — which is
+ * why \`fs.truncate(missing).catch(() => {})\` is ordinary, correct code.
+ *
+ * Everything else — EIO, a dropped RPC, a quota, an authority that died, an
+ * error carrying no errno at all — is not an answer. It means the outcome of
+ * a write is UNKNOWN, and that is a durability event no matter what the
+ * program caught. Unrecognised is treated as durability-class on purpose: the
+ * safe direction is to surface.
+ */
+const __NIMBUS_SYSCALL_VERDICT_CODES = new Set([
+  "ENOENT", "EEXIST", "EISDIR", "ENOTDIR", "ENOTEMPTY",
+  "EBADF", "EINVAL", "EPERM", "EACCES", "ELOOP", "ENAMETOOLONG",
+]);
+
+function __nimbusIsDurabilityFailure(error) {
+  const code = error && typeof error === "object" ? error.code : undefined;
+  return typeof code !== "string" || !__NIMBUS_SYSCALL_VERDICT_CODES.has(code);
+}
+
+/**
  * Order a mutation behind the others queued for the same path.
  *
- * \`retainFailure\` decides whether a rejection is ALSO reported to the drain,
- * and it is off by default because the tail handler below already marks
- * \`result\` handled — which suppresses the platform's own
- * \`unhandledrejection\` signal, so retention is the only thing that can
- * report a failure nobody is waiting for.
+ * A rejection is ALSO reported to the drain when it is durability-class. That
+ * second channel is not redundancy: the tail handler below marks \`result\`
+ * handled, which suppresses the platform's own \`unhandledrejection\` signal,
+ * so retention is the only thing that can reach a durability boundary. Losing
+ * it is how a handler whose write failed still answers 200 — silent wrong
+ * data, which is what this ledger exists to prevent.
  *
- * Retain it when the program has already been told the operation succeeded
- * and will therefore never see the error: a deferred persistence flush behind
- * a sync write (\`__nimbusFlushVfsWrite\`) is that case, and losing it silently
- * would be lost data.
+ * What must NOT be retained is a plain syscall verdict. The queue used to
+ * retain those too, so an error the program had already caught was delivered
+ * a second time at teardown and killed the process: \`opencode --help\`
+ * rendered its whole help surface and then exited 1 on the
+ * \`fs.truncate(logfile).catch(() => {})\` in its logger init.
  *
- * Do NOT retain it when the mutation IS the program's syscall and this
- * promise is what the program awaits — a truncate, a positional write. Node
- * rejects those and lets the caller decide; retaining as well kills the
- * process over an error the program already caught.
+ * The seam is the ERROR, not the call site. The same source line —
+ * \`fs.promises.truncate(p).catch(() => {})\` — must exit 0 when the file was
+ * simply absent, and must fail the response when the authority could not say
+ * whether the write landed. No per-call-site flag can express that, because
+ * both cases arrive through the same call site.
  */
-function __nimbusQueueVfsMutation(path, mutation, retainFailure = false) {
+function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   const key = __nimbusVfsPathKey(path);
   const previous = __vfsMutationTails.get(key) || Promise.resolve();
   const result = previous.then(mutation);
@@ -54,7 +80,9 @@ function __nimbusQueueVfsMutation(path, mutation, retainFailure = false) {
     }
   };
   tail = result.then(clearTail, (error) => {
-    if (retainFailure && !__nimbusHasPendingVfsMutationFailure) {
+    if (retainFailure
+        && __nimbusIsDurabilityFailure(error)
+        && !__nimbusHasPendingVfsMutationFailure) {
       __nimbusHasPendingVfsMutationFailure = true;
       __nimbusPendingVfsMutationFailure = error;
     }
