@@ -124,7 +124,8 @@ async function mintSessionFailure({ status, body = '', token }) {
   assert.match(message, /401/);
   assert.match(message, /rejected this probe's bearer token/);
   assert.match(message, /JWT_SECRET/);
-  assert.match(message, /staging-target\.mjs token/, 'the message says how to re-mint');
+  assert.match(message, /_staging-target\.mjs token/, 'the message says how to re-mint for staging');
+  assert.match(message, /_throwaway-target\.mjs token --name/, 'and for a throwaway');
   console.log('  [7] a rejected token is diagnosed as a rotated secret, with the way out');
 }
 
