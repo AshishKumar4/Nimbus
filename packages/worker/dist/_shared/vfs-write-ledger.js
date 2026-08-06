@@ -20,7 +20,26 @@ function __nimbusVfsPathKey(path) {
   return String(path).replace(/^\\/+/, "");
 }
 
-function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
+/**
+ * Order a mutation behind the others queued for the same path.
+ *
+ * \`retainFailure\` decides whether a rejection is ALSO reported to the drain,
+ * and it is off by default because the tail handler below already marks
+ * \`result\` handled — which suppresses the platform's own
+ * \`unhandledrejection\` signal, so retention is the only thing that can
+ * report a failure nobody is waiting for.
+ *
+ * Retain it when the program has already been told the operation succeeded
+ * and will therefore never see the error: a deferred persistence flush behind
+ * a sync write (\`__nimbusFlushVfsWrite\`) is that case, and losing it silently
+ * would be lost data.
+ *
+ * Do NOT retain it when the mutation IS the program's syscall and this
+ * promise is what the program awaits — a truncate, a positional write. Node
+ * rejects those and lets the caller decide; retaining as well kills the
+ * process over an error the program already caught.
+ */
+function __nimbusQueueVfsMutation(path, mutation, retainFailure = false) {
   const key = __nimbusVfsPathKey(path);
   const previous = __vfsMutationTails.get(key) || Promise.resolve();
   const result = previous.then(mutation);
