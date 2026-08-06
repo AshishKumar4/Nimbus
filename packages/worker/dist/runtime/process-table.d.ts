@@ -1,4 +1,4 @@
-import type { VfsCred } from './os-contracts.js';
+import { type VfsCred } from './os-contracts.js';
 /**
  * ProcessTable — PID allocation and process lifecycle state.
  *
@@ -17,6 +17,8 @@ export interface ProcessEntry {
     startTime: number;
     endTime: number | null;
     cred: VfsCred;
+    /** Spawning process, when the spawn declared one. Roots have none. */
+    parentPid?: number;
     /** Explicit long-running flag set when a command is handed to a
      *  long-lived Worker Loader or shell execution path. */
     longRunning?: boolean;
@@ -77,6 +79,15 @@ export declare class ProcessTable {
     get(pid: number): ProcessEntry | undefined;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
+    /**
+     * Every process spawned under `pid`, transitively, oldest first.
+     *
+     * Output attribution needs this: a command's console output can land in a
+     * child's log ring (an npm bin, a facet-backed runtime) rather than on the
+     * caller's streams, and a start-time window is not a safe substitute when
+     * several commands run concurrently in one session.
+     */
+    descendantsOf(pid: number): ProcessEntry[];
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge?: number): number;
     get stats(): {
