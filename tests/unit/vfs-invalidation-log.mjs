@@ -19,6 +19,11 @@ const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const vfs = rawVfs.as(CRED_KERNEL);
 const enc = new TextEncoder();
 
+/** The delta reports {path, rev} entries; most assertions only need names. */
+const names = (acq) => acq.paths.map((entry) => entry.path);
+/** The revision a single path was reported at, or undefined when absent. */
+const revOf = (acq, path) => acq.paths.find((entry) => entry.path === path)?.rev;
+
 vfs.mkdir('/home/user/d', { recursive: true });
 
 // An unknown epoch cannot be repaired incrementally: the caller's revisions
@@ -40,8 +45,13 @@ assert.deepEqual(acq.paths, [], 'no writes since cursor -> empty delta');
 vfs.writeFile('/home/user/d/f.txt', enc.encode('x'));
 acq = rawVfs.invalidatedSince(epoch, first.rev);
 assert.equal(acq.poison, false);
-assert.ok(acq.paths.includes('home/user/d/f.txt'), 'mutated path in delta');
-assert.ok(acq.paths.includes('home/user/d'), 'parent dir in delta');
+assert.ok(names(acq).includes('home/user/d/f.txt'), 'mutated path in delta');
+assert.ok(names(acq).includes('home/user/d'), 'parent dir in delta');
+
+// Every reported path carries the revision it was last mutated at. Without
+// it a facet cannot tell its own flush from a peer's write to the same path,
+// so it drops every cell it just authored — a self-inflicted cold cache.
+assert.equal(revOf(acq, 'home/user/d/f.txt'), acq.rev, 'path carries its revision');
 
 // Re-acquiring at the returned cursor is empty — the delta is consumed.
 assert.deepEqual(
@@ -50,17 +60,38 @@ assert.deepEqual(
   'advanced cursor -> empty delta',
 );
 
+// A path written twice inside one window reports its NEWEST revision. A
+// caller stamped at the older one must still evict, so reporting the first
+// would hand it a stale byte.
+{
+  const before = acq.rev;
+  vfs.writeFile('/home/user/d/f.txt', enc.encode('y'));
+  const firstWrite = rawVfs.invalidatedSince(epoch, before).rev;
+  vfs.writeFile('/home/user/d/f.txt', enc.encode('z'));
+  const twice = rawVfs.invalidatedSince(epoch, before);
+  assert.equal(
+    names(twice).filter((n) => n === 'home/user/d/f.txt').length,
+    1,
+    'a path appears once per delta',
+  );
+  assert.ok(
+    revOf(twice, 'home/user/d/f.txt') > firstWrite,
+    'a repeated write reports its newest revision',
+  );
+  acq = twice;
+}
+
 // rename bypasses the writeBatch funnel. A hook sited there would miss it.
 const beforeRename = acq.rev;
 vfs.rename('home/user/d/f.txt', 'home/user/d/g.txt');
 acq = rawVfs.invalidatedSince(epoch, beforeRename);
-assert.ok(acq.paths.includes('home/user/d/g.txt'), 'rename destination in delta');
+assert.ok(names(acq).includes('home/user/d/g.txt'), 'rename destination in delta');
 
 // chmod likewise bypasses the funnel.
 const beforeChmod = acq.rev;
 vfs.chmod('home/user/d/g.txt', 0o600);
 assert.ok(
-  rawVfs.invalidatedSince(epoch, beforeChmod).paths.includes('home/user/d/g.txt'),
+  names(rawVfs.invalidatedSince(epoch, beforeChmod)).includes('home/user/d/g.txt'),
   'chmod in delta',
 );
 
@@ -106,7 +137,7 @@ console.log('vfs-invalidation-log: all assertions passed');
   assert.deepEqual(fresh.paths, [], 'fresh cursor is clean');
   v2.writeFile(`/${deep}/after.txt`, enc.encode('q'));
   assert.ok(
-    raw2.invalidatedSince(fresh.epoch, fresh.rev).paths.includes(`${deep}/after.txt`),
+    names(raw2.invalidatedSince(fresh.epoch, fresh.rev)).includes(`${deep}/after.txt`),
     'log still tracks writes after eviction',
   );
 }

@@ -56,7 +56,7 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     headers: [string, string][];
     body: ArrayBuffer | null;
 }>;
-export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<void>;
+export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<number>;
 export declare function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any>;
 export declare function _rpcLstat(self: RpcHost, path: string, pid?: number): Promise<any>;
 export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean>;

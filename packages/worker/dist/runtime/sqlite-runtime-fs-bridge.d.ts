@@ -17,7 +17,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     writeFile(path: string, bytes: string | Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;
-    }): Promise<void>;
+    }): Promise<number>;
     readRange(path: string, offset: number, length: number, options?: {
         followSymlinks?: boolean;
     }): Promise<Uint8Array | null>;
