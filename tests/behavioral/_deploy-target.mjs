@@ -240,15 +240,15 @@ export const MACHINE_STATE_DIR = join(
  * because every client holding the old secret starts failing every
  * session-creating request with a bare 401.
  */
-export function assertCredentialHeld({ name, hasSecret, provisioned, rotate }) {
+export function assertCredentialHeld({ name, statePath, hasSecret, provisioned, rotate }) {
   if (rotate || hasSecret || !provisioned) return;
   throw new Error(
-    `${name} is already deployed, but this machine holds no signing secret for it.\n`
-    + `Deploying now would mint a new one and push it, which invalidates every token\n`
-    + `minted from the old secret — including any suite running against ${name} right now.\n`
-    + `  • to recover the secret: copy this machine's ${MACHINE_STATE_DIR} state from\n`
-    + `    wherever the environment was last deployed from;\n`
-    + `  • to rotate deliberately: re-run with --rotate-secrets.`,
+    `${name} is already deployed, but there is no live signing secret for it at\n`
+    + `${statePath}. Deploying now would mint a new one and push it, which invalidates\n`
+    + `every token minted from the old secret — including the ones any suite running\n`
+    + `against ${name} right now is holding.\n`
+    + `  • to keep those working: restore that record from whatever last deployed ${name};\n`
+    + `  • to take the name over deliberately: re-run with --rotate-secrets.`,
   );
 }
 

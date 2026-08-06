@@ -25,33 +25,42 @@ import { MACHINE_STATE_DIR, ROOT, assertCredentialHeld } from '../behavioral/_de
   console.log('  [1] shared-environment state is machine state, not per-checkout state');
 }
 
+const STATE_PATH = '/home/agent/.local/state/nimbus/staging-target.json';
+
 // [2] A redeploy that holds the secret reuses it — the ordinary case,
 // and the one that keeps other clients' tokens valid across a deploy.
 {
-  assertCredentialHeld({ name: 'nimbus-probe-staging', hasSecret: true, provisioned: true, rotate: false });
+  assertCredentialHeld({
+    name: 'nimbus-probe-staging', statePath: STATE_PATH, hasSecret: true, provisioned: true, rotate: false,
+  });
   console.log('  [2] a redeploy that holds the secret is allowed to proceed');
 }
 
 // [3] First provision: nothing is deployed, so there is nobody to break.
 {
-  assertCredentialHeld({ name: 'nimbus-probe-staging', hasSecret: false, provisioned: false, rotate: false });
+  assertCredentialHeld({
+    name: 'nimbus-probe-staging', statePath: STATE_PATH, hasSecret: false, provisioned: false, rotate: false,
+  });
   console.log('  [3] first provision mints freely');
 }
 
-// [4] The hazard itself: the Worker exists, this machine lost its
-// secret, and nobody asked for a rotation. Deploying would push a new
-// secret and 401 every in-flight client. It has to stop, and say why.
+// [4] The hazard itself: the Worker exists, the record this machine
+// would have kept its secret in is gone, and nobody asked for a
+// rotation. Deploying would push a new secret and 401 every in-flight
+// client. It has to stop, and say why.
 {
   assert.throws(
     () => assertCredentialHeld({
       name: 'nimbus-probe-staging',
+      statePath: STATE_PATH,
       hasSecret: false,
       provisioned: true,
       rotate: false,
     }),
     (e) => {
       assert.match(e.message, /nimbus-probe-staging is already deployed/);
-      assert.match(e.message, /invalidates every token/);
+      assert.match(e.message, /invalidates/);
+      assert.ok(e.message.includes(STATE_PATH), 'the message names the record it looked for');
       assert.match(e.message, /--rotate-secrets/);
       return true;
     },
@@ -63,8 +72,32 @@ import { MACHINE_STATE_DIR, ROOT, assertCredentialHeld } from '../behavioral/_de
 // [5] Rotation stays available — it is a deliberate operation, not an
 // accident.
 {
-  assertCredentialHeld({ name: 'nimbus-probe-staging', hasSecret: false, provisioned: true, rotate: true });
+  assertCredentialHeld({
+    name: 'nimbus-probe-staging', statePath: STATE_PATH, hasSecret: false, provisioned: true, rotate: true,
+  });
   console.log('  [5] --rotate-secrets still rotates');
+}
+
+// [6] The same rule guards throwaways, which is where it matters most
+// now that agents are steered towards them: `up --name X` against a
+// name another checkout is mid-suite on stops instead of taking it.
+{
+  const throwawayState = '/home/agent/Nimbus-wt/other/.wrangler/throwaway-targets/nimbus-tw-shared.json';
+  assert.throws(
+    () => assertCredentialHeld({
+      name: 'nimbus-tw-shared',
+      statePath: throwawayState,
+      hasSecret: false,
+      provisioned: true,
+      rotate: false,
+    }),
+    (e) => {
+      assert.match(e.message, /nimbus-tw-shared is already deployed/);
+      assert.ok(e.message.includes(throwawayState));
+      return true;
+    },
+  );
+  console.log('  [6] a throwaway name already in use is not taken over silently');
 }
 
 // The driver half: when a stale credential does reach a probe, the
@@ -85,34 +118,34 @@ async function mintSessionFailure({ status, body = '', token }) {
   );
 }
 
-// [6] 401 while presenting a bearer token is the rotation signature.
+// [7] 401 while presenting a bearer token is the rotation signature.
 {
   const message = await mintSessionFailure({ status: 401, body: 'unauthorized', token: 'stale.jwt.here' });
   assert.match(message, /401/);
   assert.match(message, /rejected this probe's bearer token/);
   assert.match(message, /JWT_SECRET/);
   assert.match(message, /staging-target\.mjs token/, 'the message says how to re-mint');
-  console.log('  [6] a rejected token is diagnosed as a rotated secret, with the way out');
+  console.log('  [7] a rejected token is diagnosed as a rotated secret, with the way out');
 }
 
-// [7] 401 with no credential at all is a different mistake and gets a
+// [8] 401 with no credential at all is a different mistake and gets a
 // different answer.
 {
   const message = await mintSessionFailure({ status: 401 });
   assert.match(message, /no probe credential was sent/);
   assert.match(message, /NIMBUS_PROBE_TOKEN/);
   assert.doesNotMatch(message, /rotated|JWT_SECRET/, 'do not blame rotation when nothing was sent');
-  console.log('  [7] a missing credential is diagnosed as a missing credential');
+  console.log('  [8] a missing credential is diagnosed as a missing credential');
 }
 
-// [8] Anything else keeps reporting the target's own answer — the
+// [9] Anything else keeps reporting the target's own answer — the
 // diagnosis must not swallow a real failure.
 {
   const message = await mintSessionFailure({ status: 503, body: 'no capacity for new sessions', token: 'good.jwt' });
   assert.match(message, /503/);
   assert.match(message, /no capacity for new sessions/);
   assert.doesNotMatch(message, /bearer token/);
-  console.log('  [8] a non-auth failure still reports what the target said');
+  console.log('  [9] a non-auth failure still reports what the target said');
 }
 
 console.log('probe-credential-rotation: all tests passed');
