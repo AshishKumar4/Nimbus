@@ -233,7 +233,7 @@ export async function _rpcWriteFile(self, path, content, pid) {
     // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
-    await runtimeFs(self, pid).writeFile(path, content);
+    return runtimeFs(self, pid).writeFile(path, content);
 }
 export async function _rpcStat(self, path, pid) {
     return runtimeFs(self, pid).stat(path);

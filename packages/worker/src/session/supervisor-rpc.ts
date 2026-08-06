@@ -37,6 +37,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '../observability/diag-counters.j
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { useRpcResource } from '../_shared/rpc-dispose.js';
+import type { VfsAcquireResult } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '../_shared/w7-frame.js';
@@ -159,7 +160,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._getStub()._rpcReadFileBytes(path, this._pid()));
   }
 
-  async writeFile(path: string, content: string | Uint8Array): Promise<void> {
+  async writeFile(path: string, content: string | Uint8Array): Promise<number> {
     // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
     // string-only, which forced node-shims.ts:writeFileSync to UTF-8-
     // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
@@ -248,9 +249,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * and enveloping the existing returns would break `useRpcResource`
    * disposal, which targets the returned value.
    */
-  async fsAcquire(epoch: string | null, cursor: number): Promise<{
-    epoch: string; rev: number; paths: string[]; poison: boolean;
-  }> {
+  async fsAcquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult> {
     return this._call(this._getStub()._rpcFsAcquire(epoch, cursor, this._pid()));
   }
 

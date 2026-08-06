@@ -106,10 +106,15 @@ export interface RuntimeFileHandle {
 export interface RuntimeFsBridge {
   stat(path: string, options?: { followSymlinks?: boolean }): Promise<RuntimeVfsStat | null>;
   readFile(path: string, options?: { followSymlinks?: boolean }): Promise<Uint8Array | null>;
+  /**
+   * Whole-file write. Returns the revision the write produced, so a caller
+   * holding the bytes it just sent can tell its own mutation apart from a
+   * peer's when {@link RuntimeFsBridge.acquire} reports the path back.
+   */
   writeFile(path: string, bytes: string | Uint8Array, options?: {
     createParents?: boolean;
     expectedRevision?: number;
-  }): Promise<void>;
+  }): Promise<number>;
   /** Stateless ranged read: clamped at EOF; null when the path is absent. */
   readRange(path: string, offset: number, length: number, options?: { followSymlinks?: boolean }): Promise<Uint8Array | null>;
   /**
@@ -161,11 +166,23 @@ export interface RuntimeFsBridge {
   subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
 }
 
+/**
+ * One path in an {@link RuntimeFsBridge.acquire} delta, with the revision it
+ * was last mutated at. The revision is what makes the delta usable by the
+ * process that caused it: a caller holding the revision its own write
+ * produced keeps that cell, while a peer's later write to the same path
+ * reports a higher revision and still invalidates.
+ */
+export interface VfsInvalidatedPath {
+  path: string;
+  rev: number;
+}
+
 /** Result of a {@link RuntimeFsBridge.acquire} barrier. */
 export interface VfsAcquireResult {
   epoch: string;
   rev: number;
-  paths: string[];
+  paths: VfsInvalidatedPath[];
   poison: boolean;
 }
 

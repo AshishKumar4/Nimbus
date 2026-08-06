@@ -1117,6 +1117,14 @@ export class SqliteVFS {
      * incarnation (its revisions are unrelated to ours), or a cursor older
      * than the retained log (entries it needed have been dropped). Both
      * degrade to a cold cache, never to a stale byte.
+     *
+     * Each path carries the revision it was last mutated at inside the window,
+     * not just its name. That is what lets a caller keep a cell it wrote
+     * itself: it holds the revision its own write produced, so a report at
+     * that same revision is its own mutation coming back, while a peer's
+     * later write to the same path reports a HIGHER revision and still
+     * invalidates. A name alone cannot separate those two, and the difference
+     * between them is a whole resident set thrown away on every flush.
      */
     invalidatedSince(epoch, cursor) {
         const rev = this._revision;
@@ -1131,12 +1139,15 @@ export class SqliteVFS {
         if (cursor < oldest - 1) {
             return { epoch: this._epoch, rev, paths: [], poison: true };
         }
-        const paths = new Set();
+        // The log is append-ordered by revision, so the last entry for a path
+        // is its newest — the one the caller has to be at or past to keep it.
+        const latest = new Map();
         for (const entry of this._invalidations) {
             if (entry.rev > cursor)
-                paths.add(entry.path);
+                latest.set(entry.path, entry.rev);
         }
-        return { epoch: this._epoch, rev, paths: [...paths], poison: false };
+        const paths = [...latest].map(([path, pathRev]) => ({ path, rev: pathRev }));
+        return { epoch: this._epoch, rev, paths, poison: false };
     }
     acquireExclusiveMutation(path, options = {}) {
         let root = normalizeVfsPath(path);

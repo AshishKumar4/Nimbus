@@ -284,14 +284,14 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
     }
 }
 
-export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<void> {
+export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<number> {
     // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
     // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
     // structured-clone preserves Uint8Array across the boundary; structured-
     // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
-    await runtimeFs(self, pid).writeFile(path, content);
+    return runtimeFs(self, pid).writeFile(path, content);
 }
 
 export async function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any> {
