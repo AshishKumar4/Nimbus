@@ -300,10 +300,23 @@ const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // main / 256 KiB slots carry 300×/10× margin while keeping a full
 // instance ~17 MiB — several forks fit the ~180-200 MiB facet ceiling.
 const MAIN_SIZE = 8 << 20, SLOT_SIZE = 256 << 10, NSLOT = 32;
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70 };
-// Per-file times are not part of the VFS snapshot; every inode reports the
-// isolate boot instant (same discipline as the JSPI shim's seeded "now").
-const BOOT_NS = BigInt(Date.now()) * 1000000n;
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70 };
+// WASI clock ids. MONOTONIC and the two CPUTIME clocks are answered from a
+// monotonic source; an id outside this set is EINVAL, never a silent realtime
+// reading — a guest that asks for monotonic and receives wall time computes
+// negative durations the first time the wall clock steps backwards.
+const CLOCK_REALTIME = 0, CLOCK_MONOTONIC = 1, CLOCK_PROCESS_CPUTIME = 2, CLOCK_THREAD_CPUTIME = 3;
+function realtimeNs() { return BigInt(Date.now()) * 1000000n; }
+function monotonicNs() {
+  const ms = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  return BigInt(Math.floor(ms * 1000)) * 1000n;
+}
+// null for an unknown id, so callers answer EINVAL rather than inventing a time.
+function clockNs(id) {
+  if (id === CLOCK_REALTIME) return realtimeNs();
+  if (id === CLOCK_MONOTONIC || id === CLOCK_PROCESS_CPUTIME || id === CLOCK_THREAD_CPUTIME) return monotonicNs();
+  return null;
+}
 class Exit { constructor(c) { this.code = c; } }
 
 let S = null;  // active session state; persists across submits on the warm isolate
@@ -349,6 +362,14 @@ function newSession(args) {
     files: new Map(), dirs: new Set(), modes: new Map(),
     written: new Set(), deleted: new Set(),
     dirsCreated: new Set(), dirsDeleted: new Set(), modesChanged: new Map(),
+    // vfsPath → mtime ns. The snapshot carries no times, so an inode the
+    // session did not touch reports sessionNs: older than anything written
+    // here, which is what makes 'is the target newer than its source' — the
+    // question make(1) and every incremental build asks — answerable.
+    times: new Map(), sessionNs: realtimeNs(),
+    // vfsPath → target string, stored verbatim per POSIX: a symlink is a dumb
+    // string resolved at lookup time, not a pointer to an inode.
+    symlinks: new Map(), symlinksCreated: new Map(),
   };
   const snap = args.fsSnapshot || { files: {}, dirs: [], modes: {} };
   for (const [path, b64] of Object.entries(snap.files || {})) fs.files.set(norm(path), { bytes: b64ToBytes(b64) });
@@ -414,11 +435,35 @@ function takeUpTo(src, max) {
   for (const p of parts) { o.set(p, x); x += p.length; }
   return o;
 }
+// POSIX readv is ONE read of up to the summed length, scattered across the
+// buffers in order — not a read of the first buffer. Zero-length entries are
+// dropped so they never terminate the scatter early.
+// A poll park has no destination buffer — it resumes into a fresh poll call.
+const EMPTY_IOV = { list: [], total: 0 };
+function readIovs(dv, iovs, n) {
+  const list = [];
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const ptr = dv.getUint32(iovs + i * 8, true), len = dv.getUint32(iovs + i * 8 + 4, true);
+    if (len > 0) { list.push({ ptr, len }); total += len; }
+  }
+  return { list, total };
+}
+function scatter(u8, iov, bytes) {
+  let off = 0;
+  for (const b of iov.list) {
+    if (off >= bytes.length) break;
+    const n = Math.min(b.len, bytes.length - off);
+    u8.set(bytes.subarray(off, off + n), b.ptr);
+    off += n;
+  }
+  return off;
+}
 function wakePipe(s, pp) {
   while (pp.readW.length && (pp.queued > 0 || pp.writers === 0)) {
     const w = pp.readW.shift(); const proc = w.proc; const req = proc.ctx.pipeReq;
-    const bytes = pp.queued > 0 ? takeUpTo(pp, req.len) : new Uint8Array(0);
-    proc.pendingRead = { ptr: req.ptr, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
+    const bytes = pp.queued > 0 ? takeUpTo(pp, req.iov.total) : new Uint8Array(0);
+    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
 }
@@ -426,8 +471,8 @@ function wakeStdin(s) {
   const st = s.stdin;
   while (st.waiters.length && (st.queued > 0 || st.closed)) {
     const w = st.waiters.shift(); const proc = w.proc; const req = proc.ctx.pipeReq;
-    const bytes = st.queued > 0 ? takeUpTo(st, req.len) : new Uint8Array(0);
-    proc.pendingRead = { ptr: req.ptr, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
+    const bytes = st.queued > 0 ? takeUpTo(st, req.iov.total) : new Uint8Array(0);
+    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
 }
@@ -458,6 +503,42 @@ function effMode(s, path) {
   return inodeExists(s, path) ? 0 : 7;
 }
 function parentOf(path) { const i = path.lastIndexOf('/'); return i < 0 ? '' : path.slice(0, i); }
+// Rewrite the leftmost symlink on the path and repeat, so both intermediate
+// components and a terminal link resolve. A target starting with '/' is
+// root-anchored; anything else is relative to the link's own directory.
+// SYMLOOP_MAX bounds it — a cycle answers ELOOP rather than hanging.
+function followPath(s, path) {
+  let cur = path;
+  for (let hops = 0; hops < 32; hops++) {
+    if (!s.fs.symlinks.size) return { path: cur, errno: 0 };
+    const parts = cur.split('/');
+    let prefix = '';
+    let rewrote = false;
+    for (let i = 0; i < parts.length; i++) {
+      prefix = prefix ? prefix + '/' + parts[i] : parts[i];
+      const target = s.fs.symlinks.get(prefix);
+      if (target === undefined) continue;
+      const base = target.startsWith('/') ? norm(target) : norm(parentOf(prefix) + '/' + target);
+      const rest = parts.slice(i + 1).join('/');
+      cur = rest ? norm(base + '/' + rest) : base;
+      rewrote = true;
+      break;
+    }
+    if (!rewrote) return { path: cur, errno: 0 };
+  }
+  return { path: cur, errno: E.LOOP };
+}
+// Resolve only the directories leading to the final component. This is what
+// the mutating ops want: rm dir/link must delete the link, not its target,
+// while dir itself may still be reached through a link.
+function followParents(s, path) {
+  const parent = parentOf(path);
+  if (!parent) return { path, errno: 0 };
+  const r = followPath(s, parent);
+  if (r.errno) return r;
+  const name = path.slice(parent.length + 1);
+  return { path: r.path ? r.path + '/' + name : name, errno: 0 };
+}
 // Every ancestor dir on the way to the target needs the search (x) bit.
 function checkTraversal(s, path) {
   const parts = path.split('/');
@@ -477,19 +558,22 @@ function checkParentWritable(s, path) {
 function recordDirAdded(s, path) {
   s.fs.dirs.add(path); s.fs.dirsDeleted.delete(path); s.fs.dirsCreated.add(path);
   if (!s.fs.modes.has(path)) s.fs.modes.set(path, 7);
+  touchPath(s, path);
 }
 function recordDirRemoved(s, path) {
-  s.fs.dirs.delete(path); s.fs.modes.delete(path);
+  s.fs.dirs.delete(path); s.fs.modes.delete(path); s.fs.times.delete(path);
   if (s.fs.dirsCreated.has(path)) s.fs.dirsCreated.delete(path);
   else s.fs.dirsDeleted.add(path);
 }
 function recordFileRemoved(s, path) {
   s.fs.files.delete(path); s.fs.written.delete(path); s.fs.modes.delete(path);
+  s.fs.times.delete(path); s.fs.symlinks.delete(path); s.fs.symlinksCreated.delete(path);
   s.fs.deleted.add(path);
 }
 function markWritten(s, path) {
   s.fs.written.add(path); s.fs.deleted.delete(path);
   if (!s.fs.modes.has(path)) s.fs.modes.set(path, 6);
+  touchPath(s, path);
   const parts = path.split('/');
   for (let i = 1; i < parts.length; i++) {
     const dir = parts.slice(0, i).join('/');
@@ -505,14 +589,19 @@ function fileWrite(s, entry, path, pos, bytes) {
   entry.bytes.set(bytes, pos);
   markWritten(s, path);
 }
-function statBuf(dv, u8, buf, filetype, size) {
+function mtimeNs(s, path) {
+  const t = s.fs.times.get(path);
+  return t === undefined ? s.fs.sessionNs : t;
+}
+function touchPath(s, path) { s.fs.times.set(path, realtimeNs()); }
+function statBuf(dv, u8, buf, filetype, size, timeNs) {
   u8.fill(0, buf, buf + 64);
   dv.setUint8(buf + 16, filetype);
   dv.setBigUint64(buf + 24, 1n, true);
   dv.setBigUint64(buf + 32, BigInt(size), true);
-  dv.setBigUint64(buf + 40, BOOT_NS, true);
-  dv.setBigUint64(buf + 48, BOOT_NS, true);
-  dv.setBigUint64(buf + 56, BOOT_NS, true);
+  dv.setBigUint64(buf + 40, timeNs, true);
+  dv.setBigUint64(buf + 48, timeNs, true);
+  dv.setBigUint64(buf + 56, timeNs, true);
 }
 
 // Shared WASI surface over the process fd table + file layer. The io
@@ -553,13 +642,47 @@ function makeResolve(s, pathBase, absRoots) {
     return joined;
   };
 }
+// The rest of the preview1 surface. These are NOT stubs that claim success:
+// each one either is genuinely a no-op on an in-memory filesystem, or answers
+// ENOSYS. The old blanket fallback returned ESUCCESS for all of them without
+// writing their out-params, so a guest read uninitialised memory and believed
+// the call had worked — silent wrong data, the worst failure available.
+function makeUnsupported(s) {
+  const nosys = (name) => () => { s.missingWasi.add(name); return E.NOSYS; };
+  return {
+    // Every write is already durable in the session's own heap, so there is
+    // nothing to flush and success is the honest answer.
+    fd_sync: () => 0,
+    fd_datasync: () => 0,
+    fd_advise: () => 0,
+    // One process runs at a time under this scheduler; a yield has nothing to
+    // yield to that the caller has not already reached.
+    sched_yield: () => 0,
+    fd_pread: nosys('fd_pread'),
+    fd_pwrite: nosys('fd_pwrite'),
+    fd_allocate: nosys('fd_allocate'),
+    fd_filestat_set_size: nosys('fd_filestat_set_size'),
+    fd_filestat_set_times: nosys('fd_filestat_set_times'),
+    fd_fdstat_set_rights: nosys('fd_fdstat_set_rights'),
+    proc_raise: nosys('proc_raise'),
+    sock_send: nosys('sock_send'),
+    sock_recv: nosys('sock_recv'),
+    sock_shutdown: nosys('sock_shutdown'),
+  };
+}
 function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
   const resolve = makeResolve(s, pathBase, absRoots);
   return {
+    ...makeUnsupported(s),
     fd_prestat_get: (fd, buf) => { if (fd === 3) { DV().setUint8(buf, 0); DV().setUint32(buf + 4, 1, true); return 0; } return E.BADF; },
     fd_prestat_dir_name: (fd, path, _plen) => { if (fd === 3) { U8()[path] = 0x2f; return 0; } return E.BADF; },
-    path_open: (dirfd, _dirflags, pathPtr, pathLen, oflags, rightsBase, _ri, fdflags, retPtr) => {
-      const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
+    path_open: (dirfd, dirflags, pathPtr, pathLen, oflags, rightsBase, _ri, fdflags, retPtr) => {
+      const raw = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
+      // SYMLINK_FOLLOW (lookupflags bit 0). Without it only the leading
+      // directories resolve, so O_NOFOLLOW opens the link itself.
+      const r = (dirflags & 1) !== 0 ? followPath(s, raw) : followParents(s, raw);
+      if (r.errno) return r.errno;
+      const path = r.path;
       const dv = DV();
       if (path === 'dev/null' || path === 'dev/tty') {
         const fd = lowestFd(proc); proc.fds.set(fd, { kind: path === 'dev/tty' ? 'tty' : 'null' });
@@ -609,30 +732,53 @@ function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
     },
     fd_filestat_get: (fd, buf) => {
       const e = proc.fds.get(fd);
-      if (e && e.kind === 'file') { const f = fileLookup(s, e.path); statBuf(DV(), U8(), buf, 4, f ? f.bytes.length : 0); return 0; }
-      if (e && (e.kind === 'dir' || e.kind === 'preopen')) { statBuf(DV(), U8(), buf, 3, 0); return 0; }
-      statBuf(DV(), U8(), buf, e && (e.kind === 'stdin' || e.kind === 'stdout' || e.kind === 'stderr' || e.kind === 'tty') ? 2 : 0, 0);
+      if (e && e.kind === 'file') { const f = fileLookup(s, e.path); statBuf(DV(), U8(), buf, 4, f ? f.bytes.length : 0, mtimeNs(s, e.path)); return 0; }
+      if (e && (e.kind === 'dir' || e.kind === 'preopen')) { statBuf(DV(), U8(), buf, 3, 0, mtimeNs(s, e.kind === 'preopen' ? '' : e.path)); return 0; }
+      statBuf(DV(), U8(), buf, e && (e.kind === 'stdin' || e.kind === 'stdout' || e.kind === 'stderr' || e.kind === 'tty') ? 2 : 0, 0, realtimeNs());
       return 0;
     },
-    path_filestat_get: (dirfd, _flags, pathPtr, pathLen, buf) => {
-      const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
-      if (path === 'dev/null' || path === 'dev/tty') { statBuf(DV(), U8(), buf, 2, 0); return 0; }
+    path_filestat_get: (dirfd, flags, pathPtr, pathLen, buf) => {
+      const raw = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
+      if (raw === 'dev/null' || raw === 'dev/tty') { statBuf(DV(), U8(), buf, 2, 0, realtimeNs()); return 0; }
+      // SYMLINK_FOLLOW (bit 0) distinguishes stat from lstat: without it the
+      // link itself is the subject, which is how 'test -L' and 'ls -l' tell a
+      // symlink apart from what it points at.
+      const follow = (flags & 1) !== 0;
+      if (!follow && s.fs.symlinks.has(raw)) {
+        statBuf(DV(), U8(), buf, 7, te.encode(s.fs.symlinks.get(raw)).length, mtimeNs(s, raw));
+        return 0;
+      }
+      const r = followPath(s, raw);
+      if (r.errno) return r.errno;
+      const path = r.path;
       const trav = checkTraversal(s, path);
       if (trav) return trav;
       const f = fileLookup(s, path);
-      if (f) { statBuf(DV(), U8(), buf, 4, f.bytes.length); return 0; }
-      if (isCoreutil(s, path)) { statBuf(DV(), U8(), buf, 4, 1024); return 0; }
-      if (isDir(s, path)) { statBuf(DV(), U8(), buf, 3, 0); return 0; }
-      if (fileExists(s, path)) { statBuf(DV(), U8(), buf, 4, 0); return 0; }  // unreadable: size unknown
+      if (f) { statBuf(DV(), U8(), buf, 4, f.bytes.length, mtimeNs(s, path)); return 0; }
+      if (isCoreutil(s, path)) { statBuf(DV(), U8(), buf, 4, 1024, mtimeNs(s, path)); return 0; }
+      if (isDir(s, path)) { statBuf(DV(), U8(), buf, 3, 0, mtimeNs(s, path)); return 0; }
+      if (fileExists(s, path)) { statBuf(DV(), U8(), buf, 4, 0, mtimeNs(s, path)); return 0; }  // unreadable: size unknown
       return E.NOENT;
     },
-    path_filestat_set_times: () => 0,
-    path_unlink_file: (dirfd, pathPtr, pathLen) => {
+    // fstflags: ATIM=1, ATIM_NOW=2, MTIM=4, MTIM_NOW=8. Only the mtime half is
+    // recorded — this layer keeps one timestamp per inode, and mtime is the
+    // one every build tool reads.
+    path_filestat_set_times: (dirfd, _flags, pathPtr, pathLen, _atim, mtim, fstflags) => {
       const path = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
+      if (!inodeExists(s, path) && !s.fs.symlinks.has(path)) return E.NOENT;
+      if (fstflags & 8) s.fs.times.set(path, realtimeNs());
+      else if (fstflags & 4) s.fs.times.set(path, typeof mtim === 'bigint' ? mtim : BigInt(mtim >>> 0));
+      return 0;
+    },
+    path_unlink_file: (dirfd, pathPtr, pathLen) => {
+      // unlink removes the link, never what it points at.
+      const r = followParents(s, resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen))));
+      if (r.errno) return r.errno;
+      const path = r.path;
       const trav = checkTraversal(s, path);
       if (trav) return trav;
       if (isDir(s, path)) return E.ISDIR;
-      if (!fileExists(s, path)) return E.NOENT;
+      if (!fileExists(s, path) && !s.fs.symlinks.has(path)) return E.NOENT;
       const denied = checkParentWritable(s, path);
       if (denied) return denied;
       recordFileRemoved(s, path);
@@ -711,8 +857,39 @@ function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
       recordDirAdded(s, path);
       return 0;
     },
-    path_readlink: () => E.INVAL,
-    path_symlink: () => E.NOSYS,
+    // path_readlink(fd, path, path_len, buf, buf_len, *bufused). Never follows
+    // the last component — reading a link is the one op that is about the link.
+    path_readlink: (dirfd, pathPtr, pathLen, bufPtr, bufLen, bufUsedPtr) => {
+      const r = followParents(s, resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen))));
+      if (r.errno) return r.errno;
+      const target = s.fs.symlinks.get(r.path);
+      if (target === undefined) return inodeExists(s, r.path) ? E.INVAL : E.NOENT;
+      const bytes = te.encode(target);
+      const n = Math.min(bytes.length, bufLen);
+      U8().set(bytes.subarray(0, n), bufPtr);
+      DV().setUint32(bufUsedPtr, n, true);
+      return 0;
+    },
+    // path_symlink(old_path, old_path_len, fd, new_path, new_path_len) — the
+    // target comes FIRST and is not a path in this filesystem: it is stored
+    // verbatim and may dangle, exactly as ln -s allows.
+    path_symlink: (oldPtr, oldLen, newFd, newPtr, newLen) => {
+      const target = td.decode(U8().subarray(oldPtr, oldPtr + oldLen));
+      const r = followParents(s, resolve(td.decode(U8().subarray(newPtr, newPtr + newLen))));
+      if (r.errno) return r.errno;
+      const link = r.path;
+      const trav = checkTraversal(s, link);
+      if (trav) return trav;
+      if (inodeExists(s, link) || s.fs.symlinks.has(link)) return E.EXIST;
+      const denied = checkParentWritable(s, link);
+      if (denied) return denied;
+      s.fs.symlinks.set(link, target);
+      s.fs.symlinksCreated.set(link, target);
+      s.fs.modes.set(link, 7);
+      s.fs.deleted.delete(link);
+      touchPath(s, link);
+      return 0;
+    },
     path_link: (fd1, _lookupFlags, oldPtr, oldLen, fd2, newPtr, newLen) => {
       const from = resolve(td.decode(U8().subarray(oldPtr, oldPtr + oldLen)));
       const to = resolve(td.decode(U8().subarray(newPtr, newPtr + newLen)));
@@ -771,6 +948,9 @@ function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
       }
       for (const p of s.fs.files.keys()) {
         if (p.startsWith(prefix) && !p.slice(prefix.length).includes('/')) push(p.slice(prefix.length), 4);
+      }
+      for (const p of s.fs.symlinks.keys()) {
+        if (p.startsWith(prefix) && !p.slice(prefix.length).includes('/')) push(p.slice(prefix.length), 7);
       }
       for (const p of s.fs.modes.keys()) {  // modes-only inodes (unreadable files)
         if (p !== dir && p.startsWith(prefix) && !p.slice(prefix.length).includes('/') && !s.fs.dirs.has(p)) push(p.slice(prefix.length), 4);
@@ -837,8 +1017,9 @@ function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
       return 0;
     },
     fd_fdstat_set_flags: () => 0,
-    fd_read: (fd, iovs, _n, nread) => io.read(fd, iovs, nread),
+    fd_read: (fd, iovs, n, nread) => io.read(fd, readIovs(DV(), iovs, n), nread),
     fd_write: (fd, iovs, n, nw) => {
+      if (!proc.fds.has(fd)) return E.BADF;
       const dv = DV(), u8 = U8(); let w = 0;
       for (let i = 0; i < n; i++) {
         const p = dv.getUint32(iovs + i * 8, true), l = dv.getUint32(iovs + i * 8 + 4, true);
@@ -848,13 +1029,33 @@ function makeWasiFs(s, proc, DV, U8, io, pathBase, absRoots) {
       return 0;
     },
     poll_oneoff: (inPtr, outPtr, nsubs, retPtr) => io.poll(inPtr, outPtr, nsubs, retPtr),
-    clock_time_get: (_id, _pr, t) => { DV().setBigUint64(t, BigInt(Date.now()) * 1000000n, true); return 0; },
-    random_get: (b, l) => { const u = U8(); for (let i = 0; i < l; i++) u[b + i] = (Math.random() * 256) | 0; return 0; },
+    clock_time_get: (id, _pr, t) => {
+      const ns = clockNs(id);
+      if (ns === null) return E.INVAL;
+      DV().setBigUint64(t, ns, true);
+      return 0;
+    },
+    clock_res_get: (id, r) => {
+      if (clockNs(id) === null) return E.INVAL;
+      DV().setBigUint64(r, id === CLOCK_REALTIME ? 1000000n : 1000n, true);
+      return 0;
+    },
+    // getRandomValues caps at 65536 bytes per call; a guest asking for more
+    // gets the same CSPRNG, chunked, never a weaker one.
+    random_get: (b, l) => {
+      const u = U8();
+      for (let off = 0; off < l; off += 65536) {
+        crypto.getRandomValues(u.subarray(b + off, b + off + Math.min(l - off, 65536)));
+      }
+      return 0;
+    },
     proc_exit: (code) => { throw new Exit(code); },
   };
 }
 
-// Route a write through the process fd table.
+// Route a write through the process fd table. The caller has already rejected
+// an fd the table does not hold, so every branch here answers a real entry —
+// an unknown fd must never land in the user's terminal.
 function writeThroughFd(s, proc, fd, bytes) {
   const e = proc.fds.get(fd);
   if (e && e.kind === 'pipe') {
@@ -873,37 +1074,136 @@ function writeThroughFd(s, proc, fd, bytes) {
   }
   if (e && (e.kind === 'null' || e.kind === 'tty')) return bytes.length;
   const text = td.decode(bytes);
-  if (e && e.kind === 'stderr') s.err += text;
+  if (e.kind === 'stderr') s.err += text;
   else s.out += text;
   return bytes.length;
 }
 
 // Synchronous read for non-parking consumers (files, buffered pipes).
-// Returns {done, errno} or null when the source would block.
-function tryReadFd(s, proc, fd, dv, u8, ptr, len, nreadPtr) {
+// Returns {errno} or null when the source would block.
+function tryReadFd(s, proc, fd, dv, u8, iov, nreadPtr) {
   const e = proc.fds.get(fd);
+  const deliver = (bytes) => { dv.setUint32(nreadPtr, scatter(u8, iov, bytes), true); return { errno: 0 }; };
   if (e && e.kind === 'file') {
     const f = fileLookup(s, e.path);
-    const bytes = f ? f.bytes.subarray(e.pos, e.pos + len) : new Uint8Array(0);
-    u8.set(bytes, ptr); e.pos += bytes.length;
-    dv.setUint32(nreadPtr, bytes.length, true);
-    return { errno: 0 };
+    const bytes = f ? f.bytes.subarray(e.pos, e.pos + iov.total) : new Uint8Array(0);
+    e.pos += bytes.length;
+    return deliver(bytes);
   }
   if (e && (e.kind === 'null' || e.kind === 'tty')) { dv.setUint32(nreadPtr, 0, true); return { errno: 0 }; }
   if (e && e.kind === 'pipe') {
     const pp = s.pipes.get(e.pipeId);
-    if (pp.queued > 0) { const b = takeUpTo(pp, len); u8.set(b, ptr); dv.setUint32(nreadPtr, b.length, true); return { errno: 0 }; }
+    if (pp.queued > 0) return deliver(takeUpTo(pp, iov.total));
     if (pp.writers === 0) { dv.setUint32(nreadPtr, 0, true); return { errno: 0 }; }
     return null;
   }
   if (e && e.kind === 'stdin') {
     const st = s.stdin;
-    if (st.queued > 0) { const b = takeUpTo(st, len); u8.set(b, ptr); dv.setUint32(nreadPtr, b.length, true); return { errno: 0 }; }
+    if (st.queued > 0) return deliver(takeUpTo(st, iov.total));
     if (st.closed) { dv.setUint32(nreadPtr, 0, true); return { errno: 0 }; }
     return null;
   }
-  dv.setUint32(nreadPtr, 0, true);
-  return { errno: e ? 0 : E.BADF };
+  if (e) { dv.setUint32(nreadPtr, 0, true); return { errno: 0 }; }
+  return { errno: E.BADF };
+}
+
+// Subscription record: 48B, userdata u64 at +0, tag u8 at +8. A CLOCK carries
+// id u32 at +16, timeout u64 at +24, flags u16 at +40 (bit 0 = ABSTIME); an
+// FD_READ/FD_WRITE carries the fd u32 at +16.
+function readSubs(dv, inPtr, nsubs) {
+  const subs = [];
+  for (let i = 0; i < nsubs; i++) {
+    const base = inPtr + i * 48;
+    const userdata = dv.getBigUint64(base, true);
+    const tag = dv.getUint8(base + 8);
+    if (tag === 0) {
+      const id = dv.getUint32(base + 16, true);
+      const timeout = dv.getBigUint64(base + 24, true);
+      const abs = (dv.getUint16(base + 40, true) & 1) !== 0;
+      const now = clockNs(id);
+      // An unknown clock id cannot produce a deadline; the event reports
+      // EINVAL rather than firing.
+      subs.push(now === null
+        ? { tag, userdata, id, bad: true }
+        : { tag, userdata, id, deadline: abs ? timeout : now + timeout });
+    } else {
+      subs.push({ tag, userdata, fd: dv.getUint32(base + 16, true) });
+    }
+  }
+  return subs;
+}
+function clockExpired(sub) {
+  const now = clockNs(sub.id);
+  return now !== null && now >= sub.deadline;
+}
+function writeEvent(dv, outPtr, slot, sub, errno, nbytes) {
+  const ev = outPtr + slot * 32;
+  dv.setBigUint64(ev, sub.userdata, true);
+  dv.setUint16(ev + 8, errno, true);
+  dv.setUint8(ev + 10, sub.tag);
+  dv.setBigUint64(ev + 16, BigInt(nbytes), true);
+  dv.setUint16(ev + 24, 0, true);
+}
+// Readiness of an FD_READ subscription. FD_WRITE and anything on an fd this
+// table does not hold are handled by the caller.
+function fdReadReady(s, proc, fd) {
+  const e = proc.fds.get(fd);
+  if (!e) return null;
+  if (e.kind === 'pipe') { const pp = s.pipes.get(e.pipeId); return { ready: pp.queued > 0 || pp.writers === 0, avail: pp.queued }; }
+  if (e.kind === 'stdin') return { ready: s.stdin.queued > 0 || s.stdin.closed, avail: s.stdin.queued };
+  return { ready: true, avail: 0 };
+}
+// Emit every subscription that is ready right now. Returns the event count.
+function emitReady(s, proc, dv, outPtr, subs) {
+  let n = 0;
+  for (const sub of subs) {
+    if (sub.tag === 0) {
+      if (sub.bad) { writeEvent(dv, outPtr, n++, sub, E.INVAL, 0); continue; }
+      if (clockExpired(sub)) writeEvent(dv, outPtr, n++, sub, 0, 0);
+      continue;
+    }
+    const st = fdReadReady(s, proc, sub.fd);
+    if (!st) { writeEvent(dv, outPtr, n++, sub, E.BADF, 0); continue; }
+    // FD_WRITE (tag 2) never blocks here: pipes and the output buffers accept
+    // whatever is handed to them.
+    if (sub.tag === 2 || st.ready) writeEvent(dv, outPtr, n++, sub, 0, st.avail);
+  }
+  return n;
+}
+// Spend a clock subscription's interval by running whatever else is runnable.
+//
+// It cannot be spent waiting. This facet's clock does not advance during
+// synchronous execution — 50M spin iterations move both Date.now() and
+// performance.now() by exactly 0ms, which is the platform's timing-attack
+// mitigation rather than a quirk. A busy-wait therefore never terminates, and
+// a poll that returns no events leaves the guest spinning on the same frozen
+// clock. Running the scheduler is the only progress available; past that the
+// deadline is reported as reached. A host whose clock does advance gets a real
+// wait, and honouring one in-facet needs poll_oneoff to become async — that is
+// the migration onto runtime/wasi-instance.ts, not something a synchronous
+// implementation can express.
+// FROZEN_PROBE is a measurement, not a timeout: if the clock has not moved by
+// a single nanosecond after this many iterations, it is not going to.
+const FROZEN_PROBE = 200000;
+function waitForDeadline(s, proc, subs) {
+  const clocks = subs.filter((x) => x.tag === 0 && !x.bad);
+  if (!clocks.length) return;
+  const startedNs = realtimeNs();
+  let spins = 0;
+  while (!clocks.some(clockExpired)) {
+    if (s.rootExit !== null) return;
+    if (subs.some((x) => x.tag === 1 && (fdReadReady(s, proc, x.fd) || { ready: true }).ready)) return;
+    if (s.runnable.length) { pumpOne(s); continue; }
+    if (++spins > FROZEN_PROBE && realtimeNs() === startedNs) return;
+  }
+}
+// Report every live clock subscription as fired. Reached only once the wait
+// above can make no further progress: the alternative is an eventless success,
+// which poll_oneoff may not return and which a guest cannot act on.
+function emitClocks(dv, outPtr, subs) {
+  let n = 0;
+  for (const sub of subs) if (sub.tag === 0 && !sub.bad) writeEvent(dv, outPtr, n++, sub, 0, 0);
+  return n;
 }
 
 function blockTarget(s, proc, fd) {
@@ -932,22 +1232,20 @@ function makeProc(s, pid, ppid, fds) {
   const c = proc.ctx;
 
   const io = {
-    read: (fd, iovs, nread) => {
+    read: (fd, iov, nread) => {
       if (proc.pendingRead) {
         proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false;
         const pr = proc.pendingRead; proc.pendingRead = null;
-        U8().set(pr.bytes, pr.ptr);
-        DV().setUint32(pr.nreadPtr, pr.bytes.length, true);
+        DV().setUint32(pr.nreadPtr, scatter(U8(), pr.iov, pr.bytes), true);
         return 0;
       }
       const dv = DV();
-      const p = dv.getUint32(iovs, true), l = dv.getUint32(iovs + 4, true);
-      const sync = tryReadFd(s, proc, fd, dv, U8(), p, l, nread);
+      const sync = tryReadFd(s, proc, fd, dv, U8(), iov, nread);
       if (sync) return sync.errno;
       // would block: asyncify-park until bytes/EOF arrive
       dv.setUint32(nread, 0, true);
       c.reason = 'blockread';
-      c.pipeReq = { fd, ptr: p, len: l, nreadPtr: nread, isPoll: false };
+      c.pipeReq = { fd, iov, nreadPtr: nread, isPoll: false };
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -967,39 +1265,22 @@ function makeProc(s, pid, ppid, fds) {
         return 0;
       }
       const dv = DV();
-      let emitted = 0;
-      let blockSub = null;
-      for (let i = 0; i < nsubs; i++) {
-        const sub = inPtr + i * 48;
-        const userdata = dv.getBigUint64(sub, true);
-        const tag = dv.getUint8(sub + 8);
-        if (tag === 0) {  // clock: report immediately (in-facet clocks are frozen anyway)
-          const ev = outPtr + emitted * 32;
-          dv.setBigUint64(ev, userdata, true); dv.setUint16(ev + 8, 0, true); dv.setUint8(ev + 10, 0);
-          emitted++;
-          continue;
-        }
-        const fd = dv.getUint32(sub + 16, true);
-        const e = proc.fds.get(fd);
-        let ready = true, avail = 0;
-        if (tag === 1 && e) {
-          if (e.kind === 'pipe') { const pp = s.pipes.get(e.pipeId); ready = pp.queued > 0 || pp.writers === 0; avail = pp.queued; }
-          else if (e.kind === 'stdin') { ready = s.stdin.queued > 0 || s.stdin.closed; avail = s.stdin.queued; }
-        }
-        if (ready) {
-          const ev = outPtr + emitted * 32;
-          dv.setBigUint64(ev, userdata, true); dv.setUint16(ev + 8, 0, true); dv.setUint8(ev + 10, tag);
-          dv.setBigUint64(ev + 16, BigInt(avail), true); dv.setUint16(ev + 24, 0, true);
-          emitted++;
-        } else if (!blockSub) {
-          blockSub = { fd, userdata };
-        }
+      const subs = readSubs(dv, inPtr, nsubs);
+      let emitted = emitReady(s, proc, dv, outPtr, subs);
+      if (emitted > 0) { dv.setUint32(retPtr, emitted, true); return 0; }
+      // Nothing ready. A blockable fd-read subscription parks the process so
+      // the host can supply input; a clock-only wait has no such source and is
+      // spent in-facet.
+      const blockSub = subs.find((x) => x.tag === 1 && blockTarget(s, proc, x.fd));
+      if (!blockSub) {
+        waitForDeadline(s, proc, subs);
+        emitted = emitReady(s, proc, dv, outPtr, subs) || emitClocks(dv, outPtr, subs);
+        dv.setUint32(retPtr, emitted, true);
+        return 0;
       }
-      if (emitted > 0 || !blockSub) { dv.setUint32(retPtr, emitted, true); return 0; }
-      // Nothing ready and a blockable fd-read subscription: park.
       dv.setUint32(retPtr, 0, true);
       c.reason = 'blockread';
-      c.pipeReq = { fd: blockSub.fd, ptr: 0, len: 0, nreadPtr: 0, isPoll: true, pollUserdata: blockSub.userdata };
+      c.pipeReq = { fd: blockSub.fd, iov: EMPTY_IOV, nreadPtr: 0, isPoll: true, pollUserdata: blockSub.userdata };
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -1115,13 +1396,7 @@ function makeProc(s, pid, ppid, fds) {
     gethostname: (p, _l) => { U8().set(te.encode('nimbus'), p); return 0; },
     dlopen: () => 0, dlsym: () => 0, dlclose: () => 0, dlerror: () => 0,
   };
-  // Unimplemented wasi calls return success (the proven driver's
-  // discipline — bash tolerates no-op fd_sync etc.); each miss is
-  // recorded so the live gate can surface true WASI gaps.
-  const wasiProxy = new Proxy(wasi, {
-    get: (t, k) => (k in t ? t[k] : (() => { s.missingWasi.add(String(k)); return 0; })),
-  });
-  proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: wasiProxy, nimbus_proc, env: envImports });
+  proc.inst = new WebAssembly.Instance(s.mod, { wasi_snapshot_preview1: wasi, nimbus_proc, env: envImports });
   s.stats.instances++;
   s.procs.set(pid, proc);
   return proc;
@@ -1186,7 +1461,7 @@ function step(s, proc) {
     trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
     const target = blockTarget(s, proc, c.pipeReq.fd);
     if (!target) {  // fd closed under us: deliver EOF
-      proc.pendingRead = { ptr: c.pipeReq.ptr, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, isPoll: c.pipeReq.isPoll, pollUserdata: c.pipeReq.pollUserdata };
+      proc.pendingRead = { iov: c.pipeReq.iov, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, isPoll: c.pipeReq.isPoll, pollUserdata: c.pipeReq.pollUserdata };
       resumeProc(proc);
     } else {
       target.list.push({ proc });
@@ -1244,11 +1519,10 @@ function doExec(s, proc) {
   const wstr = (p, str) => { const b = te.encode(str); U8().set(b, p); return b.length; };
   let code = 0;
   const io = {
-    read: (fd, iovs, nread) => {
+    read: (fd, iov, nread) => {
       const dv = DV();
-      const p = dv.getUint32(iovs, true), l = dv.getUint32(iovs + 4, true);
       for (;;) {
-        const sync = tryReadFd(s, proc, fd, dv, U8(), p, l, nread);
+        const sync = tryReadFd(s, proc, fd, dv, U8(), iov, nread);
         if (sync) return sync.errno;
         // Would block: pump the scheduler so writer procs make progress.
         // When nothing is runnable the source can't produce more
@@ -1257,7 +1531,19 @@ function doExec(s, proc) {
       }
     },
     write: (fd, bytes) => writeThroughFd(s, proc, fd, bytes),
-    poll: (_i, _o, _n, retPtr) => { DV().setUint32(retPtr, 0, true); return 0; },
+    // An exec'd tool cannot park, so a wait it cannot satisfy locally is spent
+    // pumping the scheduler — the same discipline its blocking reads use.
+    poll: (inPtr, outPtr, nsubs, retPtr) => {
+      const dv = DV();
+      const subs = readSubs(dv, inPtr, nsubs);
+      let emitted = emitReady(s, proc, dv, outPtr, subs);
+      if (emitted === 0) {
+        waitForDeadline(s, proc, subs);
+        emitted = emitReady(s, proc, dv, outPtr, subs) || emitClocks(dv, outPtr, subs);
+      }
+      dv.setUint32(retPtr, emitted, true);
+      return 0;
+    },
   };
   const base = makeWasiFs(s, proc, DV, U8, io, childCwd, absRoots);
   const w = {
@@ -1269,7 +1555,6 @@ function doExec(s, proc) {
     environ_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const v of env) { dv.setUint32(ptrs, p, true); ptrs += 4; p += wstr(p, v); U8()[p++] = 0; } return 0; },
     proc_exit: (ec) => { code = ec; throw new Exit(ec); },
   };
-  const wp = new Proxy(w, { get: (t, k) => (k in t ? t[k] : (() => 0)) });
   // nimbus_proc.chmod: WASI preview1 has no mode syscall, so busybox's
   // chmod threads through this import. In-facet the effective-mode table
   // updates immediately (chmod +x → ./script runs); the durable, S2a
@@ -1287,7 +1572,7 @@ function doExec(s, proc) {
       return 0;
     },
   };
-  inst2 = new WebAssembly.Instance(m, { wasi_snapshot_preview1: wp, nimbus_proc });
+  inst2 = new WebAssembly.Instance(m, { wasi_snapshot_preview1: w, nimbus_proc });
   s.stats.instances++;
   const mem2 = inst2.exports.memory.buffer.byteLength;
   if (mem2 > s.stats.memPeak) s.stats.memPeak = mem2;
@@ -1365,6 +1650,7 @@ function composeFsDiff(s) {
     // Deepest-first so the flush rmdirs children before their parents.
     dirsDeleted: [...s.fs.dirsDeleted].sort((a, b) => b.length - a.length),
     modesChanged: Object.fromEntries(s.fs.modesChanged),
+    symlinksCreated: Object.fromEntries(s.fs.symlinksCreated),
   };
 }
 

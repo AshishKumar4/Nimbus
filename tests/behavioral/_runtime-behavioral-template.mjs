@@ -34,6 +34,7 @@
 
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
+import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
 import { mintSession, attachPathFor, Terminal, sleep, stripAnsi, BASE, AUTH_COOKIE, AUTH_TOKEN } from './_driver.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
@@ -58,11 +59,20 @@ export const CHROME_BIN = (() => {
  * Launch a headless Chrome with the args needed for our environment
  * (--no-sandbox: the test container runs as root; --disable-dev-shm-usage:
  * /dev/shm is too small for some default allocations).
+ *
+ * The profile lives under this run's own directory rather than
+ * puppeteer's shared temp prefix, which is what makes the browser
+ * identifiable as ours: the runner reaps a crashed probe's Chrome by
+ * that directory and so can never touch a concurrent run's browser.
+ * Puppeteer only deletes profiles it chose itself, so this one is
+ * dropped when the browser disconnects.
  */
 export async function launchBrowser(opts = {}) {
-  return puppeteer.launch({
+  const userDataDir = allocateProfileDir();
+  const browser = await puppeteer.launch({
     executablePath: CHROME_BIN,
     headless: opts.headless !== false,
+    userDataDir,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -75,6 +85,8 @@ export async function launchBrowser(opts = {}) {
     defaultViewport: { width: 1280, height: 800 },
     ...(opts.timeout ? { timeout: opts.timeout } : {}),
   });
+  browser.once('disconnected', () => releaseProfileDir(userDataDir));
+  return browser;
 }
 
 export async function applyProbeCookies(page, base = BASE) {

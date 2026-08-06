@@ -1,9 +1,4 @@
-const USER_CRED = Object.freeze({
-    uid: 1000,
-    gid: 1000,
-    groups: Object.freeze([1000]),
-    umask: 0o022,
-});
+import { CRED_SESSION_USER } from './os-contracts.js';
 function immutableCred(cred) {
     return Object.freeze({
         uid: cred.uid,
@@ -44,7 +39,7 @@ export class ProcessTable {
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, options = {}) {
         const inheritedCred = options.parentPid === undefined
-            ? USER_CRED
+            ? CRED_SESSION_USER
             : this.credOf(options.parentPid);
         const pid = this.nextPid++;
         const entry = {
@@ -57,6 +52,7 @@ export class ProcessTable {
             startTime: Date.now(),
             endTime: null,
             cred: immutableCred(options.cred ?? inheritedCred),
+            parentPid: options.parentPid,
         };
         this.processes.set(pid, entry);
         return entry;
@@ -134,6 +130,25 @@ export class ProcessTable {
     }
     getAll() {
         return [...this.processes.values()];
+    }
+    /**
+     * Every process spawned under `pid`, transitively, oldest first.
+     *
+     * Output attribution needs this: a command's console output can land in a
+     * child's log ring (an npm bin, a facet-backed runtime) rather than on the
+     * caller's streams, and a start-time window is not a safe substitute when
+     * several commands run concurrently in one session.
+     */
+    descendantsOf(pid) {
+        const found = [];
+        const frontier = new Set([pid]);
+        for (const entry of [...this.processes.values()].sort((a, b) => a.startTime - b.startTime)) {
+            if (entry.parentPid !== undefined && frontier.has(entry.parentPid)) {
+                frontier.add(entry.pid);
+                found.push(entry);
+            }
+        }
+        return found;
     }
     /** Clean up exited processes older than maxAge ms. */
     reap(maxAge = 60_000) {

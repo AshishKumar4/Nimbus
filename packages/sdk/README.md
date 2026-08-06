@@ -203,14 +203,20 @@ const box = nimbus.sandbox('session-or-job-id', {
 
 await box.ready();
 await box.exec('node -e "console.log(2 + 2)"');
-await box.startProcess('node --watch /home/user/app/server.js');
+const proc = await box.startProcess('node --watch /home/user/app/server.js');
+// returns immediately with proc.pid; poll box.processes.logs(proc.pid) for
+// output and the exit record, or box.processes.kill(proc.pid) to stop it
 await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
 
 await box.files.write('/home/user/app/a.txt', 'hello');
 await box.files.read('/home/user/app/a.txt');
 await box.files.list('/home/user/app');
 await box.files.stat('/home/user/app/a.txt');
-await box.files.delete('/home/user/app/a.txt');
+await box.files.lstat('/home/user/app/link');
+await box.files.rename('/home/user/app/a.txt', '/home/user/app/b.txt');
+await box.files.chmod('/home/user/app/b.txt', 0o755);
+await box.files.readRange('/home/user/app/b.txt', 0, 64);
+await box.files.delete('/home/user/app/b.txt');
 
 await box.runtimes.available();
 await box.runtimes.installed();

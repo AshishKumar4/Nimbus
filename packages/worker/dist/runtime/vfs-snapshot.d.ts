@@ -29,6 +29,13 @@ export interface WasiFsDiff {
      * vfs.chmod, where S2a ownership enforcement decides.
      */
     modesChanged?: Record<string, number>;
+    /**
+     * vfsPath → target string for symlinks created during the run. Stored
+     * verbatim: a symlink target is a string, not a resolved path, and is
+     * allowed to dangle. Without this channel a link created in-facet resolves
+     * for the rest of the run and then silently disappears at exit.
+     */
+    symlinksCreated?: Record<string, string>;
 }
 export interface VfsSnapshotCaps {
     maxBytes?: number;
@@ -63,5 +70,6 @@ export declare function flushVfsDiff(vfs: VfsLike, diff: WasiFsDiff): {
     mkdirs: number;
     rmdirs: number;
     chmods: number;
+    symlinks: number;
 };
 //# sourceMappingURL=vfs-snapshot.d.ts.map

@@ -246,6 +246,7 @@ await box.files.write('/home/user/app/server.js', code);
 await box.runtimes.ensure(['python', 'clang']);         // package-manager backed
 await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
 const proc = await box.startProcess('node --watch /home/user/app/server.js');
+                                                        // returns a live pid, does not block
 const port = await box.ports.expose(3000);              // /s/<id>/port/3000/
 const provider = box.tools({ namespace: 'sandbox' });   // Proteus-style tools
 ```

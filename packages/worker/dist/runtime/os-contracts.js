@@ -4,6 +4,22 @@ export const CRED_KERNEL = Object.freeze({
     groups: Object.freeze([0]),
     umask: 0o022,
 });
+/**
+ * The session's unprivileged login identity — `user` in /etc/passwd, the
+ * credential every process inherits unless it deliberately transitions.
+ *
+ * It is also the credential the embedder-facing surfaces act with: the SDK
+ * filesystem API, the remote `/rpc` file ops, and the static asset server are
+ * host callers, not processes, and files they create must be owned by the same
+ * identity `exec` runs as. Never CRED_KERNEL — a pid-less caller must never
+ * gain more authority than the shell it is writing files for.
+ */
+export const CRED_SESSION_USER = Object.freeze({
+    uid: 1000,
+    gid: 1000,
+    groups: Object.freeze([1000]),
+    umask: 0o022,
+});
 export function requireVfsCred(value, source) {
     if (typeof value !== 'object' || value === null) {
         throw new Error(`${source} requires process credentials`);
