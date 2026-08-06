@@ -712,6 +712,9 @@ ${RESIDENCY_MISS_REPORT}
     // Sited before the drain, like the lifetime-limit diagnostic above, so
     // the queued stderr write is one of the writes the drain settles rather
     // than an orphan dropped at teardown.
+    if (globalThis.__nimbusVfsResidencySettle) {
+      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
+    }
     const __residencyReport = __nimbusResidencyMissReport();
     if (__residencyReport) {
       stderr += __residencyReport;
@@ -1028,7 +1031,10 @@ ${RESIDENCY_MISS_REPORT}
       if (!__supervisor || __nimbusProcessExitReported) return;
       // Every resident exit path funnels through here, so the unanswered-read
       // report is sited once and cannot be reached around.
-      const __residencyReport = __nimbusResidencyMissReport();
+      if (globalThis.__nimbusVfsResidencySettle) {
+      try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
+    }
+    const __residencyReport = __nimbusResidencyMissReport();
       if (__residencyReport) {
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
@@ -1668,6 +1674,30 @@ function buildManifest(
     }
   }
   const cwdStripped = cwd.replace(/^\/+/, '');
+  // ── The path from the root down to the working directory ──────────────
+  //
+  // One level each, before the deep walks, so that every directory on that
+  // chain is ENUMERATED rather than merely mentioned. It is what makes a
+  // synchronous "not there" honest for the shape programs probe most: node's
+  // resolver walks upward asking for `<dir>/node_modules` at every level, and
+  // a config lookup asks for a dotfile directory in $HOME. Those paths mostly
+  // do not exist, and answering that requires having listed the directory
+  // they would be in — otherwise the only honest answer is a refusal, and the
+  // resolver pays a round trip per rung to hear it.
+  //
+  // Cheap by construction: one readdir per component, names only, and the
+  // recursion below each stops immediately.
+  {
+    const segments = cwdStripped ? cwdStripped.split('/') : [];
+    // From the first component down, never the root itself. The root's listing
+    // is the one thing here that this system perturbs by running: a facet
+    // image lands under /var, so enumerating / would make the manifest — and
+    // therefore the content-addressed image built from it — change as a side
+    // effect of having built one. The facet learns the root on demand instead.
+    for (let i = 1; i < segments.length; i++) {
+      walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH);
+    }
+  }
   walk(cwdStripped, 0);
   const nmDir = cwdStripped + '/node_modules';
   if (vfs.exists(nmDir) && vfs.isDirectory(nmDir)) {
