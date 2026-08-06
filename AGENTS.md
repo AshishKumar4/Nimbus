@@ -276,6 +276,16 @@ This is also what CI runs: the `behavioral` workflow deploys the commit
 under test to its own `nimbus-tw-ci-*` throwaway, grades that, and deletes
 it. `nimbus` is production and is never a target here.
 
+**Running alongside other agents.** `run-all.mjs` takes a machine-wide lock
+and refuses to start while another suite holds it, naming the holder;
+`--allow-concurrent` is the deliberate override. A redeploy of either kind
+of target keeps the `JWT_SECRET` already on it, so tokens minted earlier
+stay valid and a target can be redeployed under a suite already running
+against it. Replacing that secret takes `--rotate-secrets`, and it 401s
+every token in flight. Deploying over a target this checkout holds no
+secret for — somebody else's throwaway, or staging after losing
+`~/.local/state/nimbus` — stops before the build instead of taking it over.
+
 Agent-specific probes:
 
 - `tests/behavioral/agent/new/session-agent-panel.mjs`

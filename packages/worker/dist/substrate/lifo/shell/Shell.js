@@ -272,7 +272,14 @@ export class Shell {
             if (options?.signal) {
                 options.signal.removeEventListener('abort', abortFromCaller);
             }
-            this.abortController = prevAbortController;
+            // Save/restore is stack discipline, and concurrent executions against
+            // one shell do not nest: an inner call that finishes first would put
+            // back a controller belonging to a command that already ended, leaving
+            // the still-running one unreachable to Ctrl+C. Only unwind if the
+            // current controller is still the one this call installed.
+            if (this.abortController === abortController) {
+                this.abortController = prevAbortController;
+            }
             if (savedShellState) {
                 this.restoreShellState(savedShellState);
             }

@@ -92,8 +92,8 @@ export default createNimbusHandler({
 - `ready()`
 - `exec(command, options?)`
 - `runCode(code, options)`
-- `startProcess(command, options?)`
-- `files.read/write/list/delete/exists/stat`
+- `startProcess(command, options?)` — backgrounds the command and returns `{ pid, process, ports, startedAt }` immediately
+- `files.read/readBytes/write/list/mkdir/delete/exists/stat/lstat/rename/chmod/readRange`
 - `runtimes.install/ensure/list`
 - `processes.list/kill/logs/write/endInput/resize/signal`
 - `ports.expose/unexpose/list`

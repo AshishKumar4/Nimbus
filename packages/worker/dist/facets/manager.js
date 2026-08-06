@@ -2942,6 +2942,14 @@ export class FacetManager {
     revokeProcessVfsWriters(pid) {
         this.vfs?.revokeAppendWriters(pid);
     }
+    /**
+     * True while a resident facet holds this pid — it was adopted through the
+     * bin-spawn contract and now owns the process lifecycle, reporting its own
+     * exit. A caller that launched the command must not record an exit for it.
+     */
+    hasResidentProcess(pid) {
+        return this.processRpcResources.has(pid);
+    }
     noteProcessReportedExit(pid, exitCode) {
         this.portRegistry.unregisterByPid(pid);
         this.processes.exit(pid, exitCode);
