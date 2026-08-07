@@ -58,13 +58,18 @@ export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
  * round-trips; the size trades that serialization against simultaneous cold
  * sibling DO starts.
  *
- * Measured at 4 on a 123-package install: 21 shards became six barriers of
- * 10.6/6.8/21.8/7.9/34.6/4.8 s, which summed to the whole 86.5 s fetch+write
- * phase. Peer DOs are separate objects with independent budgets, so the
- * constraint is cold-start burst rather than any per-object ceiling; 8 keeps
- * that burst bounded while letting a full install fan-out clear in one phase.
+ * The six-barrier profile once measured on a 123-package install (21 shards of
+ * ~6 packages, 10.6/6.8/21.8/7.9/34.6/4.8 s) came from the shard count, not
+ * from this width. Capping install shards at INSTALL_PEER_CAP fixed it at the
+ * source and that install now clears in two phases. Widening to 8 on top of
+ * that bought one further barrier and doubled the simultaneous cold sibling-DO
+ * starts, which is the account-level pressure the phasing exists for: twelve
+ * concurrent Markflow installs went from 48 simultaneous peer starts to 96 and
+ * began timing out. Phasing does not change how many peers start, only how
+ * many start at once, so this width is set by the burst the scheduler
+ * tolerates rather than by the barrier count.
  */
-export const FANOUT_PHASE_SIZE = 8;
+export const FANOUT_PHASE_SIZE = 4;
 function isNimbusFanoutPeerStub(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
         return false;
