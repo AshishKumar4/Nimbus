@@ -45,7 +45,7 @@ import {
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD, FANOUT_PHASE_SIZE } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
@@ -882,15 +882,15 @@ export class NpmInstaller {
   /**
    * Batch install via two-tier fan-out (NimbusFanoutPool).
    *
-   * Topology selected automatically based on the spec count:
-   *   specs.length <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-   *     1 NimbusLoaderPool with concurrency = specs.length, capped at
-   *     4 by V8 invariant. Each spec is one facet running its own
-   *     installPackagesInFacet over a single-element shard.
-   *   specs.length >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
-   *     N peer NimbusSession sibling DOs (N = min(specs.length,
-   *     MAX_PEER_FANOUT = 32)), each running ONE installPackagesInFacet
-   *     against its own shard with internal pLimit(3).
+   * Shard count is ⌈specs.length / PACKAGES_PER_SHARD⌉ capped at
+   * INSTALL_PEER_CAP, and the topology follows from it:
+   *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
+   *     1 NimbusLoaderPool with concurrency = shardCount, capped at
+   *     4 by V8 invariant. Each shard is one facet running its own
+   *     installPackagesInFacet.
+   *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
+   *     One peer NimbusSession sibling DO per shard, each running ONE
+   *     installPackagesInFacet against its shard with internal pLimit(3).
    *
    * Sharding strategy: round-robin (`pkgIdx % N`) so every peer DO
    *   receives roughly equal work. Stable-id router maps each
@@ -939,21 +939,18 @@ export class NpmInstaller {
       return { installed, failed, filesWritten };
     }
 
-    // Shard count is bounded by the package count and the fan-out ceiling.
-    // Large installs use a smaller peer-DO cap than the general-purpose
-    // fanout pool: each shard does substantial tarball decode and VFS write
-    // work, and keeping the shard count at eight avoids excessive sibling DO
-    // cold starts under concurrent user installs. NimbusFanoutPool dispatches
-    // those peers in bounded phases, so this remains parallel without creating
-    // one cold-start burst per package shard.
-    const LARGE_INSTALL_THRESHOLD = 200;
-    const LARGE_INSTALL_PEER_CAP = 8;
-    let shardCount: number;
-    if (specs.length > LARGE_INSTALL_THRESHOLD) {
-      shardCount = Math.min(specs.length, LARGE_INSTALL_PEER_CAP);
-    } else {
-      shardCount = Math.min(specs.length, MAX_PEER_FANOUT);
-    }
+    // One shard per package up to the peer cap. Each shard does substantial
+    // tarball decode and VFS write work, and NimbusFanoutPool dispatches peers
+    // in phases of FANOUT_PHASE_SIZE, so capping at the phase width keeps
+    // every install to a single dispatch barrier: shards past that point buy
+    // serial round-trips rather than parallelism.
+    //
+    // Previously a 200-package threshold selected between a 32-shard cap and
+    // an 8-shard cap, which ran backwards — 199 packages got 32 shards while
+    // 201 got 8, so the smaller install paid the larger fan-out. A
+    // 123-package install measured six barriers of ~6 packages each.
+    const INSTALL_PEER_CAP = FANOUT_PHASE_SIZE;
+    const shardCount = Math.min(specs.length, INSTALL_PEER_CAP);
     // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
     // This produces ⌈specs.length / shardCount⌉ specs per shard at
     // most, with the imbalance bounded to ±1.
