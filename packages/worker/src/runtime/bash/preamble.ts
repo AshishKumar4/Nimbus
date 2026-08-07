@@ -24,6 +24,7 @@ import type {
   BashBootArgs,
   BashByteQueue,
   BashErrno,
+  BashExitStatus,
   BashFdEntry,
   BashFdReadiness,
   BashFeedArgs,
@@ -431,7 +432,14 @@ function makeWasiFs(
   return {
     ...makeUnsupported(s),
     fd_prestat_get: (fd, buf) => { if (fd === 3) { DV().setUint8(buf, 0); DV().setUint32(buf + 4, 1, true); return 0; } return E.BADF; },
-    fd_prestat_dir_name: (fd, path, _plen) => { if (fd === 3) { U8()[path] = 0x2f; return 0; } return E.BADF; },
+    // The buffer length is a contract, not decoration: fd_prestat_get reports
+    // the name is 1 byte, and a guest that offers less must not be written to.
+    fd_prestat_dir_name: (fd, path, plen) => {
+      if (fd !== 3) return E.BADF;
+      if (plen < 1) return E.INVAL;
+      U8()[path] = 0x2f;
+      return 0;
+    },
     path_open: (dirfd, dirflags, pathPtr, pathLen, oflags, rightsBase, _ri, fdflags, retPtr) => {
       const raw = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
       // SYMLINK_FOLLOW (lookupflags bit 0). Without it only the leading
@@ -1387,10 +1395,20 @@ function doFork(s: BashSession, parent: BashProc): void {
 function doWait(s: BashSession, proc: BashProc): void {
   const t = proc.ctx.waitTarget;
   let pid: number | null = null;
-  if (t > 0) { if (s.exitStatus.has(t)) pid = t; }
-  else { for (const [p] of s.exitStatus) { pid = p; break; } }
+  if (t > 0) {
+    // A named target still has to be this process's child; reaping another
+    // process's child by pid is the same error, just harder to reach.
+    const e = s.exitStatus.get(t);
+    if (e && e.ppid === proc.pid) pid = t;
+  } else {
+    // `wait` with no target reaps one of MY children. This used to take the
+    // first entry in the map regardless of parentage, so with two subshells
+    // each having had a child exit, one could consume the other's status —
+    // and then block forever waiting for a child already reaped elsewhere.
+    for (const [p, e] of s.exitStatus) { if (e.ppid === proc.pid) { pid = p; break; } }
+  }
   if (pid != null) {
-    const st = s.exitStatus.get(pid) as number; s.exitStatus.delete(pid);
+    const st = (s.exitStatus.get(pid) as BashExitStatus).status; s.exitStatus.delete(pid);
     proc.ctx.resume = pid; proc.ctx.resumeStatus = st;
     resumeProc(proc);
   } else {
@@ -1403,10 +1421,13 @@ function finishProc(s: BashSession, proc: BashProc, code: number): void {
   s.procs.delete(proc.pid);
   for (const fd of [...proc.fds.keys()]) closeFd(s, proc, fd);
   if (proc.ppid === 0) s.rootExit = code;
-  s.exitStatus.set(proc.pid, st);
+  s.exitStatus.set(proc.pid, { status: st, ppid: proc.ppid });
   for (let i = 0; i < s.waiters.length; i++) {
     const w = s.waiters[i];
-    if (w.targetPid === proc.pid || w.targetPid <= 0) {
+    // Only the parent may be woken by this exit — a waiter in another subshell
+    // is not waiting for this child, and waking it hands over a status that was
+    // never its to claim.
+    if (w.proc.pid === proc.ppid && (w.targetPid === proc.pid || w.targetPid <= 0)) {
       s.waiters.splice(i, 1);
       w.proc.ctx.resume = proc.pid; w.proc.ctx.resumeStatus = st;
       s.exitStatus.delete(proc.pid);
