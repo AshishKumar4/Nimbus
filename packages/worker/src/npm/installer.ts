@@ -354,6 +354,11 @@ export class NpmInstaller {
     // pool.map and the legacy in-supervisor fetchWaves loop were both
     // removed in Phase 2 A'.1 — they re-introduced the supervisor-heap
     // pressure the facet path eliminates.
+    // The shards write through the supervisor's VFS, so every transactionSync
+    // they cause blocks this DO's only thread. Bracketing the phase with the
+    // VFS's own transaction counters says how much of the phase was storage
+    // commit rather than download.
+    const storageBefore = this.storageCommitCounters();
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
@@ -363,6 +368,9 @@ export class NpmInstaller {
     }
 
     phases['fetch+write'] = Date.now() - phaseStart;
+    const storageAfter = this.storageCommitCounters();
+    const commitCount = storageAfter.count - storageBefore.count;
+    const commitMs = storageAfter.totalMs - storageBefore.totalMs;
 
     // ── Phase 6: Link bins ──────────────────────────────────────────
     phaseStart = Date.now();
@@ -513,6 +521,10 @@ export class NpmInstaller {
       Object.entries(phases)
         .map(([name, ms]) => `${name}=${(ms / 1000).toFixed(1)}s`)
         .join(' '),
+    );
+    log(
+      `  storage: ${commitCount} transactions during fetch+write, ` +
+      `${(commitMs / 1000).toFixed(1)}s inside transactionSync`,
     );
 
     return { installed, failed, totalFiles, elapsed, cachedHits, phases };
@@ -2171,6 +2183,13 @@ export class NpmInstaller {
     } catch { /* skip */ }
 
     return null;
+  }
+
+  /** Monotonic transactionSync count and cumulative synchronous ms for this
+   *  DO's VFS. A delta across a phase is how much of it was storage commit. */
+  private storageCommitCounters(): { count: number; totalMs: number } {
+    const durationMs = this.store.getStats().sql?.transactions?.durationMs;
+    return { count: durationMs?.count ?? 0, totalMs: durationMs?.total ?? 0 };
   }
 
   /**
