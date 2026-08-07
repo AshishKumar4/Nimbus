@@ -23,6 +23,20 @@
  * The interpreter is a WASI reactor (see packages/worker/wasm/python), because
  * a command module's _start runs once and that only covers `python script.py`.
  *
+ * FOUR THINGS THIS RUNTIME REDISCOVERED THE HARD WAY, ALL OF WHICH ruby-runner
+ * ALREADY KNEW. Read the list rather than finding a fifth:
+ *   1. Every entry into the VM goes through WebAssembly.promising, not only the
+ *      calls known to park — a Suspending import traps on an unpromised stack
+ *      even when it returns a plain integer.
+ *   2. The supervisor is adopted AFTER __wasiInitFS, which clears it on purpose,
+ *      and the facet drains queued writes in a `finally`.
+ *   3. modes are seeded `{ '': 7, tmp: 7, home: 7 }` ahead of the manifest,
+ *      because manifestVfs's walk skips the empty root — without it the preopen
+ *      at '/' is mode 0 and every traversal under it is EACCES.
+ *   4. The loader pool is built per invocation, never cached: supervisorPid is
+ *      baked into the SUPERVISOR binding at construction, so a held pool hands
+ *      every later caller the first caller's write credential.
+ *
  * One ordering in cpythonRunFacetFn is load-bearing and looks redundant: the
  * supervisor stub is PUBLISHED on globalThis and only then adopted, because
  * __wasiInitFS clears the adoption on purpose and the boot re-adopts it from
