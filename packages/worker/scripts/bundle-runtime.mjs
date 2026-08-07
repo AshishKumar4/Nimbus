@@ -228,6 +228,40 @@ const SPECS = {
     python_packages: ['numpy', 'markupsafe'],
   },
 
+  // CPython 3.13 cross-built for wasm32-wasi by packages/worker/wasm/python/
+  // build-python.sh, with the C libraries the published wasm32-wasi artifacts
+  // leave out (zlib, bzip2, xz, sqlite, OpenSSL). Unlike the Pyodide entry
+  // above this is a real WASI module: it talks to runtime/wasi/preamble.ts, so
+  // it has no filesystem of its own to copy in and diff back out.
+  //
+  // Additive alongside python/0.29.4. Nothing reads these keys until
+  // session/init.ts routes `python` at the cpython-runner factory.
+  'cpython/3.13.14': {
+    license: 'PSF-2.0',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/python',
+    files: [
+      { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
+      // The stdlib, pyc-only. Read straight out of the session filesystem by
+      // zipimport, which is why it needs no separate transport.
+      { src: 'python313.zip', vfs: 'share/cpython/python313.zip' },
+      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
+      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
+    ],
+    license_text: PSF_LICENSE_NOTICE(),
+    /** Source 'BIN_MARKER' is synthesised, not fetched. */
+    synthetic_files: {
+      'BIN_MARKER': Buffer.from(
+        '# Nimbus cpython-runner launcher marker. The interpreter itself\n' +
+        '# lives in share/cpython/. This file exists so `which python` and\n' +
+        '# `ls bin/` find a regular, executable file at the expected path;\n' +
+        '# the shell registry dispatches `python` directly to the\n' +
+        '# cpython-runner factory and never reads this content.\n',
+        'utf8',
+      ),
+    },
+  },
+
   // 2026-05-11 sysroot-prep Phase 0 — R2 ingestion ONLY for the
   // clang-sysroot-swap wave. This entry stages the upstream wasi-sdk-19
   // sysroot in R2 (binji-shape: rootless `include/lib/share` layout) so
@@ -839,6 +873,22 @@ Corresponding source: https://busybox.net/downloads/busybox-1.37.0.tar.bz2
 plus the Nimbus build overlay (packages/worker/wasm/bash/coreutils/ in
 the Nimbus repository: build-busybox.sh, wasi-shim.c, overlay/).
 `;
+}
+
+function PSF_LICENSE_NOTICE() {
+  return [
+    'Python is distributed under the Python Software Foundation License',
+    'Version 2. The full text is at https://docs.python.org/3/license.html',
+    'and is included in the interpreter as Lib/LICENSE.txt.',
+    '',
+    'Copyright (c) 2001-2026 Python Software Foundation. All Rights Reserved.',
+    '',
+    'This build is CPython 3.13.14 cross-compiled for wasm32-wasi and',
+    'statically linked against zlib (zlib licence), bzip2 (BSD-like), xz',
+    'liblzma (0BSD), SQLite (public domain) and OpenSSL 3.5 (Apache-2.0).',
+    'Each of those carries its own licence, reproduced by its upstream.',
+    '',
+  ].join('\n');
 }
 
 function MPL_2_LICENSE_TEXT() {
