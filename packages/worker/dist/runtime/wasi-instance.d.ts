@@ -201,10 +201,15 @@ export interface WasiFsSnapshot {
  * Names of the WASI imports implemented by this shim.
  *
  * `wasm-runner --help` prints this to users, so under-reporting sends a caller
- * away from a syscall that is right there. The shim is a source string the
- * Worker cannot eval at runtime, so the list is written by hand and
- * `tests/unit/wasi-implemented-fns.mjs` holds it to what the shim actually
- * exports.
+ * away from a syscall that is right there.
+ *
+ * The list stays hand-ordered because it is read by people — grouped the way the
+ * spec groups them — but it is no longer hand-MAINTAINED. `satisfies` rejects a
+ * name the import table does not implement, and `_AllSyscallsListed` below
+ * rejects a syscall the table implements that nobody added here. Both directions
+ * are compile errors, so the list cannot drift from the table in either one.
+ * `tests/unit/wasi-implemented-fns.mjs` remains the runtime half of the check:
+ * types cannot see inside the emitted source string.
  */
-export declare const WASI_IMPLEMENTED_FNS: readonly string[];
+export declare const WASI_IMPLEMENTED_FNS: readonly ["args_get", "args_sizes_get", "environ_get", "environ_sizes_get", "fd_close", "fd_read", "fd_write", "fd_seek", "fd_tell", "fd_fdstat_get", "fd_fdstat_set_flags", "proc_exit", "proc_raise", "clock_time_get", "clock_res_get", "random_get", "sched_yield", "fd_prestat_get", "fd_prestat_dir_name", "path_open", "path_create_directory", "path_remove_directory", "path_unlink_file", "path_rename", "path_filestat_get", "path_filestat_set_times", "fd_filestat_get", "fd_filestat_set_size", "fd_filestat_set_times", "fd_pread", "fd_pwrite", "fd_readdir", "fd_renumber", "fd_advise", "fd_datasync", "fd_sync", "path_symlink", "path_readlink", "path_link", "fd_allocate", "fd_fdstat_set_rights", "sock_send", "sock_recv", "sock_shutdown", "poll_oneoff"];
 //# sourceMappingURL=wasi-instance.d.ts.map
