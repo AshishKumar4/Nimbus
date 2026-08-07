@@ -22,6 +22,15 @@
  *
  * The interpreter is a WASI reactor (see packages/worker/wasm/python), because
  * a command module's _start runs once and that only covers `python script.py`.
+ *
+ * One ordering in cpythonRunFacetFn is load-bearing and looks redundant: the
+ * supervisor stub is PUBLISHED on globalThis and only then adopted, because
+ * __wasiInitFS clears the adoption on purpose and the boot re-adopts it from
+ * there afterwards. Adopting once at the entry and deleting the Reflect.set
+ * leaves a guest that reads the seeded filesystem and silently writes nowhere —
+ * every write queued, none landed, no error anywhere. Ruby carries the same
+ * pair for the same reason. The drain in the `finally` is the other half: a
+ * program that wrote a file and then raised still wrote the file.
  */
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
