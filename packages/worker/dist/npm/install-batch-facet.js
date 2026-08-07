@@ -338,25 +338,45 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         inFlight++;
         if (inFlight > inFlightPeak)
             inFlightPeak = inFlight;
+        // [W4] 1a. Race the R2 cache lookup against the network fetch.
+        //
+        // Both legs start here. The R2 GET is bounded by R2_RACE_TIMEOUT_MS; if it
+        // returns bytes first the network leg is cancelled, and otherwise the
+        // network response has been in flight for the whole bounded wait rather
+        // than starting from zero once the R2 leg gives up.
+        //
+        // Soft-fail: if env.SUPERVISOR.getCachedTarball isn't defined (older
+        // supervisor deployment) the R2 leg becomes a noop and there is nothing to
+        // overlap with, so the speculative fetch is not worth issuing — the retry
+        // loop's own first fetch is already the first thing that happens.
+        const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
+        const r2P = r2Available
+            ? Promise.race([
+                __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.integrity), (result) => result),
+                new Promise((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
+            ]).catch(() => null)
+            : Promise.resolve(null);
+        let pendingNetwork = null;
+        if (r2Available) {
+            pendingNetwork = fetch(spec.tarballUrl);
+            // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
+            // this sink only stops a failure that lands while the R2 leg is still
+            // outstanding from surfacing as an unhandled rejection.
+            pendingNetwork.catch(() => { });
+        }
+        const takeNetworkResponse = async () => {
+            const pending = pendingNetwork;
+            pendingNetwork = null;
+            return pending ? await pending : await fetch(spec.tarballUrl);
+        };
+        const discardPendingNetwork = () => {
+            const pending = pendingNetwork;
+            pendingNetwork = null;
+            if (!pending)
+                return;
+            void pending.then((response) => response.body?.cancel().catch(() => { }), () => { });
+        };
         try {
-            // [W4] 1a. Race R2 cache lookup against network fetch.
-            //
-            // Strategy: kick BOTH off concurrently. Wait at most R2_RACE_TIMEOUT_MS
-            // for the R2 GET; if R2 returns first AND the bytes pass integrity,
-            // we use them and the network leg gets cancelled. Otherwise the
-            // network response (which has been making progress in the
-            // background) takes over.
-            //
-            // Soft-fail: if env.SUPERVISOR.getCachedTarball isn't defined
-            // (older supervisor deployment), the R2 leg becomes a noop and
-            // we go straight to the network path with no overhead.
-            const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
-            const r2P = r2Available
-                ? Promise.race([
-                    __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.integrity), (result) => result),
-                    new Promise((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
-                ]).catch(() => null)
-                : Promise.resolve(null);
             // [W4] Captured compressed bytes for write-back to R2 on miss.
             // Populated by the integrity-tee path below; remains null when
             // integrity isn't present (rare; we only writeback when we can
@@ -415,6 +435,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 // re-hashes on every read, so bytes that come back are already
                 // proven to be spec.integrity's tarball — there is exactly one
                 // verification point and it is not here.
+                discardPendingNetwork();
                 pipelinedTarballRaceWins++;
                 tarballsCompleted++;
                 cumulativeBytesDecoded += r2HitBytes.length;
@@ -432,7 +453,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 let lastErr;
                 for (let attempt = 0; attempt <= FACET_RETRIES; attempt++) {
                     try {
-                        const r = await fetch(spec.tarballUrl);
+                        const r = await takeNetworkResponse();
                         if (r.ok || r.status < 500 || r.status > 599) {
                             resp = r;
                             lastErr = undefined;
@@ -686,6 +707,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             };
         }
         finally {
+            // No-op once the retry loop has taken it; closes every early return.
+            discardPendingNetwork();
             inFlight = Math.max(0, inFlight - 1);
         }
     };

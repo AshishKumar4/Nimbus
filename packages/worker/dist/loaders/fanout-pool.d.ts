@@ -47,6 +47,19 @@ export declare const PEER_RETRY_BACKOFF_MS: number[];
  * reset schedule. A whole-batch abort here used to fail an entire install.
  */
 export declare const PEER_OVERLOAD_BACKOFF_MS: number[];
+/**
+ * Peer shards dispatched per phase. Each phase is a barrier that costs its
+ * slowest member, so a wide fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial
+ * round-trips; the size trades that serialization against simultaneous cold
+ * sibling DO starts.
+ *
+ * Measured at 4 on a 123-package install: 21 shards became six barriers of
+ * 10.6/6.8/21.8/7.9/34.6/4.8 s, which summed to the whole 86.5 s fetch+write
+ * phase. Peer DOs are separate objects with independent budgets, so the
+ * constraint is cold-start burst rather than any per-object ceiling; 8 keeps
+ * that burst bounded while letting a full install fan-out clear in one phase.
+ */
+export declare const FANOUT_PHASE_SIZE = 8;
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {
     /**
@@ -100,6 +113,13 @@ export interface NimbusFanoutPoolOptions {
      * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
      */
     supervisorPid?: number;
+    /**
+     * Called once per completed peer-DO dispatch phase with that phase's shard
+     * count and elapsed ms. Phases are barriers, so this is what tells a caller
+     * whether its fan-out is bounded by shard work or by the number of barriers.
+     * Not called on the in-DO path, which has no phases.
+     */
+    onDispatchPhase?: (width: number, elapsedMs: number) => void;
 }
 /**
  * Two-tier fan-out pool. Constructed by the supervisor DO; routes

@@ -27,7 +27,7 @@ import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, s
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD, FANOUT_PHASE_SIZE } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '../observability/diag-counters.js';
@@ -220,6 +220,13 @@ export class NpmInstaller {
         // pool.map and the legacy in-supervisor fetchWaves loop were both
         // removed in Phase 2 A'.1 — they re-introduced the supervisor-heap
         // pressure the facet path eliminates.
+        // The shards write through the supervisor's VFS, so every transactionSync
+        // they cause runs on this DO's only thread. Only the count is reported:
+        // a DO's clock advances at I/O, never across synchronous work, so timing
+        // a transactionSync from inside it measures zero by construction (60,673
+        // transactions once summed to 0.0 ms with a 0.0 ms maximum). The count is
+        // still the honest scale signal for the staged-write protocol.
+        const commitsBefore = this.storageCommitCount();
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
             const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
@@ -230,6 +237,7 @@ export class NpmInstaller {
                 failed.push(name);
         }
         phases['fetch+write'] = Date.now() - phaseStart;
+        const commitCount = this.storageCommitCount() - commitsBefore;
         // ── Phase 6: Link bins ──────────────────────────────────────────
         phaseStart = Date.now();
         setInstallPhase('link-bins');
@@ -377,6 +385,7 @@ export class NpmInstaller {
             Object.entries(phases)
                 .map(([name, ms]) => `${name}=${(ms / 1000).toFixed(1)}s`)
                 .join(' '));
+        log(`  storage: ${commitCount} transactions during fetch+write`);
         return { installed, failed, totalFiles, elapsed, cachedHits, phases };
     }
     // ── Single-resolver / single-fetcher invariant ───────────────────────
@@ -442,6 +451,10 @@ export class NpmInstaller {
         // "resolution is slow because there are many packuments" from
         // "resolution is slow because there are many barriers".
         const layerProfile = [];
+        // Every layer additionally splits into peer-DO dispatch phases, each its
+        // own barrier, so the walk's real serialization is the barrier total
+        // rather than the layer count.
+        let dispatchBarriers = 0;
         // cache-obs-2: accumulator for per-tier cache events across all
         // resolve-one tasks in this fanout walk. Drained at end-of-walk
         // into the DO singleton via recordCacheStatEvents.
@@ -457,6 +470,7 @@ export class NpmInstaller {
             // 1-3 s. Per-task this gates each packument fetch + R2 race.
             timeoutMs: 5 * 60_000,
             preamble: NPM_RESOLVE_PREAMBLE,
+            onDispatchPhase: () => { dispatchBarriers++; },
         });
         // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
         // submitMany batch.
@@ -709,7 +723,8 @@ export class NpmInstaller {
             `peak in-flight=${inFlightPeak}, ` +
             `cache writes=${cacheWriteCount}` +
             r2WinSuffix +
-            `, layers=${totalLayers} [${layerProfile.join(' ')}], ` +
+            `, layers=${totalLayers} [${layerProfile.join(' ')}]` +
+            `, dispatch barriers=${dispatchBarriers}, ` +
             `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
             (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''));
         return { resolved, unresolved };
@@ -717,15 +732,15 @@ export class NpmInstaller {
     /**
      * Batch install via two-tier fan-out (NimbusFanoutPool).
      *
-     * Topology selected automatically based on the spec count:
-     *   specs.length <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-     *     1 NimbusLoaderPool with concurrency = specs.length, capped at
-     *     4 by V8 invariant. Each spec is one facet running its own
-     *     installPackagesInFacet over a single-element shard.
-     *   specs.length >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
-     *     N peer NimbusSession sibling DOs (N = min(specs.length,
-     *     MAX_PEER_FANOUT = 32)), each running ONE installPackagesInFacet
-     *     against its own shard with internal pLimit(3).
+     * Shard count is ⌈specs.length / PACKAGES_PER_SHARD⌉ capped at
+     * INSTALL_PEER_CAP, and the topology follows from it:
+     *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
+     *     1 NimbusLoaderPool with concurrency = shardCount, capped at
+     *     4 by V8 invariant. Each shard is one facet running its own
+     *     installPackagesInFacet.
+     *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
+     *     One peer NimbusSession sibling DO per shard, each running ONE
+     *     installPackagesInFacet against its shard with internal pLimit(3).
      *
      * Sharding strategy: round-robin (`pkgIdx % N`) so every peer DO
      *   receives roughly equal work. Stable-id router maps each
@@ -766,22 +781,18 @@ export class NpmInstaller {
         if (specs.length === 0) {
             return { installed, failed, filesWritten };
         }
-        // Shard count is bounded by the package count and the fan-out ceiling.
-        // Large installs use a smaller peer-DO cap than the general-purpose
-        // fanout pool: each shard does substantial tarball decode and VFS write
-        // work, and keeping the shard count at eight avoids excessive sibling DO
-        // cold starts under concurrent user installs. NimbusFanoutPool dispatches
-        // those peers in bounded phases, so this remains parallel without creating
-        // one cold-start burst per package shard.
-        const LARGE_INSTALL_THRESHOLD = 200;
-        const LARGE_INSTALL_PEER_CAP = 8;
-        let shardCount;
-        if (specs.length > LARGE_INSTALL_THRESHOLD) {
-            shardCount = Math.min(specs.length, LARGE_INSTALL_PEER_CAP);
-        }
-        else {
-            shardCount = Math.min(specs.length, MAX_PEER_FANOUT);
-        }
+        // One shard per package up to the peer cap. Each shard does substantial
+        // tarball decode and VFS write work, and NimbusFanoutPool dispatches peers
+        // in phases of FANOUT_PHASE_SIZE, so capping at the phase width keeps
+        // every install to a single dispatch barrier: shards past that point buy
+        // serial round-trips rather than parallelism.
+        //
+        // Previously a 200-package threshold selected between a 32-shard cap and
+        // an 8-shard cap, which ran backwards — 199 packages got 32 shards while
+        // 201 got 8, so the smaller install paid the larger fan-out. A
+        // 123-package install measured six barriers of ~6 packages each.
+        const INSTALL_PEER_CAP = FANOUT_PHASE_SIZE;
+        const shardCount = Math.min(specs.length, INSTALL_PEER_CAP);
         // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
         // This produces ⌈specs.length / shardCount⌉ specs per shard at
         // most, with the imbalance bounded to ±1.
@@ -793,6 +804,9 @@ export class NpmInstaller {
         const topology = nonEmptyShards.length < IN_DO_THRESHOLD ? 'in-do (in-DO fanout)' : 'peer-do (peer-DO fanout)';
         log(`Dispatching ${specs.length} packages across ${nonEmptyShards.length} ` +
             `shard${nonEmptyShards.length === 1 ? '' : 's'} (${topology}, internal pLimit=3)...`);
+        // Peer shards dispatch in bounded phases and each phase is a barrier, so
+        // the phase profile is what distinguishes shard work from barrier count.
+        const phaseProfile = [];
         const fanoutPool = new NimbusFanoutPool(this.env, this.ctx, {
             tag: 'npm-install-batch',
             // Whole-batch timeout. With per-shard parallelism of N=8 peer
@@ -807,6 +821,7 @@ export class NpmInstaller {
             // process credential; without a positive pid the supervisor
             // rejects the write (S2a cred enforcement).
             supervisorPid: pid,
+            onDispatchPhase: (width, elapsedMs) => phaseProfile.push(`${width}@${elapsedMs}ms`),
         });
         const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
             // Stable-id router key. Same shardIdx → same peer DO across
@@ -896,7 +911,10 @@ export class NpmInstaller {
                 r2WinSuffix +
                 `, write waves=${fc.sharedWaves} (worst shard stalled ` +
                 `${(fc.sharedWaveMs / 1000).toFixed(1)}s)` +
-                `, ${(result.elapsed / 1000).toFixed(1)}s` +
+                `, slowest shard ${(result.elapsed / 1000).toFixed(1)}s` +
+                (phaseProfile.length > 0
+                    ? `, dispatch phases=${phaseProfile.length} [${phaseProfile.join(' ')}]`
+                    : '') +
                 (failCount > 0 ? ` (${failCount} failed)` : ''));
             return { installed, failed, filesWritten };
         }
@@ -1911,6 +1929,10 @@ export class NpmInstaller {
         }
         catch { /* skip */ }
         return null;
+    }
+    /** Monotonic count of transactionSync calls this DO's VFS has executed. */
+    storageCommitCount() {
+        return this.store.getStats().sql?.transactions?.durationMs?.count ?? 0;
     }
     /**
      * P5 (production reliability) — deterministic supervisor-heap estimate in MiB.
