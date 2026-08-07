@@ -169,11 +169,28 @@ class __WasiExit { declare code: number; constructor(code: number) { this.code =
 // stub __wasiAdoptSupervisor installs. A sealed instance (no stub) keeps them
 // in memory and its caller names what it wants back via __wasiReadFilesB64.
 //
-// Installed by __wasiInitFS before any syscall can run, and dereferenced
-// unguarded by 113 of them. __wasiMakeImports enforces that ordering, which is
-// what lets the type say `WasiFsState` rather than push a null check into every
-// one of those call sites.
-let __wasiFS: WasiFsState = null as unknown as WasiFsState;
+// An empty filesystem from the first instruction, replaced wholesale by
+// __wasiInitFS. It used to start null, which 113 syscall bodies then
+// dereferenced without checking — a fact only visible once a type checker read
+// them. Eight other places DID check, and answered null/0/false, so the same
+// pre-init read was a TypeError down one path and a plausible wrong answer down
+// another. wasm-runner worked around it by calling __wasiInitFS with an empty
+// seed purely so "__wasiFS isn't null when WASI fns are called".
+//
+// Starting empty makes the invariant structural instead of a caller's duty: a
+// syscall before init now answers ENOENT against an empty filesystem, which is
+// true, rather than trapping the guest or being individually guarded 113 times.
+function __wasiEmptyFS(): WasiFsState {
+  return {
+    root: '',
+    files: new Map(), dirs: new Set(), times: new Map(), symlinks: new Map(),
+    modes: new Map(), sizes: new Map(), origFiles: new Map(),
+    residentFileCap: 8 * 1024 * 1024,
+    enumeratedRoots: [],
+    revision: null,
+  };
+}
+let __wasiFS: WasiFsState = __wasiEmptyFS();
 let __wasiPreopens: Array<{ fd: number; wasiPath: string; vfsPath: string }> = [];
 
 // ── Threads ──────────────────────────────────────────────────────────────
@@ -220,7 +237,7 @@ export function __wasiAdoptSupervisor(sup: WasiSupervisorStub | null): void {
  * a sealed instance, whose seed IS the whole filesystem by design.
  */
 function __wasiExpectsLiveBacking() {
-  return !!__wasiFS && __wasiFS.revision !== null && __wasiFS.revision !== undefined;
+  return __wasiFS.revision !== null && __wasiFS.revision !== undefined;
 }
 
 /** Mirror one mutation to the session VFS. Cache is already updated. */
@@ -293,7 +310,7 @@ function __wasiPersistFile(vfsPath: string): void {
  * per fd_write would be one syscall's cost paid by all of them.
  */
 function __wasiPersistTimes(vfsPath: string): void {
-  const t = __wasiFS && __wasiFS.times.get(vfsPath);
+  const t = __wasiFS.times.get(vfsPath);
   if (!t) return;
   const atimeMs = Number(t.atime / 1000000n);
   const mtimeMs = Number(t.mtime / 1000000n);
@@ -713,7 +730,6 @@ function __wasiAdoptSocket(socket: WasiSocket, fdflags: number): number {
 // WASI socket and polling support B1+B2 helpers: update tracked timestamps for a path. Idempotent.
 // Caller passes nanosecond BigInt(s); pass null for fields to keep unchanged.
 function __wasiTouchTimes(canonPath: string, mtimeNs: bigint | null, atimeNs: bigint | null, ctimeNs: bigint | null): void {
-  if (!__wasiFS) return;
   const cur = __wasiFS.times.get(canonPath);
   if (cur) {
     if (mtimeNs !== null) cur.mtime = mtimeNs;
@@ -745,7 +761,6 @@ function __wasiBumpMtime(canonPath: string): void {
  */
 export function __wasiReadFilesB64(paths: string[]): Record<string, string> {
   const out: Record<string, string> = {};
-  if (!__wasiFS) return out;
   for (const path of paths) {
     const canon = __wasiCanonicalize(path);
     const bytes = __wasiFS.files.get(canon);
@@ -834,7 +849,6 @@ function __wasiResolvePath(baseFd: number, pathStr: string): string | null {
 function __wasiResolvePathFull(baseFd: number, pathStr: string, followFlag: boolean): { path: string; isSymlink: boolean; err?: Errno } {
   let p = __wasiResolvePath(baseFd, pathStr);
   if (p === null) return { path: '', isSymlink: false, err: __WASI_EBADF };
-  if (!__wasiFS) return { path: p, isSymlink: false };
   if (!followFlag) {
     return { path: p, isSymlink: __wasiFS.symlinks.has(p), err: __WASI_ESUCCESS };
   }
@@ -865,13 +879,13 @@ function __wasiResolvePathFull(baseFd: number, pathStr: string, followFlag: bool
 }
 
 function __wasiEffectiveMode(path: string): number {
-  const mode = __wasiFS && __wasiFS.modes.get(path);
+  const mode = __wasiFS.modes.get(path);
   if (mode !== undefined) return mode;
   return __wasiInodeExists(path) ? 0 : 7;
 }
 
 function __wasiInodeExists(path: string): boolean {
-  return !!__wasiFS && (
+  return (
     __wasiFS.files.has(path) ||
     __wasiFS.dirs.has(path) ||
     __wasiFS.symlinks.has(path) ||
@@ -1051,17 +1065,14 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
 
   // ── Helpers operating on the VFS state ───────────────────────────────
   function getFile(vfsPath: string): Uint8Array | null {
-    if (!__wasiFS) return null;
     return __wasiFS.files.get(vfsPath) || null;
   }
   /** Known to exist — resident content or a manifest entry. */
   function fileKnown(vfsPath: string): boolean {
-    if (!__wasiFS) return false;
     return __wasiFS.files.has(vfsPath) || __wasiFS.sizes.has(vfsPath);
   }
   /** Size without forcing a load. */
   function fileSize(vfsPath: string): number {
-    if (!__wasiFS) return 0;
     const resident = __wasiFS.files.get(vfsPath);
     if (resident) return resident.length;
     return __wasiFS.sizes.get(vfsPath) ?? 0;
@@ -1165,7 +1176,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     return total;
   }
   function hasDir(vfsPath: string): boolean {
-    if (!__wasiFS) return false;
     if (__wasiFS.dirs.has(vfsPath)) return true;
     // Root preopens implicitly exist as dirs.
     return false;
@@ -1189,7 +1199,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   }
   function touchAccess(vfsPath: string): void {
     // WASI socket and polling support B1: bump atime on a read. mtime/ctime unchanged.
-    if (!__wasiFS) return;
     const cur = __wasiFS.times.get(vfsPath);
     if (cur) cur.atime = __wasiNowNs();
   }

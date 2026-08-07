@@ -216,7 +216,7 @@ function wakePipe(s: BashSession, pp: BashPipe): void {
   while (pp.readW.length && (pp.queued > 0 || pp.writers === 0)) {
     const w = pp.readW.shift() as BashReadWaiter; const proc = w.proc; const req = proc.ctx.pipeReq;
     const bytes = pp.queued > 0 ? takeUpTo(pp, req.iov.total) : new Uint8Array(0);
-    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
+    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
 }
@@ -225,7 +225,7 @@ function wakeStdin(s: BashSession): void {
   while (st.waiters.length && (st.queued > 0 || st.closed)) {
     const w = st.waiters.shift() as BashReadWaiter; const proc = w.proc; const req = proc.ctx.pipeReq;
     const bytes = st.queued > 0 ? takeUpTo(st, req.iov.total) : new Uint8Array(0);
-    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
+    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
 }
@@ -1025,7 +1025,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       // would block: asyncify-park until bytes/EOF arrive
       dv.setUint32(nread, 0, true);
       c.reason = 'blockread';
-      c.pipeReq = { fd, iov, nreadPtr: nread, isPoll: false };
+      c.pipeReq = { fd, iov, nreadPtr: nread };
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -1036,7 +1036,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
         proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false;
         const pr = proc.pendingRead; proc.pendingRead = null;
         const dv = DV();
-        dv.setBigUint64(outPtr, pr.pollUserdata as bigint, true);
+        dv.setBigUint64(outPtr, pr.pollUserdata ?? 0n, true);
         dv.setUint16(outPtr + 8, 0, true);
         dv.setUint8(outPtr + 10, 1);  // eventtype fd_read
         dv.setBigUint64(outPtr + 16, BigInt(pr.bytes.length), true);
@@ -1060,7 +1060,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       }
       dv.setUint32(retPtr, 0, true);
       c.reason = 'blockread';
-      c.pipeReq = { fd: blockSub.fd as number, iov: EMPTY_IOV, nreadPtr: 0, isPoll: true, pollUserdata: blockSub.userdata };
+      c.pipeReq = { fd: blockSub.fd as number, iov: EMPTY_IOV, nreadPtr: 0, pollUserdata: blockSub.userdata };
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -1241,7 +1241,7 @@ function step(s: BashSession, proc: BashProc): void {
     trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
     const target = blockTarget(s, proc, c.pipeReq.fd);
     if (!target) {  // fd closed under us: deliver EOF
-      proc.pendingRead = { iov: c.pipeReq.iov, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, isPoll: c.pipeReq.isPoll, pollUserdata: c.pipeReq.pollUserdata };
+      proc.pendingRead = { iov: c.pipeReq.iov, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, pollUserdata: c.pipeReq.pollUserdata };
       resumeProc(proc);
     } else {
       target.list.push({ proc });
