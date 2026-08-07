@@ -19,6 +19,20 @@
 // lib/wasi-imports.mjs): the interpreter only touches files, whose bodies
 // return plain errnos, so nothing needs to park.
 //
+// WHAT THIS TEST CANNOT DIAGNOSE, AND WHY THAT MATTERS
+//
+// The stdlib is seeded here BY VALUE. In a live session it is a manifest entry
+// whose bytes are demand-loaded through the supervisor, so this test does not
+// exercise that path at all and must not be used to reason about it.
+//
+// The trap is specific: this harness produced the exact string a live failure
+// produces — "Failed to import encodings module" — for a completely unrelated
+// reason. bun has no JSPI, so the Suspending fd_read handed the guest a Promise
+// where an i32 belongs. Live, `promising` is present and the read suspends
+// correctly. CPython emits that one message for every variety of "I cannot find
+// my stdlib", so a green here says nothing about a red there, and a red here
+// may be about the harness rather than the runtime.
+//
 // Observed once, 2026-08-07: `Illegal instruction (core dumped)` from bun
 // during a full sequential sweep of tests/unit, while the CPython build tree
 // was still resident on the machine. Not reproducible — six isolated runs and
