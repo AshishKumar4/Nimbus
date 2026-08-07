@@ -463,16 +463,8 @@ if (spec.ingest_only) {
 
   // ── 4. Update the top-level catalog ──────────────────────────────
   const catalogR2Key = 'catalog/v1.json';
-  let catalog = { version: 1, runtimes: {} };
-  try {
-    const out = execSync(
-      `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object get ${BUCKET}/${catalogR2Key} --pipe --remote 2>/dev/null`,
-      { encoding: 'utf8' },
-    );
-    catalog = JSON.parse(out);
-  } catch {
-    console.log(`[bundle-runtime] no existing catalog; creating fresh`);
-  }
+  const catalog = readCatalogForUpdate(catalogR2Key);
+  const knownRuntimesBefore = Object.keys(catalog.runtimes);
 
   if (!catalog.runtimes[RUNTIME]) catalog.runtimes[RUNTIME] = { default: VERSION, versions: {} };
   // Catalog size_bytes counts unique blob content, not duplicate
@@ -496,6 +488,16 @@ if (spec.ingest_only) {
   // already the default, no-op).
   catalog.runtimes[RUNTIME].default = VERSION;
 
+  // The catalog indexes every runtime, so an update that drops one is a
+  // publish that unregisters somebody else's. Cheap to assert, and it catches
+  // a future edit to this function as well as a bad read.
+  for (const name of knownRuntimesBefore) {
+    if (!catalog.runtimes[name]) {
+      console.error(`ERROR: refusing to publish a catalog that lost runtime '${name}'`);
+      process.exit(1);
+    }
+  }
+
   const catalogLocal = join(workDir, 'catalog.json');
   writeFileSync(catalogLocal, JSON.stringify(catalog, null, 2));
   console.log(`[bundle-runtime] put r2://${BUCKET}/${catalogR2Key}`);
@@ -508,6 +510,57 @@ if (spec.ingest_only) {
   console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
   console.log(`[bundle-runtime] manifest:  r2://${BUCKET}/${manifestR2Key}`);
   console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key}`);
+}
+
+/**
+ * Read catalog/v1.json for a read-modify-write.
+ *
+ * catalog/v1.json is a single shared index over every runtime, and this read is
+ * the only thing between a transient R2 failure and publishing an empty catalog
+ * over the top of a populated one. The previous version swallowed stderr and
+ * fell back to `{ runtimes: {} }` on ANY failure, then wrote that back — so a
+ * network blip during a `bundle-runtime.mjs clang ...` would have silently
+ * unregistered python, ruby and bash, and said "no existing catalog; creating
+ * fresh" while doing it.
+ *
+ * A genuinely absent object is the one recoverable case, and it is
+ * distinguishable: wrangler says so in as many words. Everything else stops.
+ */
+function readCatalogForUpdate(catalogR2Key) {
+  const result = spawnSync(
+    WRANGLER,
+    ['r2', 'object', 'get', `${BUCKET}/${catalogR2Key}`, '--pipe', '--remote'],
+    { encoding: 'utf8', env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT } },
+  );
+  const stderr = result.stderr || '';
+  const missing = /The specified key does not exist|NoSuchKey|Object not found/i.test(stderr);
+  const body = (result.stdout || '').trim();
+
+  if (missing && !body) {
+    console.log('[bundle-runtime] no existing catalog; creating the first one');
+    return { version: 1, runtimes: {} };
+  }
+  if (result.error || !body) {
+    console.error('ERROR: could not read the existing catalog, and overwriting it blind would');
+    console.error('       unregister every runtime already published. Nothing was written.');
+    if (result.error) console.error(`       ${result.error.message}`);
+    if (stderr.trim()) console.error(`       ${stderr.trim().split('\n').slice(-3).join('\n       ')}`);
+    process.exit(1);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch (e) {
+    console.error(`ERROR: the existing catalog is not valid JSON (${e.message}); refusing to replace it`);
+    process.exit(1);
+  }
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.runtimes !== 'object' || parsed.runtimes === null) {
+    console.error('ERROR: the existing catalog has no runtimes object; refusing to replace it');
+    process.exit(1);
+  }
+  console.log(`[bundle-runtime] existing catalog lists: ${Object.keys(parsed.runtimes).join(', ') || '(none)'}`);
+  return parsed;
 }
 
 // ── Runtime transforms ───────────────────────────────────────────────
