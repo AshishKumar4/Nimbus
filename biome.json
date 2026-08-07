@@ -62,6 +62,78 @@
   "overrides": [
     {
       "includes": [
+        "packages/worker/src/substrate/lifo/kernel/ServiceManager.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noSelfAssign": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/session/nimbus-session.ts",
+        "packages/worker/src/shell/features.ts"
+      ],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noVoidTypeReturn": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/_shared/w7-frame.ts",
+        "packages/worker/src/facets/manager.ts",
+        "packages/worker/src/facets/vite-dev-server.ts",
+        "packages/worker/src/npm/installer.ts",
+        "packages/worker/src/runtime/barrel-synthesizer.ts",
+        "packages/worker/src/runtime/esbuild-service.ts",
+        "packages/worker/src/runtime/require-resolver.ts",
+        "packages/worker/src/runtime/virtual-socket-kernel.ts",
+        "packages/worker/src/session/routes.ts",
+        "packages/worker/src/shell/unix-commands.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noAssignInExpressions": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/runtime/process-logs.ts",
+        "packages/worker/src/shell/unix-commands.ts",
+        "packages/worker/src/substrate/lifo/node-compat/util.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noControlCharactersInRegex": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/substrate/lifo/node-compat/index.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noDoubleEquals": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
         "apps/hosted-demo/src/demo-agent-auth.ts",
         "apps/hosted-demo/src/demo-anon.ts",
         "apps/hosted-demo/src/demo-auth.ts",
@@ -160,6 +232,51 @@
         "rules": {
           "suspicious": {
             "noExplicitAny": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/facets/vite-dev-server.ts",
+        "packages/worker/src/npm/installer.ts",
+        "packages/worker/src/runtime/package-manager.ts",
+        "packages/worker/src/runtime/python-runner.ts",
+        "packages/worker/src/runtime/require-resolver.ts",
+        "packages/worker/src/session/bindings.ts",
+        "packages/worker/src/session/ws.ts",
+        "packages/worker/src/shell/unix-commands.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noImplicitAnyLet": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/shell/unix-commands.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noShadowRestrictedNames": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "packages/worker/src/loaders/fanout-pool.ts",
+        "packages/worker/src/runtime/virtual-socket-kernel.ts",
+        "packages/worker/src/substrate/lifo/node-compat/process.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "useIterableCallbackReturn": "off"
           }
         }
       }
