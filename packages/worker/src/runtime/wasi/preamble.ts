@@ -2108,9 +2108,22 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     },
     fd_datasync()   { return __WASI_ESUCCESS; },
     fd_sync()       { return __WASI_ESUCCESS; },
+    // dup2(2), and the only way to reach it: preview1 has no dup. Renumbering
+    // CLOSES `to` — dropping the entry instead leaks whatever it held, and for
+    // a socket that is a live stream the kernel is never told about.
     fd_renumber(from, to) {
       const entry = fdTable.get(from);
       if (!entry) return __WASI_EBADF;
+      if (from === to) return __WASI_ESUCCESS;
+      const target = fdTable.get(to);
+      // Preopens are the filesystem's roots. Renumbering over one takes the VFS
+      // out from under the guest with nothing left to read, so it is refused
+      // rather than obeyed — fd_close declines to close them for the same reason.
+      if (target && target.kind === 'preopen') return __WASI_ENOTCAPABLE;
+      if (target && target.kind === 'socket' && !target.closed) {
+        try { target.socket.close(); } catch {}
+        target.closed = true;
+      }
       fdTable.delete(from);
       fdTable.set(to, entry);
       return __WASI_ESUCCESS;
