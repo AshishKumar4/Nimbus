@@ -216,31 +216,51 @@ export function sessionIdFromPath(pathname: string): string | null {
   }
 }
 
-export function renderLaunchPage(auth: DemoAuth | null): Response {
-  const login = auth
-    ? `<form action="/new" method="POST"><button>Launch</button></form><a href="/logout">Sign out</a>`
-    : `<a href="/login?return_to=/new">Sign in with Cloudflare</a>`;
-  return html(200, `
+export function renderLaunchPage(auth: DemoAuth | null, env: any): Response {
+  if (auth) {
+    return demoPage(200, `
+      <main>
+        <h1>Nimbus</h1>
+        <p>Your sandboxes are private to you and last for days.</p>
+        <form action="/new" method="POST"><button>Launch a sandbox</button></form>
+        <a href="/logout">Sign out</a>
+      </main>
+    `);
+  }
+  return demoPage(200, `
     <main>
       <h1>Nimbus</h1>
-      <p>Cloudflare login is required before creating a hosted demo sandbox.</p>
-      ${login}
+      <p>A real computer inside a Cloudflare Worker. Start one now — no account, no sign-in.</p>
+      <a href="/try">Try it now</a>
+      <p class="note">A free sandbox is ephemeral: it runs for about ${anonTtlMinutes(env)} minutes and is not saved. Sign in with Cloudflare to keep sandboxes for days and to run the AI agent on your own account.</p>
+      <a href="/login?return_to=/new">Sign in with Cloudflare</a>
     </main>
   `);
 }
 
-export function renderExpiredSession(sessionId: string): Response {
-  return html(410, `
+export function renderExpiredSession(
+  sessionId: string,
+  options: { anonymous?: boolean } = {},
+): Response {
+  // An anonymous visitor has no login to return to, so the logged-in
+  // "launch another" (POST /new) would bounce them into Cloudflare OAuth —
+  // the exact wall the free path exists to avoid.
+  const again = options.anonymous
+    ? `<a href="/try">Start another</a>
+       <p class="note">Free sandboxes are ephemeral by design. Sign in with Cloudflare to keep yours for days.</p>
+       <a href="/login?return_to=/new">Sign in with Cloudflare</a>`
+    : `<form action="/new" method="POST"><button>Launch a new sandbox</button></form>`;
+  return demoPage(410, `
     <main>
       <h1>Session expired</h1>
-      <p>This Nimbus demo sandbox was idle past its retention window.</p>
-      <form action="/new" method="POST"><button>Launch a new sandbox</button></form>
+      <p>This Nimbus sandbox passed its retention window and has been destroyed.</p>
+      ${again}
     </main>
   `, { 'X-Nimbus-Expired-Session': sessionId });
 }
 
 export function renderForbiddenSession(): Response {
-  return html(404, `
+  return demoPage(404, `
     <main>
       <h1>Session not found</h1>
       <p>This sandbox is unavailable for the signed-in user.</p>
@@ -280,6 +300,11 @@ function anonMaxActive(env: any): number {
   return Math.max(1, Math.floor(envNumber(env, 'DEMO_ANON_MAX_ACTIVE', 10)));
 }
 
+/** The ephemeral lifetime, in whole minutes, as told to the visitor. */
+function anonTtlMinutes(env: any): number {
+  return Math.max(1, Math.round(anonTtlMs(env) / 60_000));
+}
+
 function touchDebounceMs(env: any): number {
   return Math.max(0, envNumber(env, 'DEMO_TOUCH_DEBOUNCE_SECONDS', 600)) * 1000;
 }
@@ -293,7 +318,12 @@ function envNumber(env: Record<string, unknown>, key: string, fallback: number):
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-function html(status: number, body: string, extraHeaders: Record<string, string> = {}): Response {
+/** The demo's shared page chrome, used by every server-rendered page here. */
+export function demoPage(
+  status: number,
+  body: string,
+  extraHeaders: Record<string, string> = {},
+): Response {
   return new Response(`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -303,6 +333,7 @@ function html(status: number, body: string, extraHeaders: Record<string, string>
   main{width:min(420px,calc(100vw - 48px));display:grid;gap:14px}
   h1{margin:0;font-size:22px}
   p{margin:0;color:#91a39a;line-height:1.5}
+  p.note{font-size:13px;color:#6f827a}
   form{margin:0}
   button,a{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 14px;border:1px solid #2d3a35;border-radius:6px;background:#111816;color:#9eeac6;text-decoration:none;font:inherit}
   button{cursor:pointer}

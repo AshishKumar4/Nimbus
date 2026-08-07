@@ -157,12 +157,17 @@
 	    "DEMO_AUTH_COOKIE_DAYS": "30",
 	    "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
 	    "DEMO_CLEANUP_BATCH_SIZE": "100",
+	    // Ceiling on concurrently live free sandboxes. Sized for `GET /try`
+	    // being the landing page's primary call to action, not just the docs
+	    // terminal: at the 600s lifetime, 100 slots sustain ~600 starts/hour
+	    // before anyone is turned away.
 	    "DEMO_ANON_TTL_SECONDS": "600",
-	    "DEMO_ANON_MAX_ACTIVE": "10"
+	    "DEMO_ANON_MAX_ACTIVE": "100"
 	  },
-  // Per-IP limiter for the anonymous docs-terminal endpoint
-  // (POST /api/demo/anon-session). Counters are shared across Workers on
-  // the account by namespace_id; period must be 10 or 60 (seconds).
+  // Per-IP limiter for both anonymous session entry points
+  // (POST /api/demo/anon-session, GET /try). Counters are shared across
+  // Workers on the account by namespace_id; period must be 10 or 60
+  // (seconds).
   // Distinct namespace from production's 1001: counters are shared across
   // Workers on the account BY namespace_id, so a dev or throwaway sharing it
   // would spend production's per-IP budget for real visitors on that IP.
@@ -355,7 +360,7 @@
         "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
         "DEMO_CLEANUP_BATCH_SIZE": "100",
         "DEMO_ANON_TTL_SECONDS": "600",
-        "DEMO_ANON_MAX_ACTIVE": "10"
+        "DEMO_ANON_MAX_ACTIVE": "100"
       },
       "ratelimits": [
         {
@@ -431,7 +436,7 @@
 	        "DEMO_NIMBUS_JWT_TTL_SECONDS": "900",
 	        "DEMO_CLEANUP_BATCH_SIZE": "100",
 	        "DEMO_ANON_TTL_SECONDS": "600",
-	        "DEMO_ANON_MAX_ACTIVE": "10",
+	        "DEMO_ANON_MAX_ACTIVE": "100",
 	        "NIMBUS_PREVIEW_HOST_SUFFIX": "nimbus-os.dev"
 	      },
       "ratelimits": [
