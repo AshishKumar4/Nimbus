@@ -29,6 +29,17 @@
 //
 //   So it no longer models the bundler — it RUNS it, and matches the output.
 //   Whatever esbuild actually keeps is what the loader will actually see.
+//
+//   THE GENERAL RULE, because the specific one keeps being relearned here:
+//   a checker that MODELS the system will eventually disagree with it; a
+//   checker that RUNS the system cannot. This file has now been wrong twice in
+//   the same direction — once with a hardcoded list of four files that had all
+//   been deleted, and once with a comment model that was merely almost right.
+//   Both times it reported success while the regression it exists to catch was
+//   live. Calling esbuild costs milliseconds per file. If you are tempted to
+//   drop it for a regex because this got slower, you are rebuilding the same
+//   defect a third time.
+//
 //   Occurrences the bundler drops are still counted and reported but do not
 //   fail: flagging those would make the check cry wolf on harmless lines,
 //   which is how a guard gets switched off.
