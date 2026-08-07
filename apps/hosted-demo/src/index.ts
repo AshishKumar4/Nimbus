@@ -42,7 +42,7 @@ import {
   type DemoAuth,
 } from './demo-auth.js';
 import { createDemoAgentAuthCookie } from './demo-agent-auth.js';
-import { handleAnonSessionCreate } from './demo-anon.js';
+import { handleAnonLaunch, handleAnonSessionCreate } from './demo-anon.js';
 import { cleanupExpiredDemoSessions } from './demo-cleanup.js';
 import { demoSandboxPrincipal, issueDemoSandboxToken, withInternalNimbusAuth } from './demo-nimbus.js';
 import { legacyHostRedirect } from './legacy-redirect.js';
@@ -129,6 +129,7 @@ async function handleHostedDemoRequest(
   }
   if (url.pathname === '/api/demo/auth/me') return handleDemoAuthMe(request, env);
   if (url.pathname === '/api/demo/anon-session') return handleAnonSessionCreate(request, env);
+  if (url.pathname === '/try') return handleAnonLaunch(request, env);
   if (url.pathname === '/new') return handleNew(request, env);
   if (url.pathname === '/api/sdk-smoke') return handleSdkSmoke(request, env);
   if (url.pathname === '/api/sdk-remote-smoke') return handleSdkRemoteSmoke(request, env, ctx);
@@ -148,7 +149,7 @@ async function handleNew(request: Request, env: any): Promise<Response> {
       const session = await createDemoSession(env, auth);
       return launchRedirectResponse(env, auth, session.sessionId);
     }
-    return renderLaunchPage(auth);
+    return renderLaunchPage(auth, env);
   }
   if (request.method !== 'POST') {
     return new Response('Method not allowed', {
@@ -206,7 +207,7 @@ async function handleSessionRequest(
   // core router verifies it in enforce mode. Fixed lifetime — no touch.
   if (session?.userId === ANON_USER_ID) {
     if (session.status !== 'active' || session.expiresAt <= Date.now()) {
-      return renderExpiredSession(sessionId);
+      return renderExpiredSession(sessionId, { anonymous: true });
     }
     return nimbus.fetch(request, env, ctx);
   }

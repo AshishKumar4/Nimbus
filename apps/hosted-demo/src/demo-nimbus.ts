@@ -45,24 +45,31 @@ export function demoTenantSegment(auth: DemoAuth): string {
 }
 
 /**
- * Attach window for the wsUrl handed to the docs terminal: long enough for
- * the browser to open the WebSocket right after the create POST, short
- * enough that a leaked URL goes stale in minutes. The session's own
- * lifetime is governed separately by DEMO_ANON_TTL_SECONDS.
+ * The attach credential for an anonymous session, valid for exactly as long
+ * as the session it is pinned to.
+ *
+ * Both bounds are load-bearing. The router's attach exchange derives the
+ * browser cookie's Max-Age from this token's `exp`, so a token shorter than
+ * the session logs the visitor out of a sandbox that is still running; a
+ * token longer than the session outlives the sandbox it names, which cleanup
+ * has already destroyed. The session's fixed lifetime
+ * (DEMO_ANON_TTL_SECONDS, no idle extension) is therefore the one bound on
+ * both, and a leaked URL is worthless the moment the session ages out.
  */
-const ANON_ATTACH_TOKEN_TTL_MS = 120_000;
-
-export async function issueAnonAttachToken(env: any, sessionId: string): Promise<string> {
+export async function issueAnonAttachToken(
+  env: any,
+  session: { sessionId: string; expiresAt: number },
+): Promise<string> {
   const { tenant, subject } = demoSandboxPrincipal(ANON_USER_ID);
   return issueNimbusToken(
     env,
     {
       tn: tenant,
       sub: subject,
-      sid: sessionId,
+      sid: session.sessionId,
       scopes: ['session:attach'],
     },
-    { ttlMs: ANON_ATTACH_TOKEN_TTL_MS },
+    { ttlMs: Math.max(1000, session.expiresAt - Date.now()) },
   );
 }
 
