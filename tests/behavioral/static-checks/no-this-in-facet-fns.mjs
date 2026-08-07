@@ -9,20 +9,40 @@
 // sentence.
 //
 // WHAT MAKES THIS CLASS DANGEROUS
-//   Bundling strips comments. It does not strip strings.
+//   The word is harmless where the bundler drops it and fatal where it does
+//   not, so the day someone moves the same sentence from one position into
+//   another, every dispatch through that function begins failing at runtime
+//   with an error that blames `this`. That is what happened to wasmFacetCall:
+//   eight occurrences sat in its comments for months, then wasi-threads parity
+//   put one in a shared-memory error string and `wasm-runner` stopped working
+//   entirely (hand-crafted-add 4/7, pthread-parity 3/10, clang/hello-world 4/5).
 //
-//   The word is harmless in a comment and fatal in a message, so the day
-//   someone moves the same sentence from one into the other, every dispatch
-//   through that function begins failing at runtime with an error that blames
-//   `this`. That is what happened to wasmFacetCall: eight occurrences sat in
-//   its comments for months, then wasi-threads parity put one in a
-//   shared-memory error string and `wasm-runner` stopped working entirely
-//   (hand-crafted-add 4/7, pthread-parity 3/10, clang/hello-world 4/5).
+// WHY THIS RUNS THE BUNDLER INSTEAD OF BLANKING COMMENTS
+//   It used to blank comments with a scanner and match what was left, on the
+//   rule "bundling strips comments, it does not strip strings". That rule is
+//   not true, and a green run on a broken tree is how it was found: esbuild
+//   DROPS a standalone comment but KEEPS one attached to an object-literal
+//   property or a call argument. A comment added directly above `getMemory:`
+//   inside wasmFacetCall survived into the deployed bundle and broke all 38
+//   WASI, wasm-runner and clang probes, while this check reported 9 pass /
+//   0 fail and counted the very occurrence as "stripped when bundled".
 //
-//   So this check blanks comments and then matches, seeing what the loader
-//   will see. Occurrences in comments are counted and reported but do not
-//   fail — flagging those would make the check cry wolf on eight harmless
-//   lines, which is how a guard gets switched off.
+//   So it no longer models the bundler — it RUNS it, and matches the output.
+//   Whatever esbuild actually keeps is what the loader will actually see.
+//
+//   THE GENERAL RULE, because the specific one keeps being relearned here:
+//   a checker that MODELS the system will eventually disagree with it; a
+//   checker that RUNS the system cannot. This file has now been wrong twice in
+//   the same direction — once with a hardcoded list of four files that had all
+//   been deleted, and once with a comment model that was merely almost right.
+//   Both times it reported success while the regression it exists to catch was
+//   live. Calling esbuild costs milliseconds per file. If you are tempted to
+//   drop it for a regex because this got slower, you are rebuilding the same
+//   defect a third time.
+//
+//   Occurrences the bundler drops are still counted and reported but do not
+//   fail: flagging those would make the check cry wolf on harmless lines,
+//   which is how a guard gets switched off.
 //
 // WHY dist AND NOT src
 //   dist is what the worker is bundled from, it is committed, and it is plain
@@ -39,6 +59,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
+import { transform } from 'esbuild';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..', '..', '..');
@@ -193,19 +214,28 @@ let discovered = 0;
 for (const file of jsFiles(DIST)) {
   const src = readFileSync(file, 'utf-8');
   if (!src.includes(SUBMIT)) continue;
-  const blank = blankComments(src);
   const rel = relative(REPO, file);
+  // What the deploy actually emits. Same settings the worker is bundled with —
+  // no minification, which is exactly the configuration that keeps comments the
+  // scanner used to assume were gone.
+  const bundled = (await transform(src, { loader: 'js', target: 'esnext' })).code;
+  // Comments are still blanked, but only to report which occurrences the
+  // bundler chose to drop. Nothing passes or fails on this copy.
+  const blank = blankComments(src);
 
   for (const name of new Set(submittedNames(blank))) {
-    const range = facetFnRange(blank, name);
+    const range = facetFnRange(bundled, name);
     if (!range) continue;   // a parameter, or defined in another module
     discovered++;
 
-    const body = blank.slice(range.open, range.close);
-    const raw = src.slice(range.open, range.close);
+    const body = bundled.slice(range.open, range.close);
+    const rawRange = facetFnRange(blank, name);
+    const rawCount = rawRange
+      ? [...src.slice(rawRange.open, rawRange.close).matchAll(/\bthis\b/g)].length
+      : 0;
     const live = [...body.matchAll(/\bthis\b/g)];
-    const inComments = [...raw.matchAll(/\bthis\b/g)].length - live.length;
-    const note = inComments > 0 ? ` (${inComments} in comments, stripped when bundled)` : '';
+    const dropped = Math.max(0, rawCount - live.length);
+    const note = dropped > 0 ? ` (${dropped} more in source, dropped by the bundler)` : '';
 
     if (live.length === 0) {
       console.log(`  ✓ ${rel}::${name} — no \`this\` the bundler would keep${note}`);
@@ -213,9 +243,12 @@ for (const file of jsFiles(DIST)) {
       continue;
     }
     console.log(`  ✗ ${rel}::${name} — ${live.length} \`this\` survive(s) bundling${note}:`);
+    // Offsets are into the BUNDLED text, so the surrounding bundled line is
+    // quoted rather than a source line number that would not correspond.
+    const bundledLines = bundled.split('\n');
     for (const m of live) {
-      const line = lineOf(src, range.open + m.index);
-      console.log(`      line ${line}: ${(src.split('\n')[line - 1] || '').trim().slice(0, 120)}`);
+      const line = lineOf(bundled, range.open + m.index);
+      console.log(`      bundled line ${line}: ${(bundledLines[line - 1] || '').trim().slice(0, 120)}`);
     }
     fail++;
   }

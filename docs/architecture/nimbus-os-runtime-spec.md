@@ -37,7 +37,7 @@ Important source areas:
 | Runtime package manager | `packages/worker/src/runtime/package-manager.ts` |
 | Runtime OS contracts | `packages/worker/src/runtime/os-contracts.ts` |
 | SQLite runtime FS bridge | `packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts` |
-| WASI/POSIX shim | `packages/worker/src/runtime/wasi-instance.ts` |
+| WASI/POSIX shim | `packages/worker/src/runtime/wasi/preamble.ts` (bundled into the facet payload at build time; `wasi-instance.ts` re-exports the result) |
 | Node compatibility shims | `packages/worker/src/runtime/node-shims.ts` |
 | Python runner | `packages/worker/src/runtime/python-runner.ts` |
 | Ruby runner | `packages/worker/src/runtime/ruby-runner.ts` |

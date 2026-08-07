@@ -26,17 +26,8 @@ import type { RuntimeManifest } from './runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
-import type { WasiFsDiff } from './vfs-snapshot.js';
+import type { BashSlice } from './bash/types.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
-export interface BashSlice {
-    state: 'need-input' | 'exited' | 'error';
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-    error?: string;
-    fsDiff?: WasiFsDiff;
-    stats?: Record<string, unknown>;
-}
 export interface BashFacetSession {
     readonly initial: BashSlice;
     push(data: string, eof?: boolean): Promise<BashSlice>;
@@ -60,16 +51,12 @@ export declare function makeBashRunnerFactory(deps: {
     vfs: SqliteVFS;
 }): BashRunnerFactory;
 /**
- * The facet-side scheduler. Direct port of the PROVEN local acid-test
- * driver (packages/worker/wasm/bash/run-bash-fork.mjs) with the
- * production additions: a VFS-snapshot file layer, terminal stdin
- * park/feed, jmp_buf→slot reuse (bounded slots for long interactive
- * sessions), fsDiff capture, and memory stats.
+ * Source string injected as the loader-pool `preamble`. The facet's module init
+ * evaluates it verbatim so `__bashBoot` / `__bashFeed` are in scope when the
+ * user fn runs. Self-contained — no closure captures, no imports.
  *
- * Arena sizing: MAIN_SIZE bounds one asyncify stack capture (bash's
- * measured captures are <64 KiB; 8 MiB is generous headroom), SLOT_*
- * bound setjmp snapshots. sbrk growth lands AFTER the arena (wasm
- * memory only grows at the end), so no inter-arena headroom is needed.
+ * The scheduler itself lives in `bash/preamble.ts` as real TypeScript; the build
+ * bundles it into `bash-runner.generated.ts`.
  */
 export declare const BASH_RUNNER_PREAMBLE: string;
 export {};

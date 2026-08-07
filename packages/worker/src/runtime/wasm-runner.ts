@@ -54,6 +54,7 @@ import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
+import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
 import type { WasiAbi } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { manifestVfs } from './vfs-manifest.js';
@@ -63,19 +64,16 @@ import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
 // time and declares these top-level. The facet fn below references
 // them; tsc needs to know they exist. Empty bodies — only types.
-declare const __wasiMakeImports: (opts: {
-  argv?: string[];
-  env?: Record<string, string>;
-  abi?: WasiAbi;
-  threads?: boolean;
-  getMemory: () => WebAssembly.Memory | null;
-  stdoutWrite?: (s: string) => void;
-  stderrWrite?: (s: string) => void;
-}) => {
-  wasiImport: WebAssembly.ModuleImports;
-  getStdout: () => string;
-  getStderr: () => string;
-};
+//
+// The SHAPES come from runtime/wasi/types.ts, which is what the shim itself is
+// written against. They used to be restated here by hand, and the copy had
+// drifted: it omitted `parking` entirely and declared `getMemory` as returning a
+// nullable memory, which the shim dereferences unguarded. A second description
+// of one contract cannot be kept honest, so there is now only the one.
+declare const __wasiMakeImports: (opts: WasiMakeImportsOptions) => WasiInstanceBundle;
+declare const __wasiInitFS: (opts: WasiInitOptions) => void;
+declare const __wasiAdoptSupervisor: (sup: unknown) => void;
+declare const __wasiDrainPersist: () => Promise<void>;
 /** The green-thread scheduler — see runtime/wasi-threads.ts. */
 interface WasiThreadScheduler {
   hostImports: () => Record<string, WebAssembly.ModuleImports>;
@@ -104,22 +102,6 @@ declare const __wasiRunStartAsync: (
   instance: WebAssembly.Instance,
   ctx: { memory: WebAssembly.Memory },
 ) => Promise<{ exitCode: number; error?: string }>;
-declare const __wasiInitFS: (opts: {
-  root: string;
-  preopens: Array<{ wasiPath: string; vfsPath: string }>;
-  files: Record<string, string>;
-  dirs: string[];
-  modes: Record<string, number>;
-  // WASI socket and polling support B1+B3: additive optional fields.
-  times?: Record<string, { mtime: string; atime: string; ctime: string }>;
-  symlinks?: Record<string, string>;
-  sizes?: Record<string, number>;
-  enumeratedRoots?: string[];
-  revision?: number;
-}) => void;
-declare const __wasiAdoptSupervisor: (sup: unknown) => void;
-declare const __wasiDrainPersist: () => Promise<void>;
-
 export const WASM_RUNNER_VERSION = '0.3.0';
 
 export const WASM_RUNNER_HELP =
@@ -499,7 +481,13 @@ export function makeWasmRunner(deps: {
           env: args.wasiEnv || {},
           abi,
           threads: !!args.threads,
-          getMemory: () => memRef.mem,
+          // Non-null by ordering, not by check. The import table is only ever
+          // CALLED from inside the guest, and the guest cannot run before
+          // `_start` below, by which point memRef.mem is assigned or the call
+          // has already returned an error. The shim dereferences the result
+          // unguarded, so if the ordering ever stops holding, the failure is a
+          // TypeError raised inside a suspended syscall.
+          getMemory: () => memRef.mem as WebAssembly.Memory,
         });
         // Bind ONLY the namespace this module actually imports, with the
         // import table built for that ABI. Aliasing one preview1 table onto
@@ -508,8 +496,12 @@ export function makeWasmRunner(deps: {
         // whence and a 64-byte filestat it decodes as 56, so every lseek
         // lands wrong and every st_size reads back as the nlink field. The
         // signatures are identical, so nothing traps and nothing is logged.
+        // The one place the precise table meets WebAssembly's own types, which
+        // describe an import object as an untyped index signature. Widening
+        // here keeps the precision on the shim's side of the boundary.
         const importObject: Record<string, WebAssembly.ModuleImports> = {
-          [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
+          [args.wasiNamespace || 'wasi_snapshot_preview1']:
+            wasi.wasiImport as unknown as WebAssembly.ModuleImports,
         };
         // A threads build imports its memory instead of defining one, because
         // every thread is another instance and they must all address the same
