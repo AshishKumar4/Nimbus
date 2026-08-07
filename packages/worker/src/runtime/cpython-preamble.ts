@@ -106,6 +106,28 @@ async function __nimbusPyBoot(args) {
   const initRc = await withCString(args.pythonHome || '/usr/local',
     (ptr) => __nimbusEnterVm(exports.nimbus_py_init)(ptr));
   if (initRc !== 0) {
+    // Do the bytes arrive intact? The interpreter, the stdlib and this preamble
+    // are all proven by tests/unit/cpython-wasi-reactor.mjs, which seeds the
+    // stdlib BY VALUE. The only thing a live session changes is the transport:
+    // manifest entry + supervisor RPC. So hash what the transport actually
+    // delivers rather than guessing at a size limit.
+    let transport = 'not-attempted';
+    try {
+      const zipPath = (args.pythonHome || '').replace(/^\/+/, '') + '/lib/python313.zip';
+      const want = __wasiFS.sizes.get(zipPath);
+      const sup = globalThis.__nimbusPySupervisor;
+      if (!sup || typeof sup.fsReadRange !== 'function') {
+        transport = 'no-supervisor';
+      } else {
+        const got = await sup.fsReadRange(zipPath, 0, want);
+        const bytes = got instanceof Uint8Array ? got : new Uint8Array(got);
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const hex = Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, '0')).join('');
+        transport = 'want=' + want + ' got=' + bytes.byteLength + ' sha=' + hex.slice(0, 16);
+      }
+    } catch (e) { transport = 'threw ' + ((e && e.message) || e); }
+
     // CPython's own message for an unreadable stdlib is "Failed to import
     // encodings module", which says nothing about where it looked or why the
     // read failed. These three facts are what separated a mode-0 root from a
@@ -113,7 +135,8 @@ async function __nimbusPyBoot(args) {
     // identically.
     throw new Error('the interpreter failed to start: home=' + (args.pythonHome || '/usr/local')
       + ' supervisor=' + (globalThis.__nimbusPySupervisor ? 'yes' : 'NO')
-      + ' promising=' + (typeof WebAssembly.promising === 'function' ? 'yes' : 'NO'));
+      + ' promising=' + (typeof WebAssembly.promising === 'function' ? 'yes' : 'NO')
+      + ' transport[' + transport + ']');
   }
 
   return {
