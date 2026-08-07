@@ -917,9 +917,21 @@ function __wasiCheckMode(path: string, requested: number): Errno {
 // park therefore wedges the process forever with nothing raised anywhere,
 // which is strictly worse than failing: nothing to log, nothing to retry.
 //
-// Every suspending import therefore parks against a deadline set with margin
-// below the measured floor, and on expiry resolves to EAGAIN — an errno the
-// guest's own retry logic already handles — instead of hanging.
+// Every import that parks on a HOST promise therefore parks against a deadline
+// set with margin below the measured floor, and on expiry resolves to EAGAIN —
+// an errno the guest's own retry logic already handles — instead of hanging.
+// That is the `parkable` list below, and it is exactly the set of imports that
+// are also Suspending-wrapped, minus one.
+//
+// sched_yield is the exception, and deliberately so: it is Suspending-wrapped
+// in a threads build but is NOT in `parkable`, because it does not wait on the
+// host at all. It waits on THIS scheduler, through wasi-threads' `yieldNow`,
+// which already moves the thread to runnable, queues it and dispatches. Sending
+// it through `parkIo` as well would mark a queued thread parked and inflate
+// pendingIo. `withParkDeadline` and `yieldNow` are alternatives, not layers —
+// see the integration table at the top of wasi-threads.ts. The earlier wording
+// here claimed every suspending import was deadline-guarded, which read as a
+// bug in the code rather than an imprecision in the sentence.
 //
 // This guards the PROMISE, not the suspension mechanism, so it serves an
 // Asyncify-unwound guest exactly as well as a JSPI-suspended one.
