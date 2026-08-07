@@ -10,10 +10,17 @@
 import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
 
 /**
- * A WASI errno. Modelled as the exact set the shim can return rather than
- * `number`, so a syscall that answers with an unrelated integer — a byte count,
- * a file descriptor, a bare `0` meant as "false" — is a compile error at the
- * `return` rather than a wrong answer the guest cannot diagnose.
+ * A WASI errno. Modelled as the exact set Nimbus's syscall layers can return
+ * rather than `number`, so a syscall that answers with an unrelated integer — a
+ * byte count, a file descriptor, a bare `0` meant as "false" — is a compile
+ * error at the `return` rather than a wrong answer the guest cannot diagnose.
+ *
+ * ONE set, shared by every syscall layer. The bash scheduler briefly carried its
+ * own `BashErrno = Errno | 63`, which is how a second vocabulary starts: a magic
+ * literal welded onto the shared type because the shared type was narrower than
+ * the spec. Values are added HERE, deliberately, when a layer needs one — never
+ * widened at a use site. Numbers are the preview1 enum, which is alphabetical
+ * and therefore not guessable; check the spec before adding one.
  */
 export type Errno =
   | 0   // ESUCCESS
@@ -33,6 +40,7 @@ export type Errno =
   | 54  // ENOTDIR
   | 55  // ENOTEMPTY
   | 57  // ENOTSOCK
+  | 63  // EPERM       — bash's path_link; POSIX forbids hard-linking a directory
   | 64  // EPIPE
   | 70  // ESPIPE
   | 73  // ETIMEDOUT

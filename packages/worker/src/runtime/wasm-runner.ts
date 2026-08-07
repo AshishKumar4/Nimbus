@@ -471,7 +471,11 @@ export function makeWasmRunner(deps: {
           // demand and writes go back as they happen.
           __wasiAdoptSupervisor(facetEnv && facetEnv.SUPERVISOR);
         } else {
-          // Minimal FS so __wasiFS isn't null when WASI fns are called.
+          // Not for null-safety any more — the shim starts with an empty
+          // filesystem. This stays because initFS is also what RESETS per-call
+          // state: the fd table, the preopen list, the persist queue and the
+          // negative-lookup cache. A pooled isolate that skipped it would hand
+          // this program the previous one's descriptors.
           initFS({ root: '', preopens: [], files: {}, dirs: [], modes: {} });
         }
         const memRef: { mem: WebAssembly.Memory | null } = { mem: null };

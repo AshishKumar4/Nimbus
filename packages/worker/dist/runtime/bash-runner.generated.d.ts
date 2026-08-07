@@ -8,7 +8,7 @@
  * globalThis.__bashBoot / globalThis.__bashFeed. bash-runner.ts re-exports it
  * as BASH_RUNNER_PREAMBLE and passes it as the loader-pool preamble.
  *
- * Size: 57.61 KiB
+ * Size: 58.56 KiB
  */
 export declare const BASH_RUNNER_BODY_SRC: string;
 //# sourceMappingURL=bash-runner.generated.d.ts.map
