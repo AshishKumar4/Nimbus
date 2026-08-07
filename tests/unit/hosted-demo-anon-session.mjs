@@ -104,9 +104,12 @@ async function expireSession(env, sessionId) {
   assert.equal(verified.claims.sid, body.sessionId, 'token is pinned to the created session');
   assert.deepEqual(verified.claims.scopes, ['session:attach'], 'no session:create handed to the client');
   assert.equal(verified.doInstanceName, 'anon:anon');
+  // The router's attach exchange derives the browser cookie's Max-Age from
+  // this token's exp, so a token that expired before the session would sign
+  // a visitor out of a sandbox that is still running.
   assert.ok(
-    (verified.claims.exp - verified.claims.iat) * 1000 <= 120_000,
-    'attach token is short-lived (<= 2 minutes)',
+    Math.abs(verified.claims.exp * 1000 - body.expiresAt) <= 2000,
+    'attach token expires with the session it is pinned to, not before',
   );
 
   const row = await env.DEMO_DB.prepare('SELECT * FROM demo_sessions WHERE session_id = ?')
