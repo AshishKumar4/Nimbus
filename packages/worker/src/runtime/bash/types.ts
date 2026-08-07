@@ -17,12 +17,14 @@ import type { WasiFsSnapshot } from '../wasi-instance.js';
 import type { WasiFsDiff } from '../vfs-snapshot.js';
 
 /**
- * The errno set this scheduler answers with: the WASI shim's set plus EPERM,
- * which only `path_link` returns (POSIX forbids hard-linking a directory).
- * Reusing `Errno` rather than restating it keeps one description of what a
- * preview1 syscall may hand back.
+ * The errno set this scheduler answers with — the same one every Nimbus syscall
+ * layer answers with. This was `Errno | 63`, and the `| 63` was the whole
+ * problem: a second vocabulary starting as a magic literal welded onto the
+ * shared type at a use site, rather than the shared type being extended at its
+ * definition. EPERM now lives in `Errno`, where the next layer that needs it
+ * will find it. Kept as an alias so the two names cannot drift apart again.
  */
-export type BashErrno = Errno | 63;
+export type BashErrno = Errno;
 
 // ── facet protocol ──────────────────────────────────────────────────────────
 
@@ -327,8 +329,12 @@ export interface BashSession {
  */
 export type BashIo = {
   read(fd: number, iov: BashIovs, nread: number): BashErrno;
-  /** Byte count, not an errno — a write here cannot fail. */
-  write(fd: number, bytes: Uint8Array): number;
+  /**
+   * Byte count, or null when the descriptor cannot be written to — currently
+   * only the read end of a pipe. It used to be "a write here cannot fail",
+   * which is how writing to a read end came to succeed silently.
+   */
+  write(fd: number, bytes: Uint8Array): number | null;
   poll(inPtr: number, outPtr: number, nsubs: number, retPtr: number): BashErrno;
 };
 
