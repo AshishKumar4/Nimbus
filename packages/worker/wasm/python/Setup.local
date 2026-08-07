@@ -1,0 +1,9 @@
+# Extension modules built into the interpreter beyond what configure selects.
+#
+# wasm32-wasi has no dlopen, so every C extension is either linked in here or
+# unavailable — this file is the package set. CPython marks mmap not-applicable
+# on WASI because wasi-libc cannot map a file, but anonymous mappings work
+# through -lwasi-emulated-mman, and that is the form pip's vendored CacheControl
+# needs. A file-backed mmap still fails, honestly, at the syscall.
+*static*
+mmap mmapmodule.c
