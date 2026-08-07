@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
-// hosted-demo-anon-session — POST /api/demo/anon-session mints a real
-// session with no login and returns a wsUrl carrying a sid-pinned,
-// short-TTL `session:attach` token; per-IP rate limiting and the global
-// live-session cap reject with structured JSON + Retry-After; anon
-// sessions register the aggressive DEMO_ANON_TTL_SECONDS lifetime in the
-// same demo_sessions table; and once expired they ride the existing
-// cleanup, destroyed under the disjoint DO name `anon:anon:<sid>`.
+// hosted-demo-anon-session — both no-login entry points mint a real session
+// carrying a sid-pinned `session:attach` token that expires exactly with the
+// session: POST /api/demo/anon-session answers the docs terminal with a
+// wsUrl, GET /try redirects a browser to the session shell. Per-IP rate
+// limiting and the global live-session cap reject both — as structured JSON
+// with Retry-After for the API, as a page with a way forward for the
+// browser. Anon sessions register the aggressive DEMO_ANON_TTL_SECONDS
+// lifetime in the same demo_sessions table, and once expired they ride the
+// existing cleanup, destroyed under the disjoint DO name `anon:anon:<sid>`.
 //
 // D1 is faked over bun:sqlite running the REAL migration SQL (foreign
 // keys ON), so schema constraints — including the demo_users FK — are
@@ -14,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
-import { handleAnonSessionCreate } from '../../apps/hosted-demo/src/demo-anon.ts';
+import { handleAnonLaunch, handleAnonSessionCreate } from '../../apps/hosted-demo/src/demo-anon.ts';
 import {
   ANON_USER_ID,
   createAnonDemoSession,
@@ -78,14 +80,18 @@ function createRequest(headers = { 'CF-Connecting-IP': '203.0.113.7' }) {
   });
 }
 
+function createTryRequest(headers = { 'CF-Connecting-IP': '203.0.113.7' }) {
+  return new Request('https://nimbus.example.com/try', { headers });
+}
+
 async function expireSession(env, sessionId) {
   await env.DEMO_DB.prepare('UPDATE demo_sessions SET expires_at = ? WHERE session_id = ?')
     .bind(Date.now() - 1000, sessionId).run();
 }
 
-// [1] Happy path: wsUrl targets /s/<sid>/ws with a sid-pinned, session:attach,
-// short-TTL token under the disjoint anon principal; the session row registers
-// the anon TTL.
+// [1] Happy path: wsUrl targets /s/<sid>/ws with a sid-pinned, session:attach
+// token under the disjoint anon principal, expiring with the session; the
+// session row registers the anon TTL.
 {
   const env = makeEnv();
   const before = Date.now();
@@ -119,7 +125,7 @@ async function expireSession(env, sessionId) {
   assert.equal(row.expires_at, body.expiresAt);
   assert.equal(row.expires_at - row.created_at, 600_000, 'anon TTL knob registered in D1');
   assert.ok(row.created_at >= before);
-  console.log('  [1] happy path: sid-pinned short-TTL attach token + anon TTL registration');
+  console.log('  [1] happy path: sid-pinned session-length attach token + anon TTL registration');
 }
 
 // [2] Method discipline: only POST creates sessions.
@@ -246,6 +252,72 @@ async function expireSession(env, sessionId) {
   const count = await env.DEMO_DB.prepare('SELECT COUNT(*) AS n FROM demo_sessions').first();
   assert.equal(count.n, 0, 'no anon slot is consumed when the secret is missing');
   console.log('  [7] missing JWT_SECRET throws before any session row is created');
+}
+
+// [8] GET /try — the landing page's no-sign-in path — lands the browser on
+// the same session shell a logged-in launch reaches, carrying the attach
+// token as the query credential the router's attach exchange consumes.
+{
+  const env = makeEnv();
+  const res = await handleAnonLaunch(createTryRequest(), env);
+  assert.equal(res.status, 303, 'a browser navigation gets a redirect, not JSON');
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+
+  const location = new URL(res.headers.get('Location'), 'https://nimbus.example.com');
+  const token = location.searchParams.get('nimbus_token');
+  assert.ok(token, 'the redirect carries the attach credential');
+
+  const sessionId = location.pathname.replace(/^\/s\/|\/$/g, '');
+  assert.equal(location.pathname, `/s/${sessionId}/`,
+    'the target is the session shell root, where the attach exchange runs');
+
+  const verified = await verifyNimbusToken(env, token);
+  assert.equal(verified.claims.sid, sessionId, 'token is pinned to the created session');
+  assert.deepEqual(verified.claims.scopes, ['session:attach']);
+  assert.equal(verified.doInstanceName, 'anon:anon', 'anon principal, disjoint from real users');
+
+  const row = await env.DEMO_DB.prepare('SELECT * FROM demo_sessions WHERE session_id = ?')
+    .bind(sessionId).first();
+  assert.equal(row.user_id, ANON_USER_ID);
+  assert.equal(row.status, 'active');
+  assert.ok(
+    Math.abs(verified.claims.exp * 1000 - row.expires_at) <= 2000,
+    'the cookie the exchange mints will outlast the session, not expire mid-use',
+  );
+  console.log('  [8] GET /try redirects to the shell with a session-length attach token');
+}
+
+// [9] Both rejections render a page with a way forward. A visitor who
+// clicked "Try it now" must not get a bare 503 dead end.
+{
+  const atCapacity = makeEnv({ DEMO_ANON_MAX_ACTIVE: '1' });
+  await handleAnonLaunch(createTryRequest(), atCapacity);
+  const full = await handleAnonLaunch(createTryRequest(), atCapacity);
+  assert.equal(full.status, 503);
+  assert.equal(full.headers.get('Retry-After'), '60');
+  assert.match(full.headers.get('Content-Type'), /text\/html/);
+  const fullBody = await full.text();
+  assert.match(fullBody, /href="\/try"/, 'offers a retry');
+  assert.match(fullBody, /href="\/login\?return_to=\/new"/, 'offers the durable alternative');
+
+  const limited = makeEnv({ ANON_RATE_LIMITER: { limit: async () => ({ success: false }) } });
+  const res = await handleAnonLaunch(createTryRequest(), limited);
+  assert.equal(res.status, 429);
+  assert.equal(res.headers.get('Retry-After'), '60');
+  assert.match(res.headers.get('Content-Type'), /text\/html/);
+  const count = await limited.DEMO_DB.prepare('SELECT COUNT(*) AS n FROM demo_sessions').first();
+  assert.equal(count.n, 0, 'no session is created when rate-limited');
+  console.log('  [9] /try rejections are HTML pages with a retry and a sign-in route');
+}
+
+// [10] Method discipline on the browser entry point.
+{
+  const env = makeEnv();
+  const res = await handleAnonLaunch(
+    new Request('https://nimbus.example.com/try', { method: 'POST' }), env);
+  assert.equal(res.status, 405);
+  assert.equal(res.headers.get('Allow'), 'GET');
+  console.log('  [10] non-GET /try is rejected with 405');
 }
 
 console.log('hosted-demo-anon-session: all tests passed');
