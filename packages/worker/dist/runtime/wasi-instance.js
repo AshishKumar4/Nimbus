@@ -174,6 +174,6 @@ export const WASI_IMPLEMENTED_FNS = Object.freeze([
     'path_symlink', 'path_readlink', 'path_link',
     'fd_allocate',
     'fd_fdstat_set_rights',
-    'sock_send', 'sock_recv', 'sock_shutdown',
+    'sock_send', 'sock_recv', 'sock_shutdown', 'sock_accept',
     'poll_oneoff',
 ]);

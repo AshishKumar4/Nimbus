@@ -1,1 +1,1 @@
-{"version":3,"file":"wasi-instance.generated.d.ts","sourceRoot":"","sources":["../../src/runtime/wasi-instance.generated.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;GAWG;AAEH,eAAO,MAAM,sBAAsB,EAAE,MAAkkmF,CAAC"}
+{"version":3,"file":"wasi-instance.generated.d.ts","sourceRoot":"","sources":["../../src/runtime/wasi-instance.generated.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;GAWG;AAEH,eAAO,MAAM,sBAAsB,EAAE,MAAktpF,CAAC"}

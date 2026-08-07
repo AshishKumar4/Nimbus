@@ -382,4 +382,70 @@ function parseWire(wire) {
   console.log('  ok  ordinary paths are unaffected by the /dev/tcp interception');
 }
 
+// ── sock_accept: the syscall wasi-libc's accept(2) actually calls ──────────
+// A guest compiled against wasi-libc never reaches the path_open route; its
+// accept(2) is a direct call to sock_accept and nothing else. CPython built for
+// wasm32-wasi is such a guest, and its module declares the import, so a missing
+// sock_accept is a LinkError at instantiation rather than a runtime failure.
+{
+  const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  kernel.listen(8080);
+  const listener = h.open('dev/nimbus/listen/8080');
+  assert.equal(listener.errno, ESUCCESS);
+
+  // Blocks until a connection arrives, like accept(2).
+  let resolved = false;
+  const pending = h.wasiImport.sock_accept(listener.fd, 0, 0x200)
+    .then((errno) => { resolved = true; return errno; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(resolved, false, 'sock_accept blocks until a connection arrives');
+
+  const served = kernel.handleHttpRequest(8080, new Request('http://127.0.0.1:8080/direct'));
+  assert.equal(await pending, ESUCCESS);
+  const conn = h.view().getUint32(0x200, true);
+
+  // The descriptor it hands back is a socket, not a connection id to open.
+  assert.equal(h.wasiImport.fd_fdstat_get(conn, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM);
+
+  assert.equal(await h.read(conn), ESUCCESS);
+  assert.match(h.lastRead(), /^GET \/direct HTTP\/1\.1/);
+  await h.write(conn, 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok');
+  const response = await served;
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'ok');
+  console.log('  ok  sock_accept yields a connected socket fd directly');
+}
+
+// ── sock_accept honours non-blocking from either descriptor ────────────────
+{
+  const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  kernel.listen(9200);
+  const listener = h.open('dev/nimbus/listen/9200');
+  assert.equal(listener.errno, ESUCCESS);
+
+  // Asked for non-blocking by the call's own flags.
+  assert.equal(await h.wasiImport.sock_accept(listener.fd, 4, 0x200), 6,
+    'an empty queue with FDFLAGS_NONBLOCK is EAGAIN');
+
+  // ...and by the listener's flags, which is how fcntl(O_NONBLOCK) reaches it.
+  assert.equal(h.wasiImport.fd_fdstat_set_flags(listener.fd, 4), ESUCCESS);
+  assert.equal(await h.wasiImport.sock_accept(listener.fd, 0, 0x200), 6,
+    "an empty queue on a non-blocking listener is EAGAIN");
+  console.log('  ok  sock_accept reports EAGAIN rather than stalling a non-blocking guest');
+}
+
+// ── sock_accept on the wrong kind of descriptor ────────────────────────────
+{
+  const h = host(async () => new Response('x'));
+  assert.equal(await h.wasiImport.sock_accept(999, 0, 0x200), 8, 'EBADF for an unknown fd');
+  const { fd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(await h.wasiImport.sock_accept(fd, 0, 0x200), 57,
+    'ENOTSOCK for a connected socket — only a listener can accept');
+  assert.equal(await h.wasiImport.sock_accept(3, 0, 0x200), 57, 'ENOTSOCK for a preopen dir');
+  console.log('  ok  sock_accept refuses descriptors that cannot accept');
+}
+
 console.log('wasi-loopback-socket-fd: all cases passed');
