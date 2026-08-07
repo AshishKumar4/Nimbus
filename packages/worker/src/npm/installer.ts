@@ -45,7 +45,7 @@ import {
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, FANOUT_PHASE_SIZE } from '../loaders/fanout-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
@@ -882,8 +882,8 @@ export class NpmInstaller {
   /**
    * Batch install via two-tier fan-out (NimbusFanoutPool).
    *
-   * Shard count is ⌈specs.length / PACKAGES_PER_SHARD⌉ capped at
-   * INSTALL_PEER_CAP, and the topology follows from it:
+   * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
+   * follows from it:
    *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
    *     1 NimbusLoaderPool with concurrency = shardCount, capped at
    *     4 by V8 invariant. Each shard is one facet running its own
@@ -939,17 +939,22 @@ export class NpmInstaller {
       return { installed, failed, filesWritten };
     }
 
-    // One shard per package up to the peer cap. Each shard does substantial
-    // tarball decode and VFS write work, and NimbusFanoutPool dispatches peers
-    // in phases of FANOUT_PHASE_SIZE, so capping at the phase width keeps
-    // every install to a single dispatch barrier: shards past that point buy
-    // serial round-trips rather than parallelism.
+    // One shard per package up to the peer cap, which is monotonic
+    // non-decreasing in package count by construction. Previously a
+    // 200-package threshold selected between a 32-shard cap and an 8-shard
+    // cap, which ran backwards — 199 packages got 32 shards while 201 got 8,
+    // so the smaller install paid the larger fan-out, and a 123-package
+    // install spent its whole fetch+write phase in six dispatch barriers of
+    // ~6 packages each.
     //
-    // Previously a 200-package threshold selected between a 32-shard cap and
-    // an 8-shard cap, which ran backwards — 199 packages got 32 shards while
-    // 201 got 8, so the smaller install paid the larger fan-out. A
-    // 123-package install measured six barriers of ~6 packages each.
-    const INSTALL_PEER_CAP = FANOUT_PHASE_SIZE;
+    // Each shard does substantial tarball decode and VFS write work, and eight
+    // is where added shards stop buying throughput and start buying peer-DO
+    // cold starts. Deliberately not tied to FANOUT_PHASE_SIZE: that width
+    // bounds how many peers start *at once* under account-wide concurrency,
+    // while this bounds how many a single install starts at all. Collapsing
+    // the two made the phase width control install parallelism, so widening it
+    // for latency widened the cold-start burst along with it.
+    const INSTALL_PEER_CAP = 8;
     const shardCount = Math.min(specs.length, INSTALL_PEER_CAP);
     // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
     // This produces ⌈specs.length / shardCount⌉ specs per shard at
