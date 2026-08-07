@@ -53,7 +53,12 @@ async function __nimbusPyBoot(args) {
     preopens: [{ wasiPath: '/', vfsPath: '' }],
     files: snapshot.files || {},
     dirs: snapshot.dirs || [],
-    modes: snapshot.modes || {},
+    // The root, /tmp and /home are seeded rather than taken from the manifest:
+    // manifestVfs's walk skips the empty root, so without this the preopen at
+    // '/' has effective mode 0 and EVERY traversal through it is EACCES —
+    // which surfaces as "Failed to import encodings module" with nothing
+    // pointing at a permission. Same baseline ruby-runner seeds, same reason.
+    modes: { '': 7, tmp: 7, home: 7, ...(snapshot.modes || {}) },
     times: snapshot.times,
     symlinks: snapshot.symlinks,
     sizes: snapshot.sizes,
@@ -98,7 +103,16 @@ async function __nimbusPyBoot(args) {
   await __nimbusEnterVm(exports._initialize)();
   const initRc = await withCString(args.pythonHome || '/usr/local',
     (ptr) => __nimbusEnterVm(exports.nimbus_py_init)(ptr));
-  if (initRc !== 0) throw new Error('the interpreter failed to start');
+  if (initRc !== 0) {
+    // CPython's own message for an unreadable stdlib is "Failed to import
+    // encodings module", which says nothing about where it looked or why the
+    // read failed. These three facts are what separated a mode-0 root from a
+    // missing supervisor from an absent JSPI, each of which presents
+    // identically.
+    throw new Error('the interpreter failed to start: home=' + (args.pythonHome || '/usr/local')
+      + ' supervisor=' + (globalThis.__nimbusPySupervisor ? 'yes' : 'NO')
+      + ' promising=' + (typeof WebAssembly.promising === 'function' ? 'yes' : 'NO'));
+  }
 
   return {
     instance,

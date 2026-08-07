@@ -338,7 +338,6 @@ export function makeCPythonRunnerFactory(deps: {
     };
     const wasmVfs = findFile(CPYTHON_WASM_REL);
     const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
-    let pool: NimbusLoaderPool | null = null;
     let manifestCache:
       { cred: string; cwd: string; revision: number; result: ReturnType<typeof manifestVfs> } | null = null;
 
@@ -468,20 +467,21 @@ export function makeCPythonRunnerFactory(deps: {
 
       const snapshot = fsManifest.snapshot;
 
-      if (!pool) {
-        const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-        const host = getFacetManagerLoaderHost(facetMgr);
-        pool = new NimbusLoaderPool(host.env, host.ctx, {
-          tag: 'cpython-runner',
-          concurrency: 1,
-          // NOT omitSupervisor. Without it the facet reads the seeded manifest
-          // and can never write anything back — the program appears to run and
-          // its output never reaches the session.
-          supervisorPid: ctx.pid,
-          preamble: buildCPythonPreamble(),
-          wasmModules: { 'python.wasm': toArrayBuffer(vfs.readFile(wasmVfs)) },
-        });
-      }
+      // Built per invocation, not cached: supervisorPid is baked into the
+      // SUPERVISOR binding at construction, so a pool held across calls would
+      // hand every later caller the first caller's write credential.
+      const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+      const host = getFacetManagerLoaderHost(facetMgr);
+      const pool = new NimbusLoaderPool(host.env, host.ctx, {
+        tag: 'cpython-runner',
+        concurrency: 1,
+        // NOT omitSupervisor. Without it the facet reads the seeded manifest
+        // and can never write anything back — the program appears to run and
+        // its output never reaches the session.
+        supervisorPid: ctx.pid,
+        preamble: buildCPythonPreamble(),
+        wasmModules: { 'python.wasm': toArrayBuffer(vfs.readFile(wasmVfs)) },
+      });
 
       const facetArgs = {
         userCode: `${prelude}\n${userCode}`,
