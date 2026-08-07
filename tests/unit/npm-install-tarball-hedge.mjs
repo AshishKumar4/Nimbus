@@ -102,7 +102,7 @@ async function sriOf(bytes) {
 
 const TARBALL = makeTarball();
 const SRI = await sriOf(TARBALL);
-const URL_ = 'https://registry.invalid/left-pad-1.3.0.tgz';
+const TARBALL_URL = 'https://registry.invalid/left-pad-1.3.0.tgz';
 
 // ── harness ─────────────────────────────────────────────────────────────
 
@@ -138,7 +138,7 @@ function supervisorFor(cached, delayMs = 0) {
 const spec = {
   name: 'left-pad',
   version: '1.3.0',
-  tarballUrl: URL_,
+  tarballUrl: TARBALL_URL,
   integrity: SRI,
   pkgDir: 'node_modules/left-pad',
   installRoot: 'node_modules',
@@ -187,7 +187,7 @@ async function install(supervisor) {
   assert.equal(
     result.facetCounters.speculativeFetches,
     0,
-    'a prompt miss answers before the hedge arms, so the fetch is the retry loop own',
+    "a prompt miss answers before the hedge arms, so the fetch is the retry loop's own",
   );
   console.log('  case2: R2 miss installs from the registry');
 }
