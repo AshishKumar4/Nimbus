@@ -488,7 +488,8 @@ function makeWasiFs(
     },
     fd_filestat_get: (fd, buf) => {
       const e = proc.fds.get(fd);
-      if (e && e.kind === 'file') { const f = fileLookup(s, e.path); statBuf(DV(), U8(), buf, 4, f ? f.bytes.length : 0, mtimeNs(s, e.path)); return 0; }
+      if (!e) return E.BADF;
+      if (e.kind === 'file') { const f = fileLookup(s, e.path); statBuf(DV(), U8(), buf, 4, f ? f.bytes.length : 0, mtimeNs(s, e.path)); return 0; }
       if (e && (e.kind === 'dir' || e.kind === 'preopen')) { statBuf(DV(), U8(), buf, 3, 0, mtimeNs(s, e.kind === 'preopen' ? '' : e.path)); return 0; }
       statBuf(DV(), U8(), buf, e && (e.kind === 'stdin' || e.kind === 'stdout' || e.kind === 'stderr' || e.kind === 'tty') ? 2 : 0, 0, realtimeNs());
       return 0;
@@ -738,9 +739,16 @@ function makeWasiFs(
       dv.setUint32(retPtr, off, true);
       return 0;
     },
+    // An fd that was never opened is EBADF everywhere below. It used to be
+    // ESPIPE from fd_seek and plain SUCCESS from fd_tell and fd_filestat_get,
+    // while fd_close, fd_fdstat_get and fd_write in this same table already
+    // answered EBADF — one descriptor table, five different opinions about what
+    // a closed descriptor is. ESPIPE in particular is a yes: it means "open, and
+    // not seekable", so a caller using lseek to test validity read it as valid.
     fd_seek: (fd, offset, whence, retPtr) => {
       const e = proc.fds.get(fd);
-      if (e && e.kind === 'file') {
+      if (!e) return E.BADF;
+      if (e.kind === 'file') {
         const f = fileLookup(s, e.path); const len = f ? f.bytes.length : 0;
         const off = Number(offset);
         const next = whence === 0 ? off : whence === 1 ? e.pos + off : len + off;
@@ -754,10 +762,15 @@ function makeWasiFs(
     },
     fd_tell: (fd, retPtr) => {
       const e = proc.fds.get(fd);
-      DV().setBigUint64(retPtr, BigInt(e && e.kind === 'file' ? e.pos : 0), true);
+      if (!e) return E.BADF;
+      DV().setBigUint64(retPtr, BigInt(e.kind === 'file' ? e.pos : 0), true);
       return 0;
     },
-    fd_close: (fd) => { closeFd(s, proc, fd); return 0; },
+    fd_close: (fd) => {
+      if (!proc.fds.has(fd)) return E.BADF;
+      closeFd(s, proc, fd);
+      return 0;
+    },
     fd_fdstat_get: (fd, st) => {
       const dv = DV(); const e = proc.fds.get(fd);
       let ft = 4;
@@ -779,7 +792,9 @@ function makeWasiFs(
       const dv = DV(), u8 = U8(); let w = 0;
       for (let i = 0; i < n; i++) {
         const p = dv.getUint32(iovs + i * 8, true), l = dv.getUint32(iovs + i * 8 + 4, true);
-        w += io.write(fd, u8.subarray(p, p + l));
+        const n2 = io.write(fd, u8.subarray(p, p + l));
+        if (n2 === null) return E.BADF;
+        w += n2;
       }
       dv.setUint32(nw, w, true);
       return 0;
@@ -812,9 +827,15 @@ function makeWasiFs(
 // Route a write through the process fd table. The caller has already rejected
 // an fd the table does not hold, so every branch here answers a real entry —
 // an unknown fd must never land in the user's terminal.
-function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): number {
+function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): number | null {
   const e = proc.fds.get(fd);
   if (e && e.kind === 'pipe') {
+    // A pipe descriptor has a direction, and it was recorded and never read.
+    // Writing to the READ end used to push bytes into the pipe and report them
+    // written, so `exec 3< …; echo x >&3` fed the reader its own output — data
+    // appearing from nowhere, attributed to the wrong writer, with no error
+    // anywhere. POSIX makes the direction part of the descriptor: EBADF.
+    if (e.end === 'r') return null;
     const pp = s.pipes.get(e.pipeId) as BashPipe;
     pp.chunks.push(bytes.slice()); pp.queued += bytes.length;
     wakePipe(s, pp);
