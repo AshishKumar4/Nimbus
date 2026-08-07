@@ -22,9 +22,26 @@
 // The residency floor did not catch this: it fires on a KNOWN path with no
 // resident content, and these paths are not known at all.
 //
-// What has to hold: never invent absence; converge the two views; and do not
-// turn an ordinary missing file into a refusal, because absence inside a
+// What has to hold: never invent absence SILENTLY; converge the two views; and
+// do not turn an ordinary missing file into a refusal, because absence inside a
 // directory the walk DID enumerate is real knowledge and programs depend on it.
+//
+// Refusing every unmapped access was the first repair and it went too far.
+// EAGAIN cannot arise from a real POSIX filesystem, so nothing branches on it:
+// the catch block that receives it was written for a missing file and rethrows.
+// Measured, create-next-app reads $HOME/.config/<tool>/config.json through the
+// conf package — read a config, treat ENOENT as "no config yet", rethrow
+// anything else — was handed EAGAIN for a file that had never existed, and died
+// before writing one template file.
+//
+// So a read, a stat and an existence check answer the not-found the program was
+// written for, PROVISIONALLY: the miss is recorded, the listing that settles it
+// is pulled in, and the exit report fails the run by name if the path turns out
+// to have been there. Silence is still unavailable — it just is not bought with
+// an errno no program can handle. A LISTING is the exception and keeps refusing:
+// "no config yet, write one" is an idiom, and there is no counterpart for a
+// directory, so ENOENT would send a scaffolder down the same wrong branch the
+// empty array did.
 
 import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
@@ -102,6 +119,16 @@ const refusal = (fn, what) => {
   assert.equal(error.code, 'EAGAIN', `${what} answered ${error.code} instead of refusing`);
   return error;
 };
+const provisional = (fn, what) => {
+  let error = null;
+  try { fn(); } catch (e) { error = e; }
+  assert.ok(error, `${what} must not succeed for a path outside the staged view`);
+  assert.equal(
+    error.code, 'ENOENT',
+    `${what} answered ${error.code}; a program branches on ENOENT and on nothing else`,
+  );
+  return error;
+};
 
 // ── 1. A listing of an unmapped directory is never an empty array ───────────
 {
@@ -110,17 +137,29 @@ const refusal = (fn, what) => {
   refusal(() => fs.readdirSync(MINIMAL, { withFileTypes: true }), 'readdirSync withFileTypes');
 }
 
-// ── 2. Existence, stat and content do not invent absence either ─────────────
-refusal(() => fs.existsSync(`${MINIMAL}/meta.json`), 'existsSync');
-refusal(() => fs.statSync(MINIMAL), 'statSync');
-refusal(() => fs.statSync(MINIMAL, { throwIfNoEntry: false }), 'statSync throwIfNoEntry:false');
-refusal(() => fs.readFileSync(`${MINIMAL}/meta.json`, 'utf8'), 'readFileSync');
-
-// ── 3. Every refusal is recorded, so nothing ends quietly ───────────────────
-assert.ok(
-  [...globalThis.__nimbusVfsResidencyMisses].some((k) => ('/' + k).startsWith(TEMPLATES)),
-  'a refusal the program swallows must still reach the exit report',
+// ── 2. Existence, stat and content answer, and the answer is on the record ──
+// The answer they give is the one a program can act on. What makes it honest is
+// section 3: none of them is allowed to be the last word.
+assert.equal(
+  fs.existsSync(`${MINIMAL}/meta.json`), false,
+  'existsSync never throws in node, and must not start here',
 );
+provisional(() => fs.statSync(MINIMAL), 'statSync');
+assert.equal(
+  fs.statSync(MINIMAL, { throwIfNoEntry: false }), undefined,
+  'throwIfNoEntry:false is honoured for an unmapped path too',
+);
+provisional(() => fs.readFileSync(`${MINIMAL}/meta.json`, 'utf8'), 'readFileSync');
+
+// ── 3. Every unmapped access is recorded, so nothing ends quietly ───────────
+// This is what pays for the provisional answers above: the ledger, not the
+// errno, is what keeps silence unavailable.
+for (const path of [MINIMAL, `${MINIMAL}/meta.json`]) {
+  assert.ok(
+    globalThis.__nimbusVfsResidencyMisses.has(path.replace(/^\/+/, '')),
+    `${path} was answered out of ignorance and must reach the exit report`,
+  );
+}
 const stillMissed = () => [...globalThis.__nimbusVfsResidencyMisses];
 
 // ── 4. The async view was always right, and the sync view converges on it ───
@@ -187,5 +226,89 @@ assert.equal(
   fs.statSync(`${APP}/nope.txt`, { throwIfNoEntry: false }), undefined,
   'and throwIfNoEntry keeps working where absence is knowable',
 );
+
+// ── 8. The config-lookup idiom, end to end ──────────────────────────────────
+// The shape that killed create-next-app, and the reason the answers above are
+// provisional rather than refusals. $HOME is enumerated, so a dotfile
+// directory that is NOT there is answered from knowledge. But $HOME/.config IS
+// there — seeded, empty, and never walked — so everything under it falls off
+// the edge of the view, and that is where every conf/env-paths/xdg CLI looks.
+{
+  const HOME = '/home/user';
+  const CFG = `${HOME}/.config`;
+  vfs.mkdir(`${HOME}/work`, { recursive: true });
+  vfs.mkdir(`${CFG}/present-tool`, { recursive: true });
+  vfs.writeFile(`${CFG}/present-tool/state.json`, enc.encode('{"real":true}'));
+
+  const { fs: cfs } = factory(
+    {},
+    {
+      'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
+      'home/user/work': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
+    },
+    {},
+    // The manifest walk lists the root-to-cwd chain one level each, which is
+    // what makes a missing dotfile directory answerable — and is exactly one
+    // level short of the directory the lookup actually lands in.
+    { '': ['home'], home: ['user'], 'home/user': ['.config', 'work'], 'home/user/work': [] },
+    supervisor,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    `${HOME}/work`, [], {}, `${HOME}/work/cli.js`, `${HOME}/work`,
+  );
+  const ledger = () => [...globalThis.__nimbusVfsResidencyMisses];
+  const settleLedger = () => globalThis.__nimbusVfsResidencySettle();
+  globalThis.__nimbusVfsResidencyMisses.clear();
+
+  // A dotfile directory that is not there at all: answered from the chain
+  // listing, no repair, no ledger entry. This already worked and must keep
+  // working — it is most of what a config lookup asks for.
+  assert.throws(
+    () => cfs.readFileSync(`${HOME}/.absent-tool/config.json`, 'utf8'),
+    (error) => error.code === 'ENOENT',
+    'a dotfile directory absent from an enumerated $HOME is knowledge, not ignorance',
+  );
+  assert.deepEqual(ledger(), [], 'and knowledge costs no ledger entry');
+
+  // The regression: one level deeper, under a directory that exists and was
+  // never walked. conf reads this, treats ENOENT as "no config yet", and
+  // rethrows anything else.
+  assert.throws(
+    () => cfs.readFileSync(`${CFG}/new-tool/config.json`, 'utf8'),
+    (error) => error.code === 'ENOENT',
+    'a config read under an unwalked directory must reach the program not-found branch',
+  );
+  assert.deepEqual(
+    ledger(), ['home/user/.config/new-tool/config.json'],
+    'the provisional answer is on the record until something proves it',
+  );
+
+  // And the record is settled by a repair aimed at the directory that can
+  // answer. The immediate parent cannot: `.config/new-tool` is not there, its
+  // listing fails, and the ledger keeps an entry no repair could ever retire —
+  // the run failed over a file that was simply absent.
+  await settleLedger();
+  assert.deepEqual(
+    ledger(), [],
+    'the boundary listing proves the absence, so the run is not failed for it',
+  );
+  assert.equal(
+    cfs.existsSync(`${CFG}/another-tool/config.json`), false,
+    'and every later lookup under it is answered from the listing that was pulled in',
+  );
+  assert.deepEqual(ledger(), [], 'from knowledge, so nothing new is recorded');
+
+  // The other half, and the reason the answer above is provisional and not a
+  // fabrication: a path that WAS there keeps its entry through the settle, so
+  // the exit report still fails the run by name.
+  assert.throws(
+    () => cfs.readFileSync(`${CFG}/present-tool/state.json`, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  await settleLedger();
+  assert.deepEqual(
+    ledger(), ['home/user/.config/present-tool/state.json'],
+    'a file that existed and was answered not-found must still fail the run',
+  );
+}
 
 process.stdout.write('node-shims-unmapped-paths: all tests passed\n');
