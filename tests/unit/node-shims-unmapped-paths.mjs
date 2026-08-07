@@ -250,7 +250,7 @@ assert.equal(
     // The manifest walk lists the root-to-cwd chain one level each, which is
     // what makes a missing dotfile directory answerable — and is exactly one
     // level short of the directory the lookup actually lands in.
-    { '': ['home'], home: ['user'], 'home/user': ['.config', 'work'], 'home/user/work': [] },
+    { '': ['home', 'tmp'], home: ['user'], 'home/user': ['.config', 'work'], 'home/user/work': [] },
     supervisor,
     { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     `${HOME}/work`, [], {}, `${HOME}/work/cli.js`, `${HOME}/work`,
@@ -308,6 +308,28 @@ assert.equal(
   assert.deepEqual(
     ledger(), ['home/user/.config/present-tool/state.json'],
     'a file that existed and was answered not-found must still fail the run',
+  );
+
+  // And the program's own answer to the not-found is not evidence against it.
+  // Read a config, find none, write one: by the time the run ends the file is
+  // there, authored out of the very branch the answer sent the program down.
+  // Judging the ledger on what exists at exit failed create-next-app over
+  // /tmp/update-check and c3 over its wrangler metrics file — paths nothing
+  // had ever withheld.
+  globalThis.__nimbusVfsResidencyMisses.clear();
+  const STAMP = '/tmp/update-check';
+  assert.throws(
+    () => cfs.readFileSync(STAMP, 'utf8'),
+    (error) => error.code === 'ENOENT',
+  );
+  // Written and never read back — an update notifier writes its stamp and
+  // moves on — so nothing clears the record the way a satisfied read would,
+  // and at exit the path exists because the program put it there.
+  cfs.writeFileSync(STAMP, String(Date.now()));
+  await settleLedger();
+  assert.deepEqual(
+    ledger(), [],
+    'a file the program itself supplied was never withheld from it',
   );
 }
 
