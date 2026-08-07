@@ -2621,6 +2621,43 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       }
       return __WASI_ESUCCESS;
     },
+
+    // The last preview1 syscall, and the one a guest written against libc
+    // reaches for: wasi-libc's accept(2) is a direct call to this and nothing
+    // else. The path_open route — open '/dev/nimbus/listen/N', read the id,
+    // open '/dev/nimbus/socket/<id>' — exists because ruby.wasm resolves
+    // descriptors through its own fd table and cannot use one handed to it out
+    // of band. That constraint belongs to guests layered over wasi-vfs, not to
+    // WASI. Both routes end at __wasiAdoptSocket, so an accepted connection is
+    // the same kind of fd whichever way it arrived.
+    async sock_accept(fd, flags, fdOutPtr) {
+      const entry = fdTable.get(fd);
+      if (!entry) return __WASI_EBADF;
+      if (entry.kind !== 'listener') return __WASI_ENOTSOCK;
+      const kernel = __wasiKernelOrNull('connections cannot be accepted');
+      if (!kernel) return __WASI_ENOSYS;
+      // Non-blocking is a property of either descriptor: the listener's own
+      // flags, or the ones this call asks the accepted socket to carry.
+      const nonblock = ((entry.fdflags | flags) & __WASI_FDFLAGS_NONBLOCK) !== 0;
+      try {
+        let accepted: AcceptedVirtualConnection | null;
+        if (nonblock) {
+          accepted = kernel.acceptNow(entry.port);
+          if (!accepted) return __WASI_EAGAIN;
+        } else {
+          accepted = await kernel.accept(entry.port);
+        }
+        const socket = kernel.streamFor(accepted.id);
+        writeU32LE(fdOutPtr, __wasiAdoptSocket(socket, flags & __WASI_FDFLAGS_NONBLOCK));
+        return __WASI_ESUCCESS;
+      } catch (e) {
+        // A rejected Suspending import traps in the guest with no diagnosis,
+        // so the reason is recorded alongside a plain errno.
+        globalThis.__nimbusWasiLastSocketError =
+          ((e as Error) && (e as Error).message) ? (e as Error).message : String(e);
+        return __WASI_ENOTCONN;
+      }
+    },
   };
 
   // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
@@ -2638,7 +2675,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // Park watchdog — see the constants and withParkDeadline at module scope.
   // Every import that can park.
   const parkable: readonly ParkableImport[] = [
-    'sock_send', 'sock_recv', 'sock_shutdown', 'poll_oneoff',
+    'sock_send', 'sock_recv', 'sock_shutdown', 'sock_accept', 'poll_oneoff',
     'fd_read', 'fd_write', 'fd_pread', 'path_filestat_get',
   ];
   // Applied before Suspending wraps them.
@@ -2690,6 +2727,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     imports.sock_send     = new WebAssembly.Suspending(imports.sock_send);
     imports.sock_recv     = new WebAssembly.Suspending(imports.sock_recv);
     imports.sock_shutdown = new WebAssembly.Suspending(imports.sock_shutdown);
+    imports.sock_accept   = new WebAssembly.Suspending(imports.sock_accept);
     // WASI socket and polling support B8: poll_oneoff also needs JSPI to support CLOCK
     // subscriptions (await setTimeout) and socket-fd readiness
     // (await reader.read()). Same Suspending shape as sock_*.
