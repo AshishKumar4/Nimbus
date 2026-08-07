@@ -236,11 +236,18 @@ function __wasiEnqueue(op: string, run: (sup: WasiSupervisorStub) => Promise<unk
     }
     return;
   }
+  // Captured HERE rather than read when the continuation runs. __wasiInitFS
+  // nulls __wasiSup and resets the queue tail, but resetting the tail does not
+  // cancel continuations already chained to the old one — so a pooled isolate
+  // that re-inits with work in flight used to hand the previous program's op a
+  // null stub, lose that mutation, and then throw the resulting TypeError out
+  // of the NEXT program's drain. An op belongs to the process that queued it.
+  const sup = __wasiSup;
   const entry = { op };
   __wasiPersistQ.pending.push(entry);
   __wasiPersistQ.tail = __wasiPersistQ.tail.then(async () => {
     try {
-      await run(__wasiSup as WasiSupervisorStub);
+      await run(sup);
     } catch (e) {
       // A failed write-back is data loss and must be visible, not swallowed.
       __wasiPersistQ.failures.push(op + ': ' + (((e as Error) && (e as Error).message) || String(e)));
@@ -266,9 +273,15 @@ function __wasiPersistFile(vfsPath: string): void {
   // writes to it reports at most once.
   if (__wasiDirty.has(vfsPath)) return;
   __wasiDirty.add(vfsPath);
+  // The bytes are read when the op RUNS, which is what coalesces a burst of
+  // fd_writes into one round trip. The filesystem they are read from is pinned
+  // here, though: reading the global instead meant a re-init between the queue
+  // and the drain looked up the path in the NEXT program's empty cache, found
+  // nothing, and returned successfully having written nothing at all.
+  const fs = __wasiFS;
   __wasiEnqueue('writeFile ' + vfsPath, async (sup) => {
     __wasiDirty.delete(vfsPath);
-    const bytes = __wasiFS && __wasiFS.files.get(vfsPath);
+    const bytes = fs && fs.files.get(vfsPath);
     if (!bytes) return;
     await sup.writeFile(vfsPath, bytes);
   });
@@ -1751,7 +1764,18 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (!kind) {
         const live = statLive(resolved);
         if (live && typeof (live as Promise<boolean>).then === 'function') {
-          return (live as Promise<boolean>).then((found) => (found ? emitStat(...(classify() as [number, bigint])) : __WASI_ENOENT));
+          return (live as Promise<boolean>).then((found) => {
+            // classify() is re-run because the live stat is what populated the
+            // maps. It can still answer null: the stat and this callback are
+            // separated by a suspension, and anything that unlinks the path in
+            // between — another thread, another request on a resident server —
+            // leaves nothing to classify. Spreading that null threw "is not
+            // iterable" from inside a Suspending import, which reaches the
+            // guest as a trap carrying no errno. The path is gone, so ENOENT is
+            // the answer the guest can act on.
+            const settled = found ? classify() : null;
+            return settled ? emitStat(...settled) : __WASI_ENOENT;
+          });
         }
         return __WASI_ENOENT;
       }
