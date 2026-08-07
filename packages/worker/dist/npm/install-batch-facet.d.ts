@@ -71,6 +71,12 @@ export interface InstallBatchResult {
          *  recordR2RaceCounters() in npm-installer. */
         pipelinedTarballRaceWins: number;
         pipelinedTarballRaceLosses: number;
+        /** Longest wait on the R2 leg in this shard, and how many registry
+         *  requests the shard issued alongside those waits. Separates cache-tier
+         *  latency from registry latency, and says how much of the speculative
+         *  network work the cache tier made redundant. */
+        r2WaitMsMax: number;
+        speculativeFetches: number;
         /** writeBatchStream waves this shard issued, and the cumulative ms it
          *  spent awaiting them. Waves never overlap within a shard and the
          *  shared-mutation mutex is held across a flush, so `sharedWaveMs` is

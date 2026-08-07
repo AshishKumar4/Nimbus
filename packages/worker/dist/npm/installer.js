@@ -383,7 +383,7 @@ export class NpmInstaller {
         // decomposes. `bundle` is dispatch-only (Phase 7 is fire-and-forget).
         log('  phases: ' +
             Object.entries(phases)
-                .map(([name, ms]) => `${name}=${(ms / 1000).toFixed(1)}s`)
+                .map(([name, ms]) => `${name}=${fmtPhaseMs(ms)}`)
                 .join(' '));
         log(`  storage: ${commitCount} transactions during fetch+write`);
         return { installed, failed, totalFiles, elapsed, cachedHits, phases };
@@ -909,6 +909,8 @@ export class NpmInstaller {
                 `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB tarball bytes, ` +
                 `peak in-flight=${result.facetCounters.peakInFlight}` +
                 r2WinSuffix +
+                `, R2 wait max=${fc.r2WaitMsMax ?? 0}ms` +
+                `, registry fetches=${fc.speculativeFetches ?? 0}/${specs.length}` +
                 `, write waves=${fc.sharedWaves} (worst shard stalled ` +
                 `${(fc.sharedWaveMs / 1000).toFixed(1)}s)` +
                 `, slowest shard ${(result.elapsed / 1000).toFixed(1)}s` +
@@ -2034,6 +2036,14 @@ function safeJsonParse(json, fallback) {
  *     across separate isolates and the supervisor never sees their
  *     in-flight sum at one moment).
  */
+/**
+ * A warm install finishes in a few hundred ms, where a seconds-with-one-decimal
+ * format rounds every phase to `0.0s` and the breakdown stops decomposing the
+ * total it sits next to.
+ */
+function fmtPhaseMs(ms) {
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
 function mergeFacetCounters(perShard) {
     if (perShard.length === 0) {
         return {
@@ -2042,6 +2052,8 @@ function mergeFacetCounters(perShard) {
             peakInFlight: 0,
             pipelinedTarballRaceWins: 0,
             pipelinedTarballRaceLosses: 0,
+            r2WaitMsMax: 0,
+            speculativeFetches: 0,
             sharedWaves: 0,
             sharedWaveMs: 0,
         };
@@ -2052,6 +2064,10 @@ function mergeFacetCounters(perShard) {
         peakInFlight: perShard.reduce((m, c) => Math.max(m, c.peakInFlight || 0), 0),
         pipelinedTarballRaceWins: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceWins || 0), 0),
         pipelinedTarballRaceLosses: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceLosses || 0), 0),
+        // Shards wait on R2 concurrently, so the max is the wait the install
+        // actually serialized behind.
+        r2WaitMsMax: perShard.reduce((m, c) => Math.max(m, c.r2WaitMsMax || 0), 0),
+        speculativeFetches: perShard.reduce((s, c) => s + (c.speculativeFetches || 0), 0),
         sharedWaves: perShard.reduce((s, c) => s + (c.sharedWaves || 0), 0),
         // Shards run concurrently, so the per-shard stall times overlap. The
         // max is the shard that stalled longest, which is what the install's
