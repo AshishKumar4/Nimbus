@@ -109,15 +109,15 @@ export declare class NpmInstaller {
     /**
      * Batch install via two-tier fan-out (NimbusFanoutPool).
      *
-     * Topology selected automatically based on the spec count:
-     *   specs.length <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-     *     1 NimbusLoaderPool with concurrency = specs.length, capped at
-     *     4 by V8 invariant. Each spec is one facet running its own
-     *     installPackagesInFacet over a single-element shard.
-     *   specs.length >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
-     *     N peer NimbusSession sibling DOs (N = min(specs.length,
-     *     MAX_PEER_FANOUT = 32)), each running ONE installPackagesInFacet
-     *     against its own shard with internal pLimit(3).
+     * Shard count is ⌈specs.length / PACKAGES_PER_SHARD⌉ capped at
+     * INSTALL_PEER_CAP, and the topology follows from it:
+     *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
+     *     1 NimbusLoaderPool with concurrency = shardCount, capped at
+     *     4 by V8 invariant. Each shard is one facet running its own
+     *     installPackagesInFacet.
+     *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
+     *     One peer NimbusSession sibling DO per shard, each running ONE
+     *     installPackagesInFacet against its shard with internal pLimit(3).
      *
      * Sharding strategy: round-robin (`pkgIdx % N`) so every peer DO
      *   receives roughly equal work. Stable-id router maps each
@@ -212,6 +212,8 @@ export declare class NpmInstaller {
      *   4. Try extensions and index-file fallbacks
      */
     private resolvePackageEntryPath;
+    /** Monotonic count of transactionSync calls this DO's VFS has executed. */
+    private storageCommitCount;
     /**
      * P5 (production reliability) — deterministic supervisor-heap estimate in MiB.
      *

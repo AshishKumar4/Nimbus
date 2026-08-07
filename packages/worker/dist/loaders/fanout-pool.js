@@ -52,6 +52,19 @@ export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
  * reset schedule. A whole-batch abort here used to fail an entire install.
  */
 export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
+/**
+ * Peer shards dispatched per phase. Each phase is a barrier that costs its
+ * slowest member, so a wide fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial
+ * round-trips; the size trades that serialization against simultaneous cold
+ * sibling DO starts.
+ *
+ * Measured at 4 on a 123-package install: 21 shards became six barriers of
+ * 10.6/6.8/21.8/7.9/34.6/4.8 s, which summed to the whole 86.5 s fetch+write
+ * phase. Peer DOs are separate objects with independent budgets, so the
+ * constraint is cold-start burst rather than any per-object ceiling; 8 keeps
+ * that burst bounded while letting a full install fan-out clear in one phase.
+ */
+export const FANOUT_PHASE_SIZE = 8;
 function isNimbusFanoutPeerStub(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
         return false;
@@ -296,10 +309,15 @@ export class NimbusFanoutPool {
         // shards can create too many simultaneous cold sibling DO starts under
         // concurrent installs. Promise-chain phasing limits scheduler pressure
         // without sleeps, timers, or idle gaps between phases.
-        const FANOUT_PHASE_SIZE = 4;
+        //
+        // A phase is a hard barrier: no shard in phase N+1 starts until every
+        // shard in phase N returns, so `width@ms` per phase is what separates
+        // "the shards are slow" from "there are too many barriers".
         for (let i = 0; i < dispatchers.length; i += FANOUT_PHASE_SIZE) {
             const phase = dispatchers.slice(i, i + FANOUT_PHASE_SIZE);
+            const phaseStartedAt = Date.now();
             await Promise.all(phase.map((d) => d()));
+            this.opts.onDispatchPhase?.(phase.length, Date.now() - phaseStartedAt);
         }
         return results;
     }
