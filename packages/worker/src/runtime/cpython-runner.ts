@@ -38,8 +38,10 @@ import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import type { CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
+import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { requireVfsCred } from './os-contracts.js';
 import {
@@ -58,11 +60,9 @@ const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 
 /** Where `nimbus install python` stages the interpreter inside the session. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
-const CPYTHON_STDLIB_REL = 'share/cpython/python313.zip';
-/** Where the guest expects to find them; nimbus_py_init is told this prefix. */
-const CPYTHON_HOME = '/usr/local';
-const CPYTHON_STDLIB_GUEST = 'usr/local/lib/python313.zip';
-const CPYTHON_MARKER_GUEST = 'usr/local/lib/python3.13/os.py';
+const CPYTHON_STDLIB_REL = 'lib/python313.zip';
+const CPYTHON_CACERT_REL = 'etc/ssl/cert.pem';
+
 
 /**
  * The one canonical facet preamble. Composed in exactly one place: a
@@ -157,12 +157,78 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The worker source for a resident Python process. Same shape as
+ * buildRubySocketProcessWorker: the socket kernel and the interpreter live in a
+ * DurableObject, startProcess runs the program until it stops, and inbound
+ * requests arrive on handleHttpRequest and are dispatched into the server the
+ * program registered before exiting.
+ */
+export function buildCPythonSocketProcessWorker(preamble: string): string {
+  return [
+    'import { DurableObject } from "cloudflare:workers";',
+    preamble,
+    '',
+    // Only adopt a real binding: routed fetch hops resolve the entrypoint
+    // without a supervisor, and overwriting with undefined would drop the live
+    // stub the process needs for its whole lifetime.
+    'function __nimbusAdoptPySupervisor(env) {',
+    '  const supervisor = env && env.SUPERVISOR;',
+    '  if (supervisor) globalThis.__nimbusPySupervisor = supervisor;',
+    '  __wasiAdoptSupervisor(supervisor);',
+    '}',
+    // A resident process answers between requests, and that is the only moment
+    // "durable while running" can be made true: by the time the caller holds a
+    // response, everything the request wrote has reached the VFS.
+    'async function __nimbusParkPy(value) {',
+    '  await __wasiDrainPersist();',
+    '  await __wasiRevalidateFS();',
+    '  return value;',
+    '}',
+    'async function __nimbusStartPyProcess(args) {',
+    '  const result = await globalThis.__cpythonStartProcess(args || {});',
+    '  const ports = await globalThis.__cpythonListeningPorts();',
+    '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
+    '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
+    '  if (ports.length > 0) {',
+    '    return { state: "listening", port: ports[0], stdout: result.stdout, stderr: result.stderr };',
+    '  }',
+    '  return { state: "exited", result, stdout: result.stdout, stderr: result.stderr };',
+    '}',
+    'export class NimbusProcess extends DurableObject {',
+    '  async startProcess(args) {',
+    '    __nimbusAdoptPySupervisor(this.env);',
+    '    return __nimbusParkPy(await __nimbusStartPyProcess(args || {}));',
+    '  }',
+    '  async fetch(request) {',
+    '    __nimbusAdoptPySupervisor(this.env);',
+    '    return this.handleHttpRequest(request);',
+    '  }',
+    '  async handleHttpRequest(request) {',
+    '    __nimbusAdoptPySupervisor(this.env);',
+    '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
+    '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
+    '    if (!port) return new Response("Nimbus Python process has no listening virtual socket", { status: 502 });',
+    '    return __nimbusParkPy(await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request));',
+    '  }',
+    '}',
+  ].join('\n');
+}
+
 interface CPythonFacetResult {
   stdout: string;
   stderr: string;
   exitCode: number;
   error?: string;
 }
+
+const CPythonBootSchema = z.object({
+  state: z.string().optional(),
+  port: z.number().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  result: z.object({ exitCode: z.number().optional() }).passthrough().optional(),
+}).passthrough();
 
 /**
  * Facet-side entry. Serialized with fn.toString(), so it captures nothing and
@@ -197,6 +263,65 @@ async function cpythonRunFacetFn(
     // then raised still wrote the file, and those bytes are the user's.
     await drain?.();
   }
+}
+
+
+interface CPythonSpawnResult extends CPythonFacetResult {
+  spawnedPid?: number;
+  port?: number;
+}
+
+/**
+ * Start a program that binds a port as its own process, so it outlives the
+ * invocation that started it. Mirrors spawnRubySocketProcess.
+ */
+async function spawnCPythonSocketProcess(
+  facetMgr: FacetManager,
+  args: { wasmVfsPath: string; startArgs: Record<string, unknown>; cwd: string },
+  command: string,
+): Promise<CPythonSpawnResult> {
+  const workerCode = buildCPythonSocketProcessWorker(buildCPythonPreamble());
+  const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
+    compatibilityFlags: ['nodejs_compat'],
+    // By path, not by value: the interpreter is 10.6 MiB, more than a single
+    // RPC value may carry, so whichever host runs this process reads it itself.
+    vfsWasmModules: { 'python.wasm': args.wasmVfsPath },
+    startArgs: args.startArgs,
+  }).catch(() => null);
+  if (!spawned) return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };
+
+  const boot = CPythonBootSchema.safeParse(spawned.boot);
+  if (!boot.success) {
+    facetMgr.finishProcess(spawned.pid, 1, 'python process boot failed');
+    return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };
+  }
+  const data = boot.data;
+
+  if (data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
+    facetMgr.registerPort(spawned.pid, data.port);
+    const routeable = await facetMgr.waitForRouteablePorts(spawned.pid);
+    const port = routeable.includes(data.port) ? data.port : routeable[0];
+    if (!port) {
+      facetMgr.kill(spawned.pid);
+      return {
+        exitCode: 1,
+        stdout: data.stdout || '',
+        stderr: `${data.stderr || ''}python: virtual socket port ${data.port} failed to attach a route handler\n`,
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: `${data.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${port}]\x1b[0m\n`,
+      stderr: data.stderr || '',
+      spawnedPid: spawned.pid,
+      port,
+    };
+  }
+
+  const result = data.result;
+  const exitCode = typeof result?.exitCode === 'number' ? result.exitCode : 0;
+  facetMgr.finishProcess(spawned.pid, exitCode, data.stderr || 'python process exited');
+  return { exitCode, stdout: data.stdout || '', stderr: data.stderr || '' };
 }
 
 export function makeCPythonRunnerFactory(deps: {
@@ -298,15 +423,22 @@ export function makeCPythonRunnerFactory(deps: {
       // no argv of its own, and this keeps the one place that decides what the
       // program sees in TypeScript.
       const prelude = [
+        PYTHON_SERVER_ADAPTER,
         'import sys',
         `sys.argv = ${JSON.stringify(pyArgv)}`,
         `sys.path.insert(0, ${JSON.stringify(`/${PYTHON_SITE_PACKAGES_ROOT}`)})`,
         `sys.path.insert(0, ${JSON.stringify(cwd)})`,
       ].join('\n');
 
+      const cacertVfs = findFile(CPYTHON_CACERT_REL);
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
       if (!userEnv.HOME) userEnv.HOME = '/home/user';
       if (!userEnv.PYTHONUNBUFFERED) userEnv.PYTHONUNBUFFERED = '1';
+      // Without this OpenSSL has no trust anchors at all — there is no
+      // /etc/ssl on a Nimbus session — and every HTTPS request fails
+      // verification with a message about a missing local issuer rather than
+      // about a missing bundle.
+      if (!userEnv.SSL_CERT_FILE && cacertVfs) userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
 
       // A manifest, not a copy: sizes and modes only, with the facet demand-
       // loading whatever the program opens. The stdlib zip is covered by it
@@ -334,25 +466,7 @@ export function makeCPythonRunnerFactory(deps: {
         return 1;
       }
 
-      // The interpreter looks for its stdlib under CPYTHON_HOME, but the
-      // install put it wherever the manifest says. Rather than move bytes, the
-      // two paths the guest needs are aliased into the seeded manifest.
-      const snapshot = fsManifest.snapshot as unknown as {
-        files: Record<string, string>;
-        dirs: string[];
-        modes: Record<string, number>;
-        sizes?: Record<string, number>;
-      };
-      snapshot.dirs = [...(snapshot.dirs || []), 'usr', 'usr/local', 'usr/local/lib',
-        'usr/local/lib/python3.13', 'usr/local/lib/python3.13/lib-dynload'];
-      for (const d of snapshot.dirs) snapshot.modes[d] = 7;
-      snapshot.modes[CPYTHON_STDLIB_GUEST] = 7;
-      snapshot.modes[CPYTHON_MARKER_GUEST] = 7;
-      snapshot.files[CPYTHON_MARKER_GUEST] = btoa('# stdlib marker; the modules live in the zip\n');
-      // The size comes from the manifest that just walked the install dir, not
-      // from a second stat: one walk, one answer.
-      snapshot.sizes = snapshot.sizes || {};
-      snapshot.sizes[CPYTHON_STDLIB_GUEST] = snapshot.sizes[stdlibVfs.replace(/^\/+/, '')] ?? 0;
+      const snapshot = fsManifest.snapshot;
 
       if (!pool) {
         const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
@@ -375,7 +489,7 @@ export function makeCPythonRunnerFactory(deps: {
         userEnv,
         progName,
         cwd,
-        pythonHome: CPYTHON_HOME,
+        pythonHome: `/${installRoot.replace(/^\/+/, '')}`,
         supervisorPid: ctx.pid,
         fsSnapshot: snapshot,
       };
@@ -389,10 +503,20 @@ export function makeCPythonRunnerFactory(deps: {
       // its facet rather than being driven by inbound requests.
       const resident = shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
 
+      if (resident) {
+        const command = [binName, ...argv].map((part) =>
+          (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
+        const spawnResult = await spawnCPythonSocketProcess(
+          facetMgr, { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd }, command);
+        if (spawnResult.stdout) ctx.stdout.write(spawnResult.stdout);
+        if (spawnResult.stderr) ctx.stderr.write(spawnResult.stderr);
+        return spawnResult.exitCode;
+      }
+
       let result: CPythonFacetResult;
       try {
         result = await pool.submit(cpythonRunFacetFn, facetArgs, {
-          timeoutMs: resident ? 600_000 : 120_000,
+          timeoutMs: 120_000,
         });
       } catch (e: unknown) {
         ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);

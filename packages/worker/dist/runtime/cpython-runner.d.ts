@@ -42,6 +42,14 @@ import type { RuntimeManifest } from './runtime-catalog.js';
  * language prelude was missing.
  */
 export declare function buildCPythonPreamble(): string;
+/**
+ * The worker source for a resident Python process. Same shape as
+ * buildRubySocketProcessWorker: the socket kernel and the interpreter live in a
+ * DurableObject, startProcess runs the program until it stops, and inbound
+ * requests arrive on handleHttpRequest and are dispatched into the server the
+ * program registered before exiting.
+ */
+export declare function buildCPythonSocketProcessWorker(preamble: string): string;
 export declare function makeCPythonRunnerFactory(deps: {
     facetMgr: FacetManager;
     vfs: SqliteVFS;
