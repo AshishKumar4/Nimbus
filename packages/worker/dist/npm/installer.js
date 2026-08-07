@@ -2027,6 +2027,14 @@ function safeJsonParse(json, fallback) {
     }
 }
 /**
+ * A warm install finishes in a few hundred ms, where a seconds-with-one-decimal
+ * format rounds every phase to `0.0s` and the breakdown stops decomposing the
+ * total it sits next to.
+ */
+function fmtPhaseMs(ms) {
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+/**
  * Merge per-shard `facetCounters` arrays from a fanout install-batch.
  * Each shard's counters describe the work done by its peer DO's
  * facet; merging gives the supervisor a single aggregate to fold
@@ -2041,14 +2049,6 @@ function safeJsonParse(json, fallback) {
  *     across separate isolates and the supervisor never sees their
  *     in-flight sum at one moment).
  */
-/**
- * A warm install finishes in a few hundred ms, where a seconds-with-one-decimal
- * format rounds every phase to `0.0s` and the breakdown stops decomposing the
- * total it sits next to.
- */
-function fmtPhaseMs(ms) {
-    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
 function mergeFacetCounters(perShard) {
     if (perShard.length === 0) {
         return {
