@@ -195,61 +195,67 @@ globalThis.__cpythonReplRun = async function __cpythonReplRun(args) {
 };
 
 // ── Resident process ───────────────────────────────────────────────────────
-// A workerd request context cannot resume a wasm stack that a different request
-// suspended, so a server cannot simply block in accept(2) across requests. A
-// Python generator can: its frame lives on the guest heap, so it survives the
-// context boundary. The process body runs inside one, and each inbound request
-// resumes it.
+// The program is not suspended between requests — it has already finished.
+// python-server-adapter.ts makes serve_forever() register the server and
+// return, so the body runs to completion and the server object survives on the
+// Python heap. Each inbound request re-enters the interpreter and dispatches
+// one connection into it. Nothing is parked across a request boundary, which is
+// what makes this work at all: workerd cannot resume a wasm stack that a
+// different request suspended.
 globalThis.__cpythonProcess = globalThis.__cpythonProcess || null;
 
 globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
-  if (globalThis.__cpythonProcess) return globalThis.__cpythonProcess.started;
+  if (globalThis.__cpythonProcess) return globalThis.__cpythonProcess.result;
   const stdoutStart = globalThis.__nimbusPyStdout.length;
   const stderrStart = globalThis.__nimbusPyStderr.length;
   const boot = await __nimbusPyBoot(args);
-  // The body becomes a generator so it can park; the driver below is what
-  // advances it. Nothing about the user's program changes - it is the harness
-  // around it that yields.
-  const started = boot.run([
-    'import sys, types',
-    '__nimbus_ns = {"__name__": "__main__"}',
-    '__nimbus_src = ' + JSON.stringify(args.userCode || '') + '',
-    'def __nimbus_body():',
-    '    exec(compile(__nimbus_src, ' + JSON.stringify(args.progName || 'python') + ', "exec"), __nimbus_ns)',
-    '    yield',
-    '__nimbus_gen = __nimbus_body()',
-  ].join('\n'));
-  globalThis.__cpythonProcess = { boot, started, stdoutStart, stderrStart, done: false };
-  return started;
-};
-
-// Advance the process until it parks again. Serialized through a queue on
-// globalThis because no single request may own it: a request context is torn
-// down without warning when its response is sent, taking anything anchored to
-// it, and two drivers entering a live generator together would corrupt it.
-globalThis.__cpythonResumeQueue = globalThis.__cpythonResumeQueue || Promise.resolve();
-globalThis.__cpythonStep = function __cpythonStep() {
-  const run = async () => {
-    const proc = globalThis.__cpythonProcess;
-    if (!proc || proc.done) return { resumed: false, alive: false };
-    const rc = await proc.boot.run([
-      'try:',
-      '    next(__nimbus_gen)',
-      '    __nimbus_alive = True',
-      'except StopIteration:',
-      '    __nimbus_alive = False',
-    ].join('\n'));
-    if (rc !== 0) proc.done = true;
-    return { resumed: true, alive: !proc.done };
+  const exitCode = await boot.run(args.userCode || '');
+  await boot.flush();
+  const result = {
+    exitCode,
+    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
   };
-  const task = globalThis.__cpythonResumeQueue.then(run, run);
-  globalThis.__cpythonResumeQueue = task.then(() => {}, () => {});
-  return task;
+  globalThis.__cpythonProcess = { boot, result };
+  return result;
 };
 
+// Which ports the program left listening. Read back from Python rather than
+// tracked here, because the adapter's registry is the only thing that knows
+// whether serve_forever actually ran.
+globalThis.__cpythonListeningPorts = async function __cpythonListeningPorts() {
+  const proc = globalThis.__cpythonProcess;
+  if (!proc) return [];
+  const before = globalThis.__nimbusPyStdout.length;
+  await proc.boot.run('print("__NIMBUS_PORTS__" + repr(_nimbus_listening_ports()))');
+  const written = globalThis.__nimbusPyStdout.splice(before).join('');
+  const match = /__NIMBUS_PORTS__\[([^\]]*)\]/.exec(written);
+  // Anything the program itself printed in the same turn is kept.
+  const leftover = written.replace(/__NIMBUS_PORTS__\[[^\]]*\]\n?/, '');
+  if (leftover) globalThis.__nimbusPyStdout.push(leftover);
+  if (!match || !match[1].trim()) return [];
+  return match[1].split(',').map((n) => Number(n.trim())).filter((n) => n > 0);
+};
+
+// One dispatch at a time for the whole process: two entries into the same
+// interpreter would interleave inside a single-threaded VM. The queue lives on
+// globalThis because no request may own it — a request context is torn down
+// without warning when its response is sent.
+globalThis.__cpythonServeQueue = globalThis.__cpythonServeQueue || Promise.resolve();
 globalThis.__nimbusVirtualSocketRequestQueued = globalThis.__nimbusVirtualSocketRequestQueued
-  || async function __nimbusVirtualSocketRequestQueued() {
-    const step = await globalThis.__cpythonStep();
-    return !!step.resumed;
+  || function __nimbusVirtualSocketRequestQueued(port) {
+    const run = async () => {
+      const proc = globalThis.__cpythonProcess;
+      if (!proc) return false;
+      const rc = await proc.boot.run(
+        'import sys\n'
+        + '_nimbus_ok = _nimbus_serve_one(' + Number(port) + ')\n'
+        + 'if not _nimbus_ok: sys.stderr.write("nimbus: no server registered on port ' + Number(port) + '\\n")');
+      await proc.boot.flush();
+      return rc === 0;
+    };
+    const task = globalThis.__cpythonServeQueue.then(run, run);
+    globalThis.__cpythonServeQueue = task.then(() => {}, () => {});
+    return task;
   };
 `;

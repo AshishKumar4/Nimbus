@@ -55,13 +55,13 @@ function runtimeVfs(runtimeFiles, deniedPath) {
   const deniedPath = 'home/user/locked/tool.py';
   const vfs = runtimeVfs({
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
-    '/runtime/python/share/cpython/python313.zip': new Uint8Array(),
+    '/runtime/python/lib/python313.zip': new Uint8Array(),
   }, deniedPath);
   const run = makeCPythonRunnerFactory({ facetMgr: {}, vfs })(
     {
       files: [
         { path: 'share/cpython/python.wasm' },
-        { path: 'share/cpython/python313.zip' },
+        { path: 'lib/python313.zip' },
       ],
     },
     '/runtime/python',

@@ -244,13 +244,28 @@ const SPECS = {
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
       // The stdlib, pyc-only. Read straight out of the session filesystem by
       // zipimport, which is why it needs no separate transport.
-      { src: 'python313.zip', vfs: 'share/cpython/python313.zip' },
+      // Laid out as a Python prefix, so nimbus_py_init can be handed the
+      // install root directly. Aliasing lib/ onto some other path would put
+      // entries in the guest's filesystem that the supervisor cannot serve,
+      // and a manifest entry nobody can fetch is an EIO waiting to happen.
+      { src: 'python313.zip', vfs: 'lib/python313.zip' },
+      // OpenSSL has no default trust store to fall back on here: there is no
+      // /etc/ssl in the session, so ssl.create_default_context() would verify
+      // against nothing and every HTTPS fetch would fail. SSL_CERT_FILE points
+      // at this. Mozilla's bundle, as published by curl.se.
+      { src: 'cacert.pem',     vfs: 'etc/ssl/cert.pem' },
+      { src: 'STDLIB_MARKER', vfs: 'lib/python3.13/os.py' },
       { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
       { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
     ],
     license_text: PSF_LICENSE_NOTICE(),
     /** Source 'BIN_MARKER' is synthesised, not fetched. */
     synthetic_files: {
+      'STDLIB_MARKER': Buffer.from(
+        '# Nimbus stdlib marker. Every module is read from ../python313.zip;\n' +
+        '# this file exists so the prefix looks like a Python prefix.\n',
+        'utf8',
+      ),
       'BIN_MARKER': Buffer.from(
         '# Nimbus cpython-runner launcher marker. The interpreter itself\n' +
         '# lives in share/cpython/. This file exists so `which python` and\n' +

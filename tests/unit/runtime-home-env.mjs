@@ -66,13 +66,13 @@ function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umas
   const sentinel = '/* Nimbus Pyodide workerd adapter: pyodide-0.29.4-workerd-adapter-v2 */';
   const vfs = new RuntimeVfs({
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
-    '/runtime/python/share/cpython/python313.zip': new Uint8Array(),
+    '/runtime/python/lib/python313.zip': new Uint8Array(),
   });
   const manifest = {
     version: '0.29.4',
     files: [
       { path: 'share/cpython/python.wasm' },
-      { path: 'share/cpython/python313.zip' },
+      { path: 'lib/python313.zip' },
     ],
     runtime_artifacts: [{
       id: 'pyodide-0.29.4-workerd-adapter-v2',

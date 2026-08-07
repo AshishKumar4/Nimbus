@@ -72,8 +72,7 @@ interface PythonReplFacetResult {
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
-const CPYTHON_STDLIB_REL = 'share/cpython/python313.zip';
-const CPYTHON_HOME = '/usr/local';
+const CPYTHON_STDLIB_REL = 'lib/python313.zip';
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -121,6 +120,7 @@ class PythonReplAdapter implements ReplAdapter {
   private deps: PythonReplDeps;
   private wasmBytes: ArrayBuffer | null = null;
   private fsSnapshot: unknown = null;
+  private pythonHome = '/usr/local';
 
   ps1 = '>>> ';
   ps2 = '... ';
@@ -194,10 +194,13 @@ class PythonReplAdapter implements ReplAdapter {
     this.wasmBytes = toArrayBuffer(vfs.readFile(wasmPath));
 
     const { manifestVfs } = await import('./vfs-manifest.js');
-    const stdlibDir = stdlibPath.replace(/\/[^/]+$/, '');
-    const built = manifestVfs(vfs, 'home/user', { extraRoots: [stdlibDir] });
+    // The install root is the Python prefix, so the manifest covers lib/ and
+    // etc/ as they are — nothing is aliased into a path the supervisor could
+    // not serve.
+    const built = manifestVfs(vfs, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
     if ('error' in built) throw new Error(built.error);
-    this.fsSnapshot = aliasStdlibInto(built.snapshot as never, stdlibPath.replace(/^\/+/, ''));
+    this.fsSnapshot = built.snapshot;
+    this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 
     const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
     const host = getFacetManagerLoaderHost(facetMgr);
@@ -229,7 +232,7 @@ class PythonReplAdapter implements ReplAdapter {
       pythonReplStepFacetFn,
       {
         userCode,
-        pythonHome: CPYTHON_HOME,
+        pythonHome: this.pythonHome,
         pyArgv: ['python'],
         userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
         progName: 'python',
@@ -240,27 +243,6 @@ class PythonReplAdapter implements ReplAdapter {
     );
     return result as PythonReplFacetResult;
   }
-}
-
-/**
- * The interpreter looks for its stdlib under /usr/local, but the install put it
- * wherever the manifest says. Aliasing the two paths the guest needs is cheaper
- * than moving 3.6 MiB, and the zip's content is demand-loaded either way.
- */
-function aliasStdlibInto(
-  snapshot: { files: Record<string, string>; dirs: string[]; modes: Record<string, number>; sizes?: Record<string, number> },
-  stdlibManifestPath: string,
-): unknown {
-  snapshot.dirs = [...snapshot.dirs, 'usr', 'usr/local', 'usr/local/lib',
-    'usr/local/lib/python3.13', 'usr/local/lib/python3.13/lib-dynload'];
-  for (const d of snapshot.dirs) snapshot.modes[d] = 7;
-  snapshot.files['usr/local/lib/python3.13/os.py'] = btoa('# stdlib marker; the modules live in the zip\n');
-  snapshot.modes['usr/local/lib/python3.13/os.py'] = 7;
-  snapshot.modes['usr/local/lib/python313.zip'] = 7;
-  // Size from the manifest walk rather than a second stat.
-  snapshot.sizes = snapshot.sizes || {};
-  snapshot.sizes['usr/local/lib/python313.zip'] = snapshot.sizes[stdlibManifestPath] ?? 0;
-  return snapshot;
 }
 
 /**

@@ -63,20 +63,20 @@ const toB64 = (bytes) => Buffer.from(bytes).toString('base64');
 const snapshot = {
   root: '',
   files: {
-    'usr/local/lib/python313.zip': toB64(readFileSync(STDLIB)),
-    'usr/local/lib/python3.13/os.py': toB64(Buffer.from('# stdlib marker\n')),
+    'opt/py/lib/python313.zip': toB64(readFileSync(STDLIB)),
+    'opt/py/lib/python3.13/os.py': toB64(Buffer.from('# stdlib marker\n')),
   },
-  dirs: ['usr', 'usr/local', 'usr/local/lib', 'usr/local/lib/python3.13',
-         'usr/local/lib/python3.13/lib-dynload', 'home', 'home/user'],
+  dirs: ['opt', 'opt/py', 'opt/py/lib', 'opt/py/lib/python3.13',
+         'opt/py/lib/python3.13/lib-dynload', 'home', 'home/user'],
   modes: {
-    '': 7, usr: 7, 'usr/local': 7, 'usr/local/lib': 7,
-    'usr/local/lib/python3.13': 7, 'usr/local/lib/python3.13/lib-dynload': 7,
+    '': 7, opt: 7, 'opt/py': 7, 'opt/py/lib': 7,
+    'opt/py/lib/python3.13': 7, 'opt/py/lib/python3.13/lib-dynload': 7,
     home: 7, 'home/user': 7,
-    'usr/local/lib/python313.zip': 7, 'usr/local/lib/python3.13/os.py': 7,
+    'opt/py/lib/python313.zip': 7, 'opt/py/lib/python3.13/os.py': 7,
   },
 };
 const base = {
-  pythonHome: '/usr/local',
+  pythonHome: '/opt/py',
   userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
   progName: 'python',
   cwd: '/home/user',
