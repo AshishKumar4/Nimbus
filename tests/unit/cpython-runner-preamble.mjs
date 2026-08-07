@@ -41,7 +41,7 @@ assert.ok(preamble.includes('__wasiMakeImports'), 'the WASI host must be present
 
 // initFS must come before the supervisor adoption in the emitted text.
 const initFsAt = preamble.indexOf('__wasiInitFS({');
-const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusSupervisor');
+const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusPySupervisor');
 assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   'the supervisor must be adopted after __wasiInitFS, which clears it');
 

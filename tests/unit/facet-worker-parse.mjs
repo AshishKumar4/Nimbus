@@ -9,10 +9,7 @@ import {
 import { serializeFunction } from '../../packages/worker/src/loaders/vendor/serialize.ts';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import { parseJavaScriptModule } from '../../packages/worker/src/runtime/javascript-ast.ts';
-import {
-  buildPyodidePreamble,
-  buildPythonSocketProcessWorker,
-} from '../../packages/worker/src/runtime/python-runner.ts';
+import { buildCPythonPreamble } from '../../packages/worker/src/runtime/cpython-runner.ts';
 import {
   buildRubyPreamble,
   buildRubySocketProcessWorker,
@@ -36,11 +33,8 @@ const facetWorkers = [
   // silently emits an unterminated string and the runtime only fails at
   // dispatch ("Invalid or unexpected token"). Parse them here instead.
   {
-    name: 'python socket process worker + pyodide preamble',
-    source: buildPythonSocketProcessWorker(
-      buildPyodidePreamble('globalThis._createPyodideModule = function () {};', ''),
-      { modules: [], wasmModules: {}, resolverEntries: [] },
-    ),
+    name: 'cpython facet preamble',
+    source: buildCPythonPreamble(),
   },
   {
     name: 'ruby socket process worker + ruby preamble',

@@ -60,10 +60,11 @@ async function __nimbusPyBoot(args) {
     symlinks: snapshot.symlinks,
     sizes: snapshot.sizes,
   });
-  // AFTER initFS, never before. See constraint (2).
-  if (args.supervisorPid !== undefined && args.supervisorPid !== null
-      && typeof __wasiAdoptSupervisor === 'function') {
-    __wasiAdoptSupervisor(globalThis.__nimbusSupervisor, args.supervisorPid);
+  // AFTER initFS, never before. See constraint (2). The stub is read back off
+  // globalThis rather than passed in, because the facet entry point published
+  // it there before initFS wiped the adoption.
+  if (typeof __wasiAdoptSupervisor === 'function') {
+    __wasiAdoptSupervisor(globalThis.__nimbusPySupervisor);
   }
 
   let instance = null;
@@ -160,6 +161,35 @@ globalThis.__cpythonRun = async function __cpythonRun(args) {
     return { exitCode, ...drain() };
   } catch (e) {
     try { await boot.flush(); } catch (ignored) { /* the VM is already gone */ }
+    return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
+  }
+};
+
+// ── REPL ───────────────────────────────────────────────────────────────────
+// One interpreter for the whole session, unlike __cpythonRun's fresh instance
+// per call: a REPL where the previous line's definitions are gone is not a
+// REPL. The facet pool that owns this runs at concurrency 1, so there is one
+// of these per session and no interleaving to guard against.
+globalThis.__cpythonReplBoot = globalThis.__cpythonReplBoot || null;
+globalThis.__cpythonReplRun = async function __cpythonReplRun(args) {
+  const stdoutStart = globalThis.__nimbusPyStdout.length;
+  const stderrStart = globalThis.__nimbusPyStderr.length;
+  const drain = () => ({
+    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
+    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+  });
+  try {
+    if (!globalThis.__cpythonReplBoot) {
+      globalThis.__cpythonReplBoot = await __nimbusPyBoot(args);
+    }
+  } catch (e) {
+    return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
+  }
+  try {
+    const exitCode = await globalThis.__cpythonReplBoot.run(args.userCode || '');
+    await globalThis.__cpythonReplBoot.flush();
+    return { exitCode, ...drain() };
+  } catch (e) {
     return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
   }
 };

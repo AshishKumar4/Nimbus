@@ -396,7 +396,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
     registerRunnerFactory(
-      'python-runner',
+      'cpython-runner',
       (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: any): Promise<number> {
         const argv: string[] = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
@@ -414,12 +414,15 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             // shell.pasteQueue on attach (multi-line WS frames like
             // `python\nexit(7)` would otherwise drop the tail input).
             shell: self.shell,
+            // The supervisor derives the write credential from this; without
+            // it the prompt cannot write to the session filesystem.
+            pid: ctx.pid,
           });
         }
         // Args present (one-shot mode: -c, script, -m, -). Fall through
         // to the canonical handler (imported lazily on first use).
-        const { makePythonRunnerFactory } = await import('../runtime/python-runner.js');
-        return await makePythonRunnerFactory({ facetMgr, vfs: sqliteFs })(
+        const { makeCPythonRunnerFactory } = await import('../runtime/cpython-runner.js');
+        return await makeCPythonRunnerFactory({ facetMgr, vfs: sqliteFs })(
           manifest, installRoot, binName, binKind,
         )(ctx);
       },
