@@ -5,8 +5,13 @@
 // on a fresh session. End-to-end including HTTPS handshake, packfile
 // fetch, and VFS write.
 //
-// Baseline: median=2631 ms p95=3695 ms threshold=5600 ms
-//   N=5 runs vs prod. See baselines.md.
+// Threshold provenance: 5600 ms. The original "median=2631 ms p95=3695 ms,
+// N=5 runs vs prod" cited a baselines.md which has never existed in this
+// repository, so that figure cannot be re-derived. Re-measured 2026-08-07,
+// N=3 against a throwaway carrying the npm fanout branch: 1557/1610/1859 ms,
+// comfortably inside the bound at roughly 3x headroom. The 62-140 ms of client
+// round-trip in each reading is ~2.5% of this threshold, so unlike
+// install-warm this bound is not sensitive to where the probe runs from.
 //
 // Threshold protects against git-clone regression:
 //   - cf-git pack-fetch path slowed.

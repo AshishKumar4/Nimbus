@@ -8,8 +8,17 @@
 // session traffic so this is "cold session, warm L2" — still the
 // canonical install path most users see (cold L1, hot L2).
 //
-// Baseline: median=761 ms p95=910 ms threshold=1400 ms
-//   N=10 runs vs prod. See baselines.md.
+// Threshold provenance: 1400 ms. The original "median=761 ms p95=910 ms,
+// N=10 runs vs prod" cited a baselines.md which has never existed in this
+// repository, so that figure cannot be re-derived and is not relied on here.
+// Re-measured 2026-08-07, N=4 against a throwaway carrying the npm fanout
+// branch: 402/852/1055/1354 ms. The bound still holds, but the worst run used
+// 97% of it, so the headroom is thinner than the old baseline implied and this
+// probe should be expected to red occasionally on a slow colo or a cold DO.
+// Left at 1400 ms deliberately — it is passing, and widening a bound with no
+// regression to justify it only hides the next one. Whoever owns this next
+// should consider scoring it server-side the way install-warm now is, since
+// 62-140 ms of any reading here is client round-trip.
 //
 // Threshold protects against the >50% install-path regression class
 // (R2 latency spike, resolver fan-out failure, install-batch-facet

@@ -57,6 +57,12 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // Tunable; if cache hit-rate plateau is high in prod, raising this
     // slightly may capture more wins on slow colos.
     const R2_RACE_TIMEOUT_MS = 300;
+    // [W4] How long the R2 leg gets on its own before the network leg is issued
+    // as a hedge. A hit or an explicit miss answers inside this window and costs
+    // no registry request; past it the leg is stalled, and the remaining
+    // R2_RACE_TIMEOUT_MS - SPECULATIVE_FETCH_DELAY_MS would otherwise be dead
+    // air before the download could start.
+    const SPECULATIVE_FETCH_DELAY_MS = 75;
     const concurrency = Math.max(1, Math.min(batch.concurrency ?? 3, 8));
     // ── pLimit (inlined; preamble doesn't carry a limiter helper) ────────
     // Identical semantics to src/npm-resolver.ts:31-50 / src/npm-resolve-facet.ts.
@@ -94,6 +100,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
     let pipelinedTarballRaceWins = 0;
     let pipelinedTarballRaceLosses = 0;
+    // Speculation accounting: how long the slowest package waited on the R2 leg,
+    // and how many registry requests were issued alongside those waits.
+    let r2WaitMsMax = 0;
+    let speculativeFetches = 0;
     // cache-obs-2: per-tier event accumulator. Filled in the L2/L3
     // (supervisor RPC return.events) and L4 (post-network-fetch)
     // branches. Returned in result.cacheStatEvents at the end of the
@@ -338,18 +348,27 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         inFlight++;
         if (inFlight > inFlightPeak)
             inFlightPeak = inFlight;
-        // [W4] 1a. Race the R2 cache lookup against the network fetch.
+        // [W4] 1a. R2 cache lookup, hedged by the network fetch.
         //
-        // Both legs start here. The R2 GET is bounded by R2_RACE_TIMEOUT_MS; if it
-        // returns bytes first the network leg is cancelled, and otherwise the
-        // network response has been in flight for the whole bounded wait rather
-        // than starting from zero once the R2 leg gives up.
+        // The R2 GET is bounded by R2_RACE_TIMEOUT_MS. That bound guards against a
+        // slow or hung leg rather than describing the normal cost: a hit and an
+        // explicit miss both answer well inside it, and only a stalled leg spends
+        // the whole budget. So the network leg is a hedge rather than a co-start —
+        // issued only once R2 has failed to answer within
+        // SPECULATIVE_FETCH_DELAY_MS, which is exactly the window in which the
+        // bounded wait would otherwise be dead air.
+        //
+        // Issuing it up front instead made every cache hit pay for a registry
+        // request it then threw away. That is the common case on a warm install,
+        // and it cost more than the miss path the speculation was meant to speed
+        // up.
         //
         // Soft-fail: if env.SUPERVISOR.getCachedTarball isn't defined (older
         // supervisor deployment) the R2 leg becomes a noop and there is nothing to
-        // overlap with, so the speculative fetch is not worth issuing — the retry
-        // loop's own first fetch is already the first thing that happens.
+        // overlap with, so no hedge is armed — the retry loop's own first fetch is
+        // already the first thing that happens.
         const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
+        const r2WaitStart = Date.now();
         const r2P = r2Available
             ? Promise.race([
                 __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.integrity), (result) => result),
@@ -357,24 +376,40 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             ]).catch(() => null)
             : Promise.resolve(null);
         let pendingNetwork = null;
+        let hedgeTimer = null;
+        const hedgeAbort = new AbortController();
+        const clearHedgeTimer = () => {
+            if (hedgeTimer === null)
+                return;
+            clearTimeout(hedgeTimer);
+            hedgeTimer = null;
+        };
         if (r2Available) {
-            pendingNetwork = fetch(spec.tarballUrl);
-            // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
-            // this sink only stops a failure that lands while the R2 leg is still
-            // outstanding from surfacing as an unhandled rejection.
-            pendingNetwork.catch(() => { });
+            hedgeTimer = setTimeout(() => {
+                hedgeTimer = null;
+                speculativeFetches++;
+                pendingNetwork = fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
+                // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
+                // this sink only stops a failure that lands while the R2 leg is still
+                // outstanding from surfacing as an unhandled rejection.
+                pendingNetwork.catch(() => { });
+            }, SPECULATIVE_FETCH_DELAY_MS);
         }
         const takeNetworkResponse = async () => {
+            clearHedgeTimer();
             const pending = pendingNetwork;
             pendingNetwork = null;
             return pending ? await pending : await fetch(spec.tarballUrl);
         };
         const discardPendingNetwork = () => {
-            const pending = pendingNetwork;
-            pendingNetwork = null;
-            if (!pending)
+            clearHedgeTimer();
+            if (!pendingNetwork)
                 return;
-            void pending.then((response) => response.body?.cancel().catch(() => { }), () => { });
+            pendingNetwork = null;
+            // Abort rather than await-then-cancel the body: a `.then()` that cancels
+            // only runs once the registry's response headers arrive, so it holds the
+            // connection open for exactly the round-trip the cache hit avoided.
+            hedgeAbort.abort();
         };
         try {
             // [W4] Captured compressed bytes for write-back to R2 on miss.
@@ -388,6 +423,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             if (r2Available) {
                 try {
                     const r2Result = await r2P;
+                    const r2WaitMs = Date.now() - r2WaitStart;
+                    if (r2WaitMs > r2WaitMsMax)
+                        r2WaitMsMax = r2WaitMs;
                     if (r2Result) {
                         r2HitBytes = r2Result.bytes;
                         // cache-obs-2: splice supervisor's per-tier events into
@@ -773,6 +811,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             peakInFlight: inFlightPeak,
             pipelinedTarballRaceWins,
             pipelinedTarballRaceLosses,
+            r2WaitMsMax,
+            speculativeFetches,
             sharedWaves,
             sharedWaveMs,
         },
