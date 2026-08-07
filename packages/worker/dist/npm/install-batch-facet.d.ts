@@ -71,6 +71,13 @@ export interface InstallBatchResult {
          *  recordR2RaceCounters() in npm-installer. */
         pipelinedTarballRaceWins: number;
         pipelinedTarballRaceLosses: number;
+        /** writeBatchStream waves this shard issued, and the cumulative ms it
+         *  spent awaiting them. Waves never overlap within a shard and the
+         *  shared-mutation mutex is held across a flush, so `sharedWaveMs` is
+         *  time during which the shard's tar pipelines are fully stopped —
+         *  the term that separates write cost from download cost. */
+        sharedWaves: number;
+        sharedWaveMs: number;
     };
     /**
      * cache-obs-2: per-tier cache events captured during this batch.

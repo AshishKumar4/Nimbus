@@ -369,6 +369,14 @@ export class NpmInstaller {
         if (cachedHits > 0) {
             log(`  (${cachedHits} from cache)`);
         }
+        // The per-phase timings were computed on every install and then
+        // dropped, so "install took 60s" carried no information about which
+        // phase owned the 60s. Emit the breakdown next to the total it
+        // decomposes. `bundle` is dispatch-only (Phase 7 is fire-and-forget).
+        log('  phases: ' +
+            Object.entries(phases)
+                .map(([name, ms]) => `${name}=${(ms / 1000).toFixed(1)}s`)
+                .join(' '));
         return { installed, failed, totalFiles, elapsed, cachedHits, phases };
     }
     // ── Single-resolver / single-fetcher invariant ───────────────────────
@@ -429,6 +437,11 @@ export class NpmInstaller {
         let totalLayers = 0;
         let r2Wins = 0;
         let r2Losses = 0;
+        // Layers are a hard barrier: layer N+1 cannot be built until every
+        // task in layer N returns. `width@ms` per layer is what separates
+        // "resolution is slow because there are many packuments" from
+        // "resolution is slow because there are many barriers".
+        const layerProfile = [];
         // cache-obs-2: accumulator for per-tier cache events across all
         // resolve-one tasks in this fanout walk. Drained at end-of-walk
         // into the DO singleton via recordCacheStatEvents.
@@ -507,8 +520,10 @@ export class NpmInstaller {
             //   <5 → in-DO fanout in-DO (NimbusLoaderPool), concurrency = layer.length (capped at 4)
             //   ≥5 → peer-DO fanout peer-DO, N peers = min(layer.length, 32)
             let results;
+            const layerT0 = Date.now();
             try {
                 results = await fanoutPool.submitMany(tasks, resolveOnePackumentInFacet);
+                layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms`);
             }
             catch (e) {
                 // Per anti-requirement: no fallback. Log + propagate.
@@ -694,7 +709,7 @@ export class NpmInstaller {
             `peak in-flight=${inFlightPeak}, ` +
             `cache writes=${cacheWriteCount}` +
             r2WinSuffix +
-            `, layers=${totalLayers}, ` +
+            `, layers=${totalLayers} [${layerProfile.join(' ')}], ` +
             `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
             (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''));
         return { resolved, unresolved };
@@ -879,6 +894,8 @@ export class NpmInstaller {
                 `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB tarball bytes, ` +
                 `peak in-flight=${result.facetCounters.peakInFlight}` +
                 r2WinSuffix +
+                `, write waves=${fc.sharedWaves} (worst shard stalled ` +
+                `${(fc.sharedWaveMs / 1000).toFixed(1)}s)` +
                 `, ${(result.elapsed / 1000).toFixed(1)}s` +
                 (failCount > 0 ? ` (${failCount} failed)` : ''));
             return { installed, failed, filesWritten };
@@ -2003,6 +2020,8 @@ function mergeFacetCounters(perShard) {
             peakInFlight: 0,
             pipelinedTarballRaceWins: 0,
             pipelinedTarballRaceLosses: 0,
+            sharedWaves: 0,
+            sharedWaveMs: 0,
         };
     }
     return {
@@ -2011,5 +2030,10 @@ function mergeFacetCounters(perShard) {
         peakInFlight: perShard.reduce((m, c) => Math.max(m, c.peakInFlight || 0), 0),
         pipelinedTarballRaceWins: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceWins || 0), 0),
         pipelinedTarballRaceLosses: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceLosses || 0), 0),
+        sharedWaves: perShard.reduce((s, c) => s + (c.sharedWaves || 0), 0),
+        // Shards run concurrently, so the per-shard stall times overlap. The
+        // max is the shard that stalled longest, which is what the install's
+        // wall time actually waits on; a sum would double-count.
+        sharedWaveMs: perShard.reduce((m, c) => Math.max(m, c.sharedWaveMs || 0), 0),
     };
 }

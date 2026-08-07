@@ -89,6 +89,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     let inFlightPeak = 0;
     let cumulativeBytesDecoded = 0; // bytes of tarball body successfully read
     let tarballsCompleted = 0;
+    let sharedWaves = 0;
+    let sharedWaveMs = 0;
     // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
     let pipelinedTarballRaceWins = 0;
     let pipelinedTarballRaceLosses = 0;
@@ -159,6 +161,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         sharedBufferedBytes = 0;
         const ownersNow = sharedOwners;
         sharedOwners = new Set();
+        sharedWaves++;
+        const waveT0 = Date.now();
         // One promise owns this exact wave. Register the SAME settled outcome
         // with every contributing package before awaiting the RPC, so a package
         // cannot report success while another package happens to be the caller
@@ -208,6 +212,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             waves.add(wave);
         }
         await wave;
+        sharedWaveMs += Date.now() - waveT0;
     };
     const sharedFlush = async () => {
         // Serialize: wait for any in-flight flush to complete first; then
@@ -745,6 +750,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             peakInFlight: inFlightPeak,
             pipelinedTarballRaceWins,
             pipelinedTarballRaceLosses,
+            sharedWaves,
+            sharedWaveMs,
         },
         cacheStatEvents,
     };
