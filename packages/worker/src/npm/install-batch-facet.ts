@@ -82,6 +82,13 @@ export interface InstallBatchResult {
      *  recordR2RaceCounters() in npm-installer. */
     pipelinedTarballRaceWins: number;
     pipelinedTarballRaceLosses: number;
+    /** writeBatchStream waves this shard issued, and the cumulative ms it
+     *  spent awaiting them. Waves never overlap within a shard and the
+     *  shared-mutation mutex is held across a flush, so `sharedWaveMs` is
+     *  time during which the shard's tar pipelines are fully stopped —
+     *  the term that separates write cost from download cost. */
+    sharedWaves: number;
+    sharedWaveMs: number;
   };
   /**
    * cache-obs-2: per-tier cache events captured during this batch.
@@ -176,6 +183,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   let inFlightPeak = 0;
   let cumulativeBytesDecoded = 0; // bytes of tarball body successfully read
   let tarballsCompleted = 0;
+  let sharedWaves = 0;
+  let sharedWaveMs = 0;
   // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
   let pipelinedTarballRaceWins = 0;
   let pipelinedTarballRaceLosses = 0;
@@ -276,6 +285,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     sharedBufferedBytes = 0;
     const ownersNow = sharedOwners;
     sharedOwners = new Set<number>();
+    sharedWaves++;
+    const waveT0 = Date.now();
 
     // One promise owns this exact wave. Register the SAME settled outcome
     // with every contributing package before awaiting the RPC, so a package
@@ -329,6 +340,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     }
 
     await wave;
+    sharedWaveMs += Date.now() - waveT0;
   };
   const sharedFlush = async (): Promise<void> => {
     // Serialize: wait for any in-flight flush to complete first; then
@@ -879,6 +891,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       peakInFlight: inFlightPeak,
       pipelinedTarballRaceWins,
       pipelinedTarballRaceLosses,
+      sharedWaves,
+      sharedWaveMs,
     },
     cacheStatEvents,
   };
