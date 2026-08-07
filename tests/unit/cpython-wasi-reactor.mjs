@@ -18,6 +18,14 @@
 // The imports come from the preamble's documented no-JSPI branch (see
 // lib/wasi-imports.mjs): the interpreter only touches files, whose bodies
 // return plain errnos, so nothing needs to park.
+//
+// Observed once, 2026-08-07: `Illegal instruction (core dumped)` from bun
+// during a full sequential sweep of tests/unit, while the CPython build tree
+// was still resident on the machine. Not reproducible — six isolated runs and
+// two further full sweeps were clean, and the crash was in bun itself, not an
+// assertion. This is the heaviest test in the suite (an 11 MiB module plus a
+// real pip install into the VFS), so memory pressure is the leading
+// explanation. Recorded so that a CI sighting does not start from zero.
 
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
