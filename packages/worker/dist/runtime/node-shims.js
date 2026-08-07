@@ -763,7 +763,7 @@ const __fsMod = (() => {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
       // nothing is learned, and the miss stands.
-      try { meta = await supervisor.stat(absPath); }
+      try { meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r); }
       catch { return; }
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
       if (meta.type === "directory") return;
@@ -1301,7 +1301,14 @@ const __fsMod = (() => {
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
     let result;
-    try { result = await supervisor.fsAcquire(_cursor.epoch, _cursor.rev); }
+    // Through the RPC helper like every other supervisor call, because it IS
+    // one: the barrier is the first thing an async read issues, and while it
+    // was uncounted __nimbusPendingOps read zero for a whole round trip. A
+    // one-shot facet's event loop, which exits when no handle is live, then
+    // ended the program mid-read — measured as an fs.promises.readFile whose
+    // .then never ran, no error, no output, intermittently, and never when a
+    // pending timer happened to hold the program open.
+    try { result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r); }
     catch { return []; }
     if (!result || typeof result.rev !== "number") return [];
     // Paths that held content before this eviction are the ones worth
@@ -1864,7 +1871,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.exists === "function") {
       const absPath = _resolve(p);
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      return !!(await supervisor.exists(absPath));
+      return !!(await __nimbusUseRpcResult(supervisor.exists(absPath), (r) => r));
     }
     return existsSync(p);
   }
