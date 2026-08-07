@@ -14,9 +14,12 @@
 #   ./build-python.sh wasi assets     # re-link the interpreter and repack
 #
 # Outputs, next to this script:
-#   python.wasm    the interpreter, stripped
+#   python.wasm    the interpreter, stripped, built as a WASI reactor
 #   python313.zip  the stdlib, pyc-only (Tools/wasm/wasm_assets.py)
 #   pip-*.whl      CPython's bundled pip, staged only when pip actually runs
+#
+# Verified by tests/unit/cpython-wasi-reactor.mjs, which drives the artifact
+# through the Nimbus WASI host.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -221,6 +224,32 @@ stage_wasi() {
 	    --with-openssl="$DEPS" --with-ensurepip=no \
 	    --disable-test-modules --disable-ipv6 >/dev/null
 	  make -j"$(nproc)" >/dev/null )
+	stage_reactor
+}
+
+# Relink the interpreter as a WASI reactor. A command module exports _start and
+# WASI says it runs once, which covers `python script.py` and nothing else; a
+# REPL has to survive between turns, and a server has to still exist when the
+# next request arrives. In workerd that cannot mean a parked wasm stack — a
+# request context cannot resume one another request suspended — so it means
+# state on the guest heap, reached by entering the VM again. Hence _initialize
+# plus named entries, the same shape ruby-runner drives.
+#
+# The link reuses the Makefile's own resolved variables rather than a second
+# copy of them, minus Programs/python.o, which is only there for main().
+stage_reactor() {
+	log "reactor link"
+	printf 'print-%%:\n\t@echo $($*)\n' > "$PYSRC/build-wasi/.printvar.mk"
+	( cd "$PYSRC/build-wasi"
+	  mkvar() { make -s -f Makefile -f .printvar.mk "print-$1"; }
+	  "$CC" --sysroot="$SYSROOT" $(mkvar PY_CORE_LDFLAGS) $(mkvar CFLAGS) \
+	    -I"$PYSRC/Include" -I"$PYSRC/Include/internal" -I. \
+	    -c "$HERE/nimbus-py.c" -o nimbus-py.o
+	  "$CC" --sysroot="$SYSROOT" $(mkvar PY_CORE_LDFLAGS) -mexec-model=reactor \
+	    -o python.reactor.wasm nimbus-py.o $(mkvar LINK_PYTHON_OBJS) \
+	    $(mkvar LIBS) $(mkvar MODLIBS) $(mkvar SYSLIBS) \
+	    -Wl,--export=nimbus_py_init -Wl,--export=nimbus_py_run \
+	    -Wl,--export=nimbus_py_flush -Wl,--export=malloc -Wl,--export=free )
 }
 
 stage_assets() {
@@ -232,7 +261,7 @@ stage_assets() {
 	  PYTHONPATH="$(cat pybuilddir.txt)" \
 	  "$PYSRC/build-host/python" "$PYSRC/Tools/wasm/wasm_assets.py" \
 	    --buildroot . --prefix /usr/local )
-	"$STRIP" "$PYSRC/build-wasi/python.wasm" -o "$HERE/python.wasm"
+	"$STRIP" "$PYSRC/build-wasi/python.reactor.wasm" -o "$HERE/python.wasm"
 	cp "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
 	cp "$PYSRC/Lib/ensurepip/_bundled"/pip-*.whl "$HERE/"
 	log "built"
@@ -285,21 +314,12 @@ stage_verify() {
 	[ "$ns" = "wasi_snapshot_preview1" ] || {
 		echo "ERROR: unexpected import namespace" >&2; exit 1; }
 
-	# Static checks cannot tell a module that was built from one that works.
-	# wasmtime is the off-platform arm; the Nimbus arm is the behavioural suite.
-	if command -v wasmtime >/dev/null 2>&1; then
-		local root="$BUILD/gate"
-		rm -rf "$root"
-		mkdir -p "$root/usr/local/lib/python$PYTHON_XY" "$root/work"
-		mkdir -p "$root/usr/local/lib/python${PYTHON_VERSION%.*}/lib-dynload"
-		touch "$root/usr/local/lib/python${PYTHON_VERSION%.*}/lib-dynload/.empty"
-		cp "$HERE/python$PYTHON_XY.zip" "$root/usr/local/lib/"
-		cp "$PYSRC/Lib/os.py" "$root/usr/local/lib/python${PYTHON_VERSION%.*}/"
-		cp "$HERE/gate.py" "$root/work/"
-		wasmtime run --dir "$root::/" "$HERE/python.wasm" -E /work/gate.py
-	else
-		echo "  gate.py SKIPPED: wasmtime not on PATH" >&2
-	fi
+	# Static checks cannot tell a module that was built from one that works, and
+	# the interpreter is a reactor, so there is no _start to run and no
+	# `wasmtime run` that means anything. The behaviour test drives the same
+	# entry points the runner calls, against the real WASI host from
+	# runtime/wasi/preamble.ts rather than a stand-in.
+	( cd "$HERE/../../../.." && bun tests/unit/cpython-wasi-reactor.mjs )
 }
 
 stages=("$@")
