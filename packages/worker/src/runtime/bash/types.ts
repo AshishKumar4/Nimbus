@@ -198,8 +198,13 @@ export interface BashPipeReq {
   fd: number;
   iov: BashIovs;
   nreadPtr: number;
-  isPoll: boolean;
-  /** Only a poll park carries one. */
+  /**
+   * Only a poll park carries one. There is no companion `isPoll` flag: asyncify
+   * rewind re-enters the SAME import call the guest unwound from, so a park
+   * begun in poll_oneoff can only resume in poll_oneoff. A flag recording which
+   * one it was would be state that mirrors the call site and is never read —
+   * and it was exactly that, in three places, until it was removed.
+   */
   pollUserdata?: bigint;
 }
 
@@ -208,7 +213,6 @@ export interface BashPendingRead {
   iov: BashIovs;
   bytes: Uint8Array;
   nreadPtr: number;
-  isPoll: boolean;
   pollUserdata?: bigint;
 }
 
