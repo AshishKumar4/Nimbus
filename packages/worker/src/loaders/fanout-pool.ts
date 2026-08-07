@@ -58,6 +58,13 @@ export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
  */
 export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
 
+/**
+ * Peer shards dispatched per phase. Each phase is a barrier, so a wide
+ * fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial round-trips; the size
+ * trades that serialization against simultaneous cold sibling DO starts.
+ */
+export const FANOUT_PHASE_SIZE = 4;
+
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {
   /**
@@ -112,6 +119,13 @@ export interface NimbusFanoutPoolOptions {
    * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
    */
   supervisorPid?: number;
+  /**
+   * Called once per completed peer-DO dispatch phase with that phase's shard
+   * count and elapsed ms. Phases are barriers, so this is what tells a caller
+   * whether its fan-out is bounded by shard work or by the number of barriers.
+   * Not called on the in-DO path, which has no phases.
+   */
+  onDispatchPhase?: (width: number, elapsedMs: number) => void;
 }
 
 interface NimbusFanoutPeerStub {
@@ -392,10 +406,15 @@ export class NimbusFanoutPool {
     // shards can create too many simultaneous cold sibling DO starts under
     // concurrent installs. Promise-chain phasing limits scheduler pressure
     // without sleeps, timers, or idle gaps between phases.
-    const FANOUT_PHASE_SIZE = 4;
+    //
+    // A phase is a hard barrier: no shard in phase N+1 starts until every
+    // shard in phase N returns, so `width@ms` per phase is what separates
+    // "the shards are slow" from "there are too many barriers".
     for (let i = 0; i < dispatchers.length; i += FANOUT_PHASE_SIZE) {
       const phase = dispatchers.slice(i, i + FANOUT_PHASE_SIZE);
+      const phaseStartedAt = Date.now();
       await Promise.all(phase.map((d) => d()));
+      this.opts.onDispatchPhase?.(phase.length, Date.now() - phaseStartedAt);
     }
     return results;
   }

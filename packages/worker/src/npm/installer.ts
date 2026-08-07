@@ -355,10 +355,12 @@ export class NpmInstaller {
     // removed in Phase 2 A'.1 — they re-introduced the supervisor-heap
     // pressure the facet path eliminates.
     // The shards write through the supervisor's VFS, so every transactionSync
-    // they cause blocks this DO's only thread. Bracketing the phase with the
-    // VFS's own transaction counters says how much of the phase was storage
-    // commit rather than download.
-    const storageBefore = this.storageCommitCounters();
+    // they cause runs on this DO's only thread. Only the count is reported:
+    // a DO's clock advances at I/O, never across synchronous work, so timing
+    // a transactionSync from inside it measures zero by construction (60,673
+    // transactions once summed to 0.0 ms with a 0.0 ms maximum). The count is
+    // still the honest scale signal for the staged-write protocol.
+    const commitsBefore = this.storageCommitCount();
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = await this.fetchViaBatchFacet(toFetch, hoistPlan, nmDir, opts?.pid);
@@ -368,9 +370,7 @@ export class NpmInstaller {
     }
 
     phases['fetch+write'] = Date.now() - phaseStart;
-    const storageAfter = this.storageCommitCounters();
-    const commitCount = storageAfter.count - storageBefore.count;
-    const commitMs = storageAfter.totalMs - storageBefore.totalMs;
+    const commitCount = this.storageCommitCount() - commitsBefore;
 
     // ── Phase 6: Link bins ──────────────────────────────────────────
     phaseStart = Date.now();
@@ -522,10 +522,7 @@ export class NpmInstaller {
         .map(([name, ms]) => `${name}=${(ms / 1000).toFixed(1)}s`)
         .join(' '),
     );
-    log(
-      `  storage: ${commitCount} transactions during fetch+write, ` +
-      `${(commitMs / 1000).toFixed(1)}s inside transactionSync`,
-    );
+    log(`  storage: ${commitCount} transactions during fetch+write`);
 
     return { installed, failed, totalFiles, elapsed, cachedHits, phases };
   }
@@ -970,6 +967,9 @@ export class NpmInstaller {
       `shard${nonEmptyShards.length === 1 ? '' : 's'} (${topology}, internal pLimit=3)...`,
     );
 
+    // Peer shards dispatch in bounded phases and each phase is a barrier, so
+    // the phase profile is what distinguishes shard work from barrier count.
+    const phaseProfile: string[] = [];
     const fanoutPool = new NimbusFanoutPool(this.env, this.ctx!, {
       tag: 'npm-install-batch',
       // Whole-batch timeout. With per-shard parallelism of N=8 peer
@@ -984,6 +984,7 @@ export class NpmInstaller {
       // process credential; without a positive pid the supervisor
       // rejects the write (S2a cred enforcement).
       supervisorPid: pid,
+      onDispatchPhase: (width, elapsedMs) => phaseProfile.push(`${width}@${elapsedMs}ms`),
     });
 
     const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
@@ -1080,7 +1081,10 @@ export class NpmInstaller {
         r2WinSuffix +
         `, write waves=${fc.sharedWaves} (worst shard stalled ` +
         `${(fc.sharedWaveMs / 1000).toFixed(1)}s)` +
-        `, ${(result.elapsed / 1000).toFixed(1)}s` +
+        `, slowest shard ${(result.elapsed / 1000).toFixed(1)}s` +
+        (phaseProfile.length > 0
+          ? `, dispatch phases=${phaseProfile.length} [${phaseProfile.join(' ')}]`
+          : '') +
         (failCount > 0 ? ` (${failCount} failed)` : ''),
       );
       return { installed, failed, filesWritten };
@@ -2185,11 +2189,9 @@ export class NpmInstaller {
     return null;
   }
 
-  /** Monotonic transactionSync count and cumulative synchronous ms for this
-   *  DO's VFS. A delta across a phase is how much of it was storage commit. */
-  private storageCommitCounters(): { count: number; totalMs: number } {
-    const durationMs = this.store.getStats().sql?.transactions?.durationMs;
-    return { count: durationMs?.count ?? 0, totalMs: durationMs?.total ?? 0 };
+  /** Monotonic count of transactionSync calls this DO's VFS has executed. */
+  private storageCommitCount(): number {
+    return this.store.getStats().sql?.transactions?.durationMs?.count ?? 0;
   }
 
   /**
