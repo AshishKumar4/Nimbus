@@ -62,7 +62,7 @@ export async function handleAnonSessionCreate(request: Request, env: any): Promi
       'All free computers are busy right now — try again in a minute.');
   }
 
-  const token = await issueAnonAttachToken(env, session.sessionId);
+  const token = await issueAnonAttachToken(env, session);
   return Response.json({
     wsUrl: `/s/${encodeURIComponent(session.sessionId)}/ws?${new URLSearchParams({ nimbus_token: token })}`,
     sessionId: session.sessionId,
