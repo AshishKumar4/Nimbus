@@ -102,6 +102,13 @@ function host(route) {
   };
 }
 
+/** Writes `p` into the scratch path slot and returns its length. */
+function writeInto(h, p) {
+  const bytes = encoder.encode(p);
+  h.u8().set(bytes, 0x100);
+  return bytes.length;
+}
+
 /** Drain a socket fd to EOF, the way a guest's read loop does. */
 async function readAll(h, fd) {
   let out = '';
@@ -446,6 +453,82 @@ function parseWire(wire) {
     'ENOTSOCK for a connected socket — only a listener can accept');
   assert.equal(await h.wasiImport.sock_accept(3, 0, 0x200), 57, 'ENOTSOCK for a preopen dir');
   console.log('  ok  sock_accept refuses descriptors that cannot accept');
+}
+
+// ── fd_renumber is dup2, and dup2 closes the descriptor it lands on ────────
+// preview1 has no dup, so fd_renumber is the only way a guest can move a
+// descriptor onto a number it already chose. nimbus-net.c's socket(2) does
+// exactly this: it claims a number by opening a directory, then moves the real
+// socket onto it once connect(2) knows what to dial.
+{
+  const h = host(async () => new Response('renumbered'));
+  // O_DIRECTORY (oflags bit 1) — nimbus-net.c claims the number by opening the
+  // root preopen, so the empty relative path wasi-libc sends for "/" is the
+  // case that has to work.
+  const claimed = h.wasiImport.path_open(3, 1, 0x100, writeInto(h, ''), 2, -1n, -1n, 0, 0x200);
+  assert.equal(claimed, ESUCCESS, 'open("/", O_DIRECTORY) must claim a descriptor');
+  const claimedFd = h.view().getUint32(0x200, true);
+  const { errno, fd: sockFd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(errno, ESUCCESS);
+
+  assert.equal(h.wasiImport.fd_renumber(sockFd, claimedFd), ESUCCESS);
+
+  // The claimed number is now the socket...
+  assert.equal(h.wasiImport.fd_fdstat_get(claimedFd, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM,
+    'the descriptor the guest was holding is now the socket');
+  // ...and the number the socket arrived on is gone.
+  assert.equal(h.wasiImport.fd_fdstat_get(sockFd, 0x2000), 8, 'EBADF for the vacated fd');
+
+  // And it is really the socket, not just the right filetype.
+  await h.write(claimedFd, 'GET /moved HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
+  assert.equal(await h.read(claimedFd), ESUCCESS);
+  assert.match(h.lastRead(), /^HTTP\/1\.1 200/);
+  console.log('  ok  fd_renumber moves a socket onto a descriptor the guest already holds');
+}
+
+// ── Renumbering over a socket closes it rather than dropping it ────────────
+// Deleting the fd-table entry without closing leaks a live stream: the kernel
+// is never told, so the connection stays open for the life of the process.
+{
+  const h = host(async () => new Response('x'));
+  const doomed = h.open('dev/tcp/127.0.0.1/3000');
+  const keeper = h.open('dev/tcp/127.0.0.1/3001');
+  assert.equal(doomed.errno, ESUCCESS);
+  assert.equal(keeper.errno, ESUCCESS);
+  const doomedEntry = P.fdTable.get(doomed.fd);
+  assert.equal(doomedEntry.closed, false);
+
+  assert.equal(h.wasiImport.fd_renumber(keeper.fd, doomed.fd), ESUCCESS);
+
+  assert.equal(doomedEntry.closed, true, 'the displaced socket must be closed, not leaked');
+  assert.equal(P.fdTable.get(doomed.fd), P.fdTable.get(doomed.fd),
+    'the destination now holds the moved descriptor');
+  assert.notEqual(P.fdTable.get(doomed.fd), doomedEntry);
+  console.log('  ok  fd_renumber closes the socket it displaces');
+}
+
+// ── Renumbering onto itself, and off a descriptor that was never open ──────
+{
+  const h = host(async () => new Response('x'));
+  const { fd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(h.wasiImport.fd_renumber(fd, fd), ESUCCESS, 'renumbering onto itself is a no-op');
+  assert.equal(h.wasiImport.fd_fdstat_get(fd, 0x2000), ESUCCESS, 'and does not close it');
+  assert.equal(h.wasiImport.fd_renumber(999, fd), 8, 'EBADF for an unopened source');
+  console.log('  ok  fd_renumber handles self-renumber and an unopened source');
+}
+
+// ── A preopen is not something a guest may renumber over ───────────────────
+// It is the root of the filesystem; replacing it leaves nothing to read from,
+// and the guest gets no diagnosis at all from a silent success.
+{
+  const h = host(async () => new Response('x'));
+  const { fd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(h.wasiImport.fd_renumber(fd, 3), 76, 'ENOTCAPABLE rather than a destroyed VFS');
+  assert.equal(h.open('tmp/after.txt').errno, 44,
+    'the preopen still resolves paths afterwards');
+  assert.equal(h.wasiImport.fd_fdstat_get(fd, 0x2000), ESUCCESS, 'and the source is untouched');
+  console.log('  ok  fd_renumber refuses to overwrite a preopen');
 }
 
 console.log('wasi-loopback-socket-fd: all cases passed');
