@@ -1,68 +1,61 @@
 /**
- * python-repl.ts — Python REPL adapter (Pyodide 0.29.4).
+ * python-repl.ts — the interactive `python` prompt.
  *
- * Implements ReplAdapter for the `python` shell command's no-args
- * invocation. Reuses the existing Pyodide v2 preamble built by
- * python-runner.ts's `buildPyodidePreamble`; this file only adds:
- *   1. A REPL-step facet fn that pushes a line into a long-lived
- *      pyodide.console.PyodideConsole instance and returns the
- *      result.
- *   2. Adapter wiring (banner, push, close, ps1/ps2 prompts).
+ * A long-lived facet holds one interpreter and each submitted line is run in
+ * it, so definitions, imports and open files survive between prompts. That is
+ * the whole reason the interpreter is built as a WASI reactor: a command
+ * module's _start runs once.
  *
- *   - State persistence: same NimbusLoaderPool reference held across
- *     submits → same child-facet isolate → globalThis.__nimbusPyodideInstance
- *     persists.
- *   - Continuation prompts: PyodideConsole's runsource() returns an
- *     'incomplete' status when input is mid-block (e.g. unclosed
- *     `def f():`); the adapter signals 'incomplete' back to ReplSession,
- *     which renders ps2 ('... ') and accumulates.
- *   - sys.exit() / exit() / quit(): captured via SystemExit on the
- *     pyodide.console.Console runtime; returned as ReplPushResult
- *     'exit' with the captured code.
+ * Incompleteness is decided by `codeop.compile_command`, which is what the real
+ * Python REPL uses — it returns None for source that is syntactically fine so
+ * far but unfinished (an open bracket, a `def` with no body yet), raises
+ * SyntaxError for source that can never complete, and otherwise hands back a
+ * code object. That distinction is not something to re-derive from error
+ * strings; the previous Pyodide implementation asked PyodideConsole for it,
+ * which is the same idea reached through a Pyodide-only object.
  *
- * NOT supported in v1 (deferred to W5+):
- *   - top-level await at the REPL prompt (Pyodide supports this via
- *     runPythonAsync; v1 uses runsource synchronously).
- *   - Tab-completion (PyodideConsole has rlcompleter; surface deferred).
- *   - SIGINT mid-statement (no interrupt-buffer plumbing yet).
+ * Compiling in 'single' mode also gets the echo right for free: an expression
+ * statement goes through sys.displayhook exactly as it does at a real prompt,
+ * so `1 + 1` prints `2` and `x = 1` prints nothing, with no wrapper of ours
+ * deciding what counts as a result.
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from './runtime-catalog.js';
-/** Inputs needed to bootstrap a Pyodide REPL session. */
 export interface PythonReplDeps {
     facetMgr: FacetManager;
     vfs: SqliteVFS;
     terminal: WebSocketTerminal;
-    /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/python/0.29.4'. */
+    /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/cpython/3.13.14'. */
     installRoot: string;
     manifest: RuntimeManifest;
     /**
-     * REPL-R7-1 (2026-05-12): optional Nimbus shell reference.
+     * The Nimbus shell, when there is one.
      *
-     * When a user pastes / sends a multi-line WS frame like
-     * `python\nexit(7)`, the shell input handler splits on \r\n and
-     * pushes everything after the first line into shell.pasteQueue.
-     * Those lines are processed ONLY when the shell becomes idle —
-     * but our REPL is running and the shell is blocked awaiting
-     * runPythonRepl. Result: REPL hangs at `>>> ` because the input
-     * never reaches it.
-     *
-     * Threading shell here lets ReplSession drain pasteQueue
-     * immediately on attach. If undefined, the REPL still works for
-     * single-line invocations (the common case) — it just won't
-     * recover paste-pending input.
+     * A multi-line WebSocket frame (`python\nexit(7)`) is split by the shell's
+     * input handler, which pushes everything after the first line onto
+     * shell.pasteQueue and drains it only when the shell goes idle. The shell is
+     * not idle: it is blocked awaiting this REPL. Handing the shell to
+     * ReplSession lets it drain that queue on attach, which is the difference
+     * between the pasted tail arriving and the prompt hanging.
      */
-    shell?: any;
+    shell?: unknown;
+    /**
+     * The invoking process's pid.
+     *
+     * The supervisor derives the write credential from it, so a pool that binds
+     * SUPERVISOR without one has a filesystem it can read and can never write —
+     * every write-back comes back "missing or invalid process pid in props".
+     * Absent only for the install-time warm-up, which boots the interpreter and
+     * never touches a file.
+     */
+    pid?: number;
 }
-/**
- * Top-level wrapper: builds a Python REPL adapter, drives a
- * ReplSession to completion, returns the exit code.
- *
- * Called from the python factory's wrapper in init.ts when the user
- * runs `python` with no args.
- */
 export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
+/**
+ * Pay the interpreter's boot before the user asks for a prompt. Pushing empty
+ * source compiles to a no-op, so the only thing it does is bring the facet up.
+ */
 export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest'>): Promise<void>;
 //# sourceMappingURL=python-repl.d.ts.map

@@ -351,7 +351,7 @@ export function initSession(self, ws) {
     // no flags that would consume args) drops into an interactive
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
-    registerRunnerFactory('python-runner', (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
+    registerRunnerFactory('cpython-runner', (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
         // which builds its own NimbusLoaderPool (separate from the
@@ -368,12 +368,15 @@ export function initSession(self, ws) {
                 // shell.pasteQueue on attach (multi-line WS frames like
                 // `python\nexit(7)` would otherwise drop the tail input).
                 shell: self.shell,
+                // The supervisor derives the write credential from this; without
+                // it the prompt cannot write to the session filesystem.
+                pid: ctx.pid,
             });
         }
         // Args present (one-shot mode: -c, script, -m, -). Fall through
         // to the canonical handler (imported lazily on first use).
-        const { makePythonRunnerFactory } = await import('../runtime/python-runner.js');
-        return await makePythonRunnerFactory({ facetMgr, vfs: sqliteFs })(manifest, installRoot, binName, binKind)(ctx);
+        const { makeCPythonRunnerFactory } = await import('../runtime/cpython-runner.js');
+        return await makeCPythonRunnerFactory({ facetMgr, vfs: sqliteFs })(manifest, installRoot, binName, binKind)(ctx);
     });
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,

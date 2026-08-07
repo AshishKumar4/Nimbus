@@ -140,11 +140,6 @@ async function buildPythonModulePipInvocation(
   return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
 
-function formatPythonCommand(binName: string, argv: string[]): string {
-  return [binName, ...argv].map((part) =>
-    (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-}
-
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
@@ -165,16 +160,34 @@ interface CPythonFacetResult {
  * names no import: everything it needs is on globalThis, put there by the
  * preamble.
  */
-function cpythonRunFacetFn(args: Record<string, unknown>): Promise<CPythonFacetResult> {
-  const g = globalThis as unknown as Record<string, (a: unknown) => Promise<CPythonFacetResult>>;
-  const run = g.__cpythonRun;
+async function cpythonRunFacetFn(
+  args: Record<string, unknown>,
+  facetEnv: { SUPERVISOR?: unknown } | undefined,
+): Promise<CPythonFacetResult> {
+  const run = Reflect.get(globalThis, '__cpythonRun') as
+    ((a: unknown) => Promise<CPythonFacetResult>) | undefined;
   if (typeof run !== 'function') {
-    return Promise.resolve({
+    return {
       stdout: '', stderr: '', exitCode: 127,
       error: 'cpython preamble missing: __cpythonRun not in scope',
-    });
+    };
   }
-  return run(args);
+  const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
+    ((s: unknown) => void) | undefined;
+  const drain = Reflect.get(globalThis, '__wasiDrainPersist') as
+    (() => Promise<void>) | undefined;
+  const supervisor = facetEnv && facetEnv.SUPERVISOR;
+  // Published where the boot re-adopts it after the mount: adopting only here
+  // would be undone by __wasiInitFS, which clears it on purpose.
+  if (supervisor) Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
+  adopt?.(supervisor);
+  try {
+    return await run(args);
+  } finally {
+    // In `finally`, not on the success path: a program that wrote a file and
+    // then raised still wrote the file, and those bytes are the user's.
+    await drain?.();
+  }
 }
 
 export function makeCPythonRunnerFactory(deps: {
@@ -327,8 +340,10 @@ export function makeCPythonRunnerFactory(deps: {
       snapshot.modes[CPYTHON_STDLIB_GUEST] = 7;
       snapshot.modes[CPYTHON_MARKER_GUEST] = 7;
       snapshot.files[CPYTHON_MARKER_GUEST] = btoa('# stdlib marker; the modules live in the zip\n');
+      // The size comes from the manifest that just walked the install dir, not
+      // from a second stat: one walk, one answer.
       snapshot.sizes = snapshot.sizes || {};
-      snapshot.sizes[CPYTHON_STDLIB_GUEST] = vfs.stat(stdlibVfs)?.size ?? 0;
+      snapshot.sizes[CPYTHON_STDLIB_GUEST] = snapshot.sizes[stdlibVfs.replace(/^\/+/, '')] ?? 0;
 
       if (!pool) {
         const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
@@ -356,12 +371,20 @@ export function makeCPythonRunnerFactory(deps: {
         fsSnapshot: snapshot,
       };
 
-      void formatPythonCommand(binName, argv);
-      void shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
+      // A script or `-m` can bind a port and keep serving, and such a program
+      // is not finished when it stops producing output — it is finished when it
+      // stops running. Pyodide gave those a dedicated socket process; that
+      // spawn is not ported yet, so for now they get a one-shot facet with a
+      // budget long enough not to cut a server off mid-request. Porting the
+      // resident process is the last piece, and until it lands a server holds
+      // its facet rather than being driven by inbound requests.
+      const resident = shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
 
       let result: CPythonFacetResult;
       try {
-        result = await pool.submit(cpythonRunFacetFn, facetArgs, { timeoutMs: 120_000 });
+        result = await pool.submit(cpythonRunFacetFn, facetArgs, {
+          timeoutMs: resident ? 600_000 : 120_000,
+        });
       } catch (e: unknown) {
         ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
         return 1;
