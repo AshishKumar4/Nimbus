@@ -287,6 +287,12 @@ export interface BashWaitEntry {
   targetPid: number;
 }
 
+/** An exited child's status, and whose child it was. */
+export interface BashExitStatus {
+  status: number;
+  ppid: number;
+}
+
 export interface BashStats {
   instances: number;
   memPeak: number;
@@ -308,8 +314,15 @@ export interface BashSession {
   procs: Map<number, BashProc>;
   pipes: Map<number, BashPipe>;
   runnable: BashProc[];
-  /** Reaped-but-unclaimed exit statuses, pid → wait-encoded status. */
-  exitStatus: Map<number, number>;
+  /**
+   * Reaped-but-unclaimed exit statuses, pid → status and parent.
+   *
+   * The parent is part of the record because `wait` with no argument must reap
+   * one of the CALLER's children. Keyed by status alone, the only thing a
+   * waiter could do was take the first entry in the map — which is another
+   * process's child whenever two subshells have both had one exit.
+   */
+  exitStatus: Map<number, BashExitStatus>;
   waiters: BashWaitEntry[];
   pidNext: number;
   pipeNext: number;
