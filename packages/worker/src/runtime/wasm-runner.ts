@@ -481,13 +481,12 @@ export function makeWasmRunner(deps: {
           env: args.wasiEnv || {},
           abi,
           threads: !!args.threads,
-          // Non-null by ordering, not by check: the table built here is only
-          // ever CALLED from inside the guest, and the guest cannot run before
+          // Non-null by ordering, not by check. The import table is only ever
+          // CALLED from inside the guest, and the guest cannot run before
           // `_start` below, by which point memRef.mem is assigned or the call
           // has already returned an error. The shim dereferences the result
-          // unguarded, so if that ordering ever stops holding the failure is a
-          // TypeError raised inside a suspended syscall — which is why this
-          // says so out loud rather than widening the shim's contract.
+          // unguarded, so if the ordering ever stops holding, the failure is a
+          // TypeError raised inside a suspended syscall.
           getMemory: () => memRef.mem as WebAssembly.Memory,
         });
         // Bind ONLY the namespace this module actually imports, with the
