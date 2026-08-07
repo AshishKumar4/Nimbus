@@ -5,11 +5,8 @@ import type { Shell } from '../substrate/lifo/shell/Shell.js';
 import { formatShellPrompt } from '../substrate/lifo/shell/Shell.js';
 import type { VfsCred } from './os-contracts.js';
 import type { RuntimeManifest } from './runtime-catalog.js';
-import {
-  createBashFacetSession,
-  type BashFacetSession,
-  type BashSlice,
-} from './bash-runner.js';
+import { createBashFacetSession, type BashFacetSession } from './bash-runner.js';
+import type { BashSlice } from './bash/types.js';
 import {
   ReplSession,
   type ReplAdapter,

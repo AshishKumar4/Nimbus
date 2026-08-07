@@ -344,6 +344,12 @@ export function makeWasmRunner(deps) {
                     env: args.wasiEnv || {},
                     abi,
                     threads: !!args.threads,
+                    // Non-null by ordering, not by check. The import table is only ever
+                    // CALLED from inside the guest, and the guest cannot run before
+                    // `_start` below, by which point memRef.mem is assigned or the call
+                    // has already returned an error. The shim dereferences the result
+                    // unguarded, so if the ordering ever stops holding, the failure is a
+                    // TypeError raised inside a suspended syscall.
                     getMemory: () => memRef.mem,
                 });
                 // Bind ONLY the namespace this module actually imports, with the
@@ -353,6 +359,9 @@ export function makeWasmRunner(deps) {
                 // whence and a 64-byte filestat it decodes as 56, so every lseek
                 // lands wrong and every st_size reads back as the nlink field. The
                 // signatures are identical, so nothing traps and nothing is logged.
+                // The one place the precise table meets WebAssembly's own types, which
+                // describe an import object as an untyped index signature. Widening
+                // here keeps the precision on the shim's side of the boundary.
                 const importObject = {
                     [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
                 };

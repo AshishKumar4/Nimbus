@@ -35,6 +35,7 @@
     "staging:deploy": "bun tests/behavioral/_staging-target.mjs up",
     "staging:test": "bun tests/behavioral/_staging-target.mjs test",
     "staging:status": "bun tests/behavioral/_staging-target.mjs status",
+    "lint": "./node_modules/.bin/biome lint",
     "typecheck": "./node_modules/.bin/tsc --noEmit",
     "test:behavioral": "bun tests/behavioral/run-all.mjs",
     "postinstall": "node packages/worker/scripts/patch-install-deps.mjs && node packages/worker/scripts/bundle-git.mjs && node packages/worker/scripts/bundle-facet-workers.mjs && node packages/worker/scripts/bundle-esbuild-wasm.mjs && node packages/worker/scripts/bundle-sqlite-wasm.mjs && node packages/worker/scripts/bundle-node-shims.mjs && node packages/worker/scripts/bundle-tailwind-play.mjs && node packages/worker/scripts/bundle-agent-chat.mjs"
