@@ -691,6 +691,25 @@ const __fsMod = (() => {
     return true;
   }
 
+  /**
+   * Paths the authority did not have when the access was refused.
+   *
+   * What the exit report asks is whether the program's result rests on a read
+   * that failed, and that is not the same question as whether the path is
+   * there NOW. A program told there is no config writes one, so by the time
+   * the run ends the file exists — authored by the program itself, out of the
+   * very branch the not-found answer sent it down. Nothing was withheld from
+   * it. Measured: create-next-app's update notifier reads /tmp/update-check,
+   * does not find it, writes it, and the whole scaffold was failed over a file
+   * that had never existed; c3 does the same with its wrangler metrics file.
+   *
+   * So the repair records what it saw, and it asks with a stat rather than a
+   * read. A read flushes this facet's pending writes to the authority before
+   * issuing, so it would hand back the bytes the program had just parked and
+   * report the path as one that was there all along.
+   */
+  const _observedAbsent = new Set();
+
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
     _recordMiss(k);
@@ -724,8 +743,32 @@ const __fsMod = (() => {
     // Swallowed here rather than at the settle: a repair nobody asked for
     // must not surface as an unhandled rejection, and a failed one is simply
     // a path that stays unanswered and stays in the ledger.
-    try { _repairs.push(_liveReadFile("/" + k, undefined).catch(() => {})); }
+    try { _repairs.push(_observeThenFill(k).catch(() => {})); }
     catch { /* the fill is speculative */ }
+  }
+
+  /**
+   * Ask what the authority has, then fetch it if there is anything to fetch.
+   *
+   * The stat is not an extra round trip on balance: where the path is absent —
+   * which is most refusals, since module resolvers and config lookups probe
+   * far more paths than exist — it replaces a content read that could only
+   * have failed, and it is the one observation that settles whether the run
+   * was denied anything.
+   */
+  async function _observeThenFill(k) {
+    const supervisor = _supervisor();
+    const absPath = "/" + k;
+    if (typeof supervisor.stat === "function") {
+      let meta;
+      // A thrown stat is the authority failing to answer, not an answer:
+      // nothing is learned, and the miss stands.
+      try { meta = await supervisor.stat(absPath); }
+      catch { return; }
+      if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
+      if (meta.type === "directory") return;
+    }
+    await _liveReadFile(absPath, undefined);
   }
 
   /**
@@ -939,6 +982,9 @@ const __fsMod = (() => {
     if (_residencyMisses.size === 0) return;
     for (const k of [..._residencyMisses]) {
       const absPath = "/" + k;
+      // The authority did not have it when we asked, so nothing was withheld —
+      // whatever is at the path now, this process put there.
+      if (_observedAbsent.has(k)) { _residencyMisses.delete(k); continue; }
       if (_statLadder(absPath) !== undefined) continue;
       if (_absenceIsKnown(absPath)) { _residencyMisses.delete(k); continue; }
       // Still unprovable, because the listing that would settle it lies below
