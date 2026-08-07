@@ -82,6 +82,12 @@ export interface InstallBatchResult {
      *  recordR2RaceCounters() in npm-installer. */
     pipelinedTarballRaceWins: number;
     pipelinedTarballRaceLosses: number;
+    /** Longest wait on the R2 leg in this shard, and how many registry
+     *  requests the shard issued alongside those waits. Separates cache-tier
+     *  latency from registry latency, and says how much of the speculative
+     *  network work the cache tier made redundant. */
+    r2WaitMsMax: number;
+    speculativeFetches: number;
     /** writeBatchStream waves this shard issued, and the cumulative ms it
      *  spent awaiting them. Waves never overlap within a shard and the
      *  shared-mutation mutex is held across a flush, so `sharedWaveMs` is
@@ -188,6 +194,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
   let pipelinedTarballRaceWins = 0;
   let pipelinedTarballRaceLosses = 0;
+  // Speculation accounting: how long the slowest package waited on the R2 leg,
+  // and how many registry requests were issued alongside those waits.
+  let r2WaitMsMax = 0;
+  let speculativeFetches = 0;
   // cache-obs-2: per-tier event accumulator. Filled in the L2/L3
   // (supervisor RPC return.events) and L4 (post-network-fetch)
   // branches. Returned in result.cacheStatEvents at the end of the
@@ -494,6 +504,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // overlap with, so the speculative fetch is not worth issuing — the retry
     // loop's own first fetch is already the first thing that happens.
     const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
+    const r2WaitStart = Date.now();
     const r2P: Promise<{ bytes: Uint8Array | null; events: any[] } | null> = r2Available
       ? Promise.race([
           __nimbusUseRpcResult(
@@ -505,6 +516,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       : Promise.resolve(null);
     let pendingNetwork: Promise<Response> | null = null;
     if (r2Available) {
+      speculativeFetches++;
       pendingNetwork = fetch(spec.tarballUrl);
       // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
       // this sink only stops a failure that lands while the R2 leg is still
@@ -540,6 +552,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       if (r2Available) {
         try {
           const r2Result = await r2P;
+          const r2WaitMs = Date.now() - r2WaitStart;
+          if (r2WaitMs > r2WaitMsMax) r2WaitMsMax = r2WaitMs;
           if (r2Result) {
             r2HitBytes = r2Result.bytes;
             // cache-obs-2: splice supervisor's per-tier events into
@@ -917,6 +931,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       peakInFlight: inFlightPeak,
       pipelinedTarballRaceWins,
       pipelinedTarballRaceLosses,
+      r2WaitMsMax,
+      speculativeFetches,
       sharedWaves,
       sharedWaveMs,
     },

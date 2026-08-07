@@ -94,6 +94,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
     let pipelinedTarballRaceWins = 0;
     let pipelinedTarballRaceLosses = 0;
+    // Speculation accounting: how long the slowest package waited on the R2 leg,
+    // and how many registry requests were issued alongside those waits.
+    let r2WaitMsMax = 0;
+    let speculativeFetches = 0;
     // cache-obs-2: per-tier event accumulator. Filled in the L2/L3
     // (supervisor RPC return.events) and L4 (post-network-fetch)
     // branches. Returned in result.cacheStatEvents at the end of the
@@ -350,6 +354,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         // overlap with, so the speculative fetch is not worth issuing — the retry
         // loop's own first fetch is already the first thing that happens.
         const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
+        const r2WaitStart = Date.now();
         const r2P = r2Available
             ? Promise.race([
                 __nimbusUseRpcResult(env.SUPERVISOR.getCachedTarball(spec.integrity), (result) => result),
@@ -358,6 +363,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             : Promise.resolve(null);
         let pendingNetwork = null;
         if (r2Available) {
+            speculativeFetches++;
             pendingNetwork = fetch(spec.tarballUrl);
             // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
             // this sink only stops a failure that lands while the R2 leg is still
@@ -388,6 +394,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             if (r2Available) {
                 try {
                     const r2Result = await r2P;
+                    const r2WaitMs = Date.now() - r2WaitStart;
+                    if (r2WaitMs > r2WaitMsMax)
+                        r2WaitMsMax = r2WaitMs;
                     if (r2Result) {
                         r2HitBytes = r2Result.bytes;
                         // cache-obs-2: splice supervisor's per-tier events into
@@ -773,6 +782,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             peakInFlight: inFlightPeak,
             pipelinedTarballRaceWins,
             pipelinedTarballRaceLosses,
+            r2WaitMsMax,
+            speculativeFetches,
             sharedWaves,
             sharedWaveMs,
         },
