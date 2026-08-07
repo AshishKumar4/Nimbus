@@ -52,10 +52,6 @@ export declare function makeRubyRunnerFactory(deps: {
     };
 }): RubyRunnerFactory;
 export declare function buildRubySocketProcessWorker(preamble: string): string;
-export declare function getFacetManagerLoaderHost(facetMgr: FacetManager): {
-    env: unknown;
-    ctx: DurableObjectState;
-};
 /**
  * Compose the per-call preamble. The preamble runs at child-facet
  * module-init time; it instantiates ruby+stdlib.wasm via the LOADER-
