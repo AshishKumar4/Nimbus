@@ -59,11 +59,18 @@ export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
 export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
 
 /**
- * Peer shards dispatched per phase. Each phase is a barrier, so a wide
- * fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial round-trips; the size
- * trades that serialization against simultaneous cold sibling DO starts.
+ * Peer shards dispatched per phase. Each phase is a barrier that costs its
+ * slowest member, so a wide fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial
+ * round-trips; the size trades that serialization against simultaneous cold
+ * sibling DO starts.
+ *
+ * Measured at 4 on a 123-package install: 21 shards became six barriers of
+ * 10.6/6.8/21.8/7.9/34.6/4.8 s, which summed to the whole 86.5 s fetch+write
+ * phase. Peer DOs are separate objects with independent budgets, so the
+ * constraint is cold-start burst rather than any per-object ceiling; 8 keeps
+ * that burst bounded while letting a full install fan-out clear in one phase.
  */
-export const FANOUT_PHASE_SIZE = 4;
+export const FANOUT_PHASE_SIZE = 8;
 
 /** Argument shape for `submitMany`. */
 export interface FanoutTask<A> {

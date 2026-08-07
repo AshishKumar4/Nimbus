@@ -596,6 +596,10 @@ export class NpmInstaller {
     // "resolution is slow because there are many packuments" from
     // "resolution is slow because there are many barriers".
     const layerProfile: string[] = [];
+    // Every layer additionally splits into peer-DO dispatch phases, each its
+    // own barrier, so the walk's real serialization is the barrier total
+    // rather than the layer count.
+    let dispatchBarriers = 0;
     // cache-obs-2: accumulator for per-tier cache events across all
     // resolve-one tasks in this fanout walk. Drained at end-of-walk
     // into the DO singleton via recordCacheStatEvents.
@@ -613,6 +617,7 @@ export class NpmInstaller {
       // 1-3 s. Per-task this gates each packument fetch + R2 race.
       timeoutMs: 5 * 60_000,
       preamble: NPM_RESOLVE_PREAMBLE,
+      onDispatchPhase: () => { dispatchBarriers++; },
     });
 
     // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
@@ -865,7 +870,8 @@ export class NpmInstaller {
       `peak in-flight=${inFlightPeak}, ` +
       `cache writes=${cacheWriteCount}` +
       r2WinSuffix +
-      `, layers=${totalLayers} [${layerProfile.join(' ')}], ` +
+      `, layers=${totalLayers} [${layerProfile.join(' ')}]` +
+      `, dispatch barriers=${dispatchBarriers}, ` +
       `elapsed=${((Date.now() - t0) / 1000).toFixed(1)}s` +
       (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''),
     );
