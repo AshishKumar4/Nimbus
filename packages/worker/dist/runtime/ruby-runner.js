@@ -35,6 +35,7 @@
  */
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { manifestVfs } from './vfs-manifest.js';
@@ -852,19 +853,6 @@ async function dispatchRubyFacet(facetMgr, args, pid) {
             error: `ruby-runner dispatch failed: ${errorMessage(e)}`,
         };
     }
-}
-export function getFacetManagerLoaderHost(facetMgr) {
-    const env = Reflect.get(facetMgr, 'env');
-    const ctx = Reflect.get(facetMgr, 'ctx');
-    if (!isDurableObjectState(ctx)) {
-        throw new Error('ruby-runner requires a FacetManager with DurableObjectState context');
-    }
-    return { env, ctx };
-}
-function isDurableObjectState(value) {
-    if (typeof value !== 'object' || value === null)
-        return false;
-    return 'id' in value && typeof Reflect.get(value, 'waitUntil') === 'function';
 }
 /**
  * Compose the per-call preamble. The preamble runs at child-facet
