@@ -162,6 +162,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // slightly may capture more wins on slow colos.
   const R2_RACE_TIMEOUT_MS = 300;
 
+  // [W4] How long the R2 leg gets on its own before the network leg is issued
+  // as a hedge. A hit or an explicit miss answers inside this window and costs
+  // no registry request; past it the leg is stalled, and the remaining
+  // R2_RACE_TIMEOUT_MS - SPECULATIVE_FETCH_DELAY_MS would otherwise be dead
+  // air before the download could start.
+  const SPECULATIVE_FETCH_DELAY_MS = 75;
+
   const concurrency = Math.max(1, Math.min(batch.concurrency ?? 3, 8));
 
   // ── pLimit (inlined; preamble doesn't carry a limiter helper) ────────
@@ -492,17 +499,25 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     inFlight++;
     if (inFlight > inFlightPeak) inFlightPeak = inFlight;
 
-    // [W4] 1a. Race the R2 cache lookup against the network fetch.
+    // [W4] 1a. R2 cache lookup, hedged by the network fetch.
     //
-    // Both legs start here. The R2 GET is bounded by R2_RACE_TIMEOUT_MS; if it
-    // returns bytes first the network leg is cancelled, and otherwise the
-    // network response has been in flight for the whole bounded wait rather
-    // than starting from zero once the R2 leg gives up.
+    // The R2 GET is bounded by R2_RACE_TIMEOUT_MS. That bound guards against a
+    // slow or hung leg rather than describing the normal cost: a hit and an
+    // explicit miss both answer well inside it, and only a stalled leg spends
+    // the whole budget. So the network leg is a hedge rather than a co-start —
+    // issued only once R2 has failed to answer within
+    // SPECULATIVE_FETCH_DELAY_MS, which is exactly the window in which the
+    // bounded wait would otherwise be dead air.
+    //
+    // Issuing it up front instead made every cache hit pay for a registry
+    // request it then threw away. That is the common case on a warm install,
+    // and it cost more than the miss path the speculation was meant to speed
+    // up.
     //
     // Soft-fail: if env.SUPERVISOR.getCachedTarball isn't defined (older
     // supervisor deployment) the R2 leg becomes a noop and there is nothing to
-    // overlap with, so the speculative fetch is not worth issuing — the retry
-    // loop's own first fetch is already the first thing that happens.
+    // overlap with, so no hedge is armed — the retry loop's own first fetch is
+    // already the first thing that happens.
     const r2Available = typeof env.SUPERVISOR.getCachedTarball === 'function';
     const r2WaitStart = Date.now();
     const r2P: Promise<{ bytes: Uint8Array | null; events: any[] } | null> = r2Available
@@ -515,27 +530,38 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         ]).catch(() => null)
       : Promise.resolve(null);
     let pendingNetwork: Promise<Response> | null = null;
+    let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
+    const hedgeAbort = new AbortController();
+    const clearHedgeTimer = (): void => {
+      if (hedgeTimer === null) return;
+      clearTimeout(hedgeTimer);
+      hedgeTimer = null;
+    };
     if (r2Available) {
-      speculativeFetches++;
-      pendingNetwork = fetch(spec.tarballUrl);
-      // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
-      // this sink only stops a failure that lands while the R2 leg is still
-      // outstanding from surfacing as an unhandled rejection.
-      pendingNetwork.catch(() => { /* consumed by takeNetworkResponse */ });
+      hedgeTimer = setTimeout(() => {
+        hedgeTimer = null;
+        speculativeFetches++;
+        pendingNetwork = fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
+        // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
+        // this sink only stops a failure that lands while the R2 leg is still
+        // outstanding from surfacing as an unhandled rejection.
+        pendingNetwork.catch(() => { /* consumed by takeNetworkResponse or discarded */ });
+      }, SPECULATIVE_FETCH_DELAY_MS);
     }
     const takeNetworkResponse = async (): Promise<Response> => {
+      clearHedgeTimer();
       const pending = pendingNetwork;
       pendingNetwork = null;
       return pending ? await pending : await fetch(spec.tarballUrl);
     };
     const discardPendingNetwork = (): void => {
-      const pending = pendingNetwork;
+      clearHedgeTimer();
+      if (!pendingNetwork) return;
       pendingNetwork = null;
-      if (!pending) return;
-      void pending.then(
-        (response) => response.body?.cancel().catch(() => { /* best-effort */ }),
-        () => { /* the losing leg's failure is not this install's problem */ },
-      );
+      // Abort rather than await-then-cancel the body: a `.then()` that cancels
+      // only runs once the registry's response headers arrive, so it holds the
+      // connection open for exactly the round-trip the cache hit avoided.
+      hedgeAbort.abort();
     };
 
     try {
