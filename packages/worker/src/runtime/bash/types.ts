@@ -17,12 +17,14 @@ import type { WasiFsSnapshot } from '../wasi-instance.js';
 import type { WasiFsDiff } from '../vfs-snapshot.js';
 
 /**
- * The errno set this scheduler answers with: the WASI shim's set plus EPERM,
- * which only `path_link` returns (POSIX forbids hard-linking a directory).
- * Reusing `Errno` rather than restating it keeps one description of what a
- * preview1 syscall may hand back.
+ * The errno set this scheduler answers with — the same one every Nimbus syscall
+ * layer answers with. This was `Errno | 63`, and the `| 63` was the whole
+ * problem: a second vocabulary starting as a magic literal welded onto the
+ * shared type at a use site, rather than the shared type being extended at its
+ * definition. EPERM now lives in `Errno`, where the next layer that needs it
+ * will find it. Kept as an alias so the two names cannot drift apart again.
  */
-export type BashErrno = Errno | 63;
+export type BashErrno = Errno;
 
 // ── facet protocol ──────────────────────────────────────────────────────────
 
@@ -196,8 +198,13 @@ export interface BashPipeReq {
   fd: number;
   iov: BashIovs;
   nreadPtr: number;
-  isPoll: boolean;
-  /** Only a poll park carries one. */
+  /**
+   * Only a poll park carries one. There is no companion `isPoll` flag: asyncify
+   * rewind re-enters the SAME import call the guest unwound from, so a park
+   * begun in poll_oneoff can only resume in poll_oneoff. A flag recording which
+   * one it was would be state that mirrors the call site and is never read —
+   * and it was exactly that, in three places, until it was removed.
+   */
   pollUserdata?: bigint;
 }
 
@@ -206,7 +213,6 @@ export interface BashPendingRead {
   iov: BashIovs;
   bytes: Uint8Array;
   nreadPtr: number;
-  isPoll: boolean;
   pollUserdata?: bigint;
 }
 
@@ -281,6 +287,12 @@ export interface BashWaitEntry {
   targetPid: number;
 }
 
+/** An exited child's status, and whose child it was. */
+export interface BashExitStatus {
+  status: number;
+  ppid: number;
+}
+
 export interface BashStats {
   instances: number;
   memPeak: number;
@@ -302,8 +314,15 @@ export interface BashSession {
   procs: Map<number, BashProc>;
   pipes: Map<number, BashPipe>;
   runnable: BashProc[];
-  /** Reaped-but-unclaimed exit statuses, pid → wait-encoded status. */
-  exitStatus: Map<number, number>;
+  /**
+   * Reaped-but-unclaimed exit statuses, pid → status and parent.
+   *
+   * The parent is part of the record because `wait` with no argument must reap
+   * one of the CALLER's children. Keyed by status alone, the only thing a
+   * waiter could do was take the first entry in the map — which is another
+   * process's child whenever two subshells have both had one exit.
+   */
+  exitStatus: Map<number, BashExitStatus>;
   waiters: BashWaitEntry[];
   pidNext: number;
   pipeNext: number;
@@ -327,8 +346,12 @@ export interface BashSession {
  */
 export type BashIo = {
   read(fd: number, iov: BashIovs, nread: number): BashErrno;
-  /** Byte count, not an errno — a write here cannot fail. */
-  write(fd: number, bytes: Uint8Array): number;
+  /**
+   * Byte count, or null when the descriptor cannot be written to — currently
+   * only the read end of a pipe. It used to be "a write here cannot fail",
+   * which is how writing to a read end came to succeed silently.
+   */
+  write(fd: number, bytes: Uint8Array): number | null;
   poll(inPtr: number, outPtr: number, nsubs: number, retPtr: number): BashErrno;
 };
 

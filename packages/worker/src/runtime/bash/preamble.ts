@@ -24,6 +24,7 @@ import type {
   BashBootArgs,
   BashByteQueue,
   BashErrno,
+  BashExitStatus,
   BashFdEntry,
   BashFdReadiness,
   BashFeedArgs,
@@ -216,7 +217,7 @@ function wakePipe(s: BashSession, pp: BashPipe): void {
   while (pp.readW.length && (pp.queued > 0 || pp.writers === 0)) {
     const w = pp.readW.shift() as BashReadWaiter; const proc = w.proc; const req = proc.ctx.pipeReq;
     const bytes = pp.queued > 0 ? takeUpTo(pp, req.iov.total) : new Uint8Array(0);
-    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
+    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
 }
@@ -225,7 +226,7 @@ function wakeStdin(s: BashSession): void {
   while (st.waiters.length && (st.queued > 0 || st.closed)) {
     const w = st.waiters.shift() as BashReadWaiter; const proc = w.proc; const req = proc.ctx.pipeReq;
     const bytes = st.queued > 0 ? takeUpTo(st, req.iov.total) : new Uint8Array(0);
-    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, isPoll: req.isPoll, pollUserdata: req.pollUserdata };
+    proc.pendingRead = { iov: req.iov, bytes, nreadPtr: req.nreadPtr, pollUserdata: req.pollUserdata };
     resumeProc(proc);
   }
 }
@@ -431,7 +432,14 @@ function makeWasiFs(
   return {
     ...makeUnsupported(s),
     fd_prestat_get: (fd, buf) => { if (fd === 3) { DV().setUint8(buf, 0); DV().setUint32(buf + 4, 1, true); return 0; } return E.BADF; },
-    fd_prestat_dir_name: (fd, path, _plen) => { if (fd === 3) { U8()[path] = 0x2f; return 0; } return E.BADF; },
+    // The buffer length is a contract, not decoration: fd_prestat_get reports
+    // the name is 1 byte, and a guest that offers less must not be written to.
+    fd_prestat_dir_name: (fd, path, plen) => {
+      if (fd !== 3) return E.BADF;
+      if (plen < 1) return E.INVAL;
+      U8()[path] = 0x2f;
+      return 0;
+    },
     path_open: (dirfd, dirflags, pathPtr, pathLen, oflags, rightsBase, _ri, fdflags, retPtr) => {
       const raw = resolve(td.decode(U8().subarray(pathPtr, pathPtr + pathLen)));
       // SYMLINK_FOLLOW (lookupflags bit 0). Without it only the leading
@@ -488,7 +496,8 @@ function makeWasiFs(
     },
     fd_filestat_get: (fd, buf) => {
       const e = proc.fds.get(fd);
-      if (e && e.kind === 'file') { const f = fileLookup(s, e.path); statBuf(DV(), U8(), buf, 4, f ? f.bytes.length : 0, mtimeNs(s, e.path)); return 0; }
+      if (!e) return E.BADF;
+      if (e.kind === 'file') { const f = fileLookup(s, e.path); statBuf(DV(), U8(), buf, 4, f ? f.bytes.length : 0, mtimeNs(s, e.path)); return 0; }
       if (e && (e.kind === 'dir' || e.kind === 'preopen')) { statBuf(DV(), U8(), buf, 3, 0, mtimeNs(s, e.kind === 'preopen' ? '' : e.path)); return 0; }
       statBuf(DV(), U8(), buf, e && (e.kind === 'stdin' || e.kind === 'stdout' || e.kind === 'stderr' || e.kind === 'tty') ? 2 : 0, 0, realtimeNs());
       return 0;
@@ -738,9 +747,16 @@ function makeWasiFs(
       dv.setUint32(retPtr, off, true);
       return 0;
     },
+    // An fd that was never opened is EBADF everywhere below. It used to be
+    // ESPIPE from fd_seek and plain SUCCESS from fd_tell and fd_filestat_get,
+    // while fd_close, fd_fdstat_get and fd_write in this same table already
+    // answered EBADF — one descriptor table, five different opinions about what
+    // a closed descriptor is. ESPIPE in particular is a yes: it means "open, and
+    // not seekable", so a caller using lseek to test validity read it as valid.
     fd_seek: (fd, offset, whence, retPtr) => {
       const e = proc.fds.get(fd);
-      if (e && e.kind === 'file') {
+      if (!e) return E.BADF;
+      if (e.kind === 'file') {
         const f = fileLookup(s, e.path); const len = f ? f.bytes.length : 0;
         const off = Number(offset);
         const next = whence === 0 ? off : whence === 1 ? e.pos + off : len + off;
@@ -754,10 +770,15 @@ function makeWasiFs(
     },
     fd_tell: (fd, retPtr) => {
       const e = proc.fds.get(fd);
-      DV().setBigUint64(retPtr, BigInt(e && e.kind === 'file' ? e.pos : 0), true);
+      if (!e) return E.BADF;
+      DV().setBigUint64(retPtr, BigInt(e.kind === 'file' ? e.pos : 0), true);
       return 0;
     },
-    fd_close: (fd) => { closeFd(s, proc, fd); return 0; },
+    fd_close: (fd) => {
+      if (!proc.fds.has(fd)) return E.BADF;
+      closeFd(s, proc, fd);
+      return 0;
+    },
     fd_fdstat_get: (fd, st) => {
       const dv = DV(); const e = proc.fds.get(fd);
       let ft = 4;
@@ -779,7 +800,9 @@ function makeWasiFs(
       const dv = DV(), u8 = U8(); let w = 0;
       for (let i = 0; i < n; i++) {
         const p = dv.getUint32(iovs + i * 8, true), l = dv.getUint32(iovs + i * 8 + 4, true);
-        w += io.write(fd, u8.subarray(p, p + l));
+        const n2 = io.write(fd, u8.subarray(p, p + l));
+        if (n2 === null) return E.BADF;
+        w += n2;
       }
       dv.setUint32(nw, w, true);
       return 0;
@@ -812,9 +835,15 @@ function makeWasiFs(
 // Route a write through the process fd table. The caller has already rejected
 // an fd the table does not hold, so every branch here answers a real entry —
 // an unknown fd must never land in the user's terminal.
-function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): number {
+function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): number | null {
   const e = proc.fds.get(fd);
   if (e && e.kind === 'pipe') {
+    // A pipe descriptor has a direction, and it was recorded and never read.
+    // Writing to the READ end used to push bytes into the pipe and report them
+    // written, so `exec 3< …; echo x >&3` fed the reader its own output — data
+    // appearing from nowhere, attributed to the wrong writer, with no error
+    // anywhere. POSIX makes the direction part of the descriptor: EBADF.
+    if (e.end === 'r') return null;
     const pp = s.pipes.get(e.pipeId) as BashPipe;
     pp.chunks.push(bytes.slice()); pp.queued += bytes.length;
     wakePipe(s, pp);
@@ -1004,7 +1033,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       // would block: asyncify-park until bytes/EOF arrive
       dv.setUint32(nread, 0, true);
       c.reason = 'blockread';
-      c.pipeReq = { fd, iov, nreadPtr: nread, isPoll: false };
+      c.pipeReq = { fd, iov, nreadPtr: nread };
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -1015,7 +1044,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
         proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false;
         const pr = proc.pendingRead; proc.pendingRead = null;
         const dv = DV();
-        dv.setBigUint64(outPtr, pr.pollUserdata as bigint, true);
+        dv.setBigUint64(outPtr, pr.pollUserdata ?? 0n, true);
         dv.setUint16(outPtr + 8, 0, true);
         dv.setUint8(outPtr + 10, 1);  // eventtype fd_read
         dv.setBigUint64(outPtr + 16, BigInt(pr.bytes.length), true);
@@ -1039,7 +1068,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       }
       dv.setUint32(retPtr, 0, true);
       c.reason = 'blockread';
-      c.pipeReq = { fd: blockSub.fd as number, iov: EMPTY_IOV, nreadPtr: 0, isPoll: true, pollUserdata: blockSub.userdata };
+      c.pipeReq = { fd: blockSub.fd as number, iov: EMPTY_IOV, nreadPtr: 0, pollUserdata: blockSub.userdata };
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
       proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
       return 0;
@@ -1220,7 +1249,7 @@ function step(s: BashSession, proc: BashProc): void {
     trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
     const target = blockTarget(s, proc, c.pipeReq.fd);
     if (!target) {  // fd closed under us: deliver EOF
-      proc.pendingRead = { iov: c.pipeReq.iov, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, isPoll: c.pipeReq.isPoll, pollUserdata: c.pipeReq.pollUserdata };
+      proc.pendingRead = { iov: c.pipeReq.iov, bytes: new Uint8Array(0), nreadPtr: c.pipeReq.nreadPtr, pollUserdata: c.pipeReq.pollUserdata };
       resumeProc(proc);
     } else {
       target.list.push({ proc });
@@ -1366,10 +1395,20 @@ function doFork(s: BashSession, parent: BashProc): void {
 function doWait(s: BashSession, proc: BashProc): void {
   const t = proc.ctx.waitTarget;
   let pid: number | null = null;
-  if (t > 0) { if (s.exitStatus.has(t)) pid = t; }
-  else { for (const [p] of s.exitStatus) { pid = p; break; } }
+  if (t > 0) {
+    // A named target still has to be this process's child; reaping another
+    // process's child by pid is the same error, just harder to reach.
+    const e = s.exitStatus.get(t);
+    if (e && e.ppid === proc.pid) pid = t;
+  } else {
+    // `wait` with no target reaps one of MY children. This used to take the
+    // first entry in the map regardless of parentage, so with two subshells
+    // each having had a child exit, one could consume the other's status —
+    // and then block forever waiting for a child already reaped elsewhere.
+    for (const [p, e] of s.exitStatus) { if (e.ppid === proc.pid) { pid = p; break; } }
+  }
   if (pid != null) {
-    const st = s.exitStatus.get(pid) as number; s.exitStatus.delete(pid);
+    const st = (s.exitStatus.get(pid) as BashExitStatus).status; s.exitStatus.delete(pid);
     proc.ctx.resume = pid; proc.ctx.resumeStatus = st;
     resumeProc(proc);
   } else {
@@ -1382,10 +1421,13 @@ function finishProc(s: BashSession, proc: BashProc, code: number): void {
   s.procs.delete(proc.pid);
   for (const fd of [...proc.fds.keys()]) closeFd(s, proc, fd);
   if (proc.ppid === 0) s.rootExit = code;
-  s.exitStatus.set(proc.pid, st);
+  s.exitStatus.set(proc.pid, { status: st, ppid: proc.ppid });
   for (let i = 0; i < s.waiters.length; i++) {
     const w = s.waiters[i];
-    if (w.targetPid === proc.pid || w.targetPid <= 0) {
+    // Only the parent may be woken by this exit — a waiter in another subshell
+    // is not waiting for this child, and waking it hands over a status that was
+    // never its to claim.
+    if (w.proc.pid === proc.ppid && (w.targetPid === proc.pid || w.targetPid <= 0)) {
       s.waiters.splice(i, 1);
       w.proc.ctx.resume = proc.pid; w.proc.ctx.resumeStatus = st;
       s.exitStatus.delete(proc.pid);

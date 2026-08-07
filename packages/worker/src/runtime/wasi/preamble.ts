@@ -169,11 +169,28 @@ class __WasiExit { declare code: number; constructor(code: number) { this.code =
 // stub __wasiAdoptSupervisor installs. A sealed instance (no stub) keeps them
 // in memory and its caller names what it wants back via __wasiReadFilesB64.
 //
-// Installed by __wasiInitFS before any syscall can run, and dereferenced
-// unguarded by 113 of them. __wasiMakeImports enforces that ordering, which is
-// what lets the type say `WasiFsState` rather than push a null check into every
-// one of those call sites.
-let __wasiFS: WasiFsState = null as unknown as WasiFsState;
+// An empty filesystem from the first instruction, replaced wholesale by
+// __wasiInitFS. It used to start null, which 113 syscall bodies then
+// dereferenced without checking — a fact only visible once a type checker read
+// them. Eight other places DID check, and answered null/0/false, so the same
+// pre-init read was a TypeError down one path and a plausible wrong answer down
+// another. wasm-runner worked around it by calling __wasiInitFS with an empty
+// seed purely so "__wasiFS isn't null when WASI fns are called".
+//
+// Starting empty makes the invariant structural instead of a caller's duty: a
+// syscall before init now answers ENOENT against an empty filesystem, which is
+// true, rather than trapping the guest or being individually guarded 113 times.
+function __wasiEmptyFS(): WasiFsState {
+  return {
+    root: '',
+    files: new Map(), dirs: new Set(), times: new Map(), symlinks: new Map(),
+    modes: new Map(), sizes: new Map(), origFiles: new Map(),
+    residentFileCap: 8 * 1024 * 1024,
+    enumeratedRoots: [],
+    revision: null,
+  };
+}
+let __wasiFS: WasiFsState = __wasiEmptyFS();
 let __wasiPreopens: Array<{ fd: number; wasiPath: string; vfsPath: string }> = [];
 
 // ── Threads ──────────────────────────────────────────────────────────────
@@ -220,7 +237,7 @@ export function __wasiAdoptSupervisor(sup: WasiSupervisorStub | null): void {
  * a sealed instance, whose seed IS the whole filesystem by design.
  */
 function __wasiExpectsLiveBacking() {
-  return !!__wasiFS && __wasiFS.revision !== null && __wasiFS.revision !== undefined;
+  return __wasiFS.revision !== null && __wasiFS.revision !== undefined;
 }
 
 /** Mirror one mutation to the session VFS. Cache is already updated. */
@@ -236,11 +253,18 @@ function __wasiEnqueue(op: string, run: (sup: WasiSupervisorStub) => Promise<unk
     }
     return;
   }
+  // Captured HERE rather than read when the continuation runs. __wasiInitFS
+  // nulls __wasiSup and resets the queue tail, but resetting the tail does not
+  // cancel continuations already chained to the old one — so a pooled isolate
+  // that re-inits with work in flight used to hand the previous program's op a
+  // null stub, lose that mutation, and then throw the resulting TypeError out
+  // of the NEXT program's drain. An op belongs to the process that queued it.
+  const sup = __wasiSup;
   const entry = { op };
   __wasiPersistQ.pending.push(entry);
   __wasiPersistQ.tail = __wasiPersistQ.tail.then(async () => {
     try {
-      await run(__wasiSup as WasiSupervisorStub);
+      await run(sup);
     } catch (e) {
       // A failed write-back is data loss and must be visible, not swallowed.
       __wasiPersistQ.failures.push(op + ': ' + (((e as Error) && (e as Error).message) || String(e)));
@@ -266,9 +290,15 @@ function __wasiPersistFile(vfsPath: string): void {
   // writes to it reports at most once.
   if (__wasiDirty.has(vfsPath)) return;
   __wasiDirty.add(vfsPath);
+  // The bytes are read when the op RUNS, which is what coalesces a burst of
+  // fd_writes into one round trip. The filesystem they are read from is pinned
+  // here, though: reading the global instead meant a re-init between the queue
+  // and the drain looked up the path in the NEXT program's empty cache, found
+  // nothing, and returned successfully having written nothing at all.
+  const fs = __wasiFS;
   __wasiEnqueue('writeFile ' + vfsPath, async (sup) => {
     __wasiDirty.delete(vfsPath);
-    const bytes = __wasiFS && __wasiFS.files.get(vfsPath);
+    const bytes = fs && fs.files.get(vfsPath);
     if (!bytes) return;
     await sup.writeFile(vfsPath, bytes);
   });
@@ -280,7 +310,7 @@ function __wasiPersistFile(vfsPath: string): void {
  * per fd_write would be one syscall's cost paid by all of them.
  */
 function __wasiPersistTimes(vfsPath: string): void {
-  const t = __wasiFS && __wasiFS.times.get(vfsPath);
+  const t = __wasiFS.times.get(vfsPath);
   if (!t) return;
   const atimeMs = Number(t.atime / 1000000n);
   const mtimeMs = Number(t.mtime / 1000000n);
@@ -700,7 +730,6 @@ function __wasiAdoptSocket(socket: WasiSocket, fdflags: number): number {
 // WASI socket and polling support B1+B2 helpers: update tracked timestamps for a path. Idempotent.
 // Caller passes nanosecond BigInt(s); pass null for fields to keep unchanged.
 function __wasiTouchTimes(canonPath: string, mtimeNs: bigint | null, atimeNs: bigint | null, ctimeNs: bigint | null): void {
-  if (!__wasiFS) return;
   const cur = __wasiFS.times.get(canonPath);
   if (cur) {
     if (mtimeNs !== null) cur.mtime = mtimeNs;
@@ -732,7 +761,6 @@ function __wasiBumpMtime(canonPath: string): void {
  */
 export function __wasiReadFilesB64(paths: string[]): Record<string, string> {
   const out: Record<string, string> = {};
-  if (!__wasiFS) return out;
   for (const path of paths) {
     const canon = __wasiCanonicalize(path);
     const bytes = __wasiFS.files.get(canon);
@@ -821,7 +849,6 @@ function __wasiResolvePath(baseFd: number, pathStr: string): string | null {
 function __wasiResolvePathFull(baseFd: number, pathStr: string, followFlag: boolean): { path: string; isSymlink: boolean; err?: Errno } {
   let p = __wasiResolvePath(baseFd, pathStr);
   if (p === null) return { path: '', isSymlink: false, err: __WASI_EBADF };
-  if (!__wasiFS) return { path: p, isSymlink: false };
   if (!followFlag) {
     return { path: p, isSymlink: __wasiFS.symlinks.has(p), err: __WASI_ESUCCESS };
   }
@@ -852,13 +879,13 @@ function __wasiResolvePathFull(baseFd: number, pathStr: string, followFlag: bool
 }
 
 function __wasiEffectiveMode(path: string): number {
-  const mode = __wasiFS && __wasiFS.modes.get(path);
+  const mode = __wasiFS.modes.get(path);
   if (mode !== undefined) return mode;
   return __wasiInodeExists(path) ? 0 : 7;
 }
 
 function __wasiInodeExists(path: string): boolean {
-  return !!__wasiFS && (
+  return (
     __wasiFS.files.has(path) ||
     __wasiFS.dirs.has(path) ||
     __wasiFS.symlinks.has(path) ||
@@ -904,9 +931,21 @@ function __wasiCheckMode(path: string, requested: number): Errno {
 // park therefore wedges the process forever with nothing raised anywhere,
 // which is strictly worse than failing: nothing to log, nothing to retry.
 //
-// Every suspending import therefore parks against a deadline set with margin
-// below the measured floor, and on expiry resolves to EAGAIN — an errno the
-// guest's own retry logic already handles — instead of hanging.
+// Every import that parks on a HOST promise therefore parks against a deadline
+// set with margin below the measured floor, and on expiry resolves to EAGAIN —
+// an errno the guest's own retry logic already handles — instead of hanging.
+// That is the `parkable` list below, and it is exactly the set of imports that
+// are also Suspending-wrapped, minus one.
+//
+// sched_yield is the exception, and deliberately so: it is Suspending-wrapped
+// in a threads build but is NOT in `parkable`, because it does not wait on the
+// host at all. It waits on THIS scheduler, through wasi-threads' `yieldNow`,
+// which already moves the thread to runnable, queues it and dispatches. Sending
+// it through `parkIo` as well would mark a queued thread parked and inflate
+// pendingIo. `withParkDeadline` and `yieldNow` are alternatives, not layers —
+// see the integration table at the top of wasi-threads.ts. The earlier wording
+// here claimed every suspending import was deadline-guarded, which read as a
+// bug in the code rather than an imprecision in the sentence.
 //
 // This guards the PROMISE, not the suspension mechanism, so it serves an
 // Asyncify-unwound guest exactly as well as a JSPI-suspended one.
@@ -1026,17 +1065,14 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
 
   // ── Helpers operating on the VFS state ───────────────────────────────
   function getFile(vfsPath: string): Uint8Array | null {
-    if (!__wasiFS) return null;
     return __wasiFS.files.get(vfsPath) || null;
   }
   /** Known to exist — resident content or a manifest entry. */
   function fileKnown(vfsPath: string): boolean {
-    if (!__wasiFS) return false;
     return __wasiFS.files.has(vfsPath) || __wasiFS.sizes.has(vfsPath);
   }
   /** Size without forcing a load. */
   function fileSize(vfsPath: string): number {
-    if (!__wasiFS) return 0;
     const resident = __wasiFS.files.get(vfsPath);
     if (resident) return resident.length;
     return __wasiFS.sizes.get(vfsPath) ?? 0;
@@ -1140,7 +1176,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     return total;
   }
   function hasDir(vfsPath: string): boolean {
-    if (!__wasiFS) return false;
     if (__wasiFS.dirs.has(vfsPath)) return true;
     // Root preopens implicitly exist as dirs.
     return false;
@@ -1164,7 +1199,6 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   }
   function touchAccess(vfsPath: string): void {
     // WASI socket and polling support B1: bump atime on a read. mtime/ctime unchanged.
-    if (!__wasiFS) return;
     const cur = __wasiFS.times.get(vfsPath);
     if (cur) cur.atime = __wasiNowNs();
   }
@@ -1751,7 +1785,18 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (!kind) {
         const live = statLive(resolved);
         if (live && typeof (live as Promise<boolean>).then === 'function') {
-          return (live as Promise<boolean>).then((found) => (found ? emitStat(...(classify() as [number, bigint])) : __WASI_ENOENT));
+          return (live as Promise<boolean>).then((found) => {
+            // classify() is re-run because the live stat is what populated the
+            // maps. It can still answer null: the stat and this callback are
+            // separated by a suspension, and anything that unlinks the path in
+            // between — another thread, another request on a resident server —
+            // leaves nothing to classify. Spreading that null threw "is not
+            // iterable" from inside a Suspending import, which reaches the
+            // guest as a trap carrying no errno. The path is gone, so ENOENT is
+            // the answer the guest can act on.
+            const settled = found ? classify() : null;
+            return settled ? emitStat(...settled) : __WASI_ENOENT;
+          });
         }
         return __WASI_ENOENT;
       }

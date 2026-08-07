@@ -9,12 +9,19 @@
  */
 import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
 /**
- * A WASI errno. Modelled as the exact set the shim can return rather than
- * `number`, so a syscall that answers with an unrelated integer — a byte count,
- * a file descriptor, a bare `0` meant as "false" — is a compile error at the
- * `return` rather than a wrong answer the guest cannot diagnose.
+ * A WASI errno. Modelled as the exact set Nimbus's syscall layers can return
+ * rather than `number`, so a syscall that answers with an unrelated integer — a
+ * byte count, a file descriptor, a bare `0` meant as "false" — is a compile
+ * error at the `return` rather than a wrong answer the guest cannot diagnose.
+ *
+ * ONE set, shared by every syscall layer. The bash scheduler briefly carried its
+ * own `BashErrno = Errno | 63`, which is how a second vocabulary starts: a magic
+ * literal welded onto the shared type because the shared type was narrower than
+ * the spec. Values are added HERE, deliberately, when a layer needs one — never
+ * widened at a use site. Numbers are the preview1 enum, which is alphabetical
+ * and therefore not guessable; check the spec before adding one.
  */
-export type Errno = 0 | 2 | 6 | 8 | 14 | 20 | 23 | 28 | 29 | 31 | 32 | 44 | 52 | 53 | 54 | 55 | 57 | 64 | 70 | 73 | 76;
+export type Errno = 0 | 2 | 6 | 8 | 14 | 20 | 23 | 28 | 29 | 31 | 32 | 44 | 52 | 53 | 54 | 55 | 57 | 63 | 64 | 70 | 73 | 76;
 /**
  * What a syscall body may hand back. A cache hit answers synchronously; a body
  * that has to reach the supervisor answers with a Promise the JSPI Suspending
