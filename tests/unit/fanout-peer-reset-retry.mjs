@@ -92,8 +92,9 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   }));
   const pool = new NimbusFanoutPool(env, ctx, { tag: 'nonretry-test', omitSupervisor: true });
   await assert.rejects(pool.submitMany(TASKS, (x) => x), /genuine task failure/);
-  // The 8 tasks dispatch within a single phase and each throws exactly
-  // once (no retry). No shard is retried.
+  // However the 8 tasks split across dispatch phases, each one that runs
+  // throws exactly once and no shard is retried; a phase that aborts the
+  // batch leaves later phases undispatched, hence the range rather than 8.
   assert.ok(attempts >= 1 && attempts <= 8, `non-transient not retried (attempts=${attempts})`);
   console.log(`  case3: non-transient propagated without retry (attempts=${attempts})`);
 }
