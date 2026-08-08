@@ -242,6 +242,16 @@ const SPECS = {
     local_base: '../wasm/python',
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
+      // The same interpreter with numpy and markupsafe's C speedups linked in,
+      // and their Python half. wasm32-wasi has no dlopen, so a compiled package
+      // is either in the binary or unavailable; the runner picks between the two
+      // from what the session installed. Both ship because the choice is made
+      // per invocation, inside the session, long after the install.
+      { src: 'python-sci.wasm', vfs: 'share/cpython/python-sci.wasm' },
+      // Beside the stdlib zip on purpose: the runner puts it on sys.path and
+      // zipimport reads it out of the session filesystem, so it needs the same
+      // treatment as lib/python313.zip and no separate transport.
+      { src: 'sci-packages.zip', vfs: 'lib/sci-packages.zip' },
       // The stdlib, pyc-only. Read straight out of the session filesystem by
       // zipimport, which is why it needs no separate transport.
       // Laid out as a Python prefix, so nimbus_py_init can be handed the

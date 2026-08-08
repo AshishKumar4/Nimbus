@@ -41,15 +41,60 @@ const PurePythonSourcePackageSchema = z.object({
     sourcePackageDir: z.string().min(1),
 });
 const PIP_SOURCE_PACKAGES = z.record(z.string(), PurePythonSourcePackageSchema).parse({
+    // Pinned to the release build-python.sh compiles _speedups.c from. The two
+    // halves of this package are built apart and only meet at import, so a skew
+    // between them is a C extension paired with an __init__.py it never saw.
     markupsafe: {
         canonicalName: 'markupsafe',
         importName: 'markupsafe',
-        version: '3.0.2',
-        sourceUrl: 'https://files.pythonhosted.org/packages/b2/97/5d42485e71dfc078108a86d6de8fa46db44a1a9295e89c5d6d4a06e23a62/markupsafe-3.0.2.tar.gz',
-        sha256: 'ee55d3edf80167e48ea11a923c7386f4669df67d7994554387f84e7d8b0a2bf0',
-        sourcePackageDir: 'markupsafe-3.0.2/src/markupsafe',
+        version: '3.0.3',
+        sourceUrl: 'https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz',
+        sha256: '722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698',
+        sourcePackageDir: 'markupsafe-3.0.3/src/markupsafe',
     },
 });
+const VariantPackageSchema = z.object({
+    canonicalName: z.string().min(1),
+    version: z.string().min(1),
+});
+/**
+ * Packages the sci interpreter variant already contains, whole.
+ *
+ * wasm32-wasi has no dlopen, so numpy's thirteen extension modules are linked
+ * into python-sci.wasm and its Python half ships beside it in sci-packages.zip
+ * (EXTENSIONS.md). There is nothing for pip to fetch, so installing one only
+ * records it — and that record is what makes the next `python` choose the
+ * variant that has it, which is why it is written even though no bytes move.
+ *
+ * markupsafe is deliberately not here: only its _speedups module is compiled, so
+ * its Python half installs from source like any other package, and the variant
+ * supplies the C half to a session that has selected it.
+ */
+const PIP_VARIANT_PACKAGES = z.record(z.string(), VariantPackageSchema).parse({
+    numpy: { canonicalName: 'numpy', version: '2.4.3' },
+});
+/**
+ * The dist-info directories that mean "this session needs the sci variant".
+ *
+ * Derived from the pins above rather than written out, so a version bump cannot
+ * leave the selector looking for a directory pip no longer writes.
+ */
+const SCI_VARIANT_DIST_INFO = Object.freeze([
+    ...Object.values(PIP_VARIANT_PACKAGES).map((p) => `${p.canonicalName}-${p.version}.dist-info`),
+    `${PIP_SOURCE_PACKAGES.markupsafe.canonicalName}-${PIP_SOURCE_PACKAGES.markupsafe.version}.dist-info`,
+]);
+/**
+ * Whether this session has installed anything the sci interpreter variant
+ * carries compiled code for.
+ *
+ * This reads installed state; it does not predict what a program might import.
+ * The dist-info directory pip writes is the record, and a variant chosen from it
+ * is right for `python -c` reading a module name out of a variable, which a
+ * per-program classifier cannot be.
+ */
+export function sessionUsesSciVariant(vfs) {
+    return SCI_VARIANT_DIST_INFO.some((dir) => vfs.exists(`${PYTHON_SITE_PACKAGES_ROOT}/${dir}`));
+}
 const PypiFileSchema = z.object({
     filename: z.string(),
     packagetype: z.string().optional(),
@@ -249,12 +294,16 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
     const remoteWheels = [];
     const sourcePackages = [];
     const pyodidePackages = [];
+    const variantPackages = [];
     for (const pkg of resolved.packages.values()) {
         if (pkg.artifact.kind === 'remote-wheel') {
             remoteWheels.push(pkg.artifact);
         }
         else if (pkg.artifact.kind === 'source') {
             sourcePackages.push(pkg.artifact);
+        }
+        else if (pkg.artifact.kind === 'variant') {
+            variantPackages.push(pkg.artifact);
         }
         else {
             pyodidePackages.push(pkg.artifact.artifact);
@@ -263,12 +312,14 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
     const installLabels = [
         ...remoteWheels.map((wheel) => wheel.canonicalName),
         ...sourcePackages.map((source) => source.canonicalName),
+        ...variantPackages.map((variant) => variant.canonicalName),
         ...pyodidePackages.map((artifact) => artifact.packageName),
         ...localWheels.map((wheel) => wheel.displayName),
     ];
     return {
         remoteWheels,
         sourcePackages,
+        variantPackages,
         pyodidePackages,
         localWheels,
         displayPackages: installLabels.length > 0 ? installLabels : displayPackages,
@@ -276,7 +327,10 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
     };
 }
 function failedPlan(error, exitCode) {
-    return { remoteWheels: [], sourcePackages: [], pyodidePackages: [], localWheels: [], displayPackages: [], error, exitCode };
+    return {
+        remoteWheels: [], sourcePackages: [], variantPackages: [], pyodidePackages: [],
+        localWheels: [], displayPackages: [], error, exitCode,
+    };
 }
 function addRequirementsFile(reqPath, baseDir, vfs, requirements, constraints, displayPackages, depth) {
     if (depth > 8)
@@ -462,6 +516,23 @@ async function resolveOneRequirement(req, runtimeContext) {
         if (!sourcePolicy)
             return { error: pyodideCompiledPackageDiagnostic(pyodidePackage) };
         return resolveSourcePolicy(req, sourcePolicy);
+    }
+    const variantPolicy = PIP_VARIANT_PACKAGES[canonicalPackageName(req.name)];
+    if (variantPolicy) {
+        const range = specifierRange(req.specs);
+        if (range && !pep440Satisfies(variantPolicy.version, range)) {
+            return {
+                error: `only ${variantPolicy.canonicalName} ${variantPolicy.version} is available here `
+                    + `(it is compiled into the interpreter, not fetched), and it does not satisfy ${range}`,
+            };
+        }
+        return {
+            package: {
+                name: variantPolicy.canonicalName,
+                version: variantPolicy.version,
+                artifact: { kind: 'variant', ...variantPolicy },
+            },
+        };
     }
     const sourcePolicy = PIP_SOURCE_PACKAGES[req.name];
     if (sourcePolicy)
@@ -812,6 +883,7 @@ function buildPipInstallCode(plan) {
         `remote_wheels = ${JSON.stringify(plan.remoteWheels)}`,
         `local_wheels = ${JSON.stringify(plan.localWheels)}`,
         `source_packages = ${JSON.stringify(plan.sourcePackages)}`,
+        `variant_packages = ${JSON.stringify(plan.variantPackages)}`,
         `pyodide_packages = ${JSON.stringify(plan.pyodidePackages)}`,
         `display_packages = ${JSON.stringify(plan.displayPackages)}`,
         `target_site_packages = ${JSON.stringify('/' + PYTHON_SITE_PACKAGES_ROOT)}`,
@@ -947,8 +1019,24 @@ function buildPipInstallCode(plan) {
         '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
         '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
         '        f.write("")',
+        // A variant package's code is already inside the interpreter and on its
+        // sys.path; only the record is missing, and that record is what makes the
+        // next spawn pick the interpreter that has it.
+        'def _nimbus_install_variant_package(policy):',
+        '    dist_info = _nimbus_dist_info_dir(policy["canonicalName"], policy["version"])',
+        '    if os.path.exists(os.path.join(dist_info, "METADATA")):',
+        '        return',
+        '    os.makedirs(dist_info, exist_ok=True)',
+        '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
+        '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
+        '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
+        '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
+        '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
+        '        f.write("")',
         'for source_package in source_packages:',
         '    _nimbus_install_source_package(source_package)',
+        'for variant_package in variant_packages:',
+        '    _nimbus_install_variant_package(variant_package)',
         'for wheel in remote_wheels:',
         '    _nimbus_install_remote_wheel(wheel)',
         'for policy in pyodide_packages:',
