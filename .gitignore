@@ -42,3 +42,6 @@ HYPOTHESIS-*.md
 /probe-*.mjs
 /repro*.mjs
 /verify-*.mjs
+
+# Raw benchmark dumps are diagnostics, not source. bench/tti.mjs writes here.
+packages/computesdk-nimbus/bench-results/
