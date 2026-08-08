@@ -85,15 +85,18 @@ await t.run('node -e "console.log(42)" > /home/user/node.txt', 30_000);
 // pins the property those fixes must not be bought with.
 {
   t.reset();
-  t.cmd('node -e "console.log(\'early\'); setTimeout(() => console.log(\'late\'), 4000)"');
+  // The terminal echoes the command line, so a marker that appears
+  // literally in the command matches its own echo and proves nothing. Build
+  // both markers at runtime instead: neither string exists in what is typed.
+  t.cmd('node -e "const m=(n)=>String.fromCharCode(n,n,n); console.log(m(65)); setTimeout(()=>console.log(m(66)), 4000)"');
   let liveBeforeExit = false;
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     const seen = stripAnsi(t.buf);
-    if (/early/.test(seen)) {
-      // `late` has not printed yet, so the process is demonstrably still
-      // running: `early` arrived live, not in an exit-time flush.
-      liveBeforeExit = !/late/.test(seen);
+    if (/AAA/.test(seen)) {
+      // BBB has not printed yet, so the process is demonstrably still
+      // running: AAA arrived live, not in an exit-time flush.
+      liveBeforeExit = !/BBB/.test(seen);
       break;
     }
     await new Promise((r) => setTimeout(r, 100));
