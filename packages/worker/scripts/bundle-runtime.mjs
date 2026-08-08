@@ -6,12 +6,20 @@
  * Invocation:
  *   node scripts/bundle-runtime.mjs clang binji-2020 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs python 0.29.4 [--bucket nimbus-runtime-cache]
+ *   node scripts/bundle-runtime.mjs --pin-catalog        (read-only; publishes nothing)
  *
  * Per `2026-05-10-true-os/plan.md` §2.4:
  *   - Blobs are content-addressed under `blobs/<name>-<version>/<sha256>/<file>`.
  *   - Per-version manifest at `manifests/<name>-<version>.json` lists
  *     the files (path-in-VFS, content R2 key, sha256, size, mode).
- *   - Top-level `catalog/v1.json` lists known runtimes.
+ *   - Top-level `catalog/v1.json` lists known runtimes, each with the
+ *     sha256 of its manifest.
+ *
+ * Every artifact the supervisor reads is named by a digest that the artifact
+ * above it vouches for, and the top of that chain is pinned into the worker
+ * build as src/runtime-catalog.generated.ts. This script owns both ends: it
+ * writes `manifest_sha256` into the catalog and rewrites the pin. See the
+ * trust-model note in src/runtime/runtime-catalog.ts for what the chain buys.
  *
  * For `clang binji-2020`, the upstream is:
  *   https://raw.githubusercontent.com/binji/wasm-clang/master/{clang,lld,sysroot.tar}
@@ -52,15 +60,30 @@ const PYODIDE_WORKERD_ADAPTER = JSON.parse(
   readFileSync(new URL('../runtime-contracts/pyodide-workerd-adapter.json', import.meta.url), 'utf8'),
 );
 
+const USAGE =
+  'usage: bundle-runtime.mjs <name> <version> [--bucket <bucket>]\n' +
+  '       bundle-runtime.mjs --pin-catalog [--bucket <bucket>]';
+
+/** The bucket the deployed Worker's NIMBUS_RUNTIME_CACHE binding points at.
+ *  Only a publish to THIS bucket may rewrite the catalog pin: the pin
+ *  describes what production reads, so regenerating it from an isolated
+ *  test bucket would point the deploy at a catalog it never fetches. */
+const PRODUCTION_BUCKET = 'nimbus-runtime-cache';
+
 const rawArgs = process.argv.slice(2);
 const positionalArgs = [];
-let BUCKET = process.env.NIMBUS_RUNTIME_BUCKET || 'nimbus-runtime-cache';
+let BUCKET = process.env.NIMBUS_RUNTIME_BUCKET || PRODUCTION_BUCKET;
+let PIN_ONLY = false;
 for (let i = 0; i < rawArgs.length; i++) {
   const arg = rawArgs[i];
+  if (arg === '--pin-catalog') {
+    PIN_ONLY = true;
+    continue;
+  }
   if (arg === '--bucket') {
     const value = rawArgs[++i];
     if (!value) {
-      console.error('usage: bundle-runtime.mjs <name> <version> [--bucket <bucket>]');
+      console.error(USAGE);
       process.exit(2);
     }
     BUCKET = value;
@@ -73,8 +96,16 @@ for (let i = 0; i < rawArgs.length; i++) {
   positionalArgs.push(arg);
 }
 
+// `--pin-catalog` regenerates the build-time root of trust from the catalog
+// already in R2. Read-only: it publishes nothing, so it is safe to run at any
+// time, including while another ingest is in flight against a different bucket.
+if (PIN_ONLY) {
+  pinCatalogFromR2();
+  process.exit(0);
+}
+
 if (!positionalArgs[0] || !positionalArgs[1]) {
-  console.error('usage: bundle-runtime.mjs <name> <version> [--bucket <bucket>]');
+  console.error(USAGE);
   process.exit(2);
 }
 
@@ -454,6 +485,10 @@ if (spec.ingest_only) {
   const manifestLocal = join(workDir, 'manifest.json');
   const manifestText = JSON.stringify(manifest, null, 2);
   writeFileSync(manifestLocal, manifestText);
+  // Digest of the exact bytes uploaded below. The catalog carries it so the
+  // supervisor can verify a manifest the same way a manifest lets it verify
+  // a blob — see the trust-model note in src/runtime/runtime-catalog.ts.
+  const manifestSha256 = createHash('sha256').update(readFileSync(manifestLocal)).digest('hex');
   const manifestR2Key = `manifests/${RUNTIME}-${VERSION}.json`;
   console.log(`[bundle-runtime] put r2://${BUCKET}/${manifestR2Key}`);
   execSync(
@@ -481,6 +516,7 @@ if (spec.ingest_only) {
   })();
   catalog.runtimes[RUNTIME].versions[VERSION] = {
     manifest: manifestR2Key,
+    manifest_sha256: manifestSha256,
     size_bytes: catalogSize,
     license: spec.license,
   };
@@ -505,6 +541,9 @@ if (spec.ingest_only) {
     `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${catalogR2Key} --file "${catalogLocal}" --content-type application/json --remote`,
     { stdio: 'inherit' },
   );
+
+  // The catalog just changed, so the pin the deploy carries is now stale.
+  writeCatalogPin(readFileSync(catalogLocal));
 
   console.log(`\n[bundle-runtime] DONE`);
   console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
@@ -587,6 +626,107 @@ function bucketIsReadable() {
   const detail = (info.stderr || '').trim();
   if (detail) console.error(`       ${detail.split('\n').slice(-3).join('\n       ')}`);
   process.exit(1);
+}
+
+// ── Catalog pin ──────────────────────────────────────────────────────
+
+const CATALOG_PIN_OUT = new URL('../src/runtime-catalog.generated.ts', import.meta.url);
+
+/**
+ * Rewrite the build-time root of trust from the exact catalog bytes.
+ *
+ * Only a production-bucket catalog may be pinned: the constant describes what
+ * the deployed Worker's NIMBUS_RUNTIME_CACHE binding reads, so pinning an
+ * isolated test bucket's catalog would disable the colo cache in production
+ * and quietly discard a good pin.
+ */
+function writeCatalogPin(catalogBytes) {
+  if (BUCKET !== PRODUCTION_BUCKET) {
+    console.log(
+      `[bundle-runtime] catalog pin: LEFT ALONE (bucket '${BUCKET}' is not ` +
+      `'${PRODUCTION_BUCKET}', which is what the deploy reads)`,
+    );
+    return;
+  }
+  const sha256 = createHash('sha256').update(catalogBytes).digest('hex');
+  writeFileSync(
+    CATALOG_PIN_OUT,
+    `/**
+ * runtime-catalog.generated.ts — AUTO-GENERATED by scripts/bundle-runtime.mjs
+ * DO NOT EDIT.
+ *
+ * SHA-256 of the \`catalog/v1.json\` bytes in the ${PRODUCTION_BUCKET} bucket.
+ * This is the root of trust for the runtime package manager: the catalog
+ * names each manifest's digest, each manifest names its blobs' digests, and
+ * the blobs are interpreters. Pinning the root at build time is what makes
+ * the chain verifiable rather than merely well-shaped.
+ *
+ * The pin governs the L2 (\`caches.default\`) tier only — see the trust-model
+ * note in runtime/runtime-catalog.ts. R2 is the trusted tier, so a pin that
+ * has drifted behind a fresh publish costs a colo cache, never correctness:
+ * the catalog is simply read from R2 and not cached until the pin is
+ * regenerated.
+ *
+ * Regenerate with a read-only catalog fetch (no publish, no R2 write):
+ *
+ *   CLOUDFLARE_ACCOUNT_ID=<account> node scripts/bundle-runtime.mjs --pin-catalog
+ *
+ * A normal \`bundle-runtime.mjs <spec>\` publish rewrites it too, from the
+ * exact bytes it just uploaded. Commit the result and deploy.
+ *
+ * The empty string means "not pinned yet" — the catalog stays out of L2 and
+ * the supervisor warns once per isolate.
+ */
+
+export const RUNTIME_CATALOG_SHA256: string = ${JSON.stringify(sha256)};
+`,
+    'utf8',
+  );
+  console.log(`[bundle-runtime] catalog pin: ${sha256}`);
+  console.log('[bundle-runtime] commit packages/worker/src/runtime-catalog.generated.ts and redeploy');
+}
+
+/**
+ * `--pin-catalog`: fetch the published catalog read-only and regenerate the
+ * pin from it. Downloads to a file rather than `--pipe` because the digest
+ * must cover the object's exact bytes, and a piped stream cannot be told
+ * apart from a stream wrangler decorated.
+ */
+function pinCatalogFromR2() {
+  const workDir = join(tmpdir(), `nimbus-catalog-pin-${process.pid}`);
+  mkdirSync(workDir, { recursive: true });
+  const local = join(workDir, 'catalog.json');
+  try {
+    const result = spawnSync(
+      WRANGLER,
+      ['r2', 'object', 'get', `${BUCKET}/catalog/v1.json`, '--file', local, '--remote'],
+      { encoding: 'utf8', env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT } },
+    );
+    if (result.status !== 0 || !existsSync(local)) {
+      console.error(`ERROR: could not read catalog/v1.json from '${BUCKET}'; the pin is unchanged.`);
+      const detail = (result.stderr || '').trim();
+      if (detail) console.error(`       ${detail.split('\n').slice(-3).join('\n       ')}`);
+      process.exit(1);
+    }
+    const bytes = readFileSync(local);
+    // A pin over bytes that are not the catalog would disable the cache on
+    // every deploy until someone worked out why.
+    let parsed;
+    try {
+      parsed = JSON.parse(bytes.toString('utf8'));
+    } catch (e) {
+      console.error(`ERROR: catalog/v1.json is not valid JSON (${e.message}); refusing to pin it`);
+      process.exit(1);
+    }
+    if (!parsed || typeof parsed.runtimes !== 'object' || parsed.runtimes === null) {
+      console.error('ERROR: catalog/v1.json has no runtimes object; refusing to pin it');
+      process.exit(1);
+    }
+    console.log(`[bundle-runtime] catalog lists: ${Object.keys(parsed.runtimes).join(', ') || '(none)'}`);
+    writeCatalogPin(bytes);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
 }
 
 // ── Runtime transforms ───────────────────────────────────────────────
