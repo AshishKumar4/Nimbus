@@ -505,8 +505,13 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           registry: pkgRegistry,
           getHome: nimbusGetHome,
           warmRuntime: async (target, ctx) => {
-            if (target.name !== 'python') return;
-            ctx.stdout.write('[python] warming runtime...\n');
+            // The runtime name, which is what `nimbus install python` installs
+            // — not the name the user typed. Left as 'python' through the
+            // migration, this matched only the superseded Pyodide entry, so the
+            // interpreter people actually install was never warmed and the
+            // first invocation after installing paid the wasm compile.
+            if (target.name !== 'cpython') return;
+            ctx.stdout.write(`[${target.name}] warming runtime...\n`);
             const stdout = { write(_s: string) {} };
             const stderrText: string[] = [];
             const stderr = { write: (s: string) => { stderrText.push(String(s)); } };

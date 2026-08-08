@@ -225,6 +225,15 @@ async function resolveRuntimeInstallTarget(
   // to that runtime, so `nimbus install python3|pip|gem|wasm-ld` all
   // work without a hand-maintained alias map.
   for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
+    // A superseded runtime does not answer for a command name either. It still
+    // declares `python` and `python3`, it comes first in the catalog, and its
+    // runner is no longer registered — so `nimbus install python3` installed
+    // Pyodide and left two bins nothing could invoke, while `nimbus install
+    // python` next to it installed CPython. The successor declares the same
+    // commands and is reached further down this same loop.
+    if (parsed.versionOverride === null
+      && SUPERSEDED_RUNTIMES[runtimeName]
+      && catalog.runtimes[SUPERSEDED_RUNTIMES[runtimeName]]) continue;
     const version = entry.default;
     const versionEntry = entry.versions[version];
     if (!versionEntry) continue;
