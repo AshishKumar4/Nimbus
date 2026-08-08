@@ -251,7 +251,7 @@ export function isRuntimePythonPackageArtifactMetadata(
 // ── L2 content addressing ────────────────────────────────────────────
 
 /** R2 key of the top-level catalog. */
-export const CATALOG_R2_KEY = 'catalog/v1.json';
+const CATALOG_R2_KEY = 'catalog/v1.json';
 
 /** Synthetic L2 cache-key host. Reserved-invalid TLD so keys can never
  *  collide with a real user request. Bumped to `-v2` when the keyspace
@@ -342,7 +342,7 @@ export async function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCatal
 
   const verified = address && await verifyBytes(address, bytes);
   if (verified) await l2Put(verified, 'application/json');
-  else warnCatalogPinUnusable(await sha256Hex(bytes));
+  else await warnCatalogPinUnusable(bytes);
 
   return parseRuntimeCatalog(parseJsonBytes(bytes));
 }
@@ -481,13 +481,13 @@ function parseJsonBytes(bytes: Uint8Array): unknown {
 
 let catalogPinWarned = false;
 
-function warnCatalogPinUnusable(actual: string): void {
+async function warnCatalogPinUnusable(bytes: Uint8Array): Promise<void> {
   if (catalogPinWarned) return;
   catalogPinWarned = true;
   console.warn(
     `[nimbus/runtime-catalog] RUNTIME_CATALOG_SHA256 is ${RUNTIME_CATALOG_SHA256 || '(unset)'} ` +
-      `but ${CATALOG_R2_KEY} hashes to ${actual}. Serving from R2 and skipping the colo ` +
-      'cache. Rerun `node scripts/bundle-runtime.mjs --pin-catalog`, commit ' +
+      `but ${CATALOG_R2_KEY} hashes to ${await sha256Hex(bytes)}. Serving from R2 and skipping ` +
+      'the colo cache. Rerun `node scripts/bundle-runtime.mjs --pin-catalog`, commit ' +
       'src/runtime-catalog.generated.ts, and redeploy.',
   );
 }
