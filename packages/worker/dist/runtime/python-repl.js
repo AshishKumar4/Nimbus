@@ -20,6 +20,7 @@
  * deciding what counts as a result.
  */
 import { ReplSession } from './repl-session.js';
+import { sessionUsesSciVariant } from './python-pip.js';
 import { buildCPythonPreamble } from './cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL } from './os-contracts.js';
@@ -36,6 +37,8 @@ const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
 const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
+const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
+const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
 function toArrayBuffer(bytes) {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -84,6 +87,8 @@ function buildReplDriver(source) {
 }
 class PythonReplAdapter {
     pool = null;
+    /** Which interpreter variant the cached pool holds; see ensurePool. */
+    poolUsesSci = false;
     deps;
     wasmBytes = null;
     fsSnapshot = null;
@@ -154,11 +159,25 @@ class PythonReplAdapter {
         }
     }
     async ensurePool() {
+        const vfsForVariant = this.deps.vfs.as(CRED_KERNEL);
+        const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
+        const wantsSci = sessionUsesSciVariant(vfsForVariant) && vfsForVariant.exists(sciPath);
+        // A prompt that was open before `pip install numpy` is holding the
+        // interpreter that does not have it. Dropping the pool rebuilds on the next
+        // statement, which is the facet restart EXTENSIONS.md says this costs.
+        if (this.pool && this.poolUsesSci !== wantsSci) {
+            try {
+                this.pool.dispose?.();
+            }
+            catch { /* fail-soft: it is being replaced */ }
+            this.pool = null;
+        }
         if (this.pool)
             return;
+        this.poolUsesSci = wantsSci;
         const { installRoot, facetMgr } = this.deps;
-        const vfs = this.deps.vfs.as(CRED_KERNEL);
-        const wasmPath = `${installRoot}/${CPYTHON_WASM_REL}`;
+        const vfs = vfsForVariant;
+        const wasmPath = wantsSci ? sciPath : `${installRoot}/${CPYTHON_WASM_REL}`;
         const stdlibPath = `${installRoot}/${CPYTHON_STDLIB_REL}`;
         if (!vfs.exists(wasmPath)) {
             throw new Error(`python.wasm missing at ${wasmPath} (run 'nimbus install python')`);
@@ -199,7 +218,7 @@ class PythonReplAdapter {
         const base = {
             // Distinct from cpython-runner's tag: a REPL facet holds a live
             // interpreter and must never be handed a one-shot invocation.
-            tag: 'python-repl',
+            tag: wantsSci ? 'python-repl:sci' : 'python-repl',
             concurrency: 1,
             preamble: buildCPythonPreamble(),
             wasmModules: { 'python.wasm': this.wasmBytes },

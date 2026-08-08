@@ -63,6 +63,7 @@ import {
   type PipInvocation,
   PYTHON_SITE_PACKAGES_ROOT,
   type PythonPipRuntimeContext,
+  sessionUsesSciVariant,
 } from './python-pip.js';
 import type { RuntimeManifest } from './runtime-catalog.js';
 import { manifestVfs } from './vfs-manifest.js';
@@ -74,6 +75,15 @@ const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 
 /** Where `nimbus install python` stages the interpreter inside the session. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
+/**
+ * The same interpreter with numpy and markupsafe's C speedups linked in, and
+ * their Python half. wasm32-wasi has no dlopen, so a compiled package is either
+ * in the binary or unavailable; EXTENSIONS.md has why that beat a runtime
+ * linker. Chosen per invocation from what the session has installed, so a
+ * session that installed none of it pays none of the 7.8 MiB.
+ */
+const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
+const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
 const CPYTHON_CACERT_REL = 'etc/ssl/cert.pem';
 
@@ -357,7 +367,9 @@ export function makeCPythonRunnerFactory(deps: {
       const entry = manifest.files.find((f) => f.path === rel);
       return entry ? `${installRoot}/${entry.path}` : null;
     };
-    const wasmVfs = findFile(CPYTHON_WASM_REL);
+    const baseWasmVfs = findFile(CPYTHON_WASM_REL);
+    const sciWasmVfs = findFile(CPYTHON_SCI_WASM_REL);
+    const sciPackagesVfs = findFile(CPYTHON_SCI_PACKAGES_REL);
     const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
     let manifestCache:
       { cred: string; cwd: string; revision: number; result: ReturnType<typeof manifestVfs> } | null = null;
@@ -395,6 +407,19 @@ export function makeCPythonRunnerFactory(deps: {
         ctx.stdout.write('zlib, lzma, bz2, hashlib, ssl, sqlite3 and sockets are built in; pure-Python wheels install with pip.\n');
         return 0;
       }
+
+      // Which interpreter this invocation gets. The sci variant is chosen from
+      // what the session has installed, never from a guess about what this
+      // program will import — the whole point of keying on state is that it is
+      // also right for `python -c` naming a module in a variable. Falling back
+      // when the variant is absent keeps a session installed before the variant
+      // shipped working, on the base interpreter, rather than failing to start.
+      const wantsSci = sessionUsesSciVariant(vfs)
+        && sciWasmVfs !== null && vfs.exists(sciWasmVfs);
+      const wasmVfs = wantsSci ? sciWasmVfs : baseWasmVfs;
+      const sciPackagesPath = wantsSci && sciPackagesVfs && vfs.exists(sciPackagesVfs)
+        ? sciPackagesVfs
+        : null;
 
       if (!wasmVfs || !vfs.exists(wasmVfs)) {
         ctx.stderr.write(`${binName}: python.wasm missing (re-run 'nimbus install python')\n`);
@@ -446,6 +471,12 @@ export function makeCPythonRunnerFactory(deps: {
         PYTHON_SERVER_ADAPTER,
         'import sys',
         `sys.argv = ${JSON.stringify(pyArgv)}`,
+        // The variant's own packages. zipimport reads them straight out of the
+        // session filesystem, so they need no unpacking and no manifest entry
+        // beyond the archive itself.
+        ...(sciPackagesPath
+          ? [`sys.path.insert(0, ${JSON.stringify(`/${sciPackagesPath.replace(/^\/+/, '')}`)})`]
+          : []),
         `sys.path.insert(0, ${JSON.stringify(`/${PYTHON_SITE_PACKAGES_ROOT}`)})`,
         `sys.path.insert(0, ${JSON.stringify(cwd)})`,
         // WASI has no process cwd, so wasi-libc starts every guest at '/'.
@@ -521,7 +552,12 @@ export function makeCPythonRunnerFactory(deps: {
       const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
       const host = getFacetManagerLoaderHost(facetMgr);
       const pool = new NimbusLoaderPool(host.env, host.ctx, {
-        tag: 'cpython-runner',
+        // The variant is in the tag because the pool's constructor-time wasm
+        // fingerprint is name:length:first-byte:last-byte, not a content hash.
+        // Two variants differ by megabytes so they would not collide today, but
+        // a warm slot serving the wrong interpreter is not a failure worth
+        // leaving to a size coincidence.
+        tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
         concurrency: 1,
         // NOT omitSupervisor. Without it the facet reads the seeded manifest
         // and can never write anything back — the program appears to run and
