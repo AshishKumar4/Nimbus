@@ -536,23 +536,6 @@ export function makeCPythonRunnerFactory(deps: {
       const snapshot = fsManifest.snapshot as unknown as {
         files: Record<string, string>; sizes?: Record<string, number>; revision?: number;
       };
-      // WORKAROUND, not a design. The stdlib is seeded by value because the
-      // guest cannot currently consume it as a manifest-only demand-load: the
-      // transport is proven good (a live fsReadRange returns all 3,845,898
-      // bytes with a sha256 identical to the file on disk and in R2), and by
-      // value the interpreter starts, but manifest-only it fails with
-      // "Failed to import encodings module". Seeding costs a base64 of 3.6 MiB
-      // per spawn and should be removed once that is understood.
-      {
-        const zipBytes = vfs.readFile(stdlibVfs);
-        let bin = '';
-        const CH = 32768;
-        for (let i = 0; i < zipBytes.length; i += CH) {
-          bin += String.fromCharCode.apply(null, Array.from(zipBytes.subarray(i, i + CH)));
-        }
-        snapshot.files[stdlibVfs.replace(/^\/+/, '')] = btoa(bin);
-      }
-
       // Built per invocation, not cached: supervisorPid is baked into the
       // SUPERVISOR binding at construction, so a pool held across calls would
       // hand every later caller the first caller's write credential.
