@@ -25,4 +25,4 @@
  * the supervisor warns once per isolate.
  */
 
-export const RUNTIME_CATALOG_SHA256: string = "";
+export const RUNTIME_CATALOG_SHA256: string = "de5f40e035887976ba2fd4611cada83c4fcbff774637eb7c954c55dd1d1c5eae";
