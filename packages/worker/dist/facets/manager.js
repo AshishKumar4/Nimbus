@@ -18,6 +18,7 @@
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
+import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '../_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { getCtxExports } from '../session/ctx-exports.js';
@@ -372,7 +373,7 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-function generateEntrypointCode(userCode, vfsState, usesSqlite, shims) {
+export function generateEntrypointCode(userCode, vfsState, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
     const bundleSource = vfsState.bundleSource
         ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
@@ -446,11 +447,11 @@ export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt, vfsCursor } = args;
-    // The cursor this facet's bundle was read at. Without it the first
-    // ACQUIRE carries a null epoch, which the authority can only answer
-    // with a poison — so the first timer, fetch or frame threw the whole
-    // resident set away and tried to refetch it in one turn.
-    if (vfsCursor) globalThis.__nimbusVfsCursor = { epoch: vfsCursor.epoch, rev: vfsCursor.rev };
+    // Per invocation, not per module: this body is cached on
+    // hash(code + bundle + manifest) and reused by any session whose snapshot
+    // hashes the same, and epochs are per supervisor incarnation.
+    const __MODULE_VFS_CURSOR = vfsCursor || null;
+${VFS_CURSOR_SEED_SOURCE}
     // What is left of this facet's lifetime, measured from the supervisor's
     // own timeout timer rather than from whenever the drain happens to start
     // — a slow module init must not be able to push the drain past the kill
@@ -647,7 +648,7 @@ ${RESIDENCY_MISS_REPORT}
  * compiled user entry is booted once and the exported entrypoint keeps
  * serving HTTP requests from the shimmed http.Server registry.
  */
-function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims) {
+export function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
@@ -754,12 +755,18 @@ async function __nimbusFlushRuntime() {
   await __pendingDrain;
 }
 
-async function __nimbusEnsureStarted(workerEnv, workerCtx) {
+async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
   if (__nimbusStarted) return;
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
     const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
+    // Off the start payload, never out of the module text: this body is
+    // content-addressed into the facet image store, and a revision that
+    // advances on every spawn would give the same program a new image each
+    // time. Same reason argv/env/pid want to move here.
+    const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
+${VFS_CURSOR_SEED_SOURCE}
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __vfsMetadata = __MODULE_VFS_METADATA;
@@ -958,7 +965,7 @@ ${RESIDENCY_MISS_REPORT}
 }
 
 async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
-  await __nimbusEnsureStarted(workerEnv, workerCtx);
+  await __nimbusEnsureStarted(workerEnv, workerCtx, __nimbusStartArgs);
   // Streaming dispatch lives in the node-shims http shim (globalThis.__nimbusServeHttp):
   // it returns the in-facet server's response as a streaming host Response the
   // moment headers are known, so SSE / chunked bodies flow live over the RPC
@@ -976,9 +983,14 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
   return response;
 }
 
+let __nimbusStartArgs = null;
+
 export class NimbusProcess extends DurableObject {
-  async startProcess() {
-    await __nimbusEnsureStarted(this.env, this.ctx);
+  async startProcess(startArgs) {
+    // Held so an HTTP-first entry (a restart re-entered by a routed request)
+    // starts from the same payload startProcess would have used.
+    if (startArgs) __nimbusStartArgs = startArgs;
+    await __nimbusEnsureStarted(this.env, this.ctx, __nimbusStartArgs);
     if (__nimbusAttachedLifecycle) await __nimbusAttachedLifecycle;
     return { ok: true };
   }
@@ -3542,6 +3554,7 @@ export class FacetManager {
             vfsBundle,
             vfsManifest: JSON.stringify(vfsState.manifest),
             vfsMetadata: JSON.stringify(vfsState.metadata),
+            vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
         };
         return { pid, command, stageSpec };
     }
@@ -4130,6 +4143,7 @@ export class FacetManager {
                 // The attached-TTY runner holds startProcess open for the process's
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
+                startArgs: { vfsCursor: vfsState.cursor },
                 boot: {
                     kind: 'code',
                     code: {
