@@ -86,10 +86,47 @@
  *
  * That boundary is drawn where the failures are. The read profile
  * (`scratchpad/node-sync-read-profile.md`) measured 97.07% of sync reads as
- * module loading with a residue of 0-1.3% for module-shaped workloads, and put
- * every observed failure in the data population: tsc's `lib/lib.*.d.ts`,
- * cowsay's `cows/*.cow`, create-vite's templates. Those are the reads this
- * store answers.
+ * module loading and put every observed failure in the data population: tsc's
+ * `lib/lib.*.d.ts`, cowsay's `cows/*.cow`, create-vite's templates. Those are
+ * the reads this store answers.
+ *
+ * THE MISS RATE IN THAT PROFILE IS NOT USABLE AS A SIZING INPUT, and this store
+ * deliberately does not use it. The profile's per-workload residue figures are
+ * path-dependent: only `generateEntrypointCode` seeded the VFS coherence
+ * cursor, so any resident or long-running workload in the set asked its first
+ * `fsAcquire` about a null epoch, which `invalidatedSince` can only answer with
+ * a poison. Such a workload lost its entire staged filesystem on its first
+ * async fs call and then read every staged path as a miss — so it measured the
+ * poison, not admission. Re-measure on top of the shared-cursor-seed fix before
+ * treating any residue number as real.
+ *
+ * It does not matter here, and that is the point rather than a lucky escape:
+ * this store admits the whole filesystem, so there is no admission decision for
+ * a fault rate to inform. `RESIDENT_CHUNK_BYTES` comes from the measured
+ * single-value ceiling and `RESIDENT_MATERIALISE_BATCH_ROWS` from the observed
+ * turn reset; neither is a function of how often a read misses. A design whose
+ * correctness depends on predicting the miss set is the design this one exists
+ * to replace.
+ *
+ * TWO CONSTRAINTS THIS STORE INHERITS FROM THAT BUG, both structural here
+ * ──────────────────────────────────────────────────────────────────────
+ * The cursor-seed defect was a coherence preamble hand-copied into three
+ * generators, two of which drifted. So: this store is ONE exported source
+ * constant, spliced wherever it is needed, with no second implementation to
+ * drift — the posture `VFS_WRITE_LEDGER_SOURCE` already takes.
+ *
+ * And nothing per-spawn is in its text. Both node bodies are content-addressed
+ * (one-shot by hash(code+bundle+manifest), resident by facet-image digest), and
+ * baking a per-spawn cursor into the generated source broke image dedup when it
+ * was tried. `FACET_RESIDENT_STORE_SOURCE` carries only the two constants
+ * above; the cursor arrives at runtime through `__residentAdmit`, so the text
+ * stays identical across spawns and the digest keeps deduping.
+ *
+ * One cost this store pays that the heap version does not: a poison is a full
+ * repopulation, not a lazy refetch. That raises the price of exactly the defect
+ * described above, and is the reason the cursor is PERSISTED beside the rows —
+ * a fresh incarnation resumes from a real cursor instead of a null epoch, so it
+ * asks for a delta rather than inviting a poison.
  */
 
 /**
