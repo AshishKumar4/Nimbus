@@ -57,12 +57,19 @@ const fetchImpl = async (url, init) => {
       },
     });
   }
-  // Void ops (writeFile/mkdir/deleteFile) return Promise<void> on the DO;
+  // `_rpcWriteFile` returns the byte count the VFS wrote (rpc.ts:301), so
+  // the live wire carries a numeric `result`. This mock previously
+  // answered the void shape below, which is why remote writes passed here
+  // while every real one threw a ZodError after the write had landed.
+  if (body.op === 'writeFile') {
+    return Response.json({ ok: true, result: 2 });
+  }
+  // Genuinely void ops (mkdir/deleteFile) return Promise<void> on the DO;
   // the real remote API wraps that as { ok: true } with NO result key
   // (encodeWire strips the undefined result). The SDK validates these
   // against z.undefined(), so the mock MUST omit `result` to match the
   // live wire shape — see the live proof in remote-api.ts encodeWire.
-  if (body.op === 'writeFile' || body.op === 'mkdir' || body.op === 'deleteFile') {
+  if (body.op === 'mkdir' || body.op === 'deleteFile') {
     return Response.json({ ok: true });
   }
   // Remaining handled op: ready → { ok: true, preinstalled: [] }.
@@ -89,7 +96,7 @@ const nimbus = Nimbus.connect({
 });
 
 const box = nimbus.sandbox('job-123');
-await box.files.write('/home/user/blob.bin', new Uint8Array([0, 255]));
+const written = await box.files.write('/home/user/blob.bin', new Uint8Array([0, 255]));
 const bytes = await box.files.readBytes('/home/user/blob.bin');
 const stat = await box.files.stat('/home/user/blob.bin');
 const result = await box.exec('node -e "console.log(4)"');
@@ -106,6 +113,8 @@ a.check('ready is the first remote operation',
   calls[0].body.op === 'ready');
 a.check('writeFile encodes bytes',
   calls.find((c) => c.body.op === 'writeFile')?.body.args[1]?.__nimbusWireType === 'bytes');
+a.check('writeFile accepts the byte count the DO returns and exposes void',
+  written === undefined);
 a.check('readFileBytes decodes bytes',
   bytes instanceof Uint8Array && bytes.length === 2 && bytes[0] === 0 && bytes[1] === 255);
 a.check('files.stat calls remote stat operation',
