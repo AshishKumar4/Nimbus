@@ -18,6 +18,8 @@
 #include <Python.h>
 #include <string.h>
 
+#include "nimbus-ext.h"
+
 void nimbus_py_flush(void);
 
 /* Reads back the exit status of a SystemExit that reached top level, with the
@@ -57,6 +59,10 @@ static int exit_status_from(PyObject *exc)
 __attribute__((export_name("nimbus_py_init")))
 int nimbus_py_init(const char *home)
 {
+	if (nimbus_ext_register() < 0) {
+		return -1;
+	}
+
 	PyConfig config;
 	PyConfig_InitIsolatedConfig(&config);
 	config.parse_argv = 0;
