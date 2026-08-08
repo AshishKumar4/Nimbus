@@ -146,7 +146,7 @@ export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext
     if (wantsVersion) {
         return {
             mode: 'pip',
-            code: 'print("pip 24.3.1 (Nimbus Pyodide package bridge, ABI-aware, Pyodide 0.29.4)")',
+            code: 'print("pip 24.3.1 (Nimbus package bridge for CPython 3.13, wasm32-wasi)")',
             exitCode: 0,
         };
     }
