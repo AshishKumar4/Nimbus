@@ -148,9 +148,12 @@ export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly Manifes
     { binName: '/bin/bash', runner: 'bash-runner', args: [] },
     { binName: '/usr/bin/bash', runner: 'bash-runner', args: [] },
   ],
-  python: [
-    { binName: 'pip', runner: 'python-runner', kind: 'pip', args: [] },
-    { binName: 'pip3', runner: 'python-runner', kind: 'pip', args: [] },
+  // `pip` belongs to whichever runtime provides the interpreter, and only one
+  // may claim it. The python row went with python-runner: Pyodide's manifest
+  // still names that runner, so it could not serve pip even if it were listed.
+  cpython: [
+    { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
+    { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
   ],
   ruby: [
     { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },

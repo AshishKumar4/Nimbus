@@ -63,6 +63,10 @@ export const NIMBUS_RUNTIME_ABIS = Object.freeze({
     bash: NIMBUS_ABI_TARGET,
     clang: NIMBUS_ABI_TARGET,
     python: 'pyodide',
+    // The wasm32-wasi interpreter. Compiled wheels are linked into the build
+    // rather than loaded at run time, so nothing here can install a native
+    // extension — see packages/worker/wasm/python/EXTENSIONS.md.
+    cpython: NATIVE_UNSUPPORTED_ABI,
     ruby: 'ruby-wasm',
     node: 'javascript',
     bun: 'javascript',
