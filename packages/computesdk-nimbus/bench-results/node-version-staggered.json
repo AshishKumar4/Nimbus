@@ -1,0 +1,124 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-08T03:33:46.484Z",
+  "target": "https://nimbus-tw-bench.ashishkmr472.workers.dev",
+  "provider": "nimbus",
+  "shape": "staggered",
+  "workload": {
+    "name": "node-version",
+    "command": "node -v",
+    "proves": "sandbox reachable and dispatching commands (NOT that Node booted)"
+  },
+  "config": {
+    "trials": 10,
+    "concurrency": 10,
+    "staggerDelayMs": 200
+  },
+  "control": {
+    "rttSamplesMs": [
+      82.637891,
+      21.988571000000007,
+      23.29018100000002,
+      21.338897000000003,
+      19.46275799999998,
+      19.43745100000001,
+      19.812933999999984,
+      17.948307,
+      19.61579999999998,
+      19.779990999999995
+    ],
+    "rttMedianMs": 19.812933999999984,
+    "bareReadyMs": [
+      731.148414,
+      685.00119,
+      621.2794630000001,
+      1419.9270390000001,
+      562.4326470000005
+    ],
+    "bareReadyMedianMs": 685.00119
+  },
+  "wallClockMs": 2911.830025,
+  "trials": [
+    {
+      "index": 0,
+      "ttiMs": 1037.3261059999995,
+      "createMs": 917.05411,
+      "execMs": 120.19404599999962,
+      "error": null,
+      "sandboxId": "csdk-msjtk6qd-ubjwfcdb"
+    },
+    {
+      "index": 1,
+      "ttiMs": 844.7594159999999,
+      "createMs": 778.1030380000002,
+      "execMs": 66.64599599999929,
+      "error": null,
+      "sandboxId": "csdk-msjtk6w4-a2qz43bl"
+    },
+    {
+      "index": 2,
+      "ttiMs": 793.1534200000006,
+      "createMs": 679.0015840000005,
+      "execMs": 114.14413500000046,
+      "error": null,
+      "sandboxId": "csdk-msjtk71q-y3clvkr4"
+    },
+    {
+      "index": 3,
+      "ttiMs": 1356.2499469999993,
+      "createMs": 1297.8687469999995,
+      "execMs": 58.37289399999918,
+      "error": null,
+      "sandboxId": "csdk-msjtk77b-6jb6fqz5"
+    },
+    {
+      "index": 4,
+      "ttiMs": 879.6612910000003,
+      "createMs": 822.6079550000004,
+      "execMs": 57.048076999999466,
+      "error": null,
+      "sandboxId": "csdk-msjtk7cx-zelekd0q"
+    },
+    {
+      "index": 5,
+      "ttiMs": 842.0177550000008,
+      "createMs": 747.2687060000007,
+      "execMs": 94.74282799999946,
+      "error": null,
+      "sandboxId": "csdk-msjtk7ii-r8hxntjd"
+    },
+    {
+      "index": 6,
+      "ttiMs": 935.3815249999998,
+      "createMs": 829.2950170000004,
+      "execMs": 106.08182000000033,
+      "error": null,
+      "sandboxId": "csdk-msjtk7o2-xdrk7k1v"
+    },
+    {
+      "index": 7,
+      "ttiMs": 682.3556289999997,
+      "createMs": 629.418533,
+      "execMs": 52.928609999999935,
+      "error": null,
+      "sandboxId": "csdk-msjtk7tn-cihb0uaq"
+    },
+    {
+      "index": 8,
+      "ttiMs": 724.482865,
+      "createMs": 656.5042130000002,
+      "execMs": 67.964473,
+      "error": null,
+      "sandboxId": "csdk-msjtk7z8-imk3ce64"
+    },
+    {
+      "index": 9,
+      "ttiMs": 958.1874370000005,
+      "createMs": 901.0725549999997,
+      "execMs": 57.10103600000002,
+      "error": null,
+      "sandboxId": "csdk-msjtk84t-q7lxhgva"
+    }
+  ],
+  "successRate": 1
+}

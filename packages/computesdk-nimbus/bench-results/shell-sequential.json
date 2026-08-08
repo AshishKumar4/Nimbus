@@ -1,0 +1,284 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-08T03:33:20.094Z",
+  "target": "https://nimbus-tw-bench.ashishkmr472.workers.dev",
+  "provider": "nimbus",
+  "shape": "sequential",
+  "workload": {
+    "name": "shell",
+    "command": "echo $((6*7))-$$",
+    "proves": "a real process ran in the sandbox and returned computed output"
+  },
+  "config": {
+    "trials": 30,
+    "concurrency": 1,
+    "staggerDelayMs": 0
+  },
+  "control": {
+    "rttSamplesMs": [
+      89.701539,
+      28.566867000000002,
+      22.24290099999999,
+      26.687235999999984,
+      23.98389800000001,
+      22.62864000000002,
+      22.355359999999962,
+      22.78063599999996,
+      22.04621800000001,
+      23.876397999999995
+    ],
+    "rttMedianMs": 23.876397999999995,
+    "bareReadyMs": [
+      856.6304400000001,
+      627.894164,
+      710.5134419999999,
+      515.3668640000001,
+      680.6871529999994
+    ],
+    "bareReadyMedianMs": 680.6871529999994
+  },
+  "wallClockMs": null,
+  "trials": [
+    {
+      "index": 0,
+      "ttiMs": 1167.3324589999993,
+      "createMs": 1099.820409,
+      "execMs": 67.38697599999978,
+      "error": null,
+      "sandboxId": "csdk-msjtj2ce-pwncws53"
+    },
+    {
+      "index": 1,
+      "ttiMs": 747.2129489999998,
+      "createMs": 687.5251429999998,
+      "execMs": 59.6648839999998,
+      "error": null,
+      "sandboxId": "csdk-msjtj3bm-hs15s5tw"
+    },
+    {
+      "index": 2,
+      "ttiMs": 759.0068549999996,
+      "createMs": 697.2530469999992,
+      "execMs": 61.74626999999964,
+      "error": null,
+      "sandboxId": "csdk-msjtj40o-27oxpb8l"
+    },
+    {
+      "index": 3,
+      "ttiMs": 704.238617,
+      "createMs": 638.279501,
+      "execMs": 65.94984000000022,
+      "error": null,
+      "sandboxId": "csdk-msjtj4oi-pm76swgo"
+    },
+    {
+      "index": 4,
+      "ttiMs": 808.1193739999999,
+      "createMs": 698.3910670000005,
+      "execMs": 109.72089899999992,
+      "error": null,
+      "sandboxId": "csdk-msjtj5aq-jxrxf1dr"
+    },
+    {
+      "index": 5,
+      "ttiMs": 782.0623699999996,
+      "createMs": 716.8536070000009,
+      "execMs": 65.19918399999915,
+      "error": null,
+      "sandboxId": "csdk-msjtj5zg-zea1cf9a"
+    },
+    {
+      "index": 6,
+      "ttiMs": 693.8122009999988,
+      "createMs": 634.7138720000003,
+      "execMs": 59.0888930000001,
+      "error": null,
+      "sandboxId": "csdk-msjtj6nq-jwzg5qbp"
+    },
+    {
+      "index": 7,
+      "ttiMs": 664.2518019999989,
+      "createMs": 604.0464199999988,
+      "execMs": 60.18176200000016,
+      "error": null,
+      "sandboxId": "csdk-msjtj79o-1v0r6td2"
+    },
+    {
+      "index": 8,
+      "ttiMs": 688.0926299999992,
+      "createMs": 636.0101410000007,
+      "execMs": 52.059416000000056,
+      "error": null,
+      "sandboxId": "csdk-msjtj7vy-a82mb9w7"
+    },
+    {
+      "index": 9,
+      "ttiMs": 807.582554999999,
+      "createMs": 748.4753069999988,
+      "execMs": 59.08164500000021,
+      "error": null,
+      "sandboxId": "csdk-msjtj8ha-24kh5bmi"
+    },
+    {
+      "index": 10,
+      "ttiMs": 780.8531869999988,
+      "createMs": 724.0044109999999,
+      "execMs": 56.83438800000113,
+      "error": null,
+      "sandboxId": "csdk-msjtj961-fnrqai2u"
+    },
+    {
+      "index": 11,
+      "ttiMs": 1625.3640759999998,
+      "createMs": 1561.0522669999991,
+      "execMs": 64.30200200000036,
+      "error": null,
+      "sandboxId": "csdk-msjtj9u5-or4k1sde"
+    },
+    {
+      "index": 12,
+      "ttiMs": 901.2783510000008,
+      "createMs": 812.8443910000024,
+      "execMs": 88.42704800000138,
+      "error": null,
+      "sandboxId": "csdk-msjtjb5m-72pgvgv5"
+    },
+    {
+      "index": 13,
+      "ttiMs": 728.7236169999996,
+      "createMs": 624.5471199999993,
+      "execMs": 104.16720700000224,
+      "error": null,
+      "sandboxId": "csdk-msjtjbyg-0htpeh7j"
+    },
+    {
+      "index": 14,
+      "ttiMs": 1132.0790410000009,
+      "createMs": 1062.156336,
+      "execMs": 69.91692399999738,
+      "error": null,
+      "sandboxId": "csdk-msjtjckx-uoah8qpl"
+    },
+    {
+      "index": 15,
+      "ttiMs": 849.8515819999993,
+      "createMs": 788.6646589999982,
+      "execMs": 61.17561199999909,
+      "error": null,
+      "sandboxId": "csdk-msjtjdk7-2ouzgqzh"
+    },
+    {
+      "index": 16,
+      "ttiMs": 870.8323700000001,
+      "createMs": 811.6352699999989,
+      "execMs": 59.189141999999265,
+      "error": null,
+      "sandboxId": "csdk-msjtjea1-fzdpldme"
+    },
+    {
+      "index": 17,
+      "ttiMs": 750.9106439999996,
+      "createMs": 686.6466899999978,
+      "execMs": 64.25594500000079,
+      "error": null,
+      "sandboxId": "csdk-msjtjf0f-rr0j841m"
+    },
+    {
+      "index": 18,
+      "ttiMs": 902.3259389999985,
+      "createMs": 849.0332239999989,
+      "execMs": 53.288001000000804,
+      "error": null,
+      "sandboxId": "csdk-msjtjfnp-ie4h04lm"
+    },
+    {
+      "index": 19,
+      "ttiMs": 1120.5675569999985,
+      "createMs": 1049.2179780000006,
+      "execMs": 71.3401150000027,
+      "error": null,
+      "sandboxId": "csdk-msjtjgf6-endu6uhd"
+    },
+    {
+      "index": 20,
+      "ttiMs": 1124.2649170000004,
+      "createMs": 1062.9714700000004,
+      "execMs": 61.28392200000235,
+      "error": null,
+      "sandboxId": "csdk-msjtjhd4-mciwh5vl"
+    },
+    {
+      "index": 21,
+      "ttiMs": 840.4589289999967,
+      "createMs": 696.6632049999971,
+      "execMs": 143.78668900000048,
+      "error": null,
+      "sandboxId": "csdk-msjtjiar-pkfe3oae"
+    },
+    {
+      "index": 22,
+      "ttiMs": 704.4328459999997,
+      "createMs": 647.1400869999998,
+      "execMs": 57.28276099999857,
+      "error": null,
+      "sandboxId": "csdk-msjtjj3b-key3rmvb"
+    },
+    {
+      "index": 23,
+      "ttiMs": 746.0737069999996,
+      "createMs": 694.4095989999987,
+      "execMs": 51.65714999999909,
+      "error": null,
+      "sandboxId": "csdk-msjtjjqq-2ncra70z"
+    },
+    {
+      "index": 24,
+      "ttiMs": 750.647028000003,
+      "createMs": 692.9416579999997,
+      "execMs": 57.70031100000051,
+      "error": null,
+      "sandboxId": "csdk-msjtjkf5-sjwxig24"
+    },
+    {
+      "index": 25,
+      "ttiMs": 684.5405539999992,
+      "createMs": 637.2038769999999,
+      "execMs": 47.32947700000295,
+      "error": null,
+      "sandboxId": "csdk-msjtjl3m-7wy86n2i"
+    },
+    {
+      "index": 26,
+      "ttiMs": 728.658999000003,
+      "createMs": 648.0469400000002,
+      "execMs": 80.60477700000047,
+      "error": null,
+      "sandboxId": "csdk-msjtjloq-ri2wzb0b"
+    },
+    {
+      "index": 27,
+      "ttiMs": 1015.6092649999991,
+      "createMs": 956.0444380000008,
+      "execMs": 59.558869999997114,
+      "error": null,
+      "sandboxId": "csdk-msjtjmck-7kkcwy62"
+    },
+    {
+      "index": 28,
+      "ttiMs": 758.4290610000025,
+      "createMs": 705.9173050000027,
+      "execMs": 52.505550000001676,
+      "error": null,
+      "sandboxId": "csdk-msjtjn7c-nlkel6ck"
+    },
+    {
+      "index": 29,
+      "ttiMs": 902.2803680000034,
+      "createMs": 840.9139810000015,
+      "execMs": 61.3607090000005,
+      "error": null,
+      "sandboxId": "csdk-msjtjnur-xw07m7mt"
+    }
+  ],
+  "successRate": 1
+}

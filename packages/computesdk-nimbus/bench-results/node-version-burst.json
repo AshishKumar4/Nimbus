@@ -1,0 +1,124 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-08T03:33:38.575Z",
+  "target": "https://nimbus-tw-bench.ashishkmr472.workers.dev",
+  "provider": "nimbus",
+  "shape": "burst",
+  "workload": {
+    "name": "node-version",
+    "command": "node -v",
+    "proves": "sandbox reachable and dispatching commands (NOT that Node booted)"
+  },
+  "config": {
+    "trials": 10,
+    "concurrency": 10,
+    "staggerDelayMs": 0
+  },
+  "control": {
+    "rttSamplesMs": [
+      82.67501,
+      21.542815000000004,
+      23.388886000000014,
+      25.949376,
+      20.998199999999997,
+      21.757486999999998,
+      21.33772400000001,
+      20.003078000000016,
+      19.30162100000001,
+      21.219682999999975
+    ],
+    "rttMedianMs": 21.542815000000004,
+    "bareReadyMs": [
+      586.0187880000001,
+      996.703161,
+      555.1399380000003,
+      865.3761519999998,
+      619.0240560000002
+    ],
+    "bareReadyMedianMs": 619.0240560000002
+  },
+  "wallClockMs": 1316.1172569999999,
+  "trials": [
+    {
+      "index": 0,
+      "ttiMs": 762.364767,
+      "createMs": 654.8867369999998,
+      "execMs": 107.47055799999998,
+      "error": null,
+      "sandboxId": "csdk-msjtk1uz-elq77ruc"
+    },
+    {
+      "index": 1,
+      "ttiMs": 730.8801990000002,
+      "createMs": 669.7701790000001,
+      "execMs": 61.036770000000615,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v0-yv9hmfv8"
+    },
+    {
+      "index": 2,
+      "ttiMs": 798.3329439999998,
+      "createMs": 736.3859039999998,
+      "execMs": 61.93930799999998,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v0-pf9lgnlw"
+    },
+    {
+      "index": 3,
+      "ttiMs": 766.9876710000008,
+      "createMs": 663.0624430000007,
+      "execMs": 103.92039000000022,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v0-ij62ohlp"
+    },
+    {
+      "index": 4,
+      "ttiMs": 877.0756859999992,
+      "createMs": 789.8711729999995,
+      "execMs": 87.19644100000005,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v0-ujeej9ig"
+    },
+    {
+      "index": 5,
+      "ttiMs": 819.317368,
+      "createMs": 762.1042029999999,
+      "execMs": 57.208260999999766,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v0-9fvsjaju"
+    },
+    {
+      "index": 6,
+      "ttiMs": 825.7058370000004,
+      "createMs": 739.354343,
+      "execMs": 86.34315900000001,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v1-nfzopgea"
+    },
+    {
+      "index": 7,
+      "ttiMs": 737.5483340000001,
+      "createMs": 685.432632,
+      "execMs": 52.107896999999866,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v1-r56esgkf"
+    },
+    {
+      "index": 8,
+      "ttiMs": 1174.7279710000003,
+      "createMs": 1088.9601119999998,
+      "execMs": 85.75778600000012,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v1-7lpzp7u8"
+    },
+    {
+      "index": 9,
+      "ttiMs": 784.8198409999995,
+      "createMs": 682.7034399999993,
+      "execMs": 102.10687099999996,
+      "error": null,
+      "sandboxId": "csdk-msjtk1v1-lq0o49of"
+    }
+  ],
+  "successRate": 1
+}
