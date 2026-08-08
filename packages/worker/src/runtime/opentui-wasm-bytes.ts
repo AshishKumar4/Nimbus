@@ -22,6 +22,7 @@ import {
   OPENTUI_WASM_SHA256,
 } from '../opentui-wasm-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { sha256Hex } from '../_shared/crypto.js';
 
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface OpenTUIWasmFetchEnv {
@@ -34,14 +35,6 @@ export interface OpenTUIWasmFetchEnv {
  * serving stale content from a warm colo cache.
  */
 const OPENTUI_WASM_L2_KEY = `https://nimbus-cache.invalid${OPENTUI_WASM_ENTRY}?build=${OPENTUI_WASM_BUILD_ID}`;
-
-async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  const view = new Uint8Array(digest);
-  let hex = '';
-  for (let i = 0; i < view.length; i++) hex += view[i].toString(16).padStart(2, '0');
-  return hex;
-}
 
 /**
  * Fetch the staged OpenTUI wasm bytes and verify their SHA-256 against the
