@@ -293,6 +293,8 @@ const WireBytesSchema = z.object({
 
 const UndefinedResultSchema = z.undefined();
 const UnknownResultSchema = z.unknown();
+/** `_rpcWriteFile` answers with the byte count the VFS wrote. */
+const WriteFileResultSchema = z.number();
 const StringOrNullSchema = z.string().nullable();
 const Uint8ArrayOrNullSchema = z.instanceof(Uint8Array).nullable();
 const BooleanResultSchema = z.boolean();
@@ -543,7 +545,12 @@ export class NimbusSandbox {
       _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options], ExecResultSchema),
       _rpcReadFile: (path) => this.remoteRpc('readFile', [path], StringOrNullSchema),
       _rpcReadFileBytes: (path) => this.remoteRpc('readFileBytes', [path], Uint8ArrayOrNullSchema),
-      _rpcWriteFile: (path, content) => this.remoteRpc('writeFile', [path, content], UndefinedResultSchema),
+      _rpcWriteFile: async (path, content) => {
+        // The byte count is the wire contract but not part of the public
+        // `files.write` surface, so it is validated and dropped. Declaring
+        // this `undefined` made every remote write throw after succeeding.
+        await this.remoteRpc('writeFile', [path, content], WriteFileResultSchema);
+      },
       _rpcStat: (path) => this.remoteRpc('stat', [path], FileStatSchema.nullable()),
       _rpcLstat: (path) => this.remoteRpc('lstat', [path], FileStatSchema.nullable()),
       _rpcRename: (from, to) => this.remoteRpc('rename', [from, to], UndefinedResultSchema),
