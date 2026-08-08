@@ -87,7 +87,8 @@ different tenants are different sandboxes.
 |---|---|
 | `create`, `destroy` | Yes |
 | `getById` | Yes, via an ownership marker — see below |
-| `runCommand` | Yes, including `cwd`, `env`, `timeout`, `background`, `onStdout`/`onStderr` |
+| `runCommand` | Yes, including `cwd`, `env`, `timeout`, `background` |
+| `runCommand` streaming | Framework-owned — see below |
 | `getInfo` | Yes |
 | `getUrl` | Yes |
 | `filesystem.*` | Yes |
@@ -125,6 +126,21 @@ listing into N+1 network calls.
 **`runCommand` with `background: true` returns exit code 0** meaning the
 process started, not that it succeeded — it is still running when the call
 returns.
+
+**Streaming callbacks are implemented by ComputeSDK, not by this provider.**
+When `onStdout`/`onStderr` are passed, `@computesdk/provider` seeds a
+`daemond` daemon into the sandbox and reads its SSE feed, stripping the
+callbacks before delegating to the provider. The seed launcher is a
+`node -e` program, so streaming works exactly when Nimbus's programmatic
+`exec` returns Node's stdout — which it currently does not (see below).
+
+**Known gap: Node stdout is lost on the programmatic exec path.** Any
+command that runs the Node runtime — `node -e`, `node script.js`, and so
+`runCode` — exits 0 with empty stdout when driven through the SDK's remote
+RPC. `node -v` appears to work only because Nimbus answers `-v` from an
+argv fast path without booting Node. The same defect is what makes
+streaming callbacks fail, since the daemon seed is a `node -e` program.
+Shell and coreutils commands are unaffected.
 
 **Environment from `create({ envs })` is re-applied per command.** Nimbus has no
 persistent per-sandbox environment, so the provider stores the environment in
