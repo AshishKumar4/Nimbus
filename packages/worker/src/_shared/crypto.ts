@@ -25,6 +25,18 @@ export async function pkceChallenge(verifier: string): Promise<string> {
   return sha256Base64Url(verifier);
 }
 
+/** Lowercase hex SHA-256 — the digest form the staged-artifact integrity checks pin. */
+export async function sha256Hex(input: BufferSource | string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    typeof input === 'string' ? textEncoder.encode(input) : input,
+  );
+  const view = new Uint8Array(digest);
+  let hex = '';
+  for (let i = 0; i < view.length; i++) hex += view[i].toString(16).padStart(2, '0');
+  return hex;
+}
+
 export async function sealJson(
   value: unknown,
   secret: string,

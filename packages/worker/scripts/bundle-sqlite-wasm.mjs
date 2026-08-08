@@ -26,6 +26,7 @@
  * Output:
  *   src/sqlite-wasm-bundle.generated.ts
  *     export const SQLJS_BUNDLE_VERSION: string;
+ *     export const SQLITE_WASM_SHA256: string;   // staged wasm digest
  *     export const SQLJS_GLUE_FN_BODY: string;   // initSqlJs factory body
  *
  *   public/_assets/sqljs-<version>.wasm
@@ -42,6 +43,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolvePackageDir } from './resolve-package-dir.mjs';
@@ -130,6 +132,7 @@ async function main() {
   const assetOut = path.join(OUT_ASSETS_DIR, assetName);
   const wasmBytes = await fs.readFile(WASM_SRC);
   await fs.writeFile(assetOut, wasmBytes);
+  const wasmSha256 = createHash('sha256').update(wasmBytes).digest('hex');
   console.log(
     `[bundle-sqlite-wasm] copied sql-wasm.wasm → ${path.relative(ROOT, assetOut)} ` +
       `(${(wasmBytes.length / 1024).toFixed(1)} KiB)`,
@@ -163,6 +166,13 @@ async function main() {
  */
 
 export const SQLJS_BUNDLE_VERSION: string = ${JSON.stringify(version)};
+
+/**
+ * SHA-256 of the staged public/_assets/sqljs-${version}.wasm bytes.
+ * src/runtime/sqlite-wasm-bytes.ts verifies every fetch against it — the L2
+ * (caches.default) tier included — before the bytes reach workerd's loader.
+ */
+export const SQLITE_WASM_SHA256: string = ${JSON.stringify(wasmSha256)};
 
 export const SQLJS_GLUE_FN_BODY: string = ${JSON.stringify(jsFn)};
 `;
