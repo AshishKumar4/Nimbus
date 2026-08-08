@@ -582,8 +582,15 @@ if (spec.ingest_only) {
  * unregistered python, ruby and bash, and said "no existing catalog; creating
  * fresh" while doing it.
  *
- * A genuinely absent object is the one recoverable case, and it is
- * distinguishable: wrangler says so in as many words. Everything else stops.
+ * A genuinely absent object is the one recoverable case. It is NOT identifiable
+ * from the error text: `wrangler r2 object get` answers "The specified key does
+ * not exist." for a bucket that does not exist, for a bucket this token cannot
+ * read, and for a key that is genuinely absent — measured, all three identical.
+ * Taking that message at face value is how a read failure against a populated
+ * bucket turns into a fresh catalog. So the first-publish path additionally
+ * demands positive evidence that the bucket is there and readable; a bucket we
+ * can enumerate with no catalog in it is the only thing that starts one.
+ * Everything else stops.
  */
 function readCatalogForUpdate(catalogR2Key) {
   const result = spawnSync(
@@ -595,7 +602,7 @@ function readCatalogForUpdate(catalogR2Key) {
   const missing = /The specified key does not exist|NoSuchKey|Object not found/i.test(stderr);
   const body = (result.stdout || '').trim();
 
-  if (missing && !body) {
+  if (missing && !body && bucketIsReadable()) {
     console.log('[bundle-runtime] no existing catalog; creating the first one');
     return { version: 1, runtimes: {} };
   }
@@ -620,6 +627,25 @@ function readCatalogForUpdate(catalogR2Key) {
   }
   console.log(`[bundle-runtime] existing catalog lists: ${Object.keys(parsed.runtimes).join(', ') || '(none)'}`);
   return parsed;
+}
+
+/**
+ * Positive evidence that BUCKET exists and this token can read it. `bucket
+ * info` reports an object count for a real bucket and fails outright for one
+ * that is absent or unreadable, which is the distinction `object get` collapses.
+ */
+function bucketIsReadable() {
+  const info = spawnSync(
+    WRANGLER,
+    ['r2', 'bucket', 'info', BUCKET],
+    { encoding: 'utf8', env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT } },
+  );
+  if (info.status === 0 && /object_count:/.test(info.stdout || '')) return true;
+  console.error(`ERROR: the catalog looks absent, but bucket '${BUCKET}' could not be read,`);
+  console.error('       so "absent" cannot be told apart from "unreachable". Nothing was written.');
+  const detail = (info.stderr || '').trim();
+  if (detail) console.error(`       ${detail.split('\n').slice(-3).join('\n       ')}`);
+  process.exit(1);
 }
 
 // ── Runtime transforms ───────────────────────────────────────────────

@@ -227,4 +227,36 @@ assert.throws(() => fs.readFileSync(dir, 'utf8'), (error) => {
   return true;
 });
 
+// An async read holds the program open for the WHOLE read, barrier included.
+//
+// A one-shot facet's event loop exits when no handle is live, and an in-flight
+// supervisor RPC is one of the three kinds of handle it counts. The ACQUIRE
+// barrier is the first thing an async read issues and it bypassed the RPC
+// helper that does the counting, so __nimbusPendingOps read zero for a whole
+// round trip at the very start of every read. The loop ended the program
+// there: measured live, an fs.promises.readFile whose .then never ran — no
+// error, no output, intermittently, and never when a pending timer happened
+// to hold the program open. create-next-app copied its template that way and
+// wrote the directories but none of the files.
+{
+  vfs.writeFile(`${dir}/held.txt`, enc.encode('held'));
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const realAcquire = supervisor.fsAcquire;
+  supervisor.fsAcquire = async (epoch, cursor) => { await gate; return realAcquire(epoch, cursor); };
+
+  const read = fs.promises.readFile(`${dir}/held.txt`, 'utf8');
+  // Let the read reach its barrier and park there. Microtask yields, not
+  // timers: the shim wraps setTimeout in a resumption ACQUIRE, which the gate
+  // above is holding.
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  assert.ok(
+    globalThis.__nimbusPendingOps > 0,
+    'the barrier a read is waiting on must count as an operation in flight',
+  );
+  release();
+  assert.equal(await read, 'held');
+  supervisor.fsAcquire = realAcquire;
+}
+
 console.log('node-shims-live-fs-coherence: all assertions passed');

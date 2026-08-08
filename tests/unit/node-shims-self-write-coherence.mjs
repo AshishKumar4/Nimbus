@@ -126,4 +126,53 @@ const back = await new Promise((resolve) => {
 assert.equal(back, 'MINE_AGAIN');
 assert.equal(stats.invalidations, quiet, 'a re-written path is self-authored again');
 
+// A speculative repair must never unstamp the facet's own write.
+//
+// A sync read that the view cannot serve issues a live read to make the next
+// touch answerable. That read is in flight while the program carries on, and a
+// program whose config was not there writes it next — so the repair lands AFTER
+// the flush, installs the same bytes over the same cell, and drops the revision
+// stamp that says the cell is this facet's own. The very next barrier then
+// evicts the facet's own output: measured at selfWrites 0, invalidations 1 and
+// fills 2 for one written file, where the same sequence without the refused
+// read costs 1, 0 and 0. Live, the sync read that followed answered ENOENT for
+// a file the program had written itself two turns earlier.
+{
+  // Under /opt, which no ancestor in this facet manifest enumerates — so the
+  // first read cannot be answered from knowledge and a repair is put in flight.
+  const CFG = '/opt/tool-nodejs/config.json';
+  const before = { fills: stats.fills, invalidations: stats.invalidations, self: stats.selfWrites };
+
+  // The refused read, which is what puts a repair in flight for this path.
+  assert.throws(() => fs.readFileSync(CFG, 'utf8'), (error) => error.code === 'ENOENT');
+  fs.mkdirSync('/opt/tool-nodejs', { recursive: true });
+  fs.writeFileSync(CFG, '{"preferences":{}}');
+  assert.equal(fs.readFileSync(CFG, 'utf8'), '{"preferences":{}}', 'read-your-own-writes, same turn');
+
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const acrossBarrier = await new Promise((resolve) => {
+    out.setTimeout(() => {
+      let answer;
+      try { answer = fs.readFileSync(CFG, 'utf8'); } catch (error) { answer = error.code; }
+      resolve(answer);
+    }, 5);
+  });
+  assert.equal(
+    acrossBarrier, '{"preferences":{}}',
+    'a file the program wrote itself must survive the barrier that follows',
+  );
+  assert.ok(
+    stats.selfWrites > before.self,
+    'the barrier must recognise the write as this facet own despite the repair',
+  );
+  assert.equal(
+    stats.invalidations, before.invalidations,
+    `nothing this facet authored was evicted (was ${stats.invalidations - before.invalidations})`,
+  );
+  assert.equal(
+    stats.fills, before.fills,
+    `and nothing was refetched that never left (was ${stats.fills - before.fills})`,
+  );
+}
+
 console.log('node-shims-self-write-coherence: all assertions passed');

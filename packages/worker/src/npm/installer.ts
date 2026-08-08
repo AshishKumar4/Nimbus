@@ -45,7 +45,7 @@ import {
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, FANOUT_PHASE_SIZE } from '../loaders/fanout-pool.js';
+import { NimbusFanoutPool, IN_DO_THRESHOLD } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
@@ -519,7 +519,7 @@ export class NpmInstaller {
     log(
       '  phases: ' +
       Object.entries(phases)
-        .map(([name, ms]) => `${name}=${(ms / 1000).toFixed(1)}s`)
+        .map(([name, ms]) => `${name}=${fmtPhaseMs(ms)}`)
         .join(' '),
     );
     log(`  storage: ${commitCount} transactions during fetch+write`);
@@ -882,8 +882,8 @@ export class NpmInstaller {
   /**
    * Batch install via two-tier fan-out (NimbusFanoutPool).
    *
-   * Shard count is ⌈specs.length / PACKAGES_PER_SHARD⌉ capped at
-   * INSTALL_PEER_CAP, and the topology follows from it:
+   * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
+   * follows from it:
    *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
    *     1 NimbusLoaderPool with concurrency = shardCount, capped at
    *     4 by V8 invariant. Each shard is one facet running its own
@@ -939,17 +939,22 @@ export class NpmInstaller {
       return { installed, failed, filesWritten };
     }
 
-    // One shard per package up to the peer cap. Each shard does substantial
-    // tarball decode and VFS write work, and NimbusFanoutPool dispatches peers
-    // in phases of FANOUT_PHASE_SIZE, so capping at the phase width keeps
-    // every install to a single dispatch barrier: shards past that point buy
-    // serial round-trips rather than parallelism.
+    // One shard per package up to the peer cap, which is monotonic
+    // non-decreasing in package count by construction. Previously a
+    // 200-package threshold selected between a 32-shard cap and an 8-shard
+    // cap, which ran backwards — 199 packages got 32 shards while 201 got 8,
+    // so the smaller install paid the larger fan-out, and a 123-package
+    // install spent its whole fetch+write phase in six dispatch barriers of
+    // ~6 packages each.
     //
-    // Previously a 200-package threshold selected between a 32-shard cap and
-    // an 8-shard cap, which ran backwards — 199 packages got 32 shards while
-    // 201 got 8, so the smaller install paid the larger fan-out. A
-    // 123-package install measured six barriers of ~6 packages each.
-    const INSTALL_PEER_CAP = FANOUT_PHASE_SIZE;
+    // Each shard does substantial tarball decode and VFS write work, and eight
+    // is where added shards stop buying throughput and start buying peer-DO
+    // cold starts. Deliberately not tied to FANOUT_PHASE_SIZE: that width
+    // bounds how many peers start *at once* under account-wide concurrency,
+    // while this bounds how many a single install starts at all. Collapsing
+    // the two made the phase width control install parallelism, so widening it
+    // for latency widened the cold-start burst along with it.
+    const INSTALL_PEER_CAP = 8;
     const shardCount = Math.min(specs.length, INSTALL_PEER_CAP);
     // Round-robin assignment: spec at pkgIdx → shard pkgIdx % shardCount.
     // This produces ⌈specs.length / shardCount⌉ specs per shard at
@@ -1082,6 +1087,8 @@ export class NpmInstaller {
         `${(result.facetCounters.cumulativeBytesDecoded / (1024 * 1024)).toFixed(1)} MiB tarball bytes, ` +
         `peak in-flight=${result.facetCounters.peakInFlight}` +
         r2WinSuffix +
+        `, R2 wait max=${fc.r2WaitMsMax ?? 0}ms` +
+        `, registry fetches=${fc.speculativeFetches ?? 0}/${specs.length}` +
         `, write waves=${fc.sharedWaves} (worst shard stalled ` +
         `${(fc.sharedWaveMs / 1000).toFixed(1)}s)` +
         `, slowest shard ${(result.elapsed / 1000).toFixed(1)}s` +
@@ -2282,6 +2289,15 @@ function safeJsonParse<T>(json: string, fallback: T): T {
 }
 
 /**
+ * A warm install finishes in a few hundred ms, where a seconds-with-one-decimal
+ * format rounds every phase to `0.0s` and the breakdown stops decomposing the
+ * total it sits next to.
+ */
+function fmtPhaseMs(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
  * Merge per-shard `facetCounters` arrays from a fanout install-batch.
  * Each shard's counters describe the work done by its peer DO's
  * facet; merging gives the supervisor a single aggregate to fold
@@ -2306,6 +2322,8 @@ function mergeFacetCounters(
       peakInFlight: 0,
       pipelinedTarballRaceWins: 0,
       pipelinedTarballRaceLosses: 0,
+      r2WaitMsMax: 0,
+      speculativeFetches: 0,
       sharedWaves: 0,
       sharedWaveMs: 0,
     };
@@ -2316,6 +2334,10 @@ function mergeFacetCounters(
     peakInFlight: perShard.reduce((m, c) => Math.max(m, c.peakInFlight || 0), 0),
     pipelinedTarballRaceWins: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceWins || 0), 0),
     pipelinedTarballRaceLosses: perShard.reduce((s, c) => s + (c.pipelinedTarballRaceLosses || 0), 0),
+    // Shards wait on R2 concurrently, so the max is the wait the install
+    // actually serialized behind.
+    r2WaitMsMax: perShard.reduce((m, c) => Math.max(m, c.r2WaitMsMax || 0), 0),
+    speculativeFetches: perShard.reduce((s, c) => s + (c.speculativeFetches || 0), 0),
     sharedWaves: perShard.reduce((s, c) => s + (c.sharedWaves || 0), 0),
     // Shards run concurrently, so the per-shard stall times overlap. The
     // max is the shard that stalled longest, which is what the install's

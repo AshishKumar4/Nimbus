@@ -109,8 +109,8 @@ export declare class NpmInstaller {
     /**
      * Batch install via two-tier fan-out (NimbusFanoutPool).
      *
-     * Shard count is ⌈specs.length / PACKAGES_PER_SHARD⌉ capped at
-     * INSTALL_PEER_CAP, and the topology follows from it:
+     * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
+     * follows from it:
      *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
      *     1 NimbusLoaderPool with concurrency = shardCount, capped at
      *     4 by V8 invariant. Each shard is one facet running its own
