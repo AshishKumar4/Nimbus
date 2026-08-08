@@ -1,0 +1,1 @@
+{"version":3,"file":"facet-vfs-cursor.d.ts","sourceRoot":"","sources":["../../src/_shared/facet-vfs-cursor.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAkCG;AACH,eAAO,MAAM,sBAAsB,0JAOlC,CAAC;AAEF,4EAA4E;AAC5E,MAAM,WAAW,cAAc;IAC7B,KAAK,EAAE,MAAM,CAAC;IACd,GAAG,EAAE,MAAM,CAAC;CACb;AAED;;;;GAIG;AACH,wBAAgB,uBAAuB,CAAC,MAAM,EAAE,cAAc,GAAG,SAAS,GAAG,MAAM,CAElF"}

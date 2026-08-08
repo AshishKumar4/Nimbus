@@ -130,6 +130,7 @@ export declare const ResidentBootSpecSchema: z.ZodDiscriminatedUnion<[z.ZodObjec
         vfsBundle: z.ZodString;
         vfsManifest: z.ZodString;
         vfsMetadata: z.ZodString;
+        vfsCursor: z.ZodString;
     }, z.core.$strip>;
 }, z.core.$strip>, z.ZodObject<{
     kind: z.ZodLiteral<"code">;
