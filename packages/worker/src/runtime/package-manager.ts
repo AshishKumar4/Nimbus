@@ -201,7 +201,7 @@ async function resolveRuntimeInstallTarget(
     const versionEntry = entry.versions[version];
     if (!versionEntry) continue;
     try {
-      const manifest = await fetchManifest(env, versionEntry.manifest);
+      const manifest = await fetchManifest(env, versionEntry);
       if (runtimeEntrypoints(manifest).some((ep) => ep.binName === parsed.name)) {
         return {
           runtimeName,
@@ -237,7 +237,7 @@ export function createRuntimeCommandHintResolver(env: RuntimeCatalogEnv): (comma
       const versionEntry = entry.versions[entry.default];
       if (!versionEntry) continue;
       try {
-        const manifest = await fetchManifest(env, versionEntry.manifest);
+        const manifest = await fetchManifest(env, versionEntry);
         for (const ep of runtimeEntrypoints(manifest)) add(ep.binName, runtimeName);
       } catch {
         // Hints are best-effort UX. Install itself still surfaces the
@@ -536,7 +536,7 @@ async function runInstall(
   ctx.stdout.write(`[${name}] fetching manifest...\n`);
   let manifest: RuntimeManifest;
   try {
-    manifest = await fetchManifest(deps.env, versionEntry.manifest);
+    manifest = await fetchManifest(deps.env, versionEntry);
   } catch (e: any) {
     ctx.stderr.write(`nimbus install: ${e?.message || e}\n`);
     return 1;
@@ -606,7 +606,7 @@ async function runInstall(
         if (i >= total) return;
         const f = files[i];
         const target = `${root}/${f.path}`;
-        const bytes = await fetchBlob(deps.env, f.content, f.sha256);
+        const bytes = await fetchBlob(deps.env, f);
         deps.vfs.writeFile(target, bytes);
         completed++;
         ctx.stdout.write(
