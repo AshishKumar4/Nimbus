@@ -157,44 +157,6 @@ async function readMarker(sandbox: NimbusSandbox, root: string): Promise<Sandbox
   return { createdAt: 0 };
 }
 
-/**
- * Runs a command while forwarding output to `onStdout`/`onStderr`.
- *
- * Nimbus `exec` resolves only once the command has finished, so streaming
- * means starting a background process and following its log cursor. This
- * path runs only when a callback was supplied.
- */
-async function runStreaming(
-  handle: NimbusSandboxHandle,
-  command: string,
-  options: RunCommandOptions,
-  execOptions: { cwd?: string; env?: Record<string, string>; timeoutMs?: number },
-): Promise<CommandResult> {
-  const started = Date.now();
-  const { pid } = await handle.box.startProcess(command, execOptions);
-  let stdout = '';
-  let stderr = '';
-
-  for await (const chunk of handle.box.processes.attach(pid)) {
-    if (chunk.stream === 'stderr') {
-      stderr += chunk.data;
-      options.onStderr?.(chunk.data);
-    } else {
-      stdout += chunk.data;
-      options.onStdout?.(chunk.data);
-    }
-  }
-
-  // The iterator ends when the exit record lands; re-read the tail to pick
-  // it up without re-fetching the output already streamed.
-  const final = await handle.box.processes.logs(pid, { bytes: 0 });
-  if (!final.exit) {
-    throw new Error(`Nimbus process ${pid} ended without an exit record`);
-  }
-
-  return { stdout, stderr, exitCode: final.exit.code, durationMs: Date.now() - started };
-}
-
 export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
   name: 'nimbus',
   methods: {
@@ -288,10 +250,12 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
           return { stdout: '', stderr: '', exitCode: 0, durationMs: Date.now() - started };
         }
 
-        if (options?.onStdout || options?.onStderr) {
-          return runStreaming(handle, command, options, execOptions);
-        }
-
+        // `onStdout`/`onStderr` never arrive here: @computesdk/provider
+        // implements streaming itself by seeding a `daemond` daemon into
+        // the sandbox and reading its SSE feed, and strips the callbacks
+        // before delegating. The seed launcher is a `node -e` program, so
+        // streaming works exactly when Nimbus's programmatic exec returns
+        // Node's stdout.
         const result = await handle.box.exec(command, execOptions);
         return {
           stdout: result.stdout,
