@@ -54,6 +54,12 @@ export const OpencodeStageSpecSchema = z.object({
     vfsManifest: z.string(),
     /** Serialized VFS inode metadata (JSON). */
     vfsMetadata: z.string(),
+    /**
+     * The coherence cursor the three above were read at, as a JSON literal
+     * (`null` when the stage carries no VFS). Without it the facet's first
+     * ACQUIRE poisons and drops the whole snapshot — see _shared/facet-vfs-cursor.
+     */
+    vfsCursor: z.string(),
 });
 function requireAssets(env, what) {
     if (!env.ASSETS) {
@@ -178,6 +184,7 @@ export async function assembleOpencodeFacetConfig(env, specInput) {
         vfsBundle: spec.vfsBundle,
         vfsManifest: spec.vfsManifest,
         vfsMetadata: spec.vfsMetadata,
+        vfsCursor: spec.vfsCursor,
         mode: spec.mode,
     });
     return {
