@@ -540,15 +540,17 @@ stage_assets() {
 	"$STRIP" "$PYSRC/build-wasi/python.sci.wasm" -o "$HERE/python-sci.wasm"
 	find "$NUMPY_SITE" -name '*.so' -delete
 	find "$NUMPY_SITE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+	# <<- strips EVERY leading tab, so the body's own indentation is spaces:
+	# written with tabs it arrived flush-left and Python refused to parse it.
 	( cd "$NUMPY_SITE" && "$BUILD/buildenv/bin/python" - "$HERE/sci-packages.zip" <<-'PYEOF'
-		import pathlib
-		import sys
-		import zipfile
+	import pathlib
+	import sys
+	import zipfile
 
-		with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-			for path in sorted(pathlib.Path('.').rglob('*')):
-				if path.is_file():
-					archive.write(path, path.as_posix())
+	with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+	    for path in sorted(pathlib.Path('.').rglob('*')):
+	        if path.is_file():
+	            archive.write(path, path.as_posix())
 	PYEOF
 	)
 	log "built"
