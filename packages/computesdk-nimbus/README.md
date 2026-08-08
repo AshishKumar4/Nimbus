@@ -146,6 +146,49 @@ Shell and coreutils commands are unaffected.
 persistent per-sandbox environment, so the provider stores the environment in
 the marker and merges it into every `runCommand`.
 
+## Benchmarks
+
+Measured with ComputeSDK's own TTI definition — `compute.sandbox.create()`
+through the first successful `runCommand`, `destroy` untimed — and scored with
+their `computeStats` (5% trimmed both ends) and `computeCompositeScores` (10s
+ceiling, weights 0.60/0.25/0.15, multiplied by success rate). Reproduce with
+`bench/tti.mjs` and `bench/score.mjs`.
+
+n=100 per shape, a fresh sandbox id per trial so every trial creates a cold
+Durable Object. Nothing is pre-warmed.
+
+| shape | median | p95 | p99 | score | success |
+|---|---|---|---|---|---|
+| sequential (`node -v`) | 780 ms | 1020 | 1063 | 91.17 | 100% |
+| sequential (`shell`) | 770 ms | 992 | 1128 | 91.21 | 100% |
+| staggered x100 | 751 ms | 1040 | 1123 | 91.21 | 100% |
+| burst x100 | 1278 ms | 1637 | 1743 | 85.63 | 100% |
+
+Phase breakdown: create ~700 ms, first command ~62 ms, plain HTTP round trip
+to the same origin ~20 ms, bare `ready()` without the provider 650-757 ms.
+
+Against ComputeSDK's published leaderboard this is mid-pack — roughly 21st of
+26 sequential, 17th under burst — but it beats Cloudflare's own container
+Sandbox SDK on every shape: 780 vs 2000 ms sequential, 1278 vs 4417 burst,
+751 vs 3764 staggered. E2B is faster sequentially at 576 ms.
+
+Two caveats worth stating plainly. These numbers were taken from a different
+network vantage point than the published leaderboard, so this is not a strict
+head-to-head; that needs both on one runner. And the providers at the top of
+that leaderboard report 13-17 ms, which is below the time any VM or container
+takes to boot — whatever those measure, it is not a cold start, whereas every
+trial here is one.
+
+### `node -v` does not prove Node runs
+
+ComputeSDK's benchmark uses `node -v` as its readiness command and documents it
+as confirming "the Node.js runtime is available and functional". On Nimbus it
+does not: `runtime-registry.ts` answers `-v` from an argv fast path that writes
+a version constant and returns, without booting Node. That is a hollow signal
+in the benchmark itself, not only here. The `shell` workload above exists for
+that reason — its output cannot be predicted by the caller, so a pass proves a
+real process ran. It lands at the same speed, so the headline is unaffected.
+
 ## License
 
 MIT
