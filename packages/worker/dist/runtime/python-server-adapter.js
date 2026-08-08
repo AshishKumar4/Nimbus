@@ -47,12 +47,18 @@ def _nimbus_patch_socketserver():
         return
 
     _orig_server_close = _socketserver.BaseServer.server_close
+    _orig_shutdown = _socketserver.BaseServer.shutdown
 
     def _serve_forever(self, poll_interval=0.5):
         sock = getattr(self, "socket", None)
         if sock is not None:
             try:
                 _nimbus_servers[int(sock.getsockname()[1])] = self
+                # The loop did not end, so the host owns this server's lifetime
+                # from here. Anything the program does on the way out of the
+                # block it started the server in is cleanup after a loop it
+                # believes returned, and must not take the listener down.
+                self._nimbus_adopted = True
             except Exception:
                 pass
         # Callers block on this event to know the loop has stopped. It never
@@ -62,7 +68,18 @@ def _nimbus_patch_socketserver():
             shut_down.set()
         return None
 
+    def _shutdown(self):
+        # The explicit "stop serving" call, and the only thing that hands the
+        # server back to the program. A later server_close() then really closes.
+        self._nimbus_adopted = False
+        return _orig_shutdown(self)
+
     def _server_close(self):
+        # python -m http.server runs its server inside a with-block, so the
+        # close arrives the instant serve_forever returns. Honouring it unbound
+        # the port before the first request could ever reach it.
+        if getattr(self, "_nimbus_adopted", False):
+            return None
         sock = getattr(self, "socket", None)
         if sock is not None:
             try:
@@ -84,6 +101,7 @@ def _nimbus_patch_socketserver():
     _serve_forever._nimbus_request_driven = True
     _socketserver.BaseServer.serve_forever = _serve_forever
     _socketserver.BaseServer.server_close = _server_close
+    _socketserver.BaseServer.shutdown = _shutdown
     try:
         _socketserver.ThreadingMixIn.process_request = _process_request_sync
     except Exception:
