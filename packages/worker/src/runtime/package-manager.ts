@@ -148,9 +148,12 @@ export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly Manifes
     { binName: '/bin/bash', runner: 'bash-runner', args: [] },
     { binName: '/usr/bin/bash', runner: 'bash-runner', args: [] },
   ],
-  python: [
-    { binName: 'pip', runner: 'python-runner', kind: 'pip', args: [] },
-    { binName: 'pip3', runner: 'python-runner', kind: 'pip', args: [] },
+  // `pip` belongs to whichever runtime provides the interpreter, and only one
+  // may claim it. The python row went with python-runner: Pyodide's manifest
+  // still names that runner, so it could not serve pip even if it were listed.
+  cpython: [
+    { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
+    { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
   ],
   ruby: [
     { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },
@@ -178,12 +181,37 @@ function splitRuntimeSpec(spec: string): { name: string; versionOverride: string
   };
 }
 
+/**
+ * Runtimes replaced by another implementation, keyed by the name users type.
+ *
+ * `python` was Pyodide (CPython on Emscripten, with its own filesystem) and is
+ * now CPython built for wasm32-wasi. Both are in the catalog, and the
+ * redirection lives HERE rather than in the catalog's `default` because the
+ * catalog is shared with production: flipping it would repoint deployed Workers
+ * that still register the old runner, and `python` would become "command not
+ * found" for everyone until they redeployed. In code, the cutover ships with
+ * the Worker that can serve it.
+ *
+ * `nimbus install python@0.29.4` still reaches Pyodide — an explicit version is
+ * a deliberate request and is left alone.
+ */
+const SUPERSEDED_RUNTIMES: Record<string, string> = { python: 'cpython' };
+
 async function resolveRuntimeInstallTarget(
   env: RuntimeCatalogEnv,
   catalog: RuntimeCatalog,
   spec: string,
 ): Promise<RuntimeInstallTarget | null> {
   const parsed = splitRuntimeSpec(spec);
+  const superseding = parsed.versionOverride === null ? SUPERSEDED_RUNTIMES[parsed.name] : undefined;
+  if (superseding && catalog.runtimes[superseding]) {
+    return {
+      runtimeName: superseding,
+      versionOverride: null,
+      // The name the user typed, so the installer's output still says `python`.
+      requestedName: parsed.name,
+    };
+  }
   if (catalog.runtimes[parsed.name]) {
     return {
       runtimeName: parsed.name,
@@ -197,6 +225,15 @@ async function resolveRuntimeInstallTarget(
   // to that runtime, so `nimbus install python3|pip|gem|wasm-ld` all
   // work without a hand-maintained alias map.
   for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
+    // A superseded runtime does not answer for a command name either. It still
+    // declares `python` and `python3`, it comes first in the catalog, and its
+    // runner is no longer registered — so `nimbus install python3` installed
+    // Pyodide and left two bins nothing could invoke, while `nimbus install
+    // python` next to it installed CPython. The successor declares the same
+    // commands and is reached further down this same loop.
+    if (parsed.versionOverride === null
+      && SUPERSEDED_RUNTIMES[runtimeName]
+      && catalog.runtimes[SUPERSEDED_RUNTIMES[runtimeName]]) continue;
     const version = entry.default;
     const versionEntry = entry.versions[version];
     if (!versionEntry) continue;

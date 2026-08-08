@@ -1,0 +1,24 @@
+# Refinements to Tools/wasm/config.site-wasm32-wasi for the Nimbus build. Both
+# files are passed in CONFIG_SITE, upstream's first, so this one only records
+# what upstream's does not already cover.
+
+# wasi-sdk 25 declares memfd_create in <sys/mman.h> but defines no symbol, so
+# configure's header-based detection succeeds and the link then fails.
+ac_cv_func_memfd_create=no
+
+# AC_CHECK_FUNCS probes a function by redeclaring it as `char f();`, which the
+# compiler rejects outright once a real prototype is in scope — and the overlay
+# headers force those prototypes into every translation unit. The probe then
+# reports "no" for functions that are demonstrably present, and the failure is
+# silent: os.getuid simply does not exist in the finished interpreter. These are
+# supplied by libnimbuswasi.a (nimbus-net.c, nimbus-wasi-compat.c) or by
+# wasi-libc itself, so the answer is recorded here instead of probed.
+ac_cv_func_getuid=yes
+ac_cv_func_geteuid=yes
+ac_cv_func_getgid=yes
+ac_cv_func_getegid=yes
+ac_cv_func_socket=yes
+ac_cv_func_shutdown=yes
+ac_cv_func_getpeername=yes
+ac_cv_func_accept4=yes
+ac_cv_func_umask=yes

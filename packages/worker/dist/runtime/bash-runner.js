@@ -3,7 +3,7 @@ import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
 import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
 import { requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { getFacetManagerLoaderHost } from './ruby-runner.js';
+import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 const BashSliceSchema = z.object({
     state: z.enum(['need-input', 'exited', 'error']),
     exitCode: z.number().optional(),

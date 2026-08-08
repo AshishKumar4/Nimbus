@@ -599,9 +599,26 @@ function __wasiOpenListener(pathArg, fdflags, fdOutPtr, writeU32LE) {
     const kernel = __wasiKernelOrNull('ports cannot be listened on');
     if (!kernel)
         return __WASI_ENOSYS;
+    // A guest opening this path IS the guest asking to listen — that is what
+    // listen(2) compiles to for a program built against wasi-libc. Refusing an
+    // unbound port made the path usable only by a runtime that could reach out to
+    // JS and bind it first (ruby, through __nimbusRubySockets), so a plain WASI
+    // server got ENOTCONN from listen and could never serve. Binding here is
+    // additive: no guest could previously succeed on an unbound port.
     if (!kernel.listeners.has(port)) {
-        globalThis.__nimbusWasiLastSocketError = 'port ' + port + ' is not bound';
-        return __WASI_ENOTCONN;
+        try {
+            kernel.listen(port);
+        }
+        catch (e) {
+            globalThis.__nimbusWasiLastSocketError =
+                'port ' + port + ' could not be bound: ' + (e && e.message ? e.message : String(e));
+            return __WASI_ENOTCONN;
+        }
+        // The supervisor has to learn about the port, or nothing outside the
+        // session can route to it: bound is not served.
+        const announce = Reflect.get(globalThis, '__nimbusVirtualSocketDidListen');
+        if (typeof announce === 'function')
+            announce(port);
     }
     const fd = nextFd++;
     fdTable.set(fd, { kind: 'listener', port, fdflags: fdflags | 0 });
@@ -1435,8 +1452,13 @@ export function __wasiMakeImports(opts) {
                 return __WASI_EBADF;
             const delta = typeof offsetArg === 'bigint' ? offsetArg : BigInt(offsetArg | 0);
             const cur = BigInt(entry.offset);
-            const file = getFile(entry.vfsPath);
-            const fileLen = file ? BigInt(file.length) : 0n;
+            // fileSize, not the resident buffer: a manifest entry is a file whose
+            // bytes have not been demand-loaded yet, and measuring it by what
+            // happens to be in memory calls it empty. SEEK_END then lands at 0, and
+            // every guest that sizes a file by seeking to its end — zipimport does
+            // exactly that before looking for the end-of-central-directory record —
+            // reads the head of the file and concludes it is not an archive.
+            const fileLen = BigInt(fileSize(entry.vfsPath));
             let next;
             if (whence === WHENCE_SET)
                 next = delta;
@@ -2197,10 +2219,28 @@ export function __wasiMakeImports(opts) {
         },
         fd_datasync() { return __WASI_ESUCCESS; },
         fd_sync() { return __WASI_ESUCCESS; },
+        // dup2(2), and the only way to reach it: preview1 has no dup. Renumbering
+        // CLOSES `to` — dropping the entry instead leaks whatever it held, and for
+        // a socket that is a live stream the kernel is never told about.
         fd_renumber(from, to) {
             const entry = fdTable.get(from);
             if (!entry)
                 return __WASI_EBADF;
+            if (from === to)
+                return __WASI_ESUCCESS;
+            const target = fdTable.get(to);
+            // Preopens are the filesystem's roots. Renumbering over one takes the VFS
+            // out from under the guest with nothing left to read, so it is refused
+            // rather than obeyed — fd_close declines to close them for the same reason.
+            if (target && target.kind === 'preopen')
+                return __WASI_ENOTCAPABLE;
+            if (target && target.kind === 'socket' && !target.closed) {
+                try {
+                    target.socket.close();
+                }
+                catch { }
+                target.closed = true;
+            }
             fdTable.delete(from);
             fdTable.set(to, entry);
             return __WASI_ESUCCESS;
@@ -2760,6 +2800,48 @@ export function __wasiMakeImports(opts) {
             }
             return __WASI_ESUCCESS;
         },
+        // The last preview1 syscall, and the one a guest written against libc
+        // reaches for: wasi-libc's accept(2) is a direct call to this and nothing
+        // else. The path_open route — open '/dev/nimbus/listen/N', read the id,
+        // open '/dev/nimbus/socket/<id>' — exists because ruby.wasm resolves
+        // descriptors through its own fd table and cannot use one handed to it out
+        // of band. That constraint belongs to guests layered over wasi-vfs, not to
+        // WASI. Both routes end at __wasiAdoptSocket, so an accepted connection is
+        // the same kind of fd whichever way it arrived.
+        async sock_accept(fd, flags, fdOutPtr) {
+            const entry = fdTable.get(fd);
+            if (!entry)
+                return __WASI_EBADF;
+            if (entry.kind !== 'listener')
+                return __WASI_ENOTSOCK;
+            const kernel = __wasiKernelOrNull('connections cannot be accepted');
+            if (!kernel)
+                return __WASI_ENOSYS;
+            // Non-blocking is a property of either descriptor: the listener's own
+            // flags, or the ones this call asks the accepted socket to carry.
+            const nonblock = ((entry.fdflags | flags) & __WASI_FDFLAGS_NONBLOCK) !== 0;
+            try {
+                let accepted;
+                if (nonblock) {
+                    accepted = kernel.acceptNow(entry.port);
+                    if (!accepted)
+                        return __WASI_EAGAIN;
+                }
+                else {
+                    accepted = await kernel.accept(entry.port);
+                }
+                const socket = kernel.streamFor(accepted.id);
+                writeU32LE(fdOutPtr, __wasiAdoptSocket(socket, flags & __WASI_FDFLAGS_NONBLOCK));
+                return __WASI_ESUCCESS;
+            }
+            catch (e) {
+                // A rejected Suspending import traps in the guest with no diagnosis,
+                // so the reason is recorded alongside a plain errno.
+                globalThis.__nimbusWasiLastSocketError =
+                    (e && e.message) ? e.message : String(e);
+                return __WASI_ENOTCONN;
+            }
+        },
     };
     // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
     // fd_write can route socket fds through them (wasi-libc maps read(2)/
@@ -2775,7 +2857,7 @@ export function __wasiMakeImports(opts) {
     // Park watchdog — see the constants and withParkDeadline at module scope.
     // Every import that can park.
     const parkable = [
-        'sock_send', 'sock_recv', 'sock_shutdown', 'poll_oneoff',
+        'sock_send', 'sock_recv', 'sock_shutdown', 'sock_accept', 'poll_oneoff',
         'fd_read', 'fd_write', 'fd_pread', 'path_filestat_get',
     ];
     // Applied before Suspending wraps them.
@@ -2825,6 +2907,7 @@ export function __wasiMakeImports(opts) {
         imports.sock_send = new WebAssembly.Suspending(imports.sock_send);
         imports.sock_recv = new WebAssembly.Suspending(imports.sock_recv);
         imports.sock_shutdown = new WebAssembly.Suspending(imports.sock_shutdown);
+        imports.sock_accept = new WebAssembly.Suspending(imports.sock_accept);
         // WASI socket and polling support B8: poll_oneoff also needs JSPI to support CLOCK
         // subscriptions (await setTimeout) and socket-fd readiness
         // (await reader.read()). Same Suspending shape as sock_*.

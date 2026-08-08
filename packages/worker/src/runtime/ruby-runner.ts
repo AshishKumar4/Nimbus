@@ -40,6 +40,7 @@ import type { FacetManager } from '../facets/manager.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
+import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
 import { manifestVfs } from './vfs-manifest.js';
@@ -971,20 +972,6 @@ async function dispatchRubyFacet(
       error: `ruby-runner dispatch failed: ${errorMessage(e)}`,
     };
   }
-}
-
-export function getFacetManagerLoaderHost(facetMgr: FacetManager): { env: unknown; ctx: DurableObjectState } {
-  const env = Reflect.get(facetMgr, 'env');
-  const ctx = Reflect.get(facetMgr, 'ctx');
-  if (!isDurableObjectState(ctx)) {
-    throw new Error('ruby-runner requires a FacetManager with DurableObjectState context');
-  }
-  return { env, ctx };
-}
-
-function isDurableObjectState(value: unknown): value is DurableObjectState {
-  if (typeof value !== 'object' || value === null) return false;
-  return 'id' in value && typeof Reflect.get(value, 'waitUntil') === 'function';
 }
 
 /**

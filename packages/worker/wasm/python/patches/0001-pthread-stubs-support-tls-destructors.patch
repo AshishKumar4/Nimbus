@@ -1,0 +1,43 @@
+--- a/Python/thread_pthread_stubs.h
++++ b/Python/thread_pthread_stubs.h
+@@ -138,18 +138,22 @@
+ 
+ #define py_tls_entries (_PyRuntime.threads.stubs.tls_entries)
+ 
++/* A stubbed build has exactly one thread, so a key's destructor can only ever
++   run when the key itself goes away. Refusing to register one instead made
++   every OpenSSL-backed extension abort at import: _hashopenssl reaches
++   CRYPTO_THREAD_init_local, which always passes a destructor. */
++static void (*py_tls_destructors[PTHREAD_KEYS_MAX])(void *);
++
+ int
+ pthread_key_create(pthread_key_t *key, void (*destr_function)(void *))
+ {
+     if (!key) {
+         return EINVAL;
+     }
+-    if (destr_function != NULL) {
+-        Py_FatalError("pthread_key_create destructor is not supported");
+-    }
+     for (pthread_key_t idx = 0; idx < PTHREAD_KEYS_MAX; idx++) {
+         if (!py_tls_entries[idx].in_use) {
+             py_tls_entries[idx].in_use = true;
++            py_tls_destructors[idx] = destr_function;
+             *key = idx;
+             return 0;
+         }
+@@ -163,8 +167,14 @@
+     if (key < 0 || key >= PTHREAD_KEYS_MAX || !py_tls_entries[key].in_use) {
+         return EINVAL;
+     }
++    void (*destr_function)(void *) = py_tls_destructors[key];
++    void *value = py_tls_entries[key].value;
+     py_tls_entries[key].in_use = false;
+     py_tls_entries[key].value = NULL;
++    py_tls_destructors[key] = NULL;
++    if (destr_function != NULL && value != NULL) {
++        destr_function(value);
++    }
+     return 0;
+ }
+ 

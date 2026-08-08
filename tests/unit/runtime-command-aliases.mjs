@@ -53,15 +53,15 @@ const blobSha = Array.from(
 ).join('');
 
 const manifests = {
-  'manifests/python-0.29.4.json': {
-    name: 'python',
-    version: '0.29.4',
-    license: 'PSF',
-    wasi_namespace: null,
-    files: [{ path: 'bin/python', content: 'blobs/python-0.29.4/bin', sha256: blobSha, size: blobBytes.length, mode: 'exec' }],
+  'manifests/cpython-3.13.14.json': {
+    name: 'cpython',
+    version: '3.13.14',
+    license: 'PSF-2.0',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    files: [{ path: 'bin/python', content: 'blobs/cpython-3.13.14/bin', sha256: blobSha, size: blobBytes.length, mode: 'exec' }],
     entrypoints: [
-      { binName: 'python', runner: 'python-runner', args: [] },
-      { binName: 'python3', runner: 'python-runner', args: [] },
+      { binName: 'python', runner: 'cpython-runner', args: [] },
+      { binName: 'python3', runner: 'cpython-runner', args: [] },
     ],
   },
   'manifests/clang-binji-2020.json': {
@@ -80,7 +80,7 @@ const manifests = {
 const catalog = {
   version: 1,
   runtimes: {
-    python: { default: '0.29.4', versions: { '0.29.4': { manifest: 'manifests/python-0.29.4.json', size_bytes: blobBytes.length, license: 'PSF' } } },
+    cpython: { default: '3.13.14', versions: { '3.13.14': { manifest: 'manifests/cpython-3.13.14.json', size_bytes: blobBytes.length, license: 'PSF-2.0' } } },
     clang: { default: 'binji-2020', versions: { 'binji-2020': { manifest: 'manifests/clang-binji-2020.json', size_bytes: blobBytes.length, license: 'Apache-2.0' } } },
   },
 };
@@ -106,14 +106,15 @@ const fakeEnv = {
 
 {
   const hint = createRuntimeCommandHintResolver(fakeEnv);
-  // Runtime names resolve to themselves.
-  assert.deepEqual(await hint('python'), { command: 'python', runtimeName: 'python', installSpec: 'python' });
+  // Runtime names resolve to themselves. `python` is provided by the cpython
+  // runtime now, and the hint names the runtime that will actually serve it.
+  assert.equal((await hint('python'))?.runtimeName, 'cpython');
   // Manifest-declared aliases are catalog-driven.
-  assert.equal((await hint('python3'))?.runtimeName, 'python');
+  assert.equal((await hint('python3'))?.runtimeName, 'cpython');
   assert.equal((await hint('wasm-ld'))?.runtimeName, 'clang');
   // Extra runner-provided commands resolve through the same path.
-  assert.equal((await hint('pip'))?.runtimeName, 'python');
-  assert.equal((await hint('pip3'))?.runtimeName, 'python');
+  assert.equal((await hint('pip'))?.runtimeName, 'cpython');
+  assert.equal((await hint('pip3'))?.runtimeName, 'cpython');
   // Unknown commands and paths produce no hint.
   assert.equal(await hint('not-a-runtime'), null);
   assert.equal(await hint('./pip'), null);
@@ -165,7 +166,7 @@ class FakeVfs {
 
 {
   const registered = [];
-  registerRunnerFactory('python-runner', (_manifest, _root, binName) => async () => {
+  registerRunnerFactory('cpython-runner', (_manifest, _root, binName) => async () => {
     void binName;
     return 0;
   });
@@ -177,8 +178,8 @@ class FakeVfs {
 
   const result = await installRuntimeProgrammatic(deps, 'pip');
   assert.equal(result.exitCode, 0, `install failed: ${result.stderr}`);
-  assert.match(result.stdout, /\[python\] installed at home\/user\/\.nimbus\/runtimes\/python\/0\.29\.4/);
-  assert.ok(vfs.exists('home/user/.nimbus/runtimes/python/0.29.4/manifest.json'));
+  assert.match(result.stdout, /\[cpython\] installed at home\/user\/\.nimbus\/runtimes\/cpython\/3\.13\.14/);
+  assert.ok(vfs.exists('home/user/.nimbus/runtimes/cpython/3.13.14/manifest.json'));
   for (const bin of ['python', 'python3', 'pip', 'pip3']) {
     assert.ok(registered.includes(bin), `expected '${bin}' to be registered`);
   }

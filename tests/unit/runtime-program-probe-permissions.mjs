@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 
-import { makePythonRunnerFactory } from '../../packages/worker/src/runtime/python-runner.ts';
+import { makeCPythonRunnerFactory } from '../../packages/worker/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/worker/src/runtime/wasm-runner.ts';
 import { registerShellEntrypointCommands } from '../../packages/worker/src/shell/shell-entrypoints.ts';
@@ -54,16 +54,14 @@ function runtimeVfs(runtimeFiles, deniedPath) {
 {
   const deniedPath = 'home/user/locked/tool.py';
   const vfs = runtimeVfs({
-    '/runtime/python/share/pyodide/pyodide.asm.wasm': new Uint8Array([0]),
-    '/runtime/python/share/pyodide/pyodide.asm.js': new TextEncoder().encode('adapter'),
-    '/runtime/python/share/pyodide/python_stdlib.zip': new Uint8Array(),
+    '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
+    '/runtime/python/lib/python313.zip': new Uint8Array(),
   }, deniedPath);
-  const run = makePythonRunnerFactory({ facetMgr: {}, vfs })(
+  const run = makeCPythonRunnerFactory({ facetMgr: {}, vfs })(
     {
       files: [
-        { path: 'share/pyodide/pyodide.asm.wasm' },
-        { path: 'share/pyodide/pyodide.asm.js' },
-        { path: 'share/pyodide/python_stdlib.zip' },
+        { path: 'share/cpython/python.wasm' },
+        { path: 'lib/python313.zip' },
       ],
     },
     '/runtime/python',

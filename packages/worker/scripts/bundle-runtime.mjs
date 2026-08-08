@@ -259,6 +259,65 @@ const SPECS = {
     python_packages: ['numpy', 'markupsafe'],
   },
 
+  // CPython 3.13 cross-built for wasm32-wasi by packages/worker/wasm/python/
+  // build-python.sh, with the C libraries the published wasm32-wasi artifacts
+  // leave out (zlib, bzip2, xz, sqlite, OpenSSL). Unlike the Pyodide entry
+  // above this is a real WASI module: it talks to runtime/wasi/preamble.ts, so
+  // it has no filesystem of its own to copy in and diff back out.
+  //
+  // Additive alongside python/0.29.4. Nothing reads these keys until
+  // session/init.ts routes `python` at the cpython-runner factory.
+  'cpython/3.13.14': {
+    license: 'PSF-2.0',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/python',
+    files: [
+      { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
+      // The same interpreter with numpy and markupsafe's C speedups linked in,
+      // and their Python half. wasm32-wasi has no dlopen, so a compiled package
+      // is either in the binary or unavailable; the runner picks between the two
+      // from what the session installed. Both ship because the choice is made
+      // per invocation, inside the session, long after the install.
+      { src: 'python-sci.wasm', vfs: 'share/cpython/python-sci.wasm' },
+      // Beside the stdlib zip on purpose: the runner puts it on sys.path and
+      // zipimport reads it out of the session filesystem, so it needs the same
+      // treatment as lib/python313.zip and no separate transport.
+      { src: 'sci-packages.zip', vfs: 'lib/sci-packages.zip' },
+      // The stdlib, pyc-only. Read straight out of the session filesystem by
+      // zipimport, which is why it needs no separate transport.
+      // Laid out as a Python prefix, so nimbus_py_init can be handed the
+      // install root directly. Aliasing lib/ onto some other path would put
+      // entries in the guest's filesystem that the supervisor cannot serve,
+      // and a manifest entry nobody can fetch is an EIO waiting to happen.
+      { src: 'python313.zip', vfs: 'lib/python313.zip' },
+      // OpenSSL has no default trust store to fall back on here: there is no
+      // /etc/ssl in the session, so ssl.create_default_context() would verify
+      // against nothing and every HTTPS fetch would fail. SSL_CERT_FILE points
+      // at this. Mozilla's bundle, as published by curl.se.
+      { src: 'cacert.pem',     vfs: 'etc/ssl/cert.pem' },
+      { src: 'STDLIB_MARKER', vfs: 'lib/python3.13/os.py' },
+      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
+      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
+    ],
+    license_text: PSF_LICENSE_NOTICE(),
+    /** Source 'BIN_MARKER' is synthesised, not fetched. */
+    synthetic_files: {
+      'STDLIB_MARKER': Buffer.from(
+        '# Nimbus stdlib marker. Every module is read from ../python313.zip;\n' +
+        '# this file exists so the prefix looks like a Python prefix.\n',
+        'utf8',
+      ),
+      'BIN_MARKER': Buffer.from(
+        '# Nimbus cpython-runner launcher marker. The interpreter itself\n' +
+        '# lives in share/cpython/. This file exists so `which python` and\n' +
+        '# `ls bin/` find a regular, executable file at the expected path;\n' +
+        '# the shell registry dispatches `python` directly to the\n' +
+        '# cpython-runner factory and never reads this content.\n',
+        'utf8',
+      ),
+    },
+  },
+
   // 2026-05-11 sysroot-prep Phase 0 — R2 ingestion ONLY for the
   // clang-sysroot-swap wave. This entry stages the upstream wasi-sdk-19
   // sysroot in R2 (binji-shape: rootless `include/lib/share` layout) so
@@ -1005,6 +1064,22 @@ Corresponding source: https://busybox.net/downloads/busybox-1.37.0.tar.bz2
 plus the Nimbus build overlay (packages/worker/wasm/bash/coreutils/ in
 the Nimbus repository: build-busybox.sh, wasi-shim.c, overlay/).
 `;
+}
+
+function PSF_LICENSE_NOTICE() {
+  return [
+    'Python is distributed under the Python Software Foundation License',
+    'Version 2. The full text is at https://docs.python.org/3/license.html',
+    'and is included in the interpreter as Lib/LICENSE.txt.',
+    '',
+    'Copyright (c) 2001-2026 Python Software Foundation. All Rights Reserved.',
+    '',
+    'This build is CPython 3.13.14 cross-compiled for wasm32-wasi and',
+    'statically linked against zlib (zlib licence), bzip2 (BSD-like), xz',
+    'liblzma (0BSD), SQLite (public domain) and OpenSSL 3.5 (Apache-2.0).',
+    'Each of those carries its own licence, reproduced by its upstream.',
+    '',
+  ].join('\n');
 }
 
 function MPL_2_LICENSE_TEXT() {

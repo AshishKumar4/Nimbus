@@ -241,6 +241,11 @@ export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = 
   bash: NIMBUS_ABI_TARGET,
   clang: NIMBUS_ABI_TARGET,
   python: 'pyodide',
+  // The wasm32-wasi interpreter. It does have compiled packages — numpy, and
+  // markupsafe's speedups — but they are linked into a prebuilt interpreter
+  // variant rather than loaded at run time, so no wheel carrying a native
+  // extension can be installed. See packages/worker/wasm/python/EXTENSIONS.md.
+  cpython: NATIVE_UNSUPPORTED_ABI,
   ruby: 'ruby-wasm',
   node: 'javascript',
   bun: 'javascript',

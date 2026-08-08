@@ -58,7 +58,7 @@ export function manifestVfs(
   let fileCount = 0;
   const stack: string[] = [];
 
-  const addDirWithParents = (path: string) => {
+  const addDirWithParents = (path: string, callerNamedRoot = false) => {
     const clean = path.replace(/^\/+/, '').replace(/\/+$/, '');
     if (!clean) return;
     const parts = clean.split('/').filter(Boolean);
@@ -69,13 +69,32 @@ export function manifestVfs(
         try {
           const st = vfs.stat(ancestor);
           modes[ancestor] = effectiveMode(st.mode, st.uid, st.gid, vfs.cred);
-        } catch { /* unreadable ancestor: leave to deny-by-default */ }
+        } catch (error) {
+          // Two different failures used to land here together, and only one of
+          // them means "deny". An ancestor the caller may not read must stay
+          // denied. But a root that does not exist YET — site-packages before
+          // the first install — is a path the producer deliberately listed for
+          // the guest to create, and leaving it modeless makes
+          // __wasiEffectiveMode answer 0 for a path that `dirs` says exists:
+          // deny everything, including traversal. The guest then cannot stat
+          // its own target, os.path.isdir swallows the error and says False,
+          // and makedirs(exist_ok=True) re-raises FileExistsError for a
+          // directory it just created. It inherits its parent instead.
+          // Only for a root the CALLER named. Those are paths a runtime has
+          // declared it will use — site-packages, a gem home — and it may not
+          // exist yet. Paths discovered by the walk are left alone: they came
+          // from a readdir that already saw them, so a stat failure there is
+          // genuinely unexpected and deny-by-default is right.
+          if (!callerNamedRoot || hasErrorCode(error, 'EACCES')) continue;
+          const parent = parts.slice(0, i - 1).join('/');
+          modes[ancestor] = i === 1 ? 7 : (modes[parent] ?? 7);
+        }
       }
     }
   };
 
   for (const start of roots) {
-    addDirWithParents(start);
+    addDirWithParents(start, true);
     try {
       if (!vfs.exists(start)) continue;
     } catch (error) {

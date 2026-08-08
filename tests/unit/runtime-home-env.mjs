@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { makePythonRunnerFactory } from '../../packages/worker/src/runtime/python-runner.ts';
+import { makeCPythonRunnerFactory } from '../../packages/worker/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
 
 const encoder = new TextEncoder();
@@ -65,24 +65,21 @@ function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umas
   const harness = loaderHarness();
   const sentinel = '/* Nimbus Pyodide workerd adapter: pyodide-0.29.4-workerd-adapter-v2 */';
   const vfs = new RuntimeVfs({
-    '/runtime/python/share/pyodide/pyodide.asm.wasm': new Uint8Array([0]),
-    '/runtime/python/share/pyodide/pyodide.asm.js': encoder.encode(sentinel),
-    '/runtime/python/share/pyodide/python_stdlib.zip': new Uint8Array(),
+    '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
+    '/runtime/python/lib/python313.zip': new Uint8Array(),
   });
   const manifest = {
     version: '0.29.4',
     files: [
-      { path: 'share/pyodide/pyodide.asm.wasm' },
-      { path: 'share/pyodide/pyodide.asm.js' },
-      { path: 'share/pyodide/python_stdlib.zip' },
+      { path: 'share/cpython/python.wasm' },
+      { path: 'lib/python313.zip' },
     ],
     runtime_artifacts: [{
       id: 'pyodide-0.29.4-workerd-adapter-v2',
       kind: 'workerd-adapter',
-      path: 'share/pyodide/pyodide.asm.js',
     }],
   };
-  const run = makePythonRunnerFactory({ facetMgr: harness.facetMgr, vfs })(
+  const run = makeCPythonRunnerFactory({ facetMgr: harness.facetMgr, vfs })(
     manifest,
     '/runtime/python',
     'python',

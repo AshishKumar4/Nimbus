@@ -46,6 +46,5 @@ cancels the read. Abandoned readers also cancel their relay pipes.
 
 Node's HTTP bridge and the Python and Ruby virtual-socket shims are separate
 adapters today, but both end at this registry. The target is one shared
-virtual socket layer for Node, Python, Ruby, and WASI. `sock_accept` is the one
-unimplemented preview1 function, so WASM servers can't take `/port` traffic
-yet. That work is on the [research page](/docs/fine-print/research/).
+virtual socket layer for Node, Python, Ruby, and WASI. That work is on the
+[research page](/docs/fine-print/research/).
