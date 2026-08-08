@@ -38,10 +38,14 @@
  * ─────────────
  * Cache lookup failure (any throw) → fall through to ASSETS.
  * ASSETS fetch returning non-200 → throw (deploy bug, surface loudly).
+ * Digest mismatch on either tier → throw (the bytes are compiled as a wasm
+ * module, so they are verified against ESBUILD_WASM_SHA256 before returning).
  */
 
 import { ESBUILD_VERSION } from '../constants.js';
+import { ESBUILD_WASM_SHA256 } from '../esbuild-wasm-bundle.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { sha256Hex } from '../_shared/crypto.js';
 
 /**
  * Path inside env.ASSETS where the esbuild-wasm binary lives.
@@ -87,63 +91,78 @@ export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid/_assets/esbuild
  * always the correct source of truth.
  */
 export async function fetchEsbuildWasmBytes(env: EsbuildWasmFetchEnv): Promise<ArrayBuffer> {
+  const caches = (globalThis as { caches?: { default?: Cache } }).caches;
+
   // ── L2 fast path ────────────────────────────────────────────────
+  let ab: ArrayBuffer | null = null;
   try {
-    const c: any = (globalThis as any).caches;
-    if (c?.default) {
-      const hit = await c.default.match(new Request(ESBUILD_WASM_L2_KEY));
-      if (hit && hit.ok) {
-        return await hit.arrayBuffer();
-      }
+    if (caches?.default) {
+      const hit = await caches.default.match(new Request(ESBUILD_WASM_L2_KEY));
+      if (hit && hit.ok) ab = await hit.arrayBuffer();
     }
   } catch { /* fall through to ASSETS */ }
 
-  // ── L4 path (env.ASSETS) ────────────────────────────────────────
-  const url = `https://nimbus-internal.invalid${ESBUILD_WASM_ASSET_PATH}`;
-  // Construct a synthetic request — env.ASSETS routes by pathname only;
-  // the host is ignored. Using `.invalid` per RFC-2606 makes it
-  // unambiguous that this URL is internal-binding-only.
-  const res = await env.ASSETS.fetch(new Request(url));
-  let ab: ArrayBuffer;
-  try {
-    if (!res.ok) {
-      throw new Error(
-        `esbuild-wasm asset fetch failed: ${res.status} ${res.statusText} ` +
-        `for ${ESBUILD_WASM_ASSET_PATH} — deploy is missing the wasm asset`,
-      );
+  const fromCache = ab !== null;
+  if (!ab) {
+    // ── L4 path (env.ASSETS) ──────────────────────────────────────
+    // Construct a synthetic request — env.ASSETS routes by pathname only;
+    // the host is ignored. Using `.invalid` per RFC-2606 makes it
+    // unambiguous that this URL is internal-binding-only.
+    const url = `https://nimbus-internal.invalid${ESBUILD_WASM_ASSET_PATH}`;
+    const res = await env.ASSETS.fetch(new Request(url));
+    try {
+      if (!res.ok) {
+        throw new Error(
+          `esbuild-wasm asset fetch failed: ${res.status} ${res.statusText} ` +
+          `for ${ESBUILD_WASM_ASSET_PATH} — deploy is missing the wasm asset`,
+        );
+      }
+      // Read the bytes once (Response body is a one-shot stream). The
+      // caller needs the ArrayBuffer to hand to workerd's LOADER; we
+      // also use it to write through to L2.
+      ab = await res.arrayBuffer();
+    } finally {
+      disposeRpcResource(res);
     }
-    // Read the bytes once (Response body is a one-shot stream). The
-    // caller needs the ArrayBuffer to hand to workerd's LOADER; we
-    // also use it to write through to L2.
-    ab = await res.arrayBuffer();
-  } finally {
-    disposeRpcResource(res);
   }
-  // ── L2 write-back ──────────────────────────────────────────────
-  // Eternal immutable TTL: the URL is version-pinned so a new
-  // ESBUILD_VERSION lands a fresh cache entry; the old one naturally
-  // evicts on TTL. The cache layer holds its own copy (workerd
-  // structured-clones the body during put), so the supervisor's
-  // reference to `ab` is unaffected.
-  // Best-effort: a write failure does NOT block the caller.
-  try {
-    const c: any = (globalThis as any).caches;
-    if (c?.default) {
-      // We pass a fresh Uint8Array view over the same buffer; the
-      // cache stores a copy at put time. Returning `ab` to the
-      // caller stays valid because Response constructor doesn't
-      // detach the buffer (only ReadableStream consumption would).
-      const writeBack = new Response(new Uint8Array(ab), {
-        headers: {
-          'Content-Type': 'application/wasm',
-          'Cache-Control': 'public, max-age=31536000, immutable',
-        },
-      });
-      // Awaited so subsequent reads strictly hit L2 (no
-      // double-fetch race). The wasm payload is 12 MiB; workerd
-      // structured-clones it into the cache, ~1-5 ms locally.
-      await c.default.put(new Request(ESBUILD_WASM_L2_KEY), writeBack);
-    }
-  } catch { /* silent */ }
+
+  const digest = await sha256Hex(ab);
+  if (digest !== ESBUILD_WASM_SHA256) {
+    throw new Error(
+      `esbuild-wasm integrity check failed: expected ${ESBUILD_WASM_SHA256}, got ` +
+        `${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) for ${ESBUILD_WASM_ASSET_PATH} — ` +
+        'the staged asset is corrupt or out of sync; rerun ' +
+        'scripts/bundle-esbuild-wasm.mjs and redeploy',
+    );
+  }
+
+  if (!fromCache) {
+    // ── L2 write-back ────────────────────────────────────────────
+    // Eternal immutable TTL: the URL is version-pinned so a new
+    // ESBUILD_VERSION lands a fresh cache entry; the old one naturally
+    // evicts on TTL. The cache layer holds its own copy (workerd
+    // structured-clones the body during put), so the supervisor's
+    // reference to `ab` is unaffected.
+    // Best-effort: a write failure does NOT block the caller.
+    try {
+      if (caches?.default) {
+        // We pass a fresh Uint8Array view over the same buffer; the
+        // cache stores a copy at put time. Returning `ab` to the
+        // caller stays valid because Response constructor doesn't
+        // detach the buffer (only ReadableStream consumption would).
+        const writeBack = new Response(new Uint8Array(ab), {
+          headers: {
+            'Content-Type': 'application/wasm',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          },
+        });
+        // Awaited so subsequent reads strictly hit L2 (no
+        // double-fetch race). The wasm payload is 12 MiB; workerd
+        // structured-clones it into the cache, ~1-5 ms locally.
+        await caches.default.put(new Request(ESBUILD_WASM_L2_KEY), writeBack);
+      }
+    } catch { /* silent */ }
+  }
+
   return ab;
 }

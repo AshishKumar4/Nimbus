@@ -184,14 +184,18 @@ const BINDING_LOCAL_FIELDS = new Set(['binding', 'class_name', 'name', 'experime
  */
 const SHARED_BY_DESIGN = new Map([
   ['r2_buckets:nimbus-npm-cache',
-    'content-addressed npm tarballs, keyed by name+version, immutable ' +
+    'npm tarballs keyed by their resolved integrity digest and re-hashed on ' +
+    'every read, so a writer can only ever address its own bytes; immutable ' +
     '(packages/worker/src/npm/r2-cache.ts)'],
   ['r2_buckets:nimbus-npm-packument-cache',
-    'packument JSON on a 5-minute TTL, refreshed from the registry ' +
-    '(packages/worker/src/npm/r2-cache.ts)'],
+    'packument JSON on a 60-minute TTL, filled only by the registry fetch ' +
+    'that produced it (packages/worker/src/npm/r2-cache.ts)'],
   ['r2_buckets:nimbus-runtime-cache',
     'never written by the Worker — runtime-catalog.ts only fetches blobs, ' +
-    'manifests and the catalog; an operator script publishes them'],
+    'manifests and the catalog; an operator script publishes them. The Worker ' +
+    'DOES write the colo cache in front of it, so every entry there is keyed ' +
+    'by its own digest and re-hashed on read, chained to the build-time ' +
+    'RUNTIME_CATALOG_SHA256 pin (packages/worker/src/runtime/runtime-catalog.ts)'],
 ]);
 
 /**
