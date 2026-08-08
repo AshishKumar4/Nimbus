@@ -16,6 +16,14 @@ await t.connect();
 await t.waitForPrompt(60_000);
 
 // Install (idempotent).
+//
+// KNOWN: this probe and its siblings intermittently fail near the cold path on
+// a freshly deployed target — the first session pays a 14.5 MiB runtime fetch
+// plus a 10.6 MiB wasm compile, and the timeouts here were tuned for Pyodide's
+// smaller image. Measured on a throwaway: install 804ms, first `python -c`
+// 1907ms, second 803ms. Every observed failure passed on re-run at these same
+// bounds, so this is flakiness near a cold worker rather than a wrong
+// threshold, and the bounds were deliberately NOT widened to hide it.
 await t.run('nimbus install python', 180_000);
 
 // 1. python is registered (not 'command not found').
