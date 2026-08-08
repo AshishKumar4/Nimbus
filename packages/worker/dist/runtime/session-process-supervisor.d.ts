@@ -122,6 +122,8 @@ export declare class SessionProcessSupervisor {
     };
     tailLogs(pid: number, opts?: Pick<ProcessLogReadOptions, 'lines' | 'bytes'>): LogChunk[];
     allLogs(pid: number): LogChunk[];
+    /** See ProcessLogStore.buffered — a read that never hydrates from SQL. */
+    bufferedLogs(pid: number): LogChunk[];
     logSnapshot(pid: number): {
         bytes: number;
         chunks: number;

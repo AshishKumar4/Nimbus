@@ -407,6 +407,11 @@ export async function rpcExec(
  * process. Attribution follows the process tree rooted at the job's own pid:
  * a start-time window would also sweep up the output of commands issued
  * concurrently against the same session.
+ *
+ * The ring is read without hydrating from SQL. Every pid here was allocated
+ * by the job this call is collecting for, so there is nothing persisted to
+ * find; asking anyway made the first exec of every session bootstrap the W9
+ * log schema and pay a second durable commit for it (~28 ms).
  */
 function collectJobOutput(
   self: ProgrammaticHost,
@@ -417,7 +422,7 @@ function collectJobOutput(
   const owned = [self.processes.get(pid), ...self.processes.descendantsOf(pid)];
   for (const entry of owned) {
     if (!entry) continue;
-    const chunks: LogChunk[] = self.processes.allLogs(entry.pid);
+    const chunks: LogChunk[] = self.processes.bufferedLogs(entry.pid);
     for (const chunk of chunks) {
       if (chunk.stream === 'stderr') stderr.push(String(chunk.data));
       else stdout.push(String(chunk.data));

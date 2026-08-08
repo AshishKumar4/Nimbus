@@ -146,4 +146,36 @@ function makeHost() {
   assert.equal(second.stdout, 'child of two\n');
 }
 
+// ── a foreground exec never reaches the persistence adapter ──────────────
+//
+// Every pid an exec collects output for was allocated by that same exec, so
+// there is nothing persisted to find. Asking anyway is not free: the
+// adapter's `load` bootstraps the W9 log schema, which cost the first exec
+// of every session a second durable commit — measured 2026-08-08 at ~28 ms.
+{
+  const host = makeHost();
+  const loads = [];
+  host.processes.setLogPersist(
+    {
+      load(pid) { loads.push(pid); return { chunks: [], exit: null }; },
+      persist() {},
+      recordExit() {},
+      pruneBeforeSeq() {},
+    },
+    () => {},
+  );
+
+  const quiet = await rpcExec(host, 'echo hello');
+  assert.equal(quiet.stdout, 'echo hello\n');
+  assert.deepEqual(loads, [], 'a foreground exec must not load persisted logs');
+
+  // Output that arrives through a child's ring still resolves. That child's
+  // first append hydrates its own pid — the ring it writes to is genuinely
+  // persisted — but collecting the result adds no lookup beyond it.
+  const viaRing = await rpcExec(host, 'spawner three');
+  assert.equal(viaRing.stdout, 'child of three\n');
+  const childPid = Math.max(...host.processes.getAll().map((p) => p.pid));
+  assert.deepEqual(loads, [childPid], 'the only hydrate is the ring write, not the collect');
+}
+
 console.log('programmatic background process: ok');

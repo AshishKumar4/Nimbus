@@ -228,6 +228,17 @@ export declare class ProcessLogStore {
     private _tailStartIndex;
     /** All chunks for a pid, chronological. */
     all(pid: number): LogChunk[];
+    /**
+     * The chunks already buffered for a pid, without consulting the
+     * persistence adapter.
+     *
+     * For a pid whose whole life is inside the current request, a hydrate is a
+     * guaranteed miss — nothing has flushed it — and the miss is not free: the
+     * adapter's `load` bootstraps the W9 schema, so a session that never
+     * persists a process log still pays a durable DDL commit for the lookup.
+     * `all()` stays the right call for a pid that may predate this isolate.
+     */
+    buffered(pid: number): LogChunk[];
     /** Record exit. Idempotent: second call is ignored (preserves first). */
     markExit(pid: number, code: number, reason?: string): void;
     /**
