@@ -17,12 +17,9 @@
  */
 import { NODE_SHIMS_BUILD_ID, NODE_SHIMS_ENTRY, NODE_SHIMS_SHA256, } from '../node-shims-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { sha256Hex } from '../_shared/crypto.js';
 const L2_KEY = `https://nimbus-cache.invalid${NODE_SHIMS_ENTRY}?build=${NODE_SHIMS_BUILD_ID}`;
 const ASSET_URL = `https://nimbus-internal.invalid${NODE_SHIMS_ENTRY}`;
-async function sha256Hex(text) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 let memo = null;
 async function fetchAndVerify(env) {
     if (!env.ASSETS) {

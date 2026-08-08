@@ -10,15 +10,18 @@
  *
  * Mirrors sqlite-wasm-bytes.ts: ASSETS is the source of truth; L2
  * (caches.default) keyed on a version-pinned synthetic URL; no module-scope
- * residency.
+ * residency. Every file is verified against its pinned SHA-256 on BOTH tiers —
+ * these bytes are compiled as wasm modules or evaluated as facet ESM, so a
+ * poisoned colo-cache entry would otherwise be executed unchecked.
  *
  * Besides the CLI bundle this also fetches the tree-sitter wasm sidecars
  * (core + bash + powershell grammars) that ride into the facet module map as
  * pre-compiled WebAssembly.Modules for opencode's bash-tool command parser
  * (see OPENCODE_TREE_SITTER_WASMS and FacetManager.treeSitterModuleEntries).
  */
-import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
+import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_DIGESTS, OPENCODE_ARTIFACT_PRESENT, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { sha256Hex } from '../_shared/crypto.js';
 /** Base asset path of the staged opencode bundle directory. */
 const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
 // The build id (content hash of the staged dist) is part of the L2 key so a
@@ -30,37 +33,68 @@ function l2Key(file) {
 function assetUrl(file) {
     return `https://nimbus-internal.invalid${OPENCODE_ASSET_BASE}/${file}`;
 }
+/**
+ * The pinned digest for a staged file. Unstaged builds carry an empty map, so
+ * the two conditions are reported apart: "this build has no artifact at all"
+ * (the documented OPENCODE_ARTIFACT_PRESENT=false case) versus "the artifact
+ * is staged but this file is not part of it".
+ */
+function pinnedDigest(file) {
+    if (!OPENCODE_ARTIFACT_PRESENT) {
+        throw new Error(`opencode artifact is not staged in this build — cannot serve ` +
+            `${OPENCODE_ASSET_BASE}/${file}; rerun scripts/bundle-opencode.mjs with the ` +
+            'opencode dist present');
+    }
+    if (!Object.prototype.hasOwnProperty.call(OPENCODE_ARTIFACT_DIGESTS, file)) {
+        throw new Error(`opencode asset ${file} has no pinned digest — it is not part of the staged ` +
+            `artifact ${OPENCODE_ARTIFACT_VERSION} (${OPENCODE_ARTIFACT_BUILD_ID}); rerun ` +
+            'scripts/bundle-opencode.mjs');
+    }
+    return OPENCODE_ARTIFACT_DIGESTS[file];
+}
 async function fetchAsset(env, file) {
+    const expected = pinnedDigest(file);
     const caches = globalThis.caches;
+    let ab = null;
     try {
         if (caches?.default) {
             const hit = await caches.default.match(new Request(l2Key(file)));
             if (hit && hit.ok)
-                return await hit.arrayBuffer();
+                ab = await hit.arrayBuffer();
         }
     }
     catch { /* fall through to ASSETS */ }
-    const res = await env.ASSETS.fetch(new Request(assetUrl(file)));
-    let ab;
-    try {
-        if (!res.ok) {
-            throw new Error(`opencode asset fetch failed: ${res.status} ${res.statusText} for ` +
-                `${OPENCODE_ASSET_BASE}/${file} — deploy is missing the staged opencode artifact`);
+    const fromCache = ab !== null;
+    if (!ab) {
+        const res = await env.ASSETS.fetch(new Request(assetUrl(file)));
+        try {
+            if (!res.ok) {
+                throw new Error(`opencode asset fetch failed: ${res.status} ${res.statusText} for ` +
+                    `${OPENCODE_ASSET_BASE}/${file} — deploy is missing the staged opencode artifact`);
+            }
+            ab = await res.arrayBuffer();
         }
-        ab = await res.arrayBuffer();
-    }
-    finally {
-        disposeRpcResource(res);
-    }
-    try {
-        if (caches?.default) {
-            const writeBack = new Response(new Uint8Array(ab), {
-                headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
-            });
-            await caches.default.put(new Request(l2Key(file)), writeBack);
+        finally {
+            disposeRpcResource(res);
         }
     }
-    catch { /* silent */ }
+    const digest = await sha256Hex(ab);
+    if (digest !== expected) {
+        throw new Error(`opencode asset integrity check failed for ${OPENCODE_ASSET_BASE}/${file}: expected ` +
+            `${expected}, got ${digest} (${fromCache ? 'L2 cache' : 'ASSETS'}) — the staged ` +
+            'artifact is corrupt or out of sync; rerun scripts/bundle-opencode.mjs and redeploy');
+    }
+    if (!fromCache) {
+        try {
+            if (caches?.default) {
+                const writeBack = new Response(new Uint8Array(ab), {
+                    headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
+                });
+                await caches.default.put(new Request(l2Key(file)), writeBack);
+            }
+        }
+        catch { /* silent */ }
+    }
     return ab;
 }
 /** Fetch the opencode CLI bundle source as text. */

@@ -17,20 +17,13 @@
  */
 import { OPENTUI_WASM_BUILD_ID, OPENTUI_WASM_ENTRY, OPENTUI_WASM_SHA256, } from '../opentui-wasm-artifact.generated.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { sha256Hex } from '../_shared/crypto.js';
 /**
  * Synthetic L2 cache key for the OpenTUI wasm asset. Build-id-pinned so a
  * same-version rebuild with different bytes lands a fresh entry instead of
  * serving stale content from a warm colo cache.
  */
 const OPENTUI_WASM_L2_KEY = `https://nimbus-cache.invalid${OPENTUI_WASM_ENTRY}?build=${OPENTUI_WASM_BUILD_ID}`;
-async function sha256Hex(bytes) {
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    const view = new Uint8Array(digest);
-    let hex = '';
-    for (let i = 0; i < view.length; i++)
-        hex += view[i].toString(16).padStart(2, '0');
-    return hex;
-}
 /**
  * Fetch the staged OpenTUI wasm bytes and verify their SHA-256 against the
  * generated digest.

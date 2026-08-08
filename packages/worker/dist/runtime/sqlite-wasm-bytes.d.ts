@@ -12,7 +12,8 @@
  *
  * Mirrors esbuild-wasm-bytes.ts: NO module-scope cache (no supervisor
  * residency), L2 colo cache via caches.default keyed by the version-pinned
- * asset URL, ASSETS as the source of truth.
+ * asset URL, ASSETS as the source of truth, and a sha-256 integrity check on
+ * both tiers so a stale or tampered asset never gets compiled.
  */
 /**
  * Path inside env.ASSETS where the sql.js wasm binary lives. Versioned so
@@ -37,7 +38,7 @@ export declare const SQLITE_WASM_L2_KEY = "https://nimbus-cache.invalid/_assets/
  *
  * L2 (caches.default) fast path; ASSETS on miss with write-back. Cache
  * failures are silent — ASSETS is always the source of truth. A non-200
- * from ASSETS throws (deploy bug — the asset is missing).
+ * from ASSETS, or a digest mismatch on either tier, throws.
  */
 export declare function fetchSqliteWasmBytes(env: SqliteWasmFetchEnv): Promise<ArrayBuffer>;
 //# sourceMappingURL=sqlite-wasm-bytes.d.ts.map

@@ -16,5 +16,11 @@
  * map.
  */
 export declare const SQLJS_BUNDLE_VERSION: string;
+/**
+ * SHA-256 of the staged public/_assets/sqljs-1.14.1.wasm bytes.
+ * src/runtime/sqlite-wasm-bytes.ts verifies every fetch against it — the L2
+ * (caches.default) tier included — before the bytes reach workerd's loader.
+ */
+export declare const SQLITE_WASM_SHA256: string;
 export declare const SQLJS_GLUE_FN_BODY: string;
 //# sourceMappingURL=sqlite-wasm-bundle.generated.d.ts.map

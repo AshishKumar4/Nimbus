@@ -10,7 +10,9 @@
  *
  * Mirrors sqlite-wasm-bytes.ts: ASSETS is the source of truth; L2
  * (caches.default) keyed on a version-pinned synthetic URL; no module-scope
- * residency.
+ * residency. Every file is verified against its pinned SHA-256 on BOTH tiers —
+ * these bytes are compiled as wasm modules or evaluated as facet ESM, so a
+ * poisoned colo-cache entry would otherwise be executed unchecked.
  *
  * Besides the CLI bundle this also fetches the tree-sitter wasm sidecars
  * (core + bash + powershell grammars) that ride into the facet module map as

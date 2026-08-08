@@ -38,6 +38,8 @@
  * ─────────────
  * Cache lookup failure (any throw) → fall through to ASSETS.
  * ASSETS fetch returning non-200 → throw (deploy bug, surface loudly).
+ * Digest mismatch on either tier → throw (the bytes are compiled as a wasm
+ * module, so they are verified against ESBUILD_WASM_SHA256 before returning).
  */
 /**
  * Path inside env.ASSETS where the esbuild-wasm binary lives.

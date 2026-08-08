@@ -14,6 +14,12 @@
  */
 export declare const ESBUILD_WASM_VERSION: string;
 /**
+ * SHA-256 of the staged public/_assets/esbuild-0.24.2.wasm bytes.
+ * src/runtime/esbuild-wasm-bytes.ts verifies every fetch against it — the L2
+ * (caches.default) tier included — before the bytes reach workerd's loader.
+ */
+export declare const ESBUILD_WASM_SHA256: string;
+/**
  * Function body that, when wrapped in `new Function(...)()`, returns
  * the esbuild-wasm namespace (build, transform, initialize, ...).
  *

@@ -23,6 +23,13 @@ export declare const OPENCODE_ARTIFACT_PRESENT: boolean;
 export declare const OPENCODE_ARTIFACT_ENTRY: string;
 export declare const OPENCODE_ARTIFACT_FILES: readonly string[];
 /**
+ * SHA-256 of every staged file, entry bundle included — the sidecar list omits
+ * index.js. runtime/opencode-artifact.ts verifies each fetch against this map
+ * (the L2 tier included) before the bytes are compiled as a wasm module or
+ * evaluated as facet ESM; a file with no entry here is a loud throw.
+ */
+export declare const OPENCODE_ARTIFACT_DIGESTS: Readonly<Record<string, string>>;
+/**
  * Staged wasm sidecar filenames the facet runner pre-registers as
  * pre-compiled WebAssembly.Modules on `globalThis.__nimbusTreeSitterModules`
  * (request-time WebAssembly.compile is blocked in facets). Core + bash +
