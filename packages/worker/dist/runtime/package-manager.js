@@ -152,7 +152,7 @@ async function resolveRuntimeInstallTarget(env, catalog, spec) {
         if (!versionEntry)
             continue;
         try {
-            const manifest = await fetchManifest(env, versionEntry.manifest);
+            const manifest = await fetchManifest(env, versionEntry);
             if (runtimeEntrypoints(manifest).some((ep) => ep.binName === parsed.name)) {
                 return {
                     runtimeName,
@@ -188,7 +188,7 @@ export function createRuntimeCommandHintResolver(env) {
             if (!versionEntry)
                 continue;
             try {
-                const manifest = await fetchManifest(env, versionEntry.manifest);
+                const manifest = await fetchManifest(env, versionEntry);
                 for (const ep of runtimeEntrypoints(manifest))
                     add(ep.binName, runtimeName);
             }
@@ -431,7 +431,7 @@ async function runInstall(args, ctx, deps) {
     ctx.stdout.write(`[${name}] fetching manifest...\n`);
     let manifest;
     try {
-        manifest = await fetchManifest(deps.env, versionEntry.manifest);
+        manifest = await fetchManifest(deps.env, versionEntry);
     }
     catch (e) {
         ctx.stderr.write(`nimbus install: ${e?.message || e}\n`);
@@ -496,7 +496,7 @@ async function runInstall(args, ctx, deps) {
                 return;
             const f = files[i];
             const target = `${root}/${f.path}`;
-            const bytes = await fetchBlob(deps.env, f.content, f.sha256);
+            const bytes = await fetchBlob(deps.env, f);
             deps.vfs.writeFile(target, bytes);
             completed++;
             ctx.stdout.write(`[${name}] fetched ${f.path} (${(f.size / 1024 / 1024).toFixed(2)} MiB) ${completed}/${total}\n`);
