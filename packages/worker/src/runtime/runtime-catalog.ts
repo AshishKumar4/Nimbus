@@ -55,6 +55,7 @@
  */
 
 import { z } from 'zod/v4';
+import { sha256Hex } from '../_shared/crypto.js';
 import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 
@@ -302,14 +303,6 @@ function l2Address(scope: L2Scope, sha256: string | undefined): L2Address | null
 /** Pair bytes with their address if they hash to it; null otherwise. */
 async function verifyBytes(address: L2Address, bytes: Uint8Array): Promise<VerifiedBytes | null> {
   return await sha256Hex(bytes) === address.sha256 ? { address, bytes } : null;
-}
-
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  const view = new Uint8Array(digest);
-  let hex = '';
-  for (let i = 0; i < view.length; i++) hex += view[i].toString(16).padStart(2, '0');
-  return hex;
 }
 
 // ── Fetchers ─────────────────────────────────────────────────────────
