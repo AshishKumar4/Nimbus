@@ -505,6 +505,13 @@ export function makeCPythonRunnerFactory(deps: {
       // like any other file, which is the whole point of not having a private
       // filesystem any more.
       const stdlibDir = stdlibVfs.replace(/\/[^/]+$/, '');
+      // Every runtime file the interpreter is told about has to be a root of
+      // its own. The trust store was reachable only while the cwd happened to
+      // be an ancestor of the install — from ~ the walk swept the whole runtime
+      // tree in — so `cd` into any subdirectory and SSL_CERT_FILE pointed at a
+      // path the facet could not see, and every pip install failed
+      // CERTIFICATE_VERIFY_FAILED with the bundle sitting right there.
+      const cacertDir = cacertVfs ? cacertVfs.replace(/\/[^/]+$/, '') : null;
       const revision = Math.max(
         vfs.revision(cwd),
         vfs.revision(PYTHON_SITE_PACKAGES_ROOT),
@@ -516,7 +523,7 @@ export function makeCPythonRunnerFactory(deps: {
         : null;
       if (!fsManifest) {
         fsManifest = manifestVfs(vfs, cwd, {
-          extraRoots: [PYTHON_SITE_PACKAGES_ROOT, stdlibDir],
+          extraRoots: [PYTHON_SITE_PACKAGES_ROOT, stdlibDir, ...(cacertDir ? [cacertDir] : [])],
           revision,
         });
         manifestCache = { cred: credKey, cwd, revision, result: fsManifest };
