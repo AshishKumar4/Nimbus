@@ -178,12 +178,37 @@ function splitRuntimeSpec(spec: string): { name: string; versionOverride: string
   };
 }
 
+/**
+ * Runtimes replaced by another implementation, keyed by the name users type.
+ *
+ * `python` was Pyodide (CPython on Emscripten, with its own filesystem) and is
+ * now CPython built for wasm32-wasi. Both are in the catalog, and the
+ * redirection lives HERE rather than in the catalog's `default` because the
+ * catalog is shared with production: flipping it would repoint deployed Workers
+ * that still register the old runner, and `python` would become "command not
+ * found" for everyone until they redeployed. In code, the cutover ships with
+ * the Worker that can serve it.
+ *
+ * `nimbus install python@0.29.4` still reaches Pyodide — an explicit version is
+ * a deliberate request and is left alone.
+ */
+const SUPERSEDED_RUNTIMES: Record<string, string> = { python: 'cpython' };
+
 async function resolveRuntimeInstallTarget(
   env: RuntimeCatalogEnv,
   catalog: RuntimeCatalog,
   spec: string,
 ): Promise<RuntimeInstallTarget | null> {
   const parsed = splitRuntimeSpec(spec);
+  const superseding = parsed.versionOverride === null ? SUPERSEDED_RUNTIMES[parsed.name] : undefined;
+  if (superseding && catalog.runtimes[superseding]) {
+    return {
+      runtimeName: superseding,
+      versionOverride: null,
+      // The name the user typed, so the installer's output still says `python`.
+      requestedName: parsed.name,
+    };
+  }
   if (catalog.runtimes[parsed.name]) {
     return {
       runtimeName: parsed.name,

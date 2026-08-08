@@ -25,6 +25,15 @@ import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL } from './os-contracts.js';
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
+/**
+ * Written when SystemExit reaches top level.
+ *
+ * The exit STATUS cannot carry this on its own: `exit()` and `exit(0)` both
+ * mean "leave the prompt" and both have status 0, which is exactly what a line
+ * that ran fine also returns. Without a marker the REPL treats `exit()` as
+ * ordinary output and never leaves.
+ */
+const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
@@ -59,10 +68,16 @@ function buildReplDriver(source) {
         'elif __nimbus_code is not False:',
         '    try:',
         '        exec(__nimbus_code, __main__.__dict__)',
-        '    except SystemExit:',
-        // Let it out: nimbus_py_run turns it into the exit status, which is how
-        // exit() and Ctrl-D leave the prompt.
-        '        raise',
+        '    except SystemExit as __nimbus_exit:',
+        // Caught rather than re-raised: the marker is what distinguishes leaving
+        // the prompt from a line that merely succeeded.
+        '        __nimbus_code = __nimbus_exit.code',
+        '        if __nimbus_code is None:',
+        '            __nimbus_code = 0',
+        '        elif not isinstance(__nimbus_code, int):',
+        '            sys.stderr.write(str(__nimbus_code) + "\\n")',
+        '            __nimbus_code = 1',
+        `        sys.stdout.write("${EXIT_MARKER}" + str(__nimbus_code) + ":")`,
         '    except BaseException:',
         '        traceback.print_exc()',
     ].join('\n');
@@ -104,6 +119,18 @@ class PythonReplAdapter {
         }
         if (result.stdout.includes(INCOMPLETE_MARKER))
             return { kind: 'incomplete' };
+        const exitAt = result.stdout.indexOf(EXIT_MARKER);
+        if (exitAt >= 0) {
+            const rest = result.stdout.slice(exitAt + EXIT_MARKER.length);
+            const code = Number.parseInt(rest.slice(0, rest.indexOf(':')), 10);
+            return {
+                kind: 'exit',
+                exitCode: Number.isFinite(code) ? code : 0,
+                // Whatever the line printed before exiting is still the user's output.
+                stdout: result.stdout.slice(0, exitAt),
+                stderr: result.stderr,
+            };
+        }
         if (result.exitCode !== 0) {
             // A runner-level failure is the only account of why the session is
             // ending; dropping it turns a broken interpreter into a silent return to
@@ -147,7 +174,19 @@ class PythonReplAdapter {
         const built = manifestVfs(vfs, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
         if ('error' in built)
             throw new Error(built.error);
-        this.fsSnapshot = built.snapshot;
+        // Same workaround as cpython-runner, and it belongs to the same open
+        // defect: the guest cannot consume the stdlib as a manifest-only
+        // demand-load, though the transport delivers it byte-identically. Seeding
+        // it by value is what makes the interpreter start. Remove both together.
+        const snapshot = built.snapshot;
+        const zipBytes = vfs.readFile(stdlibPath);
+        let bin = '';
+        const CH = 32768;
+        for (let i = 0; i < zipBytes.length; i += CH) {
+            bin += String.fromCharCode.apply(null, Array.from(zipBytes.subarray(i, i + CH)));
+        }
+        snapshot.files[stdlibPath.replace(/^\/+/, '')] = btoa(bin);
+        this.fsSnapshot = snapshot;
         this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
         const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
         const host = getFacetManagerLoaderHost(facetMgr);
@@ -191,16 +230,31 @@ class PythonReplAdapter {
  * no import: __cpythonReplRun is put on globalThis by the preamble, and unlike
  * __cpythonRun it keeps its interpreter between calls.
  */
-function pythonReplStepFacetFn(args) {
-    const g = globalThis;
-    const run = g.__cpythonReplRun;
+async function pythonReplStepFacetFn(args, facetEnv) {
+    const run = Reflect.get(globalThis, '__cpythonReplRun');
     if (typeof run !== 'function') {
-        return Promise.resolve({
+        return {
             stdout: '', stderr: '', exitCode: 127,
             error: 'cpython preamble missing: __cpythonReplRun not in scope',
-        });
+        };
     }
-    return run(args);
+    const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
+    const drain = Reflect.get(globalThis, '__wasiDrainPersist');
+    const supervisor = facetEnv && facetEnv.SUPERVISOR;
+    // Published where the boot re-adopts it after the mount, because
+    // __wasiInitFS clears the adoption on purpose. Omitting this here — while
+    // cpython-runner's entry had it — is what made the prompt start with no
+    // filesystem it could read.
+    if (supervisor)
+        Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
+    adopt?.(supervisor);
+    try {
+        return await run(args);
+    }
+    finally {
+        // A line that wrote a file and then raised still wrote the file.
+        await drain?.();
+    }
 }
 export async function runPythonRepl(deps) {
     const adapter = new PythonReplAdapter(deps);

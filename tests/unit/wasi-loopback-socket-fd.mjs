@@ -332,13 +332,36 @@ function parseWire(wire) {
   console.log('  ok  a non-blocking listening descriptor reports EAGAIN on an empty queue');
 }
 
-// ── Listening on a port nothing bound is a clear error, not a hang ──────────
+// ── Opening an unbound port binds it ───────────────────────────────────────
+// Opening this path IS the guest asking to listen: it is what listen(2)
+// compiles to for a program built against wasi-libc. This used to return
+// ENOTCONN unless something had already bound the port through JS, which meant
+// only a runtime that could reach out and do that (ruby, via
+// __nimbusRubySockets) could serve — a plain WASI server got ENOTCONN from
+// listen and never got as far as accept.
 {
   const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  assert.equal(kernel.listeners.has(9999), false, 'nothing has bound the port yet');
+
   const opened = h.open('dev/nimbus/listen/9999');
-  assert.equal(opened.errno, 53, 'ENOTCONN for an unbound port');
-  assert.match(String(globalThis.__nimbusWasiLastSocketError), /not bound/);
-  console.log('  ok  opening an unbound port fails with a reason');
+  assert.equal(opened.errno, ESUCCESS, 'opening the listen path binds the port');
+  assert.equal(kernel.listeners.has(9999), true, 'and the kernel now has a listener');
+
+  // Bound is not served: the supervisor has to learn about the port or nothing
+  // outside the session can route to it.
+  assert.equal(h.wasiImport.fd_fdstat_get(opened.fd, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM, 'and it is a listening socket');
+  console.log('  ok  opening an unbound port binds it and announces it');
+}
+
+// ── A port the kernel refuses still fails with a reason ────────────────────
+{
+  const h = host(null);   // no kernel at all
+  const opened = h.open('dev/nimbus/listen/9998');
+  assert.equal(opened.errno, 52, 'ENOSYS with no virtual socket kernel');
+  assert.match(String(globalThis.__nimbusWasiLastSocketError), /cannot be listened on|no Nimbus virtual socket/);
+  console.log('  ok  listening without a kernel fails with a reason');
 }
 
 // ── A loopback socket fd looks like a socket, not a file ────────────────────

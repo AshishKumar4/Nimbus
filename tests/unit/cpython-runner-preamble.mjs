@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { buildCPythonPreamble } from '../../packages/worker/src/runtime/cpython-runner.ts';
+import { buildCPythonPreamble, buildCPythonSocketProcessWorker } from '../../packages/worker/src/runtime/cpython-runner.ts';
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -44,6 +44,52 @@ const initFsAt = preamble.indexOf('__wasiInitFS({');
 const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusPySupervisor');
 assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   'the supervisor must be adopted after __wasiInitFS, which clears it');
+
+// ── The five invariants this runtime rediscovered by hitting them ──────────
+// Every one of these was already true of ruby-runner, and every one cost a
+// debugging cycle here. A header comment only helps a reader who knows to look;
+// these assertions fail for the next person instead. They read emitted text
+// because that is what a facet actually receives — the seam has no types.
+{
+  const socketWorker = buildCPythonSocketProcessWorker(preamble);
+
+  // 1. Every entry into the VM is wrapped, not just the calls known to park:
+  //    a Suspending import traps on an unpromised stack even returning an i32.
+  assert.ok(/__nimbusEnterVm\s*=\s*\(fn\)\s*=>[\s\S]{0,120}WebAssembly\.promising/.test(preamble),
+    'the VM entry helper must be WebAssembly.promising');
+  for (const entry of ['_initialize', 'nimbus_py_init', 'nimbus_py_run', 'nimbus_py_flush']) {
+    const bare = new RegExp(`(?<!__nimbusEnterVm\\()\\bexports\\.${entry}\\s*\\(`);
+    assert.ok(!bare.test(preamble), `${entry} must be called through __nimbusEnterVm`);
+  }
+
+  // 2. The supervisor is adopted AFTER __wasiInitFS, which clears it on purpose.
+  const initFsAt = preamble.indexOf('__wasiInitFS({');
+  const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusPySupervisor');
+  assert.ok(initFsAt > 0 && adoptAt > initFsAt,
+    'the supervisor must be adopted after __wasiInitFS, which clears it');
+
+  // 3. The root, /tmp and /home are seeded ahead of the manifest: manifestVfs's
+  //    walk skips the empty root, so without this '/' is mode 0 and every
+  //    traversal under it is EACCES.
+  assert.ok(/modes:\s*\{\s*'':\s*7,\s*tmp:\s*7,\s*home:\s*7,\s*\.\.\./.test(preamble),
+    'modes must seed the root, tmp and home before spreading the manifest');
+
+  // 4. A spawned process needs the module published where the preamble looks.
+  assert.ok(socketWorker.includes("globalThis.__NIMBUS_WASM['python.wasm']"),
+    'the socket worker must publish python.wasm to __NIMBUS_WASM');
+
+  // Supervisor publish/adopt/drain are asserted over EVERY facet entry by
+  // cpython-facet-entry-invariants.mjs, which discovers them rather than
+  // listing files — repeating them here would be a second list to rot.
+  //
+  // 5. The pool is built per invocation: supervisorPid is baked into the
+  //    SUPERVISOR binding at construction, so a held pool hands every later
+  //    caller the first caller's write credential.
+  const runnerSrc = readFileSync(path.join(RUNTIME_DIR, '../../src/runtime/cpython-runner.ts'), 'utf8');
+  assert.ok(!/let\s+pool\s*:\s*NimbusLoaderPool\s*\|\s*null/.test(runnerSrc),
+    'the loader pool must not be cached across invocations');
+  console.log('  ok  the preamble-text invariants ruby already knew are asserted, not documented');
+}
 
 // The preamble is module-scope text in a facet; give it a module to be.
 const modPath = path.join(os.tmpdir(), `cpython-preamble-${process.pid}.mjs`);
