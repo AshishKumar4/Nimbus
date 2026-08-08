@@ -599,9 +599,26 @@ function __wasiOpenListener(pathArg, fdflags, fdOutPtr, writeU32LE) {
     const kernel = __wasiKernelOrNull('ports cannot be listened on');
     if (!kernel)
         return __WASI_ENOSYS;
+    // A guest opening this path IS the guest asking to listen — that is what
+    // listen(2) compiles to for a program built against wasi-libc. Refusing an
+    // unbound port made the path usable only by a runtime that could reach out to
+    // JS and bind it first (ruby, through __nimbusRubySockets), so a plain WASI
+    // server got ENOTCONN from listen and could never serve. Binding here is
+    // additive: no guest could previously succeed on an unbound port.
     if (!kernel.listeners.has(port)) {
-        globalThis.__nimbusWasiLastSocketError = 'port ' + port + ' is not bound';
-        return __WASI_ENOTCONN;
+        try {
+            kernel.listen(port);
+        }
+        catch (e) {
+            globalThis.__nimbusWasiLastSocketError =
+                'port ' + port + ' could not be bound: ' + (e && e.message ? e.message : String(e));
+            return __WASI_ENOTCONN;
+        }
+        // The supervisor has to learn about the port, or nothing outside the
+        // session can route to it: bound is not served.
+        const announce = Reflect.get(globalThis, '__nimbusVirtualSocketDidListen');
+        if (typeof announce === 'function')
+            announce(port);
     }
     const fd = nextFd++;
     fdTable.set(fd, { kind: 'listener', port, fdflags: fdflags | 0 });

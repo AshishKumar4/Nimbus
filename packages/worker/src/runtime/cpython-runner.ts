@@ -448,6 +448,15 @@ export function makeCPythonRunnerFactory(deps: {
         `sys.argv = ${JSON.stringify(pyArgv)}`,
         `sys.path.insert(0, ${JSON.stringify(`/${PYTHON_SITE_PACKAGES_ROOT}`)})`,
         `sys.path.insert(0, ${JSON.stringify(cwd)})`,
+        // WASI has no process cwd, so wasi-libc starts every guest at '/'.
+        // Leaving it there silently reroutes every relative path a program
+        // opens — the shell says the user is in /home/user and Python resolves
+        // against the root.
+        'import os',
+        'try:',
+        `    os.chdir(${JSON.stringify(cwd)})`,
+        'except OSError:',
+        '    pass',
       ].join('\n');
 
       const cacertVfs = findFile(CPYTHON_CACERT_REL);
