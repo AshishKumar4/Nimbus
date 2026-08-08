@@ -162,7 +162,17 @@ export function buildRuntimeHandler(
         attachedTty?: boolean;
       };
     };
-    const captureOutput = !!nimbusCtx.__nimbusCaptureOutput;
+    // A facet-hosted runtime streams its output to the session terminal over
+    // the supervisor RPC and hands the shell an empty string. That is live and
+    // cheap, and it is only correct while the process's stdout IS the terminal:
+    // the stream bypasses the shell's stdout chain, so the moment fd 1 or fd 2
+    // is a file, a pipe, a command substitution, or the capture sink of a
+    // programmatic exec, the bytes have to come back in the result and be
+    // written through ctx.stdout instead. A context with no fd table of its own
+    // — the child_process broker synthesizes one — says so directly.
+    const captureOutput = !!nimbusCtx.__nimbusCaptureOutput
+      || ctx.isFdTerminal?.(1) === false
+      || ctx.isFdTerminal?.(2) === false;
     const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
 
     // ── Subcommand dispatch ──
