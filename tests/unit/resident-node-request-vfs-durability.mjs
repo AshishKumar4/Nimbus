@@ -14,7 +14,10 @@ import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts'
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
+
+/** One storage slot per constructed process: these cases are independent. */
+let facetSeq = 0;
 
 let supervisorFactory = () => ({});
 setCtxExports({ SupervisorRPC: (...args) => supervisorFactory(...args) });
@@ -1086,7 +1089,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
 
@@ -1141,7 +1144,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
   const response = await worker.handleHttpRequest(request('sync-append'));
@@ -1176,7 +1179,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
   const response = await worker.handleHttpRequest(request('sync-appends'));
@@ -1199,7 +1202,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: supervisor },
   );
   for (let index = 0; index < 32; index++) {
@@ -1236,7 +1239,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: supervisor },
   );
   const first = worker.handleHttpRequest(request('pending-drain'));
@@ -1281,7 +1284,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: supervisor },
   );
   const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
@@ -1324,7 +1327,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: supervisor },
   );
 
@@ -1371,7 +1374,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: supervisor },
   );
 
@@ -1404,7 +1407,7 @@ function request(path = 'first') {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: supervisor },
   );
 
@@ -1491,7 +1494,7 @@ http.createServer((req, res) => {
   };
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     { SUPERVISOR: withTestAppendAuthority(supervisor) },
   );
   const mutationRequest = (path) => new Request(`http://127.0.0.1:${port}/${path}`, {
@@ -1543,7 +1546,7 @@ process.exit(0);
   const reports = [];
   const generated = await loadGeneratedWorker();
   const worker = new generated.NimbusProcess(
-    { waitUntil() {} },
+    createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     {
       SUPERVISOR: {
         async fsAppend() {

@@ -19,7 +19,7 @@ import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 import { residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
@@ -71,7 +71,7 @@ const world = createFacetWorld(async (config, info) => {
     const generated = await import(url);
     const supervisor = config.env.SUPERVISOR;
     supervisorProps.push(supervisor.props);
-    return new generated.NimbusProcess({ waitUntil() {} }, { SUPERVISOR: supervisor });
+    return new generated.NimbusProcess(createProcessFacetCtx(info.facetName), { SUPERVISOR: supervisor });
   } finally {
     URL.revokeObjectURL(url);
   }

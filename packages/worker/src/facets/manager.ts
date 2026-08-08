@@ -21,6 +21,7 @@ import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
+import { FACET_RESIDENT_STORE_SOURCE } from '../vfs/facet-resident-store.js';
 import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
@@ -851,11 +852,19 @@ try {
   __entryCompileFailure = (__e && __e.stack) || (__e && __e.message) || String(__e);
 }
 
-const __MODULE_VFS_BUNDLE = ${bundleSource.expression};
+// \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
+// adopted it. Holding both is the double materialisation: the module map's text
+// and this object are the same bytes twice, and for pi that is the largest
+// single allocation in the facet before the program starts.
+let __MODULE_VFS_BUNDLE = ${bundleSource.expression};
 const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
+// Module evaluation is the ONLY place workerd allows a string to become code —
+// \`new Function\` throws "Code generation from strings disallowed" in the DO
+// constructor and at request time — so the require closure must be compiled
+// here, off the module map. That is why code cannot come from the store.
 for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
   if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
     try {
@@ -865,6 +874,8 @@ for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
     }
   }
 }
+
+${FACET_RESIDENT_STORE_SOURCE}
 
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
@@ -923,10 +934,44 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     // time. Same reason argv/env/pid want to move here.
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
     const __vfsMetadata = __MODULE_VFS_METADATA;
     const __supervisor = workerEnv?.SUPERVISOR || null;
+    // The resident set lives in this facet's own SQLite rather than its heap.
+    // A synchronous read cannot block and no JS stack here can be suspended, so
+    // the bytes have to sit somewhere a synchronous call can already reach;
+    // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
+    // vfs/facet-resident-store.ts.
+    __residentBind(workerCtx);
+    const __residentAdopted = __residentAdoptModuleBundle(__MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR);
+    // The store now holds these bytes; the parsed object is the duplicate.
+    __MODULE_VFS_BUNDLE = null;
+    // One cursor, not two. The seed above publishes the cursor this SPAWN
+    // staged at, which is right for a cold slot and stale for a warm one — the
+    // store's persisted cursor describes what the rows actually are, and it is
+    // the only one that survived the last incarnation.
+    if (__residentAdopted) {
+      globalThis.__nimbusVfsCursor = { epoch: __residentAdopted.epoch, rev: __residentAdopted.rev };
+    }
+    // Fill the store with everything the manifest knows about and the module
+    // map did not carry. This is what makes a first synchronous read of an
+    // untouched file succeed, and it is the ONLY blocking step: the waiting is
+    // done once, here, before the program's first instruction, so that no
+    // synchronous read after it ever has to wait.
+    //
+    // Paid once per SLOT, not per process — a warm slot's rows are already
+    // there and the pass finds nothing to fetch.
+    if (__residentAdopted && __supervisor) {
+      try {
+        await __residentFillFromSupervisor(__supervisor, __residentAdopted);
+      } catch (__e) {
+        // A failed fill is a smaller resident set, not a dead process: every
+        // path it did not reach reads exactly as it would have without this
+        // store. Surfacing beats a silent capability loss.
+        try { globalThis.__nimbusResidentFillError = (__e && __e.message) || String(__e); } catch {}
+      }
+    }
+    const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;

@@ -32,6 +32,52 @@
  *                                        over it, a clean catchable
  *                                        SQLITE_TOOBIG - not a reset
  *
+ * WHAT IT ACTUALLY FREES, re-measured — smaller than first claimed
+ * ────────────────────────────────────────────────────────────────
+ * The figure that motivated this work — "38.5 MiB, 18.5% of the 208 MiB facet
+ * ceiling, before the program allocates anything" — does not survive
+ * re-measurement, and the error is worth keeping because it is easy to repeat:
+ * it is a SUPERVISOR-side cost (one cached LRU entry, against a 128 MiB isolate)
+ * quoted as a FACET-side one (against a 208 MiB ceiling). Two budgets, two
+ * numbers, and they happen to land within 0.5% of each other by coincidence of
+ * magnitude.
+ *
+ * Re-measured on this tree against a real 16,357-file pi install through the
+ * real `buildPrefetchBundle` / `generateEntrypointCode` path:
+ *
+ *   facet module map (main module)        12.50 MiB
+ *   parsed __MODULE_VFS_BUNDLE             8.22 MiB
+ *   both co-resident at module eval        20.72 MiB   (not 38.5)
+ *   supervisor co-resident at LOADER.load  21.01 MiB   (in a 128 MiB isolate)
+ *
+ * So adopting the bundle and releasing the parsed object frees **8.22 MiB** of
+ * facet heap, not 38.5. The module source text is owned by the loader's module
+ * registry and this code cannot free it; whether workerd retains it after
+ * evaluation is a workerd internal that nothing in this repo decides, and it is
+ * not guessed at here.
+ *
+ * The heap saving is therefore the SMALLEST of this store's three effects, and
+ * a poor reason to adopt it on its own. The two that matter:
+ *
+ *   1. A data read cannot miss, because the store is not capped by admission.
+ *      That is the constraint this exists to satisfy.
+ *   2. Data cells need not enter the module map AT ALL. Only cells that must be
+ *      `new Function`-compiled have to travel as module text; everything else
+ *      can be filled straight into SQLite from the supervisor. That is what can
+ *      take the 12.50 MiB main module down toward the size of the require
+ *      closure alone — a far larger win than releasing the parsed object, and
+ *      the one the filler below exists for.
+ *
+ * A related mechanism, confirmed rather than refuted: an entry larger than the
+ * whole `PREFETCH_CACHE_MAX_BYTES` bound is admitted anyway and evicts every
+ * other entry (`facets/manager.ts` — the `if (oldest === key) continue` branch).
+ * Demonstrated: a 21.50 MiB entry left the cache 5.77 MB over its own 16 MiB
+ * bound with all four prior entries gone. Whether pi specifically crosses that
+ * bound is UNRESOLVED — a real pi 0.78.1 tree retains 12.04 MiB, comfortably
+ * under it, and the original 21.65 MiB was measured on 0.84.1 with a warm
+ * residency profile and a 119-package session. Do not repeat the pi number
+ * without re-measuring it on a live session.
+ *
  * WHAT MOVING THE RESIDENT SET DOES NOT BUY — measured, against expectation
  * ─────────────────────────────────────────────────────────────────────────
  * It was proposed that module-map staging is what stalls a large spawn, and
@@ -192,6 +238,13 @@ let __residentReady = false;
  * \`__residentRequire\`, which every read, scan and write goes through.
  */
 let __residentSealed = true;
+/**
+ * Set when this facet booted from a snapshot carrying no cursor, so the store
+ * holds nothing. Read by residency-miss reporting: without it, "not resident"
+ * is indistinguishable from "resident set was never adoptable", and the second
+ * is a much more actionable thing to be told.
+ */
+let __residentUndated = false;
 let __residentSealReason = "the store has not reconciled with the authority in this incarnation";
 
 const __RESIDENT_CHUNK_BYTES = ${RESIDENT_CHUNK_BYTES};
@@ -514,8 +567,142 @@ function __residentStats() {
     files, bytes,
     databaseSize: Number(sql.databaseSize ?? 0),
     sealed: __residentSealed,
+    undatedSnapshot: __residentUndated,
     cursor: __residentCursor(),
   };
+}
+
+/**
+ * Adopt the module map's bundle into the store — the first fill, and the one
+ * that costs nothing extra, because those bytes are already in the facet.
+ *
+ * Idempotent per SLOT, not per process: a warm slot already holds these rows
+ * and re-adopting would rewrite 45 MB to reach the same state. The cursor the
+ * bundle was read at is the store's cursor after a cold adopt; on a warm slot
+ * the PERSISTED cursor wins, because it describes what the rows actually are
+ * and the module's cursor only describes what this spawn happened to stage.
+ *
+ * Returns the cursor the caller should publish, so there is one answer to
+ * "what state does this facet cache" rather than two that can disagree.
+ */
+function __residentAdoptModuleBundle(bundle, moduleCursor) {
+  if (!__residentReady) throw new Error("Nimbus: __residentAdoptModuleBundle before __residentBind");
+  const persisted = __residentCursor();
+  if (persisted) {
+    // Warm slot. Its rows are already dated; do not touch them.
+    __residentSealed = false;
+    __residentSealReason = "";
+    return persisted;
+  }
+  if (!moduleCursor || moduleCursor.epoch == null || moduleCursor.rev == null) {
+    // An undated snapshot. Adopt NOTHING and serve an empty store.
+    //
+    // Not a throw, because this is a real path rather than a misuse: a facet
+    // whose first contact is an inbound HTTP request runs
+    // \`__nimbusEnsureStarted(env, ctx)\` with no start args, so it has no
+    // cursor to offer. Refusing would turn a served port into a dead one.
+    //
+    // Not an adopt either, because rows nothing can date are the stale-read
+    // bug. An EMPTY store is safe to serve for the reason the seal exists at
+    // all — it has no row whose age could be wrong — and a miss is an answer
+    // the shims already handle, falling through to the supervisor exactly as
+    // they do today after a poison. So this is strictly no worse than the
+    // current behaviour and cannot serve a stale byte.
+    __residentUndated = true;
+    __residentSealed = false;
+    __residentSealReason = "";
+    return null;
+  }
+  const rev = Number(moduleCursor.rev);
+  for (const path of Object.keys(bundle || {})) {
+    __residentPut(__residentSql, path, bundle[path], rev);
+  }
+  return __residentAdmit({ poison: false, paths: [], epoch: String(moduleCursor.epoch), rev }).cursor;
+}
+
+/**
+ * Fill the store with everything the manifest knows about and the store does
+ * not hold — the step that turns "a capped prefetch" into "the filesystem", and
+ * so the step that makes a first synchronous read of an untouched file succeed.
+ *
+ * The manifest is already shipped UNCAPPED (it is the true directory shape, ~50
+ * KiB for a 1,928-file install), so it is the authority on what exists; the cap
+ * only ever applied to CONTENT. Bytes come over \`supervisor.fsReadBatch\`, the
+ * batch read the shims already use.
+ *
+ * Async and paid once per slot, before the program's first instruction. It is
+ * the only asynchronous thing in this module, and that is the whole trick: the
+ * blocking is done here, so the reads that follow never have to.
+ */
+async function __residentFillFromSupervisor(supervisor, cursor, options) {
+  if (!__residentReady) throw new Error("Nimbus: __residentFillFromSupervisor before __residentBind");
+  if (!supervisor || typeof supervisor.fsReadBatch !== "function") {
+    return { requested: 0, filled: 0, failed: 0, skipped: "no fsReadBatch on this supervisor" };
+  }
+  const rev = Number((cursor && cursor.rev) ?? NaN);
+  if (!Number.isFinite(rev)) {
+    throw new Error("Nimbus: refusing to fill the resident store with no cursor to date the rows at");
+  }
+  const batchRows = (options && options.batchRows) || __RESIDENT_BATCH_ROWS;
+  const wanted = [];
+  // WHAT EXISTS has to come from the authority, not from the module map.
+  //
+  // Neither map the facet is shipped is a complete file list, and this was
+  // measured rather than assumed: for a working tree holding a 25 MiB file
+  // outside the cwd, \`__MODULE_VFS_METADATA\` arrived with FOUR entries — "home",
+  // "opt", "var", "home/user" — every one a directory. Metadata covers the
+  // bundle plus ancestors; the manifest is per-directory child names for the
+  // directories that were walked. A store that enumerated from either would
+  // silently hold only what the bundle already had, which is the admission
+  // problem it exists to delete.
+  //
+  // So the enumeration is a supervisor call. Until that RPC exists the store
+  // fills nothing beyond the adopted bundle and every read behaves exactly as
+  // it does today — a smaller resident set, never a wrong one.
+  if (typeof supervisor.fsList !== "function") {
+    return { requested: 0, filled: 0, failed: 0, skipped: "supervisor cannot enumerate the filesystem (no fsList)" };
+  }
+  let listed;
+  try {
+    listed = await supervisor.fsList();
+  } catch (e) {
+    return { requested: 0, filled: 0, failed: 0, skipped: "fsList failed: " + ((e && e.message) || String(e)) };
+  }
+  for (const raw of listed || []) {
+    const path = String(typeof raw === "string" ? raw : raw.path).replace(/^\\/+/, "");
+    if (!path) continue;
+    if (__residentHeadOn(__residentSql, path) !== undefined) continue;
+    wanted.push(path);
+  }
+  let filled = 0, failed = 0;
+  for (let at = 0; at < wanted.length; at += batchRows) {
+    const slice = wanted.slice(at, at + batchRows);
+    let results;
+    try {
+      results = await supervisor.fsReadBatch(slice.map((path) => ({ path })));
+    } catch {
+      failed += slice.length;
+      continue;
+    }
+    for (let i = 0; i < slice.length; i++) {
+      const entry = results && results[i];
+      if (!entry || entry.error) {
+        // A denial is a real answer and is stored as one; anything else is a
+        // path this store simply will not hold, and a read of it falls through
+        // to the same miss it would have had before.
+        if (entry && entry.error && entry.error.code === "EACCES") {
+          __residentPut(__residentSql, slice[i], { error: "EACCES" }, rev);
+          filled++;
+        } else failed++;
+        continue;
+      }
+      const body = entry.content !== undefined ? entry.content : entry.data;
+      if (body === undefined || body === null) { failed++; continue; }
+      __residentPut(__residentSql, slice[i], body, rev);
+      filled++;
+    }
+  }
+  return { requested: wanted.length, filled, failed };
 }
 
 /**
