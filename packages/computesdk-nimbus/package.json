@@ -1,0 +1,43 @@
+{
+  "name": "@computesdk/nimbus",
+  "version": "0.1.0",
+  "description": "Nimbus provider for ComputeSDK - POSIX-like sandboxes on Cloudflare Workers and Durable Objects",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "computesdk",
+    "provider",
+    "sandbox",
+    "nimbus",
+    "cloudflare",
+    "durable-objects",
+    "code-execution"
+  ],
+  "dependencies": {
+    "@computesdk/provider": "^2.1.4",
+    "@nimbus-sh/sdk": "workspace:^",
+    "computesdk": "^4.1.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
