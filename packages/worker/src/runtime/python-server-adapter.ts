@@ -47,7 +47,6 @@ def _nimbus_patch_socketserver():
     if getattr(_socketserver.BaseServer.serve_forever, "_nimbus_request_driven", False):
         return
 
-    _orig_server_close = _socketserver.BaseServer.server_close
     _orig_shutdown = _socketserver.BaseServer.shutdown
 
     def _serve_forever(self, poll_interval=0.5):
@@ -75,19 +74,21 @@ def _nimbus_patch_socketserver():
         self._nimbus_adopted = False
         return _orig_shutdown(self)
 
-    def _server_close(self):
-        # python -m http.server runs its server inside a with-block, so the
-        # close arrives the instant serve_forever returns. Honouring it unbound
-        # the port before the first request could ever reach it.
-        if getattr(self, "_nimbus_adopted", False):
-            return None
-        sock = getattr(self, "socket", None)
-        if sock is not None:
-            try:
-                _nimbus_servers.pop(int(sock.getsockname()[1]), None)
-            except Exception:
-                pass
-        return _orig_server_close(self)
+    def _wrap_server_close(original):
+        def _server_close(self):
+            # python -m http.server runs its server inside a with-block, so the
+            # close arrives the instant serve_forever returns. Honouring it shut
+            # the listening socket before the first request could reach it.
+            if getattr(self, "_nimbus_adopted", False):
+                return None
+            sock = getattr(self, "socket", None)
+            if sock is not None:
+                try:
+                    _nimbus_servers.pop(int(sock.getsockname()[1]), None)
+                except Exception:
+                    pass
+            return original(self)
+        return _server_close
 
     def _process_request_sync(self, request, client_address):
         # ThreadingMixIn would hand the request to a thread that will never be
@@ -101,8 +102,12 @@ def _nimbus_patch_socketserver():
 
     _serve_forever._nimbus_request_driven = True
     _socketserver.BaseServer.serve_forever = _serve_forever
-    _socketserver.BaseServer.server_close = _server_close
     _socketserver.BaseServer.shutdown = _shutdown
+    # Both, because TCPServer defines its own server_close and every server
+    # anyone runs here derives from it — patching only the base class left the
+    # one that actually closes the socket untouched.
+    for _cls in (_socketserver.BaseServer, _socketserver.TCPServer):
+        _cls.server_close = _wrap_server_close(_cls.__dict__["server_close"])
     try:
         _socketserver.ThreadingMixIn.process_request = _process_request_sync
     except Exception:
