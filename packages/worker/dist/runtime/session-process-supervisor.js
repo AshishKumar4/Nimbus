@@ -184,6 +184,10 @@ export class SessionProcessSupervisor {
     allLogs(pid) {
         return this.logs.all(pid);
     }
+    /** See ProcessLogStore.buffered — a read that never hydrates from SQL. */
+    bufferedLogs(pid) {
+        return this.logs.buffered(pid);
+    }
     logSnapshot(pid) {
         return this.logs.snapshot(pid);
     }
