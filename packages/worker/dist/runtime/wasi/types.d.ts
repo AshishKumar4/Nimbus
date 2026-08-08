@@ -261,6 +261,7 @@ export interface WasiImports {
     sock_send(fd: number, siDataPtr: number, siDataLen: number, siFlags: number, soDatalenPtr: number): Promise<Errno>;
     sock_recv(fd: number, riDataPtr: number, riDataLen: number, riFlags: number, roDatalenPtr: number, roFlagsPtr: number): Promise<Errno>;
     sock_shutdown(fd: number, how: number): Promise<Errno>;
+    sock_accept(fd: number, flags: number, fdOutPtr: number): Promise<Errno>;
     poll_oneoff(inSubsPtr: number, outEventsPtr: number, nsubs: number, retNeventsPtr: number): Promise<Errno>;
 }
 /**
@@ -268,7 +269,7 @@ export interface WasiImports {
  * Suspending wrapper. Typed as keys of the table so a rename or a typo is a
  * compile error instead of a silently unwrapped import.
  */
-export type ParkableImport = Extract<keyof WasiImports, 'sock_send' | 'sock_recv' | 'sock_shutdown' | 'poll_oneoff' | 'fd_read' | 'fd_write' | 'fd_pread' | 'path_filestat_get'>;
+export type ParkableImport = Extract<keyof WasiImports, 'sock_send' | 'sock_recv' | 'sock_shutdown' | 'sock_accept' | 'poll_oneoff' | 'fd_read' | 'fd_write' | 'fd_pread' | 'path_filestat_get'>;
 /**
  * A syscall body as the wrapper layer sees it. The park guard and the
  * non-suspending guard are signature-agnostic by construction — they forward

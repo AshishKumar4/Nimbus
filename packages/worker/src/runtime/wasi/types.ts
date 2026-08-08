@@ -349,6 +349,7 @@ export interface WasiImports {
     roDatalenPtr: number, roFlagsPtr: number,
   ): Promise<Errno>;
   sock_shutdown(fd: number, how: number): Promise<Errno>;
+  sock_accept(fd: number, flags: number, fdOutPtr: number): Promise<Errno>;
   poll_oneoff(inSubsPtr: number, outEventsPtr: number, nsubs: number, retNeventsPtr: number): Promise<Errno>;
 }
 
@@ -359,7 +360,7 @@ export interface WasiImports {
  */
 export type ParkableImport = Extract<
   keyof WasiImports,
-  'sock_send' | 'sock_recv' | 'sock_shutdown' | 'poll_oneoff'
+  'sock_send' | 'sock_recv' | 'sock_shutdown' | 'sock_accept' | 'poll_oneoff'
   | 'fd_read' | 'fd_write' | 'fd_pread' | 'path_filestat_get'
 >;
 

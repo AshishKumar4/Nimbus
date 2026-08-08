@@ -1,0 +1,50 @@
+Share one copy of the bundled reference LAPACK between the two linalg modules.
+
+numpy compiles lapack_lite/*.c -- the f2c'd reference BLAS and LAPACK used when
+no optimised library is found -- directly into both `lapack_lite` and
+`_umath_linalg`. As separate shared objects that is merely wasteful: each .so
+carries its own copy. Linked statically into one interpreter it is fatal,
+because scopy_, dgetrf_ and every other Fortran symbol is then defined twice in
+the same module, and wasm-ld rejects it.
+
+A static_library both modules link against is the same code with one
+definition, and it drops the duplicated copy from the variant.
+
+--- a/numpy/linalg/meson.build
++++ b/numpy/linalg/meson.build
+@@ -16,13 +16,20 @@
+   ]
+ endif
+ 
+-py.extension_module('lapack_lite',
++lapack_lite_lib = static_library('lapack_lite_shared_impl',
+   [
+-    'lapack_litemodule.c',
+     python_xerbla_sources,
+     lapack_lite_sources,
+   ],
+   dependencies: [np_core_dep, blas_dep, lapack_dep],
++)
++
++py.extension_module('lapack_lite',
++  [
++    'lapack_litemodule.c',
++  ],
++  dependencies: [np_core_dep, blas_dep, lapack_dep],
++  link_with: lapack_lite_lib,
+   install: true,
+   subdir: 'numpy/linalg',
+ )
+@@ -30,11 +37,9 @@
+ py.extension_module('_umath_linalg',
+   [
+     'umath_linalg.cpp',
+-    python_xerbla_sources,
+-    lapack_lite_sources,
+   ],
+   dependencies: [np_core_dep, blas_dep, lapack_dep],
+-  link_with: npymath_lib,
++  link_with: [npymath_lib, lapack_lite_lib],
+   install: true,
+   subdir: 'numpy/linalg',
+ )

@@ -1,13 +1,20 @@
 ---
 title: WASI & syscalls
-description: 45 of 46 preview1 functions, JSPI-suspended sockets, and the gaps stated exactly.
+description: All 46 preview1 functions, JSPI-suspended sockets, and the gaps stated exactly.
 ---
 
 Compiled binaries from `clang`, and any `wasm32-wasi` module you bring,
-run on the Nimbus `wasi_snapshot_preview1` host. **45 of the 46 preview1
-functions work.** The missing one is `sock_accept`, so WASM servers can't
-take `/port` traffic yet. Preview1 has no `sock_open`, `bind`, or `listen`;
-an inbound-socket extension is designed but not shipped.
+run on the Nimbus `wasi_snapshot_preview1` host. **All 46 preview1
+functions work.**
+
+Preview1 itself has no `sock_open`, `bind` or `listen` — it can only act on
+descriptors the host already handed over. Nimbus hands them over through
+synthetic paths: `path_open('/dev/nimbus/listen/<port>')` binds a listening
+descriptor, and a connection is taken from it either by `sock_accept`, which
+is what a guest compiled against wasi-libc calls, or by reading the
+descriptor, which is what a guest layered over its own filesystem
+(`ruby.wasm`) has to do instead. Both end at the same socket fd, so a WASM
+server takes `/port` traffic the same way a Node one does.
 
 Blocking I/O uses JSPI. Socket calls, `poll_oneoff` and the file reads
 that can reach the session filesystem are wrapped in

@@ -1,0 +1,31 @@
+Give the legacy RandomState build of distributions.c its own symbol namespace.
+
+numpy compiles distributions.c twice: once with RAND_INT_TYPE as int64_t for
+Generator, and once with NP_RANDOM_LEGACY so RAND_INT_TYPE is long, for
+RandomState, whose C API predates int64_t. distributions.h says as much: "the
+original unmodified copy must be retained for use in RandomState".
+
+Shipped as separate shared objects the two builds never meet. Linked statically
+into one interpreter they do, and they are not interchangeable -- on wasm32 a
+long is 32 bits and an int64_t is 64, so random_multinomial resolves to whichever
+copy the linker saw first and the other module's calls become a signature
+mismatch that traps at runtime. wasm-ld reports that as a warning, not an error.
+
+The forced-include header renames the legacy build's functions, so mtrand is
+self-contained and every other module keeps the canonical int64_t copy from
+libnpyrandom.a. build-python.sh generates the header from distributions.h, so
+the rename set follows the header rather than a list that can drift from it.
+
+--- a/numpy/random/meson.build
++++ b/numpy/random/meson.build
+@@ -76,7 +76,9 @@
+       'src/distributions/distributions.c',
+       'src/legacy/legacy-distributions.c'
+     ],
+-    ['-DNP_RANDOM_LEGACY=1'], [npymath_lib],
++    ['-DNP_RANDOM_LEGACY=1',
++     '-include', meson.current_source_dir() / 'src/legacy/nimbus-legacy-rename.h'],
++    [npymath_lib],
+   ],
+ ]
+ foreach gen: random_pyx_sources

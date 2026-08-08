@@ -102,6 +102,13 @@ function host(route) {
   };
 }
 
+/** Writes `p` into the scratch path slot and returns its length. */
+function writeInto(h, p) {
+  const bytes = encoder.encode(p);
+  h.u8().set(bytes, 0x100);
+  return bytes.length;
+}
+
 /** Drain a socket fd to EOF, the way a guest's read loop does. */
 async function readAll(h, fd) {
   let out = '';
@@ -325,13 +332,36 @@ function parseWire(wire) {
   console.log('  ok  a non-blocking listening descriptor reports EAGAIN on an empty queue');
 }
 
-// ── Listening on a port nothing bound is a clear error, not a hang ──────────
+// ── Opening an unbound port binds it ───────────────────────────────────────
+// Opening this path IS the guest asking to listen: it is what listen(2)
+// compiles to for a program built against wasi-libc. This used to return
+// ENOTCONN unless something had already bound the port through JS, which meant
+// only a runtime that could reach out and do that (ruby, via
+// __nimbusRubySockets) could serve — a plain WASI server got ENOTCONN from
+// listen and never got as far as accept.
 {
   const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  assert.equal(kernel.listeners.has(9999), false, 'nothing has bound the port yet');
+
   const opened = h.open('dev/nimbus/listen/9999');
-  assert.equal(opened.errno, 53, 'ENOTCONN for an unbound port');
-  assert.match(String(globalThis.__nimbusWasiLastSocketError), /not bound/);
-  console.log('  ok  opening an unbound port fails with a reason');
+  assert.equal(opened.errno, ESUCCESS, 'opening the listen path binds the port');
+  assert.equal(kernel.listeners.has(9999), true, 'and the kernel now has a listener');
+
+  // Bound is not served: the supervisor has to learn about the port or nothing
+  // outside the session can route to it.
+  assert.equal(h.wasiImport.fd_fdstat_get(opened.fd, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM, 'and it is a listening socket');
+  console.log('  ok  opening an unbound port binds it and announces it');
+}
+
+// ── A port the kernel refuses still fails with a reason ────────────────────
+{
+  const h = host(null);   // no kernel at all
+  const opened = h.open('dev/nimbus/listen/9998');
+  assert.equal(opened.errno, 52, 'ENOSYS with no virtual socket kernel');
+  assert.match(String(globalThis.__nimbusWasiLastSocketError), /cannot be listened on|no Nimbus virtual socket/);
+  console.log('  ok  listening without a kernel fails with a reason');
 }
 
 // ── A loopback socket fd looks like a socket, not a file ────────────────────
@@ -380,6 +410,148 @@ function parseWire(wire) {
   const fd = h.view().getUint32(0x200, true);
   assert.equal(h.wasiImport.fd_write(fd, 0x300, 0, 0x200), ESUCCESS, 'a file fd still writes synchronously');
   console.log('  ok  ordinary paths are unaffected by the /dev/tcp interception');
+}
+
+// ── sock_accept: the syscall wasi-libc's accept(2) actually calls ──────────
+// A guest compiled against wasi-libc never reaches the path_open route; its
+// accept(2) is a direct call to sock_accept and nothing else. CPython built for
+// wasm32-wasi is such a guest, and its module declares the import, so a missing
+// sock_accept is a LinkError at instantiation rather than a runtime failure.
+{
+  const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  kernel.listen(8080);
+  const listener = h.open('dev/nimbus/listen/8080');
+  assert.equal(listener.errno, ESUCCESS);
+
+  // Blocks until a connection arrives, like accept(2).
+  let resolved = false;
+  const pending = h.wasiImport.sock_accept(listener.fd, 0, 0x200)
+    .then((errno) => { resolved = true; return errno; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(resolved, false, 'sock_accept blocks until a connection arrives');
+
+  const served = kernel.handleHttpRequest(8080, new Request('http://127.0.0.1:8080/direct'));
+  assert.equal(await pending, ESUCCESS);
+  const conn = h.view().getUint32(0x200, true);
+
+  // The descriptor it hands back is a socket, not a connection id to open.
+  assert.equal(h.wasiImport.fd_fdstat_get(conn, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM);
+
+  assert.equal(await h.read(conn), ESUCCESS);
+  assert.match(h.lastRead(), /^GET \/direct HTTP\/1\.1/);
+  await h.write(conn, 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok');
+  const response = await served;
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'ok');
+  console.log('  ok  sock_accept yields a connected socket fd directly');
+}
+
+// ── sock_accept honours non-blocking from either descriptor ────────────────
+{
+  const h = host(async () => new Response('unused'));
+  const kernel = globalThis.__nimbusVirtualSockets;
+  kernel.listen(9200);
+  const listener = h.open('dev/nimbus/listen/9200');
+  assert.equal(listener.errno, ESUCCESS);
+
+  // Asked for non-blocking by the call's own flags.
+  assert.equal(await h.wasiImport.sock_accept(listener.fd, 4, 0x200), 6,
+    'an empty queue with FDFLAGS_NONBLOCK is EAGAIN');
+
+  // ...and by the listener's flags, which is how fcntl(O_NONBLOCK) reaches it.
+  assert.equal(h.wasiImport.fd_fdstat_set_flags(listener.fd, 4), ESUCCESS);
+  assert.equal(await h.wasiImport.sock_accept(listener.fd, 0, 0x200), 6,
+    "an empty queue on a non-blocking listener is EAGAIN");
+  console.log('  ok  sock_accept reports EAGAIN rather than stalling a non-blocking guest');
+}
+
+// ── sock_accept on the wrong kind of descriptor ────────────────────────────
+{
+  const h = host(async () => new Response('x'));
+  assert.equal(await h.wasiImport.sock_accept(999, 0, 0x200), 8, 'EBADF for an unknown fd');
+  const { fd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(await h.wasiImport.sock_accept(fd, 0, 0x200), 57,
+    'ENOTSOCK for a connected socket — only a listener can accept');
+  assert.equal(await h.wasiImport.sock_accept(3, 0, 0x200), 57, 'ENOTSOCK for a preopen dir');
+  console.log('  ok  sock_accept refuses descriptors that cannot accept');
+}
+
+// ── fd_renumber is dup2, and dup2 closes the descriptor it lands on ────────
+// preview1 has no dup, so fd_renumber is the only way a guest can move a
+// descriptor onto a number it already chose. nimbus-net.c's socket(2) does
+// exactly this: it claims a number by opening a directory, then moves the real
+// socket onto it once connect(2) knows what to dial.
+{
+  const h = host(async () => new Response('renumbered'));
+  // O_DIRECTORY (oflags bit 1) — nimbus-net.c claims the number by opening the
+  // root preopen, so the empty relative path wasi-libc sends for "/" is the
+  // case that has to work.
+  const claimed = h.wasiImport.path_open(3, 1, 0x100, writeInto(h, ''), 2, -1n, -1n, 0, 0x200);
+  assert.equal(claimed, ESUCCESS, 'open("/", O_DIRECTORY) must claim a descriptor');
+  const claimedFd = h.view().getUint32(0x200, true);
+  const { errno, fd: sockFd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(errno, ESUCCESS);
+
+  assert.equal(h.wasiImport.fd_renumber(sockFd, claimedFd), ESUCCESS);
+
+  // The claimed number is now the socket...
+  assert.equal(h.wasiImport.fd_fdstat_get(claimedFd, 0x2000), ESUCCESS);
+  assert.equal(h.view().getUint8(0x2000), FT_SOCKET_STREAM,
+    'the descriptor the guest was holding is now the socket');
+  // ...and the number the socket arrived on is gone.
+  assert.equal(h.wasiImport.fd_fdstat_get(sockFd, 0x2000), 8, 'EBADF for the vacated fd');
+
+  // And it is really the socket, not just the right filetype.
+  await h.write(claimedFd, 'GET /moved HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
+  assert.equal(await h.read(claimedFd), ESUCCESS);
+  assert.match(h.lastRead(), /^HTTP\/1\.1 200/);
+  console.log('  ok  fd_renumber moves a socket onto a descriptor the guest already holds');
+}
+
+// ── Renumbering over a socket closes it rather than dropping it ────────────
+// Deleting the fd-table entry without closing leaks a live stream: the kernel
+// is never told, so the connection stays open for the life of the process.
+{
+  const h = host(async () => new Response('x'));
+  const doomed = h.open('dev/tcp/127.0.0.1/3000');
+  const keeper = h.open('dev/tcp/127.0.0.1/3001');
+  assert.equal(doomed.errno, ESUCCESS);
+  assert.equal(keeper.errno, ESUCCESS);
+  const doomedEntry = P.fdTable.get(doomed.fd);
+  assert.equal(doomedEntry.closed, false);
+
+  assert.equal(h.wasiImport.fd_renumber(keeper.fd, doomed.fd), ESUCCESS);
+
+  assert.equal(doomedEntry.closed, true, 'the displaced socket must be closed, not leaked');
+  assert.equal(P.fdTable.get(doomed.fd), P.fdTable.get(doomed.fd),
+    'the destination now holds the moved descriptor');
+  assert.notEqual(P.fdTable.get(doomed.fd), doomedEntry);
+  console.log('  ok  fd_renumber closes the socket it displaces');
+}
+
+// ── Renumbering onto itself, and off a descriptor that was never open ──────
+{
+  const h = host(async () => new Response('x'));
+  const { fd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(h.wasiImport.fd_renumber(fd, fd), ESUCCESS, 'renumbering onto itself is a no-op');
+  assert.equal(h.wasiImport.fd_fdstat_get(fd, 0x2000), ESUCCESS, 'and does not close it');
+  assert.equal(h.wasiImport.fd_renumber(999, fd), 8, 'EBADF for an unopened source');
+  console.log('  ok  fd_renumber handles self-renumber and an unopened source');
+}
+
+// ── A preopen is not something a guest may renumber over ───────────────────
+// It is the root of the filesystem; replacing it leaves nothing to read from,
+// and the guest gets no diagnosis at all from a silent success.
+{
+  const h = host(async () => new Response('x'));
+  const { fd } = h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(h.wasiImport.fd_renumber(fd, 3), 76, 'ENOTCAPABLE rather than a destroyed VFS');
+  assert.equal(h.open('tmp/after.txt').errno, 44,
+    'the preopen still resolves paths afterwards');
+  assert.equal(h.wasiImport.fd_fdstat_get(fd, 0x2000), ESUCCESS, 'and the source is untouched');
+  console.log('  ok  fd_renumber refuses to overwrite a preopen');
 }
 
 console.log('wasi-loopback-socket-fd: all cases passed');
