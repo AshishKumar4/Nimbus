@@ -1429,8 +1429,13 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (!entry || entry.kind !== 'file') return __WASI_EBADF;
       const delta = typeof offsetArg === 'bigint' ? offsetArg : BigInt(offsetArg | 0);
       const cur = BigInt(entry.offset);
-      const file = getFile(entry.vfsPath);
-      const fileLen = file ? BigInt(file.length) : 0n;
+      // fileSize, not the resident buffer: a manifest entry is a file whose
+      // bytes have not been demand-loaded yet, and measuring it by what
+      // happens to be in memory calls it empty. SEEK_END then lands at 0, and
+      // every guest that sizes a file by seeking to its end — zipimport does
+      // exactly that before looking for the end-of-central-directory record —
+      // reads the head of the file and concludes it is not an archive.
+      const fileLen = BigInt(fileSize(entry.vfsPath));
       let next: bigint;
       if (whence === WHENCE_SET) next = delta;
       else if (whence === WHENCE_CUR) next = cur + delta;
