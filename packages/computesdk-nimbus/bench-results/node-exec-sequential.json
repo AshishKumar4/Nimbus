@@ -1,0 +1,79 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-08T03:33:32.721Z",
+  "target": "https://nimbus-tw-bench.ashishkmr472.workers.dev",
+  "provider": "nimbus",
+  "shape": "sequential",
+  "workload": {
+    "name": "node-exec",
+    "command": "node -e \"console.log(6*7)\"",
+    "proves": "the Node.js runtime booted and executed JavaScript"
+  },
+  "config": {
+    "trials": 5,
+    "concurrency": 1,
+    "staggerDelayMs": 0
+  },
+  "control": {
+    "rttSamplesMs": [
+      84.219979,
+      23.127920999999986,
+      25.328806000000014,
+      20.645329000000004,
+      19.081474999999983,
+      18.719381999999996,
+      18.815552999999966,
+      20.14617800000002,
+      18.53098799999998,
+      19.066892999999993
+    ],
+    "rttMedianMs": 20.14617800000002,
+    "bareReadyMs": [
+      695.1592539999999,
+      591.109657,
+      620.3771190000002,
+      733.901899,
+      637.472409
+    ],
+    "bareReadyMedianMs": 637.472409
+  },
+  "wallClockMs": null,
+  "trials": [
+    {
+      "index": 0,
+      "ttiMs": 0,
+      "createMs": 692.3233270000001,
+      "execMs": 913.3085490000003,
+      "error": "output did not prove the workload ran: \"\""
+    },
+    {
+      "index": 1,
+      "ttiMs": 0,
+      "createMs": 849.5694280000007,
+      "execMs": 985.3786449999998,
+      "error": "output did not prove the workload ran: \"\""
+    },
+    {
+      "index": 2,
+      "ttiMs": 0,
+      "createMs": 650.516678,
+      "execMs": 992.6046340000012,
+      "error": "output did not prove the workload ran: \"\""
+    },
+    {
+      "index": 3,
+      "ttiMs": 0,
+      "createMs": 679.1466330000003,
+      "execMs": 972.6336749999991,
+      "error": "output did not prove the workload ran: \"\""
+    },
+    {
+      "index": 4,
+      "ttiMs": 0,
+      "createMs": 625.7292900000011,
+      "execMs": 840.6981759999999,
+      "error": "output did not prove the workload ran: \"\""
+    }
+  ],
+  "successRate": 0
+}

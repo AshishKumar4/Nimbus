@@ -1,0 +1,844 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-08T03:38:22.909Z",
+  "target": "https://nimbus-tw-bench.ashishkmr472.workers.dev",
+  "provider": "nimbus",
+  "shape": "staggered",
+  "workload": {
+    "name": "node-version",
+    "command": "node -v",
+    "proves": "sandbox reachable and dispatching commands (NOT that Node booted)"
+  },
+  "config": {
+    "trials": 100,
+    "concurrency": 100,
+    "staggerDelayMs": 200
+  },
+  "control": {
+    "rttSamplesMs": [
+      79.81514,
+      20.36345,
+      18.240426999999983,
+      19.466701,
+      19.43258499999999,
+      22.64352100000002,
+      19.728339000000005,
+      22.546963000000034,
+      18.43098999999995,
+      19.644566999999995
+    ],
+    "rttMedianMs": 19.728339000000005,
+    "bareReadyMs": [
+      944.379234,
+      650.1789700000002,
+      549.056458,
+      707.738836,
+      607.8455629999994
+    ],
+    "bareReadyMedianMs": 650.1789700000002
+  },
+  "wallClockMs": 20760.876744,
+  "trials": [
+    {
+      "index": 0,
+      "ttiMs": 671.6264170000004,
+      "createMs": 611.7205409999997,
+      "execMs": 59.8021490000001,
+      "error": null,
+      "sandboxId": "csdk-msjtpq90-dp1bz3uq"
+    },
+    {
+      "index": 1,
+      "ttiMs": 722.9940539999998,
+      "createMs": 639.8342970000003,
+      "execMs": 83.15185999999994,
+      "error": null,
+      "sandboxId": "csdk-msjtpqel-0pmmwevt"
+    },
+    {
+      "index": 2,
+      "ttiMs": 827.4474569999993,
+      "createMs": 738.7127419999997,
+      "execMs": 88.7302269999991,
+      "error": null,
+      "sandboxId": "csdk-msjtpqk6-1ve96y7m"
+    },
+    {
+      "index": 3,
+      "ttiMs": 1123.4003719999992,
+      "createMs": 1038.6029139999991,
+      "execMs": 84.79326399999991,
+      "error": null,
+      "sandboxId": "csdk-msjtpqpr-ukpmk402"
+    },
+    {
+      "index": 4,
+      "ttiMs": 847.7077549999995,
+      "createMs": 752.7774749999999,
+      "execMs": 94.92291999999998,
+      "error": null,
+      "sandboxId": "csdk-msjtpqve-evl4jmky"
+    },
+    {
+      "index": 5,
+      "ttiMs": 771.5459570000003,
+      "createMs": 667.0604600000006,
+      "execMs": 104.48048500000004,
+      "error": null,
+      "sandboxId": "csdk-msjtpr12-z926bq36"
+    },
+    {
+      "index": 6,
+      "ttiMs": 747.5383419999998,
+      "createMs": 662.1520029999992,
+      "execMs": 85.37988399999995,
+      "error": null,
+      "sandboxId": "csdk-msjtpr6o-vkjtfdwg"
+    },
+    {
+      "index": 7,
+      "ttiMs": 869.8540190000003,
+      "createMs": 805.828501,
+      "execMs": 64.01785000000018,
+      "error": null,
+      "sandboxId": "csdk-msjtprc9-erm92i42"
+    },
+    {
+      "index": 8,
+      "ttiMs": 689.0498680000001,
+      "createMs": 633.5945350000002,
+      "execMs": 55.440348000000085,
+      "error": null,
+      "sandboxId": "csdk-msjtprhu-sooe2v2s"
+    },
+    {
+      "index": 9,
+      "ttiMs": 878.2331699999995,
+      "createMs": 813.9417629999998,
+      "execMs": 64.28533500000049,
+      "error": null,
+      "sandboxId": "csdk-msjtprnf-bifegqf1"
+    },
+    {
+      "index": 10,
+      "ttiMs": 724.0235029999994,
+      "createMs": 623.9966159999994,
+      "execMs": 100.01721199999974,
+      "error": null,
+      "sandboxId": "csdk-msjtprsz-jwh2f8xf"
+    },
+    {
+      "index": 11,
+      "ttiMs": 616.906986,
+      "createMs": 560.7799780000005,
+      "execMs": 56.118015000000014,
+      "error": null,
+      "sandboxId": "csdk-msjtprym-oxtq9uzj"
+    },
+    {
+      "index": 12,
+      "ttiMs": 789.0560749999995,
+      "createMs": 678.934612,
+      "execMs": 110.11666799999966,
+      "error": null,
+      "sandboxId": "csdk-msjtps46-svo17dbz"
+    },
+    {
+      "index": 13,
+      "ttiMs": 822.5230330000004,
+      "createMs": 767.1125140000004,
+      "execMs": 55.404459000000315,
+      "error": null,
+      "sandboxId": "csdk-msjtps9s-mfv1hd6x"
+    },
+    {
+      "index": 14,
+      "ttiMs": 698.0170849999995,
+      "createMs": 639.8796429999993,
+      "execMs": 58.131067999999686,
+      "error": null,
+      "sandboxId": "csdk-msjtpsfc-g4wtgf30"
+    },
+    {
+      "index": 15,
+      "ttiMs": 683.6048310000006,
+      "createMs": 621.0811040000008,
+      "execMs": 62.51436299999932,
+      "error": null,
+      "sandboxId": "csdk-msjtpskw-txi97hvo"
+    },
+    {
+      "index": 16,
+      "ttiMs": 828.6489810000003,
+      "createMs": 744.3676450000003,
+      "execMs": 84.27323099999921,
+      "error": null,
+      "sandboxId": "csdk-msjtpsqh-rmw680iq"
+    },
+    {
+      "index": 17,
+      "ttiMs": 734.9376059999995,
+      "createMs": 672.4929410000004,
+      "execMs": 62.434384000000136,
+      "error": null,
+      "sandboxId": "csdk-msjtpsw2-lnbu6yh8"
+    },
+    {
+      "index": 18,
+      "ttiMs": 676.9271370000006,
+      "createMs": 626.1553100000001,
+      "execMs": 50.76643499999955,
+      "error": null,
+      "sandboxId": "csdk-msjtpt1o-3oq09jg7"
+    },
+    {
+      "index": 19,
+      "ttiMs": 699.2455099999997,
+      "createMs": 642.9176809999999,
+      "execMs": 56.32308000000012,
+      "error": null,
+      "sandboxId": "csdk-msjtpt79-l5dtt3d3"
+    },
+    {
+      "index": 20,
+      "ttiMs": 766.8449609999989,
+      "createMs": 703.3859579999989,
+      "execMs": 63.45399399999951,
+      "error": null,
+      "sandboxId": "csdk-msjtptcv-wybtz5hq"
+    },
+    {
+      "index": 21,
+      "ttiMs": 715.3093069999995,
+      "createMs": 634.4921350000004,
+      "execMs": 80.81118700000115,
+      "error": null,
+      "sandboxId": "csdk-msjtptig-yp2b7us5"
+    },
+    {
+      "index": 22,
+      "ttiMs": 663.003372000001,
+      "createMs": 608.2748210000009,
+      "execMs": 54.721599000000424,
+      "error": null,
+      "sandboxId": "csdk-msjtpto0-gyyu8e9u"
+    },
+    {
+      "index": 23,
+      "ttiMs": 880.5608790000006,
+      "createMs": 743.3233920000002,
+      "execMs": 137.22602199999892,
+      "error": null,
+      "sandboxId": "csdk-msjtpttk-mjhk8ney"
+    },
+    {
+      "index": 24,
+      "ttiMs": 688.0057199999992,
+      "createMs": 628.6648420000001,
+      "execMs": 59.336373000000094,
+      "error": null,
+      "sandboxId": "csdk-msjtptz5-dfs5e0zs"
+    },
+    {
+      "index": 25,
+      "ttiMs": 992.8986679999998,
+      "createMs": 882.3738990000002,
+      "execMs": 110.51711400000022,
+      "error": null,
+      "sandboxId": "csdk-msjtpu4p-yzek60kb"
+    },
+    {
+      "index": 26,
+      "ttiMs": 982.1006639999996,
+      "createMs": 926.745782,
+      "execMs": 55.34862499999872,
+      "error": null,
+      "sandboxId": "csdk-msjtpuaa-zrpu88c4"
+    },
+    {
+      "index": 27,
+      "ttiMs": 765.5194780000002,
+      "createMs": 655.7376509999995,
+      "execMs": 109.77672200000052,
+      "error": null,
+      "sandboxId": "csdk-msjtpufw-ozer2z48"
+    },
+    {
+      "index": 28,
+      "ttiMs": 698.65258,
+      "createMs": 640.5703139999987,
+      "execMs": 58.078309000000445,
+      "error": null,
+      "sandboxId": "csdk-msjtpulg-sytasqca"
+    },
+    {
+      "index": 29,
+      "ttiMs": 948.5236789999999,
+      "createMs": 890.8565870000002,
+      "execMs": 57.6608240000005,
+      "error": null,
+      "sandboxId": "csdk-msjtpur2-3l7xp92c"
+    },
+    {
+      "index": 30,
+      "ttiMs": 760.5291649999999,
+      "createMs": 705.4626009999993,
+      "execMs": 55.05731800000103,
+      "error": null,
+      "sandboxId": "csdk-msjtpuwm-hb873krb"
+    },
+    {
+      "index": 31,
+      "ttiMs": 741.7936979999995,
+      "createMs": 683.8465319999996,
+      "execMs": 57.94108799999958,
+      "error": null,
+      "sandboxId": "csdk-msjtpv27-q4x0k8r3"
+    },
+    {
+      "index": 32,
+      "ttiMs": 729.2298280000014,
+      "createMs": 672.1500360000009,
+      "execMs": 57.06878999999935,
+      "error": null,
+      "sandboxId": "csdk-msjtpv7r-o1w01dni"
+    },
+    {
+      "index": 33,
+      "ttiMs": 715.1080109999984,
+      "createMs": 662.7493889999987,
+      "execMs": 52.335025999998834,
+      "error": null,
+      "sandboxId": "csdk-msjtpvdb-xffmdhk0"
+    },
+    {
+      "index": 34,
+      "ttiMs": 1706.0781270000007,
+      "createMs": 1649.9082980000003,
+      "execMs": 56.1655609999998,
+      "error": null,
+      "sandboxId": "csdk-msjtpvix-h45qajcs"
+    },
+    {
+      "index": 35,
+      "ttiMs": 1051.6723490000004,
+      "createMs": 953.7712840000004,
+      "execMs": 97.88711800000056,
+      "error": null,
+      "sandboxId": "csdk-msjtpvoj-2m697chw"
+    },
+    {
+      "index": 36,
+      "ttiMs": 732.4254659999988,
+      "createMs": 651.0737879999997,
+      "execMs": 81.3413019999989,
+      "error": null,
+      "sandboxId": "csdk-msjtpvu3-nc4zopbz"
+    },
+    {
+      "index": 37,
+      "ttiMs": 1917.436146,
+      "createMs": 1812.9734239999998,
+      "execMs": 104.4567960000004,
+      "error": null,
+      "sandboxId": "csdk-msjtpvzn-0hk405i3"
+    },
+    {
+      "index": 38,
+      "ttiMs": 886.1759170000005,
+      "createMs": 823.8524159999997,
+      "execMs": 62.31490800000029,
+      "error": null,
+      "sandboxId": "csdk-msjtpw58-im056ms1"
+    },
+    {
+      "index": 39,
+      "ttiMs": 712.6393800000005,
+      "createMs": 654.9687599999997,
+      "execMs": 57.66382900000099,
+      "error": null,
+      "sandboxId": "csdk-msjtpwat-6ydpjcsc"
+    },
+    {
+      "index": 40,
+      "ttiMs": 978.9600969999992,
+      "createMs": 891.0509089999996,
+      "execMs": 87.90281399999913,
+      "error": null,
+      "sandboxId": "csdk-msjtpwge-euvxsqa0"
+    },
+    {
+      "index": 41,
+      "ttiMs": 713.4888630000005,
+      "createMs": 650.5716279999997,
+      "execMs": 62.911331999999675,
+      "error": null,
+      "sandboxId": "csdk-msjtpwlz-yold8821"
+    },
+    {
+      "index": 42,
+      "ttiMs": 702.7826459999997,
+      "createMs": 637.2093110000005,
+      "execMs": 65.56699299999855,
+      "error": null,
+      "sandboxId": "csdk-msjtpwrk-vbp4az9w"
+    },
+    {
+      "index": 43,
+      "ttiMs": 859.4883870000012,
+      "createMs": 721.7572369999998,
+      "execMs": 137.72466499999973,
+      "error": null,
+      "sandboxId": "csdk-msjtpwx5-1257ij0q"
+    },
+    {
+      "index": 44,
+      "ttiMs": 737.3812760000001,
+      "createMs": 682.190944,
+      "execMs": 55.18508699999984,
+      "error": null,
+      "sandboxId": "csdk-msjtpx2p-tcrf47sp"
+    },
+    {
+      "index": 45,
+      "ttiMs": 686.1184690000009,
+      "createMs": 631.5964290000011,
+      "execMs": 54.51322199999959,
+      "error": null,
+      "sandboxId": "csdk-msjtpx8a-ga50bfd2"
+    },
+    {
+      "index": 46,
+      "ttiMs": 1979.409391000001,
+      "createMs": 1917.941452000001,
+      "execMs": 61.4607100000012,
+      "error": null,
+      "sandboxId": "csdk-msjtpxdu-1w9i91p2"
+    },
+    {
+      "index": 47,
+      "ttiMs": 713.0466580000011,
+      "createMs": 632.4081470000001,
+      "execMs": 80.6321599999992,
+      "error": null,
+      "sandboxId": "csdk-msjtpxje-w1aowret"
+    },
+    {
+      "index": 48,
+      "ttiMs": 1112.9091849999986,
+      "createMs": 1052.507302,
+      "execMs": 60.39413000000059,
+      "error": null,
+      "sandboxId": "csdk-msjtpxoy-6n8do63y"
+    },
+    {
+      "index": 49,
+      "ttiMs": 817.6652360000007,
+      "createMs": 735.256929000001,
+      "execMs": 82.40382099999988,
+      "error": null,
+      "sandboxId": "csdk-msjtpxuj-4wotch57"
+    },
+    {
+      "index": 50,
+      "ttiMs": 772.1686600000012,
+      "createMs": 637.9212000000007,
+      "execMs": 134.24144499999966,
+      "error": null,
+      "sandboxId": "csdk-msjtpy03-22nuu5ex"
+    },
+    {
+      "index": 51,
+      "ttiMs": 696.3395929999988,
+      "createMs": 636.1948889999985,
+      "execMs": 60.13902600000074,
+      "error": null,
+      "sandboxId": "csdk-msjtpy5p-jqsg1ran"
+    },
+    {
+      "index": 52,
+      "ttiMs": 756.7017859999996,
+      "createMs": 665.7130390000002,
+      "execMs": 90.9843409999994,
+      "error": null,
+      "sandboxId": "csdk-msjtpyba-cbyd1d6f"
+    },
+    {
+      "index": 53,
+      "ttiMs": 902.6912759999996,
+      "createMs": 817.3908790000005,
+      "execMs": 85.29610299999877,
+      "error": null,
+      "sandboxId": "csdk-msjtpygv-3bcajr9q"
+    },
+    {
+      "index": 54,
+      "ttiMs": 902.2604570000003,
+      "createMs": 849.541792,
+      "execMs": 52.71328600000015,
+      "error": null,
+      "sandboxId": "csdk-msjtpymh-msmr3fjv"
+    },
+    {
+      "index": 55,
+      "ttiMs": 1039.7620500000012,
+      "createMs": 979.343957000001,
+      "execMs": 60.41062299999976,
+      "error": null,
+      "sandboxId": "csdk-msjtpys3-dv4jj7bz"
+    },
+    {
+      "index": 56,
+      "ttiMs": 887.4815880000006,
+      "createMs": 797.7335320000002,
+      "execMs": 89.73942399999942,
+      "error": null,
+      "sandboxId": "csdk-msjtpyxp-hprt1tp0"
+    },
+    {
+      "index": 57,
+      "ttiMs": 779.5356939999983,
+      "createMs": 726.2126099999987,
+      "execMs": 53.31716400000005,
+      "error": null,
+      "sandboxId": "csdk-msjtpz3a-ejy1w6no"
+    },
+    {
+      "index": 58,
+      "ttiMs": 970.9554339999995,
+      "createMs": 888.0569859999996,
+      "execMs": 82.89361500000086,
+      "error": null,
+      "sandboxId": "csdk-msjtpz8u-wksxa1rm"
+    },
+    {
+      "index": 59,
+      "ttiMs": 805.0447380000023,
+      "createMs": 665.4564609999998,
+      "execMs": 139.5838180000028,
+      "error": null,
+      "sandboxId": "csdk-msjtpzee-jbkz6gff"
+    },
+    {
+      "index": 60,
+      "ttiMs": 765.1068070000001,
+      "createMs": 713.3489260000024,
+      "execMs": 51.75059600000168,
+      "error": null,
+      "sandboxId": "csdk-msjtpzjy-26kbqs0q"
+    },
+    {
+      "index": 61,
+      "ttiMs": 719.099252,
+      "createMs": 630.6615079999974,
+      "execMs": 88.43048500000077,
+      "error": null,
+      "sandboxId": "csdk-msjtpzpi-e1rl4z7r"
+    },
+    {
+      "index": 62,
+      "ttiMs": 653.2102909999994,
+      "createMs": 591.6255590000001,
+      "execMs": 61.57828800000061,
+      "error": null,
+      "sandboxId": "csdk-msjtpzv3-uhscra7t"
+    },
+    {
+      "index": 63,
+      "ttiMs": 663.3526349999993,
+      "createMs": 609.6430550000005,
+      "execMs": 53.701249999998254,
+      "error": null,
+      "sandboxId": "csdk-msjtq00o-60jzv36x"
+    },
+    {
+      "index": 64,
+      "ttiMs": 640.9474030000019,
+      "createMs": 585.0623090000008,
+      "execMs": 55.87962200000038,
+      "error": null,
+      "sandboxId": "csdk-msjtq06a-ndt4yvpw"
+    },
+    {
+      "index": 65,
+      "ttiMs": 689.5469779999985,
+      "createMs": 581.4040539999987,
+      "execMs": 108.13515600000028,
+      "error": null,
+      "sandboxId": "csdk-msjtq0bu-y10sgdyv"
+    },
+    {
+      "index": 66,
+      "ttiMs": 816.9582160000027,
+      "createMs": 685.236710000001,
+      "execMs": 131.71631799999886,
+      "error": null,
+      "sandboxId": "csdk-msjtq0he-5mlg5753"
+    },
+    {
+      "index": 67,
+      "ttiMs": 738.7079440000016,
+      "createMs": 676.9589269999997,
+      "execMs": 61.74420399999872,
+      "error": null,
+      "sandboxId": "csdk-msjtq0mz-8l28jygz"
+    },
+    {
+      "index": 68,
+      "ttiMs": 948.8019490000006,
+      "createMs": 860.0623550000018,
+      "execMs": 88.73196699999971,
+      "error": null,
+      "sandboxId": "csdk-msjtq0sl-djhzbd5u"
+    },
+    {
+      "index": 69,
+      "ttiMs": 695.952070000003,
+      "createMs": 633.0655030000016,
+      "execMs": 62.880026000002545,
+      "error": null,
+      "sandboxId": "csdk-msjtq0y5-ceh3ytu5"
+    },
+    {
+      "index": 70,
+      "ttiMs": 876.6349630000004,
+      "createMs": 792.7657639999998,
+      "execMs": 83.86335999999937,
+      "error": null,
+      "sandboxId": "csdk-msjtq13p-cgbu6hrl"
+    },
+    {
+      "index": 71,
+      "ttiMs": 1270.7751779999999,
+      "createMs": 1206.0498970000008,
+      "execMs": 64.71804500000144,
+      "error": null,
+      "sandboxId": "csdk-msjtq19c-3qo8vxt8"
+    },
+    {
+      "index": 72,
+      "ttiMs": 665.7338110000019,
+      "createMs": 606.3948290000008,
+      "execMs": 59.332266999997955,
+      "error": null,
+      "sandboxId": "csdk-msjtq1ez-dol3vs9o"
+    },
+    {
+      "index": 73,
+      "ttiMs": 658.4830770000008,
+      "createMs": 596.440389000003,
+      "execMs": 62.03512799999953,
+      "error": null,
+      "sandboxId": "csdk-msjtq1kj-482bvs4l"
+    },
+    {
+      "index": 74,
+      "ttiMs": 740.266592,
+      "createMs": 679.7947619999977,
+      "execMs": 60.46590599999763,
+      "error": null,
+      "sandboxId": "csdk-msjtq1q3-0mlksm3u"
+    },
+    {
+      "index": 75,
+      "ttiMs": 1158.5804879999996,
+      "createMs": 1095.3042879999994,
+      "execMs": 63.270102000002225,
+      "error": null,
+      "sandboxId": "csdk-msjtq1vo-xobu0xug"
+    },
+    {
+      "index": 76,
+      "ttiMs": 862.3973930000029,
+      "createMs": 803.0390210000005,
+      "execMs": 59.35126699999819,
+      "error": null,
+      "sandboxId": "csdk-msjtq219-qlb4p8or"
+    },
+    {
+      "index": 77,
+      "ttiMs": 947.473152999999,
+      "createMs": 862.7198089999983,
+      "execMs": 84.74705000000176,
+      "error": null,
+      "sandboxId": "csdk-msjtq26t-5br12bsr"
+    },
+    {
+      "index": 78,
+      "ttiMs": 1063.4738550000002,
+      "createMs": 990.0561600000001,
+      "execMs": 73.41038999999728,
+      "error": null,
+      "sandboxId": "csdk-msjtq2ce-jbmnij3k"
+    },
+    {
+      "index": 79,
+      "ttiMs": 726.8128939999988,
+      "createMs": 626.2180950000002,
+      "execMs": 100.5894389999994,
+      "error": null,
+      "sandboxId": "csdk-msjtq2i1-huecnota"
+    },
+    {
+      "index": 80,
+      "ttiMs": 671.8735710000001,
+      "createMs": 614.2272919999996,
+      "execMs": 57.640111000000616,
+      "error": null,
+      "sandboxId": "csdk-msjtq2nl-hofw0im8"
+    },
+    {
+      "index": 81,
+      "ttiMs": 757.4323020000011,
+      "createMs": 636.9777830000021,
+      "execMs": 120.4495820000011,
+      "error": null,
+      "sandboxId": "csdk-msjtq2t5-7udjp2zp"
+    },
+    {
+      "index": 82,
+      "ttiMs": 761.4920459999994,
+      "createMs": 712.0802519999997,
+      "execMs": 49.404748000000836,
+      "error": null,
+      "sandboxId": "csdk-msjtq2yr-avc7ydb2"
+    },
+    {
+      "index": 83,
+      "ttiMs": 755.3002759999981,
+      "createMs": 650.1345669999973,
+      "execMs": 105.15875599999708,
+      "error": null,
+      "sandboxId": "csdk-msjtq34f-16j5vts1"
+    },
+    {
+      "index": 84,
+      "ttiMs": 732.7632300000005,
+      "createMs": 653.5330590000012,
+      "execMs": 79.22612500000105,
+      "error": null,
+      "sandboxId": "csdk-msjtq3a0-lr7a66tb"
+    },
+    {
+      "index": 85,
+      "ttiMs": 637.8708939999997,
+      "createMs": 592.2296999999999,
+      "execMs": 45.63398100000268,
+      "error": null,
+      "sandboxId": "csdk-msjtq3fr-4kus0k93"
+    },
+    {
+      "index": 86,
+      "ttiMs": 650.6514569999999,
+      "createMs": 599.3809000000001,
+      "execMs": 51.26592099999834,
+      "error": null,
+      "sandboxId": "csdk-msjtq3ld-8txtkigf"
+    },
+    {
+      "index": 87,
+      "ttiMs": 715.2294269999984,
+      "createMs": 660.1342779999977,
+      "execMs": 55.08881499999916,
+      "error": null,
+      "sandboxId": "csdk-msjtq3qz-pcle2phi"
+    },
+    {
+      "index": 88,
+      "ttiMs": 736.4190559999988,
+      "createMs": 631.392190999999,
+      "execMs": 105.01970699999947,
+      "error": null,
+      "sandboxId": "csdk-msjtq3wj-wn1o7wh3"
+    },
+    {
+      "index": 89,
+      "ttiMs": 696.2038690000009,
+      "createMs": 634.8711240000011,
+      "execMs": 61.32858599999963,
+      "error": null,
+      "sandboxId": "csdk-msjtq423-avcl6ib5"
+    },
+    {
+      "index": 90,
+      "ttiMs": 841.4302940000016,
+      "createMs": 789.0934989999987,
+      "execMs": 52.331850999999006,
+      "error": null,
+      "sandboxId": "csdk-msjtq47o-dct4iix1"
+    },
+    {
+      "index": 91,
+      "ttiMs": 761.8480059999965,
+      "createMs": 703.3165939999999,
+      "execMs": 58.52548899999965,
+      "error": null,
+      "sandboxId": "csdk-msjtq4d8-ys36rm72"
+    },
+    {
+      "index": 92,
+      "ttiMs": 658.2094109999998,
+      "createMs": 604.2516360000009,
+      "execMs": 53.945716000001994,
+      "error": null,
+      "sandboxId": "csdk-msjtq4is-3wt9slbv"
+    },
+    {
+      "index": 93,
+      "ttiMs": 881.6172249999981,
+      "createMs": 796.3166669999991,
+      "execMs": 85.29296199999953,
+      "error": null,
+      "sandboxId": "csdk-msjtq4od-vmnlvbcd"
+    },
+    {
+      "index": 94,
+      "ttiMs": 652.2067260000003,
+      "createMs": 594.775275,
+      "execMs": 57.42563399999926,
+      "error": null,
+      "sandboxId": "csdk-msjtq4tx-jpbwnmnl"
+    },
+    {
+      "index": 95,
+      "ttiMs": 675.9695720000018,
+      "createMs": 616.4136810000018,
+      "execMs": 59.549965999998676,
+      "error": null,
+      "sandboxId": "csdk-msjtq4zj-917y47nc"
+    },
+    {
+      "index": 96,
+      "ttiMs": 861.9729530000004,
+      "createMs": 793.9564179999979,
+      "execMs": 68.01059499999974,
+      "error": null,
+      "sandboxId": "csdk-msjtq555-4mijbeyy"
+    },
+    {
+      "index": 97,
+      "ttiMs": 686.5236069999992,
+      "createMs": 635.3080169999994,
+      "execMs": 51.21095700000296,
+      "error": null,
+      "sandboxId": "csdk-msjtq5ap-65oprnwy"
+    },
+    {
+      "index": 98,
+      "ttiMs": 742.9995140000028,
+      "createMs": 688.2080230000029,
+      "execMs": 54.78619500000059,
+      "error": null,
+      "sandboxId": "csdk-msjtq5ga-9cvcpnk2"
+    },
+    {
+      "index": 99,
+      "ttiMs": 732.5401710000006,
+      "createMs": 648.952659999999,
+      "execMs": 83.58061499999894,
+      "error": null,
+      "sandboxId": "csdk-msjtq5lu-q9nt1310"
+    }
+  ],
+  "successRate": 1
+}

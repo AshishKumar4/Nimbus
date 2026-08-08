@@ -14,7 +14,10 @@ const ENDPOINT = 'https://nimbus.test';
 
 /**
  * Stands in for the Nimbus deployment. `handlers` maps an op name to a
- * result (or a function of the args); every call is recorded.
+ * result (or a function of the args); every call is recorded. A handler
+ * value of `undefined` is the void wire shape (`{ok:true}` with no
+ * `result`); note `writeFile` is NOT void — the DO answers with the byte
+ * count it wrote, so its handlers return a number.
  */
 function fakeNimbus(handlers = {}) {
   const calls = [];
@@ -57,7 +60,7 @@ const execResult = (over = {}) => ({
 
 // create() materializes the Durable Object and marks ownership.
 {
-  const fake = fakeNimbus({ ready: { ok: true, preinstalled: [] }, writeFile: undefined });
+  const fake = fakeNimbus({ ready: { ok: true, preinstalled: [] }, writeFile: 12 });
   const provider = nimbus({ endpoint: ENDPOINT, token: 't' });
 
   const sandbox = await withFetch(fake.fetchImpl, () => provider.sandbox.create());
@@ -74,7 +77,7 @@ const execResult = (over = {}) => ({
 
 // A caller-supplied name is used verbatim as the sandbox id.
 {
-  const fake = fakeNimbus({ ready: { ok: true, preinstalled: [] }, writeFile: undefined });
+  const fake = fakeNimbus({ ready: { ok: true, preinstalled: [] }, writeFile: 12 });
   const provider = nimbus({ endpoint: ENDPOINT });
   const sandbox = await withFetch(fake.fetchImpl, () => provider.sandbox.create({ name: 'my-box' }));
   assert.equal(sandbox.sandboxId, 'my-box');
@@ -143,7 +146,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     exec: execResult({ duration: 34, stdout: 'v22.0.0\n' }),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
@@ -164,7 +167,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     exec: execResult({ exitCode: 127, success: false, stdout: '', stderr: 'not found\n' }),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
@@ -183,7 +186,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     exec: execResult(),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
@@ -201,7 +204,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     readFile: (args) => (args[0] === '/home/user/app.js' ? 'console.log(1)' : null),
   });
   const provider = nimbus({ endpoint: ENDPOINT });
@@ -217,7 +220,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     readFile: 'x',
   });
   const provider = nimbus({ endpoint: ENDPOINT, root: '/workspace' });
@@ -238,7 +241,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     readdir: [{ name: 'src', type: 'directory' }, { name: 'a.ts', type: 'file' }],
   });
   const provider = nimbus({ endpoint: ENDPOINT });
@@ -259,7 +262,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     exposePort: { port: 3000, listening: true, pid: 7, registeredAt: Date.now() },
   });
   const provider = nimbus({
@@ -280,7 +283,7 @@ const execResult = (over = {}) => ({
 {
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
-    writeFile: undefined,
+    writeFile: 12,
     exposePort: { port: 8080, listening: true, pid: 7, registeredAt: Date.now() },
   });
   const provider = nimbus({ endpoint: ENDPOINT });
