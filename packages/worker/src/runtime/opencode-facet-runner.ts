@@ -37,6 +37,7 @@
  */
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
+import { VFS_CURSOR_SEED_SOURCE } from '../_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
@@ -300,6 +301,8 @@ export interface OpencodeRunnerOptions {
   vfsManifest: string;
   /** Serialized VFS inode metadata (JSON) for stat and permission checks. */
   vfsMetadata: string;
+  /** The coherence cursor the snapshot above was read at, as a JSON literal. */
+  vfsCursor: string;
   /**
    * Runtime disposition of this opencode invocation:
    *   - 'oneshot'  buffer stdout/stderr into the JSON response and return
@@ -794,6 +797,8 @@ let __supervisor = null;
 const __vfsBundle = ${opts.vfsBundle};
 const __vfsManifest = ${opts.vfsManifest};
 const __vfsMetadata = ${opts.vfsMetadata};
+const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
+${VFS_CURSOR_SEED_SOURCE}
 ${VFS_WRITE_LEDGER_SOURCE}
 const __vfsDirs = {};
 const __nimbusDeferProcessExitReport = true;
