@@ -87,6 +87,8 @@ export interface OpencodeRunnerOptions {
     vfsManifest: string;
     /** Serialized VFS inode metadata (JSON) for stat and permission checks. */
     vfsMetadata: string;
+    /** The coherence cursor the snapshot above was read at, as a JSON literal. */
+    vfsCursor: string;
     /**
      * Runtime disposition of this opencode invocation:
      *   - 'oneshot'  buffer stdout/stderr into the JSON response and return

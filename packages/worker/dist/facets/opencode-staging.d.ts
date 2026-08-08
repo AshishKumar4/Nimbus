@@ -53,6 +53,7 @@ export declare const OpencodeStageSpecSchema: z.ZodObject<{
     vfsBundle: z.ZodString;
     vfsManifest: z.ZodString;
     vfsMetadata: z.ZodString;
+    vfsCursor: z.ZodString;
 }, z.core.$strip>;
 export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 /** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */
