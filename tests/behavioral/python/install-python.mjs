@@ -65,8 +65,8 @@ await t.waitForPrompt(60_000);
 //    packages live in a second interpreter that the runner selects from what the
 //    session installed (see packages/worker/wasm/python/EXTENSIONS.md).
 const EXPECTED_SIZES = {
-  'share/cpython/python.wasm': 11123914,
-  'share/cpython/python-sci.wasm': 19305939,
+  'share/cpython/python.wasm': 11125000,
+  'share/cpython/python-sci.wasm': 19306220,
   'lib/python313.zip': 3845898,
   'lib/sci-packages.zip': 1269909,
 };

@@ -205,7 +205,17 @@ int socket(int domain, int type, int protocol)
 	 * socketmodule always sets CLOEXEC, so comparing the whole word rejects
 	 * every socket Python creates. */
 	int flags = type & (SOCK_CLOEXEC | SOCK_NONBLOCK);
-	if ((type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK)) != SOCK_STREAM) {
+	int kind = type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+	/* A datagram socket is a descriptor, and holding one costs nothing. There
+	 * is no datagram transport underneath, so connect, bind and listen say so —
+	 * but refusing at socket(2) is a different claim, and a wrong one: it says
+	 * the kind cannot exist rather than that it cannot reach anywhere.
+	 *
+	 * Werkzeug's get_interface_ip is why this matters. It opens a UDP socket to
+	 * discover the outbound address and guards only the connect, expecting the
+	 * "no route" case; a constructor that raised took Flask's app.run() down
+	 * before it ever bound a port. */
+	if (kind != SOCK_STREAM && kind != SOCK_DGRAM) {
 		errno = EPROTOTYPE;
 		return -1;
 	}
@@ -231,7 +241,7 @@ int socket(int domain, int type, int protocol)
 		return -1;
 	}
 	s->family = domain;
-	s->type = SOCK_STREAM;
+	s->type = kind;
 	s->protocol = protocol;
 	s->state = NIMBUS_SOCK_UNBOUND;
 	return fd;
@@ -242,6 +252,10 @@ int connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
 	struct nimbus_sock *s = sock_find(fd);
 	if (s == NULL) {
 		errno = ENOTSOCK;
+		return -1;
+	}
+	if (s->type != SOCK_STREAM) {
+		errno = ENETUNREACH;
 		return -1;
 	}
 	if (s->state == NIMBUS_SOCK_CONNECTED) {
@@ -276,6 +290,10 @@ int bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
 	struct nimbus_sock *s = sock_find(fd);
 	if (s == NULL) {
 		errno = ENOTSOCK;
+		return -1;
+	}
+	if (s->type != SOCK_STREAM) {
+		errno = EOPNOTSUPP;
 		return -1;
 	}
 	uint32_t ip;
