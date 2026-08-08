@@ -23,7 +23,7 @@ Nimbus to your own Cloudflare account with `npx create-nimbus-app`.
 Cloud dev environments today are either heavy VMs (slow to start, expensive to idle) or browser sandboxes that can't run real toolchains. Nimbus is different:
 
 - **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on — not a JS interpreter stub, but also not the upstream Node/Bun binaries: it's the workerd-compatibility surface). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
-- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.8 s median (measured with the ComputeSDK TTI methodology, N=200, 100% success). No VM boot. No image pull.
+- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.7 s median (measured with the ComputeSDK TTI methodology, N=200, 100% success). No VM boot. No image pull.
 - **Built for agents.** Every agent can mint its own sandbox through the SDK — sandboxes are cheap enough to create per-task, and 100 simultaneous creates succeed without a warm pool.
 - **128 MiB is a segment, not a ceiling.** Every isolate on Workers is capped at 128 MiB — so Nimbus treats processes the way an OS treats them: heavy apps span *multiple* isolates. Each process gets its own isolate (its own memory and CPU budget), wired together over the session's loopback network. opencode runs this way: its server and TUI are two cooperating processes in two isolates.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
@@ -325,8 +325,8 @@ Session create is dated 2026-08-08; the rest was measured against a live deploym
 
 | Operation | Wall time |
 |---|---|
-| Session create → first command (TTI, ComputeSDK methodology, N=200) | 0.81 s median · 1.02 s P95 |
-| 100 sandboxes created simultaneously (burst, all succeed) | 1.05 s median |
+| Session create → first command (TTI, ComputeSDK methodology, N=200) | 0.74 s median · 1.00 s P95 |
+| 100 sandboxes created simultaneously (burst, all succeed) | 1.02 s median |
 | `git clone` facebook/react (7,300 files) | ~28 s |
 | `npm install` 611-package app (52,500 files, cold session) | ~165 s |
 | `npm install zod` (cold session) | ~6 s |
