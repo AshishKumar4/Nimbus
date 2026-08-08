@@ -1847,6 +1847,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         onStderr: (d: string) => cmdCtx.stderr.write(d),
         stdin,
         terminalStdin: cmdCtx.terminalStdin,
+        // `npm run x` runs x on npm's own fds. Handing the nested execution a
+        // sink without saying where that sink leads would make every fd look
+        // redirected, and a runtime whose stdout is redirected stops streaming.
+        terminalFds: {
+          stdin: cmdCtx.isFdTerminal?.(0) ?? false,
+          stdout: cmdCtx.isFdTerminal?.(1) ?? false,
+          stderr: cmdCtx.isFdTerminal?.(2) ?? false,
+        },
         commandContext: {
           pid: cmdCtx.pid,
           cred: cmdCtx.cred,
@@ -1948,6 +1956,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           env: cmdCtx.env,
           onStdout: tee('stdout', cmdCtx.stdout),
           onStderr: tee('stderr', cmdCtx.stderr),
+          // The tee is a sink, not a redirection: the script's fds are still
+          // whatever the caller's were, and a runtime asks that question before
+          // deciding whether it may stream past the shell.
+          terminalFds: {
+            stdin: cmdCtx.isFdTerminal?.(0) ?? false,
+            stdout: cmdCtx.isFdTerminal?.(1) ?? false,
+            stderr: cmdCtx.isFdTerminal?.(2) ?? false,
+          },
           // Single spawn path for long-running handoff: a registry command
           // (vite/wrangler/serve) ADOPTS this wrapper pid via the bin-spawn
           // contract instead of allocating a second one, and suppresses its
