@@ -230,3 +230,56 @@ export function createCtxExports(readFile) {
  * loaded worker owns; a plain TransformStream is that same identity pipe.
  */
 if (!globalThis.IdentityTransformStream) globalThis.IdentityTransformStream = TransformStream;
+
+// ── Process-facet storage ───────────────────────────────────────────────────
+
+import { Database } from 'bun:sqlite';
+
+/** facetName → its SQLite. Storage is keyed by NAME, which is the real rule. */
+const facetDatabases = new Map();
+
+/**
+ * The `ctx` a resident process's DO class is constructed with.
+ *
+ * A facet has its OWN SQLite, reachable synchronously — `ctx.storage.sql.exec`
+ * returns a cursor rather than a promise — and the resident set is served out
+ * of it. A ctx without storage is not a smaller version of a real facet, it is
+ * a different thing, and a process body that reads its filesystem cannot run on
+ * one.
+ *
+ * Keyed by facet NAME rather than per instantiation, because that is the
+ * property the platform actually has and the one the slot pool depends on:
+ * a facet's storage identity is its name, its isolate identity is its loader
+ * key. Verified on production workerd — same name plus a new loader key gave a
+ * new module scope with all 7,141 rows and 45.7 MB intact. So `world.lose()`
+ * and `abort` drop the isolate here and leave the storage, exactly as they do
+ * in workerd.
+ */
+export function createProcessFacetCtx(facetName) {
+  let db = facetDatabases.get(facetName);
+  if (!db) {
+    db = new Database(':memory:');
+    facetDatabases.set(facetName, db);
+  }
+  return {
+    waitUntil() {},
+    storage: {
+      sql: {
+        exec(query, ...params) {
+          if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) {
+            db.query(query).run(...params);
+            return [];
+          }
+          return db.query(query).all(...params);
+        },
+        get databaseSize() { return 0; },
+      },
+    },
+  };
+}
+
+/** Drop a facet's storage — slot handover, or test isolation. */
+export function resetProcessFacetStorage(facetName) {
+  if (facetName === undefined) facetDatabases.clear();
+  else facetDatabases.delete(facetName);
+}
