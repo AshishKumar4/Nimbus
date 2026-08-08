@@ -48,6 +48,7 @@
  * Output:
  *   src/esbuild-wasm-bundle.generated.ts
  *     export const ESBUILD_WASM_VERSION: string;
+ *     export const ESBUILD_WASM_SHA256: string;      // staged wasm digest
  *     export const ESBUILD_WASM_JS_FN_BODY: string;  // ESM browser source
  *
  *   public/_assets/esbuild-<version>.wasm
@@ -64,6 +65,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolvePackageDir } from './resolve-package-dir.mjs';
@@ -149,6 +151,7 @@ async function main() {
   const assetOut = path.join(OUT_ASSETS_DIR, assetName);
   const wasmBytes = await fs.readFile(WASM_SRC);
   await fs.writeFile(assetOut, wasmBytes);
+  const wasmSha256 = createHash('sha256').update(wasmBytes).digest('hex');
   console.log(
     `[bundle-esbuild-wasm] copied esbuild.wasm → ${path.relative(ROOT, assetOut)} (${(wasmBytes.length / (1024 * 1024)).toFixed(1)} MiB)`,
   );
@@ -184,6 +187,13 @@ async function main() {
  */
 
 export const ESBUILD_WASM_VERSION: string = ${JSON.stringify(version)};
+
+/**
+ * SHA-256 of the staged public/_assets/esbuild-${version}.wasm bytes.
+ * src/runtime/esbuild-wasm-bytes.ts verifies every fetch against it — the L2
+ * (caches.default) tier included — before the bytes reach workerd's loader.
+ */
+export const ESBUILD_WASM_SHA256: string = ${JSON.stringify(wasmSha256)};
 
 /**
  * Function body that, when wrapped in \`new Function(...)()\`, returns
