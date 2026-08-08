@@ -300,4 +300,29 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal(r.text, 'created-after-spawn');
 }
 
+// ── 8. SEEK_END sizes a file that has not been demand-loaded yet ───────────
+// Sizing a file by seeking to its end is how zipimport finds the end-of-central-
+// directory record, and it is the FIRST thing it does — before any read has
+// pulled the bytes in. Measuring the file by what happened to be resident called
+// it empty, so the seek landed at 0, the following read returned the head of the
+// archive, and a zip on sys.path was "not a Zip file" on first touch.
+{
+  const BODY = 'HEAD'.padEnd(500, '.') + 'TAILMARK';
+  const sup = mockSupervisor({ 'home/user/archive.zip': BODY });
+  const h = host(ROOT_INIT({
+    sizes: { 'home/user/archive.zip': BODY.length },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/archive.zip': 6 },
+  }), sup);
+  const { errno, fd } = await h.open('home/user/archive.zip');
+  assert.equal(errno, ESUCCESS);
+
+  assert.equal(h.wasiImport.fd_seek(fd, 0n, 2 /* SEEK_END */, 0x600), ESUCCESS);
+  assert.equal(Number(h.view().getBigUint64(0x600, true)), BODY.length,
+    'SEEK_END reports the manifest size before any content has been loaded');
+
+  assert.equal(h.wasiImport.fd_seek(fd, -8n, 2, 0x600), ESUCCESS);
+  const tail = await h.read(fd, 8);
+  assert.equal(tail.text, 'TAILMARK', 'a read relative to the end returns the tail, not the head');
+}
+
 console.log('wasi-live-fs: all assertions passed');
