@@ -12,12 +12,18 @@
 // the loop measures the cost directly.
 
 import assert from 'node:assert/strict';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
+// The ledger declares __vfsWrites and the revision stamps beside it, and the
+// shims call into it — so it is spliced in ahead of them exactly as every
+// embedding does. The parked cell comes back out of the factory rather than
+// being passed in, because the ledger owns that table.
 const factory = new Function(
-  '__vfsBundle', '__vfsMetadata', '__vfsWrites', '__vfsDirs', '__vfsManifest',
+  '__vfsBundle', '__vfsMetadata', '__vfsDirs', '__vfsManifest',
   '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + generateShimsCode() + '\n;return { fs: __fsMod, Buffer: __BufferMod };',
+  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode()
+  + '\n;return { fs: __fsMod, Buffer: __BufferMod, writes: __vfsWrites };',
 );
 
 const CHUNK = 4096;
@@ -25,10 +31,9 @@ const WRITES = 512;
 const TOTAL = CHUNK * WRITES;
 
 function measureWriteLoop() {
-  const writes = {};
   const dirs = { 'home/user': true };
-  const { fs, Buffer } = factory(
-    {}, {}, writes, dirs, {}, null,
+  const { fs, Buffer, writes } = factory(
+    {}, {}, dirs, {}, null,
     { uid: 0, gid: 0, groups: [0], umask: 0o022 },
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
@@ -70,9 +75,8 @@ assert.ok(
 // Doubling the loop must roughly double the work, not quadruple it. This is
 // the shape of the bug, independent of any constant.
 const half = (() => {
-  const writes = {};
-  const { fs, Buffer } = factory(
-    {}, {}, writes, { 'home/user': true }, {}, null,
+  const { fs, Buffer, writes } = factory(
+    {}, {}, { 'home/user': true }, {}, null,
     { uid: 0, gid: 0, groups: [0], umask: 0o022 },
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );
@@ -103,9 +107,8 @@ assert.ok(
 // 28 MiB). Growth reserve therefore cannot be unbounded: a 26 MiB file in a
 // doubled 32 MiB buffer silently lost its write on a deployed worker.
 {
-  const writes = {};
-  const { fs, Buffer } = factory(
-    {}, {}, writes, { 'home/user': true }, {}, null,
+  const { fs, Buffer, writes } = factory(
+    {}, {}, { 'home/user': true }, {}, null,
     { uid: 0, gid: 0, groups: [0], umask: 0o022 },
     '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
   );

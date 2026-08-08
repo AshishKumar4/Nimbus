@@ -501,6 +501,47 @@ const __fsMod = (() => {
     if (at !== -1) siblings.splice(at, 1);
   }
 
+  /**
+   * Put a path into the sync EXISTENCE view — the inverse of _forgetSyncPath.
+   *
+   * A content cell is not existence. An invalidation drops content and is
+   * documented to leave the name behind so existsSync cannot fabricate an
+   * ENOENT for a file that was merely rewritten — but a file this process just
+   * created has no manifest entry and no spawn-time stat record, so its cell
+   * WAS the name, and evicting it retracted a file the program had written
+   * itself. Recording the name where every other name lives is what makes that
+   * documented asymmetry true.
+   *
+   * The parent's listing is the right home for it. Where the parent has no
+   * listing the entry is created only for a directory this process made, since
+   * that is the only case in which it knows the whole contents and calling the
+   * directory enumerated is honest.
+   */
+  function _announceSyncPath(k) {
+    if (!__vfsManifest || k === "") return;
+    const slash = k.lastIndexOf("/");
+    const parent = slash >= 0 ? k.slice(0, slash) : "";
+    const name = slash >= 0 ? k.slice(slash + 1) : k;
+    let siblings = __vfsManifest[parent];
+    if (!Array.isArray(siblings)) {
+      if (!__vfsDirs || !(parent in __vfsDirs)) return;
+      siblings = __vfsManifest[parent] = [];
+    }
+    if (siblings.indexOf(name) === -1) siblings.push(name);
+  }
+
+  /**
+   * Park a synchronous mutation: the cell the program reads back, the record
+   * that the path is there, and the retirement of any revision stamp the old
+   * content carried. One place, because every sync mutation owes all three.
+   */
+  function _parkWrite(k, cell) {
+    __vfsWrites[k] = cell;
+    if (__vfsBundle) __vfsBundle[k] = cell;
+    delete __vfsBundleRevisions[k];
+    _announceSyncPath(k);
+  }
+
   function _forgetSyncTree(k) {
     const prefix = k + "/";
     for (const dir of _announcedDirs) if (dir.startsWith(prefix)) _announcedDirs.delete(dir);
@@ -526,9 +567,8 @@ const __fsMod = (() => {
   function _notResidentError(absPath, displayPath, syscall, asyncForm) {
     const st = _statLadder(absPath);
     if (st === undefined) {
-      return _absenceIsKnown(absPath)
-        ? _fsErr("ENOENT", syscall, displayPath)
-        : _unmappedError(absPath, displayPath, syscall, asyncForm);
+      if (!_absenceIsKnown(absPath)) _recordUnmapped(absPath, syscall);
+      return _fsErr("ENOENT", syscall, displayPath);
     }
     if (st.isDirectory()) return _fsErr("EISDIR", syscall, displayPath);
     _recordResidencyMiss(absPath);
@@ -592,6 +632,25 @@ const __fsMod = (() => {
     return true;
   }
 
+  /**
+   * Paths the authority did not have when the access was refused.
+   *
+   * What the exit report asks is whether the program's result rests on a read
+   * that failed, and that is not the same question as whether the path is
+   * there NOW. A program told there is no config writes one, so by the time
+   * the run ends the file exists — authored by the program itself, out of the
+   * very branch the not-found answer sent it down. Nothing was withheld from
+   * it. Measured: create-next-app's update notifier reads /tmp/update-check,
+   * does not find it, writes it, and the whole scaffold was failed over a file
+   * that had never existed; c3 does the same with its wrangler metrics file.
+   *
+   * So the repair records what it saw, and it asks with a stat rather than a
+   * read. A read flushes this facet's pending writes to the authority before
+   * issuing, so it would hand back the bytes the program had just parked and
+   * report the path as one that was there all along.
+   */
+  const _observedAbsent = new Set();
+
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
     _recordMiss(k);
@@ -625,8 +684,32 @@ const __fsMod = (() => {
     // Swallowed here rather than at the settle: a repair nobody asked for
     // must not surface as an unhandled rejection, and a failed one is simply
     // a path that stays unanswered and stays in the ledger.
-    try { _repairs.push(_liveReadFile("/" + k, undefined).catch(() => {})); }
+    try { _repairs.push(_observeThenFill(k).catch(() => {})); }
     catch { /* the fill is speculative */ }
+  }
+
+  /**
+   * Ask what the authority has, then fetch it if there is anything to fetch.
+   *
+   * The stat is not an extra round trip on balance: where the path is absent —
+   * which is most refusals, since module resolvers and config lookups probe
+   * far more paths than exist — it replaces a content read that could only
+   * have failed, and it is the one observation that settles whether the run
+   * was denied anything.
+   */
+  async function _observeThenFill(k) {
+    const supervisor = _supervisor();
+    const absPath = "/" + k;
+    if (typeof supervisor.stat === "function") {
+      let meta;
+      // A thrown stat is the authority failing to answer, not an answer:
+      // nothing is learned, and the miss stands.
+      try { meta = await __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r); }
+      catch { return; }
+      if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
+      if (meta.type === "directory") return;
+    }
+    await _liveReadFile(absPath, undefined);
   }
 
   /**
@@ -643,10 +726,20 @@ const __fsMod = (() => {
    */
   const _repairs = [];
   globalThis.__nimbusVfsResidencySettle = async () => {
-    while (_repairs.length > 0) {
-      await Promise.allSettled(_repairs.splice(0));
+    // One boundary listing can move the boundary a level deeper rather than
+    // settle the question outright, and which directory to ask for next is
+    // only knowable once the previous answer has landed. So drain, settle,
+    // and go round again while the settle is still asking for listings. It
+    // terminates: every round enumerates a directory that was unknown, each
+    // directory is fetched at most once (_faultOnce), and the paths in the
+    // ledger have finitely many components.
+    for (;;) {
+      while (_repairs.length > 0) {
+        await Promise.allSettled(_repairs.splice(0));
+      }
+      _settleProvenAbsences();
+      if (_repairs.length === 0) return;
     }
-    _settleProvenAbsences();
   };
 
   /**
@@ -715,40 +808,90 @@ const __fsMod = (() => {
   }
 
   /**
-   * The refusal for a path the sync view never mapped.
+   * A path the sync view never mapped: record the ignorance, and repair it.
    *
-   * Sibling of _notResidentError and the same bargain: the file may well be
-   * there, the process simply cannot look without blocking. What it must not
-   * do is answer. A false from existsSync, an ENOENT from statSync and an
-   * empty array from readdirSync are all the same fabrication — absence
-   * invented out of ignorance — and the last one is the worst, because a
-   * program cannot even detect it. A scaffolder was told its template
-   * directory was empty, wrote nothing, and exited 0.
+   * Sibling of _notResidentError and the same bargain — the file may well be
+   * there, the process simply cannot look without blocking. The callers answer
+   * ENOENT, which is provisional rather than fabricated: this records the miss
+   * and pulls in the listing that settles the question, and the exit report
+   * reads the ledger. If the path was genuinely absent the repair proves it
+   * and the entry retires — the program's not-found branch was the right
+   * branch and it reached it through the right errno. If the path WAS there,
+   * the entry survives and the run is failed by name.
    *
-   * So: refuse, record it beside the residency misses, and pull the enclosing
-   * listing in so the next touch is answered from knowledge. The async form
-   * already reaches the authority and already writes what it learns back into
-   * the manifest, which is why the two views converge instead of drifting.
+   * EAGAIN was tried here and is the wrong answer to hand a program even
+   * though it is the honest description of the situation. It cannot arise from
+   * a real POSIX filesystem, so nothing branches on it, and the catch block
+   * that receives it was written for a missing file and rethrows instead:
+   * measured, create-next-app reads $HOME/.config/<tool>/config.json through
+   * the conf package, is handed EAGAIN for a file that was never there, and
+   * dies before writing one template file. Read a config, treat ENOENT as "no
+   * config yet", rethrow anything else is the near-universal shape. Refusing
+   * bought nothing the ledger was not already delivering, and cost every
+   * program that idiom.
+   *
+   * A LISTING is the exception and still refuses — see readdirSync. An array is
+   * a complete enumeration by definition, so there is no provisional form of
+   * it: an empty one asserts that a directory nothing ever opened is empty,
+   * which is how a scaffolder was told its template directory held nothing,
+   * wrote nothing, and exited 0.
    */
-  function _unmappedError(absPath, displayPath, syscall, asyncForm) {
+  function _recordUnmapped(absPath, syscall) {
     const k = _strip(absPath);
-    const slash = k.lastIndexOf("/");
-    // A listing wants the path's own contents; everything else wants to know
-    // whether the name is in the enclosing directory.
     _recordMiss(k);
-    if (syscall === "scandir") {
-      _faultInDirectory(k);
-    } else {
-      // Both repairs, because the caller wanted the file and the enclosing
-      // listing is what makes its absence answerable if it turns out not to
-      // exist. Fetching one and then the other would refuse the same read
-      // twice: once for being unmapped, once for having no resident content.
-      _faultInDirectory(slash > 0 ? k.slice(0, slash) : "");
-      _faultIn(k);
+    // A listing wants the path's own contents; a read wants its bytes. Both
+    // also want the boundary listing, which is the only thing that can prove
+    // the path was not there — and fetching one repair and then the other
+    // would refuse the same access twice, once for being unmapped and once for
+    // having no resident content. _faultOnce collapses them where they meet.
+    _faultInBoundary(k);
+    if (syscall === "scandir") { _faultInDirectory(k); return; }
+    _faultIn(k);
+  }
+
+  /**
+   * The shallowest directory on this path whose contents the view does not
+   * know: the child of the deepest ancestor that WAS enumerated.
+   *
+   * That, not the immediate parent, is the listing a refusal has to pull in.
+   * For a path that is not there the parent is usually not there either, so
+   * its readdir fails, the view learns nothing, and the ledger keeps an entry
+   * no repair can ever retire — the run is failed over a file that was simply
+   * absent. The boundary directory is different: the enumerated ancestor's own
+   * listing already proved it is present, so it can be read, and reading it
+   * either names the next component or proves the whole subtree absent.
+   *
+   * With nothing enumerated at all the boundary is the root, which is one
+   * listing away from making the next level answerable.
+   */
+  function _unknownBoundary(k) {
+    const segments = k.split("/");
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (_dirEnumerated(segments.slice(0, i).join("/"))) {
+        return segments.slice(0, i + 1).join("/");
+      }
     }
+    return "";
+  }
+
+  function _faultInBoundary(k) {
+    _faultInDirectory(_unknownBoundary(k));
+  }
+
+  /**
+   * The refusal, for the two callers that have no provisional answer to give.
+   *
+   * A listing cannot say "not found" usefully, and neither can a write that
+   * needs the prior content it is splicing onto. Everywhere else the sync view
+   * answers ENOENT and lets the exit report settle whether that was true; here
+   * there is no branch the program could take that would be right, so the
+   * honest EAGAIN is also the useful one.
+   */
+  function _refuseUnmapped(absPath, displayPath, syscall, asyncForm) {
+    _recordUnmapped(absPath, syscall);
     const err = _fsErr("EAGAIN", syscall, displayPath);
     err.message += " — '" + String(displayPath) + "' lies outside the filesystem view "
-      + "staged into the process, so a synchronous call cannot tell whether it exists, "
+      + "staged into the process, so a synchronous call cannot tell what is there, "
       + "and synchronous I/O cannot block to find out"
       + (_supervisor() ? "; " + asyncForm + " answers from the live filesystem" : "");
     return err;
@@ -780,8 +923,14 @@ const __fsMod = (() => {
     if (_residencyMisses.size === 0) return;
     for (const k of [..._residencyMisses]) {
       const absPath = "/" + k;
+      // The authority did not have it when we asked, so nothing was withheld —
+      // whatever is at the path now, this process put there.
+      if (_observedAbsent.has(k)) { _residencyMisses.delete(k); continue; }
       if (_statLadder(absPath) !== undefined) continue;
-      if (_absenceIsKnown(absPath)) _residencyMisses.delete(k);
+      if (_absenceIsKnown(absPath)) { _residencyMisses.delete(k); continue; }
+      // Still unprovable, because the listing that would settle it lies below
+      // the one already fetched. Ask for the next one; the settle loop waits.
+      _faultInBoundary(k);
     }
   }
 
@@ -998,6 +1147,14 @@ const __fsMod = (() => {
    * __vfsWrites is never dropped: this process's own unflushed writes are
    * strictly newer than anything the supervisor can report, and discarding
    * them would break read-your-writes.
+   *
+   * The name the asymmetry preserves has to BE somewhere, though. A file this
+   * process created has no manifest entry and no spawn-time stat record, so
+   * its cell was the only witness that it existed at all, and evicting the
+   * cell retracted the file — measured live, a sync read after a barrier
+   * answered ENOENT for a file the program had written itself moments before.
+   * _announceSyncPath, at the moment the cell is created, is what makes the
+   * intent above true rather than merely stated.
    */
   function _evictResident(k) {
     let evicted = false;
@@ -1027,12 +1184,23 @@ const __fsMod = (() => {
     if (!__vfsBundle) return;
     const k = _strip(absPath);
     if (k === "") return;
+    // Never over a cell this facet owns.
+    //
+    // A pending write is strictly newer than anything the authority can
+    // report, and __vfsBundle is what sync reads consult first, so installing
+    // over it would serve the program bytes older than its own write.
+    //
+    // A STAMPED cell is this facet's own flushed write, and the barrier this
+    // read passed on the way in reported nobody else has touched the path
+    // since — so the bytes are already what is being installed, and the only
+    // thing the install would change is to drop the stamp. It did: a
+    // speculative repair issued by an earlier refused read landed after the
+    // flush, unstamped the cell, and the next ACQUIRE evicted the facet's own
+    // output. Measured at selfWrites 0 / invalidations 1 / fills 2 for one
+    // written file, against 1 / 0 / 0 with the repair absent.
+    if (__vfsWrites && k in __vfsWrites) return;
+    if (__vfsBundleRevisions[k] !== undefined) return;
     __vfsBundle[k] = bytes;
-    // A read carries no revision, so the cell it installs is unstamped and
-    // the next report of this path evicts it. Dropping any stamp a previous
-    // write left is the point: these bytes are not the ones that stamp
-    // described, and keeping it would vouch for content it never saw.
-    delete __vfsBundleRevisions[k];
     // Keep the stat view consistent with the bytes now held. Without this
     // the content view is fresh while statSync still reports the
     // spawn-time length, so a program can read N bytes and be told the
@@ -1044,13 +1212,7 @@ const __fsMod = (() => {
     if (metadata && k in metadata) {
       metadata[k] = { ...metadata[k], size: _byteLen(bytes) };
     }
-    if (__vfsManifest) {
-      const slash = k.lastIndexOf("/");
-      const parent = slash >= 0 ? k.slice(0, slash) : "";
-      const name = slash >= 0 ? k.slice(slash + 1) : k;
-      const siblings = __vfsManifest[parent];
-      if (Array.isArray(siblings) && siblings.indexOf(name) === -1) siblings.push(name);
-    }
+    _announceSyncPath(k);
     _stats.fills++;
     _stats.filledBytes += _byteLen(bytes);
   }
@@ -1080,7 +1242,14 @@ const __fsMod = (() => {
   async function _acquireBarrier(supervisor) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
     let result;
-    try { result = await supervisor.fsAcquire(_cursor.epoch, _cursor.rev); }
+    // Through the RPC helper like every other supervisor call, because it IS
+    // one: the barrier is the first thing an async read issues, and while it
+    // was uncounted __nimbusPendingOps read zero for a whole round trip. A
+    // one-shot facet's event loop, which exits when no handle is live, then
+    // ended the program mid-read — measured as an fs.promises.readFile whose
+    // .then never ran, no error, no output, intermittently, and never when a
+    // pending timer happened to hold the program open.
+    try { result = await __nimbusUseRpcResult(supervisor.fsAcquire(_cursor.epoch, _cursor.rev), (r) => r); }
     catch { return []; }
     if (!result || typeof result.rev !== "number") return [];
     // Paths that held content before this eviction are the ones worth
@@ -1643,7 +1812,7 @@ const __fsMod = (() => {
     if (supervisor && typeof supervisor.exists === "function") {
       const absPath = _resolve(p);
       await _flushLocalPathToSupervisor(absPath, supervisor);
-      return !!(await supervisor.exists(absPath));
+      return !!(await __nimbusUseRpcResult(supervisor.exists(absPath), (r) => r));
     }
     return existsSync(p);
   }
@@ -1989,9 +2158,7 @@ const __fsMod = (() => {
     if (data instanceof Uint8Array) cell = data;
     else if (typeof data === "string") cell = data;
     else cell = String(data);
-    __vfsWrites[k] = cell;
-    // Also update bundle so subsequent reads see the write
-    if (__vfsBundle) __vfsBundle[k] = cell;
+    _parkWrite(k, cell);
   }
 
   // ── appendFileSync ──
@@ -2027,8 +2194,7 @@ const __fsMod = (() => {
       // Both strings — string concat.
       cell = existing + (typeof data === "string" ? data : String(data));
     }
-    __vfsWrites[k] = cell;
-    if (__vfsBundle) __vfsBundle[k] = cell;
+    _parkWrite(k, cell);
     // Bundle content is only a sync-view cache and may be stale. It can supply
     // the local display fragment, but only a pending full write owns its prefix.
     if (!hadPendingWrite || previousAppend) {
@@ -2066,12 +2232,13 @@ const __fsMod = (() => {
       for (const bk in __vfsBundle) { if (bk.startsWith(prefix) || bk === k) { _residencySatisfied(absPath); return true; } }
     }
     // Nothing found — which is only an answer if the enclosing directory was
-    // enumerated. Node's existsSync never throws, and that contract is exactly
-    // what makes a fabricated false unanswerable: the caller has nowhere to
-    // put a doubt, so it takes the not-there branch and is silently wrong.
-    // Refusing is louder than the API expects and quieter than being wrong.
+    // enumerated. Node's existsSync never throws, so the false below is
+    // provisional: the miss is recorded, the listing that settles it is pulled
+    // in, and the exit report fails the run if the path turns out to have been
+    // there all along.
     if (!_absenceIsKnown(absPath)) {
-      throw _unmappedError(absPath, absPath, "access", "fs.promises.access");
+      _recordUnmapped(absPath, "access");
+      return false;
     }
     _residencySatisfied(absPath);
     return false;
@@ -2081,13 +2248,7 @@ const __fsMod = (() => {
   function statSync(p, opts) {
     const absPath = _resolve(p);
     _ensureAncestorsTraversable(absPath, "stat", p);
-    const stat = _statResolved(absPath, p, opts);
-    // Reached only when the view had an answer, refusals having thrown. Any
-    // answer settles the path, including the honest "not there" — what the
-    // ledger is for is reads that went unanswered, not reads that came back
-    // with news the caller did not want.
-    _residencySatisfied(absPath);
-    return stat;
+    return _statResolved(absPath, p, opts);
   }
 
   // The stat ladder for a path whose ancestors the caller has already
@@ -2096,12 +2257,15 @@ const __fsMod = (() => {
   // performed — that path runs on every module-resolution probe.
   function _statResolved(absPath, p, opts) {
     const stat = _statLadder(absPath);
-    if (stat !== undefined) return stat;
+    // An answer settles the path, including the honest "not there" below —
+    // what the ledger is for is reads that went unanswered, not reads that came
+    // back with news the caller did not want. A PROVISIONAL not-there is not an
+    // answer, so the unmapped branch deliberately leaves the record standing.
+    if (stat !== undefined) { _residencySatisfied(absPath); return stat; }
     // Nothing in the view describes the path, and there are two very different
     // reasons for that. Only one of them means the file is not there.
-    if (!_absenceIsKnown(absPath)) {
-      throw _unmappedError(absPath, p, "stat", "fs.promises.stat");
-    }
+    if (_absenceIsKnown(absPath)) _residencySatisfied(absPath);
+    else _recordUnmapped(absPath, "stat");
     // Node's statSync honors { throwIfNoEntry: false } by returning undefined
     // for a missing path instead of throwing.
     if (opts && opts.throwIfNoEntry === false) return undefined;
@@ -2197,7 +2361,18 @@ const __fsMod = (() => {
       // An authority exists that this call cannot reach, so an empty array
       // would be a claim about a directory nothing ever opened. Refuse, and
       // pull the listing in for the next one.
-      if (_supervisor()) throw _unmappedError(absPath, p, "scandir", "fs.promises.readdir");
+      //
+      // This is the one caller that keeps refusing. Everywhere else the sync
+      // view answers a path it cannot map with the not-found the program was
+      // written to handle, provisionally, and lets the exit report settle
+      // whether that answer was true. A listing has no such answer to give:
+      // "no config yet, write one" is an idiom every program implements, and
+      // there is no counterpart for a directory — a caller handed ENOENT for a
+      // template tree has nowhere to go but the same wrong branch an empty
+      // array sent it down, and the array at least it could not detect.
+      if (_supervisor()) {
+        throw _refuseUnmapped(absPath, p, "scandir", "fs.promises.readdir");
+      }
       // No authority: the staged tables are the whole filesystem. A path they
       // do not describe is missing, and one they describe with no children is
       // genuinely empty.
@@ -2297,9 +2472,10 @@ const __fsMod = (() => {
     const newK = _strip(_resolve(newP));
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
     if (content !== undefined) {
-      __vfsWrites[newK] = content;
-      if (__vfsBundle) { __vfsBundle[newK] = content; delete __vfsBundle[oldK]; }
-      if (__vfsWrites) delete __vfsWrites[oldK];
+      _parkWrite(newK, content);
+      if (__vfsBundle) delete __vfsBundle[oldK];
+      delete __vfsBundleRevisions[oldK];
+      delete __vfsWrites[oldK];
       // The stat record travels with the content: dropping it would lose the
       // mode/ownership, and leaving it behind would keep the source path
       // reporting as an existing file this rename already moved away.
@@ -2530,16 +2706,22 @@ const __fsMod = (() => {
       const bytes = this._residentBytes(syscall);
       if (bytes !== undefined) return bytes;
       const st = statSync(this._path, { throwIfNoEntry: false });
-      // Absent or empty — an empty base IS the true prior content.
-      if (st === undefined || st.size === 0) return new Uint8Array(0);
       // Non-resident and non-empty: writing onto a zero-filled base would
       // silently destroy the bytes we cannot see. Refuse instead.
-      throw this._notResident(syscall);
+      if (st !== undefined && st.size !== 0) throw this._notResident(syscall);
+      // Absent or empty — an empty base IS the true prior content, but only
+      // where absence is knowledge. A path the view never mapped may hold bytes
+      // this process cannot see, and an O_APPEND descriptor onto a zero-filled
+      // base would overwrite the file with the fragment it meant to add.
+      if (st === undefined && !_absenceIsKnown(this._abs)) {
+        throw _refuseUnmapped(
+          this._abs, this._path, syscall, "the async fs." + syscall + "/fs.promises form",
+        );
+      }
+      return new Uint8Array(0);
     }
     _commit(next) {
-      const k = _strip(this._abs);
-      __vfsWrites[k] = next;
-      if (__vfsBundle) __vfsBundle[k] = next;
+      _parkWrite(_strip(this._abs), next);
       _markVfsStale();
       this._size = next.byteLength;
     }

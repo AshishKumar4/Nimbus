@@ -21,6 +21,31 @@ function __nimbusVfsPathKey(path) {
 }
 
 /**
+ * A supervisor round trip the ledger issues on its own account.
+ *
+ * A facet's event loop exits when no handle is live, and an in-flight
+ * supervisor RPC is one of the handles it counts — but the debounced
+ * write-back runs from a raw timer, outside any call the program is awaiting,
+ * so nothing else was counting it. Measured: a template copy parked a cell,
+ * the debounce fired 10ms later and issued the write, the explicit flush
+ * behind it joined that same in-flight promise rather than starting its own,
+ * and the loop saw zero handles and ended the program with two files copied
+ * out of twenty-eight — silently, exit 0. fs.promises.cp is how
+ * create-cloudflare copies its template.
+ *
+ * The counter is the shims' __nimbusPendingOps, reached through globalThis
+ * rather than by calling their RPC helper: this source is spliced ahead of
+ * them and into embeddings that are not the one-shot entrypoint, and an
+ * absent counter must not be an error.
+ */
+async function __nimbusVfsRpc(promise) {
+  if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+  globalThis.__nimbusPendingOps++;
+  try { return await promise; }
+  finally { globalThis.__nimbusPendingOps--; }
+}
+
+/**
  * Errno values that are the filesystem ANSWERING the syscall: the path is not
  * there, it is a directory, the descriptor is closed. The operation did not
  * apply, no bytes were in flight, and nothing the program believes is saved
@@ -269,15 +294,15 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
     }
     for (const operation of __nimbusVfsAppendOperations(snapshot)) {
       __nimbusBeginVfsAppendOperation(snapshot, operation);
-      await supervisor.fsAppend(
+      await __nimbusVfsRpc(supervisor.fsAppend(
         path,
         __nimbusVfsModuleIncarnation(),
         operation.id,
         operation.bytes,
-      );
+      ));
       __nimbusCommitVfsAppendOperation(snapshot, operation);
       try {
-        await supervisor.fsAppendAck(__nimbusVfsModuleIncarnation(), operation.id);
+        await __nimbusVfsRpc(supervisor.fsAppendAck(__nimbusVfsModuleIncarnation(), operation.id));
       } catch {
         // The client has already relinquished retry ownership after the
         // append success. A lost acknowledgement may retain a receipt, but
@@ -288,7 +313,7 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
   }
   // The revision this write produced. It is what lets the ACQUIRE barrier
   // tell this facet's own mutation apart from a peer's.
-  return supervisor.writeFile(path, content);
+  return __nimbusVfsRpc(supervisor.writeFile(path, content));
 }
 
 /**
