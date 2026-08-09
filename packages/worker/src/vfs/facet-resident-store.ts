@@ -175,6 +175,12 @@
  * asks for a delta rather than inviting a poison.
  */
 
+import {
+  FS_LIST_PAGE_LIMIT,
+  FS_READ_BATCH_PATH_LIMIT,
+  FS_READ_BATCH_REQUEST_BYTES,
+} from '../constants.js';
+
 /**
  * Bytes of file content in one row.
  *
@@ -197,6 +203,18 @@ export const RESIDENT_CHUNK_BYTES = 1_048_576;
  * rather than betting on the threshold.
  */
 export const RESIDENT_MATERIALISE_BATCH_ROWS = 512;
+
+/**
+ * The `fsReadBatch` bounds, as the filler must respect them.
+ *
+ * These are not this module's to choose — they belong to the supervisor, and a
+ * filler that guessed at them does not degrade gracefully: `_rpcFsReadBatch`
+ * validates with zod and rejects the WHOLE call, so one over-packed batch
+ * loses every path in it. Imported rather than restated as fresh literals so
+ * the generated source cannot drift from the endpoint it calls.
+ */
+export const RESIDENT_FILL_BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
+export const RESIDENT_FILL_BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
 
 /**
  * The in-facet store. Spliced into the generated module ahead of the shims, in
@@ -249,6 +267,19 @@ let __residentSealReason = "the store has not reconciled with the authority in t
 
 const __RESIDENT_CHUNK_BYTES = ${RESIDENT_CHUNK_BYTES};
 const __RESIDENT_BATCH_ROWS = ${RESIDENT_MATERIALISE_BATCH_ROWS};
+const __RESIDENT_BATCH_PATHS = ${RESIDENT_FILL_BATCH_PATHS};
+const __RESIDENT_BATCH_BYTES = ${RESIDENT_FILL_BATCH_BYTES};
+const __RESIDENT_LIST_PAGE = ${FS_LIST_PAGE_LIMIT};
+/**
+ * Pages one enumeration may take before it gives up.
+ *
+ * A bound rather than an unbounded loop because \`fsList\` is a network call in
+ * a boot path: a supervisor that never reported a null \`next\` would spin here
+ * forever and the process would never start. At the page size above this
+ * admits filesystems into the tens of millions of paths, so it bounds a defect
+ * rather than a workload.
+ */
+const __RESIDENT_MAX_LIST_PAGES = 4096;
 
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
@@ -258,6 +289,16 @@ const __RESIDENT_BATCH_ROWS = ${RESIDENT_MATERIALISE_BATCH_ROWS};
 const __RK_TEXT = 0;
 const __RK_BINARY = 1;
 const __RK_DENIED = 2;
+
+/**
+ * The revision of a cell this facet wrote and has not flushed.
+ *
+ * Read-your-writes: strictly newer than anything the authority could report,
+ * so it is never evicted by a delta and never mistaken for something the
+ * authority vouched for. A distinct sentinel rather than NULL, because NULL
+ * would reintroduce the undated row the NOT NULL constraint exists to forbid.
+ */
+const __RK_OWN_WRITE = -1;
 
 function __residentBind(ctx) {
   const sql = ctx && ctx.storage && ctx.storage.sql;
@@ -271,10 +312,21 @@ function __residentBind(ctx) {
   // that never touches content. 'chunk' carries the bytes. Splitting them is
   // what makes _statLadder and __fileExists cheap: the common case reads a
   // short row and never pages a megabyte of blob in to answer "is it there".
+  // 'rev' is NOT NULL, and that constraint IS the coherence guarantee rather
+  // than a note about it. An undated row can never be invalidated, so it would
+  // be served stale forever; making the column nullable would leave the rule
+  // to be remembered at every insert, and the one that forgot would be
+  // indistinguishable from the ones that did not. Here the row simply cannot
+  // be written. This is the r2-cache posture — an unverifiable key cannot be
+  // constructed — moved to the only storage layer this store has.
+  //
+  // __RK_OWN_WRITE is the one negative value: this facet's own unflushed
+  // bytes, which are strictly newer than anything the authority can report and
+  // are always readable. It is a real provenance, not an absence of one.
   sql.exec(
     "CREATE TABLE IF NOT EXISTS file (" +
       "path TEXT PRIMARY KEY, kind INTEGER NOT NULL, size INTEGER NOT NULL, " +
-      "chunks INTEGER NOT NULL, rev INTEGER" +
+      "chunks INTEGER NOT NULL, rev INTEGER NOT NULL CHECK (rev >= -1)" +
     ")"
   );
   sql.exec(
@@ -346,14 +398,17 @@ function __residentAdmit(result) {
   } else if (Array.isArray(result.paths)) {
     for (const entry of result.paths) {
       const path = entry.path;
-      // A stamped row at or above the reported revision is this facet's own
-      // write coming back; anything else is someone else's and is dropped.
-      let held = false, stamped = null;
+      // A row at or above the reported revision is this facet's own write
+      // coming back; anything else is someone else's and is dropped. An
+      // unflushed own-write (__RK_OWN_WRITE) is newer than any authority
+      // revision by construction and is kept — read-your-writes survives a
+      // peer's mutation of the same path, exactly as it does in heap.
+      let held = false, stamped = 0;
       for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
-        held = true; stamped = row.rev == null ? null : Number(row.rev);
+        held = true; stamped = Number(row.rev);
       }
       if (!held) continue;
-      if (stamped !== null && stamped >= Number(entry.rev)) continue;
+      if (stamped === __RK_OWN_WRITE || stamped >= Number(entry.rev)) continue;
       sql.exec("DELETE FROM chunk WHERE path = ?", path);
       sql.exec("DELETE FROM file WHERE path = ?", path);
       dropped.push(path);
@@ -437,16 +492,18 @@ function __residentBytes(value) {
  * Write one cell, chunking past the single-value ceiling.
  *
  * \`rev\` is the authority revision these bytes were read at, and it is what
- * makes the row datable. NULL means the cell is this facet's own unflushed
- * write — always readable (read-your-writes) and never mistaken for something
- * the authority vouched for.
+ * makes the row datable. Omitting it means the cell is this facet's own
+ * unflushed write, stored as __RK_OWN_WRITE — always readable
+ * (read-your-writes) and never mistaken for something the authority vouched
+ * for. There is no third case: the column refuses one.
  */
 function __residentPut(sql, path, cell, rev) {
   sql.exec("DELETE FROM chunk WHERE path = ?", path);
+  const stamp = typeof rev === "number" ? rev : __RK_OWN_WRITE;
   if (cell && typeof cell === "object" && cell.error) {
     sql.exec(
       "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, 0, 0, ?)",
-      path, __RK_DENIED, rev ?? null
+      path, __RK_DENIED, stamp
     );
     return;
   }
@@ -465,7 +522,28 @@ function __residentPut(sql, path, cell, rev) {
   }
   sql.exec(
     "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, ?, ?, ?)",
-    path, kind, size, chunks, rev ?? null
+    path, kind, size, chunks, stamp
+  );
+}
+
+/** One chunk row, written as it arrives. The streaming filler's primitive. */
+function __residentPutChunk(sql, path, part, bytes) {
+  sql.exec("INSERT OR REPLACE INTO chunk (path, part, bin) VALUES (?, ?, ?)", path, part, bytes);
+}
+
+/**
+ * The head row, written LAST by the streaming filler.
+ *
+ * Order is the durability rule here: without a head row \`__residentHead\`
+ * returns undefined and the path simply misses, falling through to the
+ * supervisor exactly as it would have. So a fill interrupted part way through
+ * a large file leaves chunks nothing can read, never a short file something
+ * can. Writing the head first would invert that into a truncated read.
+ */
+function __residentPutHead(sql, path, kind, size, chunks, rev) {
+  sql.exec(
+    "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev) VALUES (?, ?, ?, ?, ?)",
+    path, kind, size, chunks, typeof rev === "number" ? rev : __RK_OWN_WRITE
   );
 }
 
@@ -508,7 +586,8 @@ function __residentStamp(path, rev) {
 function __residentRevision(path) {
   const sql = __residentRequire();
   for (const row of sql.exec("SELECT rev FROM file WHERE path = ?", path)) {
-    return row.rev == null ? undefined : Number(row.rev);
+    const rev = Number(row.rev);
+    return rev === __RK_OWN_WRITE ? undefined : rev;
   }
   return undefined;
 }
@@ -621,88 +700,201 @@ function __residentAdoptModuleBundle(bundle, moduleCursor) {
 }
 
 /**
- * Fill the store with everything the manifest knows about and the store does
- * not hold — the step that turns "a capped prefetch" into "the filesystem", and
- * so the step that makes a first synchronous read of an untouched file succeed.
+ * Enumerate the whole filesystem, one page at a time.
  *
- * The manifest is already shipped UNCAPPED (it is the true directory shape, ~50
- * KiB for a 1,928-file install), so it is the authority on what exists; the cap
- * only ever applied to CONTENT. Bytes come over \`supervisor.fsReadBatch\`, the
- * batch read the shims already use.
+ * WHAT EXISTS has to come from the authority, not from anything the facet was
+ * shipped, and that was measured rather than assumed: for a working tree
+ * holding a 25 MiB file outside the cwd, \`__MODULE_VFS_METADATA\` arrived with
+ * FOUR entries — "home", "opt", "var", "home/user" — every one a directory.
+ * Metadata covers the bundle plus ancestors; the manifest is per-directory
+ * child names for the directories that happened to be walked. A store that
+ * enumerated from either would hold only what the bundle already had, which is
+ * the admission problem it exists to delete.
  *
- * Async and paid once per slot, before the program's first instruction. It is
+ * Every page is dated, and a page whose epoch differs from the first ABORTS
+ * the listing. The supervisor was replaced mid-walk, so the pages already
+ * collected describe a filesystem that no longer exists and the revision they
+ * would be dated at is meaningless. Returning short is safe — the rows simply
+ * are not there and the reads miss — while stitching the two halves together
+ * would date one incarnation's bytes at another's clock.
+ */
+async function __residentEnumerate(supervisor) {
+  const entries = [];
+  let after = null;
+  let cursor = null;
+  for (let page = 0; page < __RESIDENT_MAX_LIST_PAGES; page++) {
+    const listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE);
+    if (!listed || !Array.isArray(listed.entries)) {
+      throw new Error("Nimbus: fsList returned no page");
+    }
+    if (cursor === null) {
+      cursor = { epoch: String(listed.epoch), rev: Number(listed.rev) };
+    } else if (String(listed.epoch) !== cursor.epoch) {
+      return { entries, cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
+    }
+    for (const entry of listed.entries) {
+      // Directories carry no content, and a symlink's size is its TARGET's
+      // length rather than the resolved file's — reading one by that size
+      // would store a truncated file and call it whole. Both are left to fall
+      // through to the supervisor, which is a miss, never a wrong answer.
+      if (entry.kind !== "file") continue;
+      const path = String(entry.path).replace(/^\\/+/, "");
+      if (!path) continue;
+      entries.push({ path, size: Number(entry.size) });
+    }
+    if (listed.next === null || listed.next === undefined) {
+      return { entries, cursor, complete: true, reason: null };
+    }
+    after = listed.next;
+  }
+  return { entries, cursor, complete: false, reason: "the filesystem exceeded the enumeration page bound" };
+}
+
+/**
+ * Fill the store with everything that exists and the store does not hold — the
+ * step that turns "a capped prefetch" into "the filesystem", and so the step
+ * that makes a first synchronous read of an untouched file succeed.
+ *
+ * Async and paid once per SLOT, before the program's first instruction. It is
  * the only asynchronous thing in this module, and that is the whole trick: the
  * blocking is done here, so the reads that follow never have to.
+ *
+ * THE BATCH BOUNDS ARE THE SUPERVISOR'S AND ARE NOT NEGOTIABLE HERE.
+ * \`_rpcFsReadBatch\` validates with zod and rejects the WHOLE call, so an
+ * over-packed batch loses every path in it rather than degrading. Three
+ * separate bounds apply at once and the packing below respects all three:
+ *
+ *   paths per call      __RESIDENT_BATCH_PATHS   (FS_READ_BATCH_PATH_LIMIT)
+ *   requested bytes     __RESIDENT_BATCH_BYTES   (FS_READ_BATCH_REQUEST_BYTES)
+ *   bytes per range     __RESIDENT_CHUNK_BYTES   (the single-value ceiling)
+ *
+ * Every file is split into __RESIDENT_CHUNK_BYTES ranges — most files are one
+ * short range — and the ranges are packed into calls. That makes the large
+ * file the SAME path as the small one rather than a special case, and it means
+ * no whole-file buffer is ever held: each range is written straight into its
+ * own chunk row as it lands, and the head row follows only once every range of
+ * that file has.
  */
 async function __residentFillFromSupervisor(supervisor, cursor, options) {
   if (!__residentReady) throw new Error("Nimbus: __residentFillFromSupervisor before __residentBind");
   if (!supervisor || typeof supervisor.fsReadBatch !== "function") {
     return { requested: 0, filled: 0, failed: 0, skipped: "no fsReadBatch on this supervisor" };
   }
-  const rev = Number((cursor && cursor.rev) ?? NaN);
-  if (!Number.isFinite(rev)) {
-    throw new Error("Nimbus: refusing to fill the resident store with no cursor to date the rows at");
-  }
-  const batchRows = (options && options.batchRows) || __RESIDENT_BATCH_ROWS;
-  const wanted = [];
-  // WHAT EXISTS has to come from the authority, not from the module map.
-  //
-  // Neither map the facet is shipped is a complete file list, and this was
-  // measured rather than assumed: for a working tree holding a 25 MiB file
-  // outside the cwd, \`__MODULE_VFS_METADATA\` arrived with FOUR entries — "home",
-  // "opt", "var", "home/user" — every one a directory. Metadata covers the
-  // bundle plus ancestors; the manifest is per-directory child names for the
-  // directories that were walked. A store that enumerated from either would
-  // silently hold only what the bundle already had, which is the admission
-  // problem it exists to delete.
-  //
-  // So the enumeration is a supervisor call. Until that RPC exists the store
-  // fills nothing beyond the adopted bundle and every read behaves exactly as
-  // it does today — a smaller resident set, never a wrong one.
   if (typeof supervisor.fsList !== "function") {
+    // Without the enumeration the store cannot know what it is missing, so it
+    // fills nothing beyond the adopted bundle and every read behaves exactly
+    // as it did before this store existed — a smaller resident set, never a
+    // wrong one. That is the failure direction to keep.
     return { requested: 0, filled: 0, failed: 0, skipped: "supervisor cannot enumerate the filesystem (no fsList)" };
   }
-  let listed;
+
+  let listing;
   try {
-    listed = await supervisor.fsList();
+    listing = await __residentEnumerate(supervisor);
   } catch (e) {
     return { requested: 0, filled: 0, failed: 0, skipped: "fsList failed: " + ((e && e.message) || String(e)) };
   }
-  for (const raw of listed || []) {
-    const path = String(typeof raw === "string" ? raw : raw.path).replace(/^\\/+/, "");
-    if (!path) continue;
-    if (__residentHeadOn(__residentSql, path) !== undefined) continue;
-    wanted.push(path);
+
+  // Rows are dated at the cursor read BEFORE the walk, never after. A write
+  // landing mid-fill then reports a revision ABOVE the stamp, so the next
+  // ACQUIRE evicts the row and it is refetched. The opposite — stamping newer
+  // than the bytes — would keep a stale row forever, so the conservative
+  // direction is the only safe one and it costs a refetch.
+  const rev = Number((listing.cursor && listing.cursor.rev) ?? (cursor && cursor.rev) ?? NaN);
+  if (!Number.isFinite(rev)) {
+    throw new Error("Nimbus: refusing to fill the resident store with no cursor to date the rows at");
   }
+
+  // One flat list of ranges across all files, so packing is a single pass and
+  // a 25 MiB file and a 40-byte one are the same shape.
+  const ranges = [];
+  let requested = 0;
+  for (const file of listing.entries) {
+    if (__residentHeadOn(__residentSql, file.path) !== undefined) continue;
+    requested++;
+    const parts = Math.max(1, Math.ceil(file.size / __RESIDENT_CHUNK_BYTES));
+    for (let part = 0; part < parts; part++) {
+      const offset = part * __RESIDENT_CHUNK_BYTES;
+      ranges.push({
+        path: file.path,
+        part,
+        parts,
+        offset,
+        length: Math.min(__RESIDENT_CHUNK_BYTES, Math.max(0, file.size - offset)),
+        size: file.size,
+      });
+    }
+  }
+
+  // Per-file landed-part counts, so a head row is written only once every
+  // range of that file is in. See __residentPutHead.
+  const landed = new Map();
   let filled = 0, failed = 0;
-  for (let at = 0; at < wanted.length; at += batchRows) {
-    const slice = wanted.slice(at, at + batchRows);
+  const failedPaths = new Set();
+
+  for (let at = 0; at < ranges.length;) {
+    const batch = [];
+    let bytes = 0;
+    while (
+      at < ranges.length
+      && batch.length < __RESIDENT_BATCH_PATHS
+      && (batch.length === 0 || bytes + ranges[at].length <= __RESIDENT_BATCH_BYTES)
+    ) {
+      bytes += ranges[at].length;
+      batch.push(ranges[at]);
+      at++;
+    }
     let results;
     try {
-      results = await supervisor.fsReadBatch(slice.map((path) => ({ path })));
+      results = await supervisor.fsReadBatch(
+        batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length }))
+      );
     } catch {
-      failed += slice.length;
+      for (const r of batch) failedPaths.add(r.path);
       continue;
     }
-    for (let i = 0; i < slice.length; i++) {
+    for (let i = 0; i < batch.length; i++) {
+      const range = batch[i];
       const entry = results && results[i];
       if (!entry || entry.error) {
-        // A denial is a real answer and is stored as one; anything else is a
-        // path this store simply will not hold, and a read of it falls through
-        // to the same miss it would have had before.
-        if (entry && entry.error && entry.error.code === "EACCES") {
-          __residentPut(__residentSql, slice[i], { error: "EACCES" }, rev);
+        // A denial is a real answer and is stored as one, so a later read
+        // reports EACCES synchronously instead of missing. Anything else is a
+        // path this store will not hold, and a read of it falls through to
+        // exactly the miss it would have had before.
+        if (entry && entry.error && entry.error.code === "EACCES" && range.part === 0) {
+          __residentPut(__residentSql, range.path, { error: "EACCES" }, rev);
           filled++;
-        } else failed++;
+        } else failedPaths.add(range.path);
         continue;
       }
-      const body = entry.content !== undefined ? entry.content : entry.data;
-      if (body === undefined || body === null) { failed++; continue; }
-      __residentPut(__residentSql, slice[i], body, rev);
-      filled++;
+      if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
+      __residentPutChunk(__residentSql, range.path, range.part, __residentBytes(entry.bytes));
+      const seen = (landed.get(range.path) || 0) + 1;
+      landed.set(range.path, seen);
+      if (seen === range.parts && !failedPaths.has(range.path)) {
+        __residentPutHead(__residentSql, range.path, __RK_BINARY, range.size, range.parts, rev);
+        filled++;
+      }
     }
   }
-  return { requested: wanted.length, filled, failed };
+
+  // A file whose ranges did not all land has chunk rows and no head, so it is
+  // unreadable rather than short. Drop them so the slot does not carry bytes
+  // nothing will ever serve.
+  for (const path of failedPaths) {
+    failed++;
+    __residentSql.exec("DELETE FROM chunk WHERE path = ?", path);
+    __residentSql.exec("DELETE FROM file WHERE path = ?", path);
+  }
+
+  return {
+    requested,
+    filled,
+    failed,
+    ranges: ranges.length,
+    complete: listing.complete,
+    ...(listing.reason ? { incomplete: listing.reason } : {}),
+  };
 }
 
 /**
@@ -720,8 +912,9 @@ const __nimbusResidentBundle = new Proxy(Object.create(null), {
     return __residentHead(path) !== undefined;
   },
   set(_t, path, cell) {
-    // The program's own write. Undated on purpose: it is not the authority's
-    // yet, and the ledger stamps it when the write-back lands.
+    // The program's own write, stamped __RK_OWN_WRITE: not the authority's
+    // yet, newer than anything it could report, and replaced with a real
+    // revision by the ledger when the write-back lands.
     if (typeof path !== "string") return true;
     __residentPut(__residentRequire(), path, cell, undefined);
     return true;
