@@ -63,10 +63,12 @@ import {
   type RuntimeOpenFlags,
   type VfsAcquireResult,
   type VfsCred,
+  type VfsListPage,
 } from '../runtime/os-contracts.js';
 import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import {
+  FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
   MAX_RPC_SAFE_PAYLOAD_BYTES,
@@ -436,6 +438,16 @@ const FsAcquireArgsSchema = z.object({
   cursor: z.number().int().min(0),
 });
 
+// Also facet-supplied, so also untrusted. `after` is a resume key from a
+// previous page and is bounded like any other path; `limit` is clamped rather
+// than rejected, because an over-large ask is a caller wanting more of an
+// answer it is entitled to, not an attempt to exceed a byte budget the way an
+// over-large read batch is.
+const FsListArgsSchema = z.object({
+  after: z.string().max(4096).nullable(),
+  limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+});
+
 export async function _rpcFsRevision(self: RpcHost, path: string | undefined, pid?: number): Promise<number> {
     return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
 }
@@ -519,6 +531,23 @@ export async function _rpcFsAcquire(
 ): Promise<VfsAcquireResult> {
   const args = FsAcquireArgsSchema.parse({ epoch, cursor });
   return runtimeFs(self, pid).acquire(args.epoch, args.cursor);
+}
+
+/**
+ * Enumerate the session filesystem for a process, one bounded page at a time.
+ *
+ * Goes through `runtimeFs(self, pid)` like every other fs RPC, so the listing
+ * is filtered by the calling process's own credential rather than the kernel's
+ * — a process must not learn of a path it could not stat.
+ */
+export async function _rpcFsList(
+  self: RpcHost,
+  after: string | null,
+  limit: number | null,
+  pid?: number,
+): Promise<VfsListPage> {
+  const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
+  return runtimeFs(self, pid).list(args.after, args.limit ?? undefined);
 }
 
 export async function _rpcFsReadRange(
