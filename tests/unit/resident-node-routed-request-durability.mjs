@@ -116,7 +116,8 @@ http.createServer((req, res) => {
 });
 
 // The process really is a facet of this session, and its syscalls come home.
-assert.deepEqual(world.liveFacets(), [residentFacetName(spawned.pid)],
+// Named for its reusable slot, not its pid (loaders/process-fabric).
+assert.deepEqual(world.liveFacets(), [residentFacetName(0)],
   'the node process is the session\'s facet for that pid');
 assert.ok(
   supervisorProps.every((p) => p.doId === 'routed-durability-session'),
