@@ -96,6 +96,16 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
 
+/**
+ * How long assembling a process's filesystem bundle may take.
+ *
+ * Sits under FACET_TIMEOUT_MS because it is paid BEFORE the process starts and
+ * the two are sequential: a build that used the whole facet budget would leave
+ * the program none. A miss on a large tree measures in low seconds, so this is
+ * a bound on a defect rather than on a workload.
+ */
+export const BUNDLE_BUILD_DEADLINE_MS = 20_000;
+
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and
 // /@modules/ bundles are also persisted (SQLite) — this LRU is just the

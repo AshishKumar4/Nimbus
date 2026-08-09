@@ -23,6 +23,15 @@ export declare const MAX_RPC_SAFE_PAYLOAD_BYTES: number;
 export declare const FS_READ_BATCH_PATH_LIMIT = 128;
 export declare const FS_READ_BATCH_REQUEST_BYTES: number;
 export declare const FS_LIST_PAGE_LIMIT = 8192;
+/**
+ * How long assembling a process's filesystem bundle may take.
+ *
+ * Sits under FACET_TIMEOUT_MS because it is paid BEFORE the process starts and
+ * the two are sequential: a build that used the whole facet budget would leave
+ * the program none. A miss on a large tree measures in low seconds, so this is
+ * a bound on a defect rather than on a workload.
+ */
+export declare const BUNDLE_BUILD_DEADLINE_MS = 20000;
 export declare const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 export declare const ON_DEMAND_SLICE_CAP_BYTES: number;
 export declare const FACET_TIMEOUT_MS = 30000;

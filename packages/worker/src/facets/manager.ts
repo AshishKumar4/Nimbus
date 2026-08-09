@@ -66,7 +66,7 @@ import {
   type FacetBundleProfile,
 } from '../runtime/bundle-profile.js';
 import {
-  CF_COMPAT_DATE, FACET_TIMEOUT_MS,
+  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
@@ -3341,6 +3341,56 @@ export class FacetManager {
    * The bundle source and manifest are computed once on the miss path and
    * stored so subsequent hits skip rebuilding them too.
    */
+  /**
+   * Bound the prefetch build, so a cache miss cannot be a silent hang.
+   *
+   * The build was awaited entirely OUTSIDE `_execWithTimeout`, which wraps
+   * only `_execViaLoader`. So every timeout in the system — the 30 s facet
+   * bound, the 60 s bin-dispatch bound — sat downstream of a step that could
+   * take arbitrarily long, and a heavy build wedged the Durable Object with
+   * nothing able to report it. Observed as a terminal that goes quiet and
+   * never returns, with no exit record for the process.
+   *
+   * WHAT THIS CAN AND CANNOT CATCH, stated plainly because the difference
+   * decides whether a given hang is fixed by it. The build is asynchronous —
+   * it awaits the VFS walk and the esbuild ESM→CJS pass — so a stall at any
+   * of those points is caught and reported here. A stall inside ONE
+   * synchronous stretch is not: a JS stack that never yields cannot be raced
+   * by anything in the same isolate, so serializing a multi-megabyte bundle
+   * in a single pass still wedges, and the deadline fires only once the stack
+   * finally unwinds. That class needs the work bounded at its INPUT rather
+   * than timed at its edge, which is a separate change; this one converts
+   * every interruptible stall from a silent wedge into a loud failure, and
+   * makes the remaining class the only one left to explain.
+   */
+  private async _withBundleBuildDeadline(
+    build: Promise<FacetVfsState>,
+    command: string,
+  ): Promise<FacetVfsState> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        build,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(
+              `Nimbus: assembling the filesystem bundle for \`${command}\` exceeded `
+              + `${BUNDLE_BUILD_DEADLINE_MS}ms. The process was not started. This is the `
+              + 'bundle build, not the program: it runs in the session Durable Object, so '
+              + 'it is reported rather than allowed to wedge the session.',
+            )),
+            BUNDLE_BUILD_DEADLINE_MS,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      // The build keeps running after a timeout — nothing here can interrupt
+      // it — so its rejection must not surface later as an unhandled one.
+      build.catch(() => {});
+    }
+  }
+
   private async _buildPrefetchBundleCached(
     vfs: CredentialedVfs,
     scriptPath: string | undefined,
@@ -3611,13 +3661,16 @@ export class FacetManager {
     const processVfs = this.vfs?.as(entry.cred);
     const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
     const vfsState: FacetVfsState = processVfs
-      ? await this._buildPrefetchBundleCached(
-          processVfs,
-          opts.filename,
-          opts.cwd || '/home/user',
-          code,
-          credKey,
-          opts.bundleProfile,
+      ? await this._withBundleBuildDeadline(
+          this._buildPrefetchBundleCached(
+            processVfs,
+            opts.filename,
+            opts.cwd || '/home/user',
+            code,
+            credKey,
+            opts.bundleProfile,
+          ),
+          command,
         )
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;

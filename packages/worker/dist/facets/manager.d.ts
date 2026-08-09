@@ -625,6 +625,29 @@ export declare class FacetManager {
      * The bundle source and manifest are computed once on the miss path and
      * stored so subsequent hits skip rebuilding them too.
      */
+    /**
+     * Bound the prefetch build, so a cache miss cannot be a silent hang.
+     *
+     * The build was awaited entirely OUTSIDE `_execWithTimeout`, which wraps
+     * only `_execViaLoader`. So every timeout in the system — the 30 s facet
+     * bound, the 60 s bin-dispatch bound — sat downstream of a step that could
+     * take arbitrarily long, and a heavy build wedged the Durable Object with
+     * nothing able to report it. Observed as a terminal that goes quiet and
+     * never returns, with no exit record for the process.
+     *
+     * WHAT THIS CAN AND CANNOT CATCH, stated plainly because the difference
+     * decides whether a given hang is fixed by it. The build is asynchronous —
+     * it awaits the VFS walk and the esbuild ESM→CJS pass — so a stall at any
+     * of those points is caught and reported here. A stall inside ONE
+     * synchronous stretch is not: a JS stack that never yields cannot be raced
+     * by anything in the same isolate, so serializing a multi-megabyte bundle
+     * in a single pass still wedges, and the deadline fires only once the stack
+     * finally unwinds. That class needs the work bounded at its INPUT rather
+     * than timed at its edge, which is a separate change; this one converts
+     * every interruptible stall from a silent wedge into a loud failure, and
+     * makes the remaining class the only one left to explain.
+     */
+    private _withBundleBuildDeadline;
     private _buildPrefetchBundleCached;
     /**
      * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
