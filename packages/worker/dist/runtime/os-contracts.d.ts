@@ -131,6 +131,17 @@ export interface RuntimeFsBridge {
      * the alternative would be serving a stale byte.
      */
     acquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
+    /**
+     * Enumerate every path this bridge's credential can see, one bounded page at
+     * a time, resuming past `after`.
+     *
+     * {@link RuntimeFsBridge.acquire} tells a caller what CHANGED; this tells it
+     * what EXISTS. A resident cache can be kept coherent with the barrier alone,
+     * but it can only be made COMPLETE with this: every map a process is shipped
+     * describes what it was GIVEN, so a cache enumerated from them can never
+     * hold a path that was not already staged.
+     */
+    list(after?: string | null, limit?: number): Promise<VfsListPage>;
     subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
 }
 /**
@@ -150,6 +161,47 @@ export interface VfsAcquireResult {
     rev: number;
     paths: VfsInvalidatedPath[];
     poison: boolean;
+}
+/**
+ * One path in a {@link RuntimeFsBridge.list} page.
+ *
+ * `size` is here because the only consumer of an enumeration is a filler that
+ * must then FETCH the bytes, and every batch read is bounded by a byte total
+ * the caller has to compute before it asks. A list without sizes forces a stat
+ * per path just to pack a request — the round trip the enumeration exists to
+ * remove.
+ *
+ * `rev` is the path's own last-mutation revision for a file and a subtree
+ * watermark for a directory ({@link RuntimeFsBridge.revision} semantics
+ * unchanged). It is what lets a cached row be DATED, and an undated row is
+ * exactly the row that can never be invalidated.
+ */
+export interface VfsListEntry {
+    path: string;
+    kind: RuntimeFileType;
+    size: number;
+    rev: number;
+}
+/**
+ * One page of {@link RuntimeFsBridge.list}.
+ *
+ * `next` is the resume key, and `null` means the listing is COMPLETE. That
+ * distinction is the contract: a caller that cannot tell a truncated page from
+ * a finished one treats a partial filesystem as the whole one — the same class
+ * of defect as reading a truncated file as a complete one, which is why
+ * `_rpcFsReadBatch` rejects rather than truncates.
+ *
+ * `epoch`/`rev` are read BEFORE the page is walked, for the same reason
+ * `buildPrefetchBundle` reads its cursor before its walk: a mutation landing
+ * during enumeration must be reported by the next ACQUIRE, never silently
+ * missed. Dating rows at a cursor OLDER than their bytes costs a refetch;
+ * dating them newer would serve a stale byte.
+ */
+export interface VfsListPage {
+    epoch: string;
+    rev: number;
+    entries: VfsListEntry[];
+    next: string | null;
 }
 export interface RuntimeProcessBridge {
     spawn(command: string, args: string[], options?: {

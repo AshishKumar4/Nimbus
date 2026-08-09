@@ -320,6 +320,9 @@ export class SqliteRuntimeFsBridge {
     async acquire(epoch, cursor) {
         return this.rawVfs.invalidatedSince(epoch, cursor);
     }
+    async list(after, limit) {
+        return this.vfs.list(after ?? null, limit);
+    }
     subscribe(path, listener) {
         return this.rawVfs.events.onPath(normalizeVfsPath(path), listener);
     }

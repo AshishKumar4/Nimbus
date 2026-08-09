@@ -40,7 +40,7 @@
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
-import { type VfsCred, type VfsInvalidatedPath } from '../runtime/os-contracts.js';
+import { type VfsCred, type VfsInvalidatedPath, type VfsListPage } from '../runtime/os-contracts.js';
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 export interface ExclusiveMutationLease {
     readonly root: string;
@@ -113,6 +113,11 @@ export interface CredentialedVfs {
         name: string;
         type: VfsInodeKind;
     }[];
+    /**
+     * Enumerate every path this credential can see, in path order, one bounded
+     * page at a time. `after` resumes past a previous page's `next`.
+     */
+    list(after?: string | null, limit?: number): VfsListPage;
     unlink(path: string): void;
     rmdir(path: string): void;
     rename(oldPath: string, newPath: string): void;
@@ -452,6 +457,27 @@ export declare class SqliteVFS {
      */
     private chmod;
     private chown;
+    /**
+     * Enumerate the filesystem, one bounded page at a time.
+     *
+     * This is the answer to a question no facet could previously ask. A process
+     * is shipped a prefetch bundle plus the ancestors of what is in it, so every
+     * map it holds describes what it was GIVEN, never what EXISTS — a resident
+     * store that enumerated from those maps could only ever re-cache the bundle,
+     * which is the admission problem it exists to delete.
+     *
+     * Ordered by path so `after` is a stable resume key across pages. Ordering
+     * by anything else would let an insert during pagination shift entries
+     * across the page boundary and drop them.
+     *
+     * Access is checked per path against the caller's credential, and a path it
+     * cannot reach is OMITTED rather than reported. Omission is the safe
+     * direction: a filler that never learns of a path simply misses it, and the
+     * miss falls through to the supervisor, which denies it in its own right.
+     * Reporting the path instead would leak the existence of files the process
+     * has no permission to see.
+     */
+    private list;
     private readdir;
     private unlink;
     private rmdir;

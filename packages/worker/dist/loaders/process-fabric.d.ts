@@ -400,10 +400,32 @@ interface WorkerLoaderBinding {
 export interface ResidentFacetEnv extends Partial<OpencodeAssetsEnv> {
     LOADER?: WorkerLoaderBinding;
 }
-/** The facet name for a process. Unique per pid, and pids never repeat. */
-export declare function residentFacetName(pid: number): string;
-/** What `openResidentFacet` hands back: a running process, minus its placement. */
-export type ResidentFacet = Omit<HostedProcess, 'describe'>;
+/**
+ * The facet name for a slot. Reused, and that is the entire point.
+ *
+ * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
+ * append-only and are never reclaimed, so the bound is on facets ever CREATED,
+ * not facets alive at once. Naming a facet after its pid, when pids never
+ * repeat, therefore burned one of those IDs on every spawn — a long-lived
+ * session would eventually exhaust its facet index with no way back, and the
+ * failure is unrecoverable rather than merely slow.
+ *
+ * Reusing a NAME costs no new ID. So the name comes from a free list and the
+ * pid stays what it always was: the process identity in the ProcessTable. The
+ * two were only ever conflated because one of them happened to be handy.
+ */
+export declare function residentFacetName(slot: number): string;
+/**
+ * What `openResidentFacet` hands back: a running process, minus its placement.
+ *
+ * `slot` rides along because the caller's `describe` needs the facet's real
+ * name and the slot is not derivable from the pid — that indirection is the
+ * whole point of the free list. Reading it back out of the book later would
+ * also race the release that empties it.
+ */
+export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
+    slot: number;
+};
 /**
  * Open a resident process as a facet of the actor whose `ctx` and `env` are
  * given, and start its runner.

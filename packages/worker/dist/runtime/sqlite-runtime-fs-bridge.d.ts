@@ -1,5 +1,5 @@
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireResult } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireResult, VfsListPage } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private nextHandleId;
@@ -58,6 +58,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fsync(): Promise<void>;
     revision(path?: string): Promise<number>;
     acquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
+    list(after?: string | null, limit?: number): Promise<VfsListPage>;
     subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void;
     private resolveDataPath;
     private resolveMutationPath;
