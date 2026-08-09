@@ -7,6 +7,11 @@
  *     -Wl,--import-memory,--shared-memory,--max-memory=67108864 \
  *     -o prog.wasm prog.c nimbus-threads.c
  *
+ * Requires wasi-sdk 27 or newer. Older wasi-libc has no
+ * __wasilibc_futex_wait_maybe_busy hook, so nothing calls the definition below,
+ * the linker drops it as unreachable, and the build succeeds silently — leaving
+ * a binary Nimbus refuses at load. Measured: 25 has no hook, 27 does.
+ *
  * Why it is needed:
  *
  * wasi-libc implements every blocking pthread primitive — mutex, condvar,
