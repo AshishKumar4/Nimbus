@@ -411,16 +411,37 @@ try {
   );
   const fullChunks = chunks.filter(chunk => chunk.treeEntriesVisited === 1_000);
   assert.ok(fullChunks.length >= 6, 'fixture did not produce six equal checkout chunks');
-  const baselineWallMs = median(fullChunks.slice(1, 6).map(chunk => chunk.measuredWallMs));
-  for (let offset = 6; offset + 5 <= fullChunks.length; offset += 5) {
-    const windowWallMs = median(
-      fullChunks.slice(offset, offset + 5).map(chunk => chunk.measuredWallMs),
-    );
-    assert.ok(
-      windowWallMs <= baselineWallMs * 1.15,
-      `chunks ${offset + 1}-${offset + 5} median wall ${windowWallMs}ms exceeded ` +
-        `chunks 2-6 median ${baselineWallMs}ms by more than 15%`,
-    );
+  // Every full chunk visits the same 1,000 tree entries, so the work it does must
+  // not grow with how deep into the checkout it is — that is what catches a
+  // per-chunk cost scaling with the cumulative set (a re-walk, a re-parse, a cache
+  // that stops hitting). Assert it on the operation counters this harness already
+  // collects, NOT on `measuredWallMs`.
+  //
+  // The wall-clock form this replaces compared later-window median elapsed against
+  // the first window's with a 15% bound. `measuredWallMs` is `performance.now()` on
+  // the host, so it measured the machine rather than the checkout: on a busy box the
+  // later windows drift past the bound and the unit suite goes red with no defect
+  // present. It failed exactly that way — and because CI runs the unit loop with
+  // `|| exit 1` ahead of the behavioral step, one such failure took the entire
+  // behavioral gate down with it. These counters are deterministic, so the same 15%
+  // margin is generous headroom instead of a coin flip.
+  const perChunkCounters = [
+    ['readDelta', 'file reads'],
+    ['statDelta', 'stat calls'],
+    ['lstatDelta', 'lstat calls'],
+    ['rangeDelta', 'range reads'],
+    ['waveDelta', 'W7 write waves'],
+  ];
+  for (const [key, label] of perChunkCounters) {
+    const baseline = median(fullChunks.slice(1, 6).map(chunk => chunk[key]));
+    for (let offset = 6; offset + 5 <= fullChunks.length; offset += 5) {
+      const windowMedian = median(fullChunks.slice(offset, offset + 5).map(chunk => chunk[key]));
+      assert.ok(
+        windowMedian <= Math.max(baseline * 1.15, baseline + 1),
+        `chunks ${offset + 1}-${offset + 5} median ${label} ${windowMedian} exceeded ` +
+          `chunks 2-6 median ${baseline} — per-chunk work grows with checkout depth`,
+      );
+    }
   }
   assert.equal(calls.readFile.filter(path => path === idxPath).length, 2,
     'warm real chunks reparsed the pack index outside the forced-cold resume');

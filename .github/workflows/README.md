@@ -8,7 +8,9 @@ recursively under `tests/behavioral/` and run sequentially.
 
 ### What is under test
 
-The commit. The job builds `dist` through the build/bundle/build fixpoint,
+The commit. The job builds `dist` through the build/bundle/build fixpoint
+and fails if that rebuild changed anything — a commit whose committed
+`dist` does not match its `src` cannot be graded as though it did — then
 deploys `apps/probe` under a per-run `nimbus-tw-ci-<run-id>-<attempt>` name,
 asserts the active version id actually changed, and points `BASE` at the
 result. Teardown deletes the throwaway and confirms it is gone.

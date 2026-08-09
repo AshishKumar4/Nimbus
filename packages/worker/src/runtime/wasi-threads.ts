@@ -273,7 +273,10 @@ export function wasiThreadsLoadError(info: WasmThreadsInfo): string | null {
     return 'wasi-threads: this module was not linked against the Nimbus futex shim, so every '
       + 'blocking pthread operation would execute memory.atomic.wait32, which traps on Workers '
       + '("Atomics.wait cannot be called in this context"). Link runtime-contracts/'
-      + 'nimbus-threads.c into the program. Full build line: ' + THREADS_LINK_FLAGS;
+      + 'nimbus-threads.c into the program. If you DID link it, the wasi-libc you built against '
+      + 'predates the weak __wasilibc_futex_wait_maybe_busy hook that file defines: nothing calls '
+      + 'the definition, so the linker drops it and the build reports no error. Rebuild with '
+      + 'wasi-sdk 27 or newer. Full build line: ' + THREADS_LINK_FLAGS;
   }
   return null;
 }

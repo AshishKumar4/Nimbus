@@ -331,6 +331,39 @@ export function makeClangRunnerFactory(deps) {
 function isSourceExt(p) {
     return /\.(c|cc|cpp|cxx|c\+\+|C)$/.test(p);
 }
+/**
+ * Nimbus RUNS threaded wasm — see runtime/wasi-threads.ts — but this compiler
+ * cannot BUILD it. The bundled toolchain is LLVM 8 over a wasi-sdk-19 sysroot
+ * that ships one target directory, `lib/wasm32-wasi`, with no threads variant:
+ * no atomics-and-bulk-memory libc, no `libpthread.a`, and a fixed link line
+ * with no `--shared-memory`.
+ *
+ * Measured on the shipped sysroot, `-pthread` fell through parseUserArgv's
+ * catch-all for unrecognised flags, and what the user saw depended on their
+ * includes: `clang -pthread prog.c` on a program that does not include
+ * <pthread.h> built and ran with exit 0 and the flag quietly ignored, while a
+ * real threaded program died at `'pthread.h' file not found` — a diagnosis
+ * that names a missing header rather than a toolchain that has no threads at
+ * all, and points nowhere. Refuse at the front door instead, and say where the
+ * working path is, because Nimbus does run these programs once they are built
+ * correctly.
+ */
+function threadedBuildRefusal(argv) {
+    const flag = argv.find((a) => a === '-pthread' || a === '-mthread-model' || a === '--pthread'
+        || /^(-target|--target)=.*threads$/.test(a));
+    const target = argv.findIndex((a) => a === '-target' || a === '--target');
+    const targetsThreads = target >= 0 && /threads$/.test(argv[target + 1] || '');
+    if (!flag && !targetsThreads)
+        return null;
+    return `${flag ?? `${argv[target]} ${argv[target + 1]}`}: this toolchain cannot build threaded wasm.\n`
+        + `  The bundled sysroot is wasm32-wasi only — it has no wasm32-wasip1-threads libc.\n`
+        + `  Nimbus RUNS pthread programs (mutex, condvar, join, TLS, barrier, semaphore),\n`
+        + `  but they must be built with a full wasi-sdk and linked against the futex shim:\n`
+        + `    clang --target=wasm32-wasip1-threads --sysroot=$WASI_SYSROOT -pthread \\\n`
+        + `      -Wl,--import-memory,--shared-memory,--max-memory=67108864 \\\n`
+        + `      -o prog.wasm prog.c nimbus-threads.c\n`
+        + `  See docs/wasi-threads.md for nimbus-threads.c and why the shim is required.`;
+}
 function parseUserArgv(argv) {
     const inputPaths = [];
     const includePaths = [];
@@ -403,6 +436,13 @@ function parseUserArgv(argv) {
             inputPaths.push(a);
         }
         // else: drop silently (e.g. typos). clang would warn; we don't yet.
+    }
+    const threaded = threadedBuildRefusal(argv);
+    if (threaded) {
+        return {
+            inputPaths: [], includePaths, libraryPaths, libraries,
+            outputPath: '', compileOnly, exitCode: 1, error: threaded,
+        };
     }
     if (inputPaths.length === 0) {
         return {

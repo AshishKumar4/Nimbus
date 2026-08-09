@@ -69,12 +69,12 @@ import { spawnSync } from 'node:child_process';
 import { mintProbeToken } from './_mint-probe-token.mjs';
 import { PROBE_TARGET_SKIPS } from './_probe-target-skips.mjs';
 import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isolation.mjs';
+import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
 import {
   MACHINE_STATE_DIR,
   ROOT,
   activeVersionId,
   assertCredentialHeld,
-  buildDist,
   createSession,
   deployAndVerify,
   parseFlags,
@@ -166,7 +166,7 @@ async function up() {
     });
   }
 
-  if (flags.build !== false) buildDist({ account, log });
+  if (flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
 
   // The probe target first, and not only because it is cheaper: its
   // deploy prints the account's workers.dev subdomain, which is what the

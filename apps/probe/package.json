@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "predev": "bun run --cwd ../../packages/worker bundle",
-    "predeploy": "bun run --cwd ../../packages/worker bundle",
+    "predeploy": "bun ../../scripts/dist-integrity.mjs",
     "dev": "wrangler dev --ip 0.0.0.0 --port 8792",
     "deploy": "wrangler deploy"
   },
