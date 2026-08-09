@@ -29,6 +29,7 @@ import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 
 /** The file nothing references, and that the bundle cannot carry. */
 const UNTOUCHED = '/opt/appdata/locale/deep/never-required.json';
@@ -54,11 +55,48 @@ kfs.mkdir('home/user', { recursive: true, mode: 0o755 });
 kfs.mkdir('opt/appdata/locale/deep', { recursive: true, mode: 0o755 });
 kfs.writeFile(UNTOUCHED.replace(/^\//, ''), UNTOUCHED_BODY, { mode: 0o644 });
 
-/** The supervisor the facet talks to. `fsReadBatch` is what the filler uses. */
+/**
+ * Many small files, and the reason they are here.
+ *
+ * The batch packing obeys two bounds at once — at most
+ * FS_READ_BATCH_PATH_LIMIT (128) ranges and at most
+ * FS_READ_BATCH_REQUEST_BYTES (4 MiB) per call — and with the 25 MiB file
+ * alone only the BYTE bound ever binds, because 1 MiB ranges fill 4 MiB after
+ * four of them. Measured: breaking the path bound to 512 left this test green.
+ * So the fixture carries more than 128 small files, where the PATH bound binds
+ * first and a violation is rejected by the real zod schema.
+ */
+const SMALL_FILE_COUNT = 300;
+kfs.mkdir('opt/appdata/many', { recursive: true, mode: 0o755 });
+for (let i = 0; i < SMALL_FILE_COUNT; i++) {
+  kfs.writeFile(`opt/appdata/many/f${i}.txt`, `small-${i}`, { mode: 0o644 });
+}
+/** One of them, read synchronously as the program's first contact with it. */
+const UNTOUCHED_SMALL = '/opt/appdata/many/f287.txt';
+
+/**
+ * The supervisor the facet talks to.
+ *
+ * `fsList` and `fsReadBatch` are the REAL RPC entry points, not stand-ins.
+ * That is deliberate and it is what this test learned the hard way: a
+ * hand-written stub answered `{ content }` for unlimited paths with no
+ * offset or length, while `_rpcFsReadBatch` answers `{ bytes }` for at most
+ * FS_READ_BATCH_PATH_LIMIT ranges totalling FS_READ_BATCH_REQUEST_BYTES, with
+ * both fields required and zod rejecting the whole call otherwise. A filler
+ * that passed against the stub could not issue a single valid call against the
+ * supervisor. Binding the proof to the real functions makes that class of
+ * drift impossible rather than merely noticed.
+ */
 let fsReadBatchCalls = 0;
 let fsListCalls = 0;
 let allowFill = true;
 const stdoutChunks = [];
+
+const rpcHost = {
+  sqliteFs: sessionVfs,
+  processes: new SessionProcessSupervisor(),
+  ensureSqliteFs() {},
+};
 
 function makeSupervisor(props) {
   return {
@@ -68,21 +106,15 @@ function makeSupervisor(props) {
      * — measured: a facet is shipped metadata for the bundle plus ancestor
      * directories, not a file list — so it is a supervisor call.
      */
-    async fsList() {
+    async fsList(after, limit) {
       fsListCalls++;
       if (!allowFill) throw new Error('probe: fill disabled for the control arm');
-      return [UNTOUCHED.replace(/^\//, '')];
+      return _rpcFsList(rpcHost, after ?? null, limit ?? null);
     },
     async fsReadBatch(requests) {
       fsReadBatchCalls++;
       if (!allowFill) throw new Error('probe: fill disabled for the control arm');
-      return requests.map(({ path }) => {
-        try {
-          return { content: sessionVfs.as(CRED_KERNEL).readFile(String(path).replace(/^\/+/, ''), 'utf8') };
-        } catch (e) {
-          return { error: { code: e?.code ?? 'ENOENT', message: String(e?.message ?? e) } };
-        }
-      });
+      return _rpcFsReadBatch(rpcHost, requests);
     },
     async readFile(path) {
       return sessionVfs.as(CRED_KERNEL).readFile(String(path).replace(/^\/+/, ''), 'utf8');
@@ -146,6 +178,12 @@ try {
 } catch (e) {
   console.log('SYNC_READ_FAILED ' + (e && e.code ? e.code : '') + ' ' + (e && e.message));
 }
+try {
+  const small = fs.readFileSync(${JSON.stringify(UNTOUCHED_SMALL)}, 'utf8');
+  console.log('SMALL_READ_OK ' + small);
+} catch (e) {
+  console.log('SMALL_READ_FAILED ' + (e && e.code ? e.code : '') + ' ' + (e && e.message));
+}
 `;
 
 /**
@@ -194,6 +232,10 @@ assert.ok(
 assert.ok(
   filled.includes(`len=${UNTOUCHED_BODY.length} head=NNNNNNNN`),
   `the read must return the file's real bytes and full length, got: ${filled.trim()}`,
+);
+assert.ok(
+  filled.includes(`SMALL_READ_OK small-287`),
+  `a first synchronous read must also succeed where the PATH bound binds, got: ${filled.trim()}`,
 );
 assert.ok(fsListCalls > 0, 'the store must have asked the authority what exists');
 assert.ok(fsReadBatchCalls > 0, 'the store must have been filled over the supervisor');
