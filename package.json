@@ -28,7 +28,6 @@
   "scripts": {
     "bundle": "bun run --cwd packages/worker bundle",
     "predev": "bun run bundle",
-    "predeploy": "bun run bundle",
     "dev": "bun run --cwd apps/hosted-demo dev",
     "deploy": "bun run --cwd apps/hosted-demo deploy",
     "deploy:production": "bun run --cwd apps/hosted-demo deploy:production",
