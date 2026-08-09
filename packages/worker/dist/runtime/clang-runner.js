@@ -338,10 +338,15 @@ function isSourceExt(p) {
  * no atomics-and-bulk-memory libc, no `libpthread.a`, and a fixed link line
  * with no `--shared-memory`.
  *
- * Dropping `-pthread` silently is the one outcome that must not happen: the
- * non-threads libc stubs `pthread_create` to fail at runtime, so the user gets
- * a binary that links clean and does nothing. Refuse at the front door and say
- * where the working path is.
+ * Measured on the shipped sysroot, `-pthread` fell through parseUserArgv's
+ * catch-all for unrecognised flags, and what the user saw depended on their
+ * includes: `clang -pthread prog.c` on a program that does not include
+ * <pthread.h> built and ran with exit 0 and the flag quietly ignored, while a
+ * real threaded program died at `'pthread.h' file not found` — a diagnosis
+ * that names a missing header rather than a toolchain that has no threads at
+ * all, and points nowhere. Refuse at the front door instead, and say where the
+ * working path is, because Nimbus does run these programs once they are built
+ * correctly.
  */
 function threadedBuildRefusal(argv) {
     const flag = argv.find((a) => a === '-pthread' || a === '-mthread-model' || a === '--pthread'
