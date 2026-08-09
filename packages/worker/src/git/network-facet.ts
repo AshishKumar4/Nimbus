@@ -1387,6 +1387,15 @@ function parentOf(p) {
   return p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
 }
 
+// fs.promises.readFile takes its encoding bare as well as on an options
+// object, and cf-git uses both spellings. Honouring only the object form
+// hands text call sites raw bytes; see the supervisor-side adapter in
+// ./commands.ts for what that silently cost .gitignore.
+function wantsUtf8(options) {
+  const encoding = typeof options === 'string' ? options : (options && options.encoding);
+  return encoding === 'utf8' || encoding === 'utf-8';
+}
+
 function enoent(filepath) {
   const err = new Error('ENOENT: no such file or directory, ' + filepath);
   err.code = 'ENOENT'; err.errno = -2;
@@ -1993,7 +2002,7 @@ function createBufferedFs(
         // Check buffer first (FIFO insertion order preserves what git wrote)
         if (writeBuffer.has(p)) {
           const data = writeBuffer.get(p);
-          if (opts && opts.encoding === 'utf8') return new TextDecoder().decode(data);
+          if (wantsUtf8(opts)) return new TextDecoder().decode(data);
           return data;
         }
         if (deleteBuffer.has(p)) {
@@ -2003,7 +2012,7 @@ function createBufferedFs(
         const durablePath = resolved.path;
         if (durablePath !== p && writeBuffer.has(durablePath)) {
           const data = writeBuffer.get(durablePath);
-          if (opts && opts.encoding === 'utf8') return new TextDecoder().decode(data);
+          if (wantsUtf8(opts)) return new TextDecoder().decode(data);
           return data;
         }
         if (resolved.entry && resolved.entry.kind === 'dir') throw enoent(filepath);
@@ -2065,7 +2074,7 @@ function createBufferedFs(
             return content.slice();
           });
         }
-        if (opts && opts.encoding === 'utf8') return new TextDecoder().decode(data);
+        if (wantsUtf8(opts)) return new TextDecoder().decode(data);
         return data;
       },
 
