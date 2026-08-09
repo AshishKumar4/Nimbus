@@ -57,13 +57,19 @@ Three requirements, each checked before the program runs:
   would give each thread a private address space.
 - **`wasi_thread_start` exported.** The wasi-threads entry point; `-pthread`
   emits it.
-- **`nimbus-threads.c` linked.** wasi-libc compiles its futex wait to
-  `memory.atomic.wait32`, which traps on Workers with *"Atomics.wait cannot be
-  called in this context"* the first time a lock is contended. wasi-libc calls
-  the weak symbol `__wasilibc_futex_wait_maybe_busy` instead whenever something
-  defines it; that file defines it, routing every blocking pthread operation to
-  the host futex. The hook is wasi-libc's own — no patched libc, no binary
-  rewriting.
+- **`nimbus-threads.c` linked, against wasi-sdk 27 or newer.** wasi-libc
+  compiles its futex wait to `memory.atomic.wait32`, which traps on Workers with
+  *"Atomics.wait cannot be called in this context"* the first time a lock is
+  contended. wasi-libc calls the weak symbol
+  `__wasilibc_futex_wait_maybe_busy` instead whenever something defines it; that
+  file defines it, routing every blocking pthread operation to the host futex.
+  The hook is wasi-libc's own — no patched libc, no binary rewriting.
+
+  The version floor is load-bearing, and ignoring it fails quietly. A wasi-libc
+  without that hook never *calls* the definition, so the linker drops it as
+  unreachable and the build succeeds with no warning — leaving a binary that
+  looks correctly built and is refused at load. Measured: wasi-sdk 25 ships no
+  hook, wasi-sdk 27 does.
 
 A build missing any of these is rejected at load with the build line in the
 error, rather than run in a way that could corrupt.
