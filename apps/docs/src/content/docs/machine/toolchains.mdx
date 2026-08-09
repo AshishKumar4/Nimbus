@@ -20,9 +20,11 @@ binaries, but they are not stubs. `python` is Pyodide CPython 3.13.
 `ruby` is ruby.wasm 3.3. `clang` is LLVM 8 with a modern wasi-libc sysroot.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
 builds, user headers, and `fopen` against session files. `-pthread` is
-refused at link time because partial `wasi-threads` support could corrupt
-data — [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
-explains why.
+refused, because that sysroot ships no `wasm32-wasip1-threads` libc to link
+against. Nimbus *runs* pthread programs correctly — build them with a full
+wasi-sdk and the futex shim from
+[the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md),
+then run the `.wasm` in a session.
 
 Package installers check the ABI:
 
