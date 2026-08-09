@@ -8,6 +8,7 @@ import type {
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
   VfsAcquireResult,
+  VfsListPage,
 } from './os-contracts.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -357,6 +358,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   async acquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult> {
     return this.rawVfs.invalidatedSince(epoch, cursor);
+  }
+
+  async list(after?: string | null, limit?: number): Promise<VfsListPage> {
+    return this.vfs.list(after ?? null, limit);
   }
 
   subscribe(path: string, listener: Parameters<NonNullable<RuntimeFsBridge['subscribe']>>[1]): () => void {
