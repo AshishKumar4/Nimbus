@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 // clang-threaded-build-refusal — asking the bundled clang for a threads build
-// fails loudly instead of producing a binary that cannot thread.
+// fails with instructions instead of with a riddle.
 //
 // Nimbus RUNS threaded wasm (runtime/wasi-threads.ts), but the bundled
 // toolchain is LLVM 8 over a wasi-sdk-19 sysroot with only `lib/wasm32-wasi`
-// in it. The failure mode this guards is the silent one: `-pthread` used to be
-// swallowed by the argv parser along with every other unrecognised flag, so
-// the program linked against the non-threads libc — whose `pthread_create` is
-// a stub that fails at runtime — and the user got a clean-looking build of a
-// binary that could never spawn a thread.
+// in it. `-pthread` used to fall through the argv parser's catch-all for
+// unrecognised flags. Measured live, that gave two bad outcomes and no good
+// one: on a program without <pthread.h> the build succeeded with exit 0 and
+// the flag silently ignored, and on a real threaded program it died at
+// `'pthread.h' file not found` — which blames a header rather than a toolchain
+// with no threads support, and offers no way forward.
 
 import assert from 'node:assert/strict';
 
