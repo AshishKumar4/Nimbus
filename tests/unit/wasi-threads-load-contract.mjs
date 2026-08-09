@@ -163,6 +163,14 @@ const remedy = /--target=wasm32-wasip1-threads .*--shared-memory.*nimbus-threads
     assert.match(err || '', /not linked against the Nimbus futex shim/));
   check('the futex rejection explains what would otherwise happen at runtime', () =>
     assert.match(err || '', /memory\.atomic\.wait32.*Atomics\.wait cannot be called in this context/s));
+  // "Link the shim" is a dead end for the reader who already did. An old
+  // wasi-libc has no __wasilibc_futex_wait_maybe_busy to call, so the linker
+  // drops the definition as unreachable and the build reports nothing — the
+  // module arrives here looking exactly like one that never linked it.
+  check('the futex rejection names the toolchain floor that silently strips the shim', () =>
+    assert.match(err || '', /wasi-sdk 27 or newer/));
+  check('the futex rejection names the hook whose absence causes the strip', () =>
+    assert.match(err || '', /__wasilibc_futex_wait_maybe_busy/));
 }
 
 // ── malformed input is answered, not thrown at ───────────────────────────────

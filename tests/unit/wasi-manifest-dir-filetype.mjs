@@ -18,10 +18,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
-import { assertGeneratedPreambleIsFresh } from './lib/generated-freshness.mjs';
+import { assertGeneratedSourcesAreCurrent } from './lib/generated-freshness.mjs';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
-assertGeneratedPreambleIsFresh();
+assertGeneratedSourcesAreCurrent();
 
 const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports };`;
 const preamblePath = path.join(os.tmpdir(), `wasi-dirtype-${process.pid}.mjs`);

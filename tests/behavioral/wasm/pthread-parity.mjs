@@ -2,8 +2,9 @@
 // wasm/pthread-parity — a real threaded C program runs correctly in a session.
 //
 // The binary is a stock wasi-sdk `wasm32-wasip1-threads` build (plus the futex
-// shim every Nimbus threads build links). It exercises the four things a
-// pthread implementation has to get right and that a fake one gets wrong:
+// shim every Nimbus threads build links). It exercises every blocking pthread
+// primitive, each written so a broken one changes a NUMBER rather than merely
+// running slower:
 //
 //   mutex        two threads race 2000 guarded increments each. A mutex that
 //                does not exclude loses increments; counter != 4000.
@@ -15,9 +16,30 @@
 //   TLS          each thread writes its own __thread slot, yields to its peer,
 //                and re-reads it. Shared globals masquerading as TLS give
 //                tls=0, and the main thread's own slot would be clobbered.
+//   barrier      4 threads, 3 phases. Each bumps the phase's arrival count and
+//                yields before waiting, so a barrier that lets anyone through
+//                early sees arrived != 4 and reports barrier=0.
+//   semaphore    a ring of 4 carrying 100 items, so the producer MUST block on
+//                full and the consumer on empty; sem != 5050 if either didn't.
+//   signal       strict ping-pong on cond_signal — the missed-wakeup hazard. A
+//                signal dropped before its peer parks stalls both threads, so
+//                signal < 400 (and the scheduler reports the deadlock).
+//   once         4 threads race pthread_once; the initialiser must run exactly
+//                once, so once != 1 catches both re-entry and no-entry.
+//   rwlock       the writer yields BETWEEN the two halves of its update while
+//                holding the write lock, so a reader that is not excluded is
+//                guaranteed — not merely likely — to observe the torn pair.
+//   detach       a detached thread runs to completion and its exit is not
+//                waited on; detach=0 if it never ran.
+//   timedwait    cond_timedwait on a condvar nobody signals must expire with
+//                ETIMEDOUT rather than hang or wake early.
+//   trylock      must fail EBUSY on a held mutex and succeed on a free one — a
+//                trylock that always succeeds is a mutex that never excludes.
 //
 // Asserting on the exact line rather than "ran without error" is the point:
-// every one of these fails QUIETLY with a plausible-looking exit code 0.
+// every one of these fails QUIETLY with a plausible-looking exit code 0. The
+// expected line is the one the same C source prints under a real POSIX pthread
+// implementation, so this compares Nimbus against pthreads, not against itself.
 
 import { mintSession, Terminal, sleep, stripAnsi, deleteSession, BASE } from '../_driver.mjs';
 import { PTHREAD_PARITY_WASM_B64, PTHREAD_PARITY_EXPECTED } from './_pthread-fixture.mjs';
@@ -80,6 +102,14 @@ const checks = [
   ['the condition variable delivered every item', /condvar=5050\b/.test(line)],
   ['thread-local storage survived a context switch', /\btls=1\b/.test(line)],
   ['the main thread\'s TLS slot was not clobbered', /mainTls=0\b/.test(line)],
+  ['the barrier released only once every thread arrived', /barrier=1\b/.test(line)],
+  ['semaphores blocked on both a full and an empty ring', /\bsem=5050\b/.test(line)],
+  ['cond_signal lost no wakeup across 400 handoffs', /signal=400\b/.test(line)],
+  ['pthread_once ran the initialiser exactly once', /once=1\b/.test(line)],
+  ['the rwlock kept readers out of a half-written update', /rwlock=1\b/.test(line)],
+  ['a detached thread ran to completion', /detach=1\b/.test(line)],
+  ['cond_timedwait expired with ETIMEDOUT', /timedwait=1\b/.test(line)],
+  ['trylock failed on a held mutex and took a free one', /trylock=1\b/.test(line)],
   ['no trap or wasm-runner error', !/wasi trap|deadlock|Atomics\.wait/i.test(out)],
   ['a build without the futex shim is refused at load',
     /not linked against the Nimbus futex shim/.test(rejected)],

@@ -99,11 +99,14 @@ jobs:
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        # `up` builds dist through the build/bundle/build fixpoint, runs the
-        # isolation preflight, deploys apps/probe under the throwaway name,
-        # verifies the active version id changed, sets a freshly generated
-        # JWT_SECRET and mints a matching token. It prints the two exports
-        # on stdout; its progress log goes to stderr.
+        # `up` runs the dist-integrity gate (the build/bundle/build fixpoint,
+        # then a refusal if rebuilding changed anything — so a commit whose
+        # committed dist does not match its src fails HERE rather than being
+        # graded as if it did), runs the isolation preflight, deploys
+        # apps/probe under the throwaway name, verifies the active version id
+        # changed, sets a freshly generated JWT_SECRET and mints a matching
+        # token. It prints the two exports on stdout; its progress log goes
+        # to stderr.
         run: |
           bun tests/behavioral/_throwaway-target.mjs up --name "$TARGET_NAME" > target.env
           BASE="$(sed -n 's/^export BASE=//p' target.env)"
