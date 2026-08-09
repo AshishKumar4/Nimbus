@@ -204,7 +204,7 @@ export declare const RESIDENT_MATERIALISE_BATCH_ROWS = 512;
  * loses every path in it. Imported rather than restated as fresh literals so
  * the generated source cannot drift from the endpoint it calls.
  */
-export declare const RESIDENT_FILL_BATCH_PATHS = 128;
+export declare const RESIDENT_FILL_BATCH_PATHS = 1024;
 export declare const RESIDENT_FILL_BATCH_BYTES: number;
 /**
  * The in-facet store. Spliced into the generated module ahead of the shims, in

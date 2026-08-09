@@ -1583,7 +1583,7 @@ const __fsMod = (() => {
   // gather window is one microtask, so it can only capture reads the program
   // had already issued concurrently — a sequential loop batches nothing
   // because it has issued nothing else to batch.
-  const READ_BATCH_PATH_LIMIT = 128;
+  const READ_BATCH_PATH_LIMIT = 1024;
   const READ_BATCH_REQUEST_BYTES = 4194304;
   let _openReadBatch = null;
 
