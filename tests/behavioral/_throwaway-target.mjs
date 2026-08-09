@@ -58,12 +58,12 @@ import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
 import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
+import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
 import {
   ROOT,
   WRANGLER,
   activeVersionId,
   assertCredentialHeld,
-  buildDist,
   createSession,
   deployAndVerify,
   parseFlags,
@@ -145,7 +145,7 @@ async function up() {
     rotate: Boolean(flags['rotate-secrets']),
   });
 
-  if (flags.build !== false) buildDist({ account, log });
+  if (flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
 
   // Recorded before the deploy, not after: `wrangler deploy` can create the
   // script and still fail before it reports a URL, and a name nothing knows
