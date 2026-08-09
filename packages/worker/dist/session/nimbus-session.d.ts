@@ -12,7 +12,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
-import { type VfsAcquireResult } from '../runtime/os-contracts.js';
+import { type VfsAcquireResult, type VfsListPage } from '../runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
@@ -258,6 +258,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcSymlink(target: string, path: string, pid?: number): Promise<void>;
     _rpcFsRevision(path?: string, pid?: number): Promise<number>;
     _rpcFsAcquire(epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
+    _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
     _rpcWsOpen(url: string, protocols: string[], pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;

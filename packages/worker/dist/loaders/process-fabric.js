@@ -259,9 +259,66 @@ function facetContainer(ctx) {
     }
     return facets;
 }
-/** The facet name for a process. Unique per pid, and pids never repeat. */
-export function residentFacetName(pid) {
-    return `proc-${pid}`;
+/**
+ * The facet name for a slot. Reused, and that is the entire point.
+ *
+ * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
+ * append-only and are never reclaimed, so the bound is on facets ever CREATED,
+ * not facets alive at once. Naming a facet after its pid, when pids never
+ * repeat, therefore burned one of those IDs on every spawn — a long-lived
+ * session would eventually exhaust its facet index with no way back, and the
+ * failure is unrecoverable rather than merely slow.
+ *
+ * Reusing a NAME costs no new ID. So the name comes from a free list and the
+ * pid stays what it always was: the process identity in the ProcessTable. The
+ * two were only ever conflated because one of them happened to be handy.
+ */
+export function residentFacetName(slot) {
+    return `proc-slot-${slot}`;
+}
+/**
+ * Slot books, per hosting actor, because the facet index is per Durable
+ * Object.
+ *
+ * Keyed weakly off `ctx`, and that is sound rather than lossy: a facet cannot
+ * outlive the Durable Object hosting it, so a book that goes away with its
+ * host describes nothing that still exists. A fresh incarnation restarts at
+ * slot 0 and re-attaches to the SQLite a previous incarnation left there —
+ * which is safe for the reason the store is sealed until it has reconciled.
+ * Its persisted cursor is either datable against the current authority, in
+ * which case the ACQUIRE delta brings it current, or it carries a different
+ * VFS epoch, in which case `invalidatedSince` can only answer poison and the
+ * whole store is dropped. A process therefore cannot boot onto a previous
+ * tenant's filesystem even when release never ran.
+ */
+const slotBooks = new WeakMap();
+function slotBook(ctx) {
+    let book = slotBooks.get(ctx);
+    if (!book) {
+        book = { free: [], next: 0, held: new Map() };
+        slotBooks.set(ctx, book);
+    }
+    return book;
+}
+/** Take a slot for `pid`, reusing a returned one before minting a new name. */
+function acquireSlot(ctx, pid) {
+    const book = slotBook(ctx);
+    const existing = book.held.get(pid);
+    if (existing !== undefined)
+        return existing;
+    const slot = book.free.length > 0 ? book.free.shift() : book.next++;
+    book.held.set(pid, slot);
+    return slot;
+}
+/** Return `pid`'s slot to the free list. */
+function releaseSlot(ctx, pid) {
+    const book = slotBook(ctx);
+    const slot = book.held.get(pid);
+    if (slot === undefined)
+        return;
+    book.held.delete(pid);
+    book.free.push(slot);
+    book.free.sort((a, b) => a - b);
 }
 /**
  * Open a resident process as a facet of the actor whose `ctx` and `env` are
@@ -276,7 +333,8 @@ export function residentFacetName(pid) {
  */
 export function openResidentFacet(ctx, env, disk, supervisor, params) {
     const facets = facetContainer(ctx);
-    const name = residentFacetName(params.pid);
+    const slot = acquireSlot(ctx, params.pid);
+    const name = residentFacetName(slot);
     // The start callback is the ONLY way this facet is ever created, and it
     // fires AT MOST ONCE. Every later use goes through the stub below, so the
     // callback running a second time means the facet was released or died —
@@ -311,6 +369,9 @@ export function openResidentFacet(ctx, env, disk, supervisor, params) {
             facets.delete(name);
         }
         catch { /* already gone */ }
+        // Only after the facet is gone. A slot handed out while its previous
+        // tenant were still being torn down would have two processes on one name.
+        releaseSlot(ctx, params.pid);
     };
     let started;
     try {
@@ -330,6 +391,7 @@ export function openResidentFacet(ctx, env, disk, supervisor, params) {
         lost: new Promise(() => { }),
         handleHttpRequest: (request) => facet.handleHttpRequest(request),
         release,
+        slot,
     };
 }
 /**

@@ -23,7 +23,7 @@
  */
 import { type ResidentFacet } from '../loaders/process-fabric.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '../loaders/process-host.js';
-import { type RuntimeOpenFlags, type VfsAcquireResult } from '../runtime/os-contracts.js';
+import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsListPage } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
@@ -117,6 +117,14 @@ export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, re
  * way would silently arrive as undefined.
  */
 export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, cursor: number, pid?: number): Promise<VfsAcquireResult>;
+/**
+ * Enumerate the session filesystem for a process, one bounded page at a time.
+ *
+ * Goes through `runtimeFs(self, pid)` like every other fs RPC, so the listing
+ * is filtered by the calling process's own credential rather than the kernel's
+ * — a process must not learn of a path it could not stat.
+ */
+export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
 /**
  * The same read, through the same process credential and the same bridge, with

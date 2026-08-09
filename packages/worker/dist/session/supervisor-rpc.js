@@ -21,6 +21,7 @@
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
+ *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -200,6 +201,26 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     async fsRevision(path) {
         return this._call(this._getStub()._rpcFsRevision(path, this._pid()));
+    }
+    /**
+     * Enumerate the session filesystem, one bounded page at a time.
+     *
+     * ACQUIRE answers "what CHANGED"; this answers "what EXISTS", and nothing a
+     * facet is shipped can. Its bundle is a capped prefetch, its metadata covers
+     * that bundle plus ancestors, and its manifest carries child names only for
+     * the directories the bundler happened to walk — measured, for a real tree,
+     * as four entries, every one a directory. A resident cache enumerated from
+     * those maps could only ever re-cache what it was already given, which is
+     * the admission problem such a cache exists to delete.
+     *
+     * Paginated rather than capped-and-rejected the way `fsReadBatch` is: a
+     * caller asking what exists cannot know the answer's size in advance, so
+     * refusing a large filesystem would refuse exactly the filesystems worth
+     * enumerating. `next === null` marks the final page, so a short page is
+     * never mistaken for a complete listing.
+     */
+    async fsList(after, limit) {
+        return this._call(this._getStub()._rpcFsList(after ?? null, limit ?? null, this._pid()));
     }
     /**
      * WebSocket relay. A facet does not open its own sockets: the supervisor

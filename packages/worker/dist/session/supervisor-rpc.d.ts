@@ -21,6 +21,7 @@
  *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   fsReadBatch(requests) → per-range results  (many reads, one round trip)
+ *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
  *   writeBatch(payload) → { inodes, chunks }  (bulk atomic write)
  *   stdout(data) → void  (pushed to WebSocket + ring buffer)
  *   stderr(data) → void
@@ -29,7 +30,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
-import type { VfsAcquireResult } from '../runtime/os-contracts.js';
+import type { VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
 import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
@@ -113,6 +114,24 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     fsAcquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult>;
     fsRevision(path?: string): Promise<number>;
+    /**
+     * Enumerate the session filesystem, one bounded page at a time.
+     *
+     * ACQUIRE answers "what CHANGED"; this answers "what EXISTS", and nothing a
+     * facet is shipped can. Its bundle is a capped prefetch, its metadata covers
+     * that bundle plus ancestors, and its manifest carries child names only for
+     * the directories the bundler happened to walk — measured, for a real tree,
+     * as four entries, every one a directory. A resident cache enumerated from
+     * those maps could only ever re-cache what it was already given, which is
+     * the admission problem such a cache exists to delete.
+     *
+     * Paginated rather than capped-and-rejected the way `fsReadBatch` is: a
+     * caller asking what exists cannot know the answer's size in advance, so
+     * refusing a large filesystem would refuse exactly the filesystems worth
+     * enumerating. `next === null` marks the final page, so a short page is
+     * never mistaken for a complete listing.
+     */
+    fsList(after?: string | null, limit?: number | null): Promise<VfsListPage>;
     /**
      * WebSocket relay. A facet does not open its own sockets: the supervisor
      * terminates them and hands frames back through `wsPoll`, so an inbound

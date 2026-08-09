@@ -77,6 +77,18 @@ export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 // 32 MiB RPC ceiling however the caller packs it.
 export const FS_READ_BATCH_PATH_LIMIT = 128;
 export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
+// Entries in one `fsList` page.
+//
+// Enumeration cannot borrow the read batch's reject-when-over rule: a caller
+// asking what exists does not know the answer's size, so refusing a large
+// filesystem would refuse the only filesystems that need enumerating. It
+// paginates instead, and every page says explicitly whether it is the last —
+// a short page is never mistaken for a complete one.
+//
+// Sized so a page stays far under MAX_RPC_SAFE_PAYLOAD_BYTES even at the
+// deepest realistic paths: a node_modules path runs ~200 bytes, so a full
+// page is ~1.6 MB against the 28 MiB bound.
+export const FS_LIST_PAGE_LIMIT = 8192;
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and
 // /@modules/ bundles are also persisted (SQLite) — this LRU is just the

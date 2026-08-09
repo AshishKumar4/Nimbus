@@ -12,7 +12,7 @@ import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
-import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, } from '../runtime/os-contracts.js';
 import { PortRegistry } from '../runtime/port-registry.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
@@ -600,6 +600,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
     async _rpcFsAcquire(epoch, cursor, pid) {
         return _rpc._rpcFsAcquire(this, epoch, cursor, pid);
+    }
+    async _rpcFsList(after, limit, pid) {
+        return _rpc._rpcFsList(this, after, limit, pid);
     }
     async _rpcWsOpen(url, protocols, pid) {
         return _rpc._rpcWsOpen(this, url, protocols, pid);

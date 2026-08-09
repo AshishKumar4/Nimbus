@@ -38,7 +38,7 @@ import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-c
 import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
+import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
@@ -319,6 +319,15 @@ const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
 });
+// Also facet-supplied, so also untrusted. `after` is a resume key from a
+// previous page and is bounded like any other path; `limit` is clamped rather
+// than rejected, because an over-large ask is a caller wanting more of an
+// answer it is entitled to, not an attempt to exceed a byte budget the way an
+// over-large read batch is.
+const FsListArgsSchema = z.object({
+    after: z.string().max(4096).nullable(),
+    limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+});
 export async function _rpcFsRevision(self, path, pid) {
     return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
 }
@@ -371,6 +380,17 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
 export async function _rpcFsAcquire(self, epoch, cursor, pid) {
     const args = FsAcquireArgsSchema.parse({ epoch, cursor });
     return runtimeFs(self, pid).acquire(args.epoch, args.cursor);
+}
+/**
+ * Enumerate the session filesystem for a process, one bounded page at a time.
+ *
+ * Goes through `runtimeFs(self, pid)` like every other fs RPC, so the listing
+ * is filtered by the calling process's own credential rather than the kernel's
+ * — a process must not learn of a path it could not stat.
+ */
+export async function _rpcFsList(self, after, limit, pid) {
+    const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
+    return runtimeFs(self, pid).list(args.after, args.limit ?? undefined);
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid) {
     const args = FsReadRangeArgsSchema.parse({ path, offset, length });

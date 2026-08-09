@@ -41,7 +41,7 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { normalizeVfsPath } from './path.js';
-import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, } from '../constants.js';
+import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, FS_LIST_PAGE_LIMIT, } from '../constants.js';
 import { recordFailure } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
@@ -49,7 +49,7 @@ import { enc, dec } from '../_shared/bytes.js';
 import { decodeWriteBatchStream, } from '../_shared/w7-frame.js';
 import { WeightedCreditPool, } from '../_shared/weighted-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
 const INODE_ROWS_PER_SQL_EXEC = 9;
 const CHUNK_ROWS_PER_SQL_EXEC = 33;
@@ -920,6 +920,7 @@ export class SqliteVFS {
             chmod: (path, mode) => this.chmod(path, mode, bound),
             chown: (path, uid, gid, options) => this.chown(path, uid, gid, bound, options?.followSymlinks !== false),
             readdir: (path) => this.readdir(path, bound),
+            list: (after, limit) => this.list(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT), bound),
             unlink: (path) => this.unlink(path, bound),
             rmdir: (path) => this.rmdir(path, bound),
             rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
@@ -2102,6 +2103,66 @@ export class SqliteVFS {
         this.sql.exec('UPDATE inodes SET uid = ?, gid = ?, mode = ? WHERE path = ?', inode.uid, inode.gid, inode.mode, inode.path);
         this.bumpRevision([inode.path]);
         this.events.emit('change', inode.path);
+    }
+    /**
+     * Enumerate the filesystem, one bounded page at a time.
+     *
+     * This is the answer to a question no facet could previously ask. A process
+     * is shipped a prefetch bundle plus the ancestors of what is in it, so every
+     * map it holds describes what it was GIVEN, never what EXISTS — a resident
+     * store that enumerated from those maps could only ever re-cache the bundle,
+     * which is the admission problem it exists to delete.
+     *
+     * Ordered by path so `after` is a stable resume key across pages. Ordering
+     * by anything else would let an insert during pagination shift entries
+     * across the page boundary and drop them.
+     *
+     * Access is checked per path against the caller's credential, and a path it
+     * cannot reach is OMITTED rather than reported. Omission is the safe
+     * direction: a filler that never learns of a path simply misses it, and the
+     * miss falls through to the supervisor, which denies it in its own right.
+     * Reporting the path instead would leak the existence of files the process
+     * has no permission to see.
+     */
+    list(after, limit, cred) {
+        // Before the walk, deliberately — see VfsListPage.
+        const epoch = this._epoch;
+        const rev = this._revision;
+        const from = after === null || after === undefined ? '' : normalizeVfsPath(after);
+        // this.inodes is insertion-ordered, not path-ordered, so the sort is what
+        // makes `after` a resume key at all. Paid once per page against a map the
+        // DO already holds whole.
+        const paths = [];
+        for (const path of this.inodes.keys()) {
+            if (path === '' || path <= from)
+                continue;
+            paths.push(path);
+        }
+        paths.sort();
+        const entries = [];
+        let next = null;
+        for (const path of paths) {
+            if (entries.length >= limit) {
+                next = entries[entries.length - 1].path;
+                break;
+            }
+            const inode = this.inodes.get(path);
+            if (!inode)
+                continue;
+            try {
+                this.checkAccess(path, 0, cred, { followLeaf: false });
+            }
+            catch {
+                continue;
+            }
+            entries.push({
+                path,
+                kind: inode.kind,
+                size: inode.size,
+                rev: this._pathRevisions.get(path) ?? 0,
+            });
+        }
+        return { epoch, rev, entries, next };
     }
     readdir(path, cred) {
         const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
