@@ -146,11 +146,12 @@ class FacetProcessHost implements ProcessHost {
       pid: params.pid,
       writerId: params.writerId,
     };
-    const facet = openResidentFacet(this.ctx, this.env, this.disk, supervisor, params);
+    const { slot, ...facet } = openResidentFacet(this.ctx, this.env, this.disk, supervisor, params);
     return {
       ...facet,
       describe: () =>
-        `facet '${residentFacetName(params.pid)}' of session ${this.coordDoId.slice(-12)}`
+        `facet '${residentFacetName(slot)}' (pid ${params.pid})`
+        + ` of session ${this.coordDoId.slice(-12)}`
         + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
   }
