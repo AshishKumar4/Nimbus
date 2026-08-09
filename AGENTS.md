@@ -337,8 +337,19 @@ Agent-specific probes:
 | Deploy production (`nimbus`) | `bun run deploy:production` |
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
+| Check dist matches src | `bun scripts/dist-integrity.mjs` |
 
-The root `predev` and `predeploy` scripts regenerate worker bundles.
+The root `predev` script regenerates worker bundles.
+
+Every deploy path — `predeploy`, `deploy:production`, the throwaway and
+staging targets — runs `scripts/dist-integrity.mjs` instead of a build. It
+compiles `src` → `dist`, bundles (which reads `dist`), rebuilds so the
+regenerated artifacts reach `dist`, and refuses the deploy if any of that
+changed a file. `dist` is tracked and wrangler ships `dist`, so a commit
+whose `dist` predates its `src` deploys a Worker missing changes its own
+source contains; the gate makes that a refusal rather than a silent no-op
+deploy. It adds ~6s. When it refuses, the tree it refused has already been
+rebuilt: review the diff, commit it, deploy again.
 
 **Production is `wrangler deploy -e production`, and nothing else.**
 `apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own
