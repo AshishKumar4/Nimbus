@@ -81,9 +81,33 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Runs every unit file and records the failures instead of exiting on the
+      # first one, so a unit failure can no longer decide whether the behavioral
+      # suite runs at all. `unit-gate` at the end of the job is what fails the
+      # build, so both signals are always produced.
+      #
+      # This shape is not a style preference. Twice now a single failing unit
+      # test has silently disabled the behavioral gate: once on stale tests
+      # referencing removed APIs, and once on a checkout-scaling assertion that
+      # compared host `performance.now()` and so failed roughly one run in three
+      # on a busy machine. In both cases every push looked green-ish while ~380
+      # probes had not executed, and nobody could tell from the outside.
       - name: Run unit tests
+        id: unit
         shell: bash
-        run: for f in tests/unit/*.mjs; do echo "== $f"; bun "$f" || exit 1; done
+        run: |
+          failed=()
+          for f in tests/unit/*.mjs; do
+            echo "== $f"
+            bun "$f" || failed+=("$f")
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            for f in "${failed[@]}"; do echo "::error file=$f::unit test failed: $f"; done
+            echo "count=${#failed[@]}" >> "$GITHUB_OUTPUT"
+            echo "Unit failures: ${#failed[@]}. The behavioral suite still runs; unit-gate fails this job at the end."
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Require deploy credentials
         shell: bash
@@ -153,3 +177,14 @@ jobs:
         # API — a 404 on the hostname alone does not mean the script is
         # absent. It exits non-zero when it cannot confirm, so a leak is loud.
         run: bun tests/behavioral/_throwaway-target.mjs down --name "$TARGET_NAME"
+
+      # Fails the job for unit failures the run recorded earlier. It sits after
+      # teardown so the throwaway is always deleted first, and after the suite so
+      # the behavioral result is on the record either way — a red unit test and a
+      # red probe are different facts and the build should report both.
+      - name: unit-gate
+        if: always() && steps.unit.outputs.count != '0'
+        shell: bash
+        run: |
+          echo "::error::${{ steps.unit.outputs.count }} unit test(s) failed — see the 'Run unit tests' step."
+          exit 1
