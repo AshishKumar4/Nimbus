@@ -1,126 +1,201 @@
 #!/usr/bin/env bun
-// runtime-primitives/bin-tsc — primitive #2 probe.
+// runtime-primitives/bin-tsc — does `tsc` compile?
 //
-// Today: bin shims at <project>/node_modules/.bin/<cmd> are routed
-// through shellExecuteTracked ONLY inside `npm run <script>` (init.ts:
-// 1972-1983). Direct terminal invocation of `tsc --version` after
-// `npm i typescript` HAS no shell-level handler — it falls through
-// to @lifo-sh/core's PATH lookup which doesn't know about the project's
-// .bin directory.
+// The previous version of this probe substituted a three-line `echocli`
+// for the compiler and asserted that the shell routed to it, on the
+// stated grounds that "tsc + many real bins crash on Nimbus's facet
+// runtime for unrelated reasons". That is the feature under test. A
+// probe that passes while `tsc --version` hangs forever on production
+// is worse than no probe: it buys a green signal with a regression-blind
+// period (tests/behavioral/PROBE-QUALITY.md).
 //
-// What "generic bin handler" means per the queued plan:
+// So this asserts on compiler OUTPUT, through the surface a user has:
+// type `tsc` at the prompt after `npm i typescript`.
 //
-//   - Direct `<bin> [args]` from the terminal SHOULD route through
-//     shellExecuteTracked when the bin exists at
-//     `<cwd>/node_modules/.bin/<bin>`.
-//   - For dev/start/serve/watch-class invocations the bin gets the
-//     long-running treatment (PID, port registration, Process tab).
-//   - For one-shot bins (tsc, eslint, prettier), the bin runs but
-//     stdout/stderr stream to the process tab the same way.
+//   1. `tsc --version` prints the version it installed.
+//   2. `tsc -p .` on a valid project EMITS JavaScript, and the emitted
+//      file contains the compiled form of the source.
+//   3. `tsc --noEmit` on a deliberate type error reports that error, by
+//      its real TypeScript diagnostic code.
 //
-// Probe shape:
+// (2) and (3) are the two halves that matter: a compiler that emits
+// nothing is broken, and a compiler that emits without checking is
+// worse than broken. Neither can be satisfied by anything other than
+// the real tsc having run to completion.
 //
-//   1. Install typescript locally → node_modules/.bin/tsc shim exists.
-//   2. Run `tsc --version` directly (NOT via `npm run`).
-//   3. Pre-fix: shell falls through, "command not found" or hang.
-//      Post-fix: shellExecuteTracked picks it up, version prints.
+// The version is PINNED. `npm i typescript` resolves to TypeScript 7,
+// which is a native ELF executable (`@typescript/typescript-linux-x64`)
+// that its JS shim launches with `execFileSync` — nothing a wasm sandbox
+// can run, and nothing this probe can assert compiler output against.
+// 5.7.3 is the JS compiler, and pinning it keeps this probe measuring
+// Nimbus rather than measuring npm's `latest` tag. What `npm i typescript`
+// does today is the subject of its sibling, bin-tsc-native.
 //
-// Black-box surfaces only.
+// Every step is bounded. A step that does not come back is a FAIL with
+// the elapsed time, never a hang — that failure mode is the one this
+// probe exists to catch.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, sleep, stripAnsi, deleteSession, BASE } from '../_driver.mjs';
+
+const TS_VERSION = '5.7.3';
+const DIR = '/home/user/tsc-probe';
+
+/**
+ * Cleanup runs against a session whose supervisor may be gone — the exact
+ * condition this probe exists to catch — and `deleteSession` has no timeout
+ * of its own. Bound it, or a failing probe hangs the suite it is part of.
+ */
+function withDeadline(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve({ timedOut: label }), ms)),
+  ]);
+}
+
+/** Bounded run. Never throws: a timeout is an outcome, not a crash. */
+async function run(t, line, timeoutMs) {
+  const startedAt = Date.now();
+  try {
+    const r = await t.run(line, timeoutMs);
+    return { ok: true, elapsed: r.elapsed, output: stripAnsi(r.output) };
+  } catch (e) {
+    return {
+      ok: false,
+      elapsed: Date.now() - startedAt,
+      output: stripAnsi(t.buf),
+      error: e.message,
+    };
+  }
+}
+
+const PKG_JSON = JSON.stringify({ name: 'tsc-probe', version: '1.0.0', private: true });
+const TSCONFIG = JSON.stringify({
+  compilerOptions: {
+    target: 'ES2020',
+    module: 'CommonJS',
+    outDir: 'dist',
+    rootDir: 'src',
+    strict: true,
+  },
+  include: ['src'],
+});
+// Valid, and shaped so the emitted JS is recognisable: the type
+// annotations are erased and the template literal survives, so the marker
+// can only appear in output a compiler actually produced.
+const GOOD_TS = [
+  'export function greet(who: string): string {',
+  '  return `NIMBUS-TSC-EMIT:${who}`;',
+  '}',
+  'export const answer: number = greet("ok").length;',
+].join('\n');
+// `string` is not assignable to `number` — TS2322, one of the most
+// stable diagnostic codes TypeScript has.
+const BAD_TS = 'export const wrong: number = "not a number";\n';
+
+// A probe whose subject is "this never comes back" must bound its own total
+// runtime, or a regression turns one red probe into a stalled suite. Every
+// step below is bounded individually; this is the backstop for the sum.
+const WALL_CLOCK_MS = 10 * 60 * 1000;
+const wallClock = setTimeout(() => {
+  console.error(`[bin-tsc] exceeded ${WALL_CLOCK_MS / 1000}s total; the suite is not a place to hang`);
+  process.exit(1);
+}, WALL_CLOCK_MS);
 
 const sid = await mintSession();
-console.log(`[#2] sid=${sid} BASE=${BASE}`);
+console.log(`[bin-tsc] sid=${sid} BASE=${BASE}`);
+
+const checks = [];
+const check = (name, ok, detail = '') => checks.push({ name, ok, detail });
+const findings = { sid, base: BASE, tsVersion: TS_VERSION, steps: {} };
 
 const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+try {
+  await t.connect();
+  await sleep(1_000);
+  await t.waitForPrompt(30_000).catch(() => {});
 
-// ── Setup: a tiny project + LOCAL bin shim that we control ──
-//
-// We test primitive #2 (the .bin handler routing) with a bin we
-// control end-to-end, so a third-party CLI's runtime quirks don't
-// gate the architectural assertion. Tsc + many real bins crash on
-// Nimbus's facet runtime for unrelated reasons (missing native
-// modules, complex CJS init); the bin handler itself works the same
-// way regardless.
-//
-// Test plan: write a 3-line "echo" bin to node_modules/.bin/echocli,
-// invoke it from the terminal, assert output contains the marker.
-await t.run('cd /home/user', 5_000);
-await t.run('mkdir -p tsc-probe/node_modules/.bin', 5_000);
-await t.run('cd /home/user/tsc-probe', 5_000);
-await t.run('node -e "require(\'fs\').writeFileSync(\'package.json\', JSON.stringify({name:\'p\',version:\'1.0.0\'}))"', 10_000);
+  // ── Setup ────────────────────────────────────────────────────────────
+  await run(t, `mkdir -p ${DIR}/src`, 15_000);
+  await run(t, `cd ${DIR}`, 10_000);
+  for (const [path, body] of [
+    [`${DIR}/package.json`, PKG_JSON],
+    [`${DIR}/tsconfig.json`, TSCONFIG],
+    [`${DIR}/src/index.ts`, GOOD_TS],
+  ]) {
+    const b64 = Buffer.from(body, 'utf8').toString('base64');
+    await run(
+      t,
+      `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`,
+      30_000,
+    );
+  }
 
-// Write a custom CLI script that just echoes its argv. Base64-encode
-// the body so the shell parser doesn't fight us about quoting.
-const cliCode =
-  '#!/usr/bin/env node\n' +
-  'console.log("ECHOCLI-MARKER:" + JSON.stringify(process.argv.slice(2)));\n';
-const cliCodeB64 = Buffer.from(cliCode, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('/home/user/tsc-probe/node_modules/.bin/echocli', Buffer.from('${cliCodeB64}', 'base64').toString('utf8'))"`,
-  15_000,
-);
+  const install = await run(t, `npm i typescript@${TS_VERSION}`, 300_000);
+  findings.steps.install = { ok: install.ok, elapsed: install.elapsed, tail: install.output.slice(-400) };
 
-// Verify shim exists (we just wrote it; this is a sanity check).
-const lsResult = await t.run('cat /home/user/tsc-probe/node_modules/.bin/echocli', 10_000);
-const shimPresent = /ECHOCLI-MARKER/.test(stripAnsi(lsResult.output));
-const installOk = shimPresent; // semantic alias — the install in this
-                                // probe is the file write above
+  const shim = await run(t, `cat ${DIR}/node_modules/.bin/tsc`, 20_000);
+  const shimPresent = shim.ok && /typescript\/bin\/tsc/.test(shim.output);
+  check(`npm i typescript@${TS_VERSION} links node_modules/.bin/tsc`, shimPresent,
+    shimPresent ? '' : `install=${install.ok} shim=${JSON.stringify(shim.output.slice(-300))}`);
 
-// ── Run the bin directly ──
-t.reset();
-t.cmd('echocli --version');
-let elapsed = 0;
-try { elapsed = await t.waitForNewPrompt(60_000); }
-catch { elapsed = -1; }
-const directOutput = stripAnsi(t.buf);
-// The marker plus the user-side argv should both appear. Guard against
-// the user-typed echo by requiring the argv-JSON shape.
-const directOk = /ECHOCLI-MARKER:\["--version"\]/.test(directOutput);
+  // Everything below needs the install. Without it the compiler
+  // assertions would fail for a reason that is not about the compiler.
+  if (!shimPresent) throw new Error('install precondition failed');
 
-// ── Sanity: same command via `npm exec tsc -- --version` ──
-//
-// `npm exec` is the standard alternative; it should already work.
-// Used as a sanity baseline so a probe failure can be triaged
-// (env vs. shim presence vs. shell routing).
-const npmxResult = await t.run('npm exec tsc -- --version', 60_000);
-const npmxOk = /Version\s+\d+\.\d+/i.test(stripAnsi(npmxResult.output));
+  // ── 1. the compiler answers at all ───────────────────────────────────
+  const version = await run(t, 'tsc --version', 90_000);
+  findings.steps.version = { ok: version.ok, elapsed: version.elapsed, tail: version.output.slice(-400) };
+  const versionOk = version.ok && new RegExp(`Version\\s+${TS_VERSION.replace(/\./g, '\\.')}`).test(version.output);
+  check('`tsc --version` prints the installed version', versionOk,
+    versionOk ? `${version.elapsed}ms`
+      : `after ${version.elapsed}ms: ${version.error ? `${version.error}; ` : ''}output=${JSON.stringify(version.output.slice(-400))}`);
 
-const findings = {
-  primitive: '#2',
-  sid,
-  base: BASE,
-  installOk,
-  shimPresent,
-  directInvocation: {
-    elapsed,
-    ok: directOk,
-    head: directOutput.slice(-600),
-  },
-  npmExec: {
-    elapsed: npmxResult.elapsed,
-    ok: npmxOk,
-    head: stripAnsi(npmxResult.output).slice(-300),
-  },
-};
+  // ── 2. the compiler EMITS ────────────────────────────────────────────
+  const build = await run(t, 'tsc -p .', 120_000);
+  findings.steps.build = { ok: build.ok, elapsed: build.elapsed, tail: build.output.slice(-600) };
 
-await t.close();
+  const emitted = await run(t, `cat ${DIR}/dist/index.js`, 30_000);
+  findings.steps.emitted = { ok: emitted.ok, tail: emitted.output.slice(-600) };
+  // The marker proves this is compiler output; `exports.greet` proves the
+  // CommonJS module target was applied rather than the source copied.
+  const emitOk = emitted.ok
+    && /NIMBUS-TSC-EMIT/.test(emitted.output)
+    && /exports\.greet/.test(emitted.output)
+    && !/:\s*string/.test(emitted.output);
+  check('`tsc -p .` emits compiled JavaScript to dist/index.js', emitOk,
+    emitOk ? `${build.elapsed}ms`
+      : `build after ${build.elapsed}ms ${build.ok ? 'returned' : `did not return (${build.error})`}; ` +
+        `dist/index.js=${JSON.stringify(emitted.output.slice(-400))}`);
+
+  // ── 3. the compiler CHECKS ───────────────────────────────────────────
+  const badB64 = Buffer.from(BAD_TS, 'utf8').toString('base64');
+  await run(
+    t,
+    `node -e "require('fs').writeFileSync('${DIR}/src/index.ts', Buffer.from('${badB64}','base64').toString('utf8'))"`,
+    30_000,
+  );
+  const diag = await run(t, 'tsc -p . --noEmit', 120_000);
+  findings.steps.diagnostic = { ok: diag.ok, elapsed: diag.elapsed, tail: diag.output.slice(-600) };
+  const diagOk = diag.ok && /error TS2322/.test(diag.output);
+  check('`tsc --noEmit` reports the real diagnostic for a type error', diagOk,
+    diagOk ? `${diag.elapsed}ms`
+      : `after ${diag.elapsed}ms: ${diag.error ? `${diag.error}; ` : ''}output=${JSON.stringify(diag.output.slice(-400))}`);
+} catch (e) {
+  if (checks.length === 0) check('probe ran', false, e.message);
+  findings.aborted = e.message;
+} finally {
+  await withDeadline(t.close().catch(() => {}), 10_000, 'close');
+  await withDeadline(deleteSession(sid).catch(() => {}), 30_000, 'delete');
+}
+
+clearTimeout(wallClock);
 console.log(JSON.stringify(findings, null, 2));
 
-const checks = [
-  ['echocli shim materialised in .bin/',               shimPresent],
-  ['shim file readable + has marker',                  installOk],
-  ['direct `echocli --version` runs and emits marker', directOk],
-];
-
 let pass = 0;
-for (const [name, ok] of checks) {
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
+for (const { name, ok, detail } of checks) {
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `\n          ${detail}` : ''}`);
   if (ok) pass++;
 }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[#2] ${verdict} — ${pass}/${checks.length} checks`);
-process.exit(verdict === 'passing' ? 0 : 1);
+const total = checks.length;
+console.log(`[bin-tsc] ${pass === total && total > 0 ? 'passing' : 'failing'} — ${pass}/${total} checks`);
+process.exit(pass === total && total > 0 ? 0 : 1);
