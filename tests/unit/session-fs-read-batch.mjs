@@ -190,6 +190,55 @@ function makeHost() {
   );
 
   await assert.rejects(_rpcFsReadBatch(host, [], user.pid), 'an empty batch was accepted');
+
+  // ── a batch at the FULL path bound is ANSWERED, not merely permitted ──────
+  //
+  // The bound was raised from 128 to 1024 because for real installs the path
+  // cap set the fill cost while the byte cap did the safety work. A nominal
+  // limit is not evidence that the limit works: this asks for the maximum
+  // width in ONE call over that many DISTINCT real files and checks every
+  // entry positionally, so a batch that quietly answered the wrong path or
+  // returned short would fail here.
+  kernelVfs.mkdir('home/user/wide', { recursive: true, mode: 0o755 });
+  const wide = [];
+  const expected = [];
+  for (let i = 0; i < FS_READ_BATCH_PATH_LIMIT; i++) {
+    const body = `wide-${i}`;
+    kernelVfs.writeFile(`home/user/wide/w${i}.txt`, body, { mode: 0o644 });
+    wide.push({ path: `/home/user/wide/w${i}.txt`, offset: 0, length: 64 });
+    expected.push(body);
+  }
+  const answered = await _rpcFsReadBatch(host, wide, user.pid);
+  assert.equal(answered.length, FS_READ_BATCH_PATH_LIMIT,
+    `a full-width batch must answer every range, got ${answered.length}`);
+  for (let i = 0; i < expected.length; i++) {
+    assert.equal(answered[i].error, undefined,
+      `entry ${i} errored: ${answered[i].error?.message}`);
+    assert.equal(dec.decode(answered[i].bytes), expected[i],
+      `entry ${i} did not carry its own path's bytes — positional matching breaks at full width`);
+  }
+
+  // ── many small files are not automatically a small payload ───────────────
+  //
+  // The byte cap does the safety work now that the path cap is wide, so the
+  // case that matters is a batch that LOOKS like small files and is not:
+  // FS_READ_BATCH_PATH_LIMIT ranges sized past the budget. It must reject
+  // loudly rather than truncate, because a caller handed fewer entries than it
+  // asked for would read a truncated file as a whole one.
+  const perRangeWide = Math.ceil(FS_READ_BATCH_REQUEST_BYTES / FS_READ_BATCH_PATH_LIMIT) * 2;
+  const deceptive = Array.from({ length: FS_READ_BATCH_PATH_LIMIT }, (_v, i) => ({
+    path: `/home/user/many/f${i % 63}.txt`, offset: 0, length: perRangeWide,
+  }));
+  assert.ok(
+    deceptive.reduce((n, r) => n + r.length, 0) > FS_READ_BATCH_REQUEST_BYTES,
+    'the fixture must actually exceed the byte budget, or it proves nothing',
+  );
+  await assert.rejects(
+    _rpcFsReadBatch(host, deceptive, user.pid),
+    /limit/,
+    'a full-width batch whose ranges exceed the byte budget must still be refused',
+  );
+
   // A batch with no pid comes from the host — the SDK, the remote /rpc
   // dispatcher — not from a process. It reads as the unprivileged session
   // user, never as the kernel, so a root-only path stays denied.

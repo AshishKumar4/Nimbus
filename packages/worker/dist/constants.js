@@ -75,7 +75,19 @@ export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 // can check before it asks — and the result can only be smaller. It sits far
 // below MAX_RPC_SAFE_PAYLOAD_BYTES so a batch cannot approach the platform's
 // 32 MiB RPC ceiling however the caller packs it.
-export const FS_READ_BATCH_PATH_LIMIT = 128;
+//
+// The two bounds are not symmetric, and 128 had them bounding the same
+// dimension twice. Measured over the resident-store fill
+// (tests/unit/resident-fill-cost-profile): a pi-shaped 16,357-file / 96 MB
+// install fills in 131 round trips with 128 of them pinned at the PATH bound,
+// while a few-large-assets tree is byte-bound at 21. So for the trees that
+// actually cost anything the path cap set the price and the byte cap did the
+// safety work — a batch of small files is a small payload however many paths
+// it names, because the reply is bounded by the requested range total either
+// way. Raising the path bound to 1024 takes that same install to 16 calls and
+// cannot widen the payload, which is what makes a blocking whole-filesystem
+// fill affordable rather than the reason it could not ship.
+export const FS_READ_BATCH_PATH_LIMIT = 1024;
 export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // Entries in one `fsList` page.
 //
