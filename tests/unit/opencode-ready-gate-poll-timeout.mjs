@@ -58,7 +58,9 @@ const entry = processes.spawn('opencode serve --port 4096', ['opencode', 'serve'
 const pid = entry.pid;
 processes.setLongRunning(pid);
 const port = 4096;
-facetBehaviour.set(residentFacetName(pid), wedgeThenServe);
+// Behaviour is keyed by facet NAME, and a facet is named for its reusable
+// slot rather than its pid. This is the first process, so it holds slot 0.
+facetBehaviour.set(residentFacetName(0), wedgeThenServe);
 await fm._runOpencodeServerFacet({
   pid,
   command: 'opencode serve --port 4096',
@@ -77,7 +79,7 @@ assert.ok(elapsed < 3000, `gate passed without starving on the wedged poll (took
 const entry2 = processes.spawn('opencode serve --port 4097', ['opencode', 'serve'], '/home/user');
 processes.setLongRunning(entry2.pid);
 facetBehaviour.set(
-  residentFacetName(entry2.pid),
+  residentFacetName(1),
   async () => new Response('nope', { status: 502 }),
 );
 await fm._runOpencodeServerFacet({

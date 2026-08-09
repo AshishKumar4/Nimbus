@@ -78,7 +78,10 @@ const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {
 });
 assert.equal(world.boots.length, 1, "spawn evaluates the user's program exactly once");
 const firstBoot = world.boots[0].instance.boot;
-const facetName = residentFacetName(spawned.pid);
+// Facets are named for a reusable SLOT rather than the pid — a Durable Object
+// never reclaims a facet ID, so a name that could not repeat would exhaust the
+// index. One process in a fresh session, so it holds the first slot.
+const facetName = residentFacetName(0);
 assert.deepEqual(world.liveFacets(), [facetName], 'the process IS the session\'s facet for that pid');
 assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${spawned.pid}`,
   'the module map is keyed on the process, so no two processes can share one');

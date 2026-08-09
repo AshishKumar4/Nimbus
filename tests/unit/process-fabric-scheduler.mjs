@@ -110,7 +110,7 @@ function setupDisk(reads) {
 }
 
 for (const mode of PROCESS_HOST_MODES) {
-  const placement = mode === 'facet' ? /^facet 'proc-\d+'/ : /^peer 'coord-do-id:proc:/;
+  const placement = mode === 'facet' ? /^facet 'proc-slot-\d+'/ : /^peer 'coord-do-id:proc:/;
   const makeFabric = (world, disk) => new ProcessFabric(createProcessHost(mode, world, disk));
 
   // ── (1) a resident process is a facet keyed on its pid ───────────────────
@@ -140,7 +140,10 @@ for (const mode of PROCESS_HOST_MODES) {
 
     assert.equal(world.boots.length, 1, "the user's program evaluated exactly once");
     const [boot] = world.boots;
-    assert.equal(boot.facetName, residentFacetName(42), 'the facet is named for the pid');
+    // The facet is named for its SLOT, not its pid: a Durable Object never
+    // reclaims a facet ID, so names have to be reusable and a pid never is.
+    // One process in a fresh host, so it holds the first slot.
+    assert.equal(boot.facetName, residentFacetName(0), 'the facet is named for its slot');
     assert.equal(boot.className, RESIDENT_PROCESS_CLASS, 'one class name for every runtime');
     assert.equal(boot.loaderId, 'nimbus-process:coord-do-id:42', 'the loader id is the process key');
     // (2) syscalls route to the coordinator, whatever the process is and
@@ -181,7 +184,7 @@ for (const mode of PROCESS_HOST_MODES) {
 
     // (4) one handle surface: the route target reaches the running facet.
     const routed = await handle.routeTarget.handleHttpRequest(new Request('http://x/hi'));
-    assert.equal(await routed.text(), 'served /hi by proc-43');
+    assert.equal(await routed.text(), `served /hi by ${residentFacetName(0)}`);
     // A `boot` runner stays resident after its payload: `done` must not settle.
     let settled = false;
     handle.done.then(() => { settled = true; }, () => { settled = true; });
@@ -224,12 +227,12 @@ for (const mode of PROCESS_HOST_MODES) {
     await handle.booted();
     for (let i = 0; i < 20; i++) {
       const res = await handle.routeTarget.handleHttpRequest(new Request(`http://x/p${i}`));
-      assert.equal(await res.text(), `served /p${i} by proc-45`);
+      assert.equal(await res.text(), `served /p${i} by ${residentFacetName(0)}`);
     }
     assert.equal(world.boots.length, 1, '20 routed requests booted nothing');
 
     // A facet lost to a platform reset is reported, not silently replaced.
-    world.lose(residentFacetName(45));
+    world.lose(residentFacetName(0));
     await assert.rejects(
       handle.routeTarget.handleHttpRequest(new Request('http://x/after')),
       /no longer loaded/,
@@ -347,7 +350,7 @@ for (const mode of PROCESS_HOST_MODES) {
       onWriterRetired: (writerId) => retired.push(writerId),
     });
     await handle.routeTarget.handleHttpRequest(new Request('http://x/up'));
-    assert.deepEqual(world.liveFacets(), [residentFacetName(46)]);
+    assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
     handle.kill();
     handle.kill();
     assert.equal(handle.killed, true);

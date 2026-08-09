@@ -71,9 +71,11 @@ const result = await fm._runOpencodeServerFacet(staged, port);
 
 // ── 1. one facet per process, keyed on the pid ──────────────────────────────
 assert.equal(world.boots.length, 1, 'the serve facet evaluated exactly once');
-assert.equal(world.boots[0].facetName, residentFacetName(pid), 'the facet is the pid\'s');
+// The facet is named for its reusable slot; the pid identity is carried by the
+// loader key asserted just below.
+assert.equal(world.boots[0].facetName, residentFacetName(0), 'the facet is the process\'s');
 assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
-assert.deepEqual(world.liveFacets(), [residentFacetName(pid)]);
+assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
 assert.equal(result.pid, pid);
 assert.equal(result.exitCode, 0);
 
