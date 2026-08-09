@@ -33,6 +33,22 @@ async function getGit() {
 // ── VFS→isomorphic-git FS adapter ───────────────────────────────────────
 
 /**
+ * `fs.promises.readFile` takes its encoding either bare or on an options
+ * object, and cf-git uses both spellings — `fs.read(path, 'utf8')` for
+ * .gitignore, .git/info/exclude and the stash reflog, the object form
+ * everywhere else. An adapter that honours only the object form hands
+ * those call sites bytes where they asked for text, and cf-git feeds the
+ * result straight to `ignore().add()`, which silently accepts only
+ * strings — so every .gitignore rule became a no-op.
+ */
+function wantsUtf8(options: unknown): boolean {
+  const encoding = typeof options === 'string'
+    ? options
+    : (options as { encoding?: unknown } | null | undefined)?.encoding;
+  return encoding === 'utf8' || encoding === 'utf-8';
+}
+
+/**
  * Creates an isomorphic-git compatible `fs` object from SqliteVFS.
  * isomorphic-git requires: readFile, writeFile, unlink, readdir,
  * mkdir, rmdir, stat, lstat (all as promises).
@@ -63,7 +79,7 @@ function createGitFs(vfs: CredentialedVfs) {
           err.code = 'ENOENT'; err.errno = -2;
           throw err;
         }
-        if (opts?.encoding === 'utf8') return dec.decode(data);
+        if (wantsUtf8(opts)) return dec.decode(data);
         return data;
       },
       async writeFile(filepath: string, data: any, opts?: any): Promise<void> {
