@@ -472,6 +472,14 @@ const __fsMod = (() => {
     return (typeof __vfsMetadata !== "undefined" && __vfsMetadata) ? __vfsMetadata : null;
   }
 
+  // Same guard, same reason: the SQLite resident store is spliced into the
+  // resident-process body only. The one-shot exec path runs in a stateless
+  // loaded worker with no facet storage at all, so these shims must still work
+  // with the resident set on the heap and this is the single place that asks.
+  function _residentStorePresent() {
+    return typeof __residentAdmit === "function" && typeof __residentReady !== "undefined" && __residentReady;
+  }
+
   function _metadata(absPath) {
     const table = _metadataTable();
     return table ? table[_strip(absPath)] : undefined;
@@ -1257,6 +1265,31 @@ const __fsMod = (() => {
     // would otherwise miss. Collected before the delete so the membership
     // test is against the pre-eviction bundle.
     const wereResident = [];
+    // When the resident set lives in the facet's own SQLite, the STORE applies
+    // the delta. That is not an optimisation, it is where provenance has to
+    // live: a facet's SQLite outlives its module scope, so a new incarnation
+    // opens onto rows a previous one wrote while every heap-side stamp that
+    // described them is gone. Rows carry their own revision, __vfsBundleRevisions
+    // cannot follow them there, and two provenance stores would be one too many.
+    if (_residentStorePresent()) {
+      const applied = __residentAdmit(result);
+      _cursor.epoch = result.epoch;
+      _cursor.rev = result.rev;
+      if (result.poison) {
+        _stats.poisons++;
+        // Repopulate in ONE batched pass rather than handing the caller every
+        // dropped path to re-read on its own. A poison drops the whole store,
+        // and at pi scale that is 16,357 paths: as serial live reads it is a
+        // catastrophe, as a refill it is the ~131 round trips the initial fill
+        // already costs. Nothing is returned because nothing is left to refetch.
+        try {
+          await __residentFillFromSupervisor(supervisor, { epoch: result.epoch, rev: result.rev });
+        } catch { /* a short store is a miss that falls through, never a stale byte */ }
+        return [];
+      }
+      _stats.invalidations += applied.dropped.length;
+      return applied.dropped;
+    }
     if (result.poison) {
       if (__vfsBundle) for (const k of Object.keys(__vfsBundle)) { wereResident.push(k); _evictResident(k); }
       _stats.poisons++;
