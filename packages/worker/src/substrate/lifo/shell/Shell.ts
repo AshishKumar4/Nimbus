@@ -517,14 +517,17 @@ export class Shell {
       if (data === '\x1b[F' || data === '\x05') { this.moveCursorEnd(); return; }  // End / Ctrl+E
     }
 
-    // Ctrl+C
-    if (data === '\x03') {
+    // Ctrl+C (SIGINT) and Ctrl+\ (SIGQUIT) — the terminal's two signal keys.
+    // Both go to the foreground command; with no foreground job, Ctrl+C
+    // cancels the line and Ctrl+\ is absorbed, as readline does.
+    if (data === '\x03' || data === '\x1c') {
+      const signal = data === '\x03' ? 'INT' : 'QUIT';
       if (this.running && this.abortController) {
         this.terminalStdin?.close();
         this.stdinLineBuffer = '';
         this.stdinCursorPos = 0;
-        this.abortController.abort(signalAbortReason('INT'));
-      } else {
+        this.abortController.abort(signalAbortReason(signal));
+      } else if (signal === 'INT') {
         this.terminal.write('^C\r\n');
         this.lineBuffer = '';
         this.cursorPos = 0;

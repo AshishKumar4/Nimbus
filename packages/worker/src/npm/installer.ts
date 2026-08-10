@@ -61,6 +61,7 @@ import {
   readDiagCounters,
 } from '../observability/diag-counters.js';
 import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
+import { describeError } from '../observability/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
   resolveOnePackumentInFacet,
@@ -693,9 +694,9 @@ export class NpmInstaller {
         layerProfile.push(`${layer.length}@${Date.now() - layerT0}ms`);
       } catch (e: any) {
         // Per anti-requirement: no fallback. Log + propagate.
-        const msg = e?.remoteMessage || e?.message || String(e);
+        const msg = `${describeError(e)} (layer width ${layer.length}, ${fanoutPool.topologyFor(layer.length)})`;
         log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
-        throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`);
+        throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`, { cause: e });
       }
 
       // Stitch per-package results into supervisor state. The dispatched
@@ -1011,11 +1012,11 @@ export class NpmInstaller {
           installPackagesInFacet,
         );
       } catch (e: any) {
-        const msg = e?.remoteMessage || e?.message || String(e);
+        const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${fanoutPool.topologyFor(tasks.length)})`;
         log(`  [batch-fanout] aborted: ${msg}`);
         // Mark all packages failed; surface to caller to set non-zero exit.
         for (const s of specs) failed.push(`${s.name}@${s.version}`);
-        throw new Error(`batch-fanout install failed: ${msg}`);
+        throw new Error(`batch-fanout install failed: ${msg}`, { cause: e });
       }
 
       // Merge per-shard InstallBatchResult into a single result for
@@ -1103,11 +1104,10 @@ export class NpmInstaller {
       // log line shape stays consistent. NimbusFanoutPool's internal
       // pools dispose themselves at the end of each submitMany call,
       // so no explicit dispose() is needed here.
-      const msg = e?.remoteMessage || e?.message || String(e);
       // The earlier inner-catch already logged + threw; if we reach
       // here, the throw bubbled — re-throw to preserve the install
       // command's failure semantics.
-      throw e instanceof Error ? e : new Error(msg);
+      throw e instanceof Error ? e : new Error(describeError(e));
     }
   }
 
@@ -1925,7 +1925,7 @@ export class NpmInstaller {
               spec,
             );
           } catch (e: any) {
-            const msg = e?.remoteMessage || e?.message || String(e);
+            const msg = describeError(e);
             safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
             errorCount++;
             errorsByModule[next.specifier] = msg;
