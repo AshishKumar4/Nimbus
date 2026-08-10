@@ -44,11 +44,17 @@ const before = received.length;
 const fileName = 'refreshes-add-' + Math.random().toString(36).slice(2, 8) + '.txt';
 await t.run(`touch /home/user/${fileName}`, 10_000);
 
-{ const t0 = Date.now(); while (received.length === before && Date.now() - t0 < 1000) await sleep(25); }
+// Wait for THIS touch's event, not for "some frame to arrive" — see the note
+// in file-tree-refreshes-on-mkdir.mjs. Measured propagation is 68 ms p50 /
+// 78 ms p90 / 466 ms worst, so 1 s is ~2x the worst observed.
+const matchesAdd = (ev) => ev && ev.type === 'add'
+  && typeof ev.path === 'string' && ev.path.endsWith(fileName);
+const findHit = () => received.slice(before).flatMap((f) => f.events || []).find(matchesAdd);
+
+let addHit;
+{ const t0 = Date.now(); while (!(addHit = findHit()) && Date.now() - t0 < 1000) await sleep(25); }
 
 const events = received.slice(before).flatMap((f) => f.events || []);
-const addHit = events.find((ev) => ev && ev.type === 'add'
-  && typeof ev.path === 'string' && ev.path.endsWith(fileName));
 
 a.check(`'add' event for ${fileName} received within 1 s`,
   addHit !== undefined,
