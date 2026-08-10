@@ -771,6 +771,13 @@ export class Interpreter {
                                     this.config.processRegistry.reap(pid);
                                 }
                             }
+                            // A signalled command reports the SIGNAL's status, not whatever
+                            // code it returned on its way out: `sleep` observes only that
+                            // ctx.signal aborted, and cannot tell SIGINT (130) from
+                            // SIGQUIT (131). The shell holds the reason, so it decides.
+                            const signalledCode = this.abortExitCode(io);
+                            if (signalledCode !== null)
+                                exitCode = signalledCode;
                         }
                     }
                 }
