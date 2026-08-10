@@ -393,6 +393,40 @@ const __BufferMod = (() => {
   return B;
 })();
 
+/**
+ * What the resident set holds under a directory prefix — the ONE question the
+ * shims ask of it that a plain object cannot answer cheaply.
+ *
+ * The resident set is two things: a plain object on the heap, where the only
+ * way to ask is to walk every key, and a table in the facet's own SQLite, where
+ * the paths ARE a PRIMARY KEY index and the answer is a range scan. Asking the
+ * object way against the table is what made a single `existsSync` of a
+ * directory cost the whole filesystem — a `for..in` over the Proxy pulls every
+ * key AND, through the descriptor trap, every file's bytes. Measured at pi
+ * scale (19,470 files / 95 MiB): 222 ms, 17,821 chunk queries and 87 MiB of
+ * content read and thrown away, PER CALL, against 1 ms and no content read for
+ * the range scan. Node's module resolution does that lookup constantly, so the
+ * two ways are not a style choice — one of them exhausts the process's CPU
+ * budget on its own.
+ *
+ * Every prefix site in the shims goes through these, so the store's index is
+ * reached from one place rather than nine, and the heap fallback stays the
+ * literal walk it always was.
+ */
+function __residentUnder(prefix) {
+  if (typeof __residentKeysUnder === "function") return __residentKeysUnder(prefix);
+  const out = [];
+  if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) out.push(bk);
+  return out;
+}
+
+/** Whether ANYTHING is held under a prefix. The hot half — never materializes. */
+function __residentAnyUnder(prefix) {
+  if (typeof __residentHasUnder === "function") return __residentHasUnder(prefix);
+  if (__vfsBundle) for (const bk in __vfsBundle) if (bk.startsWith(prefix)) return true;
+  return false;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ──  fs shim (VFS-backed) ───────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -773,9 +807,7 @@ const __fsMod = (() => {
   /** Does the content bundle itself describe children under this directory? */
   function _bundleHasChildren(k) {
     if (!__vfsBundle) return false;
-    const prefix = k ? k + "/" : "";
-    for (const bk in __vfsBundle) if (bk.startsWith(prefix)) return true;
-    return false;
+    return __residentAnyUnder(k ? k + "/" : "");
   }
 
   /**
@@ -2316,9 +2348,9 @@ const __fsMod = (() => {
       if (sib && sib.indexOf(name) !== -1) { _residencySatisfied(absPath); return true; }
     }
     // Last-resort: bundle dir entries
-    if (__vfsBundle) {
-      const prefix = k + "/";
-      for (const bk in __vfsBundle) { if (bk.startsWith(prefix) || bk === k) { _residencySatisfied(absPath); return true; } }
+    if (__vfsBundle && (k in __vfsBundle || __residentAnyUnder(k + "/"))) {
+      _residencySatisfied(absPath);
+      return true;
     }
     // Nothing found — which is only an answer if the enclosing directory was
     // enumerated. Node's existsSync never throws, so the false below is
@@ -2417,13 +2449,8 @@ const __fsMod = (() => {
       }
     }
     // Last-resort: bundle prefix scan (legacy path).
-    if (__vfsBundle) {
-      const prefix = k + "/";
-      for (const bk in __vfsBundle) {
-        if (bk.startsWith(prefix)) {
-          return _localStatObject(k, true, false, 0, 0o755, cred.uid, cred.gid);
-        }
-      }
+    if (__vfsBundle && __residentAnyUnder(k + "/")) {
+      return _localStatObject(k, true, false, 0, 0o755, cred.uid, cred.gid);
     }
     return undefined;
   }
@@ -2476,12 +2503,9 @@ const __fsMod = (() => {
     // 2. Bundle-prefix fallback (covers older paths or runtime-mkdir'd ones
     //    that aren't in the manifest yet).
     if (__vfsBundle) {
-      for (const bk in __vfsBundle) {
-        if (bk.startsWith(prefix)) {
-          const rest = bk.substring(prefix.length);
-          const seg = rest.split("/")[0];
-          if (seg) names.add(seg);
-        }
+      for (const bk of __residentUnder(prefix)) {
+        const seg = bk.substring(prefix.length).split("/")[0];
+        if (seg) names.add(seg);
       }
     }
     // 3. Files written during this exec session.
@@ -2518,7 +2542,7 @@ const __fsMod = (() => {
           (!!__vfsManifest && fp in __vfsManifest) ||
           (!!__vfsDirs && fp in __vfsDirs) ||
           _metadata(fp)?.type === "directory" ||
-          (!!__vfsBundle && Object.keys(__vfsBundle).some(bk => bk.startsWith(fp + "/")));
+          (!!__vfsBundle && __residentAnyUnder(fp + "/"));
         return { name: n, isFile: () => !isDir, isDirectory: () => isDir, isSymbolicLink: () => false };
       });
     }
@@ -3154,7 +3178,10 @@ const __fsMod = (() => {
       const k = _strip(_resolve(p));
       const prefix = k + "/";
       if (o.recursive) {
-        if (__vfsBundle) for (const bk of Object.keys(__vfsBundle)) if (bk === k || bk.startsWith(prefix)) delete __vfsBundle[bk];
+        if (__vfsBundle) {
+          if (k in __vfsBundle) delete __vfsBundle[k];
+          for (const bk of __residentUnder(prefix)) delete __vfsBundle[bk];
+        }
         if (__vfsWrites) for (const wk of Object.keys(__vfsWrites)) if (wk === k || wk.startsWith(prefix)) delete __vfsWrites[wk];
         if (__vfsDirs) for (const dk of Object.keys(__vfsDirs)) if (dk === k || dk.startsWith(prefix)) delete __vfsDirs[dk];
         _forgetSyncTree(k);
@@ -3253,7 +3280,9 @@ const __fsMod = (() => {
         return new RegExp(r);
       })();
       const seen = new Set();
-      if (__vfsBundle) for (const bk in __vfsBundle) if (re.test(bk)) seen.add(bk);
+      // The pattern is anchored at the root, so nothing outside that subtree
+      // can match and nothing outside it needs visiting.
+      if (__vfsBundle) for (const bk of __residentUnder(root ? root + "/" : "")) if (re.test(bk)) seen.add(bk);
       if (__vfsWrites) for (const wk in __vfsWrites) if (re.test(wk)) seen.add(wk);
       for (const m of [...seen].sort()) yield '/' + m;
     },
@@ -7837,10 +7866,7 @@ function __fileExists(path) {
     if (sib && sib.indexOf(name) !== -1) return true;
   }
   // Check for directory by looking for any key with this prefix
-  if (__vfsBundle) {
-    const prefix = k + "/";
-    for (const bk in __vfsBundle) { if (bk.startsWith(prefix)) return true; }
-  }
+  if (__vfsBundle && __residentAnyUnder(k + "/")) return true;
   return false;
 }
 // W3.5 Fix A: strict-file membership probe. __fileExists also returns true for
