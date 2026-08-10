@@ -32,6 +32,7 @@ import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-wor
 import { installPackagesInFacet, } from './install-batch-facet.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '../observability/diag-counters.js';
 import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
+import { describeError } from '../observability/oom-classify.js';
 import { resolveOnePackumentInFacet, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { prebundleOne, buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
@@ -541,9 +542,9 @@ export class NpmInstaller {
             }
             catch (e) {
                 // Per anti-requirement: no fallback. Log + propagate.
-                const msg = e?.remoteMessage || e?.message || String(e);
+                const msg = `${describeError(e)} (layer width ${layer.length}, ${fanoutPool.topologyFor(layer.length)})`;
                 log(`  resolver-fanout layer ${layerN} failed: ${msg}`);
-                throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`);
+                throw new Error(`resolver-fanout failed at layer ${layerN}: ${msg}`, { cause: e });
             }
             // Stitch per-package results into supervisor state. The dispatched
             // layer — not the returned array — drives the loop, so a result the
@@ -841,12 +842,12 @@ export class NpmInstaller {
                 shardResults = await fanoutPool.submitMany(tasks, installPackagesInFacet);
             }
             catch (e) {
-                const msg = e?.remoteMessage || e?.message || String(e);
+                const msg = `${describeError(e)} (${tasks.length} shard${tasks.length === 1 ? '' : 's'}, ${fanoutPool.topologyFor(tasks.length)})`;
                 log(`  [batch-fanout] aborted: ${msg}`);
                 // Mark all packages failed; surface to caller to set non-zero exit.
                 for (const s of specs)
                     failed.push(`${s.name}@${s.version}`);
-                throw new Error(`batch-fanout install failed: ${msg}`);
+                throw new Error(`batch-fanout install failed: ${msg}`, { cause: e });
             }
             // Merge per-shard InstallBatchResult into a single result for
             // the rest of the function. Maintain input order: the
@@ -930,11 +931,10 @@ export class NpmInstaller {
             // log line shape stays consistent. NimbusFanoutPool's internal
             // pools dispose themselves at the end of each submitMany call,
             // so no explicit dispose() is needed here.
-            const msg = e?.remoteMessage || e?.message || String(e);
             // The earlier inner-catch already logged + threw; if we reach
             // here, the throw bubbled — re-throw to preserve the install
             // command's failure semantics.
-            throw e instanceof Error ? e : new Error(msg);
+            throw e instanceof Error ? e : new Error(describeError(e));
         }
     }
     // ── Spec building ─────────────────────────────────────────────────────
@@ -1657,7 +1657,7 @@ export class NpmInstaller {
                         result = await pool.submit(prebundleOne, spec);
                     }
                     catch (e) {
-                        const msg = e?.remoteMessage || e?.message || String(e);
+                        const msg = describeError(e);
                         safeProgress(`  pre-bundle failed for ${next.specifier}: ${msg}`);
                         errorCount++;
                         errorsByModule[next.specifier] = msg;

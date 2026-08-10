@@ -167,14 +167,27 @@ export function classifyMessage(msg: string): OomCause {
  *   - "Durable Object reset because its code was updated."
  *   - "Internal error while starting up Durable Object storage caused
  *      object to be reset; reference = ..."
+ *   - "Internal error in Durable Object storage caused object to be reset;
+ *      reference = ..."
  *   - "Durable Object storage operation exceeded timeout which caused
  *      the object to be reset."
+ *
+ * The second and third are the SAME condition worded for two moments —
+ * startup versus a live write — and only the first was matched here, which is
+ * why an object reset mid-write still failed a whole install. Nimbus has
+ * measured the live-write wording twice: a 45.7 MB single-turn write reset the
+ * object once and the same write then succeeded 12/12 on retry
+ * (`vfs/facet-resident-store.ts`), and it reset a session DO mid-npm-install
+ * on 2026-08-10 (probe `agentic-cli/new/pi-official-installer`). Retrying is
+ * bounded, so the one case that is NOT transient — crossing the object's
+ * storage budget, which the platform also reports this way
+ * (`loaders/process-fabric.ts`) — recurs, exhausts the budget and surfaces.
  */
 export function isTransientDoReset(input: unknown): boolean {
   const m = readMessage(input).toLowerCase();
   if (m.length === 0) return false;
   if (m.includes('reset because its code was updated')) return true;
-  if (m.includes('starting up durable object storage')) return true;
+  if (m.includes('durable object storage caused object to be reset')) return true;
   if (m.includes('storage operation') && m.includes('reset')) return true;
   return false;
 }
@@ -191,6 +204,36 @@ export function isTransientDoReset(input: unknown): boolean {
  */
 export function isDoOverloaded(input: unknown): boolean {
   return readMessage(input).toLowerCase().includes('durable object is overloaded');
+}
+
+/**
+ * One line about a failure, in terms someone can act on.
+ *
+ * npm install's catch sites each wrote `e?.remoteMessage || e?.message ||
+ * String(e)`. That reduces a failure to a bare sentence, and when the platform
+ * declines to describe a rejected Durable Object call the sentence is the word
+ * `internal error` — which is how `resolver-fanout layer 2 failed: internal
+ * error` reached users for months carrying nothing at all. The message is
+ * often the least we know: the error's class, whether the description came
+ * from a remote isolate, and which condition it classifies as are all still in
+ * hand, and naming them costs nothing and invents nothing.
+ */
+export function describeError(input: unknown): string {
+  const remote = typeof input === 'object' && input !== null
+    ? (input as { remoteMessage?: unknown }).remoteMessage
+    : undefined;
+  const message = (typeof remote === 'string' && remote.length > 0)
+    ? `${remote} (remote)`
+    : readMessage(input) || String(input);
+  const name = input instanceof Error && input.name && input.name !== 'Error'
+    ? `${input.name}: `
+    : '';
+  const cause = classifyError(input);
+  const suffix = cause !== 'unknown' ? ` [${cause}]`
+    : isTransientDoReset(input) ? ' [transient-do-reset]'
+    : isDoOverloaded(input) ? ' [do-overloaded]'
+    : '';
+  return `${name}${message}${suffix}`;
 }
 
 function readMessage(input: unknown): string {

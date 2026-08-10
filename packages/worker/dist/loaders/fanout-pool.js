@@ -17,7 +17,7 @@ import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { NimbusLoaderPool } from './loader-pool.js';
 import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { isDoOverloaded, isTransientDoReset } from '../observability/oom-classify.js';
+import { describeError, isDoOverloaded, isTransientDoReset } from '../observability/oom-classify.js';
 /**
  * Threshold at which routing switches from coordinator-local loaders to
  * sibling Durable Objects.
@@ -302,7 +302,15 @@ export class NimbusFanoutPool {
                             await new Promise((r) => setTimeout(r, backoff));
                             continue;
                         }
-                        throw err;
+                        // Re-throwing bare loses everything only this frame knows: which
+                        // sibling ran the shard, how wide it was, and how many attempts
+                        // it already cost. Callers report the message, so a rejection the
+                        // platform words as `internal error` arrived at the user with no
+                        // way to tell a one-off peer from a shard that had exhausted its
+                        // retries. `cause` keeps the original for anything that inspects
+                        // errors rather than reads them.
+                        throw new Error(`peer shard ${siblingName} (${bucket.length} task${bucket.length === 1 ? '' : 's'}) `
+                            + `failed after ${attempt + 1} attempt${attempt === 0 ? '' : 's'}: ${describeError(err)}`, { cause: err });
                     }
                     finally {
                         disposeRpcResource(peerStub);
