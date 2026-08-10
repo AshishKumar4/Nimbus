@@ -36,11 +36,20 @@ const before = received.length;
 const dirName = 'refreshes-mkdir-' + Math.random().toString(36).slice(2, 8);
 await t.run(`mkdir /home/user/${dirName}`, 10_000);
 
-{ const t0 = Date.now(); while (received.length === before && Date.now() - t0 < 1000) await sleep(25); }
+// Wait for THIS mkdir's event, not for "some frame to arrive". The session
+// seed writes /home/user/app and friends, and that burst can land after the
+// first prompt — a wait that stops on any frame stops on the seed and reads
+// the verdict off it. Measured propagation is 68 ms p50 / 78 ms p90 / 466 ms
+// worst over 40 samples, 20 of them against a target carrying eight other
+// sessions under continuous shell load, so 1 s is ~2x the worst observed.
+const matchesMkdir = (ev) => ev && ev.type === 'addDir'
+  && typeof ev.path === 'string' && ev.path.endsWith(dirName);
+const findHit = () => received.slice(before).flatMap((f) => f.events || []).find(matchesMkdir);
+
+let addDirHit;
+{ const t0 = Date.now(); while (!(addDirHit = findHit()) && Date.now() - t0 < 1000) await sleep(25); }
 
 const events = received.slice(before).flatMap((f) => f.events || []);
-const addDirHit = events.find((ev) => ev && ev.type === 'addDir'
-  && typeof ev.path === 'string' && ev.path.endsWith(dirName));
 
 a.check(`'addDir' event for ${dirName} received within 1 s`,
   addDirHit !== undefined,

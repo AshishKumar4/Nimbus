@@ -65,9 +65,14 @@ export async function runRecipes(probeLabel, cases) {
     // Execute the line.
     const tail0 = t.buf.length;
     t.send('\r');
-    // Wait for a fresh prompt to appear after the command runs.
+    // Wait for a fresh prompt to appear after the command RAN. `tail0` is 0
+    // here — the reset above just cleared the buffer — so "more bytes than
+    // tail0 and prompt-shaped" is satisfied by the Ctrl+U redraw still in
+    // flight, which ends the wait before the command has executed and reads
+    // the verdict off an empty line. Only running the line emits a newline,
+    // so require one.
     await t.waitFor(
-      (b) => b.length > 0 && t.buf.length > tail0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
+      (b) => /\n/.test(t.buf.slice(tail0)) && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
       15_000,
       `prompt after recipe "${c.name}"`,
     );

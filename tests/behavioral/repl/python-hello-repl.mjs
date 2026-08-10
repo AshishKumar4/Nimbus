@@ -43,19 +43,26 @@ const hasHi = /\bhi\b/m.test(out1);
 a.check('print("hi") prints "hi" in REPL', hasHi,
   hasHi ? '' : JSON.stringify(out1.slice(-200)));
 
-// Send `exit()<enter>` → should return to shell prompt.
+// Send `exit()<enter>` → should return to shell prompt. `waitForPrompt`
+// accepts `>` as a prompt, and Python's own `>>> ` satisfies it, so waiting
+// on it here returns on the REPL prompt the probe is trying to leave. Wait
+// for the SHELL prompt specifically, as the node/bun REPL probes do.
 t.reset();
 t.cmd('exit()');
-await t.waitForPrompt(15_000);
+await t.waitFor((b) => /[$#]\s*$/.test(b.trimEnd().slice(-3)) && /user@nimbus/.test(b),
+  15_000, 'shell prompt after exit()');
 const out2 = stripAnsi(t.buf);
-const backToShell = /[$#>]\s*$/.test(out2.trimEnd().slice(-3));
+const backToShell = /user@nimbus:.+\$/.test(out2);
 a.check('exit() returns to shell prompt', backToShell,
   backToShell ? '' : JSON.stringify(out2.slice(-200)));
 
-// Verify shell exit code via $?.
+// Verify shell exit code via $?. Wait for the marker itself rather than for
+// a prompt: the REPL teardown is still draining bytes, and any prompt-shaped
+// tail of it would end the wait before this command's output arrives.
 t.reset();
-const { output: ex } = await t.run('echo "EX=$?"', 10_000);
-const exMatch = stripAnsi(ex).match(/EX=(\d+)/);
+t.cmd('echo "EX=$?=END"');
+await t.waitFor((b) => /EX=\d+=END/.test(b), 15_000, 'exit-code marker');
+const exMatch = stripAnsi(t.buf).match(/EX=(\d+)=END/);
 const exitCode = exMatch ? parseInt(exMatch[1], 10) : -1;
 a.check('exit() → shell $? === 0', exitCode === 0, `got=${exitCode}`);
 
