@@ -294,10 +294,18 @@ export class SqliteVFS {
     // bound at all here: paths are unbounded in length, so N entries permit
     // unbounded memory — and this lives in the supervisor DO, the side that
     // is measurably memory-constrained and has been observed resetting under
-    // allocation pressure. Overflow is safe by construction (the cursor
-    // falls behind the log, invalidatedSince poisons, the facet takes a cold
-    // cache), so the budget can be small. An npm install churns this
-    // continuously and must not be able to grow it.
+    // allocation pressure. Overflow poisons the cursors that fall behind the
+    // log, and a poisoned reader repairs itself against `list()`'s absolute
+    // per-path revisions rather than by rebuying its whole cache — see
+    // vfs/facet-resident-store.ts. So the budget can stay small even under the
+    // continuous churn of an npm install, which must not be able to grow it.
+    //
+    // Note what this bound does NOT license: it is small because a poison is
+    // CHEAP to recover from, and "cheap" is a property of the recovery path, not
+    // of this file. It was not, once — a poison used to re-materialise the
+    // reader's entire filesystem — and the two statements lived far enough apart
+    // that the cost went unnoticed until it took an agent turn past the DO CPU
+    // limit.
     static INVALIDATION_LOG_MAX_BYTES = 256 * 1024;
     /** Identifies this supervisor incarnation. Never reused across restarts. */
     get epoch() { return this._epoch; }

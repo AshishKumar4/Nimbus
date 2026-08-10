@@ -168,11 +168,17 @@
  * above; the cursor arrives at runtime through `__residentAdmit`, so the text
  * stays identical across spawns and the digest keeps deduping.
  *
- * One cost this store pays that the heap version does not: a poison is a full
- * repopulation, not a lazy refetch. That raises the price of exactly the defect
- * described above, and is the reason the cursor is PERSISTED beside the rows —
- * a fresh incarnation resumes from a real cursor instead of a null epoch, so it
- * asks for a delta rather than inviting a poison.
+ * One cost this store pays that the heap version does not: LOSING the rows
+ * means repopulating them, not lazily refetching on a miss. That is why the
+ * cursor is PERSISTED beside the rows — a fresh incarnation resumes from a real
+ * cursor instead of a null epoch, so it asks for a delta rather than inviting a
+ * poison — and why a poison RECONCILES the rows against absolute per-path
+ * revisions instead of dropping them. The invalidation log a delta rides on is
+ * deliberately small (sqlite-vfs.ts, INVALIDATION_LOG_MAX_BYTES) and ordinary
+ * write churn trims it past a live cursor as a matter of course, so "poison ⇒
+ * full repopulation" made an npm install re-buy the whole filesystem over and
+ * over — measured past the DO CPU limit at pi scale. See
+ * \`__residentSynchronizeFromSupervisor\`.
  */
 /**
  * Bytes of file content in one row.
