@@ -953,19 +953,26 @@ ${VFS_CURSOR_SEED_SOURCE}
     if (__residentAdopted) {
       globalThis.__nimbusVfsCursor = { epoch: __residentAdopted.epoch, rev: __residentAdopted.rev };
     }
-    // Fill the store with everything the manifest knows about and the module
-    // map did not carry. This is what makes a first synchronous read of an
-    // untouched file succeed, and it is the ONLY blocking step: the waiting is
-    // done once, here, before the program's first instruction, so that no
-    // synchronous read after it ever has to wait.
+    // Bring the store to the authority's current state. This is what makes a
+    // first synchronous read of an untouched file succeed, and it is the ONLY
+    // blocking step: the waiting is done once, here, before the program's
+    // first instruction, so that no synchronous read after it ever has to
+    // wait.
     //
-    // Paid once per SLOT, not per process — a warm slot's rows are already
-    // there and the pass finds nothing to fetch.
-    if (__residentAdopted && __supervisor) {
+    // Cheap on a warm slot, and no longer merely by assumption: rows the
+    // absolute listing proves current are kept, so the pass fetches what
+    // changed rather than trusting that nothing did. Run whether or not the
+    // adopt produced a cursor — a facet whose snapshot carried none holds an
+    // empty store, and filling it here is what stops its first ACQUIRE from
+    // asking about a null epoch and being answered with a poison.
+    if (__supervisor) {
       try {
-        await __residentFillFromSupervisor(__supervisor, __residentAdopted);
+        const __synced = await __residentSynchronizeFromSupervisor(__supervisor);
+        if (__synced.cursor) {
+          globalThis.__nimbusVfsCursor = { epoch: __synced.cursor.epoch, rev: __synced.cursor.rev };
+        }
       } catch (__e) {
-        // A failed fill is a smaller resident set, not a dead process: every
+        // A failed pass is a smaller resident set, not a dead process: every
         // path it did not reach reads exactly as it would have without this
         // store. Surfacing beats a silent capability loss.
         try { globalThis.__nimbusResidentFillError = (__e && __e.message) || String(__e); } catch {}

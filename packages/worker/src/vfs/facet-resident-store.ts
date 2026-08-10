@@ -168,11 +168,17 @@
  * above; the cursor arrives at runtime through `__residentAdmit`, so the text
  * stays identical across spawns and the digest keeps deduping.
  *
- * One cost this store pays that the heap version does not: a poison is a full
- * repopulation, not a lazy refetch. That raises the price of exactly the defect
- * described above, and is the reason the cursor is PERSISTED beside the rows —
- * a fresh incarnation resumes from a real cursor instead of a null epoch, so it
- * asks for a delta rather than inviting a poison.
+ * One cost this store pays that the heap version does not: LOSING the rows
+ * means repopulating them, not lazily refetching on a miss. That is why the
+ * cursor is PERSISTED beside the rows — a fresh incarnation resumes from a real
+ * cursor instead of a null epoch, so it asks for a delta rather than inviting a
+ * poison — and why a poison RECONCILES the rows against absolute per-path
+ * revisions instead of dropping them. The invalidation log a delta rides on is
+ * deliberately small (sqlite-vfs.ts, INVALIDATION_LOG_MAX_BYTES) and ordinary
+ * write churn trims it past a live cursor as a matter of course, so "poison ⇒
+ * full repopulation" made an npm install re-buy the whole filesystem over and
+ * over — measured past the DO CPU limit at pi scale. See
+ * \`__residentSynchronizeFromSupervisor\`.
  */
 
 import {
@@ -371,6 +377,12 @@ function __residentCursor() {
   return epoch === null || rev === null ? null : { epoch, rev };
 }
 
+/** Stamp the store with the authority state its rows are known-good at. */
+function __residentWriteCursor(sql, cursor) {
+  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('epoch', ?)", String(cursor.epoch));
+  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('rev', ?)", String(Number(cursor.rev)));
+}
+
 /**
  * Apply one authority delta and unseal.
  *
@@ -388,11 +400,15 @@ function __residentAdmit(result) {
   const sql = __residentSql;
   const dropped = [];
   if (!result || result.poison) {
-    // Poison means the authority cannot describe the distance from our cursor
-    // to now. Nothing held can be vouched for, so nothing is kept. Two
-    // statements rather than a delete per path: a poison at pi scale is 7,141
-    // rows, and eviction is on the hot path (measured 45 ms whole-store, vs a
-    // per-row walk).
+    // A delta admission has no absolute listing to vouch for a row, so a
+    // poison here means nothing held can be kept. Two statements rather than a
+    // delete per path: a poison at pi scale is 7,141 rows, and eviction is on
+    // the hot path (measured 45 ms whole-store, vs a per-row walk).
+    //
+    // This is the LAST resort, not the poison policy.
+    // \`__residentSynchronizeFromSupervisor\` repairs the same poison against
+    // absolute per-path revisions and keeps every row it can prove current;
+    // dropping the store is what made a poison cost a whole filesystem.
     sql.exec("DELETE FROM chunk");
     sql.exec("DELETE FROM file");
   } else if (Array.isArray(result.paths)) {
@@ -422,8 +438,7 @@ function __residentAdmit(result) {
       "rather than serving rows it cannot date"
     );
   }
-  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('epoch', ?)", epoch);
-  sql.exec("INSERT OR REPLACE INTO meta (k, v) VALUES ('rev', ?)", String(rev));
+  __residentWriteCursor(sql, { epoch, rev });
   __residentSealed = false;
   __residentSealReason = "";
   return { dropped, cursor: { epoch, rev } };
@@ -740,7 +755,15 @@ async function __residentEnumerate(supervisor) {
       if (entry.kind !== "file") continue;
       const path = String(entry.path).replace(/^\\/+/, "");
       if (!path) continue;
-      entries.push({ path, size: Number(entry.size) });
+      const size = Number(entry.size);
+      // The path's own last-mutation revision. It is what makes a held row
+      // verifiable without fetching its bytes, and so what makes a poison
+      // repairable rather than fatal — see __residentSynchronizeFromSupervisor.
+      const rev = Number(entry.rev);
+      if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
+        throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
+      }
+      entries.push({ path, size, rev });
     }
     if (listed.next === null || listed.next === undefined) {
       return { entries, cursor, complete: true, reason: null };
@@ -751,13 +774,8 @@ async function __residentEnumerate(supervisor) {
 }
 
 /**
- * Fill the store with everything that exists and the store does not hold — the
- * step that turns "a capped prefetch" into "the filesystem", and so the step
- * that makes a first synchronous read of an untouched file succeed.
- *
- * Async and paid once per SLOT, before the program's first instruction. It is
- * the only asynchronous thing in this module, and that is the whole trick: the
- * blocking is done here, so the reads that follow never have to.
+ * Fetch these files from the authority and install them, each dated at the
+ * revision the listing reported it at.
  *
  * THE BATCH BOUNDS ARE THE SUPERVISOR'S AND ARE NOT NEGOTIABLE HERE.
  * \`_rpcFsReadBatch\` validates with zod and rejects the WHOLE call, so an
@@ -774,49 +792,26 @@ async function __residentEnumerate(supervisor) {
  * no whole-file buffer is ever held: each range is written straight into its
  * own chunk row as it lands, and the head row follows only once every range of
  * that file has.
+ *
+ * A row is stamped with its OWN listed revision rather than with the global
+ * cursor. Both are conservative — a write landing mid-fetch reports a revision
+ * above the stamp, so the next ACQUIRE evicts and refetches, while stamping
+ * newer than the bytes would keep a stale row forever — but the per-path
+ * revision is the tighter of the two, and it is the one that survives a
+ * reconcile: a row dated at the global cursor is indistinguishable from a row
+ * whose path moved at that same revision.
  */
-async function __residentFillFromSupervisor(supervisor, cursor, options) {
-  if (!__residentReady) throw new Error("Nimbus: __residentFillFromSupervisor before __residentBind");
-  if (!supervisor || typeof supervisor.fsReadBatch !== "function") {
-    return { requested: 0, filled: 0, failed: 0, skipped: "no fsReadBatch on this supervisor" };
-  }
-  if (typeof supervisor.fsList !== "function") {
-    // Without the enumeration the store cannot know what it is missing, so it
-    // fills nothing beyond the adopted bundle and every read behaves exactly
-    // as it did before this store existed — a smaller resident set, never a
-    // wrong one. That is the failure direction to keep.
-    return { requested: 0, filled: 0, failed: 0, skipped: "supervisor cannot enumerate the filesystem (no fsList)" };
-  }
-
-  let listing;
-  try {
-    listing = await __residentEnumerate(supervisor);
-  } catch (e) {
-    return { requested: 0, filled: 0, failed: 0, skipped: "fsList failed: " + ((e && e.message) || String(e)) };
-  }
-
-  // Rows are dated at the cursor read BEFORE the walk, never after. A write
-  // landing mid-fill then reports a revision ABOVE the stamp, so the next
-  // ACQUIRE evicts the row and it is refetched. The opposite — stamping newer
-  // than the bytes — would keep a stale row forever, so the conservative
-  // direction is the only safe one and it costs a refetch.
-  const rev = Number((listing.cursor && listing.cursor.rev) ?? (cursor && cursor.rev) ?? NaN);
-  if (!Number.isFinite(rev)) {
-    throw new Error("Nimbus: refusing to fill the resident store with no cursor to date the rows at");
-  }
-
+async function __residentFetchFiles(supervisor, files) {
   // One flat list of ranges across all files, so packing is a single pass and
   // a 25 MiB file and a 40-byte one are the same shape.
   const ranges = [];
-  let requested = 0;
-  for (const file of listing.entries) {
-    if (__residentHeadOn(__residentSql, file.path) !== undefined) continue;
-    requested++;
+  for (const file of files) {
     const parts = Math.max(1, Math.ceil(file.size / __RESIDENT_CHUNK_BYTES));
     for (let part = 0; part < parts; part++) {
       const offset = part * __RESIDENT_CHUNK_BYTES;
       ranges.push({
         path: file.path,
+        rev: file.rev,
         part,
         parts,
         offset,
@@ -829,7 +824,7 @@ async function __residentFillFromSupervisor(supervisor, cursor, options) {
   // Per-file landed-part counts, so a head row is written only once every
   // range of that file is in. See __residentPutHead.
   const landed = new Map();
-  let filled = 0, failed = 0;
+  let filled = 0, failed = 0, fetchedBytes = 0;
   const failedPaths = new Set();
 
   for (let at = 0; at < ranges.length;) {
@@ -862,17 +857,19 @@ async function __residentFillFromSupervisor(supervisor, cursor, options) {
         // path this store will not hold, and a read of it falls through to
         // exactly the miss it would have had before.
         if (entry && entry.error && entry.error.code === "EACCES" && range.part === 0) {
-          __residentPut(__residentSql, range.path, { error: "EACCES" }, rev);
+          __residentPut(__residentSql, range.path, { error: "EACCES" }, range.rev);
           filled++;
         } else failedPaths.add(range.path);
         continue;
       }
       if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
-      __residentPutChunk(__residentSql, range.path, range.part, __residentBytes(entry.bytes));
+      const chunk = __residentBytes(entry.bytes);
+      fetchedBytes += chunk.byteLength;
+      __residentPutChunk(__residentSql, range.path, range.part, chunk);
       const seen = (landed.get(range.path) || 0) + 1;
       landed.set(range.path, seen);
       if (seen === range.parts && !failedPaths.has(range.path)) {
-        __residentPutHead(__residentSql, range.path, __RK_BINARY, range.size, range.parts, rev);
+        __residentPutHead(__residentSql, range.path, __RK_BINARY, range.size, range.parts, range.rev);
         filled++;
       }
     }
@@ -887,12 +884,151 @@ async function __residentFillFromSupervisor(supervisor, cursor, options) {
     __residentSql.exec("DELETE FROM file WHERE path = ?", path);
   }
 
+  return { requested: files.length, filled, failed, bytes: fetchedBytes, ranges: ranges.length };
+}
+
+/**
+ * Bring the store to the authority's current state — the one repair path, used
+ * both to populate a facet before its first instruction and to recover a
+ * poisoned cursor.
+ *
+ * It turns "a capped prefetch" into "the filesystem", which is what makes a
+ * first synchronous read of an untouched file succeed, and it is the only
+ * blocking step: the waiting is done here so the reads that follow never have
+ * to.
+ *
+ * WHY A POISON DOES NOT DROP THE ROWS. A poison says only that
+ * \`invalidatedSince\` cannot describe the distance from our cursor to now —
+ * the invalidation log is bounded at 256 KiB (sqlite-vfs.ts) and ordinary
+ * write churn trims it past a live cursor as a matter of course. It says
+ * nothing about the rows, and the rows are the asset: at pi scale ~16k files
+ * and ~96 MB that dropping forces back over the wire, awaited inside the
+ * ACQUIRE barrier, on every poison. That is a cost defect, not a coherence
+ * one, and it was measured taking an agent turn past the DO CPU limit.
+ *
+ * \`fsList\` does not touch the log and reports every path's ABSOLUTE
+ * revision, which is strictly more information than a delta. So the rows are
+ * RECONCILED instead: a row at or above its listed revision is proven current
+ * and kept, a row below it or no longer listed goes, and only what actually
+ * moved is refetched. Every surviving row is vouched for by revision, so the
+ * no-stale-byte guarantee is exactly as unconditional as it was on the drop
+ * path — the delta is simply not the only way to establish it.
+ *
+ * The comparison is sound ONLY within one supervisor incarnation and ONLY
+ * against a complete enumeration:
+ *
+ *   - revisions from different epochs are unrelated clocks, and after a
+ *     restart an untouched path lists at rev 0, which would vouch for anything;
+ *   - a truncated listing cannot tell a path that was REMOVED from one that
+ *     was never walked, so dropping unlisted rows against it would delete a
+ *     live cache for no reason.
+ *
+ * Neither is verifiable ⇒ nothing is dropped and nothing is vouched for; the
+ * pass degrades to filling what the store does not hold, which is exactly what
+ * it did before rows could be verified. The caller keeps whatever cursor it
+ * had, and a poisoned caller has already taken its cold cache through
+ * \`__residentAdmit\`.
+ *
+ * A row stamped __RK_OWN_WRITE is this facet's own unflushed write — newer
+ * than anything the authority can report — and is kept whether listed or not,
+ * the same read-your-writes rule the delta path applies.
+ *
+ * Writes landing DURING the pass are covered the way they always were: the
+ * published cursor is the one read BEFORE the walk, so they report revisions
+ * above it and the next ACQUIRE evicts whatever they touched.
+ */
+async function __residentSynchronizeFromSupervisor(supervisor) {
+  if (!__residentReady) throw new Error("Nimbus: __residentSynchronizeFromSupervisor before __residentBind");
+  if (!supervisor || typeof supervisor.fsReadBatch !== "function") {
+    return { requested: 0, filled: 0, failed: 0, skipped: "no fsReadBatch on this supervisor" };
+  }
+  if (typeof supervisor.fsList !== "function") {
+    // Without the enumeration the store cannot know what it is missing, so it
+    // fills nothing beyond the adopted bundle and every read behaves exactly
+    // as it did before this store existed — a smaller resident set, never a
+    // wrong one. That is the failure direction to keep.
+    return { requested: 0, filled: 0, failed: 0, skipped: "supervisor cannot enumerate the filesystem (no fsList)" };
+  }
+
+  let listing;
+  try {
+    listing = await __residentEnumerate(supervisor);
+  } catch (e) {
+    return { requested: 0, filled: 0, failed: 0, skipped: "fsList failed: " + ((e && e.message) || String(e)) };
+  }
+  if (!listing.cursor) {
+    return { requested: 0, filled: 0, failed: 0, skipped: "fsList reported no authority cursor" };
+  }
+
+  const sql = __residentSql;
+  const held = __residentCursor();
+  // May a row this pass cannot prove current be DROPPED? Only against a
+  // complete enumeration: a truncated one cannot tell a path that was removed
+  // from one that was never walked.
+  const judgeable = listing.complete;
+  // May a held revision be COMPARED with a listed one? Only inside one
+  // supervisor incarnation: across a restart the clocks are unrelated, and an
+  // untouched path lists at rev 0, which would vouch for anything.
+  const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;
+
+  const listed = new Map();
+  for (const file of listing.entries) listed.set(file.path, file);
+
+  const rows = [];
+  for (const row of sql.exec("SELECT path, rev FROM file")) {
+    rows.push({ path: String(row.path), rev: Number(row.rev) });
+  }
+  const current = new Set();
+  const dropped = [];
+  for (const row of rows) {
+    const entry = listed.get(row.path);
+    const keep = row.rev === __RK_OWN_WRITE
+      || (comparable && entry !== undefined && row.rev >= entry.rev)
+      || !judgeable;
+    if (keep) { current.add(row.path); continue; }
+    dropped.push(row.path);
+  }
+  // Sweep what could not be vouched for. When NOTHING could — a new supervisor
+  // incarnation, whose revisions say nothing about ours — that is every row but
+  // this facet's own unflushed writes, and at pi scale a per-path delete would
+  // be ~32,000 statements in one turn against an object that has been observed
+  // resetting under exactly that load. So it is a predicate there, and per path
+  // where a reconcile has made the set small by construction.
+  if (dropped.length > 0 && !comparable) {
+    sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", __RK_OWN_WRITE);
+    sql.exec("DELETE FROM file WHERE rev <> ?", __RK_OWN_WRITE);
+  } else {
+    for (const path of dropped) {
+      sql.exec("DELETE FROM chunk WHERE path = ?", path);
+      sql.exec("DELETE FROM file WHERE path = ?", path);
+    }
+  }
+
+  const fetch = [];
+  for (const file of listing.entries) if (!current.has(file.path)) fetch.push(file);
+  const filled = await __residentFetchFiles(supervisor, fetch);
+
+  // The cursor may only advance to a state the rows actually describe, and
+  // after a truncated listing they do not: a path in an unwalked page could
+  // have moved since the held cursor and would never be reported again.
+  if (judgeable) {
+    __residentWriteCursor(sql, listing.cursor);
+    __residentUndated = false;
+    __residentSealed = false;
+    __residentSealReason = "";
+  }
+
   return {
-    requested,
-    filled,
-    failed,
-    ranges: ranges.length,
+    requested: filled.requested,
+    filled: filled.filled,
+    failed: filled.failed,
+    bytes: filled.bytes,
+    ranges: filled.ranges,
+    kept: current.size,
+    dropped: dropped.length,
+    reconciled: comparable,
     complete: listing.complete,
+    cursor: judgeable ? listing.cursor : null,
     ...(listing.reason ? { incomplete: listing.reason } : {}),
   };
 }

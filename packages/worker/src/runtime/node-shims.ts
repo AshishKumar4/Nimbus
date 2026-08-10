@@ -1205,7 +1205,7 @@ const __fsMod = (() => {
   const _stats = globalThis.__nimbusVfsCoherence
     || (globalThis.__nimbusVfsCoherence = {
       fills: 0, filledBytes: 0, invalidations: 0, poisons: 0,
-      selfWrites: 0, misses: 0,
+      reconciles: 0, selfWrites: 0, misses: 0,
     });
 
   /**
@@ -1296,6 +1296,63 @@ const __fsMod = (() => {
   }
 
   /**
+   * Repair a poisoned resident store, once, however many barriers hit the
+   * poison at the same instant.
+   *
+   * A poison is a failure of the DELTA CHANNEL, not of the rows. The
+   * invalidation log is bounded at 256 KiB and write churn trims it past a
+   * live cursor as a matter of course, so this runs REPEATEDLY during an npm
+   * install — and dropping the store here meant re-materialising the whole
+   * filesystem (~16,357 files / 96 MB at pi scale) inside the barrier, every
+   * time, which is what took an agent turn past the DO CPU limit. fsList does
+   * not touch the log and reports absolute per-path revisions, so the rows are
+   * reconciled against those instead: every row kept is proven current by
+   * revision, and only what actually moved is refetched.
+   *
+   * Single-flight because concurrent async fs operations each take their own
+   * barrier and would each see the same poison: without this, one overflow
+   * costs one enumeration per operation in flight. Joining is sound rather
+   * than merely cheap — the repair publishes the cursor read BEFORE its walk,
+   * so a joiner whose poison was answered later is left with a cursor at or
+   * behind its own, and the mutations in between are still owed to it by the
+   * next delta.
+   */
+  let _residentRepair = null;
+  function _repairPoisonedStore(supervisor, result) {
+    if (!_residentRepair) {
+      _residentRepair = _runResidentRepair(supervisor, result)
+        .finally(() => { _residentRepair = null; });
+    }
+    return _residentRepair;
+  }
+
+  async function _runResidentRepair(supervisor, result) {
+    let repaired;
+    try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
+    catch { repaired = null; }
+    if (!repaired || !repaired.cursor) {
+      // The pass could not vouch for a single row — a supervisor replaced
+      // mid-enumeration, an enumeration that came back short. A row that
+      // cannot be dated must not be served, so the cold cache the poison asked
+      // for is taken after all, and the pass runs once more to repopulate what
+      // it just dropped.
+      __residentAdmit(result);
+      _cursor.epoch = result.epoch;
+      _cursor.rev = result.rev;
+      try { repaired = await __residentSynchronizeFromSupervisor(supervisor); }
+      catch { repaired = null; }
+    } else if (repaired.reconciled) {
+      _stats.reconciles++;
+    }
+    if (!repaired || !repaired.cursor) return;
+    _cursor.epoch = repaired.cursor.epoch;
+    _cursor.rev = repaired.cursor.rev;
+    _stats.invalidations += repaired.dropped;
+    _stats.fills += repaired.filled;
+    _stats.filledBytes += repaired.bytes;
+  }
+
+  /**
    * ACQUIRE. Apply every invalidation the supervisor has for this facet,
    * then re-stamp the cursor.
    *
@@ -1304,9 +1361,13 @@ const __fsMod = (() => {
    * to drop.
    *
    * A poison result means the delta cannot repair the view — a different
-   * supervisor incarnation, or a cursor older than the retained log — so
-   * the whole resident content view goes. That costs a cold cache; the
-   * alternative is a stale byte.
+   * supervisor incarnation, or a cursor older than the retained log. Where the
+   * resident set lives in the facet's SQLite its rows carry their own
+   * revisions, so a poison is repaired by reconciling them against fsList's
+   * absolute per-path revisions rather than by dropping them. On the heap —
+   * where a cell carries no date to verify against — the whole resident
+   * content view still goes. That costs a cold cache; the alternative is a
+   * stale byte.
    *
    * A path the facet itself wrote is skipped, and only at the revision its
    * own flush produced. The invalidation log records what changed, not who
@@ -1342,21 +1403,16 @@ const __fsMod = (() => {
     // described them is gone. Rows carry their own revision, __vfsBundleRevisions
     // cannot follow them there, and two provenance stores would be one too many.
     if (_residentStorePresent()) {
+      if (result.poison) {
+        _stats.poisons++;
+        await _repairPoisonedStore(supervisor, result);
+        // Nothing is returned because a dropped cell is either refetched by
+        // the repair or gone from the authority too.
+        return [];
+      }
       const applied = __residentAdmit(result);
       _cursor.epoch = result.epoch;
       _cursor.rev = result.rev;
-      if (result.poison) {
-        _stats.poisons++;
-        // Repopulate in ONE batched pass rather than handing the caller every
-        // dropped path to re-read on its own. A poison drops the whole store,
-        // and at pi scale that is 16,357 paths: as serial live reads it is a
-        // catastrophe, as a refill it is the ~131 round trips the initial fill
-        // already costs. Nothing is returned because nothing is left to refetch.
-        try {
-          await __residentFillFromSupervisor(supervisor, { epoch: result.epoch, rev: result.rev });
-        } catch { /* a short store is a miss that falls through, never a stale byte */ }
-        return [];
-      }
       _stats.invalidations += applied.dropped.length;
       return applied.dropped;
     }
