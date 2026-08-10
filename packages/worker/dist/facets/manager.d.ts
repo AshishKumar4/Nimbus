@@ -250,10 +250,12 @@ interface FacetVfsState {
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
- * Only for states that are about to be RETAINED. `spawnNode` and
- * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
- * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
- * neither goes through here.
+ * Only for states on the one-shot cached path, and applied there whether or
+ * not the entry turns out small enough to retain: the invocation being served
+ * reads the serialized forms too. `spawnNode` and `_stageOpencodeFacet` build
+ * their own uncached states and genuinely re-read the raw cells
+ * (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`); neither
+ * goes through here.
  */
 export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
 interface FacetVfsBundleSource {

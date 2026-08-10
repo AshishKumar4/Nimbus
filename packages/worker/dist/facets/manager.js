@@ -1063,10 +1063,12 @@ export class NimbusProcess extends DurableObject {
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
- * Only for states that are about to be RETAINED. `spawnNode` and
- * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
- * the raw cells (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`);
- * neither goes through here.
+ * Only for states on the one-shot cached path, and applied there whether or
+ * not the entry turns out small enough to retain: the invocation being served
+ * reads the serialized forms too. `spawnNode` and `_stageOpencodeFacet` build
+ * their own uncached states and genuinely re-read the raw cells
+ * (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`); neither
+ * goes through here.
  */
 export function releaseSerializedSources(vfsState) {
     if (vfsState.bundleSource)
@@ -1110,11 +1112,11 @@ function _bundleCellLength(cell) {
 /**
  * Supervisor-heap cost of a FacetVfsState the prefetch LRU is holding on to.
  *
- * A cached entry retains the raw bundle AND the serialized forms built from
- * it — source modules, manifest, metadata — so the memoization that saves the
- * rebuild costs roughly twice the bundle. Counting only the raw cells would
- * under-report the cache by about half, which is how a count-bounded LRU came
- * to look affordable.
+ * `releaseSerializedSources` normally leaves only the serialized source,
+ * manifest and metadata behind. Every representation actually present is
+ * counted anyway, so the bound stays correct if that release policy changes:
+ * counting only the raw cells would under-report a both-forms entry by about
+ * half, which is how a count-bounded LRU came to look affordable.
  */
 function retainedVfsStateBytes(state) {
     let bytes = 0;
@@ -3116,6 +3118,22 @@ export class FacetManager {
         const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
         const key = `${profile}\x00${credKey}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
         const revision = vfs.revision();
+        // An entry built at an older revision can never be SERVED again — the
+        // lookup below requires an exact match — so from the first write after it
+        // was admitted it is retained garbage, held in the isolate that is
+        // measurably memory-constrained. Dropped here, before the build that
+        // replaces it allocates, so the stale filesystem graph and the new one
+        // never co-reside.
+        let evictedStale = false;
+        for (const [staleKey, entry] of this.prefetchBundleCache) {
+            if (entry.revision === revision)
+                continue;
+            this.prefetchBundleCache.delete(staleKey);
+            this.prefetchCacheBytes -= entry.bytes;
+            evictedStale = true;
+        }
+        if (evictedStale)
+            setPrefetchCacheBytes(this.prefetchCacheBytes);
         const cached = this.prefetchBundleCache.get(key);
         if (cached && cached.revision === revision) {
             // Refresh LRU recency.
@@ -3205,16 +3223,26 @@ export class FacetManager {
             this.prefetchCacheBytes -= previous.bytes;
         const bytes = retainedVfsStateBytes(vfsState);
         this.prefetchBundleCache.delete(key);
+        // A bundle larger than the WHOLE bound is not retained. It used to be
+        // admitted anyway, on the reasoning that refusing it means never caching
+        // the program the session is running — but admission then evicted every
+        // other entry to make room for something that still did not fit, leaving
+        // the cache over its own bound with nothing else in it. Measured: a
+        // 21.50 MiB entry left a 16 MiB cache holding 21.50 MiB with four prior
+        // entries gone. The caller still uses this build for the invocation it was
+        // made for; it simply does not become permanent supervisor pressure after
+        // that. With it refused, the loop below can no longer be asked to evict
+        // the entry it just admitted.
+        if (bytes > PREFETCH_CACHE_MAX_BYTES) {
+            setPrefetchCacheBytes(this.prefetchCacheBytes);
+            return;
+        }
         this.prefetchBundleCache.set(key, { revision, vfsState, bytes });
         this.prefetchCacheBytes += bytes;
         for (const [oldest, entry] of this.prefetchBundleCache) {
             if (this.prefetchBundleCache.size <= FacetManager.PREFETCH_CACHE_MAX
                 && this.prefetchCacheBytes <= PREFETCH_CACHE_MAX_BYTES)
                 break;
-            // The entry just admitted is the one the caller is about to use; a
-            // bundle bigger than the whole bound evicts everything else and stays.
-            if (oldest === key)
-                continue;
             this.prefetchBundleCache.delete(oldest);
             this.prefetchCacheBytes -= entry.bytes;
         }
