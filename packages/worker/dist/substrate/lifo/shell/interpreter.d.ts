@@ -135,6 +135,7 @@ export declare class Interpreter {
             setUmask(mask: number): void;
         };
         runAs?: CommandRunAsHost;
+        signal?: AbortSignal;
     }): Promise<number>;
     private executeList;
     private getListCommandText;

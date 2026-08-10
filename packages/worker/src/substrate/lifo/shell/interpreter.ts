@@ -274,6 +274,7 @@ export class Interpreter {
         setUmask(mask: number): void;
       };
       runAs?: CommandRunAsHost;
+      signal?: AbortSignal;
     },
   ): Promise<number> {
     const io = this.createTerminalIo(
@@ -288,6 +289,7 @@ export class Interpreter {
     if (options?.commandContext) io.commandContext = options.commandContext;
     if (options?.commandIdentity) io.commandIdentity = options.commandIdentity;
     if (options?.runAs) io.runAs = options.runAs;
+    if (options?.signal) io.signal = options.signal;
     if (options?.commandIdentity) io.vfs = this.config.vfs.as(options.commandIdentity.cred);
     try {
       const tokens = lex(input);

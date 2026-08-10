@@ -294,7 +294,6 @@ export class Shell {
 
     // Save current state
     const prevCwd = options?.cwd ? this.cwd : undefined;
-    const prevAbortController = this.abortController;
     const savedShellState = options?.isolateShellState ? this.snapshotShellState() : null;
     const envOverrideSnapshot = !savedShellState && options?.env
       ? snapshotEnvKeys(this.env, Object.keys(options.env))
@@ -306,8 +305,6 @@ export class Shell {
       if (options.signal.aborted) abortFromCaller();
       else options.signal.addEventListener('abort', abortFromCaller, { once: true });
     }
-    this.abortController = abortController;
-
     // Per-execution capture sink for shell-level direct-terminal writes
     // (`/dev/tty`, command-stdout fallback). Threaded through `executeLine`
     // options so a nested `execute` never mutates shared interpreter config the
@@ -351,6 +348,7 @@ export class Shell {
           commandContext: options?.commandContext,
           commandIdentity: this.resolveCommandIdentity(options?.commandContext),
           runAs: options?.runAs ?? this.commandIdentity.runAs,
+          signal: abortController.signal,
         },
       );
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
@@ -364,14 +362,6 @@ export class Shell {
       // Restore state
       if (options?.signal) {
         options.signal.removeEventListener('abort', abortFromCaller);
-      }
-      // Save/restore is stack discipline, and concurrent executions against
-      // one shell do not nest: an inner call that finishes first would put
-      // back a controller belonging to a command that already ended, leaving
-      // the still-running one unreachable to Ctrl+C. Only unwind if the
-      // current controller is still the one this call installed.
-      if (this.abortController === abortController) {
-        this.abortController = prevAbortController;
       }
       if (savedShellState) {
         this.restoreShellState(savedShellState);
@@ -959,6 +949,7 @@ export class Shell {
       await this.interpreter.executeLine(actualLine, this.terminalStdin, {
         commandIdentity: this.commandIdentity,
         runAs: this.commandIdentity.runAs,
+        signal: this.abortController.signal,
       });
     } finally {
       this.terminalStdin?.close();
