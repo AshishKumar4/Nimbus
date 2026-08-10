@@ -38,11 +38,17 @@ a.check('subscribed ok', subResult && subResult.ok === true, `subResult=${JSON.s
 const before = received.length;
 await t.run(`rm /home/user/${fileName}`, 10_000);
 
-{ const t0 = Date.now(); while (received.length === before && Date.now() - t0 < 1000) await sleep(25); }
+// Wait for THIS rm's event, not for "some frame to arrive" — see the note in
+// file-tree-refreshes-on-mkdir.mjs. Measured propagation is 68 ms p50 /
+// 78 ms p90 / 466 ms worst, so 1 s is ~2x the worst observed.
+const matchesUnlink = (ev) => ev && ev.type === 'unlink'
+  && typeof ev.path === 'string' && ev.path.endsWith(fileName);
+const findHit = () => received.slice(before).flatMap((f) => f.events || []).find(matchesUnlink);
+
+let unlinkHit;
+{ const t0 = Date.now(); while (!(unlinkHit = findHit()) && Date.now() - t0 < 1000) await sleep(25); }
 
 const events = received.slice(before).flatMap((f) => f.events || []);
-const unlinkHit = events.find((ev) => ev && ev.type === 'unlink'
-  && typeof ev.path === 'string' && ev.path.endsWith(fileName));
 
 a.check(`'unlink' event for ${fileName} received within 1 s`,
   unlinkHit !== undefined,
