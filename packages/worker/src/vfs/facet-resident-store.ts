@@ -615,21 +615,62 @@ function __residentKeys() {
 }
 
 /**
- * Paths under a directory prefix, without materialising the whole key set.
+ * The exclusive upper bound of a prefix under the BINARY collation SQLite gives
+ * a TEXT PRIMARY KEY — the successor of the last code unit it can increment.
+ * Null when there is none (an empty prefix, or one ending in U+FFFF), and the
+ * caller then scans open-ended, which is correct and merely slower.
  *
- * The shims scan the resident set by prefix in nine places — readdirSync's
- * union with the manifest, existsSync of a directory, rm -rf, watch globbing.
- * In heap those were for-in loops over every key; here they are an index range
- * scan, which is the one place this store is strictly better rather than
- * merely affordable.
+ * Every caller passes a directory prefix ending in '/', so the increment is
+ * '/' → '0' and UTF-16 and UTF-8 orderings agree exactly. They diverge only
+ * around the surrogate range, which no path segment separator lives in.
+ */
+function __residentPrefixEnd(prefix) {
+  for (let i = prefix.length - 1; i >= 0; i--) {
+    const code = prefix.charCodeAt(i);
+    if (code < 0xffff) return prefix.slice(0, i) + String.fromCharCode(code + 1);
+  }
+  return null;
+}
+
+/**
+ * Paths under a directory prefix, as a bounded index range scan.
+ *
+ * The shims ask this constantly — readdirSync's union with the manifest,
+ * existsSync of a directory, node's own module resolution, rm -rf, watch
+ * globbing. In heap it was a for-in over every key; here it must be a range
+ * scan on both ends, because that is the only version that is actually cheaper:
+ * an open-ended \`path >= prefix\` with a LIKE filter still visits every row
+ * after the prefix, and going back through the object protocol visits every row
+ * AND reads every file's bytes.
+ *
+ * Two bounds also mean no LIKE, so a real path containing '%' or '_' needs no
+ * escaping — those are only wildcards to an operator this no longer uses.
  */
 function __residentKeysUnder(prefix) {
+  const from = String(prefix);
+  const to = __residentPrefixEnd(from);
   const out = [];
-  const like = String(prefix).replace(/([%_\\\\])/g, "\\\\$1") + "%";
-  for (const row of __residentRequire().exec(
-    "SELECT path FROM file WHERE path >= ? AND path LIKE ? ESCAPE '\\\\'", prefix, like
-  )) out.push(String(row.path));
+  const rows = to === null
+    ? __residentRequire().exec("SELECT path FROM file WHERE path >= ?", from)
+    : __residentRequire().exec("SELECT path FROM file WHERE path >= ? AND path < ?", from, to);
+  for (const row of rows) out.push(String(row.path));
   return out;
+}
+
+/**
+ * Whether ANY path is held under a prefix — the same range, stopped at the
+ * first row. The hot half: it is what answers "is this a directory" on node's
+ * module-resolution path, where materialising the subtree would be the cost all
+ * over again.
+ */
+function __residentHasUnder(prefix) {
+  const from = String(prefix);
+  const to = __residentPrefixEnd(from);
+  const rows = to === null
+    ? __residentRequire().exec("SELECT path FROM file WHERE path >= ? LIMIT 1", from)
+    : __residentRequire().exec("SELECT path FROM file WHERE path >= ? AND path < ? LIMIT 1", from, to);
+  for (const _row of rows) return true;
+  return false;
 }
 
 /**
@@ -1065,7 +1106,15 @@ const __nimbusResidentBundle = new Proxy(Object.create(null), {
     if (__residentHead(path) === undefined) return undefined;
     // Configurable so 'delete' is legal and enumerable so for-in and
     // Object.keys see it — the two things every scan site depends on.
-    return { configurable: true, enumerable: true, writable: true, value: __residentGet(path) };
+    //
+    // An ACCESSOR, not a data descriptor, and that is the whole point: a
+    // for-in or Object.keys over a Proxy asks this trap about every key, so a
+    // data descriptor had to produce \`value\` — reading every file's bytes out
+    // of SQLite to answer a question about NAMES. Measured at pi scale, one
+    // such scan read 87 MiB and threw all of it away. A getter answers the
+    // name question for free and still returns the bytes to anything that
+    // genuinely reads the property.
+    return { configurable: true, enumerable: true, get() { return __residentGet(path); } };
   },
 });
 `.trim();

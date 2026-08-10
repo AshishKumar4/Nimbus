@@ -8,6 +8,6 @@
  * NODE_SHIMS_SHA256 is the full digest verified at fetch time.
  */
 
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-aa4b4bfb475c2e6c.js";
-export const NODE_SHIMS_BUILD_ID: string = "aa4b4bfb475c2e6c";
-export const NODE_SHIMS_SHA256: string = "aa4b4bfb475c2e6c3c48f106f8f41261deca6725d891d6f660307852d6fb9859";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-317d93431dd0996a.js";
+export const NODE_SHIMS_BUILD_ID: string = "317d93431dd0996a";
+export const NODE_SHIMS_SHA256: string = "317d93431dd0996a12c852a53259e62d045a930c753d1ff135808af07d0b1fed";

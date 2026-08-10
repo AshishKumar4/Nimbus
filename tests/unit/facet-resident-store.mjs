@@ -21,7 +21,7 @@ import {
 } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 
 /** workerd's `ctx.storage.sql`: exec(query, ...params) → synchronous cursor. */
-function sqlShim() {
+function sqlShim(meter) {
   const db = new Database(':memory:');
   return {
     exec(query, ...params) {
@@ -30,22 +30,35 @@ function sqlShim() {
         db.query(query).run(...normalized);
         return [];
       }
-      return db.query(query).all(...normalized);
+      const rows = db.query(query).all(...normalized);
+      if (meter) {
+        meter.selects++;
+        // A query against `chunk` is a CONTENT read. Counting them is the whole
+        // point: a question about NAMES that touches this table is reading the
+        // filesystem to answer something the index already knows.
+        if (/FROM chunk/i.test(query)) {
+          meter.contentReads++;
+          for (const row of rows) {
+            meter.contentBytes += (row.txt ? row.txt.length : 0) + (row.bin ? row.bin.byteLength : 0);
+          }
+        }
+      }
+      return rows;
     },
     get databaseSize() { return 0; },
   };
 }
 
 /** Evaluate the shipped source and hand back its internals. */
-function loadStore() {
+function loadStore(meter) {
   const factory = new Function(
     FACET_RESIDENT_STORE_SOURCE
       + '\nreturn { __residentBind, __residentAdmit, __residentPopulate, __residentClear,'
       + ' __residentStamp, __residentCursor, __residentStats, __residentKeysUnder,'
-      + ' __residentSeal, bundle: __nimbusResidentBundle };',
+      + ' __residentHasUnder, __residentSeal, bundle: __nimbusResidentBundle };',
   );
   const store = factory();
-  store.__residentBind({ storage: { sql: sqlShim() } });
+  store.__residentBind({ storage: { sql: sqlShim(meter) } });
   return store;
 }
 
@@ -203,6 +216,54 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
     ['od%d/a.js'],
     "'%' in a real path must be a literal, not a wildcard",
   );
+}
+
+// ── a name question must never read the filesystem ──────────────────────────
+//
+// The shims ask "is anything held under this directory" constantly — node's own
+// module resolution does it per candidate path. Answered through the object
+// protocol (`for..in`, `Object.keys`) that question walks every key AND, via
+// the descriptor trap, reads every file's BYTES. Measured on a pi-shaped store
+// of 19,470 files / 95 MiB: 222 ms, 17,821 chunk queries and 87 MiB read and
+// discarded, per call. At a 30 s CPU budget that is 135 calls to exhaustion,
+// which is what took an agent turn past the limit. The index answers the same
+// question without touching content at all.
+
+{
+  const meter = { selects: 0, contentReads: 0, contentBytes: 0 };
+  const s = loadStore(meter);
+  s.__residentAdmit(CURSOR);
+  const body = 'x'.repeat(4096);
+  for (let i = 0; i < 400; i++) s.__residentPopulate(`usr/lib/node_modules/p${i % 20}/f${i}.js`, body, 7);
+  for (let i = 0; i < 400; i++) s.__residentPopulate(`var/other/f${i}.js`, body, 7);
+
+  meter.contentReads = 0; meter.contentBytes = 0; meter.selects = 0;
+  assert.equal(s.__residentHasUnder('usr/lib/node_modules/p3/'), true);
+  assert.equal(meter.contentBytes, 0, 'a directory-existence question must read no file content');
+  assert.equal(meter.selects, 1, 'and must be one query, not one per candidate path');
+
+  meter.contentReads = 0; meter.contentBytes = 0;
+  assert.equal(s.__residentHasUnder('usr/lib/node_modules/nope/'), false);
+  assert.equal(meter.contentBytes, 0, 'a negative answer must read no file content either');
+
+  meter.contentReads = 0; meter.contentBytes = 0;
+  const under = s.__residentKeysUnder('usr/lib/node_modules/p3/');
+  assert.equal(meter.contentBytes, 0, 'listing a subtree must read no file content');
+  assert.ok(under.length > 0 && under.every((k) => k.startsWith('usr/lib/node_modules/p3/')),
+    'and must return exactly that subtree');
+
+  // The descriptor trap is what turned key enumeration into a full read. Even
+  // the whole-set walk — still used for watch globbing outside a cwd — must
+  // cost names only.
+  meter.contentReads = 0; meter.contentBytes = 0;
+  let walked = 0;
+  for (const k of Object.keys(s.bundle)) { if (k.length) walked++; }
+  assert.equal(walked, 800, 'the walk really did visit every key');
+  assert.equal(meter.contentBytes, 0, 'enumerating keys must not materialize their bytes');
+
+  // …and the bytes are still there for anything that actually reads one.
+  assert.equal(s.bundle['var/other/f7.js'], body, 'a real read still returns the content');
+  assert.ok(meter.contentBytes > 0, 'which is what makes the assertion above non-vacuous');
 }
 
 console.log('facet-resident-store: ok');
