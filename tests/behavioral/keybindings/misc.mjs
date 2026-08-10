@@ -59,30 +59,46 @@ await execAndAwait('echo BANANA_MARKER');
     /CL_TEST/.test(out) ? '' : JSON.stringify(out.slice(0, 200)));
 }
 
-// ────────────── Ctrl+\ — readline binding ──────────────
-// Real bash: Ctrl+\ sends SIGQUIT. We don't have signals, but the
-// PARITY-correct behavior in an interactive shell with no foreground
-// job is: the shell either ignores it (default in many readline
-// configs) or treats it like Ctrl+C (cancel current line). We assert
-// it does NOT crash the session and the next command still runs.
+// ────────────── Ctrl+\ — SIGQUIT ──────────────
+// Real bash: Ctrl+\ raises SIGQUIT. With no foreground job readline absorbs
+// it and the line survives; with one, the command dies and $? is 131 (128+3).
+// Both assertions land on an effect the terminal does not mirror: the line
+// still EXECUTES, and the exit status the shell reports afterwards.
 {
+  // No foreground job: absorbed, current line untouched.
   t.send(CTRL_U); await sleep(50);
-  t.send('echo PREFIX_BEFORE_QUIT'); await sleep(60);
+  t.send('echo QUIT_LINE_SURVIVED'); await sleep(60);
   t.send(CTRL_BACKSLASH); await sleep(120);
-  // After Ctrl+\, send U to clear (in case the binding cleared things
-  // already), then a fresh echo. Session must still respond.
-  t.send(CTRL_U); await sleep(30);
   t.reset();
-  const tail0 = t.buf.length;
-  t.send('echo POST_QUIT_LIVE\r');
-  await t.waitFor(
-    (b) => b.length > 0 && t.buf.length > tail0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-    15_000, 'prompt after post-quit echo',
-  );
-  const out = stripAnsi(t.buf.slice(tail0));
-  a.check('Ctrl+\\ does not kill the session — next command still runs',
-    /POST_QUIT_LIVE/.test(out),
-    /POST_QUIT_LIVE/.test(out) ? '' : JSON.stringify(out.slice(0, 200)));
+  t.send('\r');
+  const ranAnyway = await t.waitFor((b) => /QUIT_LINE_SURVIVED/.test(b), 15_000, 'line survives Ctrl+\\')
+    .then(() => true).catch(() => false);
+  a.check('Ctrl+\\ at the prompt is absorbed and leaves the line intact', ranAnyway,
+    ranAnyway ? '' : JSON.stringify(stripAnsi(t.buf).slice(-200)));
+
+  // Foreground job: SIGQUIT ends `sleep 20` early. The marker command is
+  // queued right behind it, so the wait discriminates on its own: signalled,
+  // the marker lands in ~1 s; unsignalled, `sleep 20` runs out first and the
+  // marker cannot arrive inside the bound. $? then names the signal exactly.
+  await t.waitForPrompt(15_000);
+  t.reset();
+  t.cmd('sleep 20');
+  await t.waitFor((b) => /sleep 20/.test(b), 10_000, 'sleep echo');
+  await sleep(1000);
+  const t0 = Date.now();
+  t.send(CTRL_BACKSLASH);
+  t.cmd('echo "QS=$?=END"');
+  const marked = await t.waitFor((b) => /QS=\d+=END/.test(b), 12_000, 'quit status marker')
+    .then(() => true).catch(() => false);
+  const elapsed = Date.now() - t0;
+  a.check('Ctrl+\\ terminates the foreground command (SIGQUIT delivered)',
+    marked && elapsed < 12_000,
+    `marked=${marked} elapsed=${elapsed}ms tail=${JSON.stringify(stripAnsi(t.buf).slice(-200))}`);
+
+  const qs = stripAnsi(t.buf).match(/QS=(\d+)=END/);
+  a.check('Ctrl+\\ reports SIGQUIT status 131 in $?',
+    qs !== null && Number(qs[1]) === 131,
+    `got=${qs ? qs[1] : 'none'}`);
 }
 
 // ────────────── Ctrl+R — reverse-i-search ──────────────
