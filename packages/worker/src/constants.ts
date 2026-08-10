@@ -171,8 +171,10 @@ export const BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;      // 22 MiB JSON-en
 // A quarter of SUPERVISOR_HEAP_CEILING_BYTES: enough for the working set of an
 // ordinary project's repeated execs, and small enough that a full cache plus
 // the ~9 MiB static baseline still leaves the transient allocation budget its
-// room. One bundle larger than this is admitted anyway and evicts the rest —
-// refusing it would mean never caching the program the session is running.
+// room. A bundle larger than this is used for the invocation it was built for
+// and then dropped rather than retained: admitting it evicted every other
+// entry and still left the cache over its own bound, which is the pressure
+// this bound exists to prevent rather than a way of caching one more program.
 export const PREFETCH_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 
 // Per-file ceiling for the blind working-tree sweep (facet-manager.ts

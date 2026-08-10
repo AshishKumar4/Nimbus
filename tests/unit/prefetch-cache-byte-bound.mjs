@@ -92,4 +92,78 @@ assert.ok(PROGRAMS <= 16,
   'and stays inside the entry count, so only the byte bound can be what evicted');
 assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
 
+// An entry larger than the WHOLE bound must not be retained.
+//
+// It used to be admitted anyway, on the reasoning that refusing it means never
+// caching the program the session is running. But admitting it evicted every
+// other entry to make room for something that still did not fit, so the cache
+// ended up over its own bound with nothing else in it — the pressure the bound
+// exists to prevent, reached by way of the bound.
+{
+  const oversized = new FacetManager(
+    { id: { toString: () => 'prefetch-cache-oversized' }, waitUntil() {} },
+    env, new SessionProcessSupervisor(), new PortRegistry(), {},
+  );
+  const oversizedHarness = createSqliteVfsTestHarness();
+  const oversizedVfs = new SqliteVFS(oversizedHarness.sql, oversizedHarness.ctx);
+  oversized.setVfs(oversizedVfs);
+  const oversizedFs = oversizedVfs.as(CRED_KERNEL);
+  oversizedFs.mkdir('home/user/big', { recursive: true, mode: 0o755 });
+  oversizedFs.writeFile(
+    'home/user/big/data.js',
+    `module.exports = "${'x'.repeat(PREFETCH_CACHE_MAX_BYTES + 1024)}";\n`,
+    { mode: 0o644 },
+  );
+
+  const result = await oversized.exec("require('./data.js');", {
+    filename: '/home/user/big/run.js',
+    cwd: '/home/user/big',
+    captureOutput: true,
+  });
+  assert.equal(result.exitCode, 0, 'the invocation is still served from the build it refuses to keep');
+  assert.equal(cacheBytes(), 0, 'an entry larger than the byte bound must not be retained');
+}
+
+// An entry built at an older revision can never be served again — the lookup
+// demands an exact revision match — so it is retained garbage from the first
+// write after it was admitted. It goes before the build that replaces it
+// allocates, so the two filesystem graphs never co-reside.
+{
+  const stale = new FacetManager(
+    { id: { toString: () => 'prefetch-cache-stale' }, waitUntil() {} },
+    env, new SessionProcessSupervisor(), new PortRegistry(), {},
+  );
+  const staleHarness = createSqliteVfsTestHarness();
+  const staleVfs = new SqliteVFS(staleHarness.sql, staleHarness.ctx);
+  stale.setVfs(staleVfs);
+  const staleFs = staleVfs.as(CRED_KERNEL);
+  staleFs.mkdir('home/user/large', { recursive: true, mode: 0o755 });
+  staleFs.mkdir('home/user/small', { recursive: true, mode: 0o755 });
+  staleFs.writeFile(
+    'home/user/large/data.js',
+    `module.exports = "${'x'.repeat(4 * 1024 * 1024)}";\n`,
+    { mode: 0o644 },
+  );
+  staleFs.writeFile('home/user/small/data.js', 'module.exports = 1;\n', { mode: 0o644 });
+
+  await stale.exec("require('./data.js');", {
+    filename: '/home/user/large/run.js',
+    cwd: '/home/user/large',
+    captureOutput: true,
+  });
+  const retained = cacheBytes();
+  assert.ok(retained > 4 * 1024 * 1024, 'the first exec retained the large entry');
+
+  staleFs.writeFile('home/user/revision-marker', 'changed', { mode: 0o644 });
+  await stale.exec("require('./data.js');", {
+    filename: '/home/user/small/run.js',
+    cwd: '/home/user/small',
+    captureOutput: true,
+  });
+  assert.ok(
+    cacheBytes() < retained / 2,
+    `the unservable ${retained}-byte entry survived a revision change; cache holds ${cacheBytes()} bytes`,
+  );
+}
+
 console.log('prefetch-cache-byte-bound: ok');
