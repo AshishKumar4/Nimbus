@@ -539,10 +539,6 @@ export class LineEditorExtender {
                 s.screenCursorRow = 0;
                 s.redrawLine();
                 return true;
-            // ── Ctrl+\: bash sends SIGQUIT; with no fg job, readline noops.
-            //   We mirror: silently absorb, leave the line intact.
-            case '\x1c':
-                return true;
             // ── Ctrl+D mid-line: delete char at cursor (bash readline) ──
             case '\x04': {
                 const buf = s.lineBuffer;

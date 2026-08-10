@@ -15,12 +15,18 @@
 
 import assert from 'node:assert/strict';
 import { NimbusFanoutPool } from '../../packages/worker/src/loaders/fanout-pool.ts';
-import { isDoOverloaded, isTransientDoReset } from '../../packages/worker/src/observability/oom-classify.ts';
+import { describeError, isDoOverloaded, isTransientDoReset } from '../../packages/worker/src/observability/oom-classify.ts';
 
 // ── Classifier: transient resets are retryable, resource resets are not ──
 assert.equal(isTransientDoReset(new Error('Durable Object reset because its code was updated.')), true);
 assert.equal(isTransientDoReset(new Error(
   'Internal error while starting up Durable Object storage caused object to be reset; reference = ga1j754dr4bl2c1ujh1jb39j')), true);
+// The live-write wording of the same condition. Measured resetting a session
+// DO mid-install on 2026-08-10 (probe agentic-cli/new/pi-official-installer);
+// matching only the startup wording is why a shard that hit it still failed
+// the whole install.
+assert.equal(isTransientDoReset(new Error(
+  'Internal error in Durable Object storage caused object to be reset; reference = 1uuko9ualhs30arc7l9u2mvs')), true);
 assert.equal(isTransientDoReset('Durable Object storage operation exceeded timeout which caused the object to be reset.'), true);
 // Must NOT treat memory/CPU resets as transient — those recur on retry.
 assert.equal(isTransientDoReset(new Error("Durable Object's isolate exceeded its memory limit and was reset")), false);
@@ -116,5 +122,39 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
   console.log(`  case4: recovered from overload across ${calls.size} shards`);
 }
+
+// ── Case 5: a rejection the platform declines to describe still names the
+// shard that produced it. `internal error` is the whole message workerd hands
+// back for a Durable Object call it will not explain, and re-throwing it bare
+// is what put `resolver-fanout failed at layer 2: internal error` in front of
+// users — a sentence carrying no layer, no sibling, no attempt count.
+{
+  const env = makeEnv(() => ({
+    async _rpcFanoutExecute() { throw new Error('internal error'); },
+  }));
+  const pool = new NimbusFanoutPool(env, ctx, { tag: 'opaque-test', omitSupervisor: true });
+  const err = await pool.submitMany(TASKS, (x) => x).then(
+    () => { throw new Error('expected submitMany to reject'); },
+    (e) => e,
+  );
+  assert.match(err.message, /peer shard nbf:opaque-test:coord-do-id-:\d+/, 'names the sibling DO');
+  assert.match(err.message, /\(\d+ tasks?\) failed after 1 attempt:/, 'names the shard width and the attempt count');
+  assert.match(err.message, /internal error/, 'keeps what the platform did say');
+  assert.equal(err.cause?.message, 'internal error', 'the original error survives as cause');
+  console.log(`  case5: ${err.message}`);
+}
+
+// ── describeError: the message is the least of what an error carries. ──
+assert.equal(
+  describeError(new Error('Internal error in Durable Object storage caused object to be reset; reference = x')),
+  'Internal error in Durable Object storage caused object to be reset; reference = x [transient-do-reset]',
+);
+assert.equal(describeError(new Error('Durable Object is overloaded.')), 'Durable Object is overloaded. [do-overloaded]');
+assert.equal(describeError(new TypeError('fs[method] is not a function')), 'TypeError: fs[method] is not a function');
+assert.equal(describeError(new Error('internal error')), 'internal error');
+assert.equal(
+  describeError(Object.assign(new Error('wrapped'), { name: 'ExecutionError', remoteMessage: 'boom in the facet' })),
+  'ExecutionError: boom in the facet (remote)',
+);
 
 console.log('fanout-peer-reset-retry: ok');

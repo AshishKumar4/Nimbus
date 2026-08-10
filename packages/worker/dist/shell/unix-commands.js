@@ -3411,13 +3411,6 @@ function mkSeq() {
         return 0;
     };
 }
-function mkSleep() {
-    return async (ctx) => {
-        const secs = parseFloat(ctx.args[0] || '1');
-        await new Promise(r => setTimeout(r, secs * 1000));
-        return 0;
-    };
-}
 function mkId(sqliteVfs) {
     return (ctx) => {
         const vfs = sqliteVfs.as(ctx.cred);
@@ -4108,7 +4101,6 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('stat', wrap(withInvocationVfs(sqliteVfs, (v) => mkStat(v, sqliteVfs))));
     registry.register('base64', wrap(withInvocationVfs(sqliteVfs, mkBase64)));
     registry.register('seq', wrap(mkSeq()));
-    registry.register('sleep', wrap(mkSleep()));
     registry.register('id', wrap(mkId(sqliteVfs)));
     registry.register('hostname', wrap(mkHostname()));
     registry.register('basename', wrap(mkBasename()));
