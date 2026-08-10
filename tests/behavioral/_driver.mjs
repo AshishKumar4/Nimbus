@@ -40,6 +40,49 @@ export function wsHeaders() {
   return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
+/** A close frame in one clause: `code 1006 (abnormal): <reason>`. */
+function describeSocketClose(code, reason) {
+  const text = reason ? String(reason).slice(0, 200) : '';
+  const known = code === 1000 ? 'normal'
+    : code === 1001 ? 'going away'
+    : code === 1006 ? 'abnormal — no close frame'
+    : code === 1011 ? 'server error'
+    : code === 1012 ? 'service restart'
+    : null;
+  return `close code ${code}${known ? ` (${known})` : ''}${text ? `: ${text}` : ''}`;
+}
+
+/**
+ * Wait for a WebSocket to open, and if it does not, say why the server did
+ * not open it.
+ *
+ * Every failure on these routes used to present as one string — `connect
+ * timeout` — because the `error` event was discarded and the wait loop never
+ * looked at `close`. An auth rejection, the router's catch-all 500 (a
+ * Durable Object that is overloaded or was reset rejects `stub.fetch`, and
+ * that is what the caller gets), and a genuinely silent server were
+ * indistinguishable, so the one measurement the probe could take about its
+ * own failure was the one it threw away. A refused upgrade already names
+ * itself in the `error` event — "Unexpected server response: 500" under node's
+ * `ws`, "Expected 101 status code" under bun's — so keeping that event is the
+ * whole fix. (`unexpected-response`, which carries the status object itself,
+ * is not implemented in bun and would only warn on every socket.)
+ */
+async function awaitSocketOpen(ws, timeoutMs, what) {
+  let open = false;
+  let closed = null;
+  let rejected = null;
+  ws.on('open', () => { open = true; });
+  ws.on('close', (code, reason) => { closed ??= describeSocketClose(code, reason); });
+  ws.on('error', (e) => { rejected ??= `socket error: ${e?.message ?? String(e)}`; });
+
+  const t0 = Date.now();
+  while (!open && !closed && !rejected && Date.now() - t0 < timeoutMs) await sleep(50);
+  if (open) return;
+  const why = rejected ?? closed ?? `no response in ${timeoutMs}ms`;
+  throw new Error(`${what} did not open: ${why}`);
+}
+
 const sessionAttachPaths = new Map();
 
 /**
@@ -134,15 +177,19 @@ export class Terminal {
     this.buf = '';
     this.connected = false;
     this.closed = false;
+    this.closeDetail = null;
   }
 
   async connect(timeoutMs = 15_000) {
     this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, wsHeaders());
     this.connected = false;
     this.closed = false;
+    this.closeDetail = null;
     this.ws.on('open', () => { this.connected = true; });
-    this.ws.on('close', () => { this.closed = true; });
-    this.ws.on('error', () => { /* swallow; close fires after */ });
+    this.ws.on('close', (code, reason) => {
+      this.closed = true;
+      this.closeDetail = describeSocketClose(code, reason);
+    });
     this.ws.on('message', (data) => {
       try {
         const m = JSON.parse(data.toString('utf8'));
@@ -151,9 +198,7 @@ export class Terminal {
         }
       } catch { /* non-json control frames ignored */ }
     });
-    const t0 = Date.now();
-    while (!this.connected && Date.now() - t0 < timeoutMs) await sleep(50);
-    if (!this.connected) throw new Error('Terminal connect timeout');
+    await awaitSocketOpen(this.ws, timeoutMs, `terminal WebSocket /s/${this.sid}/ws`);
   }
 
   send(line) {
@@ -173,7 +218,18 @@ export class Terminal {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
       if (predicate(stripAnsi(this.buf))) return Date.now() - t0;
-      if (this.closed) throw new Error(`Terminal closed while waiting for ${label}`);
+      if (this.closed) {
+        // The tail matters most here, not least: the server dropping the
+        // terminal mid-command is the failure that carries a reason, and
+        // reporting it without the output the shell had already produced is
+        // what left `Terminal closed while waiting for …` unreadable for
+        // months. Same shape as the timeout branch below.
+        throw new Error(
+          `Terminal closed while waiting for ${label} after ${Date.now() - t0}ms `
+          + `(${this.closeDetail ?? 'no close frame'}); `
+          + `tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}`,
+        );
+      }
       await sleep(50);
     }
     throw new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}`);
@@ -231,15 +287,16 @@ export class Terminal {
 export async function connectProcessTerminal(sid, pid, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
   const ws = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${pid}`, wsHeaders());
-  let open = false;
   let closed = false;
+  let closeDetail = null;
   let exit = null;
   let stdinAck = null;
   let text = '';
 
-  ws.on('open', () => { open = true; });
-  ws.on('close', () => { closed = true; });
-  ws.on('error', () => {});
+  ws.on('close', (code, reason) => {
+    closed = true;
+    closeDetail = describeSocketClose(code, reason);
+  });
   ws.on('message', (data) => {
     let msg;
     try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
@@ -254,9 +311,7 @@ export async function connectProcessTerminal(sid, pid, options = {}) {
     }
   });
 
-  const started = Date.now();
-  while (!open && Date.now() - started < timeoutMs) await sleep(50);
-  if (!open) throw new Error('process terminal WebSocket connect timeout');
+  await awaitSocketOpen(ws, timeoutMs, `process terminal /s/${sid}/api/logs/${pid}`);
 
   return {
     ws,
@@ -265,7 +320,11 @@ export async function connectProcessTerminal(sid, pid, options = {}) {
       while (Date.now() - t0 < waitMs) {
         if (predicate(stripAnsi(text))) return Date.now() - t0;
         if (closed) {
-          throw new Error(`process terminal WebSocket closed while waiting for ${label}; tail=${JSON.stringify(stripAnsi(text).slice(-400))}`);
+          throw new Error(
+            `process terminal WebSocket closed while waiting for ${label} `
+            + `(${closeDetail ?? 'no close frame'}); `
+            + `tail=${JSON.stringify(stripAnsi(text).slice(-400))}`,
+          );
         }
         await sleep(50);
       }
