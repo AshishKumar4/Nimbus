@@ -132,6 +132,8 @@ export class Interpreter {
             io.commandIdentity = options.commandIdentity;
         if (options?.runAs)
             io.runAs = options.runAs;
+        if (options?.signal)
+            io.signal = options.signal;
         if (options?.commandIdentity)
             io.vfs = this.config.vfs.as(options.commandIdentity.cred);
         try {
