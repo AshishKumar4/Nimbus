@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { handleAnonLaunch, handleAnonSessionCreate } from '../../apps/hosted-demo/src/demo-anon.ts';
+import { renderOAuthFailure } from '../../apps/hosted-demo/src/demo-http.ts';
 import {
   ANON_USER_ID,
   createAnonDemoSession,
@@ -365,6 +366,44 @@ async function expireSession(env, sessionId) {
   assert.match(dialog, /id="launch-close"/, 'the close button survives');
   assert.match(dialog, /id="launch-status"[^>]*aria-live="polite"/, 'the live region survives');
   console.log('  [11] the landing modal offers the anonymous path as a secondary action');
+}
+
+// [12] A failed Cloudflare login is actionable, and never a dead end.
+//
+// The owner hits this behind Cloudflare WARP on a company laptop: the
+// callback dies and the page used to say only what the error string
+// said. It must name the network as a thing to check WITHOUT claiming
+// to have diagnosed it, and it must offer the anonymous path, which
+// does not touch OAuth at all.
+{
+  const res = renderOAuthFailure('Cloudflare authorization failed: access_denied',
+    ['__Host-nimbus_demo_state=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax']);
+  assert.equal(res.status, 400);
+  assert.match(res.headers.get('Content-Type'), /text\/html/);
+  const body = await res.text();
+
+  assert.match(body, /Cloudflare authorization failed: access_denied/,
+    'still says what actually failed');
+  assert.match(body, /VPN/, 'names a VPN as a possible cause');
+  assert.match(body, /proxy/i, 'names a corporate proxy as a possible cause');
+  assert.match(body, /WARP/, 'names the Zero Trust client by the name users know');
+  assert.match(body, /turn it off|different network|another browser profile/,
+    'gives something concrete to do');
+  assert.match(body, /href="\/try"/, 'offers the anonymous path as the immediate way forward');
+  assert.match(body, /href="\/login"/, 'still offers a retry');
+
+  // The guidance is conditional, never a diagnosis: nothing in the
+  // failure tells us WARP is the cause, and saying so would be a lie
+  // the visitor cannot check.
+  assert.doesNotMatch(body, /WARP is blocking|caused by (your )?WARP|because of WARP/i,
+    'does not assert a cause it cannot support');
+
+  // Cookies the caller accumulated (the OAuth state clear) must survive
+  // being rendered through the shared page chrome.
+  const cleared = res.headers.getSetCookie().filter((c) => c.startsWith('__Host-nimbus_demo_state='));
+  assert.equal(cleared.length, 1, 'the OAuth state cookie is still cleared');
+  assert.match(cleared[0], /Max-Age=0/);
+  console.log('  [12] a failed login names the likely network cause and offers /try');
 }
 
 console.log('hosted-demo-anon-session: all tests passed');

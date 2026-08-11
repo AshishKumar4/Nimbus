@@ -8,6 +8,7 @@ import {
   sha256Base64Url,
   unsealJson,
 } from '@nimbus-sh/sdk/worker';
+import { renderOAuthFailure } from './demo-http.js';
 import { readDemoAuthConfig, sanitizeReturnTo } from './demo-oauth-config.js';
 import { upsertDemoUser } from './demo-sessions.js';
 
@@ -92,18 +93,22 @@ export async function startDemoLogin(request: Request, env: any): Promise<Respon
 export async function completeDemoLogin(request: Request, env: any): Promise<Response> {
   const url = new URL(request.url);
   const config = readDemoAuthConfig(env, url.origin);
+  const clearState = clearCookie(DEMO_STATE_COOKIE);
   const headers = new Headers({ 'Cache-Control': 'no-store' });
-  appendCookie(headers, clearCookie(DEMO_STATE_COOKIE));
+  appendCookie(headers, clearState);
+  // Every exit below that is not a successful login renders the same page,
+  // and each must still retire the state cookie it consumed.
+  const failed = (message: string) => renderOAuthFailure(message, [clearState]);
 
   const error = url.searchParams.get('error');
-  if (error) return oauthFailure(`Cloudflare authorization failed: ${error}`, headers);
+  if (error) return failed(`Cloudflare authorization failed: ${error}`);
 
   const code = url.searchParams.get('code');
   const nonce = url.searchParams.get('state');
   const stored = await loadDemoState(request, config.cookieSecret);
-  if (!code || !nonce || !stored) return oauthFailure('OAuth callback is missing or expired.', headers);
+  if (!code || !nonce || !stored) return failed('OAuth callback is missing or expired.');
   if (stored.expiresAt < Date.now() || stored.nonce !== nonce) {
-    return oauthFailure('OAuth state did not match this login attempt.', headers);
+    return failed('OAuth state did not match this login attempt.');
   }
 
   try {
@@ -141,7 +146,7 @@ export async function completeDemoLogin(request: Request, env: any): Promise<Res
     headers.set('Location', sanitizeReturnTo(stored.returnTo) || '/new');
     return new Response(null, { status: 302, headers });
   } catch (e: any) {
-    return oauthFailure(e?.message || String(e), headers);
+    return failed(e?.message || String(e));
   }
 }
 
@@ -224,18 +229,6 @@ function displayName(userInfo: any): string | null {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : null;
 }
 
-function oauthFailure(message: string, headers: Headers): Response {
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><title>Nimbus Login</title><body style="font:14px system-ui;background:#080b0b;color:#d8e3dd;padding:32px"><h1>Login failed</h1><p>${escapeHtml(message)}</p><p><a style="color:#8be0bd" href="/login">Try again</a></p></body>`,
-    { status: 400, headers: withHtml(headers) },
-  );
-}
-
-function withHtml(headers: Headers): Headers {
-  headers.set('Content-Type', 'text/html; charset=utf-8');
-  return headers;
-}
-
 function serializeCookie(name: string, value: string, opts: { maxAge: number }): string {
   return [
     `${name}=${value}`,
@@ -265,10 +258,3 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
