@@ -1620,27 +1620,9 @@ function buildManifest(vfs, cwd, scriptPath) {
                     walk(pkgRoot, 0);
                 }
             }
-            // The hoisted root is ENUMERATED, not descended — the same one-level
-            // form the cwd chain above uses, and for the same reason. What a global
-            // bin needs from it is which packages are siblings, because that is the
-            // question node's resolver asks; the contents of each are reached by
-            // require, which the closure walk already carries.
-            //
-            // Descending it was a real cost, not a theoretical one: pi's prefix
-            // holds 123 packages and 19,429 files, so the recursive form listed
-            // every one of them and `buildVfsMetadata` then lstat'd every one, for
-            // 3.84 MB of metadata and 0.60 MB of manifest inside a 22.9 MB module
-            // map — a fifth of everything the session DO builds, serializes and
-            // hands to the loader, spent describing files the program never opens.
-            //
-            // Narrowing a listing is safe here in a way that narrowing the bundle
-            // would not be: `readdirSync` refuses a directory the walk did not
-            // enumerate rather than claiming it is empty, records the miss, and the
-            // next build for the same entry stages it (`addObservedReads`). The
-            // worst case is one refusal that heals itself, never a silent [].
             const nodeModulesRoot = segs.slice(0, nmIdx + 1).join('/');
             if (vfs.exists(nodeModulesRoot) && vfs.isDirectory(nodeModulesRoot)) {
-                walk(nodeModulesRoot, MANIFEST_MAX_DEPTH);
+                walk(nodeModulesRoot, 0);
             }
         }
     }
