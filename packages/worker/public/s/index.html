@@ -2448,7 +2448,11 @@
         lastInboundAt = Date.now();
         if (!downSince) return;
         downSince = 0;
-        notice('reconnected. A command that was running may have been interrupted.', '32');
+        // Say only what this side can see. Whether the session survived the
+        // gap is the server's to report, and it does on the socket it just
+        // accepted — guessing here produced a "may have been interrupted"
+        // that was neither a fact nor actionable.
+        notice('reconnected.', '32');
       }
 
       function onClose() {

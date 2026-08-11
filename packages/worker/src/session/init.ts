@@ -181,6 +181,23 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       } catch (e: any) {
         try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
       }
+      // The scrollback stops mid-command when the previous instance was
+      // reset under it — the platform kills the isolate without running a
+      // line of our code, so nothing could be said at the time and the
+      // socket died with close code 1006 and no frame. Say it now, on the
+      // first socket that exists to say it on: this is the only moment the
+      // session can tell a user why their terminal went dead.
+      //
+      // Deliberately claims nothing about the cause. A restarted instance
+      // cannot observe whether it was evicted, redeployed, or killed for
+      // memory — that verdict only ever reaches an operator's `wrangler
+      // tail`, and inventing one here would be worse than the silence.
+      // What IS certain is stated: the process table is this instance's,
+      // and it starts empty.
+      self.terminal.write(
+        '\x1b[33m[nimbus] this session resumed on a new instance. Anything still '
+          + 'running was lost with the old one — re-run it if it had not finished.\x1b[0m\r\n',
+      );
     }
 
     // [B'.4] Phase B — Build. Construct Kernel + Shell + registry +
