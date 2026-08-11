@@ -204,8 +204,13 @@ function connected() {
   // back to Conn — no second recovery mechanism.
   check('recovery is announced once the socket is back',
     /reconnected/i.test(s.text()), JSON.stringify(s.text()));
-  check('recovery is honest that in-flight work may have been interrupted',
-    /interrupted/i.test(s.text()), JSON.stringify(s.text()));
+  // What happened to in-flight work is not knowable from here: the socket
+  // came back, and whether it came back to the same instance is the server's
+  // to answer — which it does, on the socket it just accepted. The client
+  // guessing produced a "may have been interrupted" that was true of every
+  // reconnect and useful in none.
+  check('recovery does not guess at what happened to in-flight work',
+    !/interrupted/i.test(s.text()), JSON.stringify(s.text()));
   check('a recovered session is not treated as gone', s.Conn.isGone() === false);
 }
 
