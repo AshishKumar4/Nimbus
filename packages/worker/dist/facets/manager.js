@@ -376,8 +376,7 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
  */
 export function generateEntrypointCode(userCode, vfsState, usesSqlite, shims) {
     const safeCode = JSON.stringify(userCode);
-    const bundleSource = vfsState.bundleSource
-        ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+    const bundleSource = facetVfsBundleSourceFor(vfsState);
     const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
     const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
     return {
@@ -661,8 +660,7 @@ export function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite
         attachedTty: opts.attachedTty === true,
         cred: opts.cred,
     });
-    const bundleSource = vfsState.bundleSource
-        ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+    const bundleSource = facetVfsBundleSourceFor(vfsState);
     const safeManifest = JSON.stringify(vfsState.manifest);
     const safeMetadata = JSON.stringify(vfsState.metadata);
     return {
@@ -1079,6 +1077,40 @@ export function releaseSerializedSources(vfsState) {
         vfsState.metadata = {};
 }
 /**
+ * Drop the serialized forms once a module map has been generated from them.
+ *
+ * The generated source is a total encoding of all three: every byte of the
+ * bundle expression, the manifest and the metadata is inside it. Holding them
+ * afterwards keeps a second copy of the largest thing this DO builds alive for
+ * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
+ * the isolate was being reset.
+ *
+ * Only for a state the prefetch cache refused. A retained entry's serialized
+ * forms ARE the entry, and a later exec is served from them.
+ */
+function releaseGeneratedSources(vfsState) {
+    vfsState.bundleSource = undefined;
+    vfsState.serializedManifest = undefined;
+    vfsState.serializedMetadata = undefined;
+    vfsState.generatedSourcesReleased = true;
+}
+/**
+ * The module-map source for a state, memoized form first.
+ *
+ * A released state has neither form left, and rebuilding from its emptied raw
+ * cells would silently generate a module map with no modules in it — which
+ * surfaces inside the facet as "Cannot find module" for the whole require
+ * closure, a long way from the cause. Say so here instead.
+ */
+function facetVfsBundleSourceFor(vfsState) {
+    if (vfsState.generatedSourcesReleased) {
+        throw new Error('Nimbus: this facet VFS state was released after its module map was generated; '
+            + 'it cannot generate a second one');
+    }
+    return vfsState.bundleSource
+        ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+}
+/**
  * hardening-r5: read a file from the VFS and decide whether to keep it
  * as a string (valid UTF-8 text — the hot path for source code,
  * package.json, configs) or as Uint8Array bytes (binary — wasm
@@ -1308,8 +1340,46 @@ function _serializeBundleForFacet(bundle) {
 }
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
+/**
+ * UTF-8 byte length of a generated module source, counted rather than
+ * materialized.
+ *
+ * `new TextEncoder().encode(source).length` answers the same question by
+ * allocating a second full copy of the string and then reading one number off
+ * it. For pi's inline bundle expression that is an 18.26 MB Uint8Array, live
+ * on the session DO beside the 18.26 MB string it measures, whose only use is
+ * its own `.length` — and the encode also flattens the string it is given,
+ * so a rope the template builder had not yet paid for becomes flat too.
+ *
+ * Same discipline `_jsonEncodedBytes` already applies to the snapshot:
+ * sizing something never allocates a copy of it. Exactly equivalent to the
+ * encoder, including its replacement of an unpaired surrogate with U+FFFD.
+ */
 function _encodedSourceBytes(source) {
-    return new TextEncoder().encode(source).length;
+    let bytes = 0;
+    for (let i = 0; i < source.length; i++) {
+        const code = source.charCodeAt(i);
+        if (code < 0x80) {
+            bytes += 1;
+            continue;
+        }
+        if (code < 0x800) {
+            bytes += 2;
+            continue;
+        }
+        if (code >= 0xd800 && code <= 0xdbff) {
+            const next = i + 1 < source.length ? source.charCodeAt(i + 1) : 0;
+            // A well-formed pair is one 4-byte code point; a lone surrogate is
+            // encoded as U+FFFD, which is three bytes — same as the default below.
+            if (next >= 0xdc00 && next <= 0xdfff) {
+                bytes += 4;
+                i++;
+                continue;
+            }
+        }
+        bytes += 3;
+    }
+    return bytes;
 }
 function _facetBundleModuleSource(bundle) {
     return `export default ${_serializeBundleForFacet(bundle)};`;
@@ -1436,7 +1506,7 @@ export function buildFacetVfsBundleSource(bundle, forceSideModules = false) {
  * readFileSync can go back to the supervisor for what was left out.
  */
 export function assertStagedBundleFitsRpcPayload(serialized, bundle) {
-    const bytes = new TextEncoder().encode(serialized).length;
+    const bytes = _encodedSourceBytes(serialized);
     if (bytes <= MAX_RPC_SAFE_PAYLOAD_BYTES)
         return;
     const cells = Object.entries(bundle)
@@ -3139,7 +3209,7 @@ export class FacetManager {
             // Refresh LRU recency.
             this.prefetchBundleCache.delete(key);
             this.prefetchBundleCache.set(key, cached);
-            return { ...cached.vfsState, cacheHit: true };
+            return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
         }
         const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile, this.residencyProfiles.get(key));
         vfsState.bundleKey = key;
@@ -3163,7 +3233,7 @@ export class FacetManager {
         // Released BEFORE admission so the byte bound prices what the entry costs
         // from here on, not the peak it passed through on the way in.
         releaseSerializedSources(vfsState);
-        this._admitPrefetchCacheEntry(key, revision, vfsState);
+        vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
         return vfsState;
     }
     /**
@@ -3217,6 +3287,7 @@ export class FacetManager {
         this.prefetchCacheBytes -= cached.bytes;
         setPrefetchCacheBytes(this.prefetchCacheBytes);
     }
+    /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
     _admitPrefetchCacheEntry(key, revision, vfsState) {
         const previous = this.prefetchBundleCache.get(key);
         if (previous)
@@ -3235,7 +3306,7 @@ export class FacetManager {
         // the entry it just admitted.
         if (bytes > PREFETCH_CACHE_MAX_BYTES) {
             setPrefetchCacheBytes(this.prefetchCacheBytes);
-            return;
+            return false;
         }
         this.prefetchBundleCache.set(key, { revision, vfsState, bytes });
         this.prefetchCacheBytes += bytes;
@@ -3247,6 +3318,7 @@ export class FacetManager {
             this.prefetchCacheBytes -= entry.bytes;
         }
         setPrefetchCacheBytes(this.prefetchCacheBytes);
+        return this.prefetchBundleCache.has(key);
     }
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
@@ -3466,8 +3538,29 @@ export class FacetManager {
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
         ]);
-        const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
-        const workerCode = generatedWorker.code;
+        // The module map is the largest thing this DO builds — pi's is ~23 MB —
+        // and it is dead the moment LOADER.load has taken it. Everything that
+        // holds it is therefore scoped to the load: the generated source is not
+        // named by this frame, the serialized forms it was built from are released
+        // unless the prefetch cache is keeping them, and `modules` is dropped
+        // below. Otherwise the coordinator carries a second full copy of the
+        // program for the whole FACET_TIMEOUT_MS the facet then runs for, which is
+        // the window the isolate was being reset in.
+        let modules = (() => {
+            const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
+            if (diagSink) {
+                diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
+                for (const source of Object.values(generatedWorker.modules)) {
+                    diagSink.moduleMapBytes += _encodedSourceBytes(source);
+                }
+                for (const m of Object.values(sqliteModules)) {
+                    diagSink.moduleMapBytes += m.wasm.byteLength;
+                }
+            }
+            if (!vfsState.cacheRetained)
+                releaseGeneratedSources(vfsState);
+            return { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules };
+        })();
         // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
         const ctxExports = getCtxExports();
         const writerId = crypto.randomUUID();
@@ -3492,15 +3585,6 @@ export class FacetManager {
             vfsCursor: vfsState.cursor,
             ...(diagSink ? { diag: true } : {}),
         });
-        if (diagSink) {
-            diagSink.moduleMapBytes = new TextEncoder().encode(workerCode).length;
-            for (const source of Object.values(generatedWorker.modules)) {
-                diagSink.moduleMapBytes += new TextEncoder().encode(source).length;
-            }
-            for (const m of Object.values(sqliteModules)) {
-                diagSink.moduleMapBytes += m.wasm.byteLength;
-            }
-        }
         let worker;
         let entrypoint;
         try {
@@ -3520,9 +3604,10 @@ export class FacetManager {
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
                 mainModule: 'runner.js',
-                modules: { 'runner.js': workerCode, ...generatedWorker.modules, ...sqliteModules },
+                modules,
                 ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
             });
+            modules = undefined;
             entrypoint = worker.getEntrypoint();
             if (typeof entrypoint.fetch !== 'function') {
                 throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');

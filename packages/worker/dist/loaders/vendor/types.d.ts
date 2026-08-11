@@ -16,8 +16,17 @@ export interface DataModule {
 export interface JsonModule {
     json: unknown;
 }
+/**
+ * A compiled WebAssembly module, importable from a facet by module name.
+ * Nimbus ships these on every path — sql.js for node:sqlite, the interpreter
+ * images for python and ruby — so the omission here was the type lagging the
+ * API, not a kind the loader lacks.
+ */
+export interface WasmModule {
+    wasm: ArrayBuffer;
+}
 /** Plain string = type inferred from file extension (.js or .py). */
-export type ModuleContent = string | JsModule | CjsModule | PyModule | TextModule | DataModule | JsonModule;
+export type ModuleContent = string | JsModule | CjsModule | PyModule | TextModule | DataModule | JsonModule | WasmModule;
 export interface WorkerCode {
     compatibilityDate: string;
     compatibilityFlags?: string[];

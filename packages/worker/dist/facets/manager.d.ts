@@ -239,6 +239,18 @@ interface FacetVfsState {
      * the only thing anything downstream still wanted them for.
      */
     usesNodeSqlite?: boolean;
+    /**
+     * True once `releaseGeneratedSources` has dropped the serialized forms. The
+     * state can still answer for its cursor, key and flags; it can no longer
+     * generate a module map, and asking is an error rather than an empty map.
+     */
+    generatedSourcesReleased?: boolean;
+    /**
+     * Whether the prefetch cache is holding this state's serialized forms. A
+     * refused entry belongs to the invocation that built it and nothing else,
+     * which is what makes releasing it safe.
+     */
+    cacheRetained?: boolean;
 }
 /**
  * Drop the raw forms of everything that has been serialized, in place.
@@ -671,6 +683,7 @@ export declare class FacetManager {
      * nothing here needs to, because the facet failed loudly on the way out.
      */
     private _recordResidencyMisses;
+    /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
     private _admitPrefetchCacheEntry;
     /**
      * Build the Worker Loader module-map fragment that carries the sql.js
