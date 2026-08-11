@@ -516,8 +516,7 @@ export function generateEntrypointCode(
   shims: string,
 ): GeneratedNodeFacetCode {
   const safeCode = JSON.stringify(userCode);
-  const bundleSource = vfsState.bundleSource
-    ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+  const bundleSource = facetVfsBundleSourceFor(vfsState);
   const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
   const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
   return {
@@ -817,8 +816,7 @@ export function generateLongRunningNodeCode(
     attachedTty: opts.attachedTty === true,
     cred: opts.cred,
   });
-  const bundleSource = vfsState.bundleSource
-    ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+  const bundleSource = facetVfsBundleSourceFor(vfsState);
   const safeManifest = JSON.stringify(vfsState.manifest);
   const safeMetadata = JSON.stringify(vfsState.metadata);
   return {
@@ -1285,6 +1283,18 @@ interface FacetVfsState {
    * the only thing anything downstream still wanted them for.
    */
   usesNodeSqlite?: boolean;
+  /**
+   * True once `releaseGeneratedSources` has dropped the serialized forms. The
+   * state can still answer for its cursor, key and flags; it can no longer
+   * generate a module map, and asking is an error rather than an empty map.
+   */
+  generatedSourcesReleased?: boolean;
+  /**
+   * Whether the prefetch cache is holding this state's serialized forms. A
+   * refused entry belongs to the invocation that built it and nothing else,
+   * which is what makes releasing it safe.
+   */
+  cacheRetained?: boolean;
 }
 
 /**
@@ -1308,6 +1318,44 @@ export function releaseSerializedSources(vfsState: FacetVfsState): void {
   if (vfsState.bundleSource) vfsState.bundle = {};
   if (vfsState.serializedManifest !== undefined) vfsState.manifest = {};
   if (vfsState.serializedMetadata !== undefined) vfsState.metadata = {};
+}
+
+/**
+ * Drop the serialized forms once a module map has been generated from them.
+ *
+ * The generated source is a total encoding of all three: every byte of the
+ * bundle expression, the manifest and the metadata is inside it. Holding them
+ * afterwards keeps a second copy of the largest thing this DO builds alive for
+ * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
+ * the isolate was being reset.
+ *
+ * Only for a state the prefetch cache refused. A retained entry's serialized
+ * forms ARE the entry, and a later exec is served from them.
+ */
+function releaseGeneratedSources(vfsState: FacetVfsState): void {
+  vfsState.bundleSource = undefined;
+  vfsState.serializedManifest = undefined;
+  vfsState.serializedMetadata = undefined;
+  vfsState.generatedSourcesReleased = true;
+}
+
+/**
+ * The module-map source for a state, memoized form first.
+ *
+ * A released state has neither form left, and rebuilding from its emptied raw
+ * cells would silently generate a module map with no modules in it — which
+ * surfaces inside the facet as "Cannot find module" for the whole require
+ * closure, a long way from the cause. Say so here instead.
+ */
+function facetVfsBundleSourceFor(vfsState: FacetVfsState): FacetVfsBundleSource {
+  if (vfsState.generatedSourcesReleased) {
+    throw new Error(
+      'Nimbus: this facet VFS state was released after its module map was generated; '
+        + 'it cannot generate a second one',
+    );
+  }
+  return vfsState.bundleSource
+    ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
 }
 
 interface FacetVfsBundleSource {
@@ -3459,7 +3507,7 @@ export class FacetManager {
       // Refresh LRU recency.
       this.prefetchBundleCache.delete(key);
       this.prefetchBundleCache.set(key, cached);
-      return { ...cached.vfsState, cacheHit: true };
+      return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
     }
 
     const vfsState = await buildPrefetchBundle(
@@ -3491,7 +3539,7 @@ export class FacetManager {
     // Released BEFORE admission so the byte bound prices what the entry costs
     // from here on, not the peak it passed through on the way in.
     releaseSerializedSources(vfsState);
-    this._admitPrefetchCacheEntry(key, revision, vfsState);
+    vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
     return vfsState;
   }
 
@@ -3541,11 +3589,12 @@ export class FacetManager {
     setPrefetchCacheBytes(this.prefetchCacheBytes);
   }
 
+  /** True when the cache is holding this state — see FacetVfsState.cacheRetained. */
   private _admitPrefetchCacheEntry(
     key: string,
     revision: number,
     vfsState: FacetVfsState,
-  ): void {
+  ): boolean {
     const previous = this.prefetchBundleCache.get(key);
     if (previous) this.prefetchCacheBytes -= previous.bytes;
     const bytes = retainedVfsStateBytes(vfsState);
@@ -3562,7 +3611,7 @@ export class FacetManager {
     // the entry it just admitted.
     if (bytes > PREFETCH_CACHE_MAX_BYTES) {
       setPrefetchCacheBytes(this.prefetchCacheBytes);
-      return;
+      return false;
     }
     this.prefetchBundleCache.set(key, { revision, vfsState, bytes });
     this.prefetchCacheBytes += bytes;
@@ -3575,6 +3624,7 @@ export class FacetManager {
       this.prefetchCacheBytes -= entry.bytes;
     }
     setPrefetchCacheBytes(this.prefetchCacheBytes);
+    return this.prefetchBundleCache.has(key);
   }
 
   /**
@@ -3861,8 +3911,28 @@ export class FacetManager {
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeShimsCode(this.env),
     ]);
-    const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
-    const workerCode = generatedWorker.code;
+    // The module map is the largest thing this DO builds — pi's is ~23 MB —
+    // and it is dead the moment LOADER.load has taken it. Everything that
+    // holds it is therefore scoped to the load: the generated source is not
+    // named by this frame, the serialized forms it was built from are released
+    // unless the prefetch cache is keeping them, and `modules` is dropped
+    // below. Otherwise the coordinator carries a second full copy of the
+    // program for the whole FACET_TIMEOUT_MS the facet then runs for, which is
+    // the window the isolate was being reset in.
+    let modules: WorkerCode['modules'] | undefined = (() => {
+      const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
+      if (diagSink) {
+        diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
+        for (const source of Object.values(generatedWorker.modules)) {
+          diagSink.moduleMapBytes += _encodedSourceBytes(source);
+        }
+        for (const m of Object.values(sqliteModules)) {
+          diagSink.moduleMapBytes += m.wasm.byteLength;
+        }
+      }
+      if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
+      return { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules };
+    })();
 
     // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
     const ctxExports = getCtxExports();
@@ -3890,16 +3960,6 @@ export class FacetManager {
       ...(diagSink ? { diag: true } : {}),
     });
 
-    if (diagSink) {
-      diagSink.moduleMapBytes = new TextEncoder().encode(workerCode).length;
-      for (const source of Object.values(generatedWorker.modules)) {
-        diagSink.moduleMapBytes += new TextEncoder().encode(source).length;
-      }
-      for (const m of Object.values(sqliteModules)) {
-        diagSink.moduleMapBytes += m.wasm.byteLength;
-      }
-    }
-
     let worker: LoadedWorkerStub | undefined;
     let entrypoint: LoadedWorkerEntrypointStub | undefined;
     try {
@@ -3919,9 +3979,10 @@ export class FacetManager {
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
         mainModule: 'runner.js',
-        modules: { 'runner.js': workerCode, ...generatedWorker.modules, ...sqliteModules },
+        modules,
         ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
       });
+      modules = undefined;
 
       entrypoint = worker.getEntrypoint();
       if (typeof entrypoint.fetch !== 'function') {
