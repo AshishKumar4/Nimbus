@@ -1536,8 +1536,36 @@ function _serializeBundleForFacet(bundle: FacetVfsBundle): string {
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
 
+/**
+ * UTF-8 byte length of a generated module source, counted rather than
+ * materialized.
+ *
+ * `new TextEncoder().encode(source).length` answers the same question by
+ * allocating a second full copy of the string and then reading one number off
+ * it. For pi's inline bundle expression that is an 18.26 MB Uint8Array, live
+ * on the session DO beside the 18.26 MB string it measures, whose only use is
+ * its own `.length` — and the encode also flattens the string it is given,
+ * so a rope the template builder had not yet paid for becomes flat too.
+ *
+ * Same discipline `_jsonEncodedBytes` already applies to the snapshot:
+ * sizing something never allocates a copy of it. Exactly equivalent to the
+ * encoder, including its replacement of an unpaired surrogate with U+FFFD.
+ */
 function _encodedSourceBytes(source: string): number {
-  return new TextEncoder().encode(source).length;
+  let bytes = 0;
+  for (let i = 0; i < source.length; i++) {
+    const code = source.charCodeAt(i);
+    if (code < 0x80) { bytes += 1; continue; }
+    if (code < 0x800) { bytes += 2; continue; }
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < source.length ? source.charCodeAt(i + 1) : 0;
+      // A well-formed pair is one 4-byte code point; a lone surrogate is
+      // encoded as U+FFFD, which is three bytes — same as the default below.
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++; continue; }
+    }
+    bytes += 3;
+  }
+  return bytes;
 }
 
 function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
@@ -1686,7 +1714,7 @@ export function assertStagedBundleFitsRpcPayload(
   serialized: string,
   bundle: FacetVfsBundle,
 ): void {
-  const bytes = new TextEncoder().encode(serialized).length;
+  const bytes = _encodedSourceBytes(serialized);
   if (bytes <= MAX_RPC_SAFE_PAYLOAD_BYTES) return;
   const cells: BundleCellSize[] = Object.entries(bundle)
     .map(([path, cell]) => [
