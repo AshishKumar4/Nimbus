@@ -37,7 +37,7 @@ import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
-import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
+import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
@@ -3787,7 +3787,9 @@ export class FacetManager {
         )
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
-    const diagSink = diagOn ? { loadMs: 0, runMs: 0, moduleMapBytes: 0 } : undefined;
+    const diagSink: ExecDiagSink | undefined = diagOn
+      ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
+      : undefined;
 
     const abortController = new AbortController();
     try {
@@ -3813,6 +3815,9 @@ export class FacetManager {
           runMs: diagSink.runMs,
           drainPasses: result.diag?.drainPasses ?? 0,
           moduleMapBytes: diagSink.moduleMapBytes,
+          bundleBytes: diagSink.bundleBytes,
+          manifestBytes: diagSink.manifestBytes,
+          metadataBytes: diagSink.metadataBytes,
           rpcWrites: result.diag?.rpcWrites ?? 0,
           fsRpcReads: result.diag?.fsRpcReads ?? 0,
           cacheHit: vfsState.cacheHit ?? false,
@@ -3902,7 +3907,7 @@ export class FacetManager {
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     signal: AbortSignal,
-    diagSink?: { loadMs: number; runMs: number; moduleMapBytes: number },
+    diagSink?: ExecDiagSink,
   ): Promise<FacetExecResult> {
     // Answered by _buildPrefetchBundleCached while the raw cells were still in
     // hand; re-deriving it here is what forced them to be retained.
@@ -3929,6 +3934,14 @@ export class FacetManager {
         for (const m of Object.values(sqliteModules)) {
           diagSink.moduleMapBytes += m.wasm.byteLength;
         }
+        // Read before the release below, which is the last moment the three
+        // parts of that total are separable.
+        diagSink.bundleBytes = _encodedSourceBytes(vfsState.bundleSource?.expression ?? '');
+        for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
+          diagSink.bundleBytes += _encodedSourceBytes(source);
+        }
+        diagSink.manifestBytes = _encodedSourceBytes(vfsState.serializedManifest ?? '');
+        diagSink.metadataBytes = _encodedSourceBytes(vfsState.serializedMetadata ?? '');
       }
       if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
       return { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules };
