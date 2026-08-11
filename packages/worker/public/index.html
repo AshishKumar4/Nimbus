@@ -239,6 +239,11 @@
       align-items: center;
     }
     .launch-actions form { display: inline; }
+    .launch-dialog .launch-note {
+      margin: 14px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
     .launch-status {
       min-height: 18px;
       margin-top: 14px;
@@ -641,13 +646,15 @@
       <p class="cta-sub">Fresh 10&nbsp;GB sandbox<span class="sep" aria-hidden="true">·</span>URL is shareable<span class="sep" aria-hidden="true">·</span>Boots in ~1s</p>
 
       <div class="launch-modal" id="launch-modal" hidden>
-        <div class="launch-dialog" role="dialog" aria-modal="true" aria-labelledby="launch-title" aria-describedby="launch-copy">
+        <div class="launch-dialog" role="dialog" aria-modal="true" aria-labelledby="launch-title" aria-describedby="launch-copy launch-note">
           <button class="launch-close" type="button" id="launch-close" aria-label="Close">X</button>
           <h2 id="launch-title">Launch Nimbus</h2>
-          <p id="launch-copy">Sign in with Cloudflare to create a hosted demo sandbox.</p>
+          <p id="launch-copy">Sign in with Cloudflare to create a hosted demo sandbox, or start a free one now without an account.</p>
           <div class="launch-actions">
             <a class="btn btn-primary" id="launch-login" href="/login?return_to=%2Fnew%3Flaunch%3D1">Login / Register with Cloudflare</a>
+            <a class="btn btn-ghost" id="launch-try" href="/try">Try it now</a>
           </div>
+          <p class="launch-note" id="launch-note">A free sandbox is ephemeral: it runs for a few minutes and is not saved. Sign in with Cloudflare to keep sandboxes for days and to run the AI agent on your own account.</p>
           <div class="launch-status" id="launch-status" aria-live="polite"></div>
         </div>
       </div>

@@ -320,4 +320,51 @@ async function expireSession(env, sessionId) {
   console.log('  [10] non-GET /try is rejected with 405');
 }
 
+// [11] The landing page OFFERS the anonymous path.
+//
+// This is the assertion whose absence let `/try` ship and stay
+// unreachable: the backend worked the whole time, and the only probe
+// that reads the landing page had no opinion about an anonymous action
+// existing. It lives in the unit suite deliberately — the behavioral
+// probe that follows the whole chain
+// (`tests/behavioral/auth/new/hosted-demo-anon-launch.mjs`) needs a
+// hosted-demo target and is skipped at `apps/probe`, and a capability
+// guarded only by a skippable check is how this hid the first time.
+{
+  const landing = readFileSync(
+    new URL('../../packages/worker/public/index.html', import.meta.url),
+    'utf8',
+  );
+  const dialog = landing.match(/<div class="launch-dialog"[\s\S]*?<\/div>\s*<\/div>/)?.[0];
+  assert.ok(dialog, 'landing page has a launch dialog');
+
+  const actions = dialog.match(/<div class="launch-actions">([\s\S]*?)<\/div>/)?.[1] ?? '';
+  const anchors = [...actions.matchAll(/<a\b([^>]*)>/g)].map((m) => m[1]);
+  const login = anchors.find((attrs) => attrs.includes('id="launch-login"'));
+  const anon = anchors.find((attrs) => /href="\/try"/.test(attrs));
+
+  assert.ok(login, 'the modal still offers Cloudflare sign-in');
+  assert.match(login, /btn-primary/, 'sign-in is still the primary action');
+  assert.ok(anon, 'the modal offers the anonymous /try path');
+  assert.doesNotMatch(anon, /btn-primary/, 'the anonymous path reads as secondary');
+  assert.match(anon, /btn-ghost/, 'the anonymous path uses the existing secondary button style');
+
+  // Honest about what a free sandbox is, in the wording demo-sessions.ts
+  // already uses for exactly this.
+  assert.match(dialog, /A free sandbox is ephemeral/,
+    'the modal says a free sandbox is ephemeral');
+  assert.match(dialog, /is not saved/, 'the modal says it is not saved');
+  assert.match(dialog, /Sign in with Cloudflare to keep sandboxes for days/,
+    'the modal says what signing in buys');
+
+  // The affordance must not have cost the dialog its accessibility.
+  assert.match(dialog, /role="dialog"/);
+  assert.match(dialog, /aria-modal="true"/);
+  assert.match(dialog, /aria-labelledby="launch-title"/);
+  assert.match(dialog, /aria-describedby="[^"]*launch-copy/);
+  assert.match(dialog, /id="launch-close"/, 'the close button survives');
+  assert.match(dialog, /id="launch-status"[^>]*aria-live="polite"/, 'the live region survives');
+  console.log('  [11] the landing modal offers the anonymous path as a secondary action');
+}
+
 console.log('hosted-demo-anon-session: all tests passed');
