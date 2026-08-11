@@ -3439,7 +3439,9 @@ export class FacetManager {
             ? await this._withBundleBuildDeadline(this._buildPrefetchBundleCached(processVfs, opts.filename, opts.cwd || '/home/user', code, credKey, opts.bundleProfile), command)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
-        const diagSink = diagOn ? { loadMs: 0, runMs: 0, moduleMapBytes: 0 } : undefined;
+        const diagSink = diagOn
+            ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
+            : undefined;
         const abortController = new AbortController();
         try {
             const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink), entry, () => abortController.abort());
@@ -3457,6 +3459,9 @@ export class FacetManager {
                     runMs: diagSink.runMs,
                     drainPasses: result.diag?.drainPasses ?? 0,
                     moduleMapBytes: diagSink.moduleMapBytes,
+                    bundleBytes: diagSink.bundleBytes,
+                    manifestBytes: diagSink.manifestBytes,
+                    metadataBytes: diagSink.metadataBytes,
                     rpcWrites: result.diag?.rpcWrites ?? 0,
                     fsRpcReads: result.diag?.fsRpcReads ?? 0,
                     cacheHit: vfsState.cacheHit ?? false,
@@ -3556,6 +3561,14 @@ export class FacetManager {
                 for (const m of Object.values(sqliteModules)) {
                     diagSink.moduleMapBytes += m.wasm.byteLength;
                 }
+                // Read before the release below, which is the last moment the three
+                // parts of that total are separable.
+                diagSink.bundleBytes = _encodedSourceBytes(vfsState.bundleSource?.expression ?? '');
+                for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
+                    diagSink.bundleBytes += _encodedSourceBytes(source);
+                }
+                diagSink.manifestBytes = _encodedSourceBytes(vfsState.serializedManifest ?? '');
+                diagSink.metadataBytes = _encodedSourceBytes(vfsState.serializedMetadata ?? '');
             }
             if (!vfsState.cacheRetained)
                 releaseGeneratedSources(vfsState);

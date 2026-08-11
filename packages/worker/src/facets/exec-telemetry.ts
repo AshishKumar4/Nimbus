@@ -37,6 +37,19 @@ export interface ExecTelemetryRecord {
   drainPasses: number;
   /** Generated module-map size in UTF-8 bytes (runner.js + sidecars). */
   moduleMapBytes: number;
+  /**
+   * What that total is made of, in the same UTF-8 bytes.
+   *
+   * The total alone says the map is large and nothing about which pass to
+   * cut, so an optimization aimed at it is aimed at a guess. It cost this
+   * project a wave: `pi --version` was diagnosed as a snapshot REBUILD on the
+   * strength of `bundleMs`, which workerd's frozen clock reports as 0 on a
+   * warm read, while the 12 s sat in `runMs` — the fresh isolate parsing this
+   * map and pre-compiling every cell in it.
+   */
+  bundleBytes: number;
+  manifestBytes: number;
+  metadataBytes: number;
   /** Supervisor RPC writes the facet issued (__queueRpcWrite calls). */
   rpcWrites: number;
   /** Supervisor fs READ round trips the facet issued. A whole-file async
@@ -50,6 +63,15 @@ export interface ExecTelemetryRecord {
   /** Wall-clock at record time (supervisor side). */
   at: number;
 }
+
+/**
+ * The fields `_execViaLoader` fills in on its way through, for the caller to
+ * fold into a record. Derived from the record so the two cannot drift.
+ */
+export type ExecDiagSink = Pick<
+  ExecTelemetryRecord,
+  'loadMs' | 'runMs' | 'moduleMapBytes' | 'bundleBytes' | 'manifestBytes' | 'metadataBytes'
+>;
 
 const EXEC_RING_MAX = 32;
 const _ring: ExecTelemetryRecord[] = [];
