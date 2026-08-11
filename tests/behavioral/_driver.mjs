@@ -171,8 +171,15 @@ export async function fetchPort(sid, port, path = '', init = {}) {
  * shell commands and read output. No diag, no internal state peeking.
  */
 export class Terminal {
-  constructor(sid) {
+  /**
+   * `options.wsOptions` overrides how the socket authenticates. The suite's
+   * bearer token is the default; an anonymous demo session has no bearer
+   * token and carries the `__Host-nimbus_token` cookie the attach exchange
+   * set in the browser instead.
+   */
+  constructor(sid, options = {}) {
     this.sid = sid;
+    this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
     this.buf = '';
     this.connected = false;
@@ -181,7 +188,7 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, wsHeaders());
+    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, this.wsOptions);
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
