@@ -51,4 +51,40 @@ assert.deepEqual(evaluateBundleSource(inline), {
   'usr/local/lib/node_modules/shebang-command/index.js': 'module.exports = true;',
 });
 
+// The inline-vs-side-module decision is made from a COUNTED encoded size, not
+// from `TextEncoder().encode(expression)` — encoding a bundle to learn its own
+// length put a second full copy of pi's 18.26 MB expression on the session DO.
+// A counter is only allowed to replace the encoder if it agrees with it
+// exactly, so pin both directions against the encoder at the ceiling, with
+// multi-byte content a char-count would get wrong by 2/3.
+const CELL = 'src/multibyte.js';
+const overheadBytes = new TextEncoder()
+  .encode(buildFacetVfsBundleSource({ [CELL]: '' }).expression).length;
+
+for (const [label, char, bytesPerChar] of [
+  ['three-byte', '€', 3],   // €   — BMP, 3 UTF-8 bytes, 1 UTF-16 unit
+  ['four-byte', '\u{1d11e}', 4], // 𝄞  — astral, 4 UTF-8 bytes, 2 UTF-16 units
+]) {
+  // Eight bytes under the ceiling: an inline verdict here is only correct if
+  // the counter is right to within those eight bytes.
+  const justUnder = char.repeat(
+    Math.floor((BUNDLE_MAX_ENCODED_BYTES - 8 - overheadBytes) / bytesPerChar),
+  );
+  const fits = buildFacetVfsBundleSource({ [CELL]: justUnder });
+  assert.deepEqual(
+    fits.modules, {},
+    `a ${label} bundle that truly fits the ceiling is not split (the counter does not over-count)`,
+  );
+  assert.ok(
+    new TextEncoder().encode(fits.expression).length <= BUNDLE_MAX_ENCODED_BYTES,
+    `an inline ${label} bundle really is within the ceiling (the counter does not under-count)`,
+  );
+
+  const justOver = char.repeat(justUnder.length / char.length + 1_000);
+  assert.ok(
+    Object.keys(buildFacetVfsBundleSource({ [CELL]: justOver }).modules).length >= 1,
+    `a ${label} bundle past the ceiling is split across side modules`,
+  );
+}
+
 console.log('facet VFS bundle source: ok');
