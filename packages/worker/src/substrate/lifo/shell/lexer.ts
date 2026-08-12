@@ -375,6 +375,10 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
             dqText += '\\';
             i++;
           }
+        } else if (input[i] === '$' && input[i + 1] === '{') {
+          const braced = readBracedExpansion(input, i);
+          dqText += braced.text;
+          i = braced.end;
         } else if (input[i] === '$' && input[i + 1] === '(') {
           const subst = readCommandSubstitution(input, i);
           if (subst.kind === 'command') {
@@ -453,19 +457,9 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
 
     // ${...} braced variable expansion -- read until matching }
     if (ch === '$' && input[i + 1] === '{') {
-      currentText += '${';
-      let j = i + 2;
-      let depth = 1;
-      while (j < input.length && depth > 0) {
-        if (input[j] === '{') depth++;
-        else if (input[j] === '}') depth--;
-        if (depth > 0) {
-          currentText += input[j];
-        }
-        j++;
-      }
-      currentText += '}';
-      i = j;
+      const braced = readBracedExpansion(input, i);
+      currentText += braced.text;
+      i = braced.end;
       hasContent = true;
       continue;
     }
@@ -602,6 +596,18 @@ function readBacktickSubstitution(input: string, pos: number): SubstitutionRead 
   return { kind: 'text', text: input.slice(pos), end: input.length };
 }
 
+/**
+ * The full `${...}` span starting at `pos`. Quotes, nested braces and command
+ * substitutions inside it belong to the expansion, not to the surrounding
+ * word — `"${v:-"a b"}"` and `"${v:-$(cmd)}"` are one parameter expansion each.
+ */
+export function readBracedExpansion(
+  input: string, pos: number,
+): { text: string; inner: string; end: number } {
+  const balanced = readBalancedCommand(input, pos + 2, '{', '}');
+  return { text: input.slice(pos, balanced.end), inner: balanced.body, end: balanced.end };
+}
+
 function readBalancedCommand(
   input: string,
   pos: number,
@@ -629,6 +635,12 @@ function readBalancedCommand(
       const quoted = readQuoted(input, i, '"');
       body += quoted.text;
       i = quoted.end;
+      continue;
+    }
+    if (ch === '$' && input[i + 1] === '(') {
+      const nested = readBalancedCommand(input, i + 2, '(', ')');
+      body += input.slice(i, nested.end);
+      i = nested.end;
       continue;
     }
     if (ch === open) {
