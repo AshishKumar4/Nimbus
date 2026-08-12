@@ -9,8 +9,16 @@
  * only (worker devDependencies); nothing here enters the worker bundle.
  *
  * Output (committed, like the sibling _assets bundles):
- *   public/_assets/agent-chat/agent-chat.js  (+ .js.map)
- *   public/_assets/agent-chat/agent-chat.css (+ .css.map)
+ *   public/_assets/agent-chat/agent-chat.js
+ *   public/_assets/agent-chat/agent-chat.css
+ *
+ * No sourcemaps. Every embedder points `assets.directory` at this package's
+ * `public/` wholesale, so anything staged here is uploaded to every consumer's
+ * Worker — and the two maps this used to emit were 901 KB of it, with nothing
+ * reading them outside a browser devtools session. Emitting them and then
+ * excluding them from the tarball would be worse than either end of the
+ * choice: `sourcemap: 'linked'` writes a `sourceMappingURL` comment, so the
+ * shipped bundle would point at a file that is deliberately not shipped.
  */
 
 import { build } from 'esbuild';
@@ -29,7 +37,7 @@ const result = await build({
   platform: 'browser',
   target: 'es2022',
   minify: true,
-  sourcemap: 'linked',
+  sourcemap: false,
   jsx: 'automatic',
   jsxImportSource: 'preact',
   legalComments: 'none',
