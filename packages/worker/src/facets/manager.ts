@@ -191,6 +191,12 @@ interface FacetManagerEnv {
    * no-op then and the shim surfaces a clear unattached-module error.
    */
   ASSETS?: { fetch(req: Request): Promise<Response> };
+  /**
+   * Verification knob: force a small resident-launch chunk bound so an
+   * ordinary program crosses several turns. Unset in production, where the
+   * default in `launch-pacer.ts` applies.
+   */
+  NIMBUS_LAUNCH_CHUNK_BYTES?: string;
 }
 
 interface ProcessRpcResources {
@@ -223,7 +229,14 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
     typeof Reflect.get(assetsCandidate, 'fetch') === 'function'
       ? (assetsCandidate as { fetch(req: Request): Promise<Response> })
       : undefined;
-  return { LOADER: loader, ASSETS: assets };
+  const chunkBytes = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+    ? Reflect.get(env, 'NIMBUS_LAUNCH_CHUNK_BYTES')
+    : undefined;
+  return {
+    LOADER: loader,
+    ASSETS: assets,
+    NIMBUS_LAUNCH_CHUNK_BYTES: typeof chunkBytes === 'string' ? chunkBytes : undefined,
+  };
 }
 
 /**
@@ -1430,6 +1443,13 @@ function _readBundleCell(
  */
 function _bundleCellLength(cell: string | Uint8Array): number {
   return typeof cell === 'string' ? cell.length : cell.byteLength;
+}
+
+/** What a bundle currently weighs, and so what one more pass over it costs. */
+function _bundleWeight(bundle: Record<string, string | Uint8Array>): number {
+  let weight = 0;
+  for (const cell of Object.values(bundle)) weight += _bundleCellLength(cell);
+  return weight;
 }
 
 type BundleCellSize = [path: string, bytes: number];
@@ -3162,13 +3182,16 @@ async function _buildPrefetchBundle(
   const requiredPaths = new Set(Object.keys(prefetch.bundle));
   let truncated = false;
   const budgetState = { totalBytes: 0, fileCount: 0 };
-  // Each enrichment pass below re-reads the bundle accumulated so far, so a
-  // pass costs about what the bundle currently weighs however little it adds.
-  // Reporting that is what makes a large program's build cross turns — pi's
-  // passes each scan tens of MB — while a small one never reaches a chunk
-  // bound and runs exactly as it always did, with no suspension at all.
+  // Each enrichment pass below re-scans the bundle accumulated so far, so a
+  // pass costs about what the bundle currently weighs however little it adds
+  // — which is why the cost reported here is the bundle's weight and not
+  // `budgetState.totalBytes`, the enrichment's own running total. A pass that
+  // admits nothing still reads everything. Reporting the weight is what makes
+  // a large program's build cross turns — pi's passes each scan tens of MB —
+  // while a small one never reaches a chunk bound and runs exactly as it
+  // always did, with no suspension at all.
   const paceAfterPass = pacer
-    ? () => pacer.spend(budgetState.totalBytes)
+    ? () => pacer.spend(_bundleWeight(bundle))
     : () => Promise.resolve();
 
   // 1.5 Observed reads. Every pass below this line guesses what a program
@@ -5055,6 +5078,11 @@ export class FacetManager {
       // The image store has taken it; this frame must not be what holds the
       // only other copy while the facet boots.
       generatedWorker = undefined;
+      // Last gate before the facet exists. A launch now spans many turns, so
+      // a kill can land anywhere inside it; booting a process the table has
+      // already exited would leave a facet nothing owns, running against a
+      // pid the session has finished reporting on.
+      this._assertLaunchStillOwned(entry.pid);
       handle = await this._startResidentProcess(entry.pid, {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
