@@ -51,12 +51,20 @@ export interface PipelineNode {
     commands: CompoundCommandNode[];
     negated: boolean;
 }
+export interface AssignmentNode {
+    name: string;
+    /** The scalar right-hand side. Empty when `elements` carries the value. */
+    value: WordPart[];
+    /** `name=(word …)` — each element is one word, expanded like an argument. */
+    elements?: WordPart[][];
+    /** `name[expr]=` — raw subscript text, expanded and evaluated at run time. */
+    subscript?: string;
+    /** `name+=` — append to the scalar, or to the end of the array. */
+    append?: boolean;
+}
 export interface SimpleCommandNode {
     type: 'simple_command';
-    assignments: Array<{
-        name: string;
-        value: WordPart[];
-    }>;
+    assignments: AssignmentNode[];
     words: WordPart[][];
     redirections: RedirectionNode[];
 }

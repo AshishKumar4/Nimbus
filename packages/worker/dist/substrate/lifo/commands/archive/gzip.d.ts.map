@@ -1,1 +1,1 @@
-{"version":3,"file":"gzip.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/archive/gzip.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAK3C,QAAA,MAAM,OAAO,EAAE,OA6Dd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"gzip.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/archive/gzip.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAc3C,QAAA,MAAM,OAAO,EAAE,OA2Dd,CAAC;AAEF,eAAe,OAAO,CAAC"}

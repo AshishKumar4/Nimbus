@@ -18,6 +18,11 @@ export type ShellInvocation = {
     kind: 'stdin';
     args: string[];
     options: ShellInvocationOptions;
+}
+/** `--help` / `--version` given as an option to the shell, not to a script. */
+ | {
+    kind: 'usage';
+    topic: 'help' | 'version';
 };
 export type ShellInvocationParseResult = {
     ok: true;

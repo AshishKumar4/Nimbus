@@ -90,6 +90,9 @@ function parseShellCommandArgs(command, args) {
     if (parsed.invocation.kind === 'script') {
         return { kind: 'script', path: parsed.invocation.path, args: parsed.invocation.args };
     }
+    // `bash --help` prints and exits; there is no process to spawn for it.
+    if (parsed.invocation.kind === 'usage')
+        return null;
     return { kind: 'stdin', args: parsed.invocation.args };
 }
 function quoteShellToken(value) {
