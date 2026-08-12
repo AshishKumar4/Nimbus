@@ -88,7 +88,7 @@ mountedVfs.mount('/home', new SqliteVFSProvider(rawVfs, 'home'));
 for (const flag of ['-e', '-f', '-d', '-s']) {
   let stderr = '';
   assert.equal(
-    evaluateTest([flag, '/home/user/hidden/file'], mountedVfs.as(USER), {
+    await evaluateTest([flag, '/home/user/hidden/file'], mountedVfs.as(USER), {
       write: (value) => { stderr += String(value); },
     }),
     1,
