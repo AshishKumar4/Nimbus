@@ -9,7 +9,9 @@ export type ShellInvocationOptions = {
 export type ShellInvocation =
   | { kind: 'command'; body: string; args: string[]; options: ShellInvocationOptions }
   | { kind: 'script'; path: string; args: string[]; options: ShellInvocationOptions }
-  | { kind: 'stdin'; args: string[]; options: ShellInvocationOptions };
+  | { kind: 'stdin'; args: string[]; options: ShellInvocationOptions }
+  /** `--help` / `--version` given as an option to the shell, not to a script. */
+  | { kind: 'usage'; topic: 'help' | 'version' };
 
 export type ShellInvocationParseResult =
   | { ok: true; invocation: ShellInvocation }
@@ -67,6 +69,10 @@ export function parseShellInvocation(shellName: ShellName, rawArgs: string[] | u
       applyShellFlag(arg[1], true, options);
       continue;
     }
+    // Only the shell's own options, so `bash script --help` passes --help to
+    // the script the way every installer expects.
+    if (arg === '--help') return { ok: true, invocation: { kind: 'usage', topic: 'help' } };
+    if (arg === '--version') return { ok: true, invocation: { kind: 'usage', topic: 'version' } };
     if (LONG_MODE_FLAGS.has(arg)) continue;
     if (arg.startsWith('--')) return error(shellName, `unsupported option: ${arg}`, 2);
     if (isOptionCluster(arg)) {
