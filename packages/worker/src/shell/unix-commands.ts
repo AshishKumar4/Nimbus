@@ -2660,6 +2660,8 @@ function mkLs(vfs: UnixVfs): CmdFn {
 
     type Entry = {
       name: string;
+      /** Resolved path — `stat %i` hashes this, so `-i` must use it too. */
+      path: string;
       type: 'file' | 'directory' | 'symlink';
       size: number;
       mtime: number;
@@ -2710,6 +2712,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
         const childPath = fp ? `${fp}/${r.name}` : r.name;
         out.push({
           name: r.name,
+          path: childPath,
           type,
           size: r.size ?? 0,
           mtime: r.mtime ?? Date.now(),
@@ -2734,6 +2737,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
           if (!flagAll && linkName.startsWith('.')) continue;
           out.push({
             name: linkName,
+            path: linkNorm,
             type: 'symlink',
             size: target.length,
             mtime: Date.now(),
@@ -2768,7 +2772,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
     }
 
     function fmtName(e: Entry): string {
-      const inode = flagInode ? `${statPathId(e.name)} ` : '';
+      const inode = flagInode ? `${statPathId('/' + e.path)} ` : '';
       return inode + e.name + classify(e);
     }
 
@@ -2782,7 +2786,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
       const user = flagNumeric ? String(e.uid) : unixUserLabel(vfs, e.uid);
       const group = flagNumeric ? String(e.gid) : unixGroupLabel(vfs, e.gid);
-      const inode = flagInode ? `${statPathId(e.name)} ` : '';
+      const inode = flagInode ? `${statPathId('/' + e.path)} ` : '';
       return `${inode}${mode}  1 ${user} ${group} ${size} ${time} ${e.name}${classify(e)}${arrow}`;
     }
 
@@ -2798,6 +2802,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
       if (target !== null) {
         fileEntries.push({
           name: arg,
+          path: fp,
           type: 'symlink',
           size: target.length,
           mtime: Date.now(),
@@ -2815,6 +2820,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
         } else {
           fileEntries.push({
             name: arg,
+            path: fp,
             type: s.type === 'directory' ? 'directory' : 'file',
             size: s.size ?? 0,
             mtime: s.mtime ?? Date.now(),

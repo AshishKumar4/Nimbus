@@ -129,6 +129,21 @@ assert.doesNotMatch(withoutHidden.stdout, /\.hidden/);
 const classified = await run('ls', ['-F', 'big.bin']);
 assert.match(classified.stdout, /big\.bin/);
 
+// -i must report the same inode `stat %i` does. Paths are the identity on
+// this filesystem, so hashing the bare name would give two files in
+// different directories the same inode.
+kernel.mkdir('home/user/one', { recursive: true });
+kernel.mkdir('home/user/two', { recursive: true });
+kernel.writeFile('home/user/one/same.txt', 'x\n');
+kernel.writeFile('home/user/two/same.txt', 'x\n');
+
+const inodeOne = (await run('ls', ['-i', 'one/same.txt'])).stdout.trim().split(/\s+/)[0];
+const inodeTwo = (await run('ls', ['-i', 'two/same.txt'])).stdout.trim().split(/\s+/)[0];
+assert.notEqual(inodeOne, inodeTwo, 'same name in two directories is not the same inode');
+
+const statInode = (await run('stat', ['-c', '%i', 'one/same.txt'])).stdout.trim();
+assert.equal(inodeOne, statInode, 'ls -i and stat %i must agree');
+
 // -r reverses the order.
 const forward = await run('ls', ['-1']);
 const reversed = await run('ls', ['-1r']);
