@@ -25,26 +25,26 @@
  */
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { replicasSuspended as _w12ReplicasSuspended } from '../replica/suspension.js';
-import { sanitizeUntrustedRequest } from '../_shared/untrusted-request.js';
+import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
-import { readDiagCounters } from '../observability/diag-counters.js';
-import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '../observability/oom-discriminator.js';
-import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '../constants.js';
+import { readDiagCounters } from '@nimbus-sh/core/observability/diag-counters.js';
+import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '../observability/heap-estimate.js';
+import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/core/observability/heap-estimate.js';
 import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
-import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
+import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { startRealVite } from './start-real-vite.js';
 import { getLoadedCodesStats } from './bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
@@ -1246,12 +1246,12 @@ export async function handleFetch(self, request) {
         return new Response(null, { status: 204 });
     }
     if (url.pathname === '/api/_diag/cache' && request.method === 'GET') {
-        const { snapshot } = await import('../_shared/cache-stats.js');
+        const { snapshot } = await import('@nimbus-sh/core/_shared/cache-stats.js');
         const snap = snapshot();
         return Response.json(snap);
     }
     if (url.pathname === '/api/_diag/cache/reset' && request.method === 'POST') {
-        const { reset } = await import('../_shared/cache-stats.js');
+        const { reset } = await import('@nimbus-sh/core/_shared/cache-stats.js');
         reset();
         return new Response(null, { status: 204 });
     }

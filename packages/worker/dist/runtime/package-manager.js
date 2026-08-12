@@ -26,7 +26,7 @@
  * Errors throw and bubble up to the user as a single diagnostic line.
  */
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest } from './runtime-catalog.js';
-import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI } from './os-contracts.js';
+import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** Map of runner-key → factory. Populated by init.ts before install. */
 const runnerFactories = {};
 export function registerRunnerFactory(key, factory) {

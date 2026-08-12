@@ -27,7 +27,7 @@
  *   6. Invoke via Nimbus's `node` registry command (preserves PID
  *      tracking, log buffer, process table membership)
  */
-import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
+import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
 export const NPX_CACHE_DIR = '/tmp/.npx-cache';

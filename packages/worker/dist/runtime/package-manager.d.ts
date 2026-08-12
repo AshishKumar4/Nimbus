@@ -26,9 +26,9 @@
  * Errors throw and bubble up to the user as a single diagnostic line.
  */
 import { type RuntimeCatalogEnv, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { type RuntimePackageAbi } from './os-contracts.js';
-import type { CommandContext } from '../substrate/lifo/commands/types.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { type RuntimePackageAbi } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
 export interface ShellCtx extends Pick<CommandContext, 'pid' | 'cred' | 'setUmask' | 'runAs'> {
     args: string[];

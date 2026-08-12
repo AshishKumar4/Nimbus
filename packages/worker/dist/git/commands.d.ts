@@ -8,7 +8,7 @@
  * Uses a VFS→isomorphic-git FS adapter that maps all operations
  * to the SqliteVFS.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export interface ParsedCloneArgs {
     url: string | undefined;
     dest: string | undefined;

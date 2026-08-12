@@ -1,7 +1,7 @@
 import { LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
 import { z } from 'zod/v4';
 import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
-import { useRpcResource } from '../_shared/rpc-dispose.js';
+import { useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 const RemoteRpcBodySchema = z.object({
     profile: z.string().optional(),

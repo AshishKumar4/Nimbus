@@ -52,7 +52,7 @@
  * sees a clear remediation: "add a static import for the
  * dynamically-referenced icon."
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 /**
  * Map of package name → set of named imports observed across the

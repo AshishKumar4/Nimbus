@@ -15,14 +15,15 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import type { ProcessEntry } from '../runtime/process-table.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { CredentialedVfs, SqliteVFS, VfsStat } from '../vfs/sqlite-vfs.js';
-import type { PortRegistry } from '../runtime/port-registry.js';
+import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { LaunchPacer } from './launch-pacer.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type ProcessHostFactory } from '../loaders/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
-import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
+import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -617,6 +618,12 @@ export declare class FacetManager {
      * workerd process a facet landed in.
      */
     private processFabric;
+    /**
+     * The same substrate the fabric runs residents on, held directly because a
+     * one-shot has no lifecycle for the fabric to own — it is started, read and
+     * gone inside one call.
+     */
+    private processHost;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
@@ -680,7 +687,7 @@ export declare class FacetManager {
      * N is honest; an unbounded one in a Durable Object is a leak.
      */
     private static readonly RESIDENCY_PROFILE_MAX_PATHS;
-    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, hooks?: FacetManagerHooks);
+    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
     setVfs(vfs: SqliteVFS): void;
     /**
      * The image store's directory, created before the first filesystem view is

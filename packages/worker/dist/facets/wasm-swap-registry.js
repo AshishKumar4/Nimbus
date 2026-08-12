@@ -29,7 +29,7 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with this module.
  */
-import { NATIVE_UNSUPPORTED_ABI, NIMBUS_ABI_TARGET, PYODIDE_PACKAGE_ABI, } from '../runtime/os-contracts.js';
+import { NATIVE_UNSUPPORTED_ABI, NIMBUS_ABI_TARGET, PYODIDE_PACKAGE_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
 // ─────────────────────────────────────────────────────────────────────────
 // The policy
 // ─────────────────────────────────────────────────────────────────────────

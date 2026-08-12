@@ -9,13 +9,13 @@
  */
 import { generateText, isLoopFinished, jsonSchema, streamText, tool as aiTool, } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
-import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '../_shared/crypto.js';
+import { decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
 import { clearNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, isNimbusCloudflareAccountId, isNimbusTenantSegment, NIMBUS_CF_OAUTH_AUTH_URL, readNimbusCookie, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './agent-oauth.js';
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcKillProcess, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
-import { resolveVfsPath } from '../vfs/path.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, } from './agent-contract.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';

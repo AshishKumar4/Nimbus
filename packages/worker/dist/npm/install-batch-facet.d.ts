@@ -37,7 +37,7 @@
  *     MAX_FILE_BYTES) referenced via @ts-ignore.
  */
 import type { FacetPackageSpec } from './install-facet.js';
-import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export interface InstallBatchSpec {
     /** All packages to install in this batch. ≈456 entries × ~200 B = ~90 KB,
      *  well under workerd's 32 MiB RPC arg cap. */

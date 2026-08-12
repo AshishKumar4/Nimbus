@@ -40,7 +40,7 @@
  * All under the 250ms warm-pool gate; no warm-pool needed.
  */
 import type { FacetManager } from '../facets/manager.js';
-import type { FacetBundleProfile } from './bundle-profile.js';
+import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /**
  * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)

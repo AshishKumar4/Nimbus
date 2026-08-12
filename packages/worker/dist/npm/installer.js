@@ -19,32 +19,32 @@
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
  */
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
 import { packumentUrl } from './r2-cache.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from './npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
-import { resolvePackageEntry } from '../_shared/exports-resolver.js';
-import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
+import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { encodeWriteBatchStream } from '@nimbus-sh/core/_shared/w7-frame.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
-import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '../observability/diag-counters.js';
-import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
-import { describeError } from '../observability/oom-classify.js';
+import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '@nimbus-sh/core/observability/diag-counters.js';
+import { estimateSupervisorHeap } from '@nimbus-sh/core/observability/heap-estimate.js';
+import { describeError } from '@nimbus-sh/core/observability/oom-classify.js';
 import { resolveOnePackumentInFacet, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { prebundleOne, buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
 import { PRE_BUNDLE_PREAMBLE } from '../loaders/pre-bundle-preamble.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
-import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, } from '../constants.js';
-import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
+import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, } from '@nimbus-sh/core/constants.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
-import { enc } from '../_shared/bytes.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
@@ -1002,7 +1002,7 @@ export class NpmInstaller {
                 return false;
             const pkg = JSON.parse(this.vfs.readFileString(pkgPath));
             // Lazy-load the detector to avoid a hard dep cycle.
-            const { detectFramework } = await import('../runtime/framework-detect.js');
+            const { detectFramework } = await import('@nimbus-sh/core/runtime/framework-detect.js');
             // Snapshot root files. Best-effort — if readdir throws we proceed
             // with an empty set (still detects via deps for most frameworks).
             const files = new Set();

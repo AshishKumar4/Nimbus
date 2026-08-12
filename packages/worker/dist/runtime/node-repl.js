@@ -22,7 +22,7 @@
  *   - History pickling
  */
 import { ReplSession } from './repl-session.js';
-import { NODE_VERSION } from '../constants.js';
+import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
 class NodeReplAdapter {
     pool = null;
     initDone = false;

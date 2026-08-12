@@ -9,7 +9,7 @@
  * the Vite resolver's output (e.g. /home/user/app/node_modules/react/index.js)
  * is rewritten to point at one of these bundles at request time.
  */
-import { type AssetsFetcher } from './runtime/assets-loader.js';
+import { type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';
 export interface CirrusNpmCjsBundle {
     moduleName: string;
     code: string;

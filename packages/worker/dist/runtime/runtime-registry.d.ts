@@ -37,10 +37,10 @@
  *     observable behaviour, not implementation shape.
  */
 import type { FacetManager } from '../facets/manager.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { type VfsCred } from './os-contracts.js';
-import type { EsbuildService } from './esbuild-service.js';
-import { type FacetBundleProfile } from './bundle-profile.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so

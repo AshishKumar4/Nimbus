@@ -34,15 +34,15 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import { z } from 'zod';
-import { hasLeadingCliFlag } from './cli-flags.js';
+import { hasLeadingCliFlag } from '@nimbus-sh/core/runtime/cli-flags.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { manifestVfs } from './vfs-manifest.js';
-import { resolveVfsPath } from '../vfs/path.js';
+import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
-import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
-import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
+import { RUBY_SOCKET_SHIM } from '@nimbus-sh/core/runtime/ruby-socket-shim.js';
+import { RUBY_GREEN_THREADS } from '@nimbus-sh/core/runtime/ruby-green-threads.js';
 import { defaultGemHome, installRubyBundle, installRubyGems, installedGemBins, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);

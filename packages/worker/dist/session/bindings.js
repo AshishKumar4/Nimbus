@@ -22,7 +22,7 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
-import { disposeRpcResource, useRpcResource } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { assembleOpencodeFacetConfig } from '../facets/opencode-staging.js';
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //

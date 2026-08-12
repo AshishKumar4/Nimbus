@@ -180,7 +180,7 @@
  * over — measured past the DO CPU limit at pi scale. See
  * \`__residentSynchronizeFromSupervisor\`.
  */
-import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '../constants.js';
+import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 /**
  * Bytes of file content in one row.
  *

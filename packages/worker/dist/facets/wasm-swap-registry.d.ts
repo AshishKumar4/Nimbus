@@ -29,7 +29,7 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with this module.
  */
-import { type PackageAbiPolicy, type PackageRejectEntry, type PackageStagedArtifactEntry, type PackageSwapEntry } from '../runtime/os-contracts.js';
+import { type PackageAbiPolicy, type PackageRejectEntry, type PackageStagedArtifactEntry, type PackageSwapEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * Sentinel bin target the installer writes for a staged-artifact package.
  * `bin/<name>` is rewritten to `<prefix><artifact-id>`; the .bin runner

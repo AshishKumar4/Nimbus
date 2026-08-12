@@ -56,12 +56,12 @@
 import { REAL_VITE_VERSION, VITE_CLIENT_MJS, VITE_ENV_MJS, getRealViteBundle, getRollupWasmBase64, } from '../real-vite-bundle.generated.js';
 import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
-import { CF_COMPAT_DATE } from '../constants.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, registerHmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import { stripLeadingSlashes } from '../vfs/path.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 /**
  * Compatibility flags for the real-vite facet.
  *

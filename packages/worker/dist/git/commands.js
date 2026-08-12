@@ -8,10 +8,10 @@
  * Uses a VFS→isomorphic-git FS adapter that maps all operations
  * to the SqliteVFS.
  */
-import { requireVfsCred } from '../runtime/os-contracts.js';
+import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
-import { normalizeVfsPath } from '../vfs/path.js';
-import { dec } from '../_shared/bytes.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,
 // diff, remote, merge, reset, tag, config) run here in the supervisor DO.

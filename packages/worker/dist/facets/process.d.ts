@@ -33,8 +33,8 @@
  *     in-flight reportExit RPC a chance to land (and be no-op'd by the
  *     idempotent guard).
  */
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this

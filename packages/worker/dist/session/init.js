@@ -24,29 +24,29 @@
  *   - acceptShellWebSocket → self.initSession(ws)  (S7 will extract).
  *   - The class still has `initSession(ws)` as a delegator method.
  */
-import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenceBackend, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages, } from '../substrate/lifo/index.js';
-import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
-import { SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL, requireVfsCred } from '../runtime/os-contracts.js';
+import { Kernel, Shell, createDefaultRegistry, ProcessRegistry, MemoryPersistenceBackend, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages, } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
+import { SqliteVFSProvider } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath, } from '../runtime/runtime-registry.js';
-import { parseViteConfigSource } from '../runtime/vite-config-parser.js';
+import { parseViteConfigSource } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
-import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '../vfs/path.js';
-import { installPathExecResolver, } from '../shell/exec-dispatch.js';
+import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
+import { installPathExecResolver, } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
-import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '../runtime/long-running-handle.js';
+import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, } from './helpers.js';
-import { HeredocHandler, LineEditorExtender } from '../shell/features.js';
-import { registerUnixCommands } from '../shell/unix-commands.js';
-import { registerShellEntrypointCommands } from '../shell/shell-entrypoints.js';
-import { makeChshCommand } from '../substrate/lifo/shell/default-shell.js';
+import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
+import { registerUnixCommands } from '@nimbus-sh/core/shell/unix-commands.js';
+import { registerShellEntrypointCommands } from '@nimbus-sh/core/shell/shell-entrypoints.js';
+import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { parseNpmInstallInvocation } from '../npm/install-args.js';
 import { npmLogEnabled } from '../npm/npm-log.js';
@@ -58,12 +58,12 @@ import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, listInstalledR
 // Keeping them off the top-level import graph shaves their module-eval cost
 // (zod, embedded socket-kernel/shim sources, wasm loaders) out of the
 // one-time Worker Startup Time paid on every fresh-isolate cold run.
-import { hasSeededProject, SEED_PROJECT_DIR } from '../vfs/seed-project.js';
+import { hasSeededProject, SEED_PROJECT_DIR } from '@nimbus-sh/core/vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { stripAnsi } from '../runtime/process-logs.js';
-import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, DEFAULT_PATH, } from '../constants.js';
+import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
+import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, NODE_VERSION, DEFAULT_PATH, } from '@nimbus-sh/core/constants.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
-import { recordRecoveryEvent } from '../observability/oom-discriminator.js';
+import { recordRecoveryEvent } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
@@ -2691,7 +2691,7 @@ export function initSession(self, ws) {
                         catch { }
                     }
                 }
-                const { detectFramework, describeDetect } = await import('../runtime/framework-detect.js');
+                const { detectFramework, describeDetect } = await import('@nimbus-sh/core/runtime/framework-detect.js');
                 const result = detectFramework({
                     pkg: { dependencies: pkg.dependencies, devDependencies: pkg.devDependencies, scripts: pkg.scripts },
                     files,

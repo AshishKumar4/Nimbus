@@ -49,7 +49,7 @@
  *   source file) instead of a .generated.ts means editor + typecheck
  *   can read it even though TypeScript doesn't compile it.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 /**
  * Build a LAZY snapshot of the project for the facet's sync-fs Map.
  *

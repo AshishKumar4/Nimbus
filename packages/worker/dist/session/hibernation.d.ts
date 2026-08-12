@@ -34,7 +34,7 @@
  * responsible for setting `host._w9PersistWired = false` BEFORE calling
  * wireProcessLogPersist again.
  */
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type WsHibernationConfigResult } from './ws-hibernation-config.js';
 export type { WsHibernationConfigResult };
 /**

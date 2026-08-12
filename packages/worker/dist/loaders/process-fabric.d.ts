@@ -5,7 +5,7 @@
  * Every long-lived process Nimbus runs — node servers, python/ruby socket
  * servers, the opencode TUI and its headless server — runs as a **DO Facet**:
  * a named child actor whose class comes from a dynamic worker, opened by
- * `openResidentFacet` below.
+ * `openResidentFacet` in `loaders/workerd-facet-host.ts`.
  *
  *   ctx.facets.get(`proc-${pid}`, () => ({
  *     class: env.LOADER.get(workerKey, buildConfig)
@@ -73,8 +73,7 @@
  * `ResidentDiskReader` it was given.
  */
 import { z } from 'zod/v4';
-import { type OpencodeAssetsEnv, type OpencodeStageSpec } from '../facets/opencode-staging.js';
-import type { RouteableFacetTarget } from '../runtime/port-registry.js';
+import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -187,45 +186,6 @@ export declare function facetImagePath(digest: string): string;
  * "Cannot find module" a long way from the corruption.
  */
 export declare function facetImagePathDigest(path: string): string | null;
-/** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
-export interface LoadedWorkerEntrypointStub {
-    handleHttpRequest?: (request: Request) => Promise<Response>;
-    fetch?(request: Request): Promise<Response>;
-}
-export interface NimbusCtxExports {
-    SupervisorRPC?: (options: {
-        props: {
-            doId: string;
-            pid: number;
-            writerId: string;
-        };
-    }) => unknown;
-    NimbusLoadedEntrypoint?: (options: {
-        props: {
-            key: string;
-            name: string | null;
-            depth: number;
-            supervisor: {
-                doId: string;
-                pid: number;
-                writerId: string;
-            };
-            stage?: OpencodeStageSpec;
-        };
-    }) => LoadedWorkerEntrypointStub;
-}
-export declare function getNimbusCtxExports(): NimbusCtxExports;
-/**
- * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. Used by the
- * one-shot runtime paths, which run a program to completion inside a single
- * request rather than leaving it resident: their module map is assembled in
- * that stateless entrypoint's own isolate, never in a session DO.
- */
-export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: {
-    doId: string;
-    pid: number;
-    writerId: string;
-}, stage: OpencodeStageSpec, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /**
  * Reads the members a boot spec named by path off the SESSION's disk — the
  * coordinator's, always, whichever substrate is doing the reading.
@@ -308,15 +268,6 @@ export interface HostedProcess {
     describe(): string;
 }
 /**
- * Total bytes a dynamic Worker's module map may carry, across every member of
- * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
- * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
- * size of 67108864 bytes", confirmed at five sizes with two trials each. The
- * budget is shared, so a ruby process is already 34.3 MiB down before its disk
- * is counted.
- */
-export declare const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67108864;
-/**
  * How a whole session-filesystem image can reach a process on a substrate, and
  * what stops it.
  *
@@ -385,59 +336,100 @@ export interface ProcessImageDelivery {
  * mechanism, one selection for the whole deployment — see
  * `loaders/process-host.ts`.
  */
+/**
+ * A one-shot's module map: every member inline.
+ *
+ * Deliberately without {@link ResidentCodeSpec}'s by-path members. A resident
+ * process names its large members by VFS path because the map has to reach
+ * whichever actor ends up hosting it; a one-shot's is assembled and consumed
+ * inside a single call, so a path buys nothing and a host that accepted one
+ * would be promising a read it never performs.
+ */
+export interface OneShotCodeSpec {
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    mainModule: string;
+    modules: Record<string, string | {
+        wasm: ArrayBuffer;
+    }>;
+}
+/**
+ * Everything a host needs to run one program to completion.
+ *
+ * Separate from {@link ProcessHostParams} because the two differ in whether
+ * anything survives the call, and every other difference follows from that: a
+ * one-shot has no route target, no independent death to observe and no
+ * residency to release. One spec carrying all of it would leave three members
+ * meaningless for half its uses.
+ */
+export interface OneShotParams {
+    /** Supervisor-assigned pid — the identity the callback capability reports as. */
+    pid: number;
+    /**
+     * Binds this run's VFS appends to this concrete incarnation. Supplied by the
+     * caller rather than minted here so it can revoke the identity it authorised
+     * instead of one it has to read back.
+     */
+    writerId: string;
+    /**
+     * The module map, assembled on demand.
+     *
+     * A thunk, and that is load-bearing rather than stylistic. The map is the
+     * largest thing a session builds — pi's is ~23 MB — and it is dead the moment
+     * the loader has taken it. Building it inside the load is what keeps it out
+     * of the caller's frame, which would otherwise hold a second full copy of the
+     * program for as long as the program runs.
+     */
+    code(): Promise<OneShotCodeSpec>;
+    /** The invocation. Its body carries argv/env/cwd; its signal bounds the run. */
+    request: Request;
+    /**
+     * Called before any capability able to write as `writerId` exists, and only
+     * if this host can mint one at all. Granting append authority to an identity
+     * nothing will ever present would leave a writer live with no writer.
+     */
+    onWriterActivated(writerId: string): void;
+    /**
+     * Called once the program is loaded and about to be entered.
+     *
+     * The boundary between paying for the isolate and paying for the program.
+     * They are separate costs with separate fixes — a 12 s exec was once read as
+     * a slow load and was a fresh isolate parsing a 23 MB map — and only the host
+     * can see where one ends and the other begins.
+     */
+    onLoaded?(): void;
+}
 export interface ProcessHost {
     /** What this substrate can and cannot deliver, for operators and callers. */
     readonly imageDelivery: ProcessImageDelivery;
+    /**
+     * Run one program to completion and hand its response to `consume`.
+     *
+     * Scoped to the call rather than returned, because the isolate that produced
+     * the response must outlive the reading of its body. A host that released its
+     * stubs before the caller had read would sever a body still streaming, and
+     * one that buffered instead would hold a second copy of every result — the
+     * cost the thunk above exists to avoid. `consume` runs while the program's
+     * resources are still held; they are released as it returns.
+     */
+    runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
     open(params: ProcessHostParams): Promise<HostedProcess>;
 }
-/** `env.LOADER` — the Worker Loader binding, as used from inside a DO. */
-interface WorkerLoaderBinding {
-    get(id: string, code: () => Promise<unknown>): {
-        getDurableObjectClass(name: string): unknown;
-    };
-}
-/** The bindings `openResidentFacet` needs off whichever DO is hosting. */
-export interface ResidentFacetEnv extends Partial<OpencodeAssetsEnv> {
-    LOADER?: WorkerLoaderBinding;
-}
 /**
- * The facet name for a slot. Reused, and that is the entire point.
+ * How a caller supplies the substrate a process manager will run programs on.
  *
- * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so the bound is on facets ever CREATED,
- * not facets alive at once. Naming a facet after its pid, when pids never
- * repeat, therefore burned one of those IDs on every spawn — a long-lived
- * session would eventually exhaust its facet index with no way back, and the
- * failure is unrecoverable rather than merely slow.
+ * A factory rather than a finished {@link ProcessHost}, because the substrate
+ * needs the disk its processes boot from and only the manager can produce one:
+ * that reader answers as the credential that WROTE the boot images and
+ * deliberately uncached, since they are the largest files a session holds.
+ * Demanding a finished host would make every caller reproduce that policy, and
+ * a second copy of a credential rule is a second thing to keep in step.
  *
- * Reusing a NAME costs no new ID. So the name comes from a free list and the
- * pid stays what it always was: the process identity in the ProcessTable. The
- * two were only ever conflated because one of them happened to be handy.
+ * The parameters are exactly what a manager already holds, so the deployment's
+ * own selector (`processHostFor`) satisfies this type as it stands — the
+ * workerd substrate is named, not wrapped.
  */
-export declare function residentFacetName(slot: number): string;
-/**
- * What `openResidentFacet` hands back: a running process, minus its placement.
- *
- * `slot` rides along because the caller's `describe` needs the facet's real
- * name and the slot is not derivable from the pid — that indirection is the
- * whole point of the free list. Reading it back out of the book later would
- * also race the release that empties it.
- */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
-    slot: number;
-};
-/**
- * Open a resident process as a facet of the actor whose `ctx` and `env` are
- * given, and start its runner.
- *
- * This is the ONE way a resident process comes into existence, and every
- * substrate goes through it: the facet host calls it with the coordinator's
- * own `ctx`, the peer host calls it — over one RPC — with a sibling session
- * DO's. Everything a substrate could plausibly want to special-case is a
- * PARAMETER here rather than a branch: which actor hosts the child, and how
- * the boot spec's by-path members are read.
- */
-export declare function openResidentFacet(ctx: DurableObjectState, env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, params: ProcessHostParams): ResidentFacet;
+export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader) => ProcessHost;
 /**
  * Resource handle for one resident process — the whole surface the kernel
  * above this module sees: `booted()` for the boot payload, `done` for death,
@@ -514,5 +506,4 @@ export declare class ProcessFabric {
      */
     startResidentProcess(spawn: ResidentProcessSpawn): Promise<ResidentProcessHandle>;
 }
-export {};
 //# sourceMappingURL=process-fabric.d.ts.map

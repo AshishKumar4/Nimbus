@@ -36,8 +36,8 @@
  * DB at ~/.local/share/opencode/*.db.
  */
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
-import { VFS_CURSOR_SEED_SOURCE } from '../_shared/facet-vfs-cursor.js';
-import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
+import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
 import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_BACKEND_GLOBAL, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
 // The ~230 KiB node-compat shim source is staged as a static asset

@@ -16,8 +16,8 @@
  * facet with no node-compat layer.
  */
 import { NODE_SHIMS_BUILD_ID, NODE_SHIMS_ENTRY, NODE_SHIMS_SHA256, } from '../node-shims-artifact.generated.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { sha256Hex } from '../_shared/crypto.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 const L2_KEY = `https://nimbus-cache.invalid${NODE_SHIMS_ENTRY}?build=${NODE_SHIMS_BUILD_ID}`;
 const ASSET_URL = `https://nimbus-internal.invalid${NODE_SHIMS_ENTRY}`;
 let memo = null;

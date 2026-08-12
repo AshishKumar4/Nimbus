@@ -6,12 +6,12 @@
  * duplicating the interactive terminal boot path.
  */
 import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, listInstalledRuntimes, } from '../runtime/package-manager.js';
-import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { PortRegistry } from '../runtime/port-registry.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '../runtime/process-input-routing.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
 const ProcessLogsOptionsSchema = z.object({

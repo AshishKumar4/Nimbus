@@ -1,4 +1,4 @@
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export interface RubyGemRequest {
     name: string;
     requirements: string[];

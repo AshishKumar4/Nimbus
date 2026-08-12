@@ -32,7 +32,7 @@
  * Bind parameter forms: '?' positional only. Named parameters (':name')
  * are NOT supported (D1 itself doesn't support them).
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export interface D1Result<T = Record<string, any>> {
     success: boolean;
     results?: T[];

@@ -1,8 +1,8 @@
 import { maxSatisfying, satisfies as pep440Satisfies, valid as validPep440Version, validRange as validPep440Range, } from '@renovatebot/pep440';
 import { parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxError, } from 'pip-requirements-js';
 import { z } from 'zod/v4';
-import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
-import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
+import { parentVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { PYODIDE_PACKAGE_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { isRuntimePythonPackageArtifactMetadata, RuntimePythonPackageArtifactMetadataSchema, } from './runtime-catalog.js';
 export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
 export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;

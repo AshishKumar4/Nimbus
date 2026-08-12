@@ -4,7 +4,7 @@
  * All functions here are pure: no class state and no `cloudflare:workers`
  * import. NimbusSession re-exports the public helpers that callers need.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
  * route. Matches the Nimbus shell MOTD aesthetic (near-black background,

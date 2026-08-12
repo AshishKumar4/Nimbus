@@ -30,10 +30,10 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
-import type { VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
-import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { VfsAcquireResult, VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FsReadBatchEntry, FsReadBatchRequest } from './rpc.js';
-import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
+import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
  * the calling facet. Discriminated union so the facet can fold each

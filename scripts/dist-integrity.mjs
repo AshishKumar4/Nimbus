@@ -81,8 +81,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Packages whose compiled output a deploy carries. */
-export const BUILT_PACKAGES = ['config', 'sdk', 'worker'];
+/**
+ * Packages whose compiled output a deploy carries.
+ *
+ * Ordered, and `core` precedes `worker` for the same reason the fixpoint
+ * below runs `bundle` before the final `build`: `bundle:shims` reads DIST,
+ * so a worker bundled before core has compiled resolves against a dist that
+ * does not exist yet — or worse, an old one.
+ */
+export const BUILT_PACKAGES = ['config', 'core', 'sdk', 'worker'];
 
 /**
  * The build, in the only order that reaches a fixpoint.

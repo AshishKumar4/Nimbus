@@ -21,19 +21,19 @@
  * HMR: VFS events → ViteDevServer detects changes → sends {type:'hmr'}
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from '../npm/cache.js';
-import { sha256Base64Url } from '../_shared/crypto.js';
-import { LruMap } from '../_shared/lru-map.js';
+import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
+import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { OnDemandBundleGate } from './on-demand-bundle-gate.js';
-import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '../constants.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
+import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
+import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
-import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
-import { injectRouterBasename, shouldProcessForRouter } from '../runtime/router-basename.js';
-import { rewriteJavaScriptModuleSource } from '../runtime/module-source-rewriter.js';
-import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { resolvePackageEntry, resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { injectRouterBasename, shouldProcessForRouter } from '@nimbus-sh/core/runtime/router-basename.js';
+import { rewriteJavaScriptModuleSource } from '@nimbus-sh/core/runtime/module-source-rewriter.js';
+import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { getTailwindPlayBundle, TAILWIND_PLAY_VERSION, } from '../tailwind-play.generated.js';
 // ── HMR client code ─────────────────────────────────────────────────────
 // Injected into index.html. Listens for HMR messages from parent window

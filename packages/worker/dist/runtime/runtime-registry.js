@@ -36,10 +36,10 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
-import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
-import { CRED_KERNEL } from './os-contracts.js';
-import { parseFacetBundleProfile } from './bundle-profile.js';
-import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
+import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { parseFacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 /** Extensions probed when a target names no exact file, in Node's order. */
 const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
 /**
