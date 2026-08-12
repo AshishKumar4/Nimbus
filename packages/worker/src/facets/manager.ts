@@ -3007,9 +3007,26 @@ function _markBundleEsmAsFailed(
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
  * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
  */
-function isBundleModuleCandidate(path: string): boolean {
+export function isBundleModuleCandidate(path: string): boolean {
   const ext = vfsPathExtension(path);
-  return ext === '.js' || ext === '.mjs' || ext === '';
+  return ext === '.js' || ext === '.mjs' || ext === '' || bundleTypescriptLoader(path) !== null;
+}
+
+/**
+ * The esbuild loader for a TypeScript source in the bundle, or null when the
+ * path does not name one.
+ *
+ * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
+ * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
+ * not the file has a single import in it. So these transform on their
+ * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
+ * the right question for a file that is already valid JS either way, and the
+ * wrong one for a file that is never valid JS.
+ */
+export function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null {
+  const ext = vfsPathExtension(path);
+  if (ext === '.tsx') return 'tsx';
+  return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
 }
 
 /**
@@ -3038,7 +3055,7 @@ async function transformEsmInBundle(
     // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
     // esbuild.transform expect strings.
     if (typeof src !== 'string') continue;
-    if (!looksLikeEsm(src)) continue;
+    if (bundleTypescriptLoader(path) === null && !looksLikeEsm(src)) continue;
     candidates.push(path);
   }
   for (const path of candidates) {
@@ -3071,7 +3088,7 @@ async function transformEsmInBundle(
     }
     try {
       const t = await esbuild.transform(src, {
-        loader: 'js',
+        loader: bundleTypescriptLoader(path) ?? 'js',
         format: 'cjs',
         target: 'esnext',
         define: importMetaDefines(absUrl),
