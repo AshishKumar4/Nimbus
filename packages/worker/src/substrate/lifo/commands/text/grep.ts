@@ -19,7 +19,26 @@ const command: Command = async (ctx) => {
   while (i < args.length) {
     const arg = args[i];
     if (arg === '--') { i++; break; }
-    if (arg.startsWith('-') && arg.length > 1 && arg[1] !== '-') {
+    if (arg.startsWith('--')) {
+      // A long option used to fail the short-option test below and land in
+      // the `!pattern` branch, so `grep --ignore-case foo` searched for the
+      // literal text "--ignore-case".
+      switch (arg) {
+        case '--ignore-case': ignoreCase = true; break;
+        case '--invert-match': invert = true; break;
+        case '--line-number': lineNumbers = true; break;
+        case '--count': countOnly = true; break;
+        case '--files-with-matches': filesWithMatches = true; break;
+        case '--recursive': recursive = true; break;
+        case '--word-regexp': wordMatch = true; break;
+        case '--extended-regexp': break; // JS regex is already ERE
+        default:
+          ctx.stderr.write(`grep: unrecognized option '${arg}'\n`);
+          ctx.stderr.write("Usage: grep [OPTION]... PATTERN [FILE]...\n");
+          return 2;
+      }
+      i++;
+    } else if (arg.startsWith('-') && arg.length > 1) {
       for (let j = 1; j < arg.length; j++) {
         switch (arg[j]) {
           case 'i': ignoreCase = true; break;
@@ -30,6 +49,10 @@ const command: Command = async (ctx) => {
           case 'r': recursive = true; break;
           case 'E': break; // JS regex is already ERE
           case 'w': wordMatch = true; break;
+          default:
+            ctx.stderr.write(`grep: invalid option -- '${arg[j]}'\n`);
+            ctx.stderr.write("Usage: grep [OPTION]... PATTERN [FILE]...\n");
+            return 2;
         }
       }
       i++;

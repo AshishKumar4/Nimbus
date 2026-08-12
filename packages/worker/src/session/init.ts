@@ -1612,7 +1612,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         return 1;
       }
 
-      const packages = args.slice(1).filter((a: string) => !a.startsWith('-'));
+      const fastArgs = args.slice(1);
+      for (const option of fastArgs.filter((a: string) => a.startsWith('-') && a !== '-')) {
+        ctx.stderr.write(`npm warn Unknown cli config "${option}". It was ignored.\n`);
+      }
+      const packages = fastArgs.filter((a: string) => !a.startsWith('-'));
       if (packages.length === 0) {
         ctx.stderr.write('Specify packages to install: npm-fast install react react-dom\n');
         return 1;
@@ -2229,7 +2233,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
 
       // npm uninstall <pkg>
       if (sub === 'uninstall' || sub === 'un' || sub === 'remove' || sub === 'rm') {
-        const packages = args.slice(1).filter(a => !a.startsWith('-'));
+        const uninstallArgs = args.slice(1);
+        for (const option of uninstallArgs.filter((a: string) => a.startsWith('-') && a !== '-')) {
+          ctx.stderr.write(`npm warn Unknown cli config "${option}". It was ignored.\n`);
+        }
+        const packages = uninstallArgs.filter((a: string) => !a.startsWith('-'));
         if (packages.length === 0) { ctx.stderr.write('Usage: npm uninstall <pkg>\n'); return 1; }
         const nmDir = cwdKey + '/node_modules';
         for (const pkg of packages) {

@@ -1,4 +1,5 @@
 import type { Command } from '../types.js';
+import { parseArgs } from '../../utils/args.js';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -48,9 +49,29 @@ function renderMonth(year: number, month: number, highlightToday: boolean): stri
   return lines.join('\n') + '\n';
 }
 
+const spec = {
+  // `cal -1` is the default single-month view, so it is a real no-op here.
+  one: { type: 'boolean' as const, short: '1' },
+  year: { type: 'boolean' as const, short: 'y' },
+};
+
 const command: Command = async (ctx) => {
   const today = new Date();
-  const args = ctx.args.filter(a => !a.startsWith('-'));
+  const parsed = parseArgs('cal', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 1;
+  }
+  const args = parsed.positional;
+
+  if (parsed.flags.year && args.length === 0) {
+    const year = today.getFullYear();
+    for (let m = 0; m < 12; m++) {
+      ctx.stdout.write(renderMonth(year, m, true));
+      if (m < 11) ctx.stdout.write('\n');
+    }
+    return 0;
+  }
 
   if (args.length === 0) {
     // Current month

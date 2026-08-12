@@ -389,9 +389,18 @@ function mkWhich(vfs: UnixVfs, registry: any): CmdFn {
  * binaries on the virtual VFS; print just the binary path. With no
  * match, print just the name (matches `whereis` behavior on missing).
  */
+const WHEREIS_SPEC: ArgSpec = {
+  // Only binaries exist on this filesystem, so -b asks for exactly what we
+  // already return. -m (manuals) and -s (sources) have nothing to search and
+  // are refused rather than answered with a confident empty result.
+  binaries: { type: 'boolean', short: 'b' },
+};
+
 function mkWhereis(vfs: UnixVfs, registry: any): CmdFn {
   return async (ctx) => {
-    const names = ctx.args.filter(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'whereis', WHEREIS_SPEC);
+    if (!opts) return 1;
+    const names = opts.positional;
     if (names.length === 0) {
       ctx.stderr.write('Usage: whereis name [name ...]\n');
       return 1;
@@ -699,18 +708,42 @@ function mkUptime(): CmdFn {
   };
 }
 
+const TREE_SPEC: ArgSpec = {
+  level: { type: 'string', short: 'L' },
+  all: { type: 'boolean', short: 'a' },
+  dirsonly: { type: 'boolean', short: 'd' },
+  fullpath: { type: 'boolean', short: 'f' },
+  noreport: { type: 'boolean' },
+};
+
 function mkTree(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const args = ctx.args.filter(a => !a.startsWith('-') && (ctx.args.indexOf(a) !== ctx.args.indexOf('-L') + 1));
+    const opts = parseOptions(ctx, 'tree', TREE_SPEC);
+    if (!opts) return 1;
+    const args = opts.positional;
     const root = args[0] ? resolvePath(ctx.cwd, args[0]) : (ctx.cwd || '/home/user').replace(/^\/+/, '');
-    const maxDepth = ctx.args.includes('-L') ? parseInt(ctx.args[ctx.args.indexOf('-L') + 1]) || 3 : 3;
+    const showAll = opts.flags.all === true;
+    const dirsOnly = opts.flags.dirsonly === true;
+    const fullPath = opts.flags.fullpath === true;
+    if (opts.flags.level !== '' && !/^\d+$/.test(opts.flags.level as string)) {
+      ctx.stderr.write(`tree: Invalid level, must be greater than 0.\n`);
+      return 1;
+    }
+    const maxDepth = opts.flags.level !== ''
+      ? Number.parseInt(opts.flags.level as string, 10)
+      : Infinity;
     const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
     let dirs = 0, files = 0, total = 0;
     let truncated = false;
     function walk(path: string, prefix: string, depth: number) {
       if (depth > maxDepth || truncated) return;
       try {
-        const entries = vfs.readdir(path).sort((a, b) => a.name.localeCompare(b.name));
+        const entries = vfs.readdir(path)
+          // Real `tree` hides dotfiles unless -a, which is what makes -a mean
+          // something; listing them always made the flag indistinguishable.
+          .filter((e: { name: string; type: string }) =>
+            (showAll || !e.name.startsWith('.')) && (!dirsOnly || e.type === 'directory'))
+          .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
         for (let i = 0; i < entries.length; i++) {
           if (total >= MAX_ENTRIES) { truncated = true; return; }
           total++;
@@ -718,7 +751,8 @@ function mkTree(vfs: UnixVfs): CmdFn {
           const isLast = i === entries.length - 1;
           const connector = isLast ? '└── ' : '├── ';
           const childPrefix = isLast ? '    ' : '│   ';
-          ctx.stdout.write(prefix + connector + e.name + '\n');
+          const label = fullPath ? `${path}/${e.name}` : e.name;
+          ctx.stdout.write(prefix + connector + label + '\n');
           if (e.type === 'directory') {
             dirs++;
             walk(path + '/' + e.name, prefix + childPrefix, depth + 1);
@@ -730,7 +764,9 @@ function mkTree(vfs: UnixVfs): CmdFn {
     ctx.stdout.write(name + '\n');
     walk(root, '', 1);
     if (truncated) ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`);
-    ctx.stdout.write(`\n${dirs} directories, ${files} files\n`);
+    if (opts.flags.noreport !== true) {
+      ctx.stdout.write(`\n${dirs} directories, ${files} files\n`);
+    }
     return 0;
   };
 }
@@ -2365,29 +2401,28 @@ function mkTee(vfs: UnixVfs): CmdFn {
  * `-h` only — `-sh` is a single arg containing both flags. POSIX
  * conformant short-flag stacking.
  */
+const DU_SPEC: ArgSpec = {
+  all: { type: 'boolean', short: 'a' },
+  'human-readable': { type: 'boolean', short: 'h' },
+  summarize: { type: 'boolean', short: 's' },
+  bytes: { type: 'boolean', short: 'b' },
+};
+
 function mkDu(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    // Parse flags supporting stacked short flags like `-sh`, `-ah`.
-    let showAll = false, human = false, sumOnly = false;
-    const positional: string[] = [];
-    for (const a of ctx.args) {
-      if (a.startsWith('-') && a !== '-' && !a.startsWith('--')) {
-        for (const ch of a.slice(1)) {
-          if (ch === 'a') showAll = true;
-          else if (ch === 'h') human = true;
-          else if (ch === 's') sumOnly = true;
-        }
-      } else if (a.startsWith('--')) {
-        if (a === '--all') showAll = true;
-        else if (a === '--human-readable') human = true;
-        else if (a === '--summarize') sumOnly = true;
-      } else {
-        positional.push(a);
-      }
-    }
+    const opts = parseOptions(ctx, 'du', DU_SPEC);
+    if (!opts) return 1;
+    const showAll = opts.flags.all === true;
+    const human = opts.flags['human-readable'] === true;
+    const sumOnly = opts.flags.summarize === true;
+    const bytes = opts.flags.bytes === true;
+    const positional = opts.positional;
     const target = positional[0] || '.';
     const root = resolvePath(ctx.cwd, target);
-    const fmt = (b: number) => human ? (b >= 1e6 ? (b / 1e6).toFixed(1) + 'M' : b >= 1e3 ? (b / 1e3).toFixed(1) + 'K' : b + 'B') : String(Math.ceil(b / 1024));
+    // `du -h` is 1024-based, like every other size GNU prints that way; this
+    // used to divide by 1000 and label the result K.
+    const fmt = (b: number) =>
+      human ? humanSize(b) : bytes ? String(b) : String(Math.ceil(b / 1024));
     let total = 0;
     function walk(path: string): number {
       let size = 0;
@@ -2529,18 +2564,53 @@ function mkEcho(): CmdFn {
  * ownership, `-d` directory itself, plus path
  * positional. Matches the shell `ls` flag surface so we don't regress.
  */
+const LS_SPEC: ArgSpec = {
+  long: { type: 'boolean', short: 'l' },
+  all: { type: 'boolean', short: 'a' },
+  'almost-all': { type: 'boolean', short: 'A' },
+  one: { type: 'boolean', short: '1' },
+  numeric: { type: 'boolean', short: 'n' },
+  directory: { type: 'boolean', short: 'd' },
+  'human-readable': { type: 'boolean', short: 'h' },
+  reverse: { type: 'boolean', short: 'r' },
+  time: { type: 'boolean', short: 't' },
+  size: { type: 'boolean', short: 'S' },
+  classify: { type: 'boolean', short: 'F' },
+  inode: { type: 'boolean', short: 'i' },
+  // Output is never a terminal here, so GNU emits no colour either way.
+  color: { type: 'string' },
+};
+
+/** `ls -h` / `du -h`-style sizes: 1024-based with a single-letter suffix. */
+function humanSize(bytes: number): string {
+  const units = ['', 'K', 'M', 'G', 'T', 'P'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  if (unit === 0) return String(bytes);
+  return (value < 10 ? value.toFixed(1) : String(Math.round(value))) + units[unit];
+}
+
 function mkLs(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const args = ctx.args;
-    const flags = new Set(args
-      .filter((arg) => arg.startsWith('-') && !arg.startsWith('--'))
-      .flatMap((arg) => [...arg.slice(1)]));
-    const flagLong = flags.has('l') || flags.has('n');
-    const flagAll = flags.has('a');
-    const flagOne = flags.has('1');
-    const flagNumeric = flags.has('n');
-    const flagDirectory = flags.has('d');
-    const positionals = args.filter(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'ls', LS_SPEC);
+    if (!opts) return 2;  // GNU ls exits 2 on a bad option.
+    const flagLong = opts.flags.long === true || opts.flags.numeric === true;
+    const flagAlmostAll = opts.flags['almost-all'] === true;
+    const flagAll = opts.flags.all === true || flagAlmostAll;
+    const flagOne = opts.flags.one === true;
+    const flagNumeric = opts.flags.numeric === true;
+    const flagDirectory = opts.flags.directory === true;
+    const flagHuman = opts.flags['human-readable'] === true;
+    const flagReverse = opts.flags.reverse === true;
+    const flagByTime = opts.flags.time === true;
+    const flagBySize = opts.flags.size === true;
+    const flagClassify = opts.flags.classify === true;
+    const flagInode = opts.flags.inode === true;
+    const positionals = opts.positional;
     const targets = positionals.length > 0 ? positionals : [ctx.cwd];
 
     const reg = vfs.symlinks;
@@ -2641,23 +2711,46 @@ function mkLs(vfs: UnixVfs): CmdFn {
           });
         }
       }
-      // Filter dotfiles among real entries unless -a.
-      const filtered = flagAll ? out : out.filter(e => !e.name.startsWith('.'));
-      filtered.sort((a, b) => a.name.localeCompare(b.name));
+      // Filter dotfiles among real entries unless -a. `-A` shows them too but
+      // never `.` or `..`, which this listing does not synthesise anyway.
+      const filtered = flagAll
+        ? (flagAlmostAll ? out.filter(e => e.name !== '.' && e.name !== '..') : out)
+        : out.filter(e => !e.name.startsWith('.'));
+      // -t sorts newest first and -S largest first; both fall back to name.
+      filtered.sort((a, b) => {
+        if (flagByTime && a.mtime !== b.mtime) return b.mtime - a.mtime;
+        if (flagBySize && a.size !== b.size) return b.size - a.size;
+        return a.name.localeCompare(b.name);
+      });
+      if (flagReverse) filtered.reverse();
       return filtered;
     }
 
+    /** `-F` appends a type sigil: `/` for a directory, `@` for a symlink. */
+    function classify(e: Entry): string {
+      if (!flagClassify) return '';
+      if (e.type === 'directory') return '/';
+      if (e.type === 'symlink') return '@';
+      return (e.mode & 0o111) ? '*' : '';
+    }
+
+    function fmtName(e: Entry): string {
+      const inode = flagInode ? `${statPathId(e.name)} ` : '';
+      return inode + e.name + classify(e);
+    }
+
     function fmtRow(e: Entry, long: boolean): string {
-      if (!long) return e.name;
+      if (!long) return fmtName(e);
       const isDir = e.type === 'directory';
       const isLink = e.type === 'symlink';
       const mode = unixModeString(e.mode, isDir, isLink);
-      const size = String(e.size).padStart(6, ' ');
+      const size = (flagHuman ? humanSize(e.size) : String(e.size)).padStart(6, ' ');
       const time = fmtTime(e.mtime);
       const arrow = isLink && e.linkTarget ? ` -> ${e.linkTarget}` : '';
       const user = flagNumeric ? String(e.uid) : unixUserLabel(vfs, e.uid);
       const group = flagNumeric ? String(e.gid) : unixGroupLabel(vfs, e.gid);
-      return `${mode}  1 ${user} ${group} ${size} ${time} ${e.name}${arrow}`;
+      const inode = flagInode ? `${statPathId(e.name)} ` : '';
+      return `${inode}${mode}  1 ${user} ${group} ${size} ${time} ${e.name}${classify(e)}${arrow}`;
     }
 
     // First pass: separate file-args from dir-args (real `ls` lists
@@ -2708,9 +2801,9 @@ function mkLs(vfs: UnixVfs): CmdFn {
       if (flagLong) {
         for (const e of fileEntries) ctx.stdout.write(fmtRow(e, true) + '\n');
       } else if (flagOne) {
-        for (const e of fileEntries) ctx.stdout.write(e.name + '\n');
+        for (const e of fileEntries) ctx.stdout.write(fmtName(e) + '\n');
       } else {
-        ctx.stdout.write(fileEntries.map(e => e.name).join('  ') + '\n');
+        ctx.stdout.write(fileEntries.map(fmtName).join('  ') + '\n');
       }
     }
     // Then dir-args (with header if multiple).
@@ -2724,9 +2817,9 @@ function mkLs(vfs: UnixVfs): CmdFn {
       if (flagLong) {
         for (const e of rows) ctx.stdout.write(fmtRow(e, true) + '\n');
       } else if (flagOne) {
-        for (const e of rows) ctx.stdout.write(e.name + '\n');
+        for (const e of rows) ctx.stdout.write(fmtName(e) + '\n');
       } else if (rows.length > 0) {
-        ctx.stdout.write(rows.map(e => e.name).join('  ') + '\n');
+        ctx.stdout.write(rows.map(fmtName).join('  ') + '\n');
       }
     }
     return exit;
@@ -2898,12 +2991,25 @@ function mkCat(vfs: UnixVfs): CmdFn {
   };
 }
 
+const RM_SPEC: ArgSpec = {
+  recursive: { type: 'boolean', short: 'rR' },
+  force: { type: 'boolean', short: 'f' },
+  dir: { type: 'boolean', short: 'd' },
+  verbose: { type: 'boolean', short: 'v' },
+};
+
 function mkRm(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const args = ctx.args;
-    const recursive = args.some(a => a === '-r' || a === '-R' || a === '-rf' || a === '-Rf' || a === '-rR' || a === '--recursive' || (a.startsWith('-') && !a.startsWith('--') && (a.includes('r') || a.includes('R'))));
-    const force = args.some(a => a === '-f' || a === '--force' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
-    const targets = args.filter(a => !a.startsWith('-'));
+    // `-i` is deliberately absent. There is no prompt to show here, and
+    // accepting it would delete without the confirmation that was asked for
+    // — the one case where a quietly ignored flag destroys data.
+    const opts = parseOptions(ctx, 'rm', RM_SPEC);
+    if (!opts) return 1;
+    const recursive = opts.flags.recursive === true;
+    const force = opts.flags.force === true;
+    const dirOnly = opts.flags.dir === true;
+    const verbose = opts.flags.verbose === true;
+    const targets = opts.positional;
     if (targets.length === 0) {
       if (force) return 0;  // POSIX: rm -f with no operands is silent success
       ctx.stderr.write('rm: missing operand\n');
@@ -2925,6 +3031,7 @@ function mkRm(vfs: UnixVfs): CmdFn {
       // either — it acts on the link node only.
       if (reg.isSymlink(fp)) {
         reg.delete(fp);
+        if (verbose) ctx.stdout.write(`removed '${t}'\n`);
         continue;
       }
       if (!vfs.exists(fp)) {
@@ -2935,16 +3042,24 @@ function mkRm(vfs: UnixVfs): CmdFn {
       }
       try {
         if (vfs.isDirectory(fp)) {
-          if (!recursive) {
+          if (!recursive && !dirOnly) {
             ctx.stderr.write(`rm: cannot remove '${t}': Is a directory\n`);
             exit = 1;
             continue;
           }
+          if (!recursive && vfs.readdir(fp).length > 0) {
+            // -d removes an empty directory only; -r is what empties one.
+            ctx.stderr.write(`rm: cannot remove '${t}': Directory not empty\n`);
+            exit = 1;
+            continue;
+          }
           // Recursive delete: walk children, unlink files, rmdir dirs.
-          rmDirRec(vfs, fp);
+          if (recursive) rmDirRec(vfs, fp);
+          else vfs.rmdir(fp);
         } else {
           vfs.unlink(fp);
         }
+        if (verbose) ctx.stdout.write(`removed '${t}'\n`);
       } catch (e: any) {
         // -f suppresses ENOENT only (file disappeared mid-loop); other
         // errors (ENOTEMPTY because of a logic bug, ENOTDIR mismatches,
@@ -2976,26 +3091,92 @@ function rmDirRec(vfs: UnixVfs, path: string): void {
   vfs.rmdir(path);
 }
 
+const TOUCH_SPEC: ArgSpec = {
+  'no-create': { type: 'boolean', short: 'c' },
+  time: { type: 'boolean', short: 'a' },
+  modify: { type: 'boolean', short: 'm' },
+  date: { type: 'string', short: 'd' },
+  reference: { type: 'string', short: 'r' },
+  stamp: { type: 'string', short: 't' },
+};
+
+/** `touch -t [[CC]YY]MMDDhhmm[.ss]`. */
+function parseTouchStamp(value: string): number | null {
+  const match = /^(?:(\d{2})?(\d{2}))?(\d{2})(\d{2})(\d{2})(\d{2})(?:\.(\d{2}))?$/.exec(value);
+  if (!match) return null;
+  const [, cc, yy, month, day, hour, minute, second] = match;
+  const year = yy === undefined
+    ? new Date().getFullYear()
+    : cc !== undefined
+      ? Number(cc) * 100 + Number(yy)
+      // POSIX: 69-99 mean 1969-1999, 00-68 mean 2000-2068.
+      : Number(yy) >= 69 ? 1900 + Number(yy) : 2000 + Number(yy);
+  const date = new Date(
+    year, Number(month) - 1, Number(day),
+    Number(hour), Number(minute), Number(second ?? 0),
+  );
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
+}
+
 function mkTouch(vfs: UnixVfs): CmdFn {
   return (ctx) => {
+    const opts = parseOptions(ctx, 'touch', TOUCH_SPEC);
+    if (!opts) return 1;
     const targetVfs = ctx.vfs ?? vfs;
-    for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-      const fp = resolvePath(ctx.cwd, f);
-      // Ensure parent dirs
-      const parts = fp.split('/');
-      for (let i = 1; i < parts.length; i++) {
-        const dir = parts.slice(0, i).join('/');
-        if (dir && !targetVfs.exists(dir)) targetVfs.mkdir(dir, { recursive: true });
+    const noCreate = opts.flags['no-create'] === true;
+    // Naming only one of -a/-m leaves the other timestamp alone; naming
+    // neither sets both, which is the default.
+    const onlyAtime = opts.flags.time === true && opts.flags.modify !== true;
+    const onlyMtime = opts.flags.modify === true && opts.flags.time !== true;
+
+    let stamp = Date.now();
+    if (typeof opts.flags.reference === 'string' && opts.flags.reference !== '') {
+      const refPath = resolvePath(ctx.cwd, opts.flags.reference);
+      try {
+        stamp = targetVfs.stat(refPath).mtime;
+      } catch {
+        ctx.stderr.write(`touch: failed to get attributes of '${opts.flags.reference}': No such file or directory\n`);
+        return 1;
       }
-      if (targetVfs.exists(fp) && !targetVfs.isDirectory(fp)) {
-        // Update mtime by re-writing the same content
-        const content = targetVfs.readFile(fp);
-        targetVfs.writeFile(fp, content);
-      } else if (!targetVfs.exists(fp)) {
+    } else if (typeof opts.flags.stamp === 'string' && opts.flags.stamp !== '') {
+      const parsed = parseTouchStamp(opts.flags.stamp);
+      if (parsed === null) {
+        ctx.stderr.write(`touch: invalid date format '${opts.flags.stamp}'\n`);
+        return 1;
+      }
+      stamp = parsed;
+    } else if (typeof opts.flags.date === 'string' && opts.flags.date !== '') {
+      const parsed = Date.parse(opts.flags.date);
+      if (Number.isNaN(parsed)) {
+        ctx.stderr.write(`touch: invalid date format '${opts.flags.date}'\n`);
+        return 1;
+      }
+      stamp = parsed;
+    }
+
+    let exit = 0;
+    for (const f of opts.positional) {
+      const fp = resolvePath(ctx.cwd, f);
+      if (!targetVfs.exists(fp)) {
+        if (noCreate) continue;
+        // Ensure parent dirs
+        const parts = fp.split('/');
+        for (let i = 1; i < parts.length; i++) {
+          const dir = parts.slice(0, i).join('/');
+          if (dir && !targetVfs.exists(dir)) targetVfs.mkdir(dir, { recursive: true });
+        }
         targetVfs.writeFile(fp, '');
       }
+      try {
+        // Stamping through utimes, rather than rewriting the file's own
+        // content back over itself, keeps `touch` O(1) on a large file.
+        targetVfs.utimes(fp, onlyMtime ? null : stamp, onlyAtime ? null : stamp);
+      } catch (error) {
+        ctx.stderr.write(`touch: setting times of '${f}': ${fsErrorMessage(error)}\n`);
+        exit = 1;
+      }
     }
-    return 0;
+    return exit;
   };
 }
 
@@ -3731,6 +3912,15 @@ function mkReadlink(vfs: UnixVfs): CmdFn {
   };
 }
 
+const SHA256SUM_SPEC: ArgSpec = {
+  check: { type: 'boolean', short: 'c' },
+  binary: { type: 'boolean', short: 'b' },
+  // There is no text/binary distinction on this filesystem, so -t is a
+  // genuine no-op; GNU documents it as the default.
+  text: { type: 'boolean', short: 't' },
+  status: { type: 'boolean' },
+};
+
 function mkSha256sum(vfs: UnixVfs): CmdFn {
   // W3: real SHA-256 via WebCrypto (crypto.subtle.digest).
   // Pre-W3 was a 4-state FNV-1a fake — second silent-correctness bug
@@ -3738,84 +3928,174 @@ function mkSha256sum(vfs: UnixVfs): CmdFn {
   // The harness type CmdFn = (ctx) => number | Promise<number> already
   // accepts async; convert sync→async to use SubtleCrypto.
   return async (ctx) => {
-    for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
+    const opts = parseOptions(ctx, 'sha256sum', SHA256SUM_SPEC);
+    if (!opts) return 1;
+    const digestOf = async (path: string): Promise<string> => {
+      const ab = await crypto.subtle.digest('SHA-256', vfs.readFile(path));
+      return Array.from(new Uint8Array(ab)).map(b => b.toString(16).padStart(2, '0')).join('');
+    };
+
+    if (opts.flags.check === true) {
+      let failures = 0;
+      let exit = 0;
+      for (const listFile of opts.positional) {
+        let listing: string;
+        try {
+          listing = vfs.readFileString(resolvePath(ctx.cwd, listFile));
+        } catch {
+          ctx.stderr.write(`sha256sum: ${listFile}: No such file or directory\n`);
+          exit = 1;
+          continue;
+        }
+        for (const line of listing.split('\n')) {
+          if (line.trim() === '') continue;
+          const match = /^([0-9a-fA-F]{64})\s[\s*](.*)$/.exec(line);
+          if (!match) {
+            ctx.stderr.write('sha256sum: improperly formatted SHA256 checksum line\n');
+            exit = 1;
+            continue;
+          }
+          const [, expected, name] = match;
+          try {
+            const actual = await digestOf(resolvePath(ctx.cwd, name));
+            const ok = actual === expected.toLowerCase();
+            if (!ok) failures++;
+            if (!(opts.flags.status === true)) {
+              ctx.stdout.write(`${name}: ${ok ? 'OK' : 'FAILED'}\n`);
+            }
+          } catch {
+            ctx.stderr.write(`sha256sum: ${name}: No such file or directory\n`);
+            failures++;
+          }
+        }
+      }
+      if (failures > 0) {
+        if (!(opts.flags.status === true)) {
+          ctx.stderr.write(`sha256sum: WARNING: ${failures} computed checksum${failures === 1 ? '' : 's'} did NOT match\n`);
+        }
+        return 1;
+      }
+      return exit;
+    }
+
+    let exit = 0;
+    for (const f of opts.positional) {
       const fp = resolvePath(ctx.cwd, f);
       try {
-        const content = vfs.readFileString(fp);
-        const buf = enc.encode(content);
-        const ab = await crypto.subtle.digest('SHA-256', buf);
-        const bytes = new Uint8Array(ab);
-        const hash = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        ctx.stdout.write(`${hash}  ${f}\n`);
-      } catch { ctx.stderr.write(`sha256sum: ${f}: No such file\n`); return 1; }
+        // GNU marks a binary read with '*'; -b requests it explicitly.
+        const marker = opts.flags.binary === true ? '*' : ' ';
+        ctx.stdout.write(`${await digestOf(fp)} ${marker}${f}\n`);
+      } catch { ctx.stderr.write(`sha256sum: ${f}: No such file\n`); exit = 1; }
     }
-    return 0;
+    return exit;
   };
+}
+
+const FILE_SPEC: ArgSpec = {
+  brief: { type: 'boolean', short: 'b' },
+  'mime-type': { type: 'boolean', short: 'i' },
+};
+
+/** One description per operand, so `-b` can drop the `name:` prefix. */
+function describeFile(vfs: UnixVfs, path: string, name: string, mime: boolean): string {
+  if (vfs.isDirectory(path)) return mime ? 'inode/directory' : 'directory';
+  const bytes = vfs.readFile(path);
+  let isBinary = false;
+  const scanLimit = Math.min(bytes.length, 8192);
+  for (let i = 0; i < scanLimit; i++) {
+    const b = bytes[i];
+    if (b === 0) { isBinary = true; break; }
+    // Bytes 0x01-0x08 + 0x0E-0x1F (excluding TAB/LF/CR/FF) are strong
+    // signals of non-text content.
+    if (b < 0x09 || (b > 0x0d && b < 0x20)) { isBinary = true; break; }
+  }
+  if (isBinary) {
+    const magic = (...expected: number[]) =>
+      bytes.length >= expected.length && expected.every((b, i) => bytes[i] === b);
+    if (magic(0x7f, 0x45, 0x4c, 0x46)) {
+      return mime ? 'application/x-executable' : 'ELF executable';
+    }
+    if (magic(0x00, 0x61, 0x73, 0x6d)) {
+      return mime ? 'application/wasm' : 'WebAssembly (wasm) binary module';
+    }
+    if (magic(0x89, 0x50, 0x4e, 0x47)) return mime ? 'image/png' : 'PNG image data';
+    if (magic(0x1f, 0x8b)) return mime ? 'application/gzip' : 'gzip compressed data';
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
+        && (bytes[2] === 0x03 || bytes[2] === 0x05)) {
+      return mime ? 'application/zip' : 'Zip archive data';
+    }
+    return mime ? 'application/octet-stream' : 'data';
+  }
+  const content = new TextDecoder('utf-8').decode(bytes);
+  if (content.startsWith('<!DOCTYPE') || content.startsWith('<html')) {
+    return mime ? 'text/html' : 'HTML document';
+  }
+  if (content.startsWith('{') || content.startsWith('[')) {
+    return mime ? 'application/json' : 'JSON data';
+  }
+  if (content.startsWith('#!')) {
+    return mime ? 'text/x-shellscript' : `script, ${content.split('\n')[0]}`;
+  }
+  if (mime) return 'text/plain';
+  if (name.endsWith('.ts') || name.endsWith('.tsx')) return 'TypeScript source';
+  if (name.endsWith('.js') || name.endsWith('.mjs')) return 'JavaScript source';
+  if (name.endsWith('.css')) return 'CSS stylesheet';
+  return `ASCII text, ${content.split('\n').length} lines`;
 }
 
 function mkFile(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-      const fp = resolvePath(ctx.cwd, f);
+    const opts = parseOptions(ctx, 'file', FILE_SPEC);
+    if (!opts) return 1;
+    const brief = opts.flags.brief === true;
+    const mime = opts.flags['mime-type'] === true;
+    let exit = 0;
+    for (const f of opts.positional) {
       try {
-        if (vfs.isDirectory(fp)) { ctx.stdout.write(`${f}: directory\n`); continue; }
-        // BUG-SWEEP-3 (2026-05-11): scan raw bytes for NUL or non-text
-        // bytes BEFORE attempting a UTF-8 decode. Pre-fix every binary
-        // file was reported as "UTF-8 text" because readFileString
-        // silently U+FFFD-substituted invalid sequences.
-        const bytes = vfs.readFile(fp);
-        let isBinary = false;
-        const scanLimit = Math.min(bytes.length, 8192);
-        for (let i = 0; i < scanLimit; i++) {
-          const b = bytes[i];
-          if (b === 0) { isBinary = true; break; }
-          // Bytes 0x01-0x08 + 0x0E-0x1F (excluding TAB/LF/CR/FF) are
-          // strong signals of non-text content.
-          if (b < 0x09 || (b > 0x0d && b < 0x20)) { isBinary = true; break; }
-        }
-        if (isBinary) {
-          // Magic-byte sniff for common formats.
-          if (bytes.length >= 4 && bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) {
-            ctx.stdout.write(`${f}: ELF executable\n`);
-          } else if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d) {
-            ctx.stdout.write(`${f}: WebAssembly (wasm) binary module\n`);
-          } else if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
-            ctx.stdout.write(`${f}: PNG image data\n`);
-          } else if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
-            ctx.stdout.write(`${f}: gzip compressed data\n`);
-          } else if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && (bytes[2] === 0x03 || bytes[2] === 0x05)) {
-            ctx.stdout.write(`${f}: Zip archive data\n`);
-          } else {
-            ctx.stdout.write(`${f}: data\n`);
-          }
-          continue;
-        }
-        const content = new TextDecoder('utf-8').decode(bytes);
-        if (content.startsWith('<!DOCTYPE') || content.startsWith('<html')) ctx.stdout.write(`${f}: HTML document\n`);
-        else if (content.startsWith('{') || content.startsWith('[')) ctx.stdout.write(`${f}: JSON data\n`);
-        else if (content.startsWith('#!')) ctx.stdout.write(`${f}: script, ${content.split('\n')[0]}\n`);
-        else if (f.endsWith('.ts') || f.endsWith('.tsx')) ctx.stdout.write(`${f}: TypeScript source\n`);
-        else if (f.endsWith('.js') || f.endsWith('.mjs')) ctx.stdout.write(`${f}: JavaScript source\n`);
-        else if (f.endsWith('.css')) ctx.stdout.write(`${f}: CSS stylesheet\n`);
-        else ctx.stdout.write(`${f}: ASCII text, ${content.split('\n').length} lines\n`);
-      } catch { ctx.stderr.write(`file: ${f}: No such file\n`); return 1; }
+        const description = describeFile(vfs, resolvePath(ctx.cwd, f), f, mime);
+        ctx.stdout.write(brief ? `${description}\n` : `${f}: ${description}\n`);
+      } catch {
+        ctx.stderr.write(`file: ${f}: No such file\n`);
+        exit = 1;
+      }
     }
-    return 0;
+    return exit;
   };
 }
 
+const XXD_SPEC: ArgSpec = {
+  len: { type: 'string', short: 'l' },
+  skip: { type: 'string', short: 's' },
+  cols: { type: 'string', short: 'c' },
+};
+
 function mkXxd(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const file = ctx.args.find(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'xxd', XXD_SPEC);
+    if (!opts) return 1;
+    const file = opts.positional[0];
     if (!file) { ctx.stderr.write('Usage: xxd FILE\n'); return 1; }
+    const numeric = (value: string | boolean, fallback: number): number | null => {
+      if (typeof value !== 'string' || value === '') return fallback;
+      const parsed = Number.parseInt(value, value.startsWith('0x') ? 16 : 10);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    };
+    const limit = numeric(opts.flags.len, 256);
+    const skip = numeric(opts.flags.skip, 0);
+    const cols = numeric(opts.flags.cols, 16);
+    if (limit === null || skip === null || cols === null || cols === 0) {
+      ctx.stderr.write('xxd: invalid number\n');
+      return 1;
+    }
     const fp = resolvePath(ctx.cwd, file);
     try {
-      const data = vfs.readFile(fp);
-      const len = Math.min(data.length, ctx.args.includes('-l') ? parseInt(ctx.args[ctx.args.indexOf('-l') + 1]) || 256 : 256);
-      for (let i = 0; i < len; i += 16) {
-        const hex = Array.from(data.slice(i, i + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        const ascii = Array.from(data.slice(i, i + 16)).map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('');
-        ctx.stdout.write(`${i.toString(16).padStart(8, '0')}: ${hex.padEnd(48)}  ${ascii}\n`);
+      const data = vfs.readFile(fp).slice(skip);
+      const len = Math.min(data.length, limit);
+      for (let i = 0; i < len; i += cols) {
+        const row = data.slice(i, Math.min(i + cols, len));
+        const hex = Array.from(row).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        const ascii = Array.from(row).map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('');
+        ctx.stdout.write(`${(skip + i).toString(16).padStart(8, '0')}: ${hex.padEnd(cols * 3 - 1)}  ${ascii}\n`);
       }
       return 0;
     } catch { ctx.stderr.write(`xxd: ${file}: No such file\n`); return 1; }
@@ -3923,6 +4203,22 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
   };
 }
 
+const LN_SPEC: ArgSpec = {
+  symbolic: { type: 'boolean', short: 's' },
+  force: { type: 'boolean', short: 'f' },
+  verbose: { type: 'boolean', short: 'v' },
+};
+
+/**
+ * `read` here is only a registry stub so `type read` and `which read` answer;
+ * the shell builtin always wins dispatch and does the real work. It still has
+ * to reject options it cannot honour rather than accept them and set an empty
+ * value, which is what a caller would otherwise see for `read -p`.
+ */
+const READ_SPEC: ArgSpec = {
+  raw: { type: 'boolean', short: 'r' },
+};
+
 export function registerUnixCommands(
   registry: any,
   sqliteVfs: SqliteVFS,
@@ -4006,10 +4302,12 @@ export function registerUnixCommands(
    */
   registry.register('ln', wrap((ctx) => {
     const vfs = unixVfsFor(sqliteVfs, ctx.cred);
-    const args = ctx.args;
-    const symbolic = args.some(a => a === '-s' || (a.startsWith('-') && !a.startsWith('--') && a.includes('s')));
-    const force = args.some(a => a === '-f' || (a.startsWith('-') && !a.startsWith('--') && a.includes('f')));
-    const positional = args.filter(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'ln', LN_SPEC);
+    if (!opts) return 1;
+    const symbolic = opts.flags.symbolic === true;
+    const force = opts.flags.force === true;
+    const verbose = opts.flags.verbose === true;
+    const positional = opts.positional;
     if (positional.length < 2) {
       ctx.stderr.write('ln: missing operand\n');
       return 1;
@@ -4030,6 +4328,7 @@ export function registerUnixCommands(
         try { vfs.unlink(linkFp); } catch { /* fail-soft */ }
       }
       reg.set(linkFp, target);
+      if (verbose) ctx.stdout.write(`'${linkPath}' -> '${target}'\n`);
       return 0;
     }
     // Hard link mode (default): file-copy semantics (legacy behaviour).
@@ -4067,8 +4366,9 @@ export function registerUnixCommands(
   // (interp.executeSimpleCommand checks builtins.get BEFORE
   // registry.resolve — index-Djm2onjx.js:5182-5186).
   registry.register('read', wrap((ctx) => {
-    const args = ctx.args.filter((a) => !a.startsWith('-'));
-    const varName = args[0] || 'REPLY';
+    const opts = parseOptions(ctx, 'read', READ_SPEC);
+    if (!opts) return 1;
+    const varName = opts.positional[0] || 'REPLY';
     ctx.env[varName] = '';
     return 0;
   }));

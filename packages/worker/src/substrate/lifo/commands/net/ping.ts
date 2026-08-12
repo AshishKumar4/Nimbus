@@ -9,9 +9,23 @@ const command: Command = async (ctx) => {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '-c') {
-      count = parseInt(args[++i] ?? '4', 10);
-      if (isNaN(count) || count < 1) count = 4;
-    } else if (!arg.startsWith('-')) {
+      const value = args[++i];
+      const parsed = parseInt(value ?? '', 10);
+      // A bad count used to fall back to 4 without a word.
+      if (isNaN(parsed) || parsed < 1) {
+        ctx.stderr.write(`ping: bad number of packets to transmit: ${value ?? ''}\n`);
+        return 1;
+      }
+      count = parsed;
+    } else if (arg.startsWith('-') && arg !== '-') {
+      ctx.stderr.write(
+        arg.startsWith('--')
+          ? `ping: unrecognized option '${arg}'\n`
+          : `ping: invalid option -- '${arg[1]}'\n`,
+      );
+      ctx.stderr.write('Usage: ping [-c count] host\n');
+      return 1;
+    } else {
       host = arg;
     }
   }

@@ -23,14 +23,39 @@ const TYPE_MAP: Record<number, string> = {
   28: 'AAAA',
 };
 
+const QUERY_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA'];
+
 const command: Command = async (ctx) => {
   let queryType = 'A';
   let domain: string | undefined;
+  let short = false;
 
-  for (const arg of ctx.args) {
-    if (arg.startsWith('-') || arg.startsWith('+')) continue;
+  for (let i = 0; i < ctx.args.length; i++) {
+    const arg = ctx.args[i];
+    // dig's `+flag` dialect and its `-t TYPE` form both used to be skipped
+    // wholesale, so `dig +short x` printed the full answer section.
+    if (arg === '+short') { short = true; continue; }
+    if (arg === '+noall' || arg === '+answer') continue;
+    if (arg === '-t') {
+      const value = ctx.args[++i];
+      if (value === undefined) {
+        ctx.stderr.write("dig: option '-t' requires an argument\n");
+        return 1;
+      }
+      if (!QUERY_TYPES.includes(value.toUpperCase())) {
+        ctx.stderr.write(`dig: unsupported query type '${value}'\n`);
+        return 1;
+      }
+      queryType = value.toUpperCase();
+      continue;
+    }
+    if (arg.startsWith('-') || arg.startsWith('+')) {
+      ctx.stderr.write(`dig: unrecognized option '${arg}'\n`);
+      ctx.stderr.write('Usage: dig [-t type] [+short] [type] domain\n');
+      return 1;
+    }
     const upper = arg.toUpperCase();
-    if (['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA'].includes(upper)) {
+    if (QUERY_TYPES.includes(upper)) {
       queryType = upper;
     } else {
       domain = arg;
@@ -57,6 +82,12 @@ const command: Command = async (ctx) => {
     }
 
     const data: DnsResponse = await response.json();
+
+    if (short) {
+      // `+short` prints just the answer data, one per line, and nothing else.
+      for (const ans of data.Answer ?? []) ctx.stdout.write(`${ans.data}\n`);
+      return 0;
+    }
 
     ctx.stdout.write(`; <<>> Lifo dig <<>> ${queryType} ${domain}\n`);
     ctx.stdout.write(`;; Got answer:\n`);

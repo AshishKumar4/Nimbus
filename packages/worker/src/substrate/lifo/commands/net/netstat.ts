@@ -22,10 +22,20 @@ export function createNetstatCommand(kernel: Kernel): Command {
       } else if (arg === '-a') {
         showAll = true;
       } else if (arg.startsWith('-')) {
-        // Support combined flags like -ri
-        if (arg.includes('r')) showRouting = true;
-        if (arg.includes('i')) showInterfaces = true;
-        if (arg.includes('a')) showAll = true;
+        // Combined flags like -ri, but a letter with no meaning here is an
+        // error rather than a silent no-op.
+        for (const ch of arg.slice(1)) {
+          if (ch === 'r') showRouting = true;
+          else if (ch === 'i') showInterfaces = true;
+          else if (ch === 'a') showAll = true;
+          // -n (numeric) is how this table is already printed.
+          else if (ch === 'n' || ch === 't' || ch === 'u') continue;
+          else {
+            ctx.stderr.write(`netstat: invalid option -- '${ch}'\n`);
+            ctx.stderr.write('Usage: netstat [-rian]\n');
+            return 1;
+          }
+        }
       }
     }
 

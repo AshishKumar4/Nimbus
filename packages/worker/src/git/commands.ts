@@ -387,7 +387,19 @@ export function registerGitCommands(
         }
 
         case 'add': {
-          const paths = subArgs.filter(a => !a.startsWith('-'));
+          // `-A`/`--all` means the same thing here as naming no path at all.
+          // Everything else was dropped, so `git add -n` (dry run) STAGED the
+          // files it was only supposed to list.
+          const addAllFlags = new Set(['-A', '--all', '--no-ignore-removal']);
+          const unknownFlag = subArgs.find(
+            (a: string) => a.startsWith('-') && a !== '-' && !addAllFlags.has(a),
+          );
+          if (unknownFlag) {
+            ctx.stderr.write(`error: unknown switch \`${unknownFlag}'\n`);
+            ctx.stderr.write('usage: git add [-A] [--] <pathspec>...\n');
+            return 129;
+          }
+          const paths = subArgs.filter((a: string) => !a.startsWith('-'));
           if (paths.length === 0 || paths.includes('.')) {
             // Add all
             const matrix = await git.statusMatrix({ fs, dir });
