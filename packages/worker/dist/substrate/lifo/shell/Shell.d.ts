@@ -64,6 +64,8 @@ export declare class Shell {
     private shellOptions;
     private traps;
     private readonlyNames;
+    /** Indexed arrays; `env` holds the scalars. A name lives in exactly one. */
+    private arrays;
     private commandIdentity;
     private tabCount;
     pasteQueue: string[];
@@ -139,6 +141,18 @@ export declare class Shell {
     private builtinWait;
     private resolveWaitTarget;
     private builtinUnset;
+    /**
+     * `local name`, `local name=value`, `local name=(word …)` and the `declare` /
+     * `typeset` spellings. `local` binds each name to the running function, so
+     * the value it had outside comes back when the function returns; `declare`
+     * only does so when it is itself inside a function, matching bash.
+     *
+     * Attribute flags (-a -A -i -r -x -g) are accepted. Only -r has an effect —
+     * the rest describe types this shell does not distinguish.
+     */
+    private builtinDeclare;
+    /** The right-hand side of a declaration: `(word …)` is an array literal. */
+    private assignDeclared;
     private assignEnv;
     private snapshotShellState;
     private restoreShellState;

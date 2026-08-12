@@ -1,5 +1,6 @@
 import { expandWord } from './expander.js';
 import { globMatch } from '../utils/glob.js';
+import { resolve } from '../utils/path.js';
 /**
  * Implementation of the `test` / `[` shell builtin.
  * Evaluates conditional expressions.
@@ -125,7 +126,7 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
     // Unary file tests
     if (arg.startsWith('-') && arg.length === 2 && pos + 1 < ops.length && isFileTestFlag(arg[1])) {
         const fileResult = evaluate
-            ? evaluateFileTest(arg[1], await valueAt(pos + 1), vfs)
+            ? evaluateFileTest(arg[1], await valueAt(pos + 1), vfs, context?.cwd)
             : false;
         return { value: fileResult, pos: pos + 2 };
     }
@@ -191,7 +192,14 @@ function hasUnquotedPart(word) {
 function hasPatternSyntax(value) {
     return value.includes('*') || value.includes('?') || value.includes('[');
 }
-function evaluateFileTest(flag, path, vfs) {
+/**
+ * File tests resolve their operand against the working directory, the way
+ * every other command does. Handing the VFS a bare `config.json` asked it
+ * about a path at the root, so `[ -f config.json ]` was false for a file
+ * sitting right there — silently taking the wrong branch rather than failing.
+ */
+function evaluateFileTest(flag, operand, vfs, cwd) {
+    const path = cwd === undefined ? operand : resolve(cwd, operand);
     switch (flag) {
         case 'e':
             return statOf(vfs, path) !== null;

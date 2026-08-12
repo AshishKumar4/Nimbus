@@ -343,15 +343,25 @@ export function parseZip(data: Uint8Array): ZipEntry[] {
 
 // ─── VFS helper: recursively collect files ───
 
+/**
+ * Members are named relative to the archive's working directory, so
+ * `tar -czf a.tgz src/f.txt` stores `src/f.txt`. Naming them relative to each
+ * operand's own parent instead flattened every multi-component operand to its
+ * basename, and the archive lost the directory the caller asked for.
+ */
 export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEntry[] {
   const entries: TarEntry[] = [];
+  const relBase = basePath === '/' ? '/' : basePath + '/';
 
-  function walk(absPath: string, relativeTo: string): void {
+  const member = (absPath: string): string =>
+    absPath.startsWith(relBase) ? absPath.slice(relBase.length) : absPath.replace(/^\/+/, '');
+
+  function walk(absPath: string): void {
     const stat = vfs.stat(absPath);
 
     if (stat.type === 'directory') {
       entries.push({
-        path: absPath.slice(relativeTo.length) || absPath,
+        path: member(absPath),
         data: new Uint8Array(0),
         type: 'directory',
         mode: stat.mode,
@@ -360,12 +370,11 @@ export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEn
 
       const children = vfs.readdir(absPath);
       for (const child of children) {
-        const childPath = absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`;
-        walk(childPath, relativeTo);
+        walk(absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`);
       }
     } else {
       entries.push({
-        path: absPath.slice(relativeTo.length) || absPath,
+        path: member(absPath),
         data: vfs.readFile(absPath),
         type: 'file',
         mode: stat.mode,
@@ -374,12 +383,7 @@ export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEn
     }
   }
 
-  for (const p of paths) {
-    const absPath = resolve(basePath, p);
-    const parent = dirname(absPath);
-    const relBase = parent === '/' ? '/' : parent + '/';
-    walk(absPath, relBase);
-  }
+  for (const p of paths) walk(resolve(basePath, p));
 
   return entries;
 }

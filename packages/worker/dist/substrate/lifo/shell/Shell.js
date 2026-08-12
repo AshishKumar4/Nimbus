@@ -1,7 +1,9 @@
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { VFSError } from '../kernel/vfs/index.js';
-import { ExitSignal, Interpreter, } from './interpreter.js';
+import { ExitSignal, Interpreter, assignScalar, } from './interpreter.js';
+import { lex } from './lexer.js';
+import { TokenKind } from './types.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
 import { signalAbortReason } from './signals.js';
@@ -65,6 +67,8 @@ export class Shell {
     };
     traps = new Map();
     readonlyNames = new Set();
+    /** Indexed arrays; `env` holds the scalars. A name lives in exactly one. */
+    arrays = new Map();
     commandIdentity;
     // Tab completion state
     tabCount = 0;
@@ -110,6 +114,7 @@ export class Shell {
         // Initialize interpreter
         this.interpreterConfig = {
             env: this.env,
+            arrays: this.arrays,
             getCwd: () => this.cwd,
             setCwd: (cwd) => { this.cwd = cwd; },
             vfs: this.vfs,
@@ -144,6 +149,9 @@ export class Shell {
         this.builtins.set('read', (args, _stdout, stderr, stdin, context) => this.builtinRead(args, stdin, stderr, context));
         this.builtins.set('wait', (args, _stdout, stderr) => this.builtinWait(args, stderr));
         this.builtins.set('unset', (args, _stdout, stderr) => this.builtinUnset(args, stderr));
+        this.builtins.set('local', (args, _stdout, stderr, _stdin, context) => this.builtinDeclare('local', args, stderr, context));
+        this.builtins.set('declare', (args, _stdout, stderr, _stdin, context) => this.builtinDeclare('declare', args, stderr, context));
+        this.builtins.set('typeset', (args, _stdout, stderr, _stdin, context) => this.builtinDeclare('typeset', args, stderr, context));
         this.builtins.set('jobs', (_args, stdout) => this.builtinJobs(stdout));
         this.builtins.set('fg', (args, stdout, stderr) => this.builtinFg(args, stdout, stderr));
         this.builtins.set('bg', (args, stdout, stderr) => this.builtinBg(args, stdout, stderr));
@@ -1256,7 +1264,10 @@ export class Shell {
     }
     async builtinUnset(args, stderr) {
         let exitCode = 0;
-        for (const name of args) {
+        for (const arg of args) {
+            // `unset arr[2]` clears one element; `unset arr` removes the variable.
+            const element = /^([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]*)\]$/.exec(arg);
+            const name = element === null ? arg : element[1];
             if (!isShellIdentifier(name))
                 continue;
             if (this.readonlyNames.has(name)) {
@@ -1264,22 +1275,99 @@ export class Shell {
                 exitCode = 1;
                 continue;
             }
-            delete this.env[name];
+            if (element === null) {
+                delete this.env[name];
+                this.arrays.delete(name);
+                continue;
+            }
+            const array = this.arrays.get(name);
+            if (array === undefined)
+                continue;
+            const index = Number.parseInt(element[2], 10);
+            if (Number.isNaN(index))
+                continue;
+            delete array[index < 0 ? array.length + index : index];
         }
         return exitCode;
+    }
+    /**
+     * `local name`, `local name=value`, `local name=(word …)` and the `declare` /
+     * `typeset` spellings. `local` binds each name to the running function, so
+     * the value it had outside comes back when the function returns; `declare`
+     * only does so when it is itself inside a function, matching bash.
+     *
+     * Attribute flags (-a -A -i -r -x -g) are accepted. Only -r has an effect —
+     * the rest describe types this shell does not distinguish.
+     */
+    async builtinDeclare(verb, args, stderr, context) {
+        let readonlyFlag = false;
+        let global = false;
+        let exitCode = 0;
+        for (const arg of args) {
+            if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
+                for (const flag of arg.slice(1)) {
+                    if (flag === 'r')
+                        readonlyFlag = true;
+                    else if (flag === 'g')
+                        global = true;
+                    else if (!'aAixlunft'.includes(flag)) {
+                        stderr.write(`${verb}: -${flag}: invalid option\n`);
+                        return 2;
+                    }
+                }
+                continue;
+            }
+            const eq = arg.indexOf('=');
+            const name = eq === -1 ? arg : arg.slice(0, eq);
+            if (!isShellIdentifier(name)) {
+                stderr.write(`${verb}: \`${arg}': not a valid identifier\n`);
+                exitCode = 1;
+                continue;
+            }
+            const scope = verb === 'local' || !global;
+            if (scope && context?.declareLocal(name) !== true && verb === 'local') {
+                stderr.write(`${verb}: can only be used in a function\n`);
+                return 1;
+            }
+            if (eq !== -1 && !this.assignDeclared(name, arg.slice(eq + 1), stderr))
+                exitCode = 1;
+            if (readonlyFlag)
+                this.readonlyNames.add(name);
+        }
+        return exitCode;
+    }
+    /** The right-hand side of a declaration: `(word …)` is an array literal. */
+    assignDeclared(name, text, stderr) {
+        if (this.readonlyNames.has(name)) {
+            stderr.write(`${name}: readonly variable\n`);
+            return false;
+        }
+        if (text.startsWith('(') && text.endsWith(')')) {
+            const elements = [];
+            for (const token of lex(text.slice(1, -1))) {
+                if (token.kind === TokenKind.Word)
+                    elements.push(unquoteWord(token));
+            }
+            delete this.env[name];
+            this.arrays.set(name, elements);
+            return true;
+        }
+        assignScalar(this.env, this.arrays, name, text);
+        return true;
     }
     assignEnv(name, value, stderr) {
         if (this.readonlyNames.has(name)) {
             stderr.write(`${name}: readonly variable\n`);
             return false;
         }
-        this.env[name] = value;
+        assignScalar(this.env, this.arrays, name, value);
         return true;
     }
     snapshotShellState() {
         return {
             cwd: this.cwd,
             env: { ...this.env },
+            arrays: cloneArrays(this.arrays),
             shellOptions: { ...this.shellOptions },
             traps: new Map(this.traps),
             readonlyNames: new Set(this.readonlyNames),
@@ -1288,6 +1376,7 @@ export class Shell {
     restoreShellState(frame) {
         this.cwd = frame.cwd;
         replaceRecord(this.env, frame.env);
+        replaceMap(this.arrays, frame.arrays);
         restoreShellOptions(this.shellOptions, frame.shellOptions);
         replaceMap(this.traps, frame.traps);
         replaceSet(this.readonlyNames, frame.readonlyNames);
@@ -1633,6 +1722,10 @@ function parseWaitTarget(arg) {
         return null;
     return { value: Number.parseInt(text, 10), byJob };
 }
+/** A lexed word's text with its quoting removed, the way expansion leaves it. */
+function unquoteWord(token) {
+    return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
+}
 function isShellIdentifier(value) {
     if (value.length === 0)
         return false;
@@ -1738,6 +1831,13 @@ function restoreShellOptions(target, source) {
     target.errexit = source.errexit;
     target.nounset = source.nounset;
     target.pipefail = source.pipefail;
+}
+/** Arrays are mutated in place, so a snapshot has to copy each one. */
+function cloneArrays(arrays) {
+    const copy = new Map();
+    for (const [name, elements] of arrays)
+        copy.set(name, [...elements]);
+    return copy;
 }
 function replaceMap(target, source) {
     target.clear();

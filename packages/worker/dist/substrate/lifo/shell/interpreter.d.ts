@@ -3,6 +3,7 @@ import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
+import { type CapturedCommand } from './expander.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 export declare class BreakSignal {
@@ -38,6 +39,8 @@ export interface TrapTable {
 }
 export interface BuiltinExecutionContext {
     vfs: VFS;
+    /** The working directory a builtin resolves its relative path operands against. */
+    cwd: string;
     stdin?: CommandInputStream;
     stdout: CommandOutputStream;
     stderr: CommandOutputStream;
@@ -48,6 +51,8 @@ export interface BuiltinExecutionContext {
     getPositionals(): readonly string[];
     setPositionals(args: string[]): void;
     executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
+    /** Bind a name to the running function. False outside one, where it is an error. */
+    declareLocal(name: string): boolean;
 }
 export interface InlineExecutionOptions {
     positionals?: string[];
@@ -91,6 +96,12 @@ type PositionalFrame = {
 };
 export interface InterpreterConfig {
     env: Record<string, string>;
+    /**
+     * Indexed arrays; `env` holds the scalars. A name lives in exactly one of
+     * them, so `$arr` and `${arr[0]}` cannot disagree, and only `unset` moves a
+     * name from one to the other.
+     */
+    arrays: Map<string, (string | undefined)[]>;
     getCwd: () => string;
     setCwd: (cwd: string) => void;
     vfs: VFS;
@@ -106,6 +117,12 @@ export interface InterpreterConfig {
     traps: TrapTable;
     readonlyNames: ReadonlySet<string>;
 }
+/**
+ * Assign a plain value to a name. A name that already holds an array keeps it:
+ * `a=(x y); a=plain` sets `a[0]` and leaves `a[1]` alone, which is bash's rule
+ * and the reason a variable's type only changes through `unset`.
+ */
+export declare function assignScalar(env: Record<string, string>, arrays: Map<string, (string | undefined)[]>, name: string, value: string): void;
 export declare class Interpreter {
     private config;
     private lastExitCode;
@@ -116,6 +133,8 @@ export declare class Interpreter {
     private persistentTerminalInputFds;
     private errexitSuppressionDepth;
     private exitTrapDepth;
+    /** One frame per running function call, holding the bindings `local` shadowed. */
+    private localFrames;
     constructor(config: InterpreterConfig);
     getLastExitCode(): number;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
@@ -155,8 +174,25 @@ export declare class Interpreter {
     private executeCompoundList;
     private executeSimpleCommand;
     private assignEnv;
+    /**
+     * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.
+     * Returns false when the name is readonly, which the caller reports.
+     */
+    private applyAssignment;
+    /** One variable's whole binding, so a scope can put it back exactly. */
+    private saveVariable;
+    private restoreVariable;
+    /** The array behind a subscripted assignment, promoting a scalar if needed. */
+    private arrayFor;
     private executeFunction;
-    executeCapture(input: string, io?: ExecutionIo): Promise<string>;
+    /**
+     * Bind a name to the running function, unset, so an assignment to it does
+     * not outlive the call. Shell variables are dynamically scoped, so a callee
+     * still sees its caller's locals — which is what bash does. Returns false
+     * outside a function, where `local` is an error.
+     */
+    private declareLocal;
+    executeCapture(input: string, io?: ExecutionIo): Promise<CapturedCommand>;
     private executeInline;
     private executeLineWithIo;
     private runExitTrap;

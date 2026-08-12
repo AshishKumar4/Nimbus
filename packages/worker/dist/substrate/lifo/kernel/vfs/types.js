@@ -30,6 +30,7 @@ export const ErrorCode = {
     EISDIR: 'EISDIR',
     ENOTEMPTY: 'ENOTEMPTY',
     EINVAL: 'EINVAL',
+    EXDEV: 'EXDEV',
 };
 export class VFSError extends Error {
     code;
