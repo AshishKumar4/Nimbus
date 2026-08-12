@@ -1,4 +1,5 @@
 import { parseArgs } from '../substrate/lifo/utils/args.js';
+import { parseNpmLogLevel } from './npm-log.js';
 const INSTALL_ARG_SPEC = {
     global: { type: 'boolean', short: 'g' },
     prefix: { type: 'string' },
@@ -34,6 +35,7 @@ export function parseNpmInstallInvocation(args) {
         packages: parsed.positional,
         global: parsed.flags.global === true,
         prefix: stringFlag(parsed.flags.prefix),
+        loglevel: parseNpmLogLevel(parsed.flags.loglevel),
     };
 }
 function stringFlag(value) {

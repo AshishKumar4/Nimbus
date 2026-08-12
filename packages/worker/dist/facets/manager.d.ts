@@ -270,6 +270,26 @@ interface FacetVfsState {
  * goes through here.
  */
 export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
+/**
+ * Drop everything a resident launch has finished reading, in place.
+ *
+ * The one-shot path releases its map at LOADER.load; this is the same policy
+ * for the path `spawnNode` takes, which is the path every attached-TTY npm bin
+ * takes — how a real agentic CLI starts. The generated source is a total
+ * encoding of the cells, the manifest and the metadata, and the only thing the
+ * rest of a launch reads off the state is `cursor`. Everything else is a second
+ * copy of the largest thing this DO builds — 22.9 MB for pi — held for exactly
+ * as long as the facet takes to boot on it.
+ *
+ * Holding it reset the session isolate with exceededMemory, and an isolate
+ * reset tears the terminal WebSocket down with no exit frame: the dead screen
+ * reading "[process terminal closed]".
+ *
+ * An emptied state can still generate a map — it would just generate one with
+ * no program in it — so this marks the state instead of trusting callers to
+ * stop.
+ */
+export declare function releaseResidentLaunchSources(vfsState: FacetVfsState): void;
 interface FacetVfsBundleSource {
     expression: string;
     imports: string;
