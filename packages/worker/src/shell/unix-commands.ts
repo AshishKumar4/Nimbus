@@ -999,7 +999,10 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
           let terminator: ';' | '+' | null = null;
           while (pos < args.length) {
             const a = next()!;
-            if (a === ';' || a === '\;') { terminator = ';'; break; }
+            // Exactly `;`, as GNU requires. The usual `\;` is the shell's
+            // escaping of it; a quoted '\;' keeps its backslash and GNU
+            // rejects that as a missing terminator, so this does too.
+            if (a === ';') { terminator = ';'; break; }
             // `+` terminates only directly after the {} placeholder.
             if (a === '+' && argv[argv.length - 1] === '{}') { terminator = '+'; break; }
             argv.push(a);

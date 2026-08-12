@@ -263,6 +263,12 @@ await check('-exec runs the command once per match',
   sorted("find extract -name a.ts -exec echo GOT {} \\;"),
   { stdout: 'GOT extract/proteus/src/a.ts\n' });
 
+// The terminator is exactly `;`. `\;` is the shell's escaping of it, so a
+// QUOTED '\;' keeps its backslash and GNU rejects it — measured, not assumed.
+await check('a quoted \\; is not a terminator',
+  "cd /home/user\nfind extract -name a.ts -exec echo GOT {} '\\;'\n",
+  { stdout: '', exitCode: 1, stderr: "find: missing argument to `-exec'\n" });
+
 // `-exec … +` batches every match into ONE invocation — one line carrying
 // every path, not one line per path.
 await check('-exec + passes every match in one invocation',
