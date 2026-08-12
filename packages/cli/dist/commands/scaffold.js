@@ -125,9 +125,9 @@ function renderPackageJson(name) {
             typecheck: 'tsc --noEmit',
         },
         dependencies: {
-            '@nimbus-sh/config': '^0.1.3',
-            '@nimbus-sh/worker': '^0.1.4',
-            '@nimbus-sh/sdk': '^0.1.4',
+            '@nimbus-sh/config': '^0.1.4',
+            '@nimbus-sh/worker': '^0.2.0',
+            '@nimbus-sh/sdk': '^0.2.0',
         },
         devDependencies: {
             '@cloudflare/workers-types': '^4.20250327.0',

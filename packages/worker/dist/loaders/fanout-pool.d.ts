@@ -125,6 +125,18 @@ export interface NimbusFanoutPoolOptions {
      * Not called on the in-DO path, which has no phases.
      */
     onDispatchPhase?: (width: number, elapsedMs: number) => void;
+    /**
+     * Cap on peer DOs this pool will spread one submitMany across. Defaults to
+     * MAX_PEER_FANOUT. Tasks beyond the cap bucket into the peers that exist and
+     * run through their in-peer pool, so lowering it trades peers for barriers
+     * without lowering total concurrency: each peer runs its bucket at
+     * concurrency 4, so N peers still resolve 4N tasks at once.
+     *
+     * A caller sets this when its per-task work is small enough that a peer per
+     * task buys nothing but round-trips — one task per peer costs ⌈tasks/
+     * FANOUT_PHASE_SIZE⌉ barriers, and each barrier costs a cold sibling start.
+     */
+    maxPeers?: number;
 }
 /**
  * Two-tier fan-out pool. Constructed by the supervisor DO; routes
