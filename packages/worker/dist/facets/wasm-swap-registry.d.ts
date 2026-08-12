@@ -119,8 +119,15 @@ export declare function formatSwapNotice(s: PackageSwapEntry): string;
  * Multi-line red error thrown when one or more top-level rejects fire.
  * Includes a leading summary line and a `try:` suggestion per package
  * (when present).
+ *
+ * `devOnly` names the rejects that only a devDependency asked for. Refusing a
+ * bundled 150 MB browser is right — a sandbox cannot run it, and fetching it
+ * to fail later is the same dishonesty as answering `uname -m` with a value
+ * whose binaries cannot execute. But when nothing the project RUNS wanted the
+ * package, refusing without naming the flag that skips it leaves the caller
+ * stuck at a wall that has a door in it.
  */
-export declare function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>): string;
+export declare function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>, devOnly?: ReadonlySet<string>): string;
 /**
  * Single-line yellow notice emitted for a transitive `[skip]`.
  *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
@@ -142,7 +149,7 @@ export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
 export declare class RegistryRejectError extends Error {
     readonly rejects: ReadonlyArray<PackageRejectEntry>;
     readonly __nimbus_registry_reject: true;
-    constructor(rejects: ReadonlyArray<PackageRejectEntry>);
+    constructor(rejects: ReadonlyArray<PackageRejectEntry>, devOnly?: ReadonlySet<string>);
 }
 /**
  * Robust check that survives the supervisor↔facet boundary: prototypes

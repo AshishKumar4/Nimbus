@@ -2200,6 +2200,7 @@ export function initSession(self, ws) {
             try {
                 const result = await self.npmInstaller.install(installCwd, {
                     packages: explicitPkgs.length > 0 ? explicitPkgs : undefined,
+                    production: installInvocation.production,
                     pid: ctx.pid,
                     npmLog,
                 });

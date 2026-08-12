@@ -1047,6 +1047,9 @@ export class NpmInstaller {
         const pkgJsonPath = projDir + '/package.json';
         if (!this.vfs.exists(pkgJsonPath))
             return specs;
+        // Which names only a devDependency asked for, so a reject can say whether
+        // anything this project RUNS actually needs the package it refused.
+        const devOnly = new Set();
         try {
             const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
             // Always include dependencies
@@ -1056,16 +1059,17 @@ export class NpmInstaller {
                 }
             }
             // Include devDeps unless production mode, skipping build-only
-            if (!production) {
-                for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
-                    if (!shouldSkipPackage(name)) {
-                        specs[name] = range;
-                    }
-                }
+            for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
+                if (shouldSkipPackage(name) || name in specs)
+                    continue;
+                if (production)
+                    continue;
+                specs[name] = range;
+                devOnly.add(name);
             }
         }
         catch { /* corrupt package.json */ }
-        return this.applyW6Registry(specs);
+        return this.applyW6Registry(specs, devOnly);
     }
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
@@ -1075,7 +1079,7 @@ export class NpmInstaller {
      *
      * Idempotent: running on already-swapped specs is a no-op.
      */
-    applyW6Registry(specs) {
+    applyW6Registry(specs, devOnly = new Set()) {
         const { specs: swapped, swaps } = applySwaps(specs);
         for (const s of swaps) {
             // onProgress is unguarded everywhere else in this file (rg the
@@ -1098,7 +1102,7 @@ export class NpmInstaller {
                     ctx: 'top',
                 });
             }
-            throw new RegistryRejectError(rejects);
+            throw new RegistryRejectError(rejects, devOnly);
         }
         return swapped;
     }

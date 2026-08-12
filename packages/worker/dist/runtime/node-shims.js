@@ -39,6 +39,7 @@ import { generateStreamsCode } from './streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
 import { generateUndiciShimCode } from './undici-shim.js';
 import { getExportsResolverJS } from '../_shared/exports-resolver.js';
+import { getTypescriptSpecifiersJS } from '../_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, } from '../constants.js';
 const STREAMS_CODE = generateStreamsCode();
@@ -46,6 +47,7 @@ const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
 const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
 const EXPORTS_RESOLVER_JS = getExportsResolverJS();
+const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
 // constants.ts for the rationale (create-astro preflight, etc.).
@@ -6660,6 +6662,19 @@ function __resolveFile(base) {
     const cand = base + ext;
     if (__fileExists(cand)) return cand;
   }
+  // TypeScript sources, probed only once every candidate above has missed, so
+  // the specifiers whose resolution changes are exactly those that resolve to
+  // nothing today. Must agree with the prefetch resolver or a file is shipped
+  // that this cannot find; both come from src/_shared/typescript-specifiers.ts
+  // and tests/unit/typescript-specifier-resolution.mjs compares them.
+  const baseTrim = base.replace(/\\/+$/, "");
+  for (const cand of __typescriptFallbackCandidates(baseTrim)) {
+    if (__pathIsFile(cand)) return cand;
+  }
+  for (const ext of __TYPESCRIPT_INDEX_CANDIDATES) {
+    const cand = baseTrim + ext;
+    if (__pathIsFile(cand)) return cand;
+  }
   return null;
 }
 
@@ -6674,6 +6689,11 @@ function __resolveFile(base) {
 // require|default|import and dropped subpath maps, wildcards, nested
 // conditions, the imports field, and null-target enforcement.
 ${EXPORTS_RESOLVER_JS}
+
+// ── TypeScript specifier fallbacks ────────────────────────────────────────
+// Emitted from src/_shared/typescript-specifiers.ts. Declares:
+// __typescriptFallbackCandidates, __TYPESCRIPT_INDEX_CANDIDATES.
+${TYPESCRIPT_SPECIFIERS_JS}
 
 /** Conditions for runtime CJS resolution (user-shell node). */
 const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];
