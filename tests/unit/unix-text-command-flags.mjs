@@ -211,4 +211,60 @@ const ignored = await run('tee', ['-i', 'out2.txt'], 'x\n');
 assert.equal(ignored.exitCode, 0, ignored.stderr);
 assert.equal(kernel.readFileString('home/user/out2.txt'), 'x\n');
 
+// ── the commands whose parsers had no refusal branch at all ───────────────
+// grep's long options fell past the short-option test into the positional
+// list, so `grep --colour PATTERN file` searched for the text "--colour".
+const grepLong = await run('grep', ['--colour', 'alpha', 'three.txt']);
+assert.equal(grepLong.exitCode, 2);
+assert.match(grepLong.stderr, /unrecognized option '--colour'/);
+assert.equal(grepLong.stdout, '', 'grep must not search for the flag itself');
+
+const grepShort = await run('grep', ['-Q', 'alpha', 'three.txt']);
+assert.equal(grepShort.exitCode, 2);
+assert.match(grepShort.stderr, /invalid option -- 'Q'/);
+
+// The flags grep does implement still work, so refusal is not over-broad.
+const grepWorks = await run('grep', ['-n', 'beta', 'three.txt']);
+assert.equal(grepWorks.exitCode, 0, grepWorks.stderr);
+assert.match(grepWorks.stdout, /2/);
+
+// find ignored any predicate it did not implement and returned EVERYTHING,
+// which reads as a successful answer to the question that was asked.
+const findBad = await run('find', ['.', '-perm', '600']);
+assert.equal(findBad.exitCode, 1);
+assert.match(findBad.stderr, /unknown predicate '-perm'/);
+assert.equal(findBad.stdout, '');
+
+const findWorks = await run('find', ['.', '-name', 'three.txt']);
+assert.equal(findWorks.exitCode, 0, findWorks.stderr);
+assert.match(findWorks.stdout, /three\.txt/);
+
+// awk carried a comment saying it ignored other flags on purpose.
+const awkBad = await run('awk', ['-Q', '{print}']);
+assert.equal(awkBad.exitCode, 2);
+assert.match(awkBad.stderr, /unrecognized option '-Q'/);
+
+// which and readlink dropped unknown letters out of a cluster.
+const whichBad = await run('which', ['-Q', 'ls']);
+assert.equal(whichBad.exitCode, 2);
+assert.match(whichBad.stderr, /invalid option -- 'Q'/);
+
+const readlinkBad = await run('readlink', ['-Q', 'three.txt']);
+assert.equal(readlinkBad.exitCode, 1);
+assert.match(readlinkBad.stderr, /invalid option -- 'Q'/);
+
+// base64 kept only -d, so `base64 -w 0` silently wrapped at the default.
+const base64Bad = await run('base64', ['-Q', 'three.txt']);
+assert.equal(base64Bad.exitCode, 1);
+assert.match(base64Bad.stderr, /invalid option -- 'Q'/);
+
+const base64Works = await run('base64', ['three.txt']);
+assert.equal(base64Works.exitCode, 0, base64Works.stderr);
+assert.match(base64Works.stdout, /^[A-Za-z0-9+/=\s]+$/);
+
+// xargs turned an unknown flag into the command name.
+const xargsBad = await run('xargs', ['-Q', 'echo'], 'a\n');
+assert.equal(xargsBad.exitCode, 1);
+assert.match(xargsBad.stderr, /unrecognized option '-Q'/);
+
 console.log('unix-text-command-flags: ok');

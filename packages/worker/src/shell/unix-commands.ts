@@ -341,6 +341,11 @@ function mkWhich(vfs: UnixVfs, registry: any): CmdFn {
         for (const ch of a.slice(1)) {
           if (ch === 'a') showAll = true;
           else if (ch === 's') silent = true;
+          else {
+            ctx.stderr.write(`which: invalid option -- '${ch}'\n`);
+            ctx.stderr.write('Usage: which [-as] NAME...\n');
+            return 2;
+          }
         }
         continue;
       }
@@ -876,7 +881,15 @@ function mkFind(vfs: UnixVfs): CmdFn {
       if (a === '-print0') { printNull = true; continue; }
       if (a === '-print') { /* default — noop */ continue; }
       if (a === '-delete') { deleteAction = true; continue; }
-      // Unknown predicate: ignore (real find would error)
+      if (a.startsWith('-')) {
+        // Ignoring a predicate silently answers a DIFFERENT question with a
+        // confident-looking result: `find . -perm 600` returned everything.
+        ctx.stderr.write(`find: unknown predicate '${a}'\n`);
+        return 1;
+      }
+      // A second path operand; real find walks each one.
+      ctx.stderr.write(`find: paths must precede expression: '${a}'\n`);
+      return 1;
     }
 
     const now = Date.now();
@@ -1017,8 +1030,20 @@ function mkGrep(vfs: UnixVfs): CmdFn {
           else if (ch === 'l') filesOnly = true;
           else if (ch === 'E') { /* ERE noop */ }
           else if (ch === 'F') (args as any).__fixedStrings = true;
+          else {
+            ctx.stderr.write(`grep: invalid option -- '${ch}'\n`);
+            ctx.stderr.write('Usage: grep [-rnicvlEFw] PATTERN [FILE...]\n');
+            return 2;
+          }
         }
         continue;
+      }
+      if (a.startsWith('--')) {
+        // Long options fell past the short-option test into the positional
+        // list, so `grep --colour PATTERN` searched for "--colour".
+        ctx.stderr.write(`grep: unrecognized option '${a}'\n`);
+        ctx.stderr.write('Usage: grep [-rnicvlEFw] PATTERN [FILE...]\n');
+        return 2;
       }
       positional.push(a);
     }
@@ -1631,8 +1656,16 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       } else if (a.startsWith('-F')) {
         const s = a.slice(2);
         if (s) separator = s.length === 1 ? s : new RegExp(s);
-      } else if (a.startsWith('-')) {
-        // Ignore other flags (silent compat).
+      } else if (a === '--') {
+        for (let j = i + 1; j < allArgs.length; j++) {
+          if (programArgs.length === 0) programArgs.push(allArgs[j]);
+          else fileArgs.push(allArgs[j]);
+        }
+        break;
+      } else if (a.startsWith('-') && a !== '-') {
+        ctx.stderr.write(`awk: unrecognized option '${a}'\n`);
+        ctx.stderr.write("Usage: awk [-F sep] [-v var=value] 'program' [file...]\n");
+        return 2;
       } else if (programArgs.length === 0) {
         programArgs.push(a);
       } else {
@@ -2271,7 +2304,7 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
     let batchSize = Infinity;
     let replaceTok: string | null = null;
     let nullSep = false;
-    while (args.length > 0 && args[0].startsWith('-')) {
+    while (args.length > 0 && args[0].startsWith('-') && args[0] !== '-') {
       const a = args.shift()!;
       if (a === '-n') {
         const n = parseInt(args.shift() || '', 10);
@@ -2287,9 +2320,9 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
       } else if (a === '--') {
         break;
       } else {
-        // Unknown flag — push back as cmd token (best-effort behavior)
-        args.unshift(a);
-        break;
+        ctx.stderr.write(`xargs: unrecognized option '${a}'\n`);
+        ctx.stderr.write('Usage: xargs [-0] [-n MAX] [-I REPLACE] COMMAND\n');
+        return 1;
       }
     }
 
@@ -3509,10 +3542,19 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
   };
 }
 
+const BASE64_SPEC: ArgSpec = {
+  decode: { type: 'boolean', short: 'd' },
+  wrap: { type: 'string', short: 'w' },
+  // Decoding already tolerates whitespace and rejects nothing else.
+  'ignore-garbage': { type: 'boolean', short: 'i' },
+};
+
 function mkBase64(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const decode = ctx.args.includes('-d') || ctx.args.includes('--decode');
-    const file = ctx.args.find(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'base64', BASE64_SPEC);
+    if (!opts) return 1;
+    const decode = opts.flags.decode === true;
+    const file = opts.positional[0];
     let input = ctx.stdin || '';
     if (file) {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, file)); }
@@ -3871,7 +3913,15 @@ function mkReadlink(vfs: UnixVfs): CmdFn {
     for (const a of args) {
       if (a === '-f' || a === '--canonicalize') { canonicalize = true; continue; }
       if (a.startsWith('-') && a !== '-') {
-        for (const ch of a.slice(1)) if (ch === 'f') canonicalize = true;
+        for (const ch of a.slice(1)) {
+          if (ch === 'f' || ch === 'e' || ch === 'm') canonicalize = true;
+          else if (ch === 'n') { /* no trailing newline is already the case */ }
+          else {
+            ctx.stderr.write(`readlink: invalid option -- '${ch}'\n`);
+            ctx.stderr.write('Usage: readlink [-f] FILE...\n');
+            return 1;
+          }
+        }
         continue;
       }
       targets.push(a);
