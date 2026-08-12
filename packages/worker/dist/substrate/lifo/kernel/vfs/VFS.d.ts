@@ -35,6 +35,12 @@ export declare class VFS {
     registerProvider(prefix: string, provider: VirtualProvider): void;
     getRoot(): INode;
     loadFromSerialized(root: INode): void;
+    /**
+     * `provider` is derived per call — a credentialed VFS hands back a fresh
+     * `as(cred)` view every time — so it is never a stable identity. `entry` is
+     * the mount itself and is what "are these two paths on the same filesystem"
+     * has to compare.
+     */
     private getProvider;
     private createNode;
     private resolveNode;

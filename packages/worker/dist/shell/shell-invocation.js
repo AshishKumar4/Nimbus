@@ -46,6 +46,12 @@ export function parseShellInvocation(shellName, rawArgs) {
             applyShellFlag(arg[1], true, options);
             continue;
         }
+        // Only the shell's own options, so `bash script --help` passes --help to
+        // the script the way every installer expects.
+        if (arg === '--help')
+            return { ok: true, invocation: { kind: 'usage', topic: 'help' } };
+        if (arg === '--version')
+            return { ok: true, invocation: { kind: 'usage', topic: 'version' } };
         if (LONG_MODE_FLAGS.has(arg))
             continue;
         if (arg.startsWith('--'))

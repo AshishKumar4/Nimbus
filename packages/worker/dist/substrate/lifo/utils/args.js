@@ -1,6 +1,7 @@
 export function parseArgs(args, spec) {
     const flags = {};
     const positional = [];
+    const unknown = [];
     // Build short -> long map
     const shortMap = {};
     for (const [long, def] of Object.entries(spec)) {
@@ -28,6 +29,9 @@ export function parseArgs(args, spec) {
                 if (name in spec) {
                     flags[name] = spec[name].type === 'boolean' ? true : value;
                 }
+                else {
+                    unknown.push(`--${name}`);
+                }
             }
             else {
                 const name = arg.slice(2);
@@ -39,6 +43,9 @@ export function parseArgs(args, spec) {
                         flags[name] = true;
                     }
                 }
+                else {
+                    unknown.push(arg);
+                }
             }
             continue;
         }
@@ -47,8 +54,10 @@ export function parseArgs(args, spec) {
         for (let j = 0; j < chars.length; j++) {
             const ch = chars[j];
             const longName = shortMap[ch];
-            if (!longName)
+            if (!longName) {
+                unknown.push(`-${ch}`);
                 continue;
+            }
             if (spec[longName].type === 'string') {
                 // Rest of chars or next arg is value
                 const rest = chars.slice(j + 1);
@@ -60,5 +69,5 @@ export function parseArgs(args, spec) {
             }
         }
     }
-    return { flags, positional };
+    return { flags, positional, unknown };
 }

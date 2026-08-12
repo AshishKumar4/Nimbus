@@ -131,6 +131,12 @@ export class VFS {
         this.root = root;
     }
     // ─── Provider resolution ───
+    /**
+     * `provider` is derived per call — a credentialed VFS hands back a fresh
+     * `as(cred)` view every time — so it is never a stable identity. `entry` is
+     * the mount itself and is what "are these two paths on the same filesystem"
+     * has to compare.
+     */
     getProvider(path) {
         const abs = this.toAbsolute(path);
         for (const entry of this.mounts) {
@@ -139,7 +145,7 @@ export class VFS {
                 const provider = this.cred && entry.provider.as
                     ? entry.provider.as(this.cred)
                     : entry.provider;
-                return { provider, subpath };
+                return { entry, provider, subpath };
             }
         }
         return null;
@@ -443,15 +449,15 @@ export class VFS {
         const newAbs = this.toAbsolute(newPath);
         const vpOld = this.getProvider(oldPath);
         const vpNew = this.getProvider(newPath);
-        // If both paths are on the same mount and it supports MountProvider, delegate
-        if (vpOld && vpNew && vpOld.provider === vpNew.provider && isMountProvider(vpOld.provider)) {
+        // Same mount and it supports MountProvider: delegate.
+        if (vpOld && vpNew && vpOld.entry === vpNew.entry && isMountProvider(vpOld.provider)) {
             vpOld.provider.rename(vpOld.subpath, vpNew.subpath);
             return;
         }
-        // If either path is on a provider that doesn't support rename, fall through
-        // to in-memory rename (or error if source is on a provider)
+        // Different filesystems. rename(2) reports EXDEV here rather than doing the
+        // copy itself; `mv` is what falls back to copy-then-unlink.
         if (vpOld) {
-            throw new VFSError(ErrorCode.EINVAL, `'${oldPath}': cannot rename across mount boundaries`);
+            throw new VFSError(ErrorCode.EXDEV, `'${oldPath}' -> '${newPath}': cross-device link`);
         }
         const { parent: oldParent, name: oldName } = this.resolveParent(oldPath);
         const node = oldParent.children.get(oldName);
@@ -459,7 +465,7 @@ export class VFS {
             throw new VFSError(ErrorCode.ENOENT, `'${oldPath}': no such file or directory`);
         }
         if (vpNew) {
-            throw new VFSError(ErrorCode.EINVAL, `'${newPath}': cannot rename across mount boundaries`);
+            throw new VFSError(ErrorCode.EXDEV, `'${oldPath}' -> '${newPath}': cross-device link`);
         }
         const { parent: newParent, name: newName } = this.resolveParent(newPath);
         node.name = newName;
@@ -472,7 +478,7 @@ export class VFS {
         const vpSrc = this.getProvider(src);
         const vpDest = this.getProvider(dest);
         // If both on the same MountProvider, delegate
-        if (vpSrc && vpDest && vpSrc.provider === vpDest.provider && isMountProvider(vpSrc.provider)) {
+        if (vpSrc && vpDest && vpSrc.entry === vpDest.entry && isMountProvider(vpSrc.provider)) {
             vpSrc.provider.copyFile(vpSrc.subpath, vpDest.subpath);
             return;
         }

@@ -61,6 +61,7 @@ export declare const ErrorCode: {
     readonly EISDIR: "EISDIR";
     readonly ENOTEMPTY: "ENOTEMPTY";
     readonly EINVAL: "EINVAL";
+    readonly EXDEV: "EXDEV";
 };
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
 export interface VirtualProvider {

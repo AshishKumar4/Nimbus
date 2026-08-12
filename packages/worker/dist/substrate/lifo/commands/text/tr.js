@@ -1,3 +1,10 @@
+import { parseArgs } from '../../utils/args.js';
+const spec = {
+    delete: { type: 'boolean', short: 'd' },
+    squeeze: { type: 'boolean', short: 's' },
+    complement: { type: 'boolean', short: 'c' },
+    truncate: { type: 'boolean', short: 't' },
+};
 function expandRange(set) {
     let result = '';
     let i = 0;
@@ -18,20 +25,14 @@ function expandRange(set) {
     return result;
 }
 const command = async (ctx) => {
-    let deleteMode = false;
-    let squeezeMode = false;
-    const sets = [];
-    for (const arg of ctx.args) {
-        if (arg === '-d') {
-            deleteMode = true;
-        }
-        else if (arg === '-s') {
-            squeezeMode = true;
-        }
-        else {
-            sets.push(arg);
-        }
+    const { flags, positional, unknown } = parseArgs(ctx.args, spec);
+    if (unknown.length > 0) {
+        ctx.stderr.write(`tr: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+        return 1;
     }
+    const deleteMode = flags.delete === true;
+    const squeezeMode = flags.squeeze === true;
+    const sets = positional;
     if (sets.length === 0) {
         ctx.stderr.write('tr: missing operand\n');
         return 1;
@@ -46,11 +47,24 @@ const command = async (ctx) => {
     }
     const set1 = expandRange(sets[0]);
     if (deleteMode) {
-        // Delete characters in set1
         let result = '';
         for (const ch of text) {
             if (!set1.includes(ch))
                 result += ch;
+        }
+        // `tr -ds SET1 SET2` deletes SET1 and then squeezes SET2, which is why
+        // the two sets are read separately rather than one being ignored.
+        if (squeezeMode && sets.length > 1) {
+            const squeezeSet = expandRange(sets[1]);
+            let squeezed = '';
+            let lastCh = '';
+            for (const ch of result) {
+                if (squeezeSet.includes(ch) && ch === lastCh)
+                    continue;
+                squeezed += ch;
+                lastCh = ch;
+            }
+            result = squeezed;
         }
         ctx.stdout.write(result);
         return 0;

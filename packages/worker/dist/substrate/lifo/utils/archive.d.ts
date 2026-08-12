@@ -18,5 +18,11 @@ export interface ZipEntry {
 }
 export declare function createZip(entries: ZipEntry[]): Uint8Array;
 export declare function parseZip(data: Uint8Array): ZipEntry[];
+/**
+ * Members are named relative to the archive's working directory, so
+ * `tar -czf a.tgz src/f.txt` stores `src/f.txt`. Naming them relative to each
+ * operand's own parent instead flattened every multi-component operand to its
+ * basename, and the archive lost the directory the caller asked for.
+ */
 export declare function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEntry[];
 //# sourceMappingURL=archive.d.ts.map
