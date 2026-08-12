@@ -1,1 +1,1 @@
-{"version":3,"file":"uname.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/system/uname.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAsB3C,QAAA,MAAM,OAAO,EAAE,OA6Bd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"uname.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/system/uname.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAgD3C,QAAA,MAAM,OAAO,EAAE,OAkDd,CAAC;AAEF,eAAe,OAAO,CAAC"}

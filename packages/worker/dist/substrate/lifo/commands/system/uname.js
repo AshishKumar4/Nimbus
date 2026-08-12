@@ -1,50 +1,94 @@
-import { parseArgs } from '../../utils/args.js';
-const info = {
-    sysname: 'Lifo',
-    nodename: 'lifo',
+/**
+ * Nimbus presents a Linux system: the syscall surface, the filesystem layout
+ * and the binaries that run on it are Linux's. Third-party install scripts
+ * gate on `uname -s` (`case "$(uname -s)" in Linux|Darwin)`), so anything else
+ * here makes every one of them refuse to install. The machine stays honest —
+ * the code that runs is wasm, not x86_64.
+ */
+const INFO = {
+    sysname: 'Linux',
+    nodename: 'nimbus',
     release: '1.0.0',
-    version: '#1',
+    version: '#1 Nimbus',
     machine: 'wasm',
-    operatingSystem: 'Lifo',
+    processor: 'unknown',
+    platform: 'unknown',
+    operatingSystem: 'GNU/Linux',
 };
-const spec = {
-    all: { type: 'boolean', short: 'a' },
-    'kernel-name': { type: 'boolean', short: 's' },
-    nodename: { type: 'boolean', short: 'n' },
-    'kernel-release': { type: 'boolean', short: 'r' },
-    'kernel-version': { type: 'boolean', short: 'v' },
-    machine: { type: 'boolean', short: 'm' },
-    'operating-system': { type: 'boolean', short: 'o' },
+const FIELDS = {
+    s: INFO.sysname,
+    n: INFO.nodename,
+    r: INFO.release,
+    v: INFO.version,
+    m: INFO.machine,
+    p: INFO.processor,
+    i: INFO.platform,
+    o: INFO.operatingSystem,
 };
+const LONG_FLAGS = {
+    '--kernel-name': 's',
+    '--nodename': 'n',
+    '--kernel-release': 'r',
+    '--kernel-version': 'v',
+    '--machine': 'm',
+    '--processor': 'p',
+    '--hardware-platform': 'i',
+    '--operating-system': 'o',
+};
+/** GNU's `-a` omits -p and -i when they are unknown, which here they always are. */
+const ALL_ORDER = ['s', 'n', 'r', 'v', 'm', 'o'];
+const PRINT_ORDER = ['s', 'n', 'r', 'v', 'm', 'p', 'i', 'o'];
+const USAGE = 'Usage: uname [-asnrvmpio]\n';
 const command = async (ctx) => {
-    const parsed = parseArgs('uname', ctx.args, spec);
-    if (!parsed.ok) {
-        ctx.stderr.write(parsed.error);
+    const selected = new Set();
+    for (const arg of ctx.args) {
+        if (arg === '--all') {
+            for (const flag of ALL_ORDER)
+                selected.add(flag);
+            continue;
+        }
+        if (arg.startsWith('--')) {
+            const field = LONG_FLAGS[arg];
+            // A long option must be matched whole. Scanning it as a cluster of
+            // short flags made `uname --bogus` pick the `o` and `s` out of the
+            // word and answer "Linux GNU/Linux" to a typo.
+            if (!field) {
+                ctx.stderr.write(`uname: unrecognized option '${arg}'\n`);
+                ctx.stderr.write(USAGE);
+                return 1;
+            }
+            selected.add(field);
+            continue;
+        }
+        if (arg.startsWith('-') && arg.length > 1) {
+            for (let i = 1; i < arg.length; i++) {
+                const ch = arg[i];
+                if (ch === 'a')
+                    for (const flag of ALL_ORDER)
+                        selected.add(flag);
+                else if (ch in FIELDS)
+                    selected.add(ch);
+                else {
+                    // Dropping the letter left `uname -Q` printing the kernel name, so
+                    // a caller could not tell a typo from a supported request.
+                    ctx.stderr.write(`uname: invalid option -- '${ch}'\n`);
+                    ctx.stderr.write(USAGE);
+                    return 1;
+                }
+            }
+            continue;
+        }
+        ctx.stderr.write(`uname: extra operand '${arg}'\n`);
+        ctx.stderr.write(USAGE);
         return 1;
     }
-    const { flags } = parsed;
-    if (flags.all) {
-        ctx.stdout.write(`${info.sysname} ${info.nodename} ${info.release} ${info.version} ${info.machine} ${info.operatingSystem}\n`);
+    if (selected.size === 0) {
+        ctx.stdout.write(INFO.sysname + '\n');
         return 0;
     }
     // GNU prints the selected fields in a fixed order, not the order given.
-    const parts = [];
-    if (flags['kernel-name'])
-        parts.push(info.sysname);
-    if (flags.nodename)
-        parts.push(info.nodename);
-    if (flags['kernel-release'])
-        parts.push(info.release);
-    if (flags['kernel-version'])
-        parts.push(info.version);
-    if (flags.machine)
-        parts.push(info.machine);
-    if (flags['operating-system'])
-        parts.push(info.operatingSystem);
-    // Selecting nothing means -s, which is also what a bare `uname` prints.
-    if (parts.length === 0)
-        parts.push(info.sysname);
-    ctx.stdout.write(parts.join(' ') + '\n');
+    const order = PRINT_ORDER.filter((f) => selected.has(f));
+    ctx.stdout.write(order.map((f) => FIELDS[f]).join(' ') + '\n');
     return 0;
 };
 export default command;
