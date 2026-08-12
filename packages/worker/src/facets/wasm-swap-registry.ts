@@ -612,18 +612,34 @@ export function formatSwapNotice(s: PackageSwapEntry): string {
  * Multi-line red error thrown when one or more top-level rejects fire.
  * Includes a leading summary line and a `try:` suggestion per package
  * (when present).
+ *
+ * `devOnly` names the rejects that only a devDependency asked for. Refusing a
+ * bundled 150 MB browser is right — a sandbox cannot run it, and fetching it
+ * to fail later is the same dishonesty as answering `uname -m` with a value
+ * whose binaries cannot execute. But when nothing the project RUNS wanted the
+ * package, refusing without naming the flag that skips it leaves the caller
+ * stuck at a wall that has a door in it.
  */
-export function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>): string {
+export function formatRejectError(
+  rejects: ReadonlyArray<PackageRejectEntry>,
+  devOnly: ReadonlySet<string> = new Set(),
+): string {
   if (rejects.length === 0) return '';
   const head = `${ANSI_RED}npm install rejected:${ANSI_RESET} ${rejects.length} package${rejects.length === 1 ? '' : 's'} not supported on Nimbus.`;
   const lines = rejects.map((r) => {
-    const main = `  ❌ ${r.from} — ${r.reason}`;
+    const dev = devOnly.has(r.from) ? ' (devDependency)' : '';
+    const main = `  ❌ ${r.from}${dev} — ${r.reason}`;
     if (r.suggest) {
       return `${main}\n     ${ANSI_DIM}try:${ANSI_RESET} ${r.suggest}`;
     }
     return main;
   });
-  return [head, ...lines].join('\n');
+  const allDev = rejects.every((r) => devOnly.has(r.from));
+  const footer = allDev
+    ? [`  ${ANSI_DIM}Nothing this project runs depends on ${rejects.length === 1 ? 'it' : 'them'}:`
+      + ` \`npm install --omit=dev\` installs the rest.${ANSI_RESET}`]
+    : [];
+  return [head, ...lines, ...footer].join('\n');
 }
 
 /**
@@ -655,8 +671,8 @@ export function formatTransitiveSkip(r: PackageRejectEntry): string {
 export class RegistryRejectError extends Error {
   readonly rejects: ReadonlyArray<PackageRejectEntry>;
   readonly __nimbus_registry_reject: true = true;
-  constructor(rejects: ReadonlyArray<PackageRejectEntry>) {
-    super(formatRejectError(rejects));
+  constructor(rejects: ReadonlyArray<PackageRejectEntry>, devOnly?: ReadonlySet<string>) {
+    super(formatRejectError(rejects, devOnly));
     this.name = 'RegistryRejectError';
     this.rejects = rejects;
   }
