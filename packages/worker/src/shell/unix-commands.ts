@@ -20,6 +20,11 @@ import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { fileTypeChar, isCharacterDevice } from '../substrate/lifo/kernel/vfs/index.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import {
+  parseArgs,
+  type ArgSpec,
+  type ParseOptions,
+} from '../substrate/lifo/utils/args.js';
+import {
   findUnixGroupName,
   findUnixUserName,
   parseChownOwnership,
@@ -62,6 +67,28 @@ function withInvocationVfs(
     sqliteVfs,
     requireVfsCred(ctx.cred, 'unix command dispatch'),
   ))(ctx);
+}
+
+/**
+ * Parse `ctx.args` against a command's declared options, writing GNU's
+ * diagnostic and returning null when one is not recognised.
+ *
+ * Every command here used to keep its operands with
+ * `args.filter(a => !a.startsWith('-'))`, which threw away flags it did not
+ * implement. That is silent: `wc -m` reported lines and words, `cat -n`
+ * printed unnumbered lines, and nothing said so. A caller has no way to spot
+ * the difference, so an unimplemented option has to be an error.
+ */
+function parseOptions(
+  ctx: Ctx,
+  name: string,
+  spec: ArgSpec,
+  options?: ParseOptions,
+): { flags: Record<string, string | boolean>; positional: string[] } | null {
+  const parsed = parseArgs(name, ctx.args, spec, options);
+  if (parsed.ok) return parsed;
+  ctx.stderr.write(parsed.error);
+  return null;
 }
 
 function fsErrorMessage(error: unknown): string {
@@ -1124,9 +1151,21 @@ function mkHead(_vfs: UnixVfs): CmdFn {
   };
 }
 
-type HeadArgs = { lines: number; bytes?: number; files: string[]; error?: string };
+type HeadArgs = {
+  lines: number;
+  bytes?: number;
+  files: string[];
+  headers?: 'always' | 'never';
+  error?: string;
+};
 
-/** `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`. */
+/**
+ * `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`.
+ *
+ * `head` and `tail` take the same options, so they share this rather than
+ * hand-rolling one each — which is how `tail` ended up recognising only `-n`
+ * and dropping the rest into its operand list.
+ */
 function parseHeadArgs(args: string[]): HeadArgs {
   const result: HeadArgs = { lines: 10, files: [] };
   for (let i = 0; i < args.length; i++) {
@@ -1144,8 +1183,10 @@ function parseHeadArgs(args: string[]): HeadArgs {
       if (option.flag === 'c') result.bytes = count; else result.lines = count;
     } else if (/^-\d+$/.test(arg)) {
       result.lines = Number.parseInt(arg.slice(1), 10);
-    } else if (arg === '-q' || arg === '--quiet' || arg === '-v' || arg === '--verbose') {
-      continue;
+    } else if (arg === '-q' || arg === '--quiet' || arg === '--silent') {
+      result.headers = 'never';
+    } else if (arg === '-v' || arg === '--verbose') {
+      result.headers = 'always';
     } else if (arg !== '-' && arg.startsWith('-') && arg.length > 1) {
       return { ...result, error: `unrecognized option '${arg}'` };
     } else {
@@ -1250,58 +1291,103 @@ function readWholeFileString(ctx: Ctx, path: string): string {
   return dec.decode(ctx.vfs.readFile(path));
 }
 
+/** Last `limit` bytes of each operand, for `tail -c`. */
+function tailBytes(text: string, limit: number): string {
+  const bytes = enc.encode(text);
+  return dec.decode(bytes.slice(Math.max(0, bytes.length - limit)));
+}
+
 function mkTail(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    let n = 10;
-    const nIdx = ctx.args.indexOf('-n');
-    if (nIdx >= 0) n = parseInt(ctx.args[nIdx + 1]) || 10;
-    const files = ctx.args.filter(a => !a.startsWith('-') && (ctx.args.indexOf(a) !== nIdx + 1));
-    if (files.length === 0 && ctx.stdin) {
-      const lines = ctx.stdin.split('\n');
-      ctx.stdout.write(lines.slice(-n).join('\n') + '\n');
+    const parsed = parseHeadArgs(ctx.args);
+    if (parsed.error) { ctx.stderr.write(`tail: ${parsed.error}\n`); return 1; }
+    const { lines: n, bytes, files } = parsed;
+
+    const take = (content: string): string => {
+      if (bytes !== undefined) return tailBytes(content, bytes);
+      const split = content.split('\n');
+      // A trailing newline terminates the last line rather than starting an
+      // empty one; counting it would make `tail -n 1` emit a blank line.
+      if (split[split.length - 1] === '') split.pop();
+      return split.slice(-n).join('\n') + '\n';
+    };
+
+    if (files.length === 0) {
+      if (ctx.stdin) ctx.stdout.write(take(ctx.stdin));
       return 0;
     }
+    const showHeaders = parsed.headers === 'always'
+      || (parsed.headers !== 'never' && files.length > 1);
+    let exit = 0;
+    let first = true;
     for (const f of files) {
       const fp = resolvePath(ctx.cwd, f);
       try {
         const content = vfs.readFileString(fp);
-        if (files.length > 1) ctx.stdout.write(`==> ${f} <==\n`);
-        const lines = content.split('\n');
-        ctx.stdout.write(lines.slice(-n).join('\n') + '\n');
-      } catch { ctx.stderr.write(`tail: ${f}: No such file\n`); return 1; }
+        if (showHeaders) {
+          ctx.stdout.write(`${first ? '' : '\n'}==> ${f} <==\n`);
+        }
+        ctx.stdout.write(take(content));
+        first = false;
+      } catch (error) {
+        ctx.stderr.write(`tail: ${f}: ${fsErrorMessage(error)}\n`);
+        exit = 1;
+      }
     }
-    return 0;
+    return exit;
   };
 }
 
+const WC_SPEC: ArgSpec = {
+  lines: { type: 'boolean', short: 'l' },
+  words: { type: 'boolean', short: 'w' },
+  bytes: { type: 'boolean', short: 'c' },
+  chars: { type: 'boolean', short: 'm' },
+  'max-line-length': { type: 'boolean', short: 'L' },
+};
+
 function mkWc(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const flags = ctx.args.filter(a => a.startsWith('-'));
-    const hasFlags = flags.some(f => f.includes('l') || f.includes('w') || f.includes('c'));
-    const countLines = !hasFlags || ctx.args.includes('-l');
-    const countWords = !hasFlags || ctx.args.includes('-w');
-    const countBytes = !hasFlags || ctx.args.includes('-c');
-    const files = ctx.args.filter(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'wc', WC_SPEC);
+    if (!opts) return 1;
+    // Selecting nothing means GNU's default trio, but a cluster like `-lw`
+    // selects exactly what it names. The old `args.includes('-l')` test could
+    // not see inside a cluster, so `wc -lw` selected no columns at all and
+    // printed a bare filename.
+    const selected =
+      opts.flags.lines || opts.flags.words || opts.flags.bytes ||
+      opts.flags.chars || opts.flags['max-line-length'];
+    const countLines = !selected || opts.flags.lines === true;
+    const countWords = !selected || opts.flags.words === true;
+    const countBytes = !selected || opts.flags.bytes === true;
+    const countChars = opts.flags.chars === true;
+    const maxLineLength = opts.flags['max-line-length'] === true;
+    const files = opts.positional;
     // BUG-SWEEP-3 (2026-05-11): byte count uses raw Uint8Array length,
     // not enc.encode(decoded) length. Pre-fix, binary files were
     // decoded as UTF-8 (substituting U+FFFD for invalid sequences) and
     // re-encoded — turning each invalid byte into 3 bytes. A 5-byte
     // file `[ff fe 00 01 42]` reported 9 bytes; `stat` reported the
     // correct 5. Fixed by reading raw bytes when -c is requested.
+    const needsText = countLines || countWords || countChars || maxLineLength;
     function wcEmit(rawBytes: Uint8Array, label: string) {
-      const text = (countLines || countWords)
-        ? new TextDecoder('utf-8').decode(rawBytes)
-        : '';
-      const lines = (countLines || countWords)
+      const text = needsText ? new TextDecoder('utf-8').decode(rawBytes) : '';
+      const lines = needsText
         ? text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
         : 0;
-      const words = (countLines || countWords)
-        ? text.split(/\s+/).filter(Boolean).length
-        : 0;
+      const words = needsText ? text.split(/\s+/).filter(Boolean).length : 0;
       const parts: string[] = [];
+      // GNU prints the columns in a fixed order regardless of flag order.
       if (countLines) parts.push(String(lines).padStart(8));
       if (countWords) parts.push(String(words).padStart(8));
+      // `-m` counts characters, `-c` counts bytes; they differ on any
+      // multi-byte input, which is exactly why `-m` must not mean `-c`.
+      if (countChars) parts.push(String([...text].length).padStart(8));
       if (countBytes) parts.push(String(rawBytes.length).padStart(8));
+      if (maxLineLength) {
+        const longest = text.split('\n').reduce((n, line) => Math.max(n, [...line].length), 0);
+        parts.push(String(longest).padStart(8));
+      }
       ctx.stdout.write(parts.join('') + (label ? ' ' + label : '') + '\n');
     }
     if (files.length === 0 && ctx.stdin) {
@@ -1319,24 +1405,92 @@ function mkWc(vfs: UnixVfs): CmdFn {
   };
 }
 
+const SORT_SPEC: ArgSpec = {
+  reverse: { type: 'boolean', short: 'r' },
+  numeric: { type: 'boolean', short: 'n' },
+  unique: { type: 'boolean', short: 'u' },
+  'ignore-case': { type: 'boolean', short: 'f' },
+  'ignore-leading-blanks': { type: 'boolean', short: 'b' },
+  'human-numeric': { type: 'boolean', short: 'h' },
+  key: { type: 'string', short: 'k' },
+  'field-separator': { type: 'string', short: 't' },
+};
+
+const HUMAN_SUFFIXES: Record<string, number> = {
+  K: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15,
+};
+
+/** `sort -h` reads `1.5K` / `2G` the way GNU does. */
+function humanNumericValue(text: string): number {
+  const match = /^\s*([+-]?[\d.]+)\s*([KMGTP])?/i.exec(text);
+  if (!match) return 0;
+  const scale = match[2] ? HUMAN_SUFFIXES[match[2].toUpperCase()] : 1;
+  return (parseFloat(match[1]) || 0) * scale;
+}
+
 function mkSort(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const files = ctx.args.filter(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'sort', SORT_SPEC);
+    if (!opts) return 2;  // GNU sort exits 2 on a bad option, not 1.
+    const files = opts.positional;
     let input = ctx.stdin || '';
     // Read from file if specified
     if (files.length > 0 && !input) {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, files[0])); }
-      catch { ctx.stderr.write(`sort: ${files[0]}: No such file\n`); return 1; }
+      catch { ctx.stderr.write(`sort: ${files[0]}: No such file\n`); return 2; }
     }
     const lines = input.split('\n');
     // Keep trailing empty line if input ends with newline
     if (lines[lines.length - 1] === '') lines.pop();
-    const reverse = ctx.args.includes('-r');
-    const numeric = ctx.args.includes('-n');
-    const unique = ctx.args.includes('-u');
-    lines.sort((a, b) => numeric ? parseFloat(a) - parseFloat(b) : a.localeCompare(b));
+    const reverse = opts.flags.reverse === true;
+    const numeric = opts.flags.numeric === true;
+    const human = opts.flags['human-numeric'] === true;
+    const unique = opts.flags.unique === true;
+    const foldCase = opts.flags['ignore-case'] === true;
+    const skipBlanks = opts.flags['ignore-leading-blanks'] === true;
+    // Unset string flags default to '', which is not a usable separator.
+    const separator = opts.flags['field-separator'] || null;
+
+    // `-k START[,END]` selects fields START..END, and END defaults to the end
+    // of the LINE — not to START. `sort -k1` therefore compares whole lines,
+    // which is why `-k1 -u` keeps rows that differ only past field 1.
+    const keySpec = opts.flags.key;
+    let keyStart = 0;
+    let keyEnd = Infinity;
+    if (typeof keySpec === 'string' && keySpec !== '') {
+      const match = /^(\d+)(?:\.\d+)?[a-zA-Z]*(?:,(\d+)(?:\.\d+)?[a-zA-Z]*)?$/.exec(keySpec);
+      if (!match || match[1] === '0') {
+        ctx.stderr.write(`sort: invalid number at field start: invalid count at start of '${keySpec}'\n`);
+        return 2;
+      }
+      keyStart = Number.parseInt(match[1], 10);
+      if (match[2] !== undefined) keyEnd = Number.parseInt(match[2], 10);
+    }
+
+    const keyOf = (line: string): string => {
+      let key = line;
+      if (keyStart > 0) {
+        const fields = separator === null
+          ? line.trim().split(/\s+/)
+          : line.split(separator as string);
+        key = fields.slice(keyStart - 1, keyEnd).join(separator === null ? ' ' : separator as string);
+      }
+      if (skipBlanks) key = key.replace(/^\s+/, '');
+      return foldCase ? key.toLowerCase() : key;
+    };
+
+    lines.sort((a, b) => {
+      const ka = keyOf(a);
+      const kb = keyOf(b);
+      if (human) return humanNumericValue(ka) - humanNumericValue(kb);
+      if (numeric) return (parseFloat(ka) || 0) - (parseFloat(kb) || 0);
+      return ka.localeCompare(kb);
+    });
     if (reverse) lines.reverse();
-    const result = unique ? [...new Set(lines)] : lines;
+    // `-u` drops adjacent duplicates by SORT KEY, not by whole line.
+    const result = unique
+      ? lines.filter((line, i) => i === 0 || keyOf(line) !== keyOf(lines[i - 1]))
+      : lines;
     ctx.stdout.write(result.join('\n') + '\n');
     return 0;
   };
@@ -2172,22 +2326,36 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
   };
 }
 
+const TEE_SPEC: ArgSpec = {
+  append: { type: 'boolean', short: 'a' },
+  // There are no signals to ignore in this shell, so -i is a true no-op.
+  'ignore-interrupts': { type: 'boolean', short: 'i' },
+};
+
 function mkTee(vfs: UnixVfs): CmdFn {
   return (ctx) => {
+    const opts = parseOptions(ctx, 'tee', TEE_SPEC);
+    if (!opts) return 1;
     const input = ctx.stdin || '';
-    const append = ctx.args.includes('-a');
-    const files = ctx.args.filter(a => !a.startsWith('-'));
+    const append = opts.flags.append === true;
     ctx.stdout.write(input);
-    for (const f of files) {
+    let exit = 0;
+    for (const f of opts.positional) {
       const fp = resolvePath(ctx.cwd, f);
-      if (append && vfs.exists(fp)) {
-        const existing = vfs.readFileString(fp);
-        vfs.writeFile(fp, existing + input);
-      } else {
-        vfs.writeFile(fp, input);
+      try {
+        if (append && vfs.exists(fp)) {
+          const existing = vfs.readFileString(fp);
+          vfs.writeFile(fp, existing + input);
+        } else {
+          vfs.writeFile(fp, input);
+        }
+      } catch (error) {
+        // tee keeps writing its remaining operands after one fails.
+        ctx.stderr.write(`tee: ${f}: ${fsErrorMessage(error)}\n`);
+        exit = 1;
       }
     }
-    return 0;
+    return exit;
   };
 }
 
@@ -2573,12 +2741,122 @@ function mkLs(vfs: UnixVfs): CmdFn {
  * Operands stream through one shared writer, so concatenating six 1 MB files
  * emits 6 MB in 64 KiB steps rather than materialising each file whole.
  */
+const CAT_SPEC: ArgSpec = {
+  number: { type: 'boolean', short: 'n' },
+  'number-nonblank': { type: 'boolean', short: 'b' },
+  'show-ends': { type: 'boolean', short: 'E' },
+  'show-tabs': { type: 'boolean', short: 'T' },
+  'show-nonprinting': { type: 'boolean', short: 'v' },
+  'squeeze-blank': { type: 'boolean', short: 's' },
+  'show-all': { type: 'boolean', short: 'A' },
+  e: { type: 'boolean', short: 'e' },
+  t: { type: 'boolean', short: 't' },
+  // GNU documents -u as "(ignored)"; it is a genuine no-op here too.
+  u: { type: 'boolean', short: 'u' },
+};
+
+interface CatFormat {
+  number: boolean;
+  numberNonblank: boolean;
+  showEnds: boolean;
+  showTabs: boolean;
+  showNonprinting: boolean;
+  squeezeBlank: boolean;
+}
+
+function catFormatFrom(flags: Record<string, string | boolean>): CatFormat | null {
+  // -A is -vET, -e is -vE, -t is -vT.
+  const all = flags['show-all'] === true;
+  const format: CatFormat = {
+    number: flags.number === true,
+    numberNonblank: flags['number-nonblank'] === true,
+    showEnds: all || flags.e === true || flags['show-ends'] === true,
+    showTabs: all || flags.t === true || flags['show-tabs'] === true,
+    showNonprinting:
+      all || flags.e === true || flags.t === true || flags['show-nonprinting'] === true,
+    squeezeBlank: flags['squeeze-blank'] === true,
+  };
+  return Object.values(format).some(Boolean) ? format : null;
+}
+
+/** GNU renders control bytes as `^X`, DEL as `^?`, and high bytes as `M-`. */
+function catVisible(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code === 9 || code === 10) out += ch;
+    else if (code < 32) out += '^' + String.fromCharCode(code + 64);
+    else if (code === 127) out += '^?';
+    else if (code >= 128 && code < 160) out += 'M-^' + String.fromCharCode(code - 128 + 64);
+    else out += ch;
+  }
+  return out;
+}
+
+function catFormatText(text: string, format: CatFormat, state: { line: number }): string {
+  const endsWithNewline = text.endsWith('\n');
+  const lines = text.split('\n');
+  if (endsWithNewline) lines.pop();
+
+  const out: string[] = [];
+  let blankRun = 0;
+  for (let line of lines) {
+    if (format.squeezeBlank) {
+      blankRun = line === '' ? blankRun + 1 : 0;
+      if (blankRun > 1) continue;
+    }
+    if (format.showNonprinting) line = catVisible(line);
+    if (format.showTabs) line = line.replace(/\t/g, '^I');
+    if (format.showEnds) line += '$';
+    // -b numbers only non-blank lines and overrides -n, as GNU does.
+    if (format.numberNonblank) {
+      line = line === '' || (format.showEnds && line === '$')
+        ? line
+        : `${String(++state.line).padStart(6)}\t${line}`;
+    } else if (format.number) {
+      line = `${String(++state.line).padStart(6)}\t${line}`;
+    }
+    out.push(line);
+  }
+  return out.join('\n') + (endsWithNewline || out.length > 0 ? '\n' : '');
+}
+
 function mkCat(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const files = ctx.args.filter(a => !a.startsWith('-'));
+    const opts = parseOptions(ctx, 'cat', CAT_SPEC);
+    if (!opts) return 1;
+    const files = opts.positional;
+    // Formatting needs whole lines, so it takes a text path; with no
+    // formatting flags the byte-streaming fast path below is unchanged.
+    const format = catFormatFrom(opts.flags);
     if (files.length === 0) {
-      if (ctx.stdin) ctx.stdout.write(ctx.stdin);
+      if (ctx.stdin) {
+        ctx.stdout.write(format ? catFormatText(ctx.stdin, format, { line: 0 }) : ctx.stdin);
+      }
       return 0;
+    }
+    if (format) {
+      const state = { line: 0 };
+      let formatExit = 0;
+      for (const f of files) {
+        try {
+          const path = resolvePath(ctx.cwd, f);
+          const resolved = resolveSymlinkPath(vfs, path);
+          if (resolved === null) {
+            ctx.stderr.write(`cat: ${f}: Too many levels of symbolic links\n`);
+            formatExit = 1;
+            continue;
+          }
+          if (vfs.isDirectory(resolved)) {
+            throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
+          }
+          ctx.stdout.write(catFormatText(vfs.readFileString(resolved), format, state));
+        } catch (error) {
+          ctx.stderr.write(`cat: ${f}: ${fsErrorMessage(error)}\n`);
+          formatExit = 1;
+        }
+      }
+      return formatExit;
     }
     // Resolve both native VFS symlinks and the legacy registry before reads.
     let exit = 0;
