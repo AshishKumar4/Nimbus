@@ -3612,9 +3612,10 @@ export class SqliteVFS {
      *
      * The children index answers "what is under this prefix?" in the size of
      * the subtree. The scan it replaces answered it in the size of the whole
-     * filesystem, so removing a tree of N entries one path at a time cost
-     * O(N²) — a 19,429-file tree was ~190 million synchronous comparisons on
-     * the object's only thread, long enough to drop the session's socket.
+     * filesystem, and every mutation resolved its deletions twice — once to
+     * preflight the plan, once to commit it — so removing a tree of N entries
+     * one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
+     * 19,429-file tree, on the object's only thread.
      */
     collectSubtreeInodes(roots) {
         if (roots.length === 0)
