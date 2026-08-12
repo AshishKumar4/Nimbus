@@ -400,6 +400,10 @@ class TransactionPlanBuilder {
   }
 
   addPublishedContent(contentId: string): void {
+    // Staged and published inside one transaction is a no-op pair: the
+    // content is published the instant the transaction commits and the
+    // intermediate row is never observable, so neither is written.
+    if (this.stagingContentIds.delete(contentId)) return;
     this.publishedContentIds.add(contentId);
   }
 
@@ -414,14 +418,29 @@ class TransactionPlanBuilder {
   }
 
   wouldExceedChunks(additionalBlobBytes: number, additionalRows = 1): TransactionLimit | null {
-    return exceededTransactionLimit({
-      blobBytes: this.blobBytes + additionalBlobBytes,
-      logicalRows: this.logicalRows + additionalRows,
-      sqlExecs: this.fixedSqlExecs
-        + groupedSqlExecs(this.inodes.length, INODE_ROWS_PER_SQL_EXEC)
-        + groupedSqlExecs(this.chunks.length + additionalRows, CHUNK_ROWS_PER_SQL_EXEC),
-      affectedPaths: this.affectedPaths.size,
-    });
+    return exceededTransactionLimit(
+      this.metricsWith({ blobBytes: additionalBlobBytes, chunkRows: additionalRows }),
+    );
+  }
+
+  /**
+   * Would admitting one whole file — every chunk, its inode, and the
+   * lifecycle row its publication writes — exceed the bound? Answering
+   * before the first chunk is staged is what keeps a file that fits inside
+   * one transaction from ever reaching the staging table.
+   */
+  wouldExceedFile(
+    byteLength: number,
+    chunkCount: number,
+    replacedContent: boolean,
+  ): TransactionLimit | null {
+    return exceededTransactionLimit(this.metricsWith({
+      blobBytes: byteLength,
+      chunkRows: chunkCount,
+      inodeRows: 1,
+      gcContentIds: replacedContent ? 1 : 0,
+      paths: 1,
+    }));
   }
 
   get empty(): boolean {
@@ -448,23 +467,6 @@ class TransactionPlanBuilder {
     };
   }
 
-  private get logicalRows(): number {
-    return this.inodes.length
-      + this.chunks.length
-      + this.deletedChunks.length
-      + this.deletedInodeRows
-      + this.stagingContentIds.size
-      + this.publishedContentIds.size
-      + this.gcContentIds.size;
-  }
-
-  private get fixedSqlExecs(): number {
-    return this.deletedPaths.size
-      + groupedSqlExecs(this.stagingContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
-      + groupedSqlExecs(this.publishedContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
-      + groupedSqlExecs(this.gcContentIds.size, CONTENT_IDS_PER_SQL_EXEC);
-  }
-
   private get deletedChunkSqlExecs(): number {
     const byContent = new Map<string, number>();
     for (const chunk of this.deletedChunks) {
@@ -478,16 +480,46 @@ class TransactionPlanBuilder {
   }
 
   private get metrics(): TransactionPlanMetrics {
+    return this.metricsWith({});
+  }
+
+  /**
+   * What this plan would cost with `addition` admitted. One formula serves
+   * both the built plan and every admission test, so a bound can never be
+   * checked against a different accounting than the one it commits under.
+   */
+  private metricsWith(addition: PlanAddition): TransactionPlanMetrics {
+    const inodeRows = this.inodes.length + (addition.inodeRows ?? 0);
+    const chunkRows = this.chunks.length + (addition.chunkRows ?? 0);
+    const gcIds = this.gcContentIds.size + (addition.gcContentIds ?? 0);
     return {
-      blobBytes: this.blobBytes,
-      logicalRows: this.logicalRows,
-      sqlExecs: this.fixedSqlExecs
-        + groupedSqlExecs(this.inodes.length, INODE_ROWS_PER_SQL_EXEC)
-        + groupedSqlExecs(this.chunks.length, CHUNK_ROWS_PER_SQL_EXEC)
+      blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
+      logicalRows: inodeRows
+        + chunkRows
+        + this.deletedChunks.length
+        + this.deletedInodeRows
+        + this.stagingContentIds.size
+        + this.publishedContentIds.size
+        + gcIds,
+      sqlExecs: this.deletedPaths.size
+        + groupedSqlExecs(this.stagingContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
+        + groupedSqlExecs(this.publishedContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
+        + groupedSqlExecs(gcIds, CONTENT_IDS_PER_SQL_EXEC)
+        + groupedSqlExecs(inodeRows, INODE_ROWS_PER_SQL_EXEC)
+        + groupedSqlExecs(chunkRows, CHUNK_ROWS_PER_SQL_EXEC)
         + this.deletedChunkSqlExecs,
-      affectedPaths: this.affectedPaths.size,
+      affectedPaths: this.affectedPaths.size + (addition.paths ?? 0),
     };
   }
+}
+
+/** Rows and bytes a not-yet-admitted mutation would add to a plan. */
+interface PlanAddition {
+  blobBytes?: number;
+  chunkRows?: number;
+  inodeRows?: number;
+  gcContentIds?: number;
+  paths?: number;
 }
 
 function groupedSqlExecs(rows: number, rowsPerExec: number): number {
@@ -3222,15 +3254,20 @@ export class SqliteVFS {
     this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
   }
 
-  private publishStagedFile(
+  /**
+   * The rows that publishing `inode` from `contentId` writes: the inode
+   * itself, the lifecycle transition, and the content it supersedes. The
+   * single definition of a file's publication — ownership inheritance and
+   * the GC of the replaced content are the same whether the file publishes
+   * alone or as one member of a batched group.
+   */
+  private addFilePublication(
+    builder: TransactionPlanBuilder,
     inode: BatchInodeEntry,
     contentId: string,
-    publishedChunkCount: number,
-    onCommit?: () => void,
-  ): { inodes: number; chunks: number } {
+  ): void {
     this.assertMutationsAllowed([inode.path]);
     const prior = this.inodes.get(inode.path);
-    const builder = new TransactionPlanBuilder();
     builder.addInode({
       ...inode,
       kind: inodeKind(inode),
@@ -3240,6 +3277,16 @@ export class SqliteVFS {
     });
     builder.addPublishedContent(contentId);
     if (prior && !prior.isDir) builder.addGcContent(this.contentIdForInode(prior));
+  }
+
+  private publishStagedFile(
+    inode: BatchInodeEntry,
+    contentId: string,
+    publishedChunkCount: number,
+    onCommit?: () => void,
+  ): { inodes: number; chunks: number } {
+    const builder = new TransactionPlanBuilder();
+    this.addFilePublication(builder, inode, contentId);
     const plan = builder.build();
     this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
     const result = this._writeBatchOnce(
@@ -3253,10 +3300,22 @@ export class SqliteVFS {
   }
 
   /**
-   * Incremental W7 v3 consumer. Publication is path-atomic with a committed
-   * prefix. Chunk payload is admitted through one per-VFS weighted credit
-   * pool, staged in bounded synchronous transactions, then released before
-   * the decoder pulls another record.
+   * Incremental W7 v3 consumer. Chunk payload is admitted through one
+   * per-VFS weighted credit pool and committed in bounded synchronous
+   * transactions, which release their credit before the decoder pulls
+   * another record.
+   *
+   * Publication is group-atomic with a committed prefix: a bounded group of
+   * whole files commits in one transaction, and either every file in it is
+   * durable or none is. A file never publishes partially, and a group is
+   * closed on the record boundary before the file that would overflow it,
+   * so a file too large for one transaction is alone in its group and
+   * stages across several — the original per-file path, unchanged.
+   *
+   * Publishing per file cost three transactions each (stage the content
+   * row, flush the chunks, publish), which at ~0.9 ms of commit apiece made
+   * writing 19,429 files the dominant term of an npm install and stalled
+   * every download shard behind the one Durable Object's storage queue.
    */
   private async writeStream(
     stream: ReadableStream<Uint8Array>,
@@ -3285,33 +3344,88 @@ export class SqliteVFS {
       chunks: 0,
     };
     let phase: WriteBatchStreamFailurePhase = 'decode';
-    let stageBuilder = new TransactionPlanBuilder();
-    let stageLeases: CreditLease[] = [];
 
-    const flushStagedChunks = (): void => {
-      if (stageBuilder.empty) return;
-      const plan = stageBuilder.build();
-      const leases = stageLeases;
-      stageBuilder = new TransactionPlanBuilder();
-      stageLeases = [];
+    // The pending publish group: chunks, inodes and lifecycle rows that
+    // will commit together. Everything reset by a flush lives here.
+    let group = new TransactionPlanBuilder();
+    let groupLeases: CreditLease[] = [];
+    let groupInodes: BatchInodeEntry[] = [];
+    let groupContentIds: string[] = [];
+    let groupPublishedChunks = 0;
+    let groupPaths = 0;
+    let groupStagedBytes = 0;
+    // Directory upserts batch on their own: authorising a file consults the
+    // committed inode tree for its parent, so directories flush before the
+    // first file record rather than sharing the file group.
+    let pendingDirectories: BatchInodeEntry[] = [];
+
+    const flushGroup = (): void => {
+      if (group.empty) return;
+      const plan = group.build();
+      const leases = groupLeases;
+      const inodes = groupInodes;
+      const contentIds = groupContentIds;
+      const publishedChunks = groupPublishedChunks;
+      const paths = groupPaths;
+      const stagedBytes = groupStagedBytes;
+      group = new TransactionPlanBuilder();
+      groupLeases = [];
+      groupInodes = [];
+      groupContentIds = [];
+      groupPublishedChunks = 0;
+      groupPaths = 0;
+      groupStagedBytes = 0;
       try {
-        this.executeStagedChunkPlan(plan);
-        this._stagedStreamBytes += plan.metrics.blobBytes;
-        this._peakStagedStreamBytes = Math.max(
-          this._peakStagedStreamBytes,
-          this._stagedStreamBytes,
+        if (inodes.length === 0) {
+          // Nothing completed yet: this is a file too large for one
+          // transaction, staging across several. It is alone in the group,
+          // so the plan publishes nothing and the chunks stay staged.
+          this.executeStagedChunkPlan(plan);
+          this._stagedStreamBytes += plan.metrics.blobBytes;
+          this._peakStagedStreamBytes = Math.max(
+            this._peakStagedStreamBytes,
+            this._stagedStreamBytes,
+          );
+          if (activeFile) activeFile.stagedBytes += plan.metrics.blobBytes;
+          return;
+        }
+        this.assertTransactionFits(plan.metrics);
+        const result = this._writeBatchOnce(
+          { payload: { inodes, chunks: [] }, plan, deletedInodes: [] },
+          { source: 'content-publish', limitMode: 'bounded' },
+          publishedChunks,
         );
-        if (activeFile) activeFile.stagedBytes += plan.metrics.blobBytes;
+        this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes - stagedBytes);
+        for (const contentId of contentIds) {
+          this.activeStagingContentIds.delete(contentId);
+          ownedStagingContentIds.delete(contentId);
+        }
+        progress.committedGroupSequence++;
+        progress.committedPathCount += paths;
+        progress.inodes += result.inodes;
+        progress.chunks += result.chunks;
       } finally {
         for (const lease of leases) lease.release();
       }
     };
 
+    const flushDirectories = (): void => {
+      if (pendingDirectories.length === 0) return;
+      const inodes = pendingDirectories;
+      pendingDirectories = [];
+      const result = this.withMutationOwner(options.mutationOwner, () => (
+        this.writeBatch({ inodes, chunks: [] }, cred)
+      ));
+      progress.committedGroupSequence++;
+      progress.committedPathCount += inodes.length;
+      progress.inodes += result.inodes;
+    };
+
     const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
-      if (stageBuilder.wouldExceedChunks(byteLength) !== null) flushStagedChunks();
+      if (group.wouldExceedChunks(byteLength) !== null) flushGroup();
       let writeLease = this.writeStreamCredits.tryAcquire(byteLength);
-      if (!writeLease && !stageBuilder.empty) {
-        flushStagedChunks();
+      if (!writeLease && !group.empty) {
+        flushGroup();
         writeLease = this.writeStreamCredits.tryAcquire(byteLength);
       }
       if (!writeLease) {
@@ -3374,7 +3488,10 @@ export class SqliteVFS {
         const record = next.value;
         switch (record.type) {
           case 'delete': {
+            // A delete observes everything the stream wrote before it.
             phase = 'publish';
+            flushGroup();
+            flushDirectories();
             const affected = Math.max(1, this.collectBatchDeletions([record.path]).length);
             this.withMutationOwner(options.mutationOwner, () => {
               this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
@@ -3387,25 +3504,40 @@ export class SqliteVFS {
             phase = 'validation';
             this.validateFileChunks(record.inode, []);
             phase = 'publish';
-            const result = this.withMutationOwner(options.mutationOwner, () => (
-              this.writeBatch({ inodes: [record.inode], chunks: [] }, cred)
-            ));
-            progress.committedGroupSequence++;
-            progress.committedPathCount++;
-            progress.inodes += result.inodes;
+            pendingDirectories.push(record.inode);
+            // Directory inodes carry no payload, so the row count is the
+            // only bound in reach; the flush re-asserts it regardless.
+            if (pendingDirectories.length >= MAX_TX_LOGICAL_ROWS) flushDirectories();
             break;
           }
           case 'file-begin': {
             if (activeFile) throw new Error(`EINVAL: nested streamed file ${record.inode.path}`);
             phase = 'validation';
             this.validateInodeContentShape(record.inode);
+            phase = 'publish';
+            // Authorising a file reads its parent from the committed inode
+            // tree, so pending directories become visible first.
+            flushDirectories();
+            phase = 'validation';
             this.withMutationOwner(options.mutationOwner, () => {
               this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred);
               this.assertMutationsAllowed([record.inode.path]);
             });
             phase = 'stage';
-            const durableContentId = this.beginStagedContent();
+            // Close the group before the file that would overflow it, so a
+            // file either fits whole or begins a group of its own. The
+            // estimate only picks the boundary — the flush asserts the bound.
+            const prior = this.inodes.get(normalizeVfsPath(record.inode.path));
+            const overflows = group.wouldExceedFile(
+              record.inode.size,
+              record.inode.chunkCount,
+              prior !== undefined && !prior.isDir,
+            );
+            if (overflows !== null) flushGroup();
+            const durableContentId = this.createContentId();
+            this.activeStagingContentIds.add(durableContentId);
             ownedStagingContentIds.add(durableContentId);
+            group.addStagingContent(durableContentId);
             activeFile = {
               streamContentId: record.streamContentId,
               durableContentId,
@@ -3423,13 +3555,13 @@ export class SqliteVFS {
               throw new Error(`EINVAL: streamed chunk ownership mismatch: ${record.path}`);
             }
             phase = 'stage';
-            stageBuilder.addChunk({
+            group.addChunk({
               path: record.path,
               contentId: activeFile.durableContentId,
               chunkId: record.chunkId,
               data: record.data,
             });
-            stageLeases.push(record.retention);
+            groupLeases.push(record.retention);
             decodedRecordLease = null;
             break;
           }
@@ -3438,26 +3570,24 @@ export class SqliteVFS {
             if (!activeFile || record.streamContentId !== activeFile.streamContentId) {
               throw new Error(`EINVAL: streamed file-end ownership mismatch: ${record.path}`);
             }
-            flushStagedChunks();
             phase = 'publish';
             const completed = activeFile;
-            const result = this.withMutationOwner(options.mutationOwner, () => (
-              this.publishStagedFile(
-                this.normalizeBatchInode(completed.inode, cred),
-                completed.durableContentId,
-                record.chunkCount,
-              )
-            ));
-            ownedStagingContentIds.delete(completed.durableContentId);
-            this._stagedStreamBytes -= completed.stagedBytes;
+            const inode = this.normalizeBatchInode(completed.inode, cred);
+            this.withMutationOwner(options.mutationOwner, () => {
+              this.addFilePublication(group, inode, completed.durableContentId);
+            });
+            groupInodes.push(inode);
+            groupContentIds.push(completed.durableContentId);
+            groupPublishedChunks += record.chunkCount;
+            groupStagedBytes += completed.stagedBytes;
+            groupPaths++;
             activeFile = null;
-            progress.committedGroupSequence++;
-            progress.committedPathCount++;
-            progress.inodes += result.inodes;
-            progress.chunks += result.chunks;
             break;
           }
           case 'batch-end':
+            phase = 'publish';
+            flushDirectories();
+            flushGroup();
             if (recordIterator.return) await recordIterator.return();
             recordIteratorFinished = true;
             this._decodeDrainStarts.delete(decodeDrainToken);
@@ -3478,8 +3608,8 @@ export class SqliteVFS {
       };
     } finally {
       decodedRecordLease?.release();
-      for (const lease of stageLeases) lease.release();
-      stageLeases = [];
+      for (const lease of groupLeases) lease.release();
+      groupLeases = [];
       if (!recordIteratorFinished && recordIterator?.return) {
         try { await recordIterator.return(); } catch { /* preserve the primary stream result */ }
       }
@@ -3487,10 +3617,10 @@ export class SqliteVFS {
         this._decodeDrainStarts.delete(decodeDrainToken);
         this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
       }
-      if (activeFile) {
-        this._stagedStreamBytes -= activeFile.stagedBytes;
-        if (this._stagedStreamBytes < 0) this._stagedStreamBytes = 0;
-      }
+      // Staged bytes belonging to work that never reached a commit: the
+      // file in flight, plus any completed file still pending in the group.
+      const abandonedStagedBytes = (activeFile?.stagedBytes ?? 0) + groupStagedBytes;
+      this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes - abandonedStagedBytes);
       for (const contentId of ownedStagingContentIds) {
         if (this.activeStagingContentIds.has(contentId)) this.maintenancePending = true;
         this.activeStagingContentIds.delete(contentId);
