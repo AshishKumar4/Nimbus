@@ -10,6 +10,9 @@
 //   4. `bun server.js` (Bun.serve) produces a long-running marker.
 //   5. `bun install <pkg>` adds packages to node_modules.
 //   6. `bun run <script>` executes a package.json script.
+//   7. `bun run <path.ts>` executes the FILE, args intact.
+//   8. a path-shaped target never consults package.json scripts.
+//   9. not-found reports bun's own two messages, by target shape.
 
 import { mintSession, Terminal, makeAsserter, sleep, heredocCommand } from './_driver.mjs';
 
@@ -111,6 +114,68 @@ await t.waitForPrompt(SERVER_TTL_MS + 10_000);
   const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
   const seen = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('hello'));
   a.check('bun run <script> executes package.json scripts', seen, r.output.slice(-300));
+}
+
+// 7-9. `bun run <target>` — file vs script.
+//
+// `bun run` used to mean ONLY "look up package.json scripts", so
+// `bun run packages/cli/bin/cli.ts --help` — the shape every bun-based
+// installer launcher ends on — died on `script "…" not found`. Real bun runs
+// a FILE for a path-shaped target and consults scripts only for a bare name.
+// Expectations below were produced by running the identical case under real
+// bun 1.3.1, including the two distinct not-found messages.
+{
+  const tag = 'BUN_RUN_FILE_' + Math.random().toString(36).slice(2, 8);
+  const cliTs = [
+    'const argv: string[] = process.argv.slice(2);',
+    `console.log('${tag}');`,
+    "console.log('ARGV ' + JSON.stringify(argv));",
+  ].join('\n');
+  await t.run('mkdir -p /home/user/bun-probe/pkg/bin', 15_000);
+  await t.run(heredocCommand('/home/user/bun-probe/pkg/bin/cli.ts', cliTs), 15_000);
+
+  // 7. A relative path to a TypeScript file runs it, and the args after the
+  // path belong to the script — `--help` is NOT bun's here.
+  {
+    const r = await t.run('cd /home/user/bun-probe && bun run pkg/bin/cli.ts --help extra', 90_000);
+    const out = r.output.replace(/\r/g, '');
+    a.check('bun run <path.ts> executes the file', out.includes(tag), out.slice(-400));
+    a.check(
+      'bun run <path.ts> passes trailing args to the script',
+      out.includes('ARGV ["--help","extra"]'),
+      out.slice(-400),
+    );
+  }
+
+  // 8. A path-shaped target is a file even when a script of that name exists.
+  {
+    const scriptTag = 'BUN_SHADOWED_' + Math.random().toString(36).slice(2, 8);
+    const pkgJson = `{"name":"bp","version":"0.0.0","scripts":{"hello":"node -e \\"console.log('${scriptTag}')\\"","pkg/bin/cli.ts":"node -e \\"console.log('${scriptTag}')\\""}}`;
+    await t.run(heredocCommand('/home/user/bun-probe/package.json', pkgJson), 10_000);
+    const r = await t.run('cd /home/user/bun-probe && bun run ./pkg/bin/cli.ts', 90_000);
+    const out = r.output.replace(/\r/g, '');
+    a.check(
+      'a path-shaped target runs the file, not a same-named script',
+      out.includes(tag) && !out.includes(scriptTag),
+      out.slice(-400),
+    );
+  }
+
+  // 9. Not-found is bun's own message, and which one depends on the shape.
+  {
+    const bare = await t.run('cd /home/user/bun-probe && bun run nosuchthing', 30_000);
+    a.check(
+      'a missing bare name reports bun\'s Script not found',
+      bare.output.includes('error: Script not found "nosuchthing"'),
+      bare.output.slice(-300),
+    );
+    const path = await t.run('cd /home/user/bun-probe && bun run ./nosuch.ts', 30_000);
+    a.check(
+      'a missing path reports bun\'s Module not found',
+      path.output.includes('error: Module not found "./nosuch.ts"'),
+      path.output.slice(-300),
+    );
+  }
 }
 
 await t.close();
