@@ -37,7 +37,16 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
           throw error;
         }
       }
-      return db.query(query).all(...params);
+      const prepared = db.query(query);
+      if (prepared.columnNames.length === 0) {
+        // A prepared statement consumes ONE statement and silently discards the
+        // rest of the string, where workerd's exec runs every statement in it.
+        // `run` runs them all, and a statement with no result columns has no
+        // rows to hand back.
+        db.run(query, ...params);
+        return [];
+      }
+      return prepared.all(...params);
     },
   };
 
