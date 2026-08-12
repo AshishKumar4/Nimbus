@@ -36,6 +36,7 @@ import { hasTopLevelModuleSyntax } from '../runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
+import { LaunchPacer, launchChunkMaxBytes, type LaunchTurnScheduler } from './launch-pacer.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
@@ -190,6 +191,12 @@ interface FacetManagerEnv {
    * no-op then and the shim surfaces a clear unattached-module error.
    */
   ASSETS?: { fetch(req: Request): Promise<Response> };
+  /**
+   * Verification knob: force a small resident-launch chunk bound so an
+   * ordinary program crosses several turns. Unset in production, where the
+   * default in `launch-pacer.ts` applies.
+   */
+  NIMBUS_LAUNCH_CHUNK_BYTES?: string;
 }
 
 interface ProcessRpcResources {
@@ -222,7 +229,14 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
     typeof Reflect.get(assetsCandidate, 'fetch') === 'function'
       ? (assetsCandidate as { fetch(req: Request): Promise<Response> })
       : undefined;
-  return { LOADER: loader, ASSETS: assets };
+  const chunkBytes = ((typeof env === 'object' || typeof env === 'function') && env !== null)
+    ? Reflect.get(env, 'NIMBUS_LAUNCH_CHUNK_BYTES')
+    : undefined;
+  return {
+    LOADER: loader,
+    ASSETS: assets,
+    NIMBUS_LAUNCH_CHUNK_BYTES: typeof chunkBytes === 'string' ? chunkBytes : undefined,
+  };
 }
 
 /**
@@ -509,14 +523,14 @@ interface GeneratedNodeFacetCode {
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-export function generateEntrypointCode(
+export async function generateEntrypointCode(
   userCode: string,
   vfsState: FacetVfsState,
   usesSqlite: boolean,
   shims: string,
-): GeneratedNodeFacetCode {
+): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(userCode);
-  const bundleSource = facetVfsBundleSourceFor(vfsState);
+  const bundleSource = await facetVfsBundleSourceFor(vfsState);
   const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
   const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
   return {
@@ -789,7 +803,7 @@ ${RESIDENCY_MISS_REPORT}
  * compiled user entry is booted once and the exported entrypoint keeps
  * serving HTTP requests from the shimmed http.Server registry.
  */
-export function generateLongRunningNodeCode(
+export async function generateLongRunningNodeCode(
   userCode: string,
   vfsState: FacetVfsState,
   opts: {
@@ -804,7 +818,8 @@ export function generateLongRunningNodeCode(
   },
   usesSqlite: boolean,
   shims: string,
-): GeneratedNodeFacetCode {
+  pacer?: LaunchPacer,
+): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(userCode);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
@@ -816,7 +831,7 @@ export function generateLongRunningNodeCode(
     attachedTty: opts.attachedTty === true,
     cred: opts.cred,
   });
-  const bundleSource = facetVfsBundleSourceFor(vfsState);
+  const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
   const safeManifest = JSON.stringify(vfsState.manifest);
   const safeMetadata = JSON.stringify(vfsState.metadata);
   return {
@@ -1373,7 +1388,10 @@ function releaseGeneratedSources(vfsState: FacetVfsState): void {
  * surfaces inside the facet as "Cannot find module" for the whole require
  * closure, a long way from the cause. Say so here instead.
  */
-function facetVfsBundleSourceFor(vfsState: FacetVfsState): FacetVfsBundleSource {
+async function facetVfsBundleSourceFor(
+  vfsState: FacetVfsState,
+  pacer?: LaunchPacer,
+): Promise<FacetVfsBundleSource> {
   if (vfsState.generatedSourcesReleased) {
     throw new Error(
       'Nimbus: this facet VFS state was released after its module map was generated; '
@@ -1381,7 +1399,9 @@ function facetVfsBundleSourceFor(vfsState: FacetVfsState): FacetVfsBundleSource 
     );
   }
   return vfsState.bundleSource
-    ?? buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+    ?? await buildFacetVfsBundleSource(
+      vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
+    );
 }
 
 interface FacetVfsBundleSource {
@@ -1423,6 +1443,13 @@ function _readBundleCell(
  */
 function _bundleCellLength(cell: string | Uint8Array): number {
   return typeof cell === 'string' ? cell.length : cell.byteLength;
+}
+
+/** What a bundle currently weighs, and so what one more pass over it costs. */
+function _bundleWeight(bundle: Record<string, string | Uint8Array>): number {
+  let weight = 0;
+  for (const cell of Object.values(bundle)) weight += _bundleCellLength(cell);
+  return weight;
 }
 
 type BundleCellSize = [path: string, bytes: number];
@@ -1647,6 +1674,54 @@ function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
 }
 
 /**
+ * Byte cost of the serializer's fixed scaffolding: the IIFE and the three
+ * empty literals it always emits, with and without the `export default …;`
+ * a side module wraps it in. Measured off the serializer itself so the
+ * counts and the thing they count cannot drift.
+ */
+const _FACET_INLINE_ENVELOPE_BYTES = _encodedSourceBytes(_serializeBundleForFacet({}));
+const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSource({}));
+
+/**
+ * What one cell adds to a generated bundle source, counted rather than built.
+ *
+ * `_serializeBundleForFacet` sorts a cell into one of three literals — the
+ * text map, the base64 map, or the denied-path array — and each is a plain
+ * JSON encoding, so a cell's contribution is additive and knowable without
+ * materializing anything. Base64 is pure ASCII of a length fixed by the
+ * source byte count, so a binary cell can be sized without being encoded.
+ *
+ * Sizing a bundle used to mean serializing it: the caller built the whole
+ * 22.9 MB source, read `.length` off it, and threw it away — three times per
+ * pi launch, once whole and twice more per-cell inside the split loop.
+ */
+function _facetBundleCellBytes(path: string, cell: FacetVfsBundle[string]): number {
+  if (typeof cell === 'string') {
+    return _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
+  }
+  if (cell instanceof Uint8Array) {
+    return _jsonEncodedBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
+  }
+  // A denial cell rides in the path array, which carries no key.
+  return _jsonEncodedBytes(path);
+}
+
+/** Encoded size of the inline bundle expression, without building it. */
+function _inlineBundleSourceBytes(bundle: FacetVfsBundle): number {
+  let bytes = _FACET_INLINE_ENVELOPE_BYTES;
+  const counts = { str: 0, bin: 0, denied: 0 };
+  for (const [path, cell] of Object.entries(bundle)) {
+    bytes += _facetBundleCellBytes(path, cell);
+    if (typeof cell === 'string') counts.str++;
+    else if (cell instanceof Uint8Array) counts.bin++;
+    else counts.denied++;
+  }
+  // One separator between siblings in each of the three literals.
+  for (const n of Object.values(counts)) if (n > 1) bytes += n - 1;
+  return bytes;
+}
+
+/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Small bundles remain inline. Large bundles are partitioned into side
@@ -1655,26 +1730,29 @@ function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
  */
-export function buildFacetVfsBundleSource(
+export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
-): FacetVfsBundleSource {
-  const inlineExpression = _serializeBundleForFacet(bundle);
+  pacer?: LaunchPacer,
+): Promise<FacetVfsBundleSource> {
+  // Size the inline form before building it. A bundle that will be split has
+  // no use for the whole-bundle expression, and building one to read its
+  // length off cost a second full copy of the largest string this DO makes.
   if (
     !forceSideModules
-    && _encodedSourceBytes(inlineExpression) <= BUNDLE_MAX_ENCODED_BYTES
+    && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES
   ) {
-    return { expression: inlineExpression, imports: '', modules: {} };
+    return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
   if (Object.keys(bundle).length === 0) {
-    return { expression: inlineExpression, imports: '', modules: {} };
+    return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
 
   const maxModuleBytes = BUNDLE_MAX_ENCODED_BYTES - FACET_VFS_MODULE_SOURCE_MARGIN;
   type BundlePiece = [path: string, cell: FacetVfsBundle[string]];
 
   function sourceBytes(path: string, cell: FacetVfsBundle[string]): number {
-    return _encodedSourceBytes(_facetBundleModuleSource({ [path]: cell }));
+    return _FACET_MODULE_ENVELOPE_BYTES + _facetBundleCellBytes(path, cell);
   }
 
   function splitCell(path: string, cell: FacetVfsBundle[string]): BundlePiece[] {
@@ -1752,6 +1830,9 @@ export function buildFacetVfsBundleSource(
     modules[moduleName] = source;
     imports.push(`import ${alias} from "${moduleName}";`);
     aliases.push(alias);
+    // Each side module is an independent serialization of its own cells, so
+    // the turn may end between any two of them.
+    if (pacer) await pacer.spend(source.length);
   }
 
   const expression =
@@ -2945,6 +3026,7 @@ function isBundleModuleCandidate(path: string): boolean {
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
   esbuild: EsbuildService,
+  pacer?: LaunchPacer,
 ): Promise<{ transformed: number; failed: number }> {
   let transformed = 0;
   let failed = 0;
@@ -2962,6 +3044,9 @@ async function transformEsmInBundle(
   for (const path of candidates) {
     const src = bundle[path];
     if (typeof src !== 'string') continue;
+    // esbuild-wasm runs inside this isolate, so a transform is computation
+    // like any other pass — the await above it yields nothing on its own.
+    if (pacer) await pacer.spend(src.length);
     // `import.meta.url` substitution mirrors the sibling fix at
     // src/runtime/runtime-registry.ts:383-389 (framework-gaps-fix P5).
     // Without `define`, esbuild's CJS transform reduces `import.meta.url`
@@ -3057,6 +3142,7 @@ export async function buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
   observedReads?: ReadonlySet<string>,
+  pacer?: LaunchPacer,
 ): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
   // with nothing watching: the estimator read 9.4 MiB while these bytes were
@@ -3068,7 +3154,7 @@ export async function buildPrefetchBundle(
   prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
   try {
     return await _buildPrefetchBundle(
-      vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads,
+      vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer,
     );
   } finally {
     prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
@@ -3084,6 +3170,7 @@ async function _buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
   observedReads?: ReadonlySet<string>,
+  pacer?: LaunchPacer,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -3095,6 +3182,17 @@ async function _buildPrefetchBundle(
   const requiredPaths = new Set(Object.keys(prefetch.bundle));
   let truncated = false;
   const budgetState = { totalBytes: 0, fileCount: 0 };
+  // Each enrichment pass below re-scans the bundle accumulated so far, so a
+  // pass costs about what the bundle currently weighs however little it adds
+  // — which is why the cost reported here is the bundle's weight and not
+  // `budgetState.totalBytes`, the enrichment's own running total. A pass that
+  // admits nothing still reads everything. Reporting the weight is what makes
+  // a large program's build cross turns — pi's passes each scan tens of MB —
+  // while a small one never reaches a chunk bound and runs exactly as it
+  // always did, with no suspension at all.
+  const paceAfterPass = pacer
+    ? () => pacer.spend(_bundleWeight(bundle))
+    : () => Promise.resolve();
 
   // 1.5 Observed reads. Every pass below this line guesses what a program
   //     will read — from a call shape, a package layout, a string literal —
@@ -3106,12 +3204,14 @@ async function _buildPrefetchBundle(
   //     again on the next run and the loop never closes.
   const observedAdd = addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState);
   void observedAdd;
+  await paceAfterPass();
 
   // 2. Greedy oversample — every installed pkg's pkg.json + main.
   //    Catches dynamic-require / `bindings()` / plugin-loader cases the
   //    regex prefetch misses. Its budget is independent from the complete
   //    static require closure, which is correctness-critical.
   const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState);
+  await paceAfterPass();
 
   // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
   //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
@@ -3124,6 +3224,7 @@ async function _buildPrefetchBundle(
   //      at facet runtime even though the file is on VFS-disk + in
   const assetAdd = addStaticReadFileAssets(vfs, cwd, bundle, budgetState);
   void assetAdd;
+  await paceAfterPass();
 
   // 2.27 X.5-U: dotfile + SWC-shape readFileSync sentinel prefetch.
   //      Sibling of `addStaticReadFileAssets` (X.5-Z3) — same call shape,
@@ -3134,6 +3235,7 @@ async function _buildPrefetchBundle(
   //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
   const dotAdd = addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState);
   void dotAdd;
+  await paceAfterPass();
 
   // 2.30 G3 (runtime-pkg wave): bin-target sibling oversample. Pulls
   //      ALL files under the entry's package root (capped at 200) so
@@ -3145,6 +3247,7 @@ async function _buildPrefetchBundle(
   //      No-op when entry isn't inside node_modules.
   const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile);
   void binSiblingAdd;
+  await paceAfterPass();
 
   // 2.34 project-data snapshot: sync Node fs cannot await the
   // supervisor. Include a bounded snapshot of the current working tree
@@ -3153,6 +3256,7 @@ async function _buildPrefetchBundle(
   // reads and child-process staleness fallback.
   const cwdProjectAdd = addCwdProjectFiles(vfs, cwd, bundle, budgetState);
   void cwdProjectAdd;
+  await paceAfterPass();
 
   // 2.35 shell compatibility: absolute-path readFileSync scanner.
   //
@@ -3180,6 +3284,7 @@ async function _buildPrefetchBundle(
   //     `/dev` — we don't have these mounts; they'd never resolve).
   const absScanAdd = addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState);
   void absScanAdd;
+  await paceAfterPass();
 
   // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
   //     .js/.mjs for top-level import/export, runs esbuild's CJS transform
@@ -3190,7 +3295,7 @@ async function _buildPrefetchBundle(
   //     "file was not pre-bundled" at request time.
   if (esbuild) {
     try {
-      await transformEsmInBundle(bundle, esbuild);
+      await transformEsmInBundle(bundle, esbuild, pacer);
       // Recount bytes after the transform — CJS rebuilds can be larger
       // OR smaller than the ESM source. We don't try to thread totalBytes
       // through the transform because the eviction loop below recomputes
@@ -3215,7 +3320,9 @@ async function _buildPrefetchBundle(
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
   //    from content cap so fs.readdirSync remains honest even if the
   //    content for a given file was capped out.
+  await paceAfterPass();
   const manifest = buildManifest(vfs, cwd, scriptPath);
+  await paceAfterPass();
 
   // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
   //    units) because that is what workerd charges against the per-module
@@ -3251,6 +3358,7 @@ async function _buildPrefetchBundle(
   const fileCount = Object.keys(bundle).length;
   const metadata = buildVfsMetadata(vfs, manifest, bundle);
   addUnreadableDenialCells(vfs, bundle, metadata);
+  await paceAfterPass();
   // Denial cells land after the eviction pass, so account for them before
   // deciding where the bundle has to live.
   for (const [path, cell] of Object.entries(bundle)) size.add(path, cell);
@@ -3286,6 +3394,14 @@ export interface FacetManagerHooks {
   onExternalExit?: (pid: number, code: number, reason: string) => void;
   /** Fired right after the supervisor's spawn — lets the session print a notification. */
   onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
+  /**
+   * Arrange for `pumpResidentLaunches` to run on a fresh Durable Object turn.
+   *
+   * The session satisfies this with an alarm, which is the only primitive that
+   * genuinely re-enters the object: a fresh turn is both a released thread and
+   * a fresh CPU budget, and a launch needs each for a different reason.
+   */
+  requestLaunchTurn?: () => void;
 }
 
 export interface LongRunningWorkerSpawnOptions {
@@ -3304,6 +3420,21 @@ export interface LongRunningWorkerSpawnOptions {
 }
 
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
+
+/** What `spawnNode` needs to build and boot one resident Node process. */
+export interface ResidentSpawnOptions {
+  argv?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  filename?: string;
+  dirname?: string;
+  command?: string;
+  port?: number;
+  attachedTty?: boolean;
+  skipSpawn?: boolean;
+  callerPid?: number;
+  bundleProfile?: FacetBundleProfile;
+}
 
 export class FacetManager {
   private ctx: DurableObjectState;
@@ -3324,6 +3455,15 @@ export class FacetManager {
   private processRpcResources = new Map<number, ProcessRpcResources>();
   /** pid → the boot images its facet loads from; the image sweep's root set. */
   private residentImages = new Map<number, string[]>();
+  /**
+   * Launches suspended between chunks, waiting for a turn of their own.
+   *
+   * In-memory on purpose: a launch is only meaningful while the process table
+   * entry it is building for exists, and both are lost together if the isolate
+   * resets. Persisting the queue would resurrect launches for pids that no
+   * longer exist.
+   */
+  private launchWaiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
@@ -3541,7 +3681,7 @@ export class FacetManager {
       this.residencyProfiles.get(key),
     );
     vfsState.bundleKey = key;
-    vfsState.bundleSource = buildFacetVfsBundleSource(
+    vfsState.bundleSource = await buildFacetVfsBundleSource(
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
     );
@@ -3950,8 +4090,8 @@ export class FacetManager {
     // below. Otherwise the coordinator carries a second full copy of the
     // program for the whole FACET_TIMEOUT_MS the facet then runs for, which is
     // the window the isolate was being reset in.
-    let modules: WorkerCode['modules'] | undefined = (() => {
-      const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
+    let modules: WorkerCode['modules'] | undefined = await (async () => {
+      const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims);
       if (diagSink) {
         diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
         for (const source of Object.values(generatedWorker.modules)) {
@@ -4442,6 +4582,7 @@ export class FacetManager {
   private async _materializeFacetImages(
     pid: number,
     modules: Record<string, string>,
+    pacer?: LaunchPacer,
   ): Promise<Record<string, string>> {
     const vfs = this.vfs;
     if (!vfs) {
@@ -4456,9 +4597,16 @@ export class FacetManager {
       const path = facetImagePath(await facetImageDigest(source));
       images[moduleName] = path;
       sources.set(path, source);
+      if (pacer) await pacer.spend(source.length);
     }
-    // Everything below runs without awaiting, so this process joins the
-    // sweep's root set before a concurrent spawn can sweep what it just wrote.
+    // Register the WHOLE root set here, in one synchronous step, before any
+    // byte of it exists on disk. That ordering is the entire protocol between
+    // a launch and the sweep: an image is rooted from before it is written, so
+    // a sweep can never observe a file this launch has written but not yet
+    // claimed. The old loop achieved it by not awaiting at all, which read as
+    // "the writes must not be interrupted" — they may be. What must not be
+    // interrupted is the gap between writing and rooting, and rooting first
+    // closes it for every write that follows, however many turns they span.
     this.residentImages.set(pid, [...sources.keys()]);
     fs.mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
     for (const [path, source] of sources) {
@@ -4468,11 +4616,26 @@ export class FacetManager {
       // image already present at the right size cannot be a torn one, and
       // rewriting it would only cost the disk. Size is enough of a check here
       // because the reader verifies the digest before the loader sees it.
-      if (fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength) continue;
-      fs.writeFile(stored, bytes, { mode: 0o644 });
+      if (!(fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength)) {
+        fs.writeFile(stored, bytes, { mode: 0o644 });
+      }
+      if (pacer) await pacer.spend(bytes.byteLength);
     }
     this._sweepFacetImages(fs);
     return images;
+  }
+
+  /**
+   * Fail a paced launch whose process went away while it was suspended.
+   *
+   * Between turns anything may happen to the process — a kill, a reap, a
+   * `_sweepFacetImages` that has already unrooted its images. Continuing would
+   * spend further turns building a facet for a pid nothing will ever attach
+   * to, and would write image files the next sweep immediately collects.
+   */
+  private _assertLaunchStillOwned(pid: number): void {
+    if (this.processes.get(pid)?.state === 'running') return;
+    throw new Error(`Nimbus: resident launch for pid ${pid} was cancelled while it was suspended`);
   }
 
   /**
@@ -4539,6 +4702,48 @@ export class FacetManager {
     // ProcessTable PIDs are monotonic within a generation and generation-strided
     // across resets, so this live entry is the sole positive authority root.
     this.vfs?.activateAppendWriter(pid, writerId);
+  }
+
+  /**
+   * How a paced launch asks for a fresh turn.
+   *
+   * The host grants one by calling `pumpResidentLaunches` from a context that
+   * is genuinely a new invocation — the session's alarm. Without such a host
+   * there is no fresh turn to be had, and the launch continues on this one
+   * rather than hanging: that is exactly the single-turn launch this path has
+   * always performed, so a harness or a runtime without alarms loses the
+   * responsiveness but keeps the behaviour.
+   */
+  private readonly launchScheduler: LaunchTurnScheduler = {
+    nextTurn: (chunkEnded: Promise<void>) => new Promise<void>((resume) => {
+      this.launchWaiters.push({ resume, chunkEnded });
+      if (this.hooks.requestLaunchTurn) {
+        this.hooks.requestLaunchTurn();
+        return;
+      }
+      setTimeout(() => { void this.pumpResidentLaunches(); }, 0);
+    }),
+  };
+
+  /**
+   * Run one chunk of every launch waiting for a turn.
+   *
+   * Awaits the chunk each resumed launch then performs, so the invocation that
+   * granted the turn is the invocation that pays for the work — rather than
+   * releasing it into a handler's microtask drain, where nothing owns it and
+   * the runtime may tear the context down mid-chunk.
+   */
+  async pumpResidentLaunches(): Promise<void> {
+    const waiting = this.launchWaiters;
+    if (waiting.length === 0) return;
+    this.launchWaiters = [];
+    for (const waiter of waiting) waiter.resume();
+    await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
+  }
+
+  /** Whether any launch is suspended waiting for a turn. */
+  get hasPendingLaunchTurns(): boolean {
+    return this.launchWaiters.length > 0;
   }
 
   /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -4723,19 +4928,7 @@ export class FacetManager {
    */
   async spawnNode(
     code: string,
-    opts: {
-      argv?: string[];
-      env?: Record<string, string>;
-      cwd?: string;
-      filename?: string;
-      dirname?: string;
-      command?: string;
-      port?: number;
-      attachedTty?: boolean;
-      skipSpawn?: boolean;
-      callerPid?: number;
-      bundleProfile?: FacetBundleProfile;
-    } = {},
+    opts: ResidentSpawnOptions = {},
   ): Promise<{ pid: number }> {
     this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
@@ -4756,6 +4949,64 @@ export class FacetManager {
       try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}
     }
 
+    const launch = this._runResidentLaunch(entry, code, command, opts);
+    if (!opts.attachedTty) {
+      // A server's caller is told a port is bound, so it has to wait for the
+      // boot that binds it. The wait costs this turn nothing: every chunk of
+      // the launch runs on a turn of its own.
+      await launch;
+      return { pid: entry.pid };
+    }
+    // An attached TUI has no such handshake — its terminal is already open on
+    // this pid and the first thing it will show is the program's own output.
+    // Returning now is what lets the shell's response complete while the
+    // launch is still being built, which is the whole point: the turn that
+    // asked for the process must not be the turn that builds it.
+    // Rooted so the launch is not an abandoned promise between turns. A
+    // failure has already exited the process and notified the session on its
+    // way out, so there is nothing left here to report and nothing to gain
+    // from also failing the invocation that started it.
+    this.ctx.waitUntil(launch.catch(() => {}));
+    return { pid: entry.pid };
+  }
+
+  /**
+   * Build and boot a resident process across as many turns as it takes.
+   *
+   * Every phase below is paced: the walk, the ESM transform, the module-map
+   * serialization and the image-store write each report the work they do, and
+   * the pacer ends the turn whenever a chunk's worth has accumulated. What the
+   * session gets back between those chunks is its thread — which is what the
+   * terminal WebSocket needs to survive a launch, and what no amount of making
+   * the launch faster would have given it.
+   */
+  private async _runResidentLaunch(
+    entry: ProcessEntry,
+    code: string,
+    command: string,
+    opts: ResidentSpawnOptions,
+  ): Promise<void> {
+    const cwd = opts.cwd || '/home/user';
+    const pacer = new LaunchPacer(
+      this.launchScheduler,
+      launchChunkMaxBytes(this.env),
+      () => this._assertLaunchStillOwned(entry.pid),
+    );
+    try {
+      await this._residentLaunchBody(entry, code, command, cwd, opts, pacer);
+    } finally {
+      pacer.settle();
+    }
+  }
+
+  private async _residentLaunchBody(
+    entry: ProcessEntry,
+    code: string,
+    command: string,
+    cwd: string,
+    opts: ResidentSpawnOptions,
+    pacer: LaunchPacer,
+  ): Promise<void> {
     if (this.vfs && !this.esbuild) {
       try { this.esbuild = new EsbuildService(this.vfs); } catch { this.esbuild = null; }
     }
@@ -4764,7 +5015,10 @@ export class FacetManager {
     const __bundleStart = diagOn ? Date.now() : 0;
     const processVfs = this.vfs?.as(entry.cred);
     const vfsState: FacetVfsState = processVfs
-      ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
+      ? await buildPrefetchBundle(
+          processVfs, opts.filename, cwd, code, this.esbuild || undefined,
+          opts.bundleProfile, undefined, pacer,
+        )
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     const processEnv = opts.attachedTty
@@ -4784,12 +5038,13 @@ export class FacetManager {
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeShimsCode(this.env),
     ]);
-    let generatedWorker: GeneratedNodeFacetCode | undefined = generateLongRunningNodeCode(
+    let generatedWorker: GeneratedNodeFacetCode | undefined = await generateLongRunningNodeCode(
       code,
       vfsState,
       { ...opts, env: processEnv, cred: entry.cred },
       usesSqlite,
       shims,
+      pacer,
     );
 
     // Sized here, while the map is still in hand. Reading these after the load
@@ -4817,10 +5072,15 @@ export class FacetManager {
       const vfsTextModules = await this._materializeFacetImages(entry.pid, {
         'worker.js': generatedWorker.code,
         ...generatedWorker.modules,
-      });
+      }, pacer);
       // The image store has taken it; this frame must not be what holds the
       // only other copy while the facet boots.
       generatedWorker = undefined;
+      // Last gate before the facet exists. A launch now spans many turns, so
+      // a kill can land anywhere inside it; booting a process the table has
+      // already exited would leave a facet nothing owns, running against a
+      // pid the session has finished reporting on.
+      this._assertLaunchStillOwned(entry.pid);
       handle = await this._startResidentProcess(entry.pid, {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
@@ -4898,7 +5158,6 @@ export class FacetManager {
       if (opts.port && opts.port > 0 && opts.port < 65536) {
         this.portRegistry.register(opts.port, entry.pid);
       }
-      return { pid: entry.pid };
     } catch (e: unknown) {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);

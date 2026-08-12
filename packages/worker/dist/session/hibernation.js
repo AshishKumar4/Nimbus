@@ -345,14 +345,14 @@ export function scheduleHibFlush(host, ctx) {
  *
  * Forward/back-compat: unknown reasons silently dropped.
  */
-export function dispatchAlarm(host, ctx, janitorOrphanCheck) {
+export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunches) {
     // Same serialization as scheduleAlarm: the dispatcher's read→handlers→write
     // cycle must not interleave with a log-activity scheduleAlarm.
-    const chained = (host._w1AlarmChain ?? Promise.resolve()).then(() => dispatchAlarmBody(host, ctx, janitorOrphanCheck), () => dispatchAlarmBody(host, ctx, janitorOrphanCheck));
+    const chained = (host._w1AlarmChain ?? Promise.resolve()).then(() => dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches), () => dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches));
     host._w1AlarmChain = chained;
     return chained;
 }
-async function dispatchAlarmBody(host, ctx, janitorOrphanCheck) {
+async function dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches) {
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(W1_NEXT_ALARM_REASONS_KEY));
@@ -383,6 +383,12 @@ async function dispatchAlarmBody(host, ctx, janitorOrphanCheck) {
             try {
                 if (reason === 'w9-flush') {
                     host.processes.flushLogs();
+                }
+                else if (reason === 'resident-launch') {
+                    // Awaited, not fired and forgotten: this invocation is the fresh
+                    // turn the launch asked for, and it has to stay the one paying for
+                    // the chunk it just released.
+                    await pumpResidentLaunches?.();
                 }
                 else if (reason === 'log-janitor') {
                     host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);

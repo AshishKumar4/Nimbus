@@ -19,6 +19,7 @@ import type { ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '../vfs/sqlite-vfs.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
+import { LaunchPacer } from './launch-pacer.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
@@ -151,7 +152,7 @@ interface GeneratedNodeFacetCode {
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, shims: string): GeneratedNodeFacetCode;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, shims: string): Promise<GeneratedNodeFacetCode>;
 /**
  * Generate a long-running Node entrypoint.
  *
@@ -168,7 +169,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
-}, usesSqlite: boolean, shims: string): GeneratedNodeFacetCode;
+}, usesSqlite: boolean, shims: string, pacer?: LaunchPacer): Promise<GeneratedNodeFacetCode>;
 /**
  * Result of preparing facet VFS state.
  *   - bundle:   path → content for the complete static require closure
@@ -324,7 +325,7 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle, manifest: Reco
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean): FacetVfsBundleSource;
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: LaunchPacer): Promise<FacetVfsBundleSource>;
 /**
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
@@ -523,7 +524,7 @@ export declare function addObservedReads(vfs: CredentialedVfs, observed: Readonl
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: LaunchPacer): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -538,6 +539,14 @@ export interface FacetManagerHooks {
     onExternalExit?: (pid: number, code: number, reason: string) => void;
     /** Fired right after the supervisor's spawn — lets the session print a notification. */
     onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
+    /**
+     * Arrange for `pumpResidentLaunches` to run on a fresh Durable Object turn.
+     *
+     * The session satisfies this with an alarm, which is the only primitive that
+     * genuinely re-enters the object: a fresh turn is both a released thread and
+     * a fresh CPU budget, and a launch needs each for a different reason.
+     */
+    requestLaunchTurn?: () => void;
 }
 export interface LongRunningWorkerSpawnOptions {
     port?: number;
@@ -554,6 +563,20 @@ export interface LongRunningWorkerSpawnOptions {
     compatibilityFlags?: string[];
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
+}
+/** What `spawnNode` needs to build and boot one resident Node process. */
+export interface ResidentSpawnOptions {
+    argv?: string[];
+    env?: Record<string, string>;
+    cwd?: string;
+    filename?: string;
+    dirname?: string;
+    command?: string;
+    port?: number;
+    attachedTty?: boolean;
+    skipSpawn?: boolean;
+    callerPid?: number;
+    bundleProfile?: FacetBundleProfile;
 }
 export declare class FacetManager {
     private ctx;
@@ -574,6 +597,15 @@ export declare class FacetManager {
     private processRpcResources;
     /** pid → the boot images its facet loads from; the image sweep's root set. */
     private residentImages;
+    /**
+     * Launches suspended between chunks, waiting for a turn of their own.
+     *
+     * In-memory on purpose: a launch is only meaningful while the process table
+     * entry it is building for exists, and both are lost together if the isolate
+     * resets. Persisting the queue would resurrect launches for pids that no
+     * longer exist.
+     */
+    private launchWaiters;
     private timedOutProcessIds;
     private _pairedServeFacet;
     /**
@@ -868,6 +900,15 @@ export declare class FacetManager {
      */
     private _materializeFacetImages;
     /**
+     * Fail a paced launch whose process went away while it was suspended.
+     *
+     * Between turns anything may happen to the process — a kill, a reap, a
+     * `_sweepFacetImages` that has already unrooted its images. Continuing would
+     * spend further turns building a facet for a pid nothing will ever attach
+     * to, and would write image files the next sweep immediately collects.
+     */
+    private _assertLaunchStillOwned;
+    /**
      * Drop every image no running process boots from.
      *
      * Content addressing means a changed program writes a NEW image rather than
@@ -886,6 +927,28 @@ export declare class FacetManager {
      */
     private _startResidentProcess;
     private _activateProcessVfsWriter;
+    /**
+     * How a paced launch asks for a fresh turn.
+     *
+     * The host grants one by calling `pumpResidentLaunches` from a context that
+     * is genuinely a new invocation — the session's alarm. Without such a host
+     * there is no fresh turn to be had, and the launch continues on this one
+     * rather than hanging: that is exactly the single-turn launch this path has
+     * always performed, so a harness or a runtime without alarms loses the
+     * responsiveness but keeps the behaviour.
+     */
+    private readonly launchScheduler;
+    /**
+     * Run one chunk of every launch waiting for a turn.
+     *
+     * Awaits the chunk each resumed launch then performs, so the invocation that
+     * granted the turn is the invocation that pays for the work — rather than
+     * releasing it into a handler's microtask drain, where nothing owns it and
+     * the runtime may tear the context down mid-chunk.
+     */
+    pumpResidentLaunches(): Promise<void>;
+    /** Whether any launch is suspended waiting for a turn. */
+    get hasPendingLaunchTurns(): boolean;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
     private _allocateLoopbackPort;
     /**
@@ -926,21 +989,21 @@ export declare class FacetManager {
      * is the largest thing Nimbus generates, so it travels by VFS path rather
      * than inside the boot spec and is read only when the facet loads.
      */
-    spawnNode(code: string, opts?: {
-        argv?: string[];
-        env?: Record<string, string>;
-        cwd?: string;
-        filename?: string;
-        dirname?: string;
-        command?: string;
-        port?: number;
-        attachedTty?: boolean;
-        skipSpawn?: boolean;
-        callerPid?: number;
-        bundleProfile?: FacetBundleProfile;
-    }): Promise<{
+    spawnNode(code: string, opts?: ResidentSpawnOptions): Promise<{
         pid: number;
     }>;
+    /**
+     * Build and boot a resident process across as many turns as it takes.
+     *
+     * Every phase below is paced: the walk, the ESM transform, the module-map
+     * serialization and the image-store write each report the work they do, and
+     * the pacer ends the turn whenever a chunk's worth has accumulated. What the
+     * session gets back between those chunks is its thread — which is what the
+     * terminal WebSocket needs to survive a launch, and what no amount of making
+     * the launch faster would have given it.
+     */
+    private _runResidentLaunch;
+    private _residentLaunchBody;
     /**
      * Spawn a long-running dynamic Worker, boot it, and return its boot payload.
      *
