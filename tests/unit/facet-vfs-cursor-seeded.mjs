@@ -47,11 +47,11 @@ const serializedSnapshot = {
 const bodies = [
   {
     label: 'one-shot node facet',
-    source: generateEntrypointCode('', vfsState, false, SHIMS).code,
+    source: (await generateEntrypointCode('', vfsState, false, SHIMS)).code,
   },
   {
     label: 'long-running node facet',
-    source: generateLongRunningNodeCode('', vfsState, { cred: CRED }, false, SHIMS).code,
+    source: (await generateLongRunningNodeCode('', vfsState, { cred: CRED }, false, SHIMS)).code,
   },
   {
     label: 'staged-artifact (opencode) facet',
@@ -103,8 +103,8 @@ for (const { label, source } of bodies) {
 const otherCursor = { epoch: 'a-different-incarnation', rev: 9 };
 const at = (cursor) => ({ ...vfsState, cursor });
 assert.equal(
-  generateEntrypointCode('', at(CURSOR), false, SHIMS).code,
-  generateEntrypointCode('', at(otherCursor), false, SHIMS).code,
+  (await generateEntrypointCode('', at(CURSOR), false, SHIMS)).code,
+  (await generateEntrypointCode('', at(otherCursor), false, SHIMS)).code,
   'the one-shot body is addressed by its program, not by the cursor it runs at',
 );
 assert.equal(
