@@ -120,6 +120,11 @@ export interface CredentialedVfs {
     list(after?: string | null, limit?: number): VfsListPage;
     unlink(path: string): void;
     rmdir(path: string): void;
+    /**
+     * Remove a path and everything beneath it, in bounded transactions.
+     * Returns the number of entries removed.
+     */
+    removeRecursive(path: string): number;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
     writeBatch(payload: BatchWritePayload): {
@@ -481,6 +486,20 @@ export declare class SqliteVFS {
     private readdir;
     private unlink;
     private rmdir;
+    /**
+     * Remove a path and everything beneath it, in bounded transactions.
+     *
+     * Walking the tree and issuing one transaction per entry cost a commit and
+     * a content-maintenance pass apiece — 19,429 of each for a single npm
+     * install's tree, on top of the whole-filesystem scan every one of them
+     * paid. A bounded group of entries commits together instead, closed on the
+     * entry before the one that would overflow it.
+     *
+     * Removal is group-atomic rather than path-atomic. Because entries go
+     * deepest first, every committed prefix is a consistent smaller tree —
+     * exactly the state an interrupted per-entry walk left behind.
+     */
+    private removeRecursive;
     private rename;
     private copyFile;
     private normalizeBatchInode;
@@ -563,7 +582,16 @@ export declare class SqliteVFS {
     private validateInodeContentShape;
     private assertTransactionFits;
     private _writeBatchOnce;
-    private collectBatchDeletions;
+    /**
+     * Every inode at or under each root, deepest first.
+     *
+     * The children index answers "what is under this prefix?" in the size of
+     * the subtree. The scan it replaces answered it in the size of the whole
+     * filesystem, so removing a tree of N entries one path at a time cost
+     * O(N²) — a 19,429-file tree was ~190 million synchronous comparisons on
+     * the object's only thread, long enough to drop the session's socket.
+     */
+    private collectSubtreeInodes;
     /**
      * Bulk mkdir: create all directories in a single transactionSync.
      * Pre-creates the full directory tree before file writes to avoid
