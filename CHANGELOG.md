@@ -69,9 +69,15 @@ someone consuming the packages, not the several hundred commits behind it.
   - `@nimbus-sh/worker@0.2.0`
   - `@nimbus-sh/sdk@0.2.0`
   - `@nimbus-sh/cli@0.1.8`
+  - `@nimbus-sh/react@0.1.4`
   - `@nimbus-sh/config@0.1.4`
-- Unchanged, not republished: `@nimbus-sh/react@0.1.3`,
-  `create-nimbus-app@0.1.6`.
+- Unchanged, not republished: `create-nimbus-app@0.1.6`.
+- `@nimbus-sh/react@0.1.4` is a range fix and nothing else — every shipped
+  file is byte-identical to `0.1.3`. Its peer on the SDK was `^0.1.4`, which
+  npm cannot satisfy with `0.2.0`, so installing the new SDK beside the React
+  component failed to resolve. It now accepts `^0.1.4 || ^0.2.0`. The
+  component imports nothing from the SDK — it is an iframe wrapper — so the
+  breaking type change does not reach it.
 - `@nimbus-sh/sdk` needs `@nimbus-sh/worker` at the matching major-equivalent
   range: it imports `@nimbus-sh/worker/preview-host` at runtime, and that
   subpath does not exist before `0.2.0`.

@@ -98,14 +98,14 @@
     },
     "packages/react": {
       "name": "@nimbus-sh/react",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "devDependencies": {
-        "@nimbus-sh/sdk": "^0.1.4",
+        "@nimbus-sh/sdk": "^0.1.4 || ^0.2.0",
         "@types/react": "^19.0.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/sdk": "^0.1.4",
+        "@nimbus-sh/sdk": "^0.1.4 || ^0.2.0",
         "react": ">=18.0.0",
       },
     },
@@ -1513,8 +1513,6 @@
     "@bruits/satteri-wasm32-wasi/@emnapi/runtime": ["@emnapi/runtime@1.11.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-vgj7R3y3Wgx24IQaGPA/R6YFXLHVMOZ0uVEyIQPaWs+rd1AzfEMXlAC22FYwO1XkKR6NPsq7mUandH8oIRdZFw=="],
 
     "@mdx-js/mdx/estree-walker": ["estree-walker@3.0.3", "", { "dependencies": { "@types/estree": "^1.0.0" } }, "sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g=="],
-
-    "@nimbus-sh/react/@nimbus-sh/sdk": ["@nimbus-sh/sdk@0.1.5", "", { "peerDependencies": { "@nimbus-sh/worker": "^0.1.6" } }, "sha512-EFFFTryAtTZfhLv5lc+3eH/bEPwPKV5+xN8GWCcZQY9dPKA9Ob74OElELRPhDOok5MFYiX3oETobRXFnFXZdZA=="],
 
     "@rolldown/binding-wasm32-wasi/@emnapi/runtime": ["@emnapi/runtime@1.11.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-vgj7R3y3Wgx24IQaGPA/R6YFXLHVMOZ0uVEyIQPaWs+rd1AzfEMXlAC22FYwO1XkKR6NPsq7mUandH8oIRdZFw=="],
 

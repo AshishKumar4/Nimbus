@@ -11,13 +11,19 @@ export interface ExpandContext {
     executeCapture?: (input: string) => Promise<string>;
 }
 /**
- * Expand all words for a command's arguments.
- * Handles variable expansion, tilde expansion, glob expansion, and command substitution.
+ * A parameter expansion that aborts the command it belongs to: `set -u` on an
+ * unset parameter, or an explicit `${var:?message}`.
+ */
+export declare class ExpansionError extends Error {
+}
+/**
+ * Expand all words for a command's arguments: brace expansion, tilde,
+ * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
 export declare function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]>;
 /**
- * Expand a single word (e.g., for redirect targets).
- * No glob expansion.
+ * Expand a single word (e.g., for redirect targets and assignments).
+ * No field splitting and no glob expansion.
  */
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
 //# sourceMappingURL=expander.d.ts.map
