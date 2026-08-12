@@ -83,6 +83,7 @@ export const ErrorCode = {
   EISDIR: 'EISDIR',
   ENOTEMPTY: 'ENOTEMPTY',
   EINVAL: 'EINVAL',
+  EXDEV: 'EXDEV',
 } as const;
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];

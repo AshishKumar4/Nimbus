@@ -119,6 +119,45 @@ await check('gunzip still rejects an option it does not have',
   `cd /tmp\ngunzip -Z absent.gz\necho "rc=$?"\n`,
   { stdout: 'rc=1\n', stderr: "gunzip: invalid option -- 'Z'\n" });
 
+// ── mv ─────────────────────────────────────────────────────────────────────
+// Every mount hands out a fresh credentialed view per lookup, so comparing the
+// two derived providers never matched and *every* rename inside one filesystem
+// failed. Renames between two mounts are a genuine EXDEV, which `mv` resolves
+// by copying and then removing the source — `mv "$tmp/download" "$HOME/bin/x"`
+// is in both installers.
+
+await check('mv renames within one mount',
+  'set -e\nmkdir -p /home/user/m/sub\nprintf body > /home/user/m/sub/f\n' +
+  'mv /home/user/m/sub/f /home/user/m/g\ncat /home/user/m/g\necho\n' +
+  'test ! -e /home/user/m/sub/f && echo source-gone\n',
+  { stdout: 'body\nsource-gone\n' });
+
+await check('mv moves across two mounts',
+  'set -e\nprintf body > /tmp/x1\nmv /tmp/x1 /home/user/x1\ncat /home/user/x1\necho\n' +
+  'test ! -e /tmp/x1 && echo source-gone\n',
+  { stdout: 'body\nsource-gone\n' });
+
+await check('mv across mounts carries the mode',
+  'set -e\nprintf "#!/bin/sh\\necho ran\\n" > /tmp/x2\nchmod 755 /tmp/x2\n' +
+  'mv /tmp/x2 /home/user/x2\nstat -c %a /home/user/x2\n',
+  { stdout: '755\n' });
+
+await check('mv moves a directory across mounts',
+  'set -e\nmkdir -p /tmp/tree/inner\nprintf leaf > /tmp/tree/inner/f\n' +
+  'mv /tmp/tree /home/user/tree\ncat /home/user/tree/inner/f\necho\n' +
+  'test ! -e /tmp/tree && echo source-gone\n',
+  { stdout: 'leaf\nsource-gone\n' });
+
+await check('mv moves several sources into a directory',
+  'set -e\nmkdir -p /home/user/many\nprintf a > /tmp/a\nprintf b > /tmp/b\n' +
+  'mv /tmp/a /tmp/b /home/user/many\ncat /home/user/many/a /home/user/many/b\necho\n',
+  { stdout: 'ab\n' });
+
+await check('mv -n keeps an existing destination',
+  'set -e\nprintf old > /home/user/keep\nprintf new > /tmp/keep\n' +
+  'mv -n /tmp/keep /home/user/keep\ncat /home/user/keep\necho\n',
+  { stdout: 'old\n' });
+
 box.destroy();
 
 if (failures.length > 0) {
