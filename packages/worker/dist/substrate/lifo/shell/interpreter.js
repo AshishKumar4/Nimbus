@@ -1,6 +1,6 @@
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
-import { expandWords, expandWord } from './expander.js';
+import { expandWords, expandWord, ExpansionError } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { PipeChannel } from './pipe.js';
 import { exitCodeForAbortSignal } from './signals.js';
@@ -153,8 +153,11 @@ export class Interpreter {
             if (e instanceof Error) {
                 this.writeTerminal(io, `${e.message}\n`);
             }
-            this.lastExitCode = 2;
-            return 2;
+            // A failed expansion aborts with 1, the way bash does; 2 is reserved for
+            // the shell's own usage errors (syntax, bad builtin invocation).
+            const exitCode = e instanceof ExpansionError ? 1 : 2;
+            this.lastExitCode = exitCode;
+            return exitCode;
         }
     }
     async executeList(list, io = {}) {
