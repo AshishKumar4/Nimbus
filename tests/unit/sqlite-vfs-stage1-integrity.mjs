@@ -716,4 +716,79 @@ for (const faultCase of [
   assert.ok(rawVfs.getStats().cache.entries <= 1);
 }
 
+// Renaming a directory carries its whole subtree and nothing else. Both the
+// set that moves and the destination-conflict check are resolved from the
+// children index, so a sibling whose name merely starts with the source or
+// destination path must stay exactly where it is.
+{
+  const { harness, rawVfs, vfs } = openVfs();
+  vfs.mkdir('src/lib/deep', { recursive: true });
+  vfs.writeFile('src/lib/deep/a.txt', 'a');
+  vfs.writeFile('src/top.txt', 'top');
+  vfs.writeFile('srcfile.txt', 'sibling');
+  vfs.mkdir('src-other', { recursive: true });
+  vfs.writeFile('src-other/b.txt', 'b');
+  vfs.writeFile('destfile.txt', 'dest sibling');
+
+  vfs.rename('src', 'dest');
+
+  const reconstructed = openVfs(createSqliteVfsTestHarness(harness.db)).vfs;
+  assert.equal(reconstructed.exists('src'), false);
+  assert.equal(reconstructed.readFileString('dest/lib/deep/a.txt'), 'a');
+  assert.equal(reconstructed.readFileString('dest/top.txt'), 'top');
+  assert.equal(reconstructed.readFileString('srcfile.txt'), 'sibling');
+  assert.equal(reconstructed.readFileString('src-other/b.txt'), 'b');
+  assert.equal(reconstructed.readFileString('destfile.txt'), 'dest sibling');
+  assert.deepEqual(
+    reconstructed.readdir('dest').map((entry) => entry.name).sort(),
+    ['lib', 'top.txt'],
+  );
+  assert.equal(rawVfs._verifyCounters(), null);
+}
+
+// A destination whose subtree is already occupied is refused, and refused
+// without mutating anything.
+{
+  const { rawVfs, vfs } = openVfs();
+  vfs.mkdir('from/inner', { recursive: true });
+  vfs.writeFile('from/inner/a.txt', 'a');
+  vfs.mkdir('onto/inner', { recursive: true });
+  vfs.writeFile('onto/inner/b.txt', 'b');
+
+  assert.throws(() => vfs.rename('from', 'onto'), /ENOTDIR-or-EISDIR|ENOTEMPTY/);
+  assert.equal(vfs.readFileString('from/inner/a.txt'), 'a');
+  assert.equal(vfs.readFileString('onto/inner/b.txt'), 'b');
+  assert.equal(rawVfs._verifyCounters(), null);
+}
+
+// Resolving those two subtrees must cost the subtrees, not the filesystem:
+// an atomic write is `write temp; rename temp final`, and a whole-inode scan
+// per call made every one of them cost the size of the tree it wrote into.
+{
+  const { rawVfs, vfs } = openVfs();
+  vfs.mkdir('bulk', { recursive: true });
+  for (let i = 0; i < 400; i++) vfs.writeFile(`bulk/file-${i}.js`, 'x');
+  vfs.writeFile('atomic.tmp', 'payload');
+
+  let walked = 0;
+  const inodes = rawVfs.inodes;
+  const whole = new Set(['values', 'keys', 'entries', Symbol.iterator]);
+  rawVfs.inodes = new Proxy(inodes, {
+    get(target, property) {
+      if (whole.has(property)) walked++;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  try {
+    vfs.rename('atomic.tmp', 'bulk/final.js');
+  } finally {
+    rawVfs.inodes = inodes;
+  }
+  assert.equal(walked, 0, 'rename walked the whole inode table');
+  assert.equal(vfs.readFileString('bulk/final.js'), 'payload');
+  assert.equal(vfs.exists('atomic.tmp'), false);
+  assert.equal(rawVfs._verifyCounters(), null);
+}
+
 console.log('sqlite-vfs-stage1-integrity: all assertions passed');

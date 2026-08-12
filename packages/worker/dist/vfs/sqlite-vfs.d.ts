@@ -120,6 +120,11 @@ export interface CredentialedVfs {
     list(after?: string | null, limit?: number): VfsListPage;
     unlink(path: string): void;
     rmdir(path: string): void;
+    /**
+     * Remove a path and everything beneath it, in bounded transactions.
+     * Returns the number of entries removed.
+     */
+    removeRecursive(path: string): number;
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string): void;
     writeBatch(payload: BatchWritePayload): {
@@ -481,6 +486,23 @@ export declare class SqliteVFS {
     private readdir;
     private unlink;
     private rmdir;
+    /**
+     * Remove a path and everything beneath it, in bounded transactions.
+     *
+     * Walking the tree and issuing one transaction per entry cost a commit and
+     * a content-maintenance pass apiece — 19,429 of each for a single npm
+     * install's tree, on top of the whole-filesystem scan every one of them
+     * paid. That took long enough on the object's only thread to exceed its
+     * per-request CPU budget: the removal committed, the object was reset, and
+     * every WebSocket it held closed 1006. A bounded group of entries commits
+     * together instead, closed on the entry before the one that would overflow
+     * it, and the removal owes one maintenance pass rather than one per group.
+     *
+     * Removal is group-atomic rather than path-atomic. Because entries go
+     * deepest first, every committed prefix is a consistent smaller tree —
+     * exactly the state an interrupted per-entry walk left behind.
+     */
+    private removeRecursive;
     private rename;
     private copyFile;
     private normalizeBatchInode;
@@ -493,6 +515,14 @@ export declare class SqliteVFS {
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     private writeBatch;
+    /**
+     * Authorise and commit one batch, without the maintenance pass. A standalone
+     * mutation owes that pass; an operation built from several transactions owes
+     * exactly one when it is finished. Charging it per transaction made removing
+     * a tree run the orphan scan — which reads the chunk table — once for every
+     * bounded group of the removal.
+     */
+    private commitBatch;
     private replaceFileWithStagedContent;
     /**
      * Copy-on-write replacement for an over-limit range/truncate mutation.
@@ -563,7 +593,17 @@ export declare class SqliteVFS {
     private validateInodeContentShape;
     private assertTransactionFits;
     private _writeBatchOnce;
-    private collectBatchDeletions;
+    /**
+     * Every inode at or under each root, deepest first.
+     *
+     * The children index answers "what is under this prefix?" in the size of
+     * the subtree. The scan it replaces answered it in the size of the whole
+     * filesystem, and every mutation resolved its deletions twice — once to
+     * preflight the plan, once to commit it — so removing a tree of N entries
+     * one path at a time cost N(N+1) comparisons: ~4.8 × 10^8 for a
+     * 19,429-file tree, on the object's only thread.
+     */
+    private collectSubtreeInodes;
     /**
      * Bulk mkdir: create all directories in a single transactionSync.
      * Pre-creates the full directory tree before file writes to avoid
