@@ -63,6 +63,7 @@ const WIDTH = 33; // a real resolve-layer width from the measured pi install
   const r = await dispatch(WIDTH);
   assert.deepEqual(r.results, Array.from({ length: WIDTH }, (_, i) => i),
     'uncapped: results in input order');
+  assert.equal(r.dispatched, WIDTH, 'uncapped: every task dispatched exactly once');
   // Keys hash onto min(WIDTH, MAX_PEER_FANOUT) slots, so collisions leave
   // somewhat fewer distinct peers than tasks — but the fan-out is still
   // peer-per-task in shape, and far wider than any cap below.
