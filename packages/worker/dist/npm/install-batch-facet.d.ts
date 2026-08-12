@@ -54,6 +54,13 @@ export interface InstallBatchPerPackage {
     warnings: string[];
     /** When set, the package failed; caller surfaces this in install log. */
     errorText?: string;
+    /**
+     * Which tier served this tarball, and how long acquiring it took. The
+     * supervisor reports both verbatim in its `npm http` lines, so they must
+     * stay measurements — absent when the tarball was never acquired.
+     */
+    tarballSource?: 'cache' | 'registry';
+    tarballElapsedMs?: number;
 }
 export interface InstallBatchResult {
     /** One entry per input spec, in input order. */

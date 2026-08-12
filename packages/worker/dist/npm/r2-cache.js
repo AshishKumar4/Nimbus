@@ -102,6 +102,13 @@ export const PACKUMENT_TTL_MS = 60 * 60_000;
 const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 /** Jittered backoff between packument fetch attempts. */
 const PACKUMENT_BACKOFF_MS = [500, 1500, 4500];
+/** The registry URL a packument is read from — also what `npm http` lines report. */
+export function packumentUrl(name) {
+    const safeName = name.startsWith('@')
+        ? '@' + encodeURIComponent(name.slice(1))
+        : encodeURIComponent(name);
+    return `${NPM_REGISTRY_ORIGIN}/${safeName}`;
+}
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
  *  framing + the call's own arg bytes. Tarballs above this size skip
@@ -530,10 +537,7 @@ export class R2CacheClient {
         if (cached && !cached.expired && cached.json) {
             return { json: cached.json, source: 'r2-cache' };
         }
-        const safeName = name.startsWith('@')
-            ? '@' + encodeURIComponent(name.slice(1))
-            : encodeURIComponent(name);
-        const url = `${NPM_REGISTRY_ORIGIN}/${safeName}`;
+        const url = packumentUrl(name);
         const retries = Math.max(0, options?.retries ?? 3);
         const timeoutMs = options?.timeoutMs ?? 15_000;
         let lastErr;

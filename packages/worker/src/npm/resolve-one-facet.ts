@@ -151,6 +151,12 @@ export interface ResolveOneResult {
   packumentBytesDecoded: number;
   packumentSource: 'cache-hit' | 'r2-cache' | 'network' | 'skipped';
   /**
+   * Round trip of the packument read as this task observed it. Reported
+   * verbatim in the supervisor's `npm http fetch` line, so it must stay a
+   * measurement — zero when no read was issued.
+   */
+  packumentElapsedMs: number;
+  /**
    * cache-obs-2: per-tier cache events captured during this resolve.
    *
    * Each entry records a single L2/L3/L4 hit-or-miss observed when
@@ -258,6 +264,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   // (spliced from supervisor RPC return.events) and the L4 path
   // (post-network-fetch). Threaded through `out()` into the result.
   const cacheStatEvents: ResolveOneResult['cacheStatEvents'] = [];
+  let packumentElapsedMs = 0;
   const out = (
     pkg: ResolvedPackage | null,
     bytes: number,
@@ -274,6 +281,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     events,
     packumentBytesDecoded: bytes,
     packumentSource: source,
+    packumentElapsedMs,
     cacheStatEvents,
     error,
   });
@@ -416,6 +424,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     });
   }
   {
+    const packumentStart = Date.now();
     const result = await __nimbusUseRpcResult(
       env.SUPERVISOR.getPackument(effName, {
         retries: Math.max(0, spec.retries ?? 3),
@@ -423,6 +432,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       }),
       (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }),
     );
+    packumentElapsedMs = Date.now() - packumentStart;
     // Splice the supervisor's per-tier events into our accumulator.
     // Filter to known tiers/kinds so a future schema change cannot
     // poison the result.

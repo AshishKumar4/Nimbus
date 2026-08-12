@@ -67,6 +67,7 @@ import { registerShellEntrypointCommands, type ShellEntrypointExecutor } from '.
 import { makeChshCommand } from '../substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { parseNpmInstallInvocation } from '../npm/install-args.js';
+import { npmLogEnabled, type NpmLogLevel } from '../npm/npm-log.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import { registerGitCommands } from '../git/commands.js';
 import {
@@ -2297,10 +2298,21 @@ export function initSession(self: InitHost, ws: WebSocket): void {
           ctx.stdout.write('[npm] ' + msg + '\n');
         });
 
+        // `--loglevel` selects npm's own log protocol on stderr, where npm
+        // writes it. Tooling that drives npm parses those lines rather than
+        // our prose — pi's installer advances its progress label off them.
+        const npmLogLevel = installInvocation.loglevel;
+        const npmLog = npmLogLevel === null ? undefined : (
+          (level: NpmLogLevel, line: string) => {
+            if (npmLogEnabled(npmLogLevel, level)) ctx.stderr.write(line + '\n');
+          }
+        );
+
         try {
           const result = await self.npmInstaller!.install(installCwd, {
             packages: explicitPkgs.length > 0 ? explicitPkgs : undefined,
             pid: ctx.pid,
+            npmLog,
           });
 
           if (result.failed?.length > 0) {

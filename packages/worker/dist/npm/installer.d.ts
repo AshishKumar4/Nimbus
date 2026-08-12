@@ -23,6 +23,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
+import { type NpmLogEmitter } from './npm-log.js';
 import type { InstallPhase } from '../_shared/install-phase.js';
 export interface InstallProgress {
     phase: InstallPhase;
@@ -59,6 +60,12 @@ export declare class NpmInstaller {
      * when the feature flag is on, using the facet's own global fetch.
      */
     private fetchFn;
+    /**
+     * npm-protocol log sink for the install in flight. Set per invocation
+     * because `--loglevel` is a per-invocation flag; the no-op default is
+     * what every caller that didn't pass one gets.
+     */
+    private npmLog;
     constructor(vfs: SqliteVFS, sql: SqlStorage, opts?: {
         esbuild?: EsbuildService;
         ctx?: DurableObjectState;
@@ -78,6 +85,7 @@ export declare class NpmInstaller {
         packages?: string[];
         production?: boolean;
         pid?: number;
+        npmLog?: NpmLogEmitter;
     }): Promise<NpmInstallResult>;
     private _installInner;
     /**
