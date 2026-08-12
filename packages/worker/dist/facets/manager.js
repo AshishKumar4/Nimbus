@@ -2792,9 +2792,26 @@ function _markBundleEsmAsFailed(bundle, reason) {
  * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
  * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
  */
-function isBundleModuleCandidate(path) {
+export function isBundleModuleCandidate(path) {
     const ext = vfsPathExtension(path);
-    return ext === '.js' || ext === '.mjs' || ext === '';
+    return ext === '.js' || ext === '.mjs' || ext === '' || bundleTypescriptLoader(path) !== null;
+}
+/**
+ * The esbuild loader for a TypeScript source in the bundle, or null when the
+ * path does not name one.
+ *
+ * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
+ * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
+ * not the file has a single import in it. So these transform on their
+ * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
+ * the right question for a file that is already valid JS either way, and the
+ * wrong one for a file that is never valid JS.
+ */
+export function bundleTypescriptLoader(path) {
+    const ext = vfsPathExtension(path);
+    if (ext === '.tsx')
+        return 'tsx';
+    return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
 }
 /**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
@@ -2820,7 +2837,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
         // esbuild.transform expect strings.
         if (typeof src !== 'string')
             continue;
-        if (!looksLikeEsm(src))
+        if (bundleTypescriptLoader(path) === null && !looksLikeEsm(src))
             continue;
         candidates.push(path);
     }
@@ -2856,7 +2873,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
         }
         try {
             const t = await esbuild.transform(src, {
-                loader: 'js',
+                loader: bundleTypescriptLoader(path) ?? 'js',
                 format: 'cjs',
                 target: 'esnext',
                 define: importMetaDefines(absUrl),

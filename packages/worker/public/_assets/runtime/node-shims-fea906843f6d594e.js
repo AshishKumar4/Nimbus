@@ -7954,6 +7954,19 @@ function __resolveFile(base) {
     const cand = base + ext;
     if (__fileExists(cand)) return cand;
   }
+  // TypeScript sources, probed only once every candidate above has missed, so
+  // the specifiers whose resolution changes are exactly those that resolve to
+  // nothing today. Must agree with the prefetch resolver or a file is shipped
+  // that this cannot find; both come from src/_shared/typescript-specifiers.ts
+  // and tests/unit/typescript-specifier-resolution.mjs compares them.
+  const baseTrim = base.replace(/\/+$/, "");
+  for (const cand of __typescriptFallbackCandidates(baseTrim)) {
+    if (__pathIsFile(cand)) return cand;
+  }
+  for (const ext of __TYPESCRIPT_INDEX_CANDIDATES) {
+    const cand = baseTrim + ext;
+    if (__pathIsFile(cand)) return cand;
+  }
   return null;
 }
 
@@ -8063,6 +8076,24 @@ function resolvePackageEntry(pkg, subpath, conditions) {
   return subpath;
 }
 // ── end exports-resolver.js ────────────────────────────────────────────
+
+
+// ── TypeScript specifier fallbacks ────────────────────────────────────────
+// Emitted from src/_shared/typescript-specifiers.ts. Declares:
+// __typescriptFallbackCandidates, __TYPESCRIPT_INDEX_CANDIDATES.
+
+// ── typescript-specifiers (mirrors src/_shared/typescript-specifiers.ts) ──
+const __NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
+const __TYPESCRIPT_INDEX_CANDIDATES = ["/index.ts","/index.tsx"];
+function __typescriptFallbackCandidates(base) {
+  if (__NON_MAPPING_EXTENSION.test(base)) return [];
+  if (base.endsWith(".mjs")) return [base.slice(0, -4) + ".mts"];
+  if (base.endsWith(".js")) {
+    const stem = base.slice(0, -3);
+    return [stem + ".ts", stem + ".tsx"];
+  }
+  return [base + ".ts", base + ".tsx"];
+}
 
 
 /** Conditions for runtime CJS resolution (user-shell node). */

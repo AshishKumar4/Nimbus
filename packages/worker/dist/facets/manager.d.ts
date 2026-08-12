@@ -509,6 +509,31 @@ export declare function addObservedReads(vfs: CredentialedVfs, observed: Readonl
     added: number;
 };
 /**
+ * The set of bundle entries the facet's startup pre-compile loop turns into
+ * functions, minus the ones already in the right format. Everything the loop
+ * compiles must pass through the ESM→CJS transform first: a file the loop
+ * compiles but this pass skipped reaches `new Function` as ESM source and
+ * dies there, and request-time codegen is blocked so nothing can recover it.
+ *
+ * Extensionless entries are in the set for the same reason the pre-compile
+ * loop takes them — that is the shape of nearly every npm `bin` script.
+ * `.json` is data and `.cjs` is CommonJS by definition; neither needs the
+ * transform. Content, not the path, decides from here: `looksLikeEsm` parses.
+ */
+export declare function isBundleModuleCandidate(path: string): boolean;
+/**
+ * The esbuild loader for a TypeScript source in the bundle, or null when the
+ * path does not name one.
+ *
+ * A resolved `.ts` file reaches the facet as TypeScript, and TypeScript is not
+ * JavaScript: `new Function` on a type annotation is a SyntaxError whether or
+ * not the file has a single import in it. So these transform on their
+ * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
+ * the right question for a file that is already valid JS either way, and the
+ * wrong one for a file that is never valid JS.
+ */
+export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
+/**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
  * The static walker supplies the complete known require closure. Separate

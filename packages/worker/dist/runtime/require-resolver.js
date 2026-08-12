@@ -27,6 +27,7 @@
  * de-quarantines it as the primary content-bundle source.
  */
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
+import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates, } from '../_shared/typescript-specifiers.js';
 import { FACET_PROVIDED_PACKAGES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
@@ -137,6 +138,19 @@ function resolveFile(vfs, base, sink) {
     const indexExts = ['/index.js', '/index.cjs', '/index.mjs', '/index.json'];
     for (const ext of indexExts) {
         const p = normalizePath(base + ext);
+        if (vfs.exists(p) && !vfs.isDirectory(p))
+            return p;
+    }
+    // TypeScript sources, probed only once every candidate above has missed —
+    // so the specifiers whose resolution changes are exactly those that resolve
+    // to nothing today. See _shared/typescript-specifiers.ts for the scope.
+    for (const candidate of typescriptFallbackCandidates(baseTrim)) {
+        const p = normalizePath(candidate);
+        if (vfs.exists(p) && !vfs.isDirectory(p))
+            return p;
+    }
+    for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
+        const p = normalizePath(baseTrim + ext);
         if (vfs.exists(p) && !vfs.isDirectory(p))
             return p;
     }

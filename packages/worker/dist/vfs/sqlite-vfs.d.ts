@@ -504,6 +504,17 @@ export declare class SqliteVFS {
      */
     private removeRecursive;
     private rename;
+    /**
+     * Unwind the destination inodes a failed move had already published.
+     *
+     * These rows name content the source still owns, so removing them collects
+     * nothing — the point is only that a retry sees an empty destination rather
+     * than a subtree conflict. Deepest-first in bounded groups, like any other
+     * removal. A failure here is swallowed: the caller is already unwinding, and
+     * the source tree — which is what the data lives in — is untouched either
+     * way.
+     */
+    private unpublishRenameDestination;
     private copyFile;
     private normalizeBatchInode;
     private authorizeBatch;
