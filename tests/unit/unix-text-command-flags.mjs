@@ -267,4 +267,23 @@ const xargsBad = await run('xargs', ['-Q', 'echo'], 'a\n');
 assert.equal(xargsBad.exitCode, 1);
 assert.match(xargsBad.stderr, /unrecognized option '-Q'/);
 
+// sed pushed an unhandled option into its FILE list, so `sed -r 's/a/b/' f`
+// reported "no such file: -r" — and with -i would have edited the wrong set.
+const sedBad = await run('sed', ['-r', 's/alpha/x/', 'three.txt']);
+assert.equal(sedBad.exitCode, 1);
+assert.match(sedBad.stderr, /invalid option -- 'r'/);
+assert.equal(sedBad.stdout, '');
+
+const sedLongBad = await run('sed', ['--regexp-extended', 's/alpha/x/', 'three.txt']);
+assert.equal(sedLongBad.exitCode, 1);
+assert.match(sedLongBad.stderr, /unrecognized option '--regexp-extended'/);
+
+// The options sed does implement still work.
+const sedWorks = await run('sed', ['s/alpha/x/', 'three.txt']);
+assert.equal(sedWorks.exitCode, 0, sedWorks.stderr);
+assert.match(sedWorks.stdout, /^x\n/);
+
+const sedQuiet = await run('sed', ['-n', 's/alpha/x/p', 'three.txt']);
+assert.equal(sedQuiet.stdout, 'x\n', sedQuiet.stderr);
+
 console.log('unix-text-command-flags: ok');

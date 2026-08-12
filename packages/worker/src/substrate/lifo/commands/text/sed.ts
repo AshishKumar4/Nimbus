@@ -35,6 +35,8 @@ type SedCommandOptions = {
   quiet: boolean;
   expressions: string[];
   files: string[];
+  /** First option this build does not implement; refused rather than kept. */
+  unknownOption?: string;
 };
 
 function parseSedExpr(expr: string): SedExpr | null {
@@ -112,6 +114,16 @@ function isDigit(value: string): boolean {
 
 export async function runSed(ctx: SedExecutionContext): Promise<number> {
   const options = parseSedArgs(ctx.args);
+
+  if (options.unknownOption) {
+    ctx.stderr.write(
+      options.unknownOption.startsWith('--')
+        ? `sed: unrecognized option '${options.unknownOption}'\n`
+        : `sed: invalid option -- '${options.unknownOption.slice(1)}'\n`,
+    );
+    ctx.stderr.write("Usage: sed [-n] [-i] [-e script] script [input-file]...\n");
+    return 1;
+  }
 
   if (options.expressions.length === 0) {
     ctx.stderr.write('sed: missing expression\n');
@@ -229,6 +241,14 @@ function parseSedArgs(args: string[]): SedCommandOptions {
     }
     if (options.expressions.length === 0 && !arg.startsWith('-')) {
       options.expressions.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith('-') && arg !== '-') {
+      // An unhandled option used to become a FILE operand, so
+      // `sed -r 's/a/b/' f` reported "no such file: -r" — or worse, with
+      // `-i`, edited the wrong set of files.
+      options.unknownOption ??= arg;
       continue;
     }
 
