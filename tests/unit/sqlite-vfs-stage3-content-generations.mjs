@@ -898,8 +898,9 @@ function streamFromBytes(bytes) {
   });
 }
 
-// Storage failure after one published stream path returns exact typed progress;
-// replaying the whole stream is idempotent and converges to the requested bytes.
+// Storage failure inside a publish group commits none of that group: files
+// that had already been accepted stay absent, a replaced file keeps its old
+// content, and replaying the whole stream converges to the requested bytes.
 {
   const { harness, vfs } = openVfs();
   const oldB = bytes(4, 3);
@@ -912,29 +913,59 @@ function streamFromBytes(bytes) {
   const payload = streamPayload(entries);
   harness.setFaultInjector(({ sql, params }) => (
     /INSERT OR REPLACE INTO inodes/i.test(sql) && params.includes('prefix-b.bin')
-      ? new Error('injected second publish failure')
+      ? new Error('injected publish failure')
       : null
   ));
   const failed = await vfs.writeStream(encodeWriteBatchStream(payload));
   harness.clearFault();
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'publish');
-  assert.equal(failed.committedGroupSequence, 1);
-  assert.equal(failed.committedPathCount, 1);
-  assert.deepEqual(reopenVfs(harness).readFile('prefix-a.bin'), entries[0].data);
+  assert.equal(failed.committedGroupSequence, 0);
+  assert.equal(failed.committedPathCount, 0);
+  assert.equal(reopenVfs(harness).exists('prefix-a.bin'), false);
   assert.deepEqual(reopenVfs(harness).readFile('prefix-b.bin'), oldB);
   assert.equal(reopenVfs(harness).exists('prefix-c.bin'), false);
 
   const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
   assert.equal(replay.ok, true);
-  assert.equal(replay.committedGroupSequence, 3);
+  assert.equal(replay.committedGroupSequence, 1);
   assert.equal(replay.committedPathCount, 3);
   const reconstructed = reopenVfs(harness);
   for (const entry of entries) assert.deepEqual(reconstructed.readFile(entry.path), entry.data);
 }
 
-// Decoder failure after one complete path is the committed-prefix boundary:
-// the complete path remains durable and reported; the incomplete path is not.
+// Groups that already committed are the committed prefix. A file larger than
+// one transaction closes the group before it, so the failure that lands in the
+// second group cannot unmake the first.
+{
+  const { harness, vfs } = openVfs();
+  const entries = [
+    { path: 'group-a.bin', data: bytes(5, 10) },
+    { path: 'group-b.bin', data: bytes(MAX_TX_BLOB_BYTES + 1, 20) },
+  ];
+  harness.setFaultInjector(({ sql, params }) => (
+    /INSERT OR REPLACE INTO inodes/i.test(sql) && params.includes('group-b.bin')
+      ? new Error('injected second-group publish failure')
+      : null
+  ));
+  const failed = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  harness.clearFault();
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error.phase, 'publish');
+  assert.equal(failed.committedGroupSequence, 1);
+  assert.equal(failed.committedPathCount, 1);
+  const reconstructed = reopenVfs(harness);
+  assert.deepEqual(reconstructed.readFile('group-a.bin'), entries[0].data);
+  assert.equal(reconstructed.exists('group-b.bin'), false);
+
+  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  assert.equal(replay.ok, true);
+  const converged = reopenVfs(harness);
+  for (const entry of entries) assert.deepEqual(converged.readFile(entry.path), entry.data);
+}
+
+// Decoder failure mid-file abandons the whole pending group: neither the
+// complete path nor the incomplete one is durable, and the replay converges.
 {
   const { harness, vfs } = openVfs();
   const first = { path: 'decode-a.bin', data: bytes(3, 1) };
@@ -945,10 +976,10 @@ function streamFromBytes(bytes) {
   const failed = await vfs.writeStream(streamFromBytes(encoded.slice(0, secondChunkOffset + 9)));
   assert.equal(failed.ok, false);
   assert.equal(failed.error.phase, 'decode');
-  assert.equal(failed.committedGroupSequence, 1);
-  assert.equal(failed.committedPathCount, 1);
+  assert.equal(failed.committedGroupSequence, 0);
+  assert.equal(failed.committedPathCount, 0);
   const reconstructed = reopenVfs(harness);
-  assert.deepEqual(reconstructed.readFile(first.path), first.data);
+  assert.equal(reconstructed.exists(first.path), false);
   assert.equal(reconstructed.exists(second.path), false);
 
   const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload([first, second])));

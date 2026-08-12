@@ -419,6 +419,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // §11 finding #4 lifecycle correctness.
             let capturedTgzBytes = null;
             let r2HitBytes = null;
+            // Acquisition span, measured from the first cache probe to the moment
+            // the tarball body is in hand.
+            let tarballElapsedMs = 0;
             // 1b. Try R2 first (bounded wait).
             if (r2Available) {
                 try {
@@ -474,6 +477,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 // proven to be spec.integrity's tarball — there is exactly one
                 // verification point and it is not here.
                 discardPendingNetwork();
+                tarballElapsedMs = Date.now() - r2WaitStart;
                 pipelinedTarballRaceWins++;
                 tarballsCompleted++;
                 cumulativeBytesDecoded += r2HitBytes.length;
@@ -546,6 +550,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                         errorText: 'no response body',
                     };
                 }
+                tarballElapsedMs = Date.now() - r2WaitStart;
                 // cache-obs-2: record the L4 (registry.npmjs.org) hit. We're
                 // about to stream the body — the byte count is known either
                 // via the response's Content-Length header OR we can sum it
@@ -735,6 +740,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 name: spec.name, version: spec.version,
                 fileCount: totalFileInodes, bytesWritten: totalBytesWritten,
                 elapsed: Date.now() - t0, warnings,
+                tarballSource: r2HitBytes ? 'cache' : 'registry',
+                tarballElapsedMs: tarballElapsedMs,
             };
         }
         catch (e) {

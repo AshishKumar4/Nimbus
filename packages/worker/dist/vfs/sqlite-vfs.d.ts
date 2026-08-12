@@ -502,12 +502,34 @@ export declare class SqliteVFS {
     private replaceFileWithGeneratedContent;
     private beginStagedContent;
     private executeStagedChunkPlan;
+    /**
+     * The rows that publishing `inode` from `contentId` writes: the inode
+     * itself, the lifecycle transition, and the content it supersedes. The
+     * single definition of a file's publication — ownership inheritance and
+     * the GC of the replaced content are the same whether the file publishes
+     * alone or as one member of a batched group.
+     */
+    private addFilePublication;
     private publishStagedFile;
     /**
-     * Incremental W7 v3 consumer. Publication is path-atomic with a committed
-     * prefix. Chunk payload is admitted through one per-VFS weighted credit
-     * pool, staged in bounded synchronous transactions, then released before
-     * the decoder pulls another record.
+     * Incremental W7 v3 consumer. Chunk payload is admitted through one
+     * per-VFS weighted credit pool and committed in bounded synchronous
+     * transactions, which release their credit before the decoder pulls
+     * another record.
+     *
+     * Publication is group-atomic with a committed prefix: a bounded group of
+     * whole files commits in one transaction, and either every file in it is
+     * durable or none is. A file never publishes partially — a group is closed
+     * on the record boundary before the file that would overflow it, so a file
+     * too large for one transaction stages across several and publishes on the
+     * last, exactly as the per-file path did. Chunks staged for a file still
+     * in flight may ride along in a group that publishes other files; they
+     * carry a content id no inode references yet, so nothing observes them.
+     *
+     * Publishing per file cost three transactions each (stage the content
+     * row, flush the chunks, publish), which at ~0.9 ms of commit apiece made
+     * writing 19,429 files the dominant term of an npm install and stalled
+     * every download shard behind the one Durable Object's storage queue.
      */
     private writeStream;
     private _writeBatchWithRetry;
