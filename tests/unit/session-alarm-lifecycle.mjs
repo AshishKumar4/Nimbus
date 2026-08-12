@@ -19,7 +19,7 @@ import {
 } from '../../packages/worker/src/session/hibernation.ts';
 import { W1_NEXT_ALARM_REASONS_KEY, SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY } from '../../packages/worker/src/session/keys.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 function makeStorage() {
   const map = new Map();

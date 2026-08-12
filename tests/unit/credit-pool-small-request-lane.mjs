@@ -10,15 +10,15 @@
 // fall back to a reserve otherwise, so they never join the shared queue.
 
 import assert from 'node:assert/strict';
-import { WeightedCreditPool } from '../../packages/worker/src/_shared/weighted-credit-pool.ts';
+import { WeightedCreditPool } from '../../packages/core/src/_shared/weighted-credit-pool.ts';
 import {
   CHUNK_SIZE,
   SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES as CAPACITY,
-} from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/constants.ts';
 import {
   acquireSupervisorAllocation,
   acquireSupervisorReadAllocation,
-} from '../../packages/worker/src/observability/heavy-alloc-coord.ts';
+} from '../../packages/core/src/observability/heavy-alloc-coord.ts';
 
 const MiB = 1024 * 1024;
 // Held as literals rather than imported so this asserts the behaviour, not

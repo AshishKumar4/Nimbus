@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/worker/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/worker/src/runtime/wasm-runner.ts';
-import { registerShellEntrypointCommands } from '../../packages/worker/src/shell/shell-entrypoints.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 
 const USER_CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 

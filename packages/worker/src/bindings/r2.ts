@@ -28,7 +28,7 @@
  * helpers text() / arrayBuffer() / json() / blob().
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
 // ── Public types ──────────────────────────────────────────────────────────
 

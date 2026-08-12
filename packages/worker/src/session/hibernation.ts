@@ -35,8 +35,8 @@
  * wireProcessLogPersist again.
  */
 
-import type { LogChunk, PersistAdapter, ProcessExitInfo } from '../runtime/process-logs.js';
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { LogChunk, PersistAdapter, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from './ws-hibernation-config.js';
 import { SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS, W1_NEXT_ALARM_REASONS_KEY } from './keys.js';
 

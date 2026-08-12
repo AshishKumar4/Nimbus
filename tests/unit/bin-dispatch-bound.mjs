@@ -16,7 +16,7 @@
 // rejection, which would take the whole DO down instead.
 
 import assert from 'node:assert/strict';
-import { FACET_TIMEOUT_MS } from '../../packages/worker/src/constants.ts';
+import { FACET_TIMEOUT_MS } from '../../packages/core/src/constants.ts';
 import {
   BIN_DISPATCH_TIMEOUT_MS,
   awaitBinDispatch,

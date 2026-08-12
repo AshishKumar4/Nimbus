@@ -26,16 +26,16 @@
 // Run directly; it prints a table rather than asserting a threshold, because a
 // performance figure that fails a build is a flake generator.
 
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
-} from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/constants.ts';
 
 /**
  * Tree shapes worth separating, because the two RPC bounds bind on different

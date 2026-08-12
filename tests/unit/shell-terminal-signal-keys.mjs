@@ -7,7 +7,7 @@
 // ctx.signal, so an abort that never arrives shows up as a full-length sleep.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
+import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 
 async function interrupt(key) {
   const box = await Sandbox.create({ persist: false });

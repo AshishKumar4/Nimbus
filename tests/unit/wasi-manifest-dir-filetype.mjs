@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { assertGeneratedSourcesAreCurrent } from './lib/generated-freshness.mjs';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
@@ -125,7 +125,7 @@ function host() {
 // The fix belongs to the producer: deny-by-default in the consumer is a
 // security property and must not be loosened to paper over a bad manifest.
 {
-  const { manifestVfs } = await import('../../packages/worker/src/runtime/vfs-manifest.ts');
+  const { manifestVfs } = await import('../../packages/core/src/runtime/vfs-manifest.ts');
   const enoent = () => { const e = new Error('no such file'); e.code = 'ENOENT'; throw e; };
   const eacces = () => { const e = new Error('denied'); e.code = 'EACCES'; throw e; };
   const present = new Map([

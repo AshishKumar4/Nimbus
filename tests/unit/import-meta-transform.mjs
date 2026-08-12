@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   bindImportMetaResolve,
   importMetaDefines,
-} from '../../packages/worker/src/runtime/import-meta-transform.ts';
+} from '../../packages/core/src/runtime/import-meta-transform.ts';
 
 const absUrl = 'file:///home/user/app/mod.js';
 assert.deepEqual(importMetaDefines(absUrl), {

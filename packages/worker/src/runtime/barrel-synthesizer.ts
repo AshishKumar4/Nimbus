@@ -53,9 +53,9 @@
  * dynamically-referenced icon."
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
-import { packageNameFromSpecifier } from './barrel-detect.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 
 /**
  * Map of package name → set of named imports observed across the

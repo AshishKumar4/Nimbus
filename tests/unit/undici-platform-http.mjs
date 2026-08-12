@@ -14,9 +14,9 @@
 // throw with the limitation named rather than answer wrongly.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
+import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/core/src/constants.ts';
 
 const AI_TOKEN = 'sk-nimbus-test-token';
 

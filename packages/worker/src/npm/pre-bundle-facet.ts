@@ -45,9 +45,9 @@
  * contract.
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
-import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
+import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 
 // Note: NO import of esbuild-wasm-bundle.generated.js here. The 16 MiB
 // of inlined assets MUST NOT enter the supervisor bundle — they reach

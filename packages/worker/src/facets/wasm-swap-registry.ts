@@ -38,7 +38,7 @@ import {
   type PackageRejectEntry,
   type PackageStagedArtifactEntry,
   type PackageSwapEntry,
-} from '../runtime/os-contracts.js';
+} from '@nimbus-sh/core/runtime/os-contracts.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // The policy

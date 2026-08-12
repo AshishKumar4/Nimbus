@@ -37,7 +37,7 @@ import {
   ESBUILD_WASM_JS_FN_BODY,
   ESBUILD_WASM_VERSION,
 } from '../esbuild-wasm-bundle.generated.js';
-import { getExportsResolverJS } from '../_shared/exports-resolver.js';
+import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 // NOTE: wasm BYTES deliberately NOT in this preamble. They live in
 // env.ASSETS at /_assets/esbuild-<version>.wasm and are fetched by
 // the supervisor at pool-construction time

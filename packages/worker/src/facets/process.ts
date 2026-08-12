@@ -34,10 +34,10 @@
  *     idempotent guard).
  */
 
-import { resolveVfsPath } from '../vfs/path.js';
-import { parseShellInvocation, type ShellName } from '../shell/shell-invocation.js';
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { parseShellInvocation, type ShellName } from '@nimbus-sh/core/shell/shell-invocation.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors

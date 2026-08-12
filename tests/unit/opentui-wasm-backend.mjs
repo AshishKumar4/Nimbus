@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Stage B backend test for the OpenTUI wasm FFI backend
-// (packages/worker/src/runtime/opentui-wasm-backend.ts). Loads the backend over
+// (packages/core/src/runtime/opentui-wasm-backend.ts). Loads the backend over
 // the staged Stage A artifact under the REAL wasi-instance.ts host, then proves
 // the @opentui/core backend contract end-to-end:
 //   1. dlopen resolves EVERY symbol zig.ts requests to a callable
@@ -18,8 +18,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
-import { OpenTUIWasmBackend } from '../../packages/worker/src/runtime/opentui-wasm-backend.ts';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { OpenTUIWasmBackend } from '../../packages/core/src/runtime/opentui-wasm-backend.ts';
 import { ZIG_FFI_SYMBOLS } from './opentui-zig-symbols.mjs';
 
 const workerRoot = path.resolve(

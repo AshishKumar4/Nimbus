@@ -58,7 +58,7 @@
  *   - npm publish webhook -> cache invalidation.
  */
 
-import type { CacheTier, CacheKind } from '../_shared/cache-stats.js';
+import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 
 /**
  * Per-call cache-stat event (cache metrics support). R2CacheClient

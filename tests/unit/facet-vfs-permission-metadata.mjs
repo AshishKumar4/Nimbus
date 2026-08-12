@@ -8,11 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { NODE_SHIMS_ENTRY } from '../../packages/worker/src/node-shims-artifact.generated.ts';
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));

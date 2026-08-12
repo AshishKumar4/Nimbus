@@ -41,8 +41,8 @@
  */
 
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
-import { parsePortFromArgv } from './long-running-handle.js';
-import type { FacetBundleProfile } from './bundle-profile.js';
+import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 
 /**
  * Argv long-running detection. Signals we honour:

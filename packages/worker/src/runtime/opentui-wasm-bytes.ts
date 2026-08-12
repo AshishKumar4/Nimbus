@@ -21,8 +21,8 @@ import {
   OPENTUI_WASM_ENTRY,
   OPENTUI_WASM_SHA256,
 } from '../opentui-wasm-artifact.generated.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { sha256Hex } from '../_shared/crypto.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface OpenTUIWasmFetchEnv {

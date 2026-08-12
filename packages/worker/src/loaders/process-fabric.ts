@@ -75,7 +75,7 @@
 
 import { z } from 'zod/v4';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
-import type { RouteableFacetTarget } from '../runtime/os-contracts.js';
+import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * The class every generated resident runner exports. One name for every

@@ -9,11 +9,11 @@
  * to the SqliteVFS.
  */
 
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execGitNetwork } from './network-facet.js';
-import { normalizeVfsPath } from '../vfs/path.js';
-import { dec } from '../_shared/bytes.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,

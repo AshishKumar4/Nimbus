@@ -18,8 +18,8 @@ import type {
   VersionSpec,
 } from 'pip-requirements-js';
 import { z } from 'zod/v4';
-import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
-import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
+import { parentVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { PYODIDE_PACKAGE_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   isRuntimePythonPackageArtifactMetadata,
   RuntimePythonPackageArtifactMetadataSchema,

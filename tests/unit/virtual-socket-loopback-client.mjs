@@ -8,7 +8,7 @@
 // exactly what the guest socket shims see.
 
 import assert from 'node:assert/strict';
-import { installVirtualSocketKernel } from '../../packages/worker/src/runtime/virtual-socket-kernel.ts';
+import { installVirtualSocketKernel } from '../../packages/core/src/runtime/virtual-socket-kernel.ts';
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();

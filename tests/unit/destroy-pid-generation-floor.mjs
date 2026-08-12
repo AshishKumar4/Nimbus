@@ -25,9 +25,9 @@ import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 import { _rpcStdout, _rpcReportExit, PRIOR_GENERATION_EXIT_REASON }
   from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor }
-  from '../../packages/worker/src/runtime/session-process-supervisor.ts';
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
-import { PID_GEN_STRIDE } from '../../packages/worker/src/runtime/process-table.ts';
+  from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { W9_ISOLATE_GEN_KEY } from '../../packages/worker/src/session/keys.ts';
 
 const GEN = 3;

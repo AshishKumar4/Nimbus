@@ -60,8 +60,8 @@
  * events on a supervisor poll. That is substrate-independent by construction.
  */
 
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { isTransientDoReset } from '../observability/oom-classify.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
 import {
   type HostedProcess,

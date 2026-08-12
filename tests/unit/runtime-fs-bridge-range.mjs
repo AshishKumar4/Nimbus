@@ -8,15 +8,15 @@ import assert from 'node:assert/strict';
 import {
   SqliteVFS,
   VFS_APPEND_RECEIPT_LIMIT,
-} from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+} from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   CHUNK_SIZE,
   MAX_TX_BLOB_BYTES,
   MAX_TX_LOGICAL_ROWS,
-} from '../../packages/worker/src/constants.ts';
-import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
+} from '../../packages/core/src/constants.ts';
+import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const APPEND_MODULE = '77777777-7777-4777-8777-777777777777';

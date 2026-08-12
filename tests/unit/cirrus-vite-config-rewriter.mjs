@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { rewriteCirrusViteConfigBundle } from '../../packages/worker/src/runtime/cirrus-vite-config-rewriter.ts';
+import { rewriteCirrusViteConfigBundle } from '../../packages/core/src/runtime/cirrus-vite-config-rewriter.ts';
 
 const rewritten = rewriteCirrusViteConfigBundle(`
   import { defineConfig } from "vite";

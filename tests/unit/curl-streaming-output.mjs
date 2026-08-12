@@ -9,7 +9,7 @@
 // against a live SSE endpoint showed nothing until the stream ended.
 
 import assert from 'node:assert/strict';
-import { createCurlCommand } from '../../packages/worker/src/substrate/lifo/commands/net/curl.ts';
+import { createCurlCommand } from '../../packages/core/src/substrate/lifo/commands/net/curl.ts';
 
 const enc = new TextEncoder();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

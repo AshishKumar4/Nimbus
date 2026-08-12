@@ -75,15 +75,15 @@ export { isPreviewHostRequest } from './_shared/preview-host.js';
 
 // The embeddable form of Nimbus: a durable filesystem and a shell over it,
 // constructed from a host's own SQLite. See ./workspace/nimbus-workspace.ts.
-export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
-export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
+export { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
+export type { NimbusWorkspaceOptions } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 export type {
   SqlDatabase,
   SqlTransactions,
   SqlRow,
   SqlValue,
   TransactionHost,
-} from './runtime/os-contracts.js';
+} from '@nimbus-sh/core/runtime/os-contracts.js';
 export {
   base64Utf8,
   base64Url,
@@ -95,7 +95,7 @@ export {
   sealJson,
   sha256Base64Url,
   unsealJson,
-} from './_shared/crypto.js';
+} from '@nimbus-sh/core/_shared/crypto.js';
 export {
   clearNimbusAgentOAuthCookie,
   createNimbusAgentOAuthCookie,

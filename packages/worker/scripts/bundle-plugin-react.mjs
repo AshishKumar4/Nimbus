@@ -449,7 +449,7 @@ async function main() {
  * stays inline.
  */
 
-import { loadAssetText, type AssetsFetcher } from './runtime/assets-loader.js';
+import { loadAssetText, type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';
 
 export const CIRRUS_PLUGIN_REACT_VERSION = ${JSON.stringify(pluginReactVersion)};
 

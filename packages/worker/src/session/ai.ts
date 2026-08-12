@@ -42,8 +42,8 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 import { z } from 'zod/v4';
-import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
-import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '../_shared/ai-egress.js';
+import { NIMBUS_AI_GATEWAY_PORT } from '@nimbus-sh/core/constants.js';
+import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '@nimbus-sh/core/_shared/ai-egress.js';
 import {
   NIMBUS_AGENT_AUTH_COOKIE,
   NIMBUS_CLOUDFLARE_API,

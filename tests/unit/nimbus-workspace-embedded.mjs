@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { NimbusWorkspace } from '../../packages/worker/src/workspace/nimbus-workspace.ts';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'nimbus-workspace-'));
 const dbPath = join(dir, 'workspace.sqlite');

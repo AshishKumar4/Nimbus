@@ -2,9 +2,9 @@
 
 import assert from 'node:assert/strict';
 
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });

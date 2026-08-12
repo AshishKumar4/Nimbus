@@ -15,7 +15,7 @@
  * inside the session.
  */
 
-import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
+import { NIMBUS_AI_GATEWAY_PORT } from '@nimbus-sh/core/constants.js';
 import { handleSessionAiRequest, type SessionAiHost } from './ai.js';
 
 interface LoopbackHost extends SessionAiHost {

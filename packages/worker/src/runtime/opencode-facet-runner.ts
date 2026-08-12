@@ -37,8 +37,8 @@
  */
 
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
-import { VFS_CURSOR_SEED_SOURCE } from '../_shared/facet-vfs-cursor.js';
-import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
+import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,

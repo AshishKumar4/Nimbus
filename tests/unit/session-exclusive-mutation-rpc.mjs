@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcLstat, _rpcUnlink } from '../../packages/worker/src/session/rpc.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 

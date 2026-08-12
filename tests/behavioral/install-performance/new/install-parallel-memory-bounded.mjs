@@ -12,7 +12,7 @@ import {
   Terminal,
 } from '../../_driver.mjs';
 import { diagMemory, fmtBytes } from '../../heap-correctness/_diag.mjs';
-import { W7_MAX_RECORD_BYTES } from '../../../../packages/worker/src/_shared/w7-frame.ts';
+import { W7_MAX_RECORD_BYTES } from '../../../../packages/core/src/_shared/w7-frame.ts';
 
 if (!process.env.BASE) {
   console.error('FATAL: BASE env required');

@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-port-mount-test-'));
 const build = await Bun.build({

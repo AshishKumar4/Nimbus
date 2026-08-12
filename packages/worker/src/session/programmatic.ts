@@ -13,20 +13,20 @@ import {
   listInstalledRuntimes,
   type MinShellRegistry,
 } from '../runtime/package-manager.js';
-import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
-import type { LogChunk, ProcessLogReadOptions } from '../runtime/process-logs.js';
+import { PID_GEN_STRIDE, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { PortRegistry, type PortEntry } from '../runtime/port-registry.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { PortRegistry, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   endProcessInput,
   resizeProcess,
   signalProcess,
   writeProcessInput,
-} from '../runtime/process-input-routing.js';
+} from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
 

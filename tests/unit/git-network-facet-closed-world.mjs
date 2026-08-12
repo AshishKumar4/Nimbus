@@ -8,17 +8,17 @@ import {
   decodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
-} from '../../packages/worker/src/_shared/w7-frame.ts';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/_shared/w7-frame.ts';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/core/src/constants.ts';
 import {
   assembleGitNetworkFacetSource,
   execGitNetwork,
 } from '../../packages/worker/src/git/network-facet.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-closed-world-'));

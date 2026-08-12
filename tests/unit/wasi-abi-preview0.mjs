@@ -14,7 +14,7 @@ import assert from 'node:assert';
 import {
   WASI_INSTANCE_PREAMBLE_SRC,
   WASI_ABI_NAMESPACE,
-} from '../../packages/worker/src/runtime/wasi-instance.ts';
+} from '../../packages/core/src/runtime/wasi-instance.ts';
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 

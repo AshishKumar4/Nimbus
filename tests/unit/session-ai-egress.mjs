@@ -9,16 +9,16 @@
 // user's own real provider key is not ours and goes to that provider.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
+import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { createCurlCommand } from '../../packages/worker/src/substrate/lifo/commands/net/curl.ts';
+import { createCurlCommand } from '../../packages/core/src/substrate/lifo/commands/net/curl.ts';
 import { handleSessionAiRequest, storeSessionAiCredential } from '../../packages/worker/src/session/ai.ts';
 import {
   NIMBUS_AI_TOKEN_ENV,
   mintSessionAiToken,
   requestCarriesSessionAiToken,
-} from '../../packages/worker/src/_shared/ai-egress.ts';
-import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/_shared/ai-egress.ts';
+import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/core/src/constants.ts';
 
 const TOKEN = mintSessionAiToken();
 const FOREIGN_KEY = 'sk-proj-Aa0000000000000000000000000000000000000000000000';

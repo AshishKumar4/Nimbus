@@ -36,13 +36,13 @@ import {
   releaseResidentLaunchSources,
 } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/worker/src/loaders/process-fabric.ts';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };

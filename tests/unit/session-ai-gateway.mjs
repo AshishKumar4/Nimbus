@@ -37,11 +37,11 @@ import {
   SESSION_AI_CREDENTIAL_KEY,
 } from '../../packages/worker/src/session/ai.ts';
 import { createNimbusAgentOAuthCookie } from '../../packages/worker/src/session/agent-oauth.ts';
-import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
+import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/core/src/constants.ts';
 import {
   NIMBUS_AI_TOKEN_ENV,
   requestCarriesSessionAiToken,
-} from '../../packages/worker/src/_shared/ai-egress.ts';
+} from '../../packages/core/src/_shared/ai-egress.ts';
 
 const ACCOUNT = 'f44999d1ddda7012e9a87729eba250f1';
 const OTHER_ACCOUNT = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';

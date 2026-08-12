@@ -4,7 +4,7 @@
 // Map surface its callers use.
 
 import assert from 'node:assert/strict';
-import { LruMap } from '../../packages/worker/src/_shared/lru-map.ts';
+import { LruMap } from '../../packages/core/src/_shared/lru-map.ts';
 
 // Eviction at capacity, LRU first.
 {

@@ -6,7 +6,7 @@
 // the W9 persistence hook (chunks-before-exit flush ordering).
 
 import assert from 'node:assert/strict';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 // ── spawn / PID authority ────────────────────────────────────────────
 {

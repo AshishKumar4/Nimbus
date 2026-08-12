@@ -5,8 +5,8 @@ import {
   decodeWriteBatchStream,
   encodeWriteBatchStream,
   W7_MAX_PATHS_PER_BATCH,
-} from '../../packages/worker/src/_shared/w7-frame.ts';
-import { CHUNK_SIZE } from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/_shared/w7-frame.ts';
+import { CHUNK_SIZE } from '../../packages/core/src/constants.ts';
 
 const bytes = (length, seed = 0) => {
   const value = new Uint8Array(length);

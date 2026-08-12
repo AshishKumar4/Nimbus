@@ -1,14 +1,14 @@
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
   resolveNpmBin, resolveNpmBinFromPath,
   isStagedArtifactTarget, stagedArtifactId,
 } from '../npm/bin-links.js';
-import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
+import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
-import { normalizeVfsPath } from '../vfs/path.js';
-import { DEFAULT_PATH, FACET_TIMEOUT_MS } from '../constants.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { DEFAULT_PATH, FACET_TIMEOUT_MS } from '@nimbus-sh/core/constants.js';
 import { z } from 'zod/v4';
 
 type Output = { write(data: string): void };

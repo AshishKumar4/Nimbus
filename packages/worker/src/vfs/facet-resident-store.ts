@@ -185,7 +185,7 @@ import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
-} from '../constants.js';
+} from '@nimbus-sh/core/constants.js';
 
 /**
  * Bytes of file content in one row.

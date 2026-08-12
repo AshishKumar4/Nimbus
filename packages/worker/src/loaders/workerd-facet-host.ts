@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import {
   assembleOpencodeFacetConfig,
   type OpencodeAssetsEnv,

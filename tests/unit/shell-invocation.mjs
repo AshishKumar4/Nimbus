@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { parseShellInvocation } from '../../packages/worker/src/shell/shell-invocation.ts';
+import { parseShellInvocation } from '../../packages/core/src/shell/shell-invocation.ts';
 
 {
   const parsed = parseShellInvocation('sh', ['-c', 'echo ok', 'arg1']);

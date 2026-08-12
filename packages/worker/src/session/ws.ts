@@ -33,8 +33,8 @@
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
 
-import { dec } from '../_shared/bytes.js';
-import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '../observability/oom-discriminator.js';
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
 import { persistShellState } from './state-store.js';
 import {
@@ -43,14 +43,14 @@ import {
   cleanupFsWatchOnClose,
   type FsWatchSub,
 } from './fs-watch.js';
-import { parseProcessLogClientFrame } from '../runtime/process-io-protocol.js';
-import { applyProcessClientFrame } from '../runtime/process-input-routing.js';
+import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
+import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { Kernel, Shell } from '../substrate/lifo/index.js';
+import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 
 /**
@@ -83,7 +83,7 @@ export interface WsHost {
   _w5LastPersistAt: number;
   _w5LastPersistRingSize: number;
   /** [B'.4] live phase indicator — see nimbus-session-internal.d.ts */
-  _b4Phase: import('../observability/oom-discriminator.js').SessionState | null;
+  _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null;
   _w5PersistRing(): Promise<void> | null;
   _w9FlushOnClose(): void;
 }

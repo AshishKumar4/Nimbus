@@ -7,7 +7,7 @@ import { makeAsserter } from '../../_driver.mjs';
 const a = makeAsserter('assets-fetch/new/loader-fetches-and-caches');
 
 const { loadAssetText, loadAssetBytes, _resetAssetsCacheForTests, NimbusAssetLoadError } =
-  await import('../../../../packages/worker/src/runtime/assets-loader.ts');
+  await import('../../../../packages/core/src/runtime/assets-loader.ts');
 
 _resetAssetsCacheForTests();
 

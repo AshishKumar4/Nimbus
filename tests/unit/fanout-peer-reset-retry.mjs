@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { NimbusFanoutPool } from '../../packages/worker/src/loaders/fanout-pool.ts';
-import { describeError, isDoOverloaded, isTransientDoReset } from '../../packages/worker/src/observability/oom-classify.ts';
+import { describeError, isDoOverloaded, isTransientDoReset } from '../../packages/core/src/observability/oom-classify.ts';
 
 // ── Classifier: transient resets are retryable, resource resets are not ──
 assert.equal(isTransientDoReset(new Error('Durable Object reset because its code was updated.')), true);

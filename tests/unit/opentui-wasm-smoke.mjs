@@ -25,7 +25,7 @@ import {
 import {
   WASI_IMPLEMENTED_FNS,
   WASI_INSTANCE_PREAMBLE_SRC,
-} from '../../packages/worker/src/runtime/wasi-instance.ts';
+} from '../../packages/core/src/runtime/wasi-instance.ts';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

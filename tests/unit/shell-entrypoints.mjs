@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { registerShellEntrypointCommands } from '../../packages/worker/src/shell/shell-entrypoints.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 
 function makeOutput() {
   let text = '';

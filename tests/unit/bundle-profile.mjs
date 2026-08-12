@@ -5,7 +5,7 @@ import {
   DEFAULT_FACET_BUNDLE_PROFILE,
   bundleProfileForNpmBin,
   parseFacetBundleProfile,
-} from '../../packages/worker/src/runtime/bundle-profile.ts';
+} from '../../packages/core/src/runtime/bundle-profile.ts';
 
 assert.equal(DEFAULT_FACET_BUNDLE_PROFILE, 'runtime');
 assert.equal(parseFacetBundleProfile('runtime'), 'runtime');

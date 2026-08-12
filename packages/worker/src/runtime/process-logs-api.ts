@@ -15,8 +15,8 @@
  * open after a crash continues to show the final output.
  */
 
-import type { LogChunk } from './process-logs.js';
-import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import type { LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 
 /**
  * Parameters for `handleLogsWebSocketRequest`. The process supervisor
