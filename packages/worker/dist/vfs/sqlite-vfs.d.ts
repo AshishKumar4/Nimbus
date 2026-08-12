@@ -519,10 +519,12 @@ export declare class SqliteVFS {
      *
      * Publication is group-atomic with a committed prefix: a bounded group of
      * whole files commits in one transaction, and either every file in it is
-     * durable or none is. A file never publishes partially, and a group is
-     * closed on the record boundary before the file that would overflow it,
-     * so a file too large for one transaction is alone in its group and
-     * stages across several — the original per-file path, unchanged.
+     * durable or none is. A file never publishes partially — a group is closed
+     * on the record boundary before the file that would overflow it, so a file
+     * too large for one transaction stages across several and publishes on the
+     * last, exactly as the per-file path did. Chunks staged for a file still
+     * in flight may ride along in a group that publishes other files; they
+     * carry a content id no inode references yet, so nothing observes them.
      *
      * Publishing per file cost three transactions each (stage the content
      * row, flush the chunks, publish), which at ~0.9 ms of commit apiece made

@@ -80,6 +80,42 @@ function streamPayload(entries, directories = []) {
   };
 }
 
+async function collectStream(stream) {
+  const reader = stream.getReader();
+  const parts = [];
+  let total = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    parts.push(next.value);
+    total += next.value.length;
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
+/** Offset of the final record (batch-end), walking the 5-byte envelopes. */
+function lastRecordOffset(frame) {
+  let offset = 4;
+  let last = offset;
+  while (offset < frame.length) {
+    const length = (
+      frame[offset + 1]
+      | (frame[offset + 2] << 8)
+      | (frame[offset + 3] << 16)
+      | (frame[offset + 4] << 24)
+    ) >>> 0;
+    last = offset;
+    offset += 5 + length;
+  }
+  return last;
+}
+
 function assertBounded(stats) {
   assert.ok(stats.sql.transactions.boundedPeak.blobBytes <= MAX_TX_BLOB_BYTES);
   assert.ok(stats.sql.transactions.boundedPeak.logicalRows <= MAX_TX_LOGICAL_ROWS);
@@ -272,6 +308,56 @@ function assertBounded(stats) {
     entries.length,
   );
   assert.equal(reconstructed.readdir('idem').length, entries.length);
+}
+
+// The mutation guard is re-checked where the group commits, not only where
+// each file was accepted. A group commits after the records that follow it,
+// and the loop awaits the decoder between them, so another request on this
+// object can take an overlapping lease inside that window.
+{
+  const { harness, rawVfs, vfs } = openVfs();
+  const entries = [
+    { path: 'locked/a.txt', data: bytes(16, 1) },
+    { path: 'locked/b.txt', data: bytes(16, 2) },
+  ];
+  vfs.mkdir('locked', { recursive: true });
+
+  // Split immediately before batch-end: every file has been accepted and no
+  // further authorisation happens, so only the group flush is left.
+  const encoded = await collectStream(encodeWriteBatchStream(streamPayload(entries)));
+  const batchEndOffset = lastRecordOffset(encoded);
+  let lease = null;
+  const paused = new ReadableStream({
+    type: 'bytes',
+    async pull(controller) {
+      if (this.sent === undefined) {
+        this.sent = true;
+        controller.enqueue(encoded.slice(0, batchEndOffset));
+        return;
+      }
+      if (lease === null) {
+        lease = rawVfs.acquireExclusiveMutation('locked');
+        controller.enqueue(encoded.slice(batchEndOffset));
+        return;
+      }
+      controller.close();
+    },
+  });
+
+  const blocked = await vfs.writeStream(paused);
+  assert.notEqual(lease, null, 'expected a lease to be taken before batch-end');
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.phase, 'publish');
+  assert.match(blocked.error.message, /EBUSY/);
+  assert.equal(blocked.committedPathCount, 0);
+  const duringLease = reopenVfs(harness);
+  for (const entry of entries) assert.equal(duringLease.exists(entry.path), false);
+
+  rawVfs.releaseExclusiveMutation(lease.owner);
+  const replay = await vfs.writeStream(encodeWriteBatchStream(streamPayload(entries)));
+  assert.equal(replay.ok, true);
+  const converged = reopenVfs(harness);
+  for (const entry of entries) assert.deepEqual(converged.readFile(entry.path), entry.data);
 }
 
 // A delete observes every write the stream made before it, even though those
