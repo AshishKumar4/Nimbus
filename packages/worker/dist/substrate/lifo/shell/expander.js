@@ -1,31 +1,39 @@
 import { expandGlob, globMatch } from '../utils/glob.js';
+import { readBracedExpansion } from './lexer.js';
 /**
- * Expand all words for a command's arguments.
- * Handles variable expansion, tilde expansion, glob expansion, and command substitution.
+ * A parameter expansion that aborts the command it belongs to: `set -u` on an
+ * unset parameter, or an explicit `${var:?message}`.
+ */
+export class ExpansionError extends Error {
+}
+const IFS_WHITESPACE = ' \t\n';
+/**
+ * Expand all words for a command's arguments: brace expansion, tilde,
+ * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
 export async function expandWords(words, ctx) {
     const results = [];
     for (const word of words) {
         for (const braceExpandedWord of expandBraceWord(word)) {
-            const expanded = await expandWordParts(braceExpandedWord, ctx);
+            const fields = splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx));
             // Glob expansion only for unquoted parts
             if (hasUnquotedGlob(braceExpandedWord)) {
-                const globResults = expandGlob(expanded, ctx.cwd, ctx.vfs);
-                results.push(...globResults);
+                for (const field of fields)
+                    results.push(...expandGlob(field, ctx.cwd, ctx.vfs));
             }
             else {
-                results.push(expanded);
+                results.push(...fields);
             }
         }
     }
     return results;
 }
 /**
- * Expand a single word (e.g., for redirect targets).
- * No glob expansion.
+ * Expand a single word (e.g., for redirect targets and assignments).
+ * No field splitting and no glob expansion.
  */
 export async function expandWord(parts, ctx) {
-    return expandWordParts(parts, ctx);
+    return joinPieces(await expandParts(parts, ctx));
 }
 function expandBraceWord(parts) {
     let combinations = [[]];
@@ -168,42 +176,42 @@ function skipBalanced(text, openPos, open, close) {
     }
     return i;
 }
-async function expandWordParts(parts, ctx) {
-    let result = '';
+// ─── Word assembly ───
+async function expandParts(parts, ctx) {
+    const pieces = [];
     for (const part of parts) {
         if (part.commandSubstitution !== undefined) {
-            result += await expandCommandSubstitution(part.commandSubstitution, ctx);
+            const output = await expandCommandSubstitution(part.commandSubstitution, ctx);
+            pieces.push(valuePiece(output, part.quoted !== 'none'));
             continue;
         }
-        switch (part.quoted) {
-            case 'single':
-                // Single quotes: literal, no expansion
-                result += part.text;
-                break;
-            case 'double':
-                // Double quotes: expand variables and command substitution, no glob
-                result += await expandVariablesAndSubst(part.text, ctx);
-                break;
-            case 'none': {
-                // Unquoted: expand tilde, variables, command substitution
-                let text = part.text;
-                // Tilde expansion at word start
-                if (result === '' && text.startsWith('~')) {
-                    const home = ctx.env['HOME'] ?? '/home/user';
-                    if (text === '~') {
-                        text = home;
-                    }
-                    else if (text.startsWith('~/')) {
-                        text = home + text.slice(1);
-                    }
-                }
-                text = await expandVariablesAndSubst(text, ctx);
-                result += text;
-                break;
-            }
+        if (part.quoted === 'single') {
+            pieces.push({ kind: 'text', text: part.text, split: false, literal: true });
+            continue;
         }
+        if (part.quoted === 'double') {
+            // `"$@"` with no positional parameters must vanish entirely, so only an
+            // empty pair of quotes contributes the empty field that keeps `""` alive.
+            if (part.text === '')
+                pieces.push({ kind: 'text', text: '', split: false, literal: true });
+            else
+                pieces.push(...await expandText(part.text, ctx, true));
+            continue;
+        }
+        pieces.push(...await expandText(tildeExpanded(part.text, ctx, pieces), ctx, false));
     }
-    return result;
+    return pieces;
+}
+function tildeExpanded(text, ctx, preceding) {
+    const atWordStart = !preceding.some((p) => p.kind === 'break' || p.text !== '');
+    if (!atWordStart || !text.startsWith('~'))
+        return text;
+    const home = ctx.env['HOME'] ?? '/home/user';
+    if (text === '~')
+        return home;
+    if (text.startsWith('~/'))
+        return home + text.slice(1);
+    return text;
 }
 async function expandCommandSubstitution(command, ctx) {
     if (!ctx.executeCapture)
@@ -211,114 +219,71 @@ async function expandCommandSubstitution(command, ctx) {
     const output = await ctx.executeCapture(command);
     return output.replace(/\n+$/, '');
 }
-async function expandVariablesAndSubst(text, ctx) {
-    let result = '';
+/** Expand every `$…` in one run of text, keeping literal and expanded runs apart. */
+async function expandText(text, ctx, quoted) {
+    const pieces = [];
+    let literal = '';
+    const flush = () => {
+        if (literal === '')
+            return;
+        pieces.push({ kind: 'text', text: literal, split: false, literal: quoted });
+        literal = '';
+    };
     let i = 0;
     while (i < text.length) {
-        if (text[i] === '$') {
-            const expanded = await expandDollar(text, i, ctx);
-            result += expanded.value;
-            i = expanded.end;
+        if (text[i] !== '$') {
+            literal += text[i];
+            i++;
+            continue;
+        }
+        const dollar = await expandDollar(text, i, ctx, quoted);
+        if (dollar.pieces === null) {
+            literal += text.slice(i, dollar.end);
         }
         else {
-            result += text[i];
-            i++;
+            flush();
+            pieces.push(...dollar.pieces);
         }
+        i = dollar.end;
     }
-    return result;
+    flush();
+    return pieces;
 }
-async function expandDollar(text, pos, ctx) {
+async function expandDollar(text, pos, ctx, quoted) {
     const next = text[pos + 1];
-    if (next === undefined) {
-        return { value: '$', end: pos + 1 };
-    }
-    // $? -- last exit code
-    if (next === '?') {
-        return { value: String(ctx.lastExitCode), end: pos + 2 };
-    }
-    // $# -- number of positional parameters
-    if (next === '#') {
-        return { value: readShellParameter('#', ctx) ?? '0', end: pos + 2 };
-    }
-    // $! -- most recent background job id
-    if (next === '!') {
-        return { value: ctx.env['!'] ?? '', end: pos + 2 };
-    }
-    // $$ -- current shell process id
-    if (next === '$') {
-        return { value: ctx.env['$'] ?? '', end: pos + 2 };
-    }
-    // $@ -- all positional parameters
-    if (next === '@') {
-        return { value: readShellParameter('@', ctx) ?? '', end: pos + 2 };
-    }
+    if (next === undefined)
+        return { pieces: null, end: pos + 1 };
     // $((...)) -- arithmetic expansion
     if (next === '(' && text[pos + 2] === '(') {
         const arithmetic = readArithmeticExpansion(text, pos);
-        const expr = arithmetic.expression;
-        const result = evaluateArithmetic(expr, ctx.env, ctx.positionals);
-        return { value: String(result), end: arithmetic.end };
+        const result = evaluateArithmetic(arithmetic.expression, ctx.env, ctx.positionals);
+        return { pieces: [valuePiece(String(result), quoted)], end: arithmetic.end };
     }
     // Raw command substitution is handled by structured WordPart values emitted
     // by the lexer. This branch is retained only for caller-constructed WordPart
     // values that did not pass through the lexer.
     if (next === '(') {
-        let depth = 1;
-        let j = pos + 2;
-        while (j < text.length && depth > 0) {
-            if (text[j] === '(')
-                depth++;
-            else if (text[j] === ')')
-                depth--;
-            j++;
-        }
-        const cmd = text.slice(pos + 2, j - 1);
-        let output = '';
-        if (ctx.executeCapture) {
-            output = await ctx.executeCapture(cmd);
-            // Trim trailing newlines (bash behavior)
-            output = output.replace(/\n+$/, '');
-        }
-        return { value: output, end: j };
+        const end = skipBalanced(text, pos + 1, '(', ')');
+        const output = await expandCommandSubstitution(text.slice(pos + 2, end - 1), ctx);
+        return { pieces: [valuePiece(output, quoted)], end };
     }
-    // ${...} -- braced variable
+    // ${...} -- braced parameter expansion
     if (next === '{') {
-        let j = pos + 2;
-        let depth = 1;
-        while (j < text.length && depth > 0) {
-            if (text[j] === '{')
-                depth++;
-            else if (text[j] === '}')
-                depth--;
-            j++;
-        }
-        const inner = text.slice(pos + 2, j - 1);
-        const value = expandBracedVar(inner, ctx);
-        return { value, end: j };
+        const braced = readBracedExpansion(text, pos);
+        return { pieces: await expandBraced(braced.inner, ctx, quoted), end: braced.end };
     }
-    // $N -- positional parameters (single digit)
-    if (/[0-9]/.test(next)) {
-        return { value: readShellParameter(next, ctx) ?? '', end: pos + 2 };
-    }
-    // $VAR -- simple variable
-    if (/[a-zA-Z_]/.test(next)) {
-        let j = pos + 1;
-        while (j < text.length && /[a-zA-Z0-9_]/.test(text[j])) {
-            j++;
-        }
-        const name = text.slice(pos + 1, j);
-        return { value: readEnvValue(name, ctx), end: j };
-    }
-    // Unrecognized $ sequence -- literal
-    return { value: '$', end: pos + 1 };
+    const name = readParameterName(text, pos + 1);
+    if (name === null)
+        return { pieces: null, end: pos + 1 };
+    return { pieces: expandParameter(name, ctx, quoted), end: pos + 1 + name.length };
 }
-function readEnvValue(name, ctx) {
-    const value = ctx.env[name];
-    if (value !== undefined)
-        return value;
-    if (ctx.options.nounset)
-        throw new Error(`${name}: unbound variable`);
-    return '';
+/**
+ * The parameter name directly after an unbraced `$`: an identifier, a single
+ * digit (`$10` is `${1}0`), or one of the special parameters.
+ */
+function readParameterName(text, pos) {
+    const match = /^(?:[a-zA-Z_][a-zA-Z0-9_]*|[0-9]|[@*#?!$])/.exec(text.slice(pos));
+    return match === null ? null : match[0];
 }
 function readArithmeticExpansion(text, pos) {
     let i = pos + 3;
@@ -348,163 +313,412 @@ function readArithmeticExpansion(text, pos) {
     }
     return { expression: text.slice(pos + 3), end: text.length };
 }
-function expandBracedVar(inner, ctx) {
-    // ${#VAR} -- string length
-    if (inner.startsWith('#') && /^#[a-zA-Z_][a-zA-Z0-9_]*$/.test(inner)) {
-        const varName = inner.slice(1);
-        const val = readEnvValue(varName, ctx);
-        return String(val.length);
-    }
-    // ${VAR:offset:length} and ${VAR:offset}
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*):(-?\d+)(?::(\d+))?$/);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            let offset = parseInt(match[2], 10);
-            if (offset < 0)
-                offset = Math.max(0, val.length + offset);
-            if (match[3] !== undefined) {
-                const length = parseInt(match[3], 10);
-                return val.slice(offset, offset + length);
-            }
-            return val.slice(offset);
-        }
-    }
-    // ${VAR:-default}
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*):-(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]];
-            return (val !== undefined && val !== '') ? val : match[2];
-        }
-    }
-    // ${VAR:=default} -- assign default if unset/empty
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*):=(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]];
-            if (val !== undefined && val !== '')
-                return val;
-            ctx.env[match[1]] = match[2];
-            return match[2];
-        }
-    }
-    // ${VAR:+alternative}
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\+(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]];
-            return (val !== undefined && val !== '') ? match[2] : '';
-        }
-    }
-    // ${VAR:?message} -- error if unset/empty
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*):\?(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]];
-            if (val !== undefined && val !== '')
-                return val;
-            throw new Error(`${match[1]}: ${match[2] || 'parameter null or not set'}`);
-        }
-    }
-    // ${VAR//pattern/replacement} -- replace all (must check before single /)
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\/\/([^/]*)\/(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            const pattern = match[2];
-            const replacement = match[3];
-            return replaceAll(val, pattern, replacement);
-        }
-    }
-    // ${VAR/pattern/replacement} -- replace first
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\/([^/]*)\/(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            const pattern = match[2];
-            const replacement = match[3];
-            return replaceFirst(val, pattern, replacement);
-        }
-    }
-    // ${VAR##pattern} -- remove longest prefix (must check before single #)
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*)##(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            const pattern = match[2];
-            // Try longest prefix first
-            for (let i = val.length; i >= 0; i--) {
-                if (globMatch(pattern, val.slice(0, i))) {
-                    return val.slice(i);
-                }
-            }
-            return val;
-        }
-    }
-    // ${VAR#pattern} -- remove shortest prefix
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*)#(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            const pattern = match[2];
-            for (let i = 0; i <= val.length; i++) {
-                if (globMatch(pattern, val.slice(0, i))) {
-                    return val.slice(i);
-                }
-            }
-            return val;
-        }
-    }
-    // ${VAR%%pattern} -- remove longest suffix (must check before single %)
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*)%%(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            const pattern = match[2];
-            for (let i = 0; i <= val.length; i++) {
-                if (globMatch(pattern, val.slice(i))) {
-                    return val.slice(0, i);
-                }
-            }
-            return val;
-        }
-    }
-    // ${VAR%pattern} -- remove shortest suffix
-    {
-        const match = inner.match(/^([a-zA-Z_][a-zA-Z0-9_]*)%(.*)$/s);
-        if (match) {
-            const val = ctx.env[match[1]] ?? '';
-            const pattern = match[2];
-            for (let i = val.length; i >= 0; i--) {
-                if (globMatch(pattern, val.slice(i))) {
-                    return val.slice(0, i);
-                }
-            }
-            return val;
-        }
-    }
-    // ${VAR} -- simple
-    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(inner)) {
-        return readEnvValue(inner, ctx);
-    }
-    return readShellParameter(inner, ctx) ?? '';
-}
-function readShellParameter(name, ctx) {
-    if (ctx.positionals !== undefined) {
-        if (name === '#')
-            return String(ctx.positionals.length);
-        if (name === '@')
-            return ctx.positionals.join(' ');
-        if (isPositionalParameterName(name)) {
-            return ctx.positionals[Number.parseInt(name, 10) - 1];
-        }
-    }
-    return ctx.env[name];
-}
+// ─── Parameters ───
 function isPositionalParameterName(name) {
     return /^[1-9][0-9]*$/.test(name);
 }
+function resolveParameter(name, ctx) {
+    const positionals = ctx.positionals ?? [];
+    if (name === '@' || name === '*')
+        return { kind: 'list', values: positionals };
+    if (name === '#')
+        return { kind: 'scalar', value: String(positionals.length) };
+    if (name === '?')
+        return { kind: 'scalar', value: String(ctx.lastExitCode) };
+    if (isPositionalParameterName(name)) {
+        return { kind: 'scalar', value: positionals[Number.parseInt(name, 10) - 1] };
+    }
+    return { kind: 'scalar', value: ctx.env[name] };
+}
+/** `$0`, `$$` and `$!` are shell state; the rest must exist under `set -u`. */
+function isNounsetChecked(name) {
+    return name !== '0' && name !== '$' && name !== '!';
+}
+function requireSet(name, value, ctx) {
+    if (value !== undefined)
+        return value;
+    if (ctx.options.nounset && isNounsetChecked(name)) {
+        throw new ExpansionError(`${name}: unbound variable`);
+    }
+    return '';
+}
+function expandParameter(name, ctx, quoted) {
+    const parameter = resolveParameter(name, ctx);
+    if (parameter.kind === 'list')
+        return listPieces(parameter.values, name === '*', ctx, quoted);
+    return [valuePiece(requireSet(name, parameter.value, ctx), quoted)];
+}
+function valuePiece(text, quoted) {
+    return { kind: 'text', text, split: !quoted, literal: quoted };
+}
+/**
+ * `$*` joins the positional parameters with the first character of IFS; `$@`
+ * keeps them as separate fields even inside double quotes.
+ */
+function listPieces(values, star, ctx, quoted) {
+    if (star)
+        return [valuePiece(values.join((ctx.env['IFS'] ?? ' ').slice(0, 1)), quoted)];
+    const pieces = [];
+    for (const value of values) {
+        if (pieces.length > 0)
+            pieces.push({ kind: 'break' });
+        pieces.push(valuePiece(value, quoted));
+    }
+    return pieces;
+}
+// ─── ${...} ───
+const DEFAULT_OPERATORS = new Set(['-', '=', '?', '+']);
+async function expandBraced(inner, ctx, quoted) {
+    if (inner === '')
+        return [];
+    // ${#param} -- string length, or element count for $@ / $*
+    if (inner.length > 1 && inner[0] === '#') {
+        const parameter = parseParameterRef(inner.slice(1));
+        if (parameter !== null && parameter.rest === '') {
+            const resolved = resolveParameter(parameter.name, ctx);
+            const length = resolved.kind === 'list'
+                ? resolved.values.length
+                : requireSet(parameter.name, resolved.value, ctx).length;
+            return [valuePiece(String(length), quoted)];
+        }
+    }
+    // ${!param} -- expand the parameter whose name this parameter holds
+    if (inner.length > 1 && inner[0] === '!') {
+        const parameter = parseParameterRef(inner.slice(1));
+        if (parameter !== null) {
+            const target = scalarOf(resolveParameter(parameter.name, ctx), ctx);
+            const indirect = parseParameterRef(target);
+            if (indirect === null || indirect.rest !== '')
+                return [valuePiece('', quoted)];
+            if (parameter.rest === '')
+                return expandParameter(target, ctx, quoted);
+            return applyModifier(target, parameter.rest, ctx, quoted);
+        }
+    }
+    const parameter = parseParameterRef(inner);
+    if (parameter === null)
+        return [valuePiece('', quoted)];
+    if (parameter.rest === '')
+        return expandParameter(parameter.name, ctx, quoted);
+    return applyModifier(parameter.name, parameter.rest, ctx, quoted);
+}
+/** Split `${name<modifier>}` into its parameter name and the modifier tail. */
+function parseParameterRef(inner) {
+    const match = /^(?:[a-zA-Z_][a-zA-Z0-9_]*|[0-9]+|[@*#?!$])/.exec(inner);
+    if (match === null)
+        return null;
+    return { name: match[0], rest: inner.slice(match[0].length) };
+}
+async function applyModifier(name, rest, ctx, quoted) {
+    const colon = rest[0] === ':';
+    const operator = colon ? rest[1] : rest[0];
+    if (operator !== undefined && DEFAULT_OPERATORS.has(operator)) {
+        return applyDefault(name, operator, colon, rest.slice(colon ? 2 : 1), ctx, quoted);
+    }
+    if (colon)
+        return applySlice(name, rest.slice(1), ctx, quoted);
+    if (rest[0] === '#' || rest[0] === '%')
+        return applyTrim(name, rest, ctx, quoted);
+    if (rest[0] === '/')
+        return applySubstitution(name, rest.slice(1), ctx, quoted);
+    if (rest[0] === '^' || rest[0] === ',')
+        return applyCase(name, rest, ctx, quoted);
+    return [valuePiece('', quoted)];
+}
+/** `${p:-w}` `${p-w}` `${p:=w}` `${p=w}` `${p:?w}` `${p?w}` `${p:+w}` `${p+w}` */
+async function applyDefault(name, operator, colon, word, ctx, quoted) {
+    const parameter = resolveParameter(name, ctx);
+    const set = parameter.kind === 'list'
+        ? parameter.values.length > 0
+        : parameter.value !== undefined && (!colon || parameter.value !== '');
+    if (operator === '+') {
+        return [valuePiece(set ? await expandParameterWord(word, ctx) : '', quoted)];
+    }
+    if (set)
+        return parameterPieces(parameter, name === '*', ctx, quoted);
+    const value = await expandParameterWord(word, ctx);
+    if (operator === '?') {
+        throw new ExpansionError(`${name}: ${value || 'parameter null or not set'}`);
+    }
+    if (operator === '=' && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name))
+        ctx.env[name] = value;
+    return [valuePiece(value, quoted)];
+}
+/** `${p:offset}` and `${p:offset:length}` -- substring, or a slice of `$@`/`$*`. */
+async function applySlice(name, spec, ctx, quoted) {
+    const separator = topLevelColon(spec);
+    const offsetText = separator === -1 ? spec : spec.slice(0, separator);
+    const lengthText = separator === -1 ? null : spec.slice(separator + 1);
+    const offset = await evaluateSliceIndex(offsetText, ctx);
+    const length = lengthText === null ? null : await evaluateSliceIndex(lengthText, ctx);
+    const parameter = resolveParameter(name, ctx);
+    if (parameter.kind === 'list') {
+        // Positional slices are indexed from $0, so `${@:1}` is the whole list.
+        const all = [ctx.env['0'] ?? '', ...parameter.values];
+        return listPieces(sliceRange(all, offset, length), name === '*', ctx, quoted);
+    }
+    const value = requireSet(name, parameter.value, ctx);
+    return [valuePiece(sliceRange([...value], offset, length).join(''), quoted)];
+}
+function sliceRange(values, offset, length) {
+    const start = offset < 0 ? Math.max(0, values.length + offset) : Math.min(offset, values.length);
+    if (length === null)
+        return values.slice(start);
+    const end = length < 0 ? values.length + length : start + length;
+    return values.slice(start, Math.max(start, end));
+}
+async function evaluateSliceIndex(text, ctx) {
+    const expanded = await expandParameterWord(text, ctx);
+    if (expanded.trim() === '')
+        return 0;
+    return evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+}
+function topLevelColon(spec) {
+    let depth = 0;
+    for (let i = 0; i < spec.length; i++) {
+        if (spec[i] === '(')
+            depth++;
+        else if (spec[i] === ')')
+            depth--;
+        else if (spec[i] === ':' && depth === 0)
+            return i;
+    }
+    return -1;
+}
+/** `${p#pat}` `${p##pat}` `${p%pat}` `${p%%pat}` -- strip a matching prefix/suffix. */
+async function applyTrim(name, rest, ctx, quoted) {
+    const operator = rest[0];
+    const longest = rest[1] === operator;
+    const pattern = await expandParameterWord(rest.slice(longest ? 2 : 1), ctx);
+    return mapParameter(name, ctx, quoted, (value) => operator === '#'
+        ? trimPrefix(value, pattern, longest)
+        : trimSuffix(value, pattern, longest));
+}
+function trimPrefix(value, pattern, longest) {
+    const bounds = longest
+        ? range(value.length, -1, -1)
+        : range(0, value.length + 1, 1);
+    for (const i of bounds) {
+        if (globMatch(pattern, value.slice(0, i)))
+            return value.slice(i);
+    }
+    return value;
+}
+function trimSuffix(value, pattern, longest) {
+    const bounds = longest
+        ? range(0, value.length + 1, 1)
+        : range(value.length, -1, -1);
+    for (const i of bounds) {
+        if (globMatch(pattern, value.slice(i)))
+            return value.slice(0, i);
+    }
+    return value;
+}
+function range(from, to, step) {
+    const out = [];
+    for (let i = from; step > 0 ? i < to : i > to; i += step)
+        out.push(i);
+    return out;
+}
+/** `${p/pat/rep}` `${p//pat/rep}` `${p/#pat/rep}` `${p/%pat/rep}` */
+async function applySubstitution(name, rest, ctx, quoted) {
+    const mode = rest[0] === '/' ? 'all' : rest[0] === '#' ? 'prefix' : rest[0] === '%' ? 'suffix' : 'first';
+    const body = mode === 'first' ? rest : rest.slice(1);
+    const cut = unescapedSlash(body);
+    const pattern = await expandParameterWord(cut === -1 ? body : body.slice(0, cut), ctx);
+    const replacement = cut === -1 ? '' : await expandParameterWord(body.slice(cut + 1), ctx);
+    return mapParameter(name, ctx, quoted, (value) => {
+        if (mode === 'all')
+            return replaceAll(value, pattern, replacement);
+        if (mode === 'first')
+            return replaceFirst(value, pattern, replacement);
+        if (mode === 'prefix')
+            return replaceAnchored(value, pattern, replacement, 'prefix');
+        return replaceAnchored(value, pattern, replacement, 'suffix');
+    });
+}
+function unescapedSlash(text) {
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\\') {
+            i++;
+            continue;
+        }
+        if (text[i] === '/')
+            return i;
+    }
+    return -1;
+}
+function replaceAnchored(value, pattern, replacement, anchor) {
+    if (anchor === 'prefix') {
+        for (let i = value.length; i >= 0; i--) {
+            if (globMatch(pattern, value.slice(0, i)))
+                return replacement + value.slice(i);
+        }
+        return value;
+    }
+    for (let i = 0; i <= value.length; i++) {
+        if (globMatch(pattern, value.slice(i)))
+            return value.slice(0, i) + replacement;
+    }
+    return value;
+}
+/** `${p^pat}` `${p^^pat}` `${p,pat}` `${p,,pat}` -- case conversion. */
+async function applyCase(name, rest, ctx, quoted) {
+    const operator = rest[0];
+    const every = rest[1] === operator;
+    const pattern = await expandParameterWord(rest.slice(every ? 2 : 1), ctx);
+    const convert = (c) => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
+    const matches = (c) => pattern === '' || globMatch(pattern, c);
+    return mapParameter(name, ctx, quoted, (value) => {
+        if (!every) {
+            return value === '' || !matches(value[0]) ? value : convert(value[0]) + value.slice(1);
+        }
+        return [...value].map((c) => (matches(c) ? convert(c) : c)).join('');
+    });
+}
+function mapParameter(name, ctx, quoted, transform) {
+    const parameter = resolveParameter(name, ctx);
+    if (parameter.kind === 'list') {
+        return listPieces(parameter.values.map(transform), name === '*', ctx, quoted);
+    }
+    return [valuePiece(transform(requireSet(name, parameter.value, ctx)), quoted)];
+}
+function parameterPieces(parameter, star, ctx, quoted) {
+    if (parameter.kind === 'list')
+        return listPieces(parameter.values, star, ctx, quoted);
+    return [valuePiece(parameter.value ?? '', quoted)];
+}
+function scalarOf(parameter, ctx) {
+    if (parameter.kind === 'list')
+        return parameter.values.join((ctx.env['IFS'] ?? ' ').slice(0, 1));
+    return parameter.value ?? '';
+}
+/**
+ * The word inside `${p:-word}`, `${p#pattern}` and friends is itself expanded,
+ * with quote removal, before it is used.
+ */
+async function expandParameterWord(word, ctx) {
+    if (word === '')
+        return '';
+    return joinPieces(await expandParts(parameterWordParts(word), ctx));
+}
+function parameterWordParts(word) {
+    const parts = [];
+    let text = '';
+    const flush = () => {
+        if (text === '')
+            return;
+        parts.push({ text, quoted: 'none' });
+        text = '';
+    };
+    let i = 0;
+    while (i < word.length) {
+        const ch = word[i];
+        if (ch === '\\' && i + 1 < word.length) {
+            flush();
+            parts.push({ text: word[i + 1], quoted: 'single' });
+            i += 2;
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            const end = word.indexOf(ch, i + 1);
+            const close = end === -1 ? word.length : end;
+            flush();
+            parts.push({ text: word.slice(i + 1, close), quoted: ch === "'" ? 'single' : 'double' });
+            i = close + 1;
+            continue;
+        }
+        if (ch === '$' && word[i + 1] === '(') {
+            const end = skipBalanced(word, i + 1, '(', ')');
+            text += word.slice(i, end);
+            i = end;
+            continue;
+        }
+        text += ch;
+        i++;
+    }
+    flush();
+    return parts;
+}
+// ─── Field splitting ───
+function ifsOf(ctx) {
+    return ctx.env['IFS'] ?? IFS_WHITESPACE;
+}
+function joinPieces(pieces) {
+    return pieces.map((p) => (p.kind === 'break' ? ' ' : p.text)).join('');
+}
+/**
+ * Cut the expanded word into fields on IFS. Only characters that came out of
+ * an unquoted expansion are eligible delimiters, so literal text keeps its
+ * IFS characters, and `"$@"` boundaries split regardless of IFS.
+ */
+function splitFields(pieces, ifs) {
+    const fields = [];
+    let text = '';
+    let eligible = [];
+    let literal = false;
+    let started = false;
+    const flush = () => {
+        if (started)
+            fields.push(...splitGroup(text, eligible, literal, ifs));
+        text = '';
+        eligible = [];
+        literal = false;
+        started = false;
+    };
+    for (const piece of pieces) {
+        if (piece.kind === 'break') {
+            flush();
+            continue;
+        }
+        started = true;
+        if (piece.literal)
+            literal = true;
+        text += piece.text;
+        for (let i = 0; i < piece.text.length; i++)
+            eligible.push(piece.split);
+    }
+    flush();
+    return fields;
+}
+function splitGroup(text, eligible, literal, ifs) {
+    const keep = (fields) => (fields.length === 1 && fields[0] === '' && !literal ? [] : fields);
+    if (ifs === '')
+        return keep([text]);
+    const isDelimiter = (i) => eligible[i] && ifs.includes(text[i]);
+    const isWhitespace = (i) => IFS_WHITESPACE.includes(text[i]);
+    let start = 0;
+    let end = text.length;
+    while (start < end && isDelimiter(start) && isWhitespace(start))
+        start++;
+    while (end > start && isDelimiter(end - 1) && isWhitespace(end - 1))
+        end--;
+    const fields = [];
+    let current = '';
+    let i = start;
+    while (i < end) {
+        if (!isDelimiter(i)) {
+            current += text[i];
+            i++;
+            continue;
+        }
+        // One delimiter: a run of IFS whitespace around at most one other IFS char.
+        while (i < end && isDelimiter(i) && isWhitespace(i))
+            i++;
+        if (i < end && isDelimiter(i) && !isWhitespace(i))
+            i++;
+        while (i < end && isDelimiter(i) && isWhitespace(i))
+            i++;
+        fields.push(current);
+        current = '';
+        // A word ending in a delimiter has no trailing empty field.
+        if (i >= end)
+            return keep(fields);
+    }
+    fields.push(current);
+    return keep(fields);
+}
+// ─── Pattern replacement ───
 function replaceFirst(val, pattern, replacement) {
     for (let i = 0; i < val.length; i++) {
         for (let j = i + 1; j <= val.length; j++) {
