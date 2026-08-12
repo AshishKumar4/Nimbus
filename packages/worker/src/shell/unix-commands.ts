@@ -19,6 +19,7 @@ import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { fileTypeChar, isCharacterDevice } from '../substrate/lifo/kernel/vfs/index.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
+import { parseArgs } from '../substrate/lifo/utils/args.js';
 import {
   findUnixGroupName,
   findUnixUserName,
@@ -3453,26 +3454,95 @@ function mkReadlink(vfs: UnixVfs): CmdFn {
   };
 }
 
+const SHA256SUM_SPEC = {
+  check: { type: 'boolean' as const, short: 'c' },
+  binary: { type: 'boolean' as const, short: 'b' },
+  text: { type: 'boolean' as const, short: 't' },
+  quiet: { type: 'boolean' as const, short: 'q' },
+  status: { type: 'boolean' as const },
+};
+
+/**
+ * Real SHA-256 over the file's real bytes.
+ *
+ * The digest used to be taken over `enc.encode(readFileString(path))` — a
+ * UTF-8 decode and re-encode, which replaces every byte that is not valid
+ * UTF-8 with U+FFFD. For any binary file that hashes something the file does
+ * not contain, and it never announced a problem: an installer verifying a
+ * downloaded tarball got a mismatch on a perfectly good download, every time.
+ */
 function mkSha256sum(vfs: UnixVfs): CmdFn {
-  // W3: real SHA-256 via WebCrypto (crypto.subtle.digest).
-  // Pre-W3 was a 4-state FNV-1a fake — second silent-correctness bug
-  // discovered during W3 plan grep (the first being node-shims crypto).
-  // The harness type CmdFn = (ctx) => number | Promise<number> already
-  // accepts async; convert sync→async to use SubtleCrypto.
-  return async (ctx) => {
-    for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-      const fp = resolvePath(ctx.cwd, f);
-      try {
-        const content = vfs.readFileString(fp);
-        const buf = enc.encode(content);
-        const ab = await crypto.subtle.digest('SHA-256', buf);
-        const bytes = new Uint8Array(ab);
-        const hash = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-        ctx.stdout.write(`${hash}  ${f}\n`);
-      } catch { ctx.stderr.write(`sha256sum: ${f}: No such file\n`); return 1; }
-    }
-    return 0;
+  const digest = async (bytes: Uint8Array): Promise<string> => {
+    const ab = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+    return Array.from(new Uint8Array(ab)).map((b) => b.toString(16).padStart(2, '0')).join('');
   };
+
+  return async (ctx) => {
+    const { flags, positional, unknown } = parseArgs(ctx.args, SHA256SUM_SPEC);
+    if (unknown.length > 0) {
+      ctx.stderr.write(`sha256sum: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+      return 1;
+    }
+
+    if (flags.check) return verifySha256Sums(ctx, vfs, positional, digest, flags.status === true);
+
+    if (positional.length === 0 || (positional.length === 1 && positional[0] === '-')) {
+      ctx.stdout.write(`${await digest(enc.encode(ctx.stdin ?? ''))}  -\n`);
+      return 0;
+    }
+
+    let exit = 0;
+    for (const f of positional) {
+      try {
+        ctx.stdout.write(`${await digest(vfs.readFile(resolvePath(ctx.cwd, f)))}  ${f}\n`);
+      } catch {
+        ctx.stderr.write(`sha256sum: ${f}: No such file or directory\n`);
+        exit = 1;
+      }
+    }
+    return exit;
+  };
+}
+
+/** `sha256sum -c LIST` — each line is `HASH  FILENAME`, as this command prints. */
+async function verifySha256Sums(
+  ctx: Ctx,
+  vfs: UnixVfs,
+  lists: string[],
+  digest: (bytes: Uint8Array) => Promise<string>,
+  quiet: boolean,
+): Promise<number> {
+  let exit = 0;
+  for (const list of lists) {
+    let body: string;
+    try {
+      body = vfs.readFileString(resolvePath(ctx.cwd, list));
+    } catch {
+      ctx.stderr.write(`sha256sum: ${list}: No such file or directory\n`);
+      exit = 1;
+      continue;
+    }
+    for (const line of body.split('\n')) {
+      const entry = /^([0-9a-fA-F]{64})\s[\s*](.*)$/.exec(line);
+      if (entry === null) continue;
+      const [, expected, name] = entry;
+      let actual: string | null = null;
+      try {
+        actual = await digest(vfs.readFile(resolvePath(ctx.cwd, name)));
+      } catch { /* reported as FAILED open below */ }
+      if (actual === null) {
+        ctx.stderr.write(`sha256sum: ${name}: No such file or directory\n`);
+        if (!quiet) ctx.stdout.write(`${name}: FAILED open or read\n`);
+        exit = 1;
+      } else if (actual.toLowerCase() === expected.toLowerCase()) {
+        if (!quiet) ctx.stdout.write(`${name}: OK\n`);
+      } else {
+        if (!quiet) ctx.stdout.write(`${name}: FAILED\n`);
+        exit = 1;
+      }
+    }
+  }
+  return exit;
 }
 
 function mkFile(vfs: UnixVfs): CmdFn {
