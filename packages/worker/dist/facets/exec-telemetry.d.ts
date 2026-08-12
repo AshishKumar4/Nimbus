@@ -27,6 +27,8 @@ export interface ExecTelemetryRecord {
     command: string;
     /** buildPrefetchBundle wall time (real I/O — clock advances). */
     bundleMs: number;
+    /** Module-map construction wall time (serialize + template). */
+    generateMs: number;
     /**
      * `_materializeFacetImages` wall time — resident processes only.
      *
@@ -75,13 +77,28 @@ export interface ExecTelemetryRecord {
  * The fields `_execViaLoader` fills in on its way through, for the caller to
  * fold into a record. Derived from the record so the two cannot drift.
  */
-export type ExecDiagSink = Pick<ExecTelemetryRecord, 'loadMs' | 'runMs' | 'moduleMapBytes' | 'bundleBytes' | 'manifestBytes' | 'metadataBytes'>;
+export type ExecDiagSink = Pick<ExecTelemetryRecord, 'generateMs' | 'loadMs' | 'runMs' | 'moduleMapBytes' | 'bundleBytes' | 'manifestBytes' | 'metadataBytes'>;
 /**
  * True when exec telemetry is enabled. Read once at exec entry; callers
  * skip building the record entirely when this is false so the path stays
  * zero-overhead in production.
  */
 export declare function isExecDiagEnabled(): boolean;
+/**
+ * Advance workerd's clock so the span just measured has a real duration.
+ *
+ * `Date.now()` in workerd only moves when I/O completes, so a span of pure
+ * computation — which is most of what a launch is — reads 0 no matter how
+ * many seconds it burned. That is not a small distortion: it is why
+ * `bundleMs` was read as "the build stopped happening" and why the resident
+ * launch's materialize and load phases both reported 0 out of a turn that the
+ * tail measured at 21,274 ms of CPU.
+ *
+ * A timer is I/O, so awaiting one lets the clock catch up to real time before
+ * the next phase starts. Diagnostics only: every call site is behind
+ * `isExecDiagEnabled()`, so the measured path is never the shipped one.
+ */
+export declare function diagClockTick(): Promise<void>;
 /** Append a record to the ring. No-op when telemetry is disabled. */
 export declare function recordExecTelemetry(rec: ExecTelemetryRecord): void;
 /** Snapshot the ring (newest last). Caller mutations don't affect it. */
