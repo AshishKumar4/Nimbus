@@ -1233,6 +1233,9 @@ export class NpmInstaller {
     const pkgJsonPath = projDir + '/package.json';
     if (!this.vfs.exists(pkgJsonPath)) return specs;
 
+    // Which names only a devDependency asked for, so a reject can say whether
+    // anything this project RUNS actually needs the package it refused.
+    const devOnly = new Set<string>();
     try {
       const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
 
@@ -1244,16 +1247,15 @@ export class NpmInstaller {
       }
 
       // Include devDeps unless production mode, skipping build-only
-      if (!production) {
-        for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
-          if (!shouldSkipPackage(name)) {
-            specs[name] = range as string;
-          }
-        }
+      for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
+        if (shouldSkipPackage(name) || name in specs) continue;
+        if (production) continue;
+        specs[name] = range as string;
+        devOnly.add(name);
       }
     } catch { /* corrupt package.json */ }
 
-    return this.applyW6Registry(specs);
+    return this.applyW6Registry(specs, devOnly);
   }
 
   /**
@@ -1264,7 +1266,10 @@ export class NpmInstaller {
    *
    * Idempotent: running on already-swapped specs is a no-op.
    */
-  private applyW6Registry(specs: Record<string, string>): Record<string, string> {
+  private applyW6Registry(
+    specs: Record<string, string>,
+    devOnly: ReadonlySet<string> = new Set(),
+  ): Record<string, string> {
     const { specs: swapped, swaps } = applySwaps(specs);
     for (const s of swaps) {
       // onProgress is unguarded everywhere else in this file (rg the
@@ -1287,7 +1292,7 @@ export class NpmInstaller {
           ctx: 'top',
         });
       }
-      throw new RegistryRejectError(rejects);
+      throw new RegistryRejectError(rejects, devOnly);
     }
     return swapped;
   }
