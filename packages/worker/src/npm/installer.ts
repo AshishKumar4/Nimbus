@@ -610,6 +610,12 @@ export class NpmInstaller {
     // width (parallelism mirrors the in-DO/peer-DO pool's task count).
     let inFlightPeak = 0;
 
+    // Peers one resolve layer may spread across. Mirrors INSTALL_PEER_CAP on
+    // the write side (fetchViaBatchFacet), for the same reason and at the same
+    // width: eight is where added peers stop buying throughput and start
+    // buying sibling-DO cold starts.
+    const RESOLVE_PEER_CAP = 8;
+
     // F-2 fanout pool. One construction reused across every layer; the
     // pool is stateless across submitMany calls.
     const fanoutPool = new NimbusFanoutPool(this.env, this.ctx!, {
@@ -619,6 +625,15 @@ export class NpmInstaller {
       timeoutMs: 5 * 60_000,
       preamble: NPM_RESOLVE_PREAMBLE,
       onDispatchPhase: () => { dispatchBarriers++; },
+      // One peer per package is what this dispatched before, and resolving a
+      // package is one cached-packument read — far too little work to pay a
+      // sibling DO start for. A 123-package install walked 8 layers as 23
+      // barriers (33-wide layer: 8.2 s to serve 33 reads that all hit the
+      // cache), because a layer of width W costs ⌈min(W,32)/FANOUT_PHASE_SIZE⌉
+      // of them. Capping peers here is the same fix INSTALL_PEER_CAP already
+      // applies to the write side, and it does not cost concurrency: each peer
+      // runs its bucket at concurrency 4, so 8 peers still resolve 32 at once.
+      maxPeers: RESOLVE_PEER_CAP,
     });
 
     // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE

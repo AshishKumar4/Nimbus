@@ -213,7 +213,7 @@ export class NimbusFanoutPool {
         // bucketed into existing shards — each shard's peer DO then
         // runs its bucket through its in-DO NimbusLoaderPool.map
         // (concurrency capped at 4 there).
-        const peerCount = Math.min(tasks.length, MAX_PEER_FANOUT);
+        const peerCount = Math.min(tasks.length, this.opts.maxPeers ?? MAX_PEER_FANOUT);
         // Group tasks by deterministic shard. Same key → same shard, so
         // tests can predict which peer handles which task.
         const shards = new Map();
