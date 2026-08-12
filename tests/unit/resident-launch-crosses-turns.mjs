@@ -86,12 +86,17 @@ function seedProgram(vfs, marker) {
   // generated module map, so a quoted marker would be escaped there and a
   // substring check for it would fail for reasons that have nothing to do
   // with chunking.
+  const mods = 40;
   fs.writeFile(
     'home/user/node_modules/dep/lib/index.js',
-    `module.exports = 1; // ${marker}\n`,
+    Array.from({ length: mods }, (_, i) => `require('./mod${i}');`).join('\n')
+      + `\nmodule.exports = 1; // ${marker}\n`,
     { mode: 0o644 },
   );
-  for (let i = 0; i < 40; i++) {
+  // Required, not merely present: the passes carry the reachable closure, so
+  // files nothing requires would leave the bundle too small to chunk and the
+  // multi-turn path would go untested.
+  for (let i = 0; i < mods; i++) {
     fs.writeFile(
       `home/user/node_modules/dep/lib/mod${i}.js`,
       `module.exports = ${i};\n// ${'p'.repeat(400)}\n`,
@@ -135,6 +140,7 @@ async function settle(world) {
     turns.count > 1,
     `the launch crossed several turns rather than running straight through (grants=${turns.count})`,
   );
+
 
   const [config] = [...world.configs.values()];
   const entrySource = config.modules['worker.js'];
@@ -269,13 +275,24 @@ async function settle(world) {
   // exist before, taken at the first turn boundary.
   await new Promise((resolve) => setTimeout(resolve, 0));
   manager.processes.exit(spawned.pid, 137);
+  const grantsAtKill = turns.count;
 
   // Give the launch every opportunity to carry on and boot anyway.
-  for (let i = 0; i < 60; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let i = 0; i < 80; i++) await new Promise((resolve) => setTimeout(resolve, 5));
 
   assert.equal(
     world.configs.size, 0,
     'a launch whose process was killed while it was suspended does not go on to boot a facet',
+  );
+  // Not booting is not enough on its own — a launch that ran every remaining
+  // phase and only failed at the end would also not boot, while having spent
+  // the session's thread on turn after turn of work for a dead pid. An
+  // ordinary launch here takes twelve turns; this one must stop within a
+  // couple of the kill.
+  assert.ok(
+    turns.count - grantsAtKill <= 2,
+    'the launch stopped taking turns once its process was gone, rather than running to '
+    + `completion and failing at the end (grants after the kill: ${turns.count - grantsAtKill})`,
   );
 }
 

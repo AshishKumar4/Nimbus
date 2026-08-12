@@ -75,9 +75,18 @@ export class LaunchPacer {
   private spent = 0;
   private chunkEnded: { promise: Promise<void>; resolve: () => void } | undefined;
 
+  /**
+   * @param stillWanted Checked every time the launch resumes. A launch spans
+   *   many turns, so anything may have happened to what it is building for
+   *   while it was suspended; throwing from here is how a launch stops instead
+   *   of spending turn after turn on work nothing will use. Checked at the one
+   *   place a launch can be interrupted, rather than at whichever phases
+   *   remembered to ask.
+   */
   constructor(
     private readonly scheduler: LaunchTurnScheduler,
     private readonly maxChunkBytes: number = LAUNCH_CHUNK_MAX_BYTES,
+    private readonly stillWanted?: () => void,
   ) {}
 
   /**
@@ -98,6 +107,7 @@ export class LaunchPacer {
     const ended = withResolvers();
     this.chunkEnded = ended;
     await this.scheduler.nextTurn(ended.promise);
+    this.stillWanted?.();
   }
 
   /**
