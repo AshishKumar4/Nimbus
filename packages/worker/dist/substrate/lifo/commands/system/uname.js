@@ -1,51 +1,55 @@
+/**
+ * Nimbus presents a Linux system: the syscall surface, the filesystem layout
+ * and the binaries that run on it are Linux's. Third-party install scripts
+ * gate on `uname -s` (`case "$(uname -s)" in Linux|Darwin)`), so anything else
+ * here makes every one of them refuse to install. The machine stays honest —
+ * the code that runs is wasm, not x86_64.
+ */
+const INFO = {
+    sysname: 'Linux',
+    nodename: 'nimbus',
+    release: '1.0.0',
+    version: '#1 Nimbus',
+    machine: 'wasm',
+    processor: 'unknown',
+    platform: 'unknown',
+    operatingSystem: 'GNU/Linux',
+};
+const FIELDS = {
+    s: INFO.sysname,
+    n: INFO.nodename,
+    r: INFO.release,
+    v: INFO.version,
+    m: INFO.machine,
+    p: INFO.processor,
+    i: INFO.platform,
+    o: INFO.operatingSystem,
+};
+const ALL_ORDER = ['s', 'n', 'r', 'v', 'm', 'o'];
 const command = async (ctx) => {
-    const info = {
-        sysname: 'Lifo',
-        release: '1.0.0',
-        machine: 'wasm',
-    };
-    if (ctx.args.length === 0) {
-        ctx.stdout.write(info.sysname + '\n');
-        return 0;
-    }
-    let showAll = false;
-    let showSysname = false;
-    let showRelease = false;
-    let showMachine = false;
+    const selected = new Set();
     for (const arg of ctx.args) {
-        if (arg.startsWith('-')) {
-            for (let i = 1; i < arg.length; i++) {
-                switch (arg[i]) {
-                    case 'a':
-                        showAll = true;
-                        break;
-                    case 's':
-                        showSysname = true;
-                        break;
-                    case 'r':
-                        showRelease = true;
-                        break;
-                    case 'm':
-                        showMachine = true;
-                        break;
-                }
-            }
+        if (!arg.startsWith('-'))
+            continue;
+        if (arg === '--all') {
+            for (const flag of ALL_ORDER)
+                selected.add(flag);
+            continue;
+        }
+        for (let i = 1; i < arg.length; i++) {
+            if (arg[i] === 'a')
+                for (const flag of ALL_ORDER)
+                    selected.add(flag);
+            else if (arg[i] in FIELDS)
+                selected.add(arg[i]);
         }
     }
-    if (showAll) {
-        ctx.stdout.write(`${info.sysname} ${info.release} ${info.machine}\n`);
+    if (selected.size === 0) {
+        ctx.stdout.write(INFO.sysname + '\n');
         return 0;
     }
-    const parts = [];
-    if (showSysname)
-        parts.push(info.sysname);
-    if (showRelease)
-        parts.push(info.release);
-    if (showMachine)
-        parts.push(info.machine);
-    if (parts.length === 0)
-        parts.push(info.sysname);
-    ctx.stdout.write(parts.join(' ') + '\n');
+    const order = ['s', 'n', 'r', 'v', 'm', 'p', 'i', 'o'].filter((f) => selected.has(f));
+    ctx.stdout.write(order.map((f) => FIELDS[f]).join(' ') + '\n');
     return 0;
 };
 export default command;
