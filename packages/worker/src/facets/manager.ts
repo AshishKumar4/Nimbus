@@ -4619,13 +4619,7 @@ export class FacetManager {
       if (!(fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength)) {
         fs.writeFile(stored, bytes, { mode: 0o644 });
       }
-      if (pacer) {
-        await pacer.spend(bytes.byteLength);
-        // A launch that lost its process while suspended has nothing left to
-        // materialize for, and its images are already unrooted — the sweep
-        // that collects them is entitled to run before this loop ends.
-        this._assertLaunchStillOwned(pid);
-      }
+      if (pacer) await pacer.spend(bytes.byteLength);
     }
     this._sweepFacetImages(fs);
     return images;
@@ -4993,7 +4987,11 @@ export class FacetManager {
     opts: ResidentSpawnOptions,
   ): Promise<void> {
     const cwd = opts.cwd || '/home/user';
-    const pacer = new LaunchPacer(this.launchScheduler, launchChunkMaxBytes(this.env));
+    const pacer = new LaunchPacer(
+      this.launchScheduler,
+      launchChunkMaxBytes(this.env),
+      () => this._assertLaunchStillOwned(entry.pid),
+    );
     try {
       await this._residentLaunchBody(entry, code, command, cwd, opts, pacer);
     } finally {
