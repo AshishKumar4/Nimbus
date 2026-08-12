@@ -52,9 +52,18 @@ try {
   if (pid > 0) {
     const parentShellAfterLaunch = stripAnsi(t.buf);
     const proc = await connectProcessTerminal(sid, pid);
-    await proc.waitFor((out) => out.trim().length > 0, 60_000, 'Pi first TUI frame');
-    a.check('bare pi renders output in the process terminal',
-      proc.output.trim().length > 0,
+    // Wait for Pi's OWN chrome, not for bytes. "Some output arrived" is the
+    // assertion this probe used to make, and a dead screen satisfies it: when
+    // the session isolate was reset mid-launch the socket closed with no exit
+    // frame, the UI painted "[process terminal closed]", and this probe went
+    // green anyway. The launch is only up when the TUI has drawn itself.
+    await proc.waitFor(
+      (out) => /pi v\d+\.\d+\.\d+|ctrl\+o|escape interrupt/.test(out),
+      60_000,
+      'Pi TUI chrome',
+    );
+    a.check('bare pi renders its TUI in the process terminal',
+      /pi v\d+\.\d+\.\d+|ctrl\+o|escape interrupt/.test(proc.output),
       JSON.stringify(proc.output.slice(-1200)));
     a.check('bare pi does not crash before the TUI starts',
       !/fs\[method\] is not a function|utimes is not a function|TypeError/i.test(proc.output),
@@ -62,6 +71,28 @@ try {
     a.check('bare pi TUI output is not mirrored into the parent shell',
       stripAnsi(t.buf) === parentShellAfterLaunch,
       JSON.stringify(stripAnsi(t.buf).slice(-1200)));
+
+    // Alive, not merely painted once: it takes a keystroke and echoes it, and
+    // the socket is still open a few seconds later rather than having been
+    // torn down by an isolate reset.
+    proc.input('hello');
+    let echoed = false;
+    try {
+      await proc.waitFor((out) => /hello/.test(out), 20_000, 'Pi echoes typed input');
+      echoed = true;
+    } catch { /* reported below with the buffer */ }
+    a.check('bare pi accepts input and stays alive',
+      echoed && !proc.closed && !proc.exit,
+      `echoed=${echoed} closed=${proc.closed} exit=${JSON.stringify(proc.exit)} `
+      + JSON.stringify(proc.output.slice(-1200)));
+
+    // The session behind the TUI has to have survived the launch too — an
+    // isolate reset takes the shell with it, and that is invisible from the
+    // process terminal alone.
+    const shellAfter = await t.run('echo SHELL_SURVIVED_LAUNCH', 30_000);
+    a.check('the shell survives launching the TUI',
+      /SHELL_SURVIVED_LAUNCH/.test(stripAnsi(shellAfter.output)),
+      JSON.stringify(stripAnsi(shellAfter.output).slice(-600)));
 
     proc.resize(100, 31);
     proc.signal('SIGTERM');

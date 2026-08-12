@@ -1077,6 +1077,31 @@ export function releaseSerializedSources(vfsState) {
         vfsState.metadata = {};
 }
 /**
+ * Drop everything a resident launch has finished reading, in place.
+ *
+ * The one-shot path releases its map at LOADER.load; this is the same policy
+ * for the path `spawnNode` takes, which is the path every attached-TTY npm bin
+ * takes — how a real agentic CLI starts. The generated source is a total
+ * encoding of the cells, the manifest and the metadata, and the only thing the
+ * rest of a launch reads off the state is `cursor`. Everything else is a second
+ * copy of the largest thing this DO builds — 22.9 MB for pi — held for exactly
+ * as long as the facet takes to boot on it.
+ *
+ * Holding it reset the session isolate with exceededMemory, and an isolate
+ * reset tears the terminal WebSocket down with no exit frame: the dead screen
+ * reading "[process terminal closed]".
+ *
+ * An emptied state can still generate a map — it would just generate one with
+ * no program in it — so this marks the state instead of trusting callers to
+ * stop.
+ */
+export function releaseResidentLaunchSources(vfsState) {
+    vfsState.bundle = {};
+    vfsState.manifest = {};
+    vfsState.metadata = {};
+    vfsState.generatedSourcesReleased = true;
+}
+/**
  * Drop the serialized forms once a module map has been generated from them.
  *
  * The generated source is a total encoding of all three: every byte of the
@@ -4334,10 +4359,13 @@ export class FacetManager {
         }
         if (this.vfs)
             this._ensureImageStoreDir(this.vfs);
+        const diagOn = isExecDiagEnabled();
+        const __bundleStart = diagOn ? Date.now() : 0;
         const processVfs = this.vfs?.as(entry.cred);
         const vfsState = processVfs
             ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+        const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const processEnv = opts.attachedTty
             ? {
                 ...(opts.env || {}),
@@ -4355,16 +4383,38 @@ export class FacetManager {
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
         ]);
-        const generatedWorker = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
-        const workerCode = generatedWorker.code;
+        let generatedWorker = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
+        // Sized here, while the map is still in hand. Reading these after the load
+        // would itself be what keeps the map alive, and the whole point of the
+        // scoping below is that nothing does.
+        let moduleMapBytes = 0;
+        let bundleBytes = 0;
+        if (diagOn) {
+            for (const source of Object.values(generatedWorker.modules)) {
+                bundleBytes += _encodedSourceBytes(source);
+            }
+            moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
+        }
+        const manifestBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.manifest)) : 0;
+        const metadataBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.metadata)) : 0;
+        const cacheHit = vfsState.cacheHit ?? false;
+        const vfsCursor = vfsState.cursor;
+        releaseResidentLaunchSources(vfsState);
         let handle;
         let resourcesTracked = false;
         try {
+            const vfsTextModules = await this._materializeFacetImages(entry.pid, {
+                'worker.js': generatedWorker.code,
+                ...generatedWorker.modules,
+            });
+            // The image store has taken it; this frame must not be what holds the
+            // only other copy while the facet boots.
+            generatedWorker = undefined;
             handle = await this._startResidentProcess(entry.pid, {
                 // The attached-TTY runner holds startProcess open for the process's
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
-                startArgs: { vfsCursor: vfsState.cursor },
+                startArgs: { vfsCursor },
                 boot: {
                     kind: 'code',
                     code: {
@@ -4374,13 +4424,35 @@ export class FacetManager {
                         // Only the sqlite sidecar rides by value: it is a fixed-size
                         // asset of the worker's own, not of the user's disk.
                         modules: sqliteModules,
-                        vfsTextModules: await this._materializeFacetImages(entry.pid, {
-                            'worker.js': workerCode,
-                            ...generatedWorker.modules,
-                        }),
+                        vfsTextModules,
                     },
                 },
             });
+            if (diagOn) {
+                recordExecTelemetry({
+                    command,
+                    bundleMs,
+                    // Both spans are pure computation plus SQLite, and workerd's clock
+                    // only moves on I/O, so timing them here reads 0 however many
+                    // seconds they burn. The tail's per-turn cpuTime is the authority on
+                    // what a launch costs; what this record adds is what it is made OF.
+                    loadMs: 0,
+                    runMs: 0,
+                    drainPasses: 0,
+                    moduleMapBytes,
+                    // The side modules ARE the VFS bundle whenever the map was split;
+                    // when it stayed inline it rides inside worker.js and shows up only
+                    // in the total.
+                    bundleBytes,
+                    manifestBytes,
+                    metadataBytes,
+                    rpcWrites: 0,
+                    fsRpcReads: 0,
+                    cacheHit,
+                    exitCode: 0,
+                    at: Date.now(),
+                });
+            }
             this.trackProcessRpcResources(entry.pid, [handle], { releaseOnReportExit: !opts.attachedTty });
             resourcesTracked = true;
             this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
