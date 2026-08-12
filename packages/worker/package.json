@@ -59,7 +59,8 @@
     "runtime-contracts",
     "README.md",
     "LICENSE",
-    "NOTICE.md"
+    "NOTICE.md",
+    "!public/**/*.map"
   ],
   "scripts": {
     "bundle:git": "node scripts/bundle-git.mjs",
