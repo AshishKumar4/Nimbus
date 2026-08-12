@@ -34,4 +34,19 @@ import { parseNpmInstallInvocation } from '../../packages/worker/src/npm/install
   assert.deepEqual(parsed.packages, ['vite', '@vitejs/plugin-react']);
 }
 
+{
+  // npm warns about an option it does not know and carries on. The parser
+  // used to drop it, leaving the caller unable to warn about anything.
+  const parsed = parseNpmInstallInvocation(['--bogus', '-Z', 'vite']);
+
+  assert.deepEqual(parsed.unknownOptions, ['--bogus', '-Z']);
+  assert.deepEqual(parsed.packages, ['vite'], 'the install still proceeds');
+}
+
+{
+  // A recognised invocation reports nothing, so a caller can trust the field.
+  const parsed = parseNpmInstallInvocation(['-g', 'vite']);
+  assert.deepEqual(parsed.unknownOptions, []);
+}
+
 console.log('npm-install-args: ok');

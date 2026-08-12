@@ -10,7 +10,12 @@ const spec = {
 };
 
 const command: Command = async (ctx) => {
-  const { flags, positional } = parseArgs(ctx.args, spec);
+  const parsed = parseArgs('nl', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 1;
+  }
+  const { flags, positional } = parsed;
 
   const style = (flags['body-numbering'] as string) || 't';
   const width = parseInt((flags['number-width'] as string) || '6', 10);

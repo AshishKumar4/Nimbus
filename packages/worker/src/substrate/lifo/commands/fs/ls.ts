@@ -70,7 +70,12 @@ function listDirectory(
 }
 
 const command: Command = async (ctx) => {
-  const { flags, positional } = parseArgs(ctx.args, spec);
+  const parsed = parseArgs('ls', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 2;
+  }
+  const { flags, positional } = parsed;
   const targets = positional.length > 0 ? positional : [ctx.cwd];
 
   let exitCode = 0;

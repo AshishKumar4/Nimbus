@@ -2264,6 +2264,9 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       // npm install (no args or with packages) — use NpmInstaller v2 (batched writes)
       if (sub === 'install' || sub === 'i' || sub === 'add') {
         const installInvocation = parseNpmInstallInvocation(args.slice(1));
+        for (const option of installInvocation.unknownOptions) {
+          ctx.stderr.write(`npm warn Unknown cli config "${option}". It was ignored.\n`);
+        }
         const explicitPkgs = installInvocation.packages;
         const globalPrefix = installInvocation.global
           ? resolveNpmPrefix(

@@ -17,7 +17,12 @@ function randomChars(n: number): string {
 }
 
 const command: Command = async (ctx) => {
-  const { flags, positional } = parseArgs(ctx.args, spec);
+  const parsed = parseArgs('mktemp', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 1;
+  }
+  const { flags, positional } = parsed;
 
   const dir = (flags.tmpdir as string) || '/tmp';
   const template = positional[0] || 'tmp.XXXXXXXXXX';

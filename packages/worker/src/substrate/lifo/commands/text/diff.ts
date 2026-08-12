@@ -228,7 +228,12 @@ function formatUnified(ops: EditOp[], file1: string, file2: string): string {
 }
 
 const command: Command = async (ctx) => {
-  const { flags, positional } = parseArgs(ctx.args, spec);
+  const parsed = parseArgs('diff', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 2;
+  }
+  const { flags, positional } = parsed;
 
   if (positional.length < 2) {
     ctx.stderr.write('diff: missing operand\n');

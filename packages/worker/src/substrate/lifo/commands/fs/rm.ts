@@ -10,7 +10,12 @@ const spec = {
 };
 
 const command: Command = async (ctx) => {
-  const { flags, positional } = parseArgs(ctx.args, spec);
+  const parsed = parseArgs('rm', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 1;
+  }
+  const { flags, positional } = parsed;
   const recursive = (flags.recursive || flags.Recursive) as boolean;
   const force = flags.force as boolean;
 

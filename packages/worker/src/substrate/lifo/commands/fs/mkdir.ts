@@ -8,7 +8,12 @@ const spec = {
 };
 
 const command: Command = async (ctx) => {
-  const { flags, positional } = parseArgs(ctx.args, spec);
+  const parsed = parseArgs('mkdir', ctx.args, spec);
+  if (!parsed.ok) {
+    ctx.stderr.write(parsed.error);
+    return 1;
+  }
+  const { flags, positional } = parsed;
 
   if (positional.length === 0) {
     ctx.stderr.write('mkdir: missing operand\n');
