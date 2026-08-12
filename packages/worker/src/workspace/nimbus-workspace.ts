@@ -77,7 +77,11 @@ export class NimbusWorkspace {
   readonly kernel: Kernel;
   readonly shell: Shell;
 
-  private constructor(private readonly sandbox: Sandbox, vfs: SqliteVFS) {
+  private constructor(
+    private readonly sandbox: Sandbox,
+    vfs: SqliteVFS,
+    private readonly sql: SqlDatabase,
+  ) {
     this.vfs = vfs;
     this.kernel = sandbox.kernel;
     this.shell = sandbox.shell;
@@ -112,7 +116,7 @@ export class NimbusWorkspace {
     registerUnixCommands(sandbox.commands.registry, vfs);
     installPathExecResolver(sandbox.commands.registry, vfs.as(CRED_SESSION_USER), () => sandbox.shell.getCwd());
 
-    return new NimbusWorkspace(sandbox, vfs);
+    return new NimbusWorkspace(sandbox, vfs, options.sql);
   }
 
   exec(command: string, options?: RunOptions): Promise<CommandResult> {
@@ -130,7 +134,42 @@ export class NimbusWorkspace {
     const s = this.vfs.getStats();
     return { files: s.files, dirs: s.directories, usedBytes: s.usedBytes };
   }
+
+  /**
+   * Drop this workspace's tables. The host's own rows are untouched.
+   *
+   * Deliberately not `ctx.storage.deleteAll()`, which is what the session's
+   * own destroy uses: a session owns its Durable Object, and a workspace does
+   * not. Calling deleteAll here would erase the data of whatever else the host
+   * keeps in that object.
+   */
+  destroy(): void {
+    for (const table of WORKSPACE_TABLES) {
+      this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    }
+  }
 }
+
+/**
+ * Every table the filesystem creates.
+ *
+ * Listed rather than discovered because the namespace is the contract an
+ * embedder is owed: these names, and nothing else in their database, belong
+ * to the workspace. `inodes`, `file_chunks` and `content_lifecycle` are the
+ * three that carry no `vfs_` prefix and so are the ones most likely to
+ * collide with a host's own schema.
+ */
+const WORKSPACE_TABLES = [
+  'inodes',
+  'file_chunks',
+  'content_lifecycle',
+  'vfs_schema_migrations',
+  'vfs_append_receipts',
+  'vfs_append_writer_state',
+  'vfs_append_module_state',
+  'vfs_append_pid_revocations',
+  'vfs_append_acked_gaps',
+] as const;
 
 /**
  * The directories and account files the shell cannot start without.

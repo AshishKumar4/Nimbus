@@ -899,12 +899,20 @@ export class SqliteVFS {
       )`);
       this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_parent ON inodes(parent_path)`);
       this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_inodes_content ON inodes(content_id)`);
-      this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_file_content');
-      // The COALESCE expression index is unusable by the reference probes:
-      // SQLite cannot seek an expression index from a correlated subquery, so
-      // every probe now seeks idx_inodes_content or the path primary key
-      // (see sqlNoInodeContentReference). Keeping it would only tax writes.
-      this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_kind_content');
+      if (!contentMigrationApplied) {
+        // The COALESCE expression indexes are unusable by the reference probes:
+        // SQLite cannot seek an expression index from a correlated subquery, so
+        // every probe now seeks idx_inodes_content or the path primary key
+        // (see sqlNoInodeContentReference). Keeping them would only tax writes.
+        //
+        // Gated on the marker because this is a one-time cleanup of indexes an
+        // older Nimbus created, and the database may not be ours alone: an
+        // embedder shares its Durable Object's SQLite with us, and dropping by
+        // name on every construction would silently delete a host's index that
+        // happened to collide.
+        this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_file_content');
+        this.sql.exec('DROP INDEX IF EXISTS idx_inodes_resolved_kind_content');
+      }
       this.sql.exec(
         "INSERT OR IGNORE INTO vfs_schema_migrations (id, applied_at) VALUES (?, ?)",
         CONTENT_SCHEMA_MIGRATION,
