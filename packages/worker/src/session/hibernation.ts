@@ -282,7 +282,7 @@ export function ensureHibSchema(host: HibHost, ctx: any): void {
  * drops unknown reasons so a rollback from a future deploy that added
  * new reasons doesn't leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch';
 
 /**
  * W1: schedule (or re-schedule) an alarm reason. Coordinated via a
@@ -397,12 +397,13 @@ export function dispatchAlarm(
   host: HibHost,
   ctx: any,
   janitorOrphanCheck?: (pid: number) => boolean,
+  pumpResidentLaunches?: () => Promise<void>,
 ): Promise<void> {
   // Same serialization as scheduleAlarm: the dispatcher's read→handlers→write
   // cycle must not interleave with a log-activity scheduleAlarm.
   const chained = (host._w1AlarmChain ?? Promise.resolve()).then(
-    () => dispatchAlarmBody(host, ctx, janitorOrphanCheck),
-    () => dispatchAlarmBody(host, ctx, janitorOrphanCheck),
+    () => dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches),
+    () => dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches),
   );
   host._w1AlarmChain = chained;
   return chained;
@@ -412,6 +413,7 @@ async function dispatchAlarmBody(
   host: HibHost,
   ctx: any,
   janitorOrphanCheck?: (pid: number) => boolean,
+  pumpResidentLaunches?: () => Promise<void>,
 ): Promise<void> {
   try {
     const now = Date.now();
@@ -441,6 +443,11 @@ async function dispatchAlarmBody(
       try {
         if (reason === 'w9-flush') {
           host.processes.flushLogs();
+        } else if (reason === 'resident-launch') {
+          // Awaited, not fired and forgotten: this invocation is the fresh
+          // turn the launch asked for, and it has to stay the one paying for
+          // the chunk it just released.
+          await pumpResidentLaunches?.();
         } else if (reason === 'log-janitor') {
           host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);
           // Re-arm only while the session still has running processes or

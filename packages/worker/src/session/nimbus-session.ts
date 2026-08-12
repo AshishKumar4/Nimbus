@@ -94,6 +94,7 @@ import {
   scheduleHibFlush as _w9DoScheduleHibFlush,
   clearDestroyedTombstone as _w1ClearDestroyedTombstone,
   dispatchAlarm as _w9DoDispatchAlarm,
+  scheduleAlarm as _w9ScheduleAlarm,
   maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen,
   flushOnClose as _w9DoFlushOnClose,
 } from './hibernation.js';
@@ -601,7 +602,19 @@ export class NimbusSession extends CloudflareDurableObject {
       this,
       this.ctx,
       _rpc._logJanitorOrphanCheck(this as any),
+      () => this.facetManager?.pumpResidentLaunches() ?? Promise.resolve(),
     );
+  }
+
+  /**
+   * Re-enter this object so a suspended resident launch can run its next
+   * chunk. An alarm at a deadline already past is delivered as soon as the
+   * object is free, which is precisely when the launch should resume — and
+   * it arrives as a new invocation, so the chunk runs against a fresh CPU
+   * budget rather than the one the launch has already been spending.
+   */
+  private _scheduleLaunchTurn(): Promise<boolean> {
+    return _w9ScheduleAlarm(this, this.ctx, 'resident-launch', Date.now());
   }
 
   /** W9: increment + persist isolate-gen counter once per fresh isolate. */
@@ -1000,6 +1013,7 @@ export class NimbusSession extends CloudflareDurableObject {
         this.portRegistry,
         {
           onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
+          requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
           onSpawn: (pid, command, longRunning) => {
             const attachedTty = this.processes.get(pid)?.attachedTty === true;
             if (longRunning) {

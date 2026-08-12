@@ -59,7 +59,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
   // Generating first is the real order: the map is a total encoding of all
   // three, which is what makes releasing them a pure drop.
-  const generated = generateLongRunningNodeCode('', state, { cred: CRED }, false, '/* shims */');
+  const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, '/* shims */');
   assert.ok(generated.code.includes('module.exports = 1;'), 'the map carries the program');
 
   releaseResidentLaunchSources(state);
@@ -69,31 +69,31 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   assert.deepEqual(state.cursor, { epoch: 'e', rev: 7 },
     'the one field the rest of the launch reads survives the release');
 
-  assert.throws(
+  await assert.rejects(
     () => generateLongRunningNodeCode('', state, { cred: CRED }, false, '/* shims */'),
     /released after its module map was generated/,
     'a released state refuses a second map rather than silently building an empty one',
   );
 }
 
-// ── 2. spawnNode releases, and does it before the boot ────────────────────
+// ── 2. the launch releases, and does it before the boot ───────────────────
 {
   const source = readFileSync(
     new URL('../../packages/worker/src/facets/manager.ts', import.meta.url), 'utf8',
   );
-  const start = source.indexOf('async spawnNode(');
-  assert.ok(start > 0, 'spawnNode is where a resident process is launched');
-  const body = source.slice(start, source.indexOf('\n  private ', start));
+  const start = source.indexOf('  private async _residentLaunchBody(');
+  assert.ok(start > 0, 'the resident launch body is where a resident process is built');
+  const body = source.slice(start, source.indexOf('\n  /**', start + 10));
 
   const released = body.indexOf('releaseResidentLaunchSources(');
   assert.ok(
     released > 0,
-    'spawnNode releases the sources its module map was built from; without this the '
+    'the launch releases the sources its module map was built from; without this the '
     + 'coordinator carries a second copy of the program (22.9 MB for pi) while the facet boots, '
     + 'and the session isolate is reset with exceededMemory',
   );
   const booted = body.indexOf('this._startResidentProcess(');
-  assert.ok(booted > 0, 'spawnNode starts the resident process');
+  assert.ok(booted > 0, 'the launch starts the resident process');
   assert.ok(
     released < booted,
     'the release happens BEFORE the boot — releasing afterwards keeps the copy alive for '
