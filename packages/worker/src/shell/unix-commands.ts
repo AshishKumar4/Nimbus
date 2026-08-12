@@ -715,197 +715,437 @@ function mkTree(vfs: UnixVfs): CmdFn {
 }
 
 /**
- * shell compatibility (2026-05-11): find predicates (-size, -mtime).
+ * `find`'s arguments are an EXPRESSION, not a flag list.
  *
- * Pre-fix only -name and -type were honoured. `find /x -size 0`
- * and `find /x -mtime -1` were no-ops (returned all files). Common
- * cleanup-script patterns broken:
- *   find /tmp -mtime +7 -delete       # delete files older than 7d
- *   find . -size 0 -type f             # find empty files
- *   find . -name "*.log" -exec rm {} \\;
+ * The flat AND-list this replaced dropped every token it did not recognise,
+ * which does not fail — it answers a different question. `find . ! -name x`
+ * ran as `find . -name x`, the exact complement of the requested set, and
+ * said nothing. An installer's
  *
- * Predicates supported here:
- *   -name PATTERN      glob match against basename (existing)
- *   -type f|d          file/directory (existing)
- *   -size [+|-]NUM[c|k|M|G]
- *                      file size in 512-byte blocks default; with c
- *                      char (bytes), k KiB, M MiB, G GiB. Prefix
- *                      '+' = greater, '-' = less.
- *   -mtime [+|-]N      modification time relative to now (in days)
- *   -newer FILE        modified more recently than FILE
- *   -empty             zero-size files OR empty directories
- *   -maxdepth N        recursion depth limit
+ *     find "$dir" -mindepth 1 -maxdepth 1 -type d | head -n 1
  *
- * -exec CMD [ARGS] {} \\;  per-match exec of CMD (already supported
- *                          for limited cases — preserved here).
- * -print, -print0          explicit output formatters
- * -delete                  delete matching entries (cleanup idiom)
+ * silently became `-maxdepth 1 -type d`, which emits the start directory at
+ * depth 0, so the pipeline selected the container instead of the tree in it.
+ *
+ * So the fix is not `-mindepth`. It is to parse the real grammar —
+ *
+ *     expr   := or
+ *     or     := and (('-o' | '-or') and)*
+ *     and    := unary (('-a' | '-and')? unary)*
+ *     unary  := ('!' | '-not') unary | '(' expr ')' | primary
+ *
+ * — with `-a` binding tighter than `-o`, to evaluate it with short-circuit
+ * semantics (which is what makes the `-prune -o -print` idiom work), and to
+ * REFUSE any token outside the table below rather than ignore it.
+ *
+ * Every behaviour here was derived by running the same expression under GNU
+ * findutils 4.10.0; tests/unit/find-expression-evaluator.mjs carries the
+ * differential.
+ *
+ * Global options   -maxdepth N, -mindepth N, -depth
+ * Operators        !, -not, -a, -and, -o, -or, ( )
+ * Tests            -name, -iname, -path, -type, -size, -mtime, -newer, -empty
+ * Actions          -print, -print0, -delete, -exec … {} \\; | +, -prune, -quit
+ *
+ * Anything else is `find: unknown predicate '-x'`, exit 1 — the same
+ * honesty `uname -m` keeps by answering `wasm`.
  */
-function mkFind(vfs: UnixVfs): CmdFn {
-  return (ctx) => {
+
+/** A usage error carrying the message GNU find prints for it. */
+class FindUsageError extends Error {}
+
+interface FindEntry {
+  /** Canonical VFS path (no leading slash) — what the VFS is asked about. */
+  vfsPath: string;
+  /** Path as find prints it: the start argument plus the relative remainder. */
+  display: string;
+  name: string;
+  type: string;
+  depth: number;
+}
+
+interface FindState {
+  minDepth: number;
+  maxDepth: number;
+  /** -depth, or implied by -delete: visit children before their parent. */
+  depthFirst: boolean;
+  /** Set by -prune while the current entry is being evaluated. */
+  prune: boolean;
+  /** Set by -quit: stop the walk entirely. */
+  quit: boolean;
+}
+
+/** One `-exec … +` site: its argv template and the matches batched for it. */
+interface FindExecBatch {
+  argv: string[];
+  pending: string[];
+}
+
+type FindNode = (entry: FindEntry, st: FindState) => Promise<boolean>;
+function mkFind(vfs: UnixVfs, registry: any): CmdFn {
+  return async (ctx) => {
+    const state: FindState = {
+      minDepth: 0,
+      maxDepth: Infinity,
+      depthFirst: false,
+      prune: false,
+      quit: false,
+    };
+    const execBatches: FindExecBatch[] = [];
+    let hasAction = false;
+
+    // ── Emission ──────────────────────────────────────────────────────────
+    const emit = (entry: FindEntry, terminator: string): void => {
+      ctx.stdout.write(entry.display + terminator);
+    };
+
+    /** Run one command through the registry the session resolves through. */
+    const runExec = async (argv: string[]): Promise<boolean> => {
+      const [name, ...rest] = argv;
+      if (!name) return false;
+      let target;
+      try { target = await registry.resolve(name); } catch { target = null; }
+      if (!target) {
+        ctx.stderr.write(`find: ${name}: No such file or directory\n`);
+        return false;
+      }
+      try {
+        const code = await target({
+          pid: ctx.pid,
+          cred: ctx.cred,
+          args: rest,
+          env: ctx.env,
+          cwd: ctx.cwd,
+          vfs: ctx.vfs,
+          stdout: ctx.stdout,
+          stderr: ctx.stderr,
+          stdin: '',
+          signal: ctx.signal,
+          setUmask: ctx.setUmask,
+          runAs: ctx.runAs,
+          execInterpreterDepth: ctx.execInterpreterDepth,
+        });
+        return code === 0;
+      } catch (e: any) {
+        ctx.stderr.write(`find: ${name}: ${e?.message || e}\n`);
+        return false;
+      }
+    };
+
+    // ── Parser ────────────────────────────────────────────────────────────
+    //
+    // Start paths come first: GNU reads operands until the first token that
+    // begins an expression, so `find a b -type d` walks both a and b.
     const args = [...ctx.args];
-    // First non-flag arg is the start path.
-    const root = args[0] && !args[0].startsWith('-')
-      ? resolvePath(ctx.cwd, args.shift()!)
-      : (ctx.cwd || '/home/user').replace(/^\/+/, '');
+    let pos = 0;
+    const startsExpression = (tok: string): boolean =>
+      tok.startsWith('-') || tok === '(' || tok === ')' || tok === '!' || tok === ',';
 
-    // Parse predicates in order. We support a flat list of AND'd
-    // predicates (real find supports more — sufficient for v1).
-    let namePattern: string | null = null;
-    let typeFilter: string | null = null;
-    let sizeOp: { cmp: '+' | '-' | '='; bytes: number } | null = null;
-    let mtimeOp: { cmp: '+' | '-' | '='; ms: number } | null = null;
-    let newerThanMtime: number | null = null;
-    let emptyFilter = false;
-    let maxDepth = Infinity;
-    let execArgv: string[] | null = null;
-    let printNull = false;
-    let deleteAction = false;
+    const startArgs: string[] = [];
+    while (pos < args.length && !startsExpression(args[pos])) startArgs.push(args[pos++]);
+    if (startArgs.length === 0) startArgs.push('.');
 
-    for (let i = 0; i < args.length; i++) {
-      const a = args[i];
-      if (a === '-name') { namePattern = args[++i]; continue; }
-      if (a === '-type') { typeFilter = args[++i]; continue; }
-      if (a === '-size') {
-        const raw = args[++i] || '';
-        const m = raw.match(/^([+-]?)(\d+)([ckMG]?)$/);
-        if (m) {
-          const cmp = (m[1] === '+' ? '+' : m[1] === '-' ? '-' : '=') as '+' | '-' | '=';
-          const n = parseInt(m[2], 10);
-          const unit = m[3];
-          const bytes = unit === 'c' ? n
-            : unit === 'k' ? n * 1024
-            : unit === 'M' ? n * 1024 * 1024
-            : unit === 'G' ? n * 1024 * 1024 * 1024
-            : n * 512;  // default: 512-byte blocks
-          sizeOp = { cmp, bytes };
-        }
-        continue;
+    const peek = (): string | undefined => args[pos];
+    const next = (): string | undefined => args[pos++];
+    /** The argument a predicate requires, or GNU's missing-argument error. */
+    const value = (pred: string): string => {
+      const v = args[pos++];
+      if (v === undefined) throw new FindUsageError(`missing argument to \`${pred}'`);
+      return v;
+    };
+    const positiveInt = (pred: string): number => {
+      const raw = value(pred);
+      if (!/^\d+$/.test(raw)) {
+        throw new FindUsageError(
+          `Expected a positive decimal integer argument to ${pred}, but got \`${raw}'`,
+        );
       }
-      if (a === '-mtime') {
-        const raw = args[++i] || '';
-        const m = raw.match(/^([+-]?)(\d+)$/);
-        if (m) {
-          const cmp = (m[1] === '+' ? '+' : m[1] === '-' ? '-' : '=') as '+' | '-' | '=';
-          const days = parseInt(m[2], 10);
-          mtimeOp = { cmp, ms: days * 86400 * 1000 };
-        }
-        continue;
-      }
-      if (a === '-newer') {
-        const ref = args[++i];
-        if (ref) {
-          try { newerThanMtime = vfs.stat(resolvePath(ctx.cwd, ref)).mtime; } catch { /* ignore */ }
-        }
-        continue;
-      }
-      if (a === '-empty') { emptyFilter = true; continue; }
-      if (a === '-maxdepth') {
-        const d = parseInt(args[++i] || '', 10);
-        if (Number.isFinite(d) && d >= 0) maxDepth = d;
-        continue;
-      }
-      if (a === '-exec') {
-        // Collect args up to ';'.
-        const collected: string[] = [];
-        i++;
-        while (i < args.length && args[i] !== ';' && args[i] !== '\\;') {
-          collected.push(args[i]);
-          i++;
-        }
-        execArgv = collected;
-        continue;
-      }
-      if (a === '-print0') { printNull = true; continue; }
-      if (a === '-print') { /* default — noop */ continue; }
-      if (a === '-delete') { deleteAction = true; continue; }
-      // Unknown predicate: ignore (real find would error)
-    }
+      return parseInt(raw, 10);
+    };
 
-    const now = Date.now();
-    function matches(fullPath: string, name: string, e: { type: string }): boolean {
-      if (namePattern && !globMatch(namePattern, name)) return false;
-      if (typeFilter) {
-        if (typeFilter === 'f' && e.type !== 'file') return false;
-        if (typeFilter === 'd' && e.type !== 'directory') return false;
-      }
-      // For size/mtime/newer we need a stat. Skip for directories
-      // unless the predicate cares about them.
-      let needsStat = sizeOp || mtimeOp || newerThanMtime !== null || emptyFilter;
-      if (!needsStat) return true;
-      try {
-        const st = vfs.stat(fullPath);
-        if (sizeOp) {
-          const sz = st.size || 0;
-          if (sizeOp.cmp === '+' && !(sz > sizeOp.bytes)) return false;
-          if (sizeOp.cmp === '-' && !(sz < sizeOp.bytes)) return false;
-          if (sizeOp.cmp === '=' && sz !== sizeOp.bytes) return false;
+    const TRUE: FindNode = async () => true;
+
+    /** Size in the unit's own terms: GNU rounds a partial unit UP. */
+    const sizeInUnits = (bytes: number, unit: number): number =>
+      unit === 1 ? bytes : Math.ceil(bytes / unit);
+
+    const statOf = (entry: FindEntry) => {
+      try { return vfs.stat(entry.vfsPath); } catch { return null; }
+    };
+
+    function parsePrimary(): FindNode {
+      const tok = next();
+      if (tok === undefined) throw new FindUsageError('missing expression');
+
+      switch (tok) {
+        // ── Global options: they configure the walk and evaluate true ──
+        case '-maxdepth': state.maxDepth = positiveInt('-maxdepth'); return TRUE;
+        case '-mindepth': state.minDepth = positiveInt('-mindepth'); return TRUE;
+        case '-depth': state.depthFirst = true; return TRUE;
+
+        // ── Tests ──
+        case '-name': {
+          const pattern = value('-name');
+          return async (e) => globMatch(pattern, e.name);
         }
-        if (mtimeOp) {
-          const ageMs = now - (st.mtime || 0);
-          // bash find -mtime n: file modified n*24h ago.
-          //   +n → strictly more than n*24h ago (older)
-          //   -n → less than n*24h ago (newer)
-          //    n → between (n)*24h and (n+1)*24h ago
+        case '-iname': {
+          const pattern = value('-iname').toLowerCase();
+          return async (e) => globMatch(pattern, e.name.toLowerCase());
+        }
+        case '-path': {
+          const pattern = value('-path');
+          return async (e) => globMatch(pattern, e.display);
+        }
+        case '-type': {
+          const letter = value('-type');
+          if (letter !== 'f' && letter !== 'd' && letter !== 'l') {
+            throw new FindUsageError(`Unknown argument to -type: ${letter}`);
+          }
+          const wanted = letter === 'f' ? 'file' : letter === 'd' ? 'directory' : 'symlink';
+          return async (e) => e.type === wanted;
+        }
+        case '-size': {
+          const raw = value('-size');
+          const m = raw.match(/^([+-]?)(\d+)([ckMG]?)$/);
+          if (!m) throw new FindUsageError(`invalid -size type \`${raw.slice(-1)}'`);
+          const cmp = m[1];
+          const count = parseInt(m[2], 10);
+          const unit = m[3] === 'c' ? 1
+            : m[3] === 'k' ? 1024
+            : m[3] === 'M' ? 1024 * 1024
+            : m[3] === 'G' ? 1024 * 1024 * 1024
+            : 512;
+          return async (e) => {
+            const st = statOf(e);
+            if (!st) return false;
+            const units = sizeInUnits(st.size || 0, unit);
+            return cmp === '+' ? units > count : cmp === '-' ? units < count : units === count;
+          };
+        }
+        case '-mtime': {
+          const raw = value('-mtime');
+          const m = raw.match(/^([+-]?)(\d+)$/);
+          if (!m) throw new FindUsageError(`invalid argument \`${raw}' to \`-mtime'`);
+          const cmp = m[1];
           const dayMs = 86400 * 1000;
-          if (mtimeOp.cmp === '+' && !(ageMs > mtimeOp.ms + dayMs)) return false;
-          if (mtimeOp.cmp === '-' && !(ageMs < mtimeOp.ms)) return false;
-          if (mtimeOp.cmp === '=' && !(ageMs >= mtimeOp.ms && ageMs < mtimeOp.ms + dayMs)) return false;
+          const threshold = parseInt(m[2], 10) * dayMs;
+          const now = Date.now();
+          return async (e) => {
+            const st = statOf(e);
+            if (!st) return false;
+            const age = now - (st.mtime || 0);
+            return cmp === '+' ? age > threshold + dayMs
+              : cmp === '-' ? age < threshold
+              : age >= threshold && age < threshold + dayMs;
+          };
         }
-        if (newerThanMtime !== null && !((st.mtime || 0) > newerThanMtime)) return false;
-        if (emptyFilter && (st.size || 0) > 0) return false;
-        return true;
-      } catch { return false; }
-    }
-
-    function emit(fullPath: string): void {
-      const slashPath = '/' + fullPath;
-      if (execArgv) {
-        // Substitute {} with the path and invoke. We do NOT have
-        // cross-registry execution here in a sync context; POSIX find's
-        // -exec usually runs the cmd via the registry. The R2-3
-        // xargs fix used registry.resolve; we can do same. For now
-        // emit a marker that the test harness can recognize OR
-        // attempt limited shell-builtin exec via the registry.
-        // Conservative: write the substituted command line. Real
-        // execution via registry would require ctx.registry which
-        // mkFind doesn't take.
-        const cmdLine = execArgv.map(a => a.split('{}').join(slashPath)).join(' ');
-        ctx.stdout.write(cmdLine + '\n');
-      } else if (deleteAction) {
-        try {
-          const st = vfs.stat(fullPath);
-          if (st.type === 'directory') vfs.rmdir(fullPath);
-          else vfs.unlink(fullPath);
-        } catch { /* ignore */ }
-      } else {
-        ctx.stdout.write(slashPath + (printNull ? '\0' : '\n'));
-      }
-    }
-
-    function walk(path: string, depth: number): void {
-      try {
-        // Emit the current path itself if it matches (find prints the
-        // root directory line too when type filter doesn't exclude).
-        if (depth === 0) {
+        case '-newer': {
+          const ref = value('-newer');
+          let refMtime: number;
           try {
-            const st = vfs.stat(path);
-            const synthEntry = { type: st.type };
-            const baseName = path.split('/').pop() || path;
-            if (matches(path, baseName, synthEntry)) emit(path);
-          } catch { /* root may not exist; bail */ }
+            refMtime = vfs.stat(resolvePath(ctx.cwd, ref)).mtime;
+          } catch {
+            throw new FindUsageError(`'${ref}': No such file or directory`);
+          }
+          return async (e) => {
+            const st = statOf(e);
+            return !!st && (st.mtime || 0) > refMtime;
+          };
         }
-        if (depth >= maxDepth) return;
-        const entries = vfs.readdir(path);
-        for (const e of entries) {
-          const fullPath = path + '/' + e.name;
-          if (matches(fullPath, e.name, e)) emit(fullPath);
-          if (e.type === 'directory') walk(fullPath, depth + 1);
+        case '-empty':
+          return async (e) => {
+            if (e.type === 'directory') {
+              try { return vfs.readdir(e.vfsPath).length === 0; } catch { return false; }
+            }
+            const st = statOf(e);
+            return !!st && (st.size || 0) === 0;
+          };
+
+        // ── Actions ──
+        case '-print':
+          hasAction = true;
+          return async (e) => { emit(e, '\n'); return true; };
+        case '-print0':
+          hasAction = true;
+          return async (e) => { emit(e, '\0'); return true; };
+        case '-delete':
+          hasAction = true;
+          // GNU's -delete implies -depth: a directory is removable only once
+          // its children are gone.
+          state.depthFirst = true;
+          return async (e) => {
+            try {
+              if (e.type === 'directory') vfs.rmdir(e.vfsPath);
+              else vfs.unlink(e.vfsPath);
+              return true;
+            } catch (err: any) {
+              ctx.stderr.write(`find: cannot delete '${e.display}': ${err?.message || err}\n`);
+              return false;
+            }
+          };
+        case '-quit':
+          hasAction = true;
+          return async (_e, st) => { st.quit = true; return true; };
+        case '-prune':
+          // NOT an action: GNU still adds the implicit -print alongside it,
+          // which is what makes `-prune -o -print` print everything else.
+          return async (e, st) => {
+            if (e.type === 'directory') st.prune = true;
+            return true;
+          };
+        case '-exec': {
+          hasAction = true;
+          const argv: string[] = [];
+          let terminator: ';' | '+' | null = null;
+          while (pos < args.length) {
+            const a = next()!;
+            if (a === ';' || a === '\;') { terminator = ';'; break; }
+            // `+` terminates only directly after the {} placeholder.
+            if (a === '+' && argv[argv.length - 1] === '{}') { terminator = '+'; break; }
+            argv.push(a);
+          }
+          if (terminator === null) {
+            throw new FindUsageError("missing argument to `-exec'");
+          }
+          if (terminator === ';') {
+            return async (e) => runExec(argv.map((a) => a.split('{}').join(e.display)));
+          }
+          // `-exec … {} +`: every match joins one invocation, flushed after
+          // the walk. The trailing {} is where the paths go.
+          const batch: FindExecBatch = { argv: argv.slice(0, -1), pending: [] };
+          execBatches.push(batch);
+          return async (e) => { batch.pending.push(e.display); return true; };
         }
-      } catch { /* unreadable dir */ }
+
+        // ── Grouping ──
+        case '(': {
+          const inner = parseExpr();
+          if (next() !== ')') throw new FindUsageError("expected expression after `('");
+          return inner;
+        }
+      }
+      throw new FindUsageError(`unknown predicate \`${tok}'`);
     }
-    walk(root, 0);
-    return 0;
+
+    function parseUnary(): FindNode {
+      const tok = peek();
+      if (tok === '!' || tok === '-not') {
+        pos++;
+        const operand = parseUnary();
+        return async (e, st) => !(await operand(e, st));
+      }
+      return parsePrimary();
+    }
+
+    function parseAnd(): FindNode {
+      let left = parseUnary();
+      while (pos < args.length) {
+        const tok = peek()!;
+        if (tok === ')' || tok === '-o' || tok === '-or') break;
+        if (tok === '-a' || tok === '-and') pos++;
+        const right = parseUnary();
+        const l = left;
+        left = async (e, st) => (await l(e, st)) && (await right(e, st));
+      }
+      return left;
+    }
+
+    function parseExpr(): FindNode {
+      let left = parseAnd();
+      while (peek() === '-o' || peek() === '-or') {
+        pos++;
+        const right = parseAnd();
+        const l = left;
+        left = async (e, st) => (await l(e, st)) || (await right(e, st));
+      }
+      return left;
+    }
+
+    let predicate: FindNode;
+    try {
+      predicate = pos < args.length ? parseExpr() : TRUE;
+      if (pos < args.length) {
+        throw new FindUsageError(`paths must precede expression: \`${args[pos]}'`);
+      }
+    } catch (e: any) {
+      if (e instanceof FindUsageError) {
+        ctx.stderr.write(`find: ${e.message}\n`);
+        return 1;
+      }
+      throw e;
+    }
+
+    // With no action anywhere in the expression the whole of it is printed;
+    // -prune deliberately does not count, so `-prune -o -print` still prints.
+    const test = predicate;
+    if (!hasAction) {
+      predicate = async (e, st) => {
+        const matched = await test(e, st);
+        if (matched) emit(e, '\n');
+        return matched;
+      };
+    }
+
+    // ── Walk ──────────────────────────────────────────────────────────────
+    let status = 0;
+
+    const visit = async (entry: FindEntry): Promise<void> => {
+      state.prune = false;
+      if (entry.depth >= state.minDepth) await predicate(entry, state);
+    };
+
+    const walk = async (entry: FindEntry): Promise<void> => {
+      if (state.quit) return;
+      // A pre-order visit must run before the descent it may prune.
+      if (!state.depthFirst) {
+        await visit(entry);
+        if (state.quit || state.prune) return;
+      }
+      if (entry.type === 'directory' && entry.depth < state.maxDepth) {
+        let entries: { name: string; type: string }[] = [];
+        try { entries = vfs.readdir(entry.vfsPath); } catch { entries = []; }
+        for (const child of entries) {
+          if (state.quit) break;
+          await walk({
+            vfsPath: entry.vfsPath + '/' + child.name,
+            display: entry.display + '/' + child.name,
+            name: child.name,
+            type: child.type,
+            depth: entry.depth + 1,
+          });
+        }
+      }
+      // Post-order: the visit that -depth and -delete need, after the
+      // children it must outlive.
+      if (state.depthFirst && !state.quit) await visit(entry);
+    };
+
+    for (const startArg of startArgs) {
+      if (state.quit) break;
+      // `find dir/` prints `dir/empty.txt`, so the separator is not doubled.
+      const display = startArg.length > 1 ? startArg.replace(/\/+$/, '') : startArg;
+      const vfsPath = resolvePath(ctx.cwd, startArg);
+      let type: string;
+      try {
+        type = vfs.stat(vfsPath).type;
+      } catch {
+        ctx.stderr.write(`find: '${startArg}': No such file or directory\n`);
+        status = 1;
+        continue;
+      }
+      await walk({
+        vfsPath,
+        display,
+        name: display.split('/').pop() || display,
+        type,
+        depth: 0,
+      });
+    }
+
+    for (const batch of execBatches) {
+      if (batch.pending.length > 0) await runExec([...batch.argv, ...batch.pending]);
+    }
+    return status;
   };
 }
 
@@ -3937,7 +4177,7 @@ export function registerUnixCommands(
   registry.register('date', wrap(mkDate()));
   registry.register('uptime', wrap(mkUptime()));
   registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));
-  registry.register('find', wrap(withInvocationVfs(sqliteVfs, mkFind)));
+  registry.register('find', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkFind(vfs, registry))));
   registry.register('grep', wrap(withInvocationVfs(sqliteVfs, mkGrep)));
   // SHELL-R6-B2: head uses streaming wrap so a pipe reader passes
   // through (head terminates after N lines, triggering the abort
