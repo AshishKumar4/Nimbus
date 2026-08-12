@@ -172,6 +172,7 @@ function counters(rawVfs) {
 {
   const { harness, rawVfs, vfs } = openVfs();
   const paths = seedTree(vfs, 'tree', 24, 25); // 24 × (2 dirs + 25 files) + root
+  const maintenanceBefore = rawVfs.getStats().sql.phases.maintenanceMs.count;
   const before = harness.transactionCount;
   const removed = vfs.removeRecursive('tree');
   const transactions = harness.transactionCount - before;
@@ -186,6 +187,15 @@ function counters(rawVfs) {
   assert.ok(stats.sql.transactions.boundedPeak.blobBytes <= MAX_TX_BLOB_BYTES);
   assert.ok(stats.sql.transactions.boundedPeak.logicalRows <= MAX_TX_LOGICAL_ROWS);
   assert.ok(stats.sql.transactions.boundedPeak.sqlExecs <= MAX_TX_SQL_EXECS);
+
+  // One maintenance pass for the whole removal, not one per group. The orphan
+  // scan reads the chunk table, so charging it per transaction put a scan of
+  // every chunk in the filesystem inside each of the removal's groups.
+  assert.equal(
+    stats.sql.phases.maintenanceMs.count - maintenanceBefore,
+    1,
+    'a removal owes one maintenance pass, however many transactions it took',
+  );
 
   const reconstructed = reopenVfs(harness);
   assert.equal(reconstructed.exists('tree'), false);
