@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
@@ -52,7 +53,7 @@ const env = {
 
 const manager = new FacetManager(
   { id: { toString: () => 'prefetch-cache-bound' }, waitUntil() {} },
-  env, new SessionProcessSupervisor(), new PortRegistry(), {},
+  env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -102,7 +103,7 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
 {
   const oversized = new FacetManager(
     { id: { toString: () => 'prefetch-cache-oversized' }, waitUntil() {} },
-    env, new SessionProcessSupervisor(), new PortRegistry(), {},
+    env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
   );
   const oversizedHarness = createSqliteVfsTestHarness();
   const oversizedVfs = new SqliteVFS(oversizedHarness.sql, oversizedHarness.ctx);
@@ -131,7 +132,7 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
 {
   const stale = new FacetManager(
     { id: { toString: () => 'prefetch-cache-stale' }, waitUntil() {} },
-    env, new SessionProcessSupervisor(), new PortRegistry(), {},
+    env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
   );
   const staleHarness = createSqliteVfsTestHarness();
   const staleVfs = new SqliteVFS(staleHarness.sql, staleHarness.ctx);

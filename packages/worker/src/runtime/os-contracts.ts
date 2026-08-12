@@ -309,6 +309,24 @@ export interface RuntimeTtyOptions {
   raw?: boolean;
 }
 
+/**
+ * Where a registered port's traffic goes: one process, reached by HTTP.
+ *
+ * The whole of what a listening process exposes, deliberately. A resident
+ * process never receives a WebSocket — every inbound socket Nimbus serves
+ * terminates on the session and reaches the process, if at all, as events on a
+ * poll — so a target that could return a 101 would describe a case no runner
+ * produces.
+ *
+ * Lives here rather than beside the registry because both ends need it and
+ * neither owns it: the port registry stores these, and the process fabric
+ * hands one back for every resident process it starts. Defining it in either
+ * would make the other import a peer's internals to name its own contract.
+ */
+export interface RouteableFacetTarget {
+  handleHttpRequest(request: Request): Promise<Response>;
+}
+
 export interface RuntimePortBridge {
   register(port: number, processId: number, handler: (request: Request) => Promise<Response>): Promise<void>;
   unregister(port: number, processId?: number): Promise<void>;

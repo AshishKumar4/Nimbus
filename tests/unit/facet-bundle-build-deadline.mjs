@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
@@ -27,7 +28,7 @@ const world = createFacetWorld(async () => ({
   async handleHttpRequest() { return new Response('{}'); },
 }));
 const ctx = createFacetCtx(world, 'bundle-deadline-session');
-const manager = new FacetManager(ctx, { LOADER: world.loader }, new SessionProcessSupervisor(), new PortRegistry(), {});
+const manager = new FacetManager(ctx, { LOADER: world.loader }, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
 manager.setVfs(vfs);
 
 // ── A build that never settles must be REPORTED, not waited on forever ─────

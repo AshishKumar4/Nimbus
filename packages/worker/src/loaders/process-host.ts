@@ -64,18 +64,22 @@ import { disposeRpcResource } from '../_shared/rpc-dispose.js';
 import { isTransientDoReset } from '../observability/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
 import {
-  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
-  openResidentFacet,
-  residentFacetName,
   type HostedProcess,
+  type OneShotParams,
   type ProcessHost,
   type ProcessHostParams,
   type ProcessImageDelivery,
   type ResidentBootSpec,
   type ResidentDiskReader,
-  type ResidentFacetEnv,
   type ResidentSupervisorProps,
 } from './process-fabric.js';
+import {
+  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
+  openResidentFacet,
+  residentFacetName,
+  runOneShotWorker,
+  type ResidentFacetEnv,
+} from './workerd-facet-host.js';
 import { BindingError } from './vendor/errors.js';
 
 /** The substrates this deployment can be configured for. */
@@ -138,6 +142,15 @@ class FacetProcessHost implements ProcessHost {
   ) {
     this.env = (env ?? {}) as ResidentFacetEnv;
     this.coordDoId = ctx.id.toString();
+  }
+
+  runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
+    return runOneShotWorker(
+      this.env,
+      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
+      params,
+      consume,
+    );
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {
@@ -296,13 +309,32 @@ class PeerProcessHost implements ProcessHost {
   };
 
   private readonly ns: PeerNamespace;
+  private readonly env: ResidentFacetEnv;
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
 
   constructor(private readonly ctx: DurableObjectState, env: unknown) {
     this.ns = peerNamespace(env);
+    this.env = (env ?? {}) as ResidentFacetEnv;
     this.coordDoId = ctx.id.toString();
+  }
+
+  /**
+   * Not placed on a sibling, and that is not a gap in this substrate.
+   * `peer` exists to buy a resident process independent CPU; a program that
+   * ends with the call it was started by has no residency to place, and its
+   * map is fully inline — so a hop would meet the RPC ceiling that by-path
+   * boot specs exist to avoid while buying nothing. It runs as a dynamic
+   * worker of the coordinator here exactly as it does on `facet`.
+   */
+  runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
+    return runOneShotWorker(
+      this.env,
+      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
+      params,
+      consume,
+    );
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {

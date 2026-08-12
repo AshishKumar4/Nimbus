@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { NODE_SHIMS_ENTRY } from '../../packages/worker/src/node-shims-artifact.generated.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
@@ -65,6 +66,7 @@ const manager = new FacetManager(
   env,
   processes,
   new PortRegistry(),
+  processHostFor,
 );
 manager.setVfs(rawVfs);
 

@@ -20,10 +20,11 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import { residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { residentFacetName } from '../../packages/worker/src/loaders/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -62,7 +63,7 @@ const env = {
 const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();
 const portRegistry = new PortRegistry();
-const fm = new FacetManager(ctx, env, processes, portRegistry, {});
+const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
 // A resident process materializes its generated module map in the session's
 // image store and boots from the path, so the manager needs the disk every
 // real session has.

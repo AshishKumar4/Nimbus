@@ -20,10 +20,11 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import { residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { residentFacetName } from '../../packages/worker/src/loaders/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
 setCtxExports({ SupervisorRPC: (_opts) => ({ __supervisor: true }) });
@@ -49,7 +50,7 @@ const env = {
 const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();
 const portRegistry = new PortRegistry();
-const fm = new FacetManager(ctx, env, processes, portRegistry, {});
+const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
 
 // Fabricate the staged facet (bypass the VFS snapshot that _stageOpencodeFacet
 // does — this test targets the routeing decision).

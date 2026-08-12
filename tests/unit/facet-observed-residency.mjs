@@ -31,6 +31,7 @@ import {
   addObservedReads,
   buildPrefetchBundle,
 } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
@@ -171,7 +172,7 @@ const env = {
 
 const manager = new FacetManager(
   { id: { toString: () => 'observed-residency' }, waitUntil() {} },
-  env, new SessionProcessSupervisor(), new PortRegistry(), {},
+  env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
 manager.setVfs(rawVfs);
 

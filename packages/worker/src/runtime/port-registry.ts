@@ -28,10 +28,7 @@
  */
 
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
-
-export interface RouteableFacetTarget {
-  handleHttpRequest(request: Request): Promise<Response>;
-}
+import type { RouteableFacetTarget } from './os-contracts.js';
 
 export interface PortEntry {
   port: number;
