@@ -47,13 +47,17 @@ Options:
         return 64;
     }
     const parsed = parseFlags(args.slice(1));
+    if (!parsed.ok) {
+        process.stderr.write(parsed.error);
+        return 64;
+    }
     const target = rawProjectName === '.'
         ? process.cwd()
         : resolve(process.cwd(), rawProjectName);
     const projectName = basename(target);
-    const wranglerName = parsed['--name'] || projectName;
-    const force = '--force' in parsed;
-    const template = parsed['--template'] || 'worker-only';
+    const wranglerName = parsed.flags['--name'] || projectName;
+    const force = '--force' in parsed.flags;
+    const template = parsed.flags['--template'] || 'worker-only';
     if (template !== 'worker-only') {
         process.stderr.write(`create-nimbus-app: unknown template "${template}". Only "worker-only" ships in v0.1.\n`);
         return 64;
@@ -384,19 +388,47 @@ export default createNimbusHandler({
 Docs: https://github.com/AshishKumar4/Nimbus
 `;
 }
+/**
+ * The three flags this command reads, and whether each takes a value.
+ *
+ * Declaring them is what lets an unknown one be refused. The previous parser
+ * accepted any `--x` into a map only these three keys were ever read from, so
+ * `--templete worker-only` scaffolded the default template and said nothing —
+ * a wrong project with no error, which is worse here than in a shell command
+ * because the mistake is what you keep.
+ */
+const SCAFFOLD_FLAGS = {
+    '--name': 'value',
+    '--template': 'value',
+    '--force': 'boolean',
+};
 function parseFlags(args) {
-    const out = {};
+    const flags = {};
+    const fail = (message) => ({
+        ok: false,
+        error: `create-nimbus-app: ${message}\nUsage: create-nimbus-app my-app [--name my-worker] [--template worker-only] [--force]\n`,
+    });
     for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (!a.startsWith('--'))
+        const arg = args[i];
+        const kind = SCAFFOLD_FLAGS[arg];
+        if (!kind) {
+            // A single-dash flag was skipped outright by the old `startsWith('--')`
+            // test, so `-f` neither forced nor complained.
+            if (arg.startsWith('-'))
+                return fail(`unknown option "${arg}"`);
+            return fail(`unexpected argument "${arg}"`);
+        }
+        if (kind === 'boolean') {
+            flags[arg] = '';
             continue;
-        if (args[i + 1] && !args[i + 1].startsWith('--')) {
-            out[a] = args[i + 1];
-            i++;
         }
-        else {
-            out[a] = '';
+        const value = args[++i];
+        // `--name` with nothing after it used to store '' and fall back to the
+        // project name, which reads as success.
+        if (value === undefined || value.startsWith('-')) {
+            return fail(`option "${arg}" requires a value`);
         }
+        flags[arg] = value;
     }
-    return out;
+    return { ok: true, flags };
 }
