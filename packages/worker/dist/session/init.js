@@ -49,6 +49,7 @@ import { registerShellEntrypointCommands } from '../shell/shell-entrypoints.js';
 import { makeChshCommand } from '../substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { parseNpmInstallInvocation } from '../npm/install-args.js';
+import { npmLogEnabled } from '../npm/npm-log.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import { registerGitCommands } from '../git/commands.js';
 import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, listInstalledRuntimes, rehydrateInstalledRuntimes, registerRunnerFactory, } from '../runtime/package-manager.js';
@@ -2151,10 +2152,19 @@ export function initSession(self, ws) {
             self.ensureNpmInstaller((msg) => {
                 ctx.stdout.write('[npm] ' + msg + '\n');
             });
+            // `--loglevel` selects npm's own log protocol on stderr, where npm
+            // writes it. Tooling that drives npm parses those lines rather than
+            // our prose — pi's installer advances its progress label off them.
+            const npmLogLevel = installInvocation.loglevel;
+            const npmLog = npmLogLevel === null ? undefined : ((level, line) => {
+                if (npmLogEnabled(npmLogLevel, level))
+                    ctx.stderr.write(line + '\n');
+            });
             try {
                 const result = await self.npmInstaller.install(installCwd, {
                     packages: explicitPkgs.length > 0 ? explicitPkgs : undefined,
                     pid: ctx.pid,
+                    npmLog,
                 });
                 if (result.failed?.length > 0) {
                     ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');

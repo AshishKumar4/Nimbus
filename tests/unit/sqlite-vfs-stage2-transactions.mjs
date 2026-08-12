@@ -199,7 +199,12 @@ function assertBounded(stats) {
     inodes: 1,
     chunks: entries.length,
   });
-  assert.ok(harness.transactionCount - firstTransaction + 1 >= 4);
+  // The blob bound alone forces one commit per megabyte of payload; the
+  // publication rides the last of them rather than adding its own.
+  assert.ok(
+    harness.transactionCount - firstTransaction + 1
+      >= Math.ceil(data.length / MAX_TX_BLOB_BYTES),
+  );
   assert.deepEqual(vfs.readFile('stream.bin'), data);
   assert.equal(rawVfs.getStats().sql.decoderRetainedBytes.current, 0);
   assert.equal(rawVfs.getStats().sql.phases.decodeDrainWaitMs.count, 1);
