@@ -26,7 +26,7 @@ const bundle = {
   'usr/local/lib/node_modules/private.txt': { error: 'EACCES' },
 };
 
-const source = buildFacetVfsBundleSource(bundle);
+const source = await buildFacetVfsBundleSource(bundle);
 assert.ok(
   Object.keys(source.modules).length >= 2,
   'an oversized required bundle is split across Worker Loader side modules',
@@ -43,7 +43,7 @@ assert.deepEqual(
   'side modules reconstruct every text, binary, denial, and transitive leaf cell exactly',
 );
 
-const inline = buildFacetVfsBundleSource({
+const inline = await buildFacetVfsBundleSource({
   'usr/local/lib/node_modules/shebang-command/index.js': 'module.exports = true;',
 });
 assert.deepEqual(inline.modules, {}, 'small bundles keep the existing inline path');
@@ -59,7 +59,7 @@ assert.deepEqual(evaluateBundleSource(inline), {
 // multi-byte content a char-count would get wrong by 2/3.
 const CELL = 'src/multibyte.js';
 const overheadBytes = new TextEncoder()
-  .encode(buildFacetVfsBundleSource({ [CELL]: '' }).expression).length;
+  .encode((await buildFacetVfsBundleSource({ [CELL]: '' })).expression).length;
 
 for (const [label, char, bytesPerChar] of [
   ['three-byte', '€', 3],   // €   — BMP, 3 UTF-8 bytes, 1 UTF-16 unit
@@ -70,7 +70,7 @@ for (const [label, char, bytesPerChar] of [
   const justUnder = char.repeat(
     Math.floor((BUNDLE_MAX_ENCODED_BYTES - 8 - overheadBytes) / bytesPerChar),
   );
-  const fits = buildFacetVfsBundleSource({ [CELL]: justUnder });
+  const fits = await buildFacetVfsBundleSource({ [CELL]: justUnder });
   assert.deepEqual(
     fits.modules, {},
     `a ${label} bundle that truly fits the ceiling is not split (the counter does not over-count)`,
@@ -82,8 +82,41 @@ for (const [label, char, bytesPerChar] of [
 
   const justOver = char.repeat(justUnder.length / char.length + 1_000);
   assert.ok(
-    Object.keys(buildFacetVfsBundleSource({ [CELL]: justOver }).modules).length >= 1,
+    Object.keys((await buildFacetVfsBundleSource({ [CELL]: justOver })).modules).length >= 1,
     `a ${label} bundle past the ceiling is split across side modules`,
+  );
+}
+
+// A binary cell is sized from its byte count alone — base64 is ASCII of a
+// length fixed by the source, so the counter never encodes one to measure it.
+// That shortcut is only sound if it lands on the same byte as the encoder, so
+// pin it at the ceiling the way the text cases above are pinned.
+{
+  const BIN = 'src/data.bin';
+  const binOverhead = new TextEncoder()
+    .encode((await buildFacetVfsBundleSource({ [BIN]: new Uint8Array(0) })).expression).length;
+  // Base64 spends 4 characters per 3 bytes, so back the payload out of the
+  // room left under the ceiling and leave the same eight bytes of slack.
+  const fittingBytes = Math.floor((BUNDLE_MAX_ENCODED_BYTES - 8 - binOverhead) / 4) * 3;
+  const justUnder = new Uint8Array(fittingBytes).fill(0xff);
+  const fits = await buildFacetVfsBundleSource({ [BIN]: justUnder });
+  assert.deepEqual(
+    fits.modules, {},
+    'a binary bundle that truly fits the ceiling is not split (the counter does not over-count)',
+  );
+  assert.ok(
+    new TextEncoder().encode(fits.expression).length <= BUNDLE_MAX_ENCODED_BYTES,
+    'an inline binary bundle really is within the ceiling (the counter does not under-count)',
+  );
+  assert.deepEqual(
+    evaluateBundleSource(fits), { [BIN]: justUnder },
+    'a ceiling-sized binary cell still revives byte-for-byte',
+  );
+
+  const justOver = new Uint8Array(fittingBytes + 3_000).fill(0xff);
+  assert.ok(
+    Object.keys((await buildFacetVfsBundleSource({ [BIN]: justOver })).modules).length >= 1,
+    'a binary bundle past the ceiling is split across side modules',
   );
 }
 
