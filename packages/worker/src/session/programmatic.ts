@@ -678,7 +678,7 @@ export async function rpcDeleteFile(
       vfs.rmdir(p);
       return;
     }
-    rmrf(vfs, p);
+    vfs.removeRecursive(p);
     return;
   }
   vfs.unlink(p);
@@ -872,15 +872,6 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function rmrf(vfs: CredentialedVfs, path: string): void {
-  for (const entry of vfs.readdir(path)) {
-    const child = `${path}/${entry.name}`;
-    if (entry.type === 'directory') rmrf(vfs, child);
-    else vfs.unlink(child);
-  }
-  vfs.rmdir(path);
 }
 
 function serializeProcess(p: ProcessEntry | undefined): SerializedProcess | null {
