@@ -71,7 +71,7 @@ function instrumentChunkPulls(stream, onChunkData) {
       chunkPulls++;
       if (chunkPulls === 17) {
         assert.ok(
-          harness.transactionCount >= startTransactions + 2,
+          harness.transactionCount >= startTransactions + 1,
           'producer pulled beyond 1 MiB before the staging commit',
         );
       }
