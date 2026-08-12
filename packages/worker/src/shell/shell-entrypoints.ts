@@ -51,6 +51,7 @@ type RegistryLike = {
 };
 
 type ParsedProgram =
+  | { kind: 'usage'; topic: 'help' | 'version' }
   | { kind: 'command'; body: string; argv0: string; args: string[]; options: ShellInvocationOptions }
   | { kind: 'script'; body: string; path: string; argv0: string; args: string[]; options: ShellInvocationOptions }
   | { kind: 'stdin'; body: string; argv0: string; args: string[]; options: ShellInvocationOptions };
@@ -77,29 +78,30 @@ export function registerShellEntrypointCommands(
   }
 }
 
+function usageText(shellName: ShellName, topic: 'help' | 'version'): string {
+  if (topic === 'version') {
+    return shellName === 'bash'
+      ? 'Nimbus bash-compatible shell engine\n'
+      : 'Nimbus POSIX sh-compatible shell engine\n';
+  }
+  return `usage: ${shellName} [-c command] [script]\n`
+    + 'Executes commands through the Nimbus shell engine with VFS-backed stdin and scripts.\n';
+}
+
 function makeShellEntrypoint(
   shellName: ShellName,
   shell: ShellEntrypointExecutor,
   vfs: CredentialedVfs,
 ): (ctx: ShellCommandContext) => Promise<number> {
   return async (ctx) => {
-    const argv = normalizeArgs(ctx.args);
-    if (argv.includes('--version')) {
-      ctx.stdout.write(shellName === 'bash'
-        ? 'Nimbus bash-compatible shell engine\n'
-        : 'Nimbus POSIX sh-compatible shell engine\n');
-      return 0;
-    }
-    if (argv.includes('--help')) {
-      ctx.stdout.write(`usage: ${shellName} [-c command] [script]\n`);
-      ctx.stdout.write('Executes commands through the Nimbus shell engine with VFS-backed stdin and scripts.\n');
-      return 0;
-    }
-
     const program = await parseShellProgram(shellName, ctx, ctx.vfs);
     if ('error' in program) {
       if (program.error) ctx.stderr.write(program.error + '\n');
       return program.exitCode;
+    }
+    if (program.kind === 'usage') {
+      ctx.stdout.write(usageText(shellName, program.topic));
+      return 0;
     }
 
     let forwardedStdout = '';
@@ -176,6 +178,9 @@ async function parseShellProgram(
     return { error: parsed.error, exitCode: parsed.exitCode };
   }
 
+  if (parsed.invocation.kind === 'usage') {
+    return { kind: 'usage', topic: parsed.invocation.topic };
+  }
   if (parsed.invocation.kind === 'command') {
     const { argv0, args } = commandPositionals(shellName, parsed.invocation.args);
     return {

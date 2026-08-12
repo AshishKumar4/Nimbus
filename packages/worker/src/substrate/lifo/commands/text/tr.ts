@@ -1,4 +1,12 @@
 import type { Command } from '../types.js';
+import { parseArgs } from '../../utils/args.js';
+
+const spec = {
+  delete: { type: 'boolean' as const, short: 'd' },
+  squeeze: { type: 'boolean' as const, short: 's' },
+  complement: { type: 'boolean' as const, short: 'c' },
+  truncate: { type: 'boolean' as const, short: 't' },
+};
 
 function expandRange(set: string): string {
   let result = '';
@@ -20,19 +28,14 @@ function expandRange(set: string): string {
 }
 
 const command: Command = async (ctx) => {
-  let deleteMode = false;
-  let squeezeMode = false;
-  const sets: string[] = [];
-
-  for (const arg of ctx.args) {
-    if (arg === '-d') {
-      deleteMode = true;
-    } else if (arg === '-s') {
-      squeezeMode = true;
-    } else {
-      sets.push(arg);
-    }
+  const { flags, positional, unknown } = parseArgs(ctx.args, spec);
+  if (unknown.length > 0) {
+    ctx.stderr.write(`tr: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+    return 1;
   }
+  const deleteMode = flags.delete === true;
+  const squeezeMode = flags.squeeze === true;
+  const sets = positional;
 
   if (sets.length === 0) {
     ctx.stderr.write('tr: missing operand\n');
@@ -50,10 +53,22 @@ const command: Command = async (ctx) => {
   const set1 = expandRange(sets[0]);
 
   if (deleteMode) {
-    // Delete characters in set1
     let result = '';
     for (const ch of text) {
       if (!set1.includes(ch)) result += ch;
+    }
+    // `tr -ds SET1 SET2` deletes SET1 and then squeezes SET2, which is why
+    // the two sets are read separately rather than one being ignored.
+    if (squeezeMode && sets.length > 1) {
+      const squeezeSet = expandRange(sets[1]);
+      let squeezed = '';
+      let lastCh = '';
+      for (const ch of result) {
+        if (squeezeSet.includes(ch) && ch === lastCh) continue;
+        squeezed += ch;
+        lastCh = ch;
+      }
+      result = squeezed;
     }
     ctx.stdout.write(result);
     return 0;

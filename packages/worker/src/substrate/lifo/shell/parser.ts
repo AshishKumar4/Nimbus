@@ -1,6 +1,8 @@
+import { lex } from './lexer.js';
 import {
   TokenKind,
   type Token,
+  type AssignmentNode,
   type ScriptNode,
   type ListNode,
   type PipelineNode,
@@ -505,35 +507,10 @@ class Parser {
 
         // Check for VAR=value assignment (only before any regular words)
         if (words.length === 0) {
-          const eqIdx = token.value.indexOf('=');
-          if (eqIdx > 0 && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(token.value.slice(0, eqIdx))) {
+          const assignment = parseAssignment(token);
+          if (assignment !== null) {
             this.advance();
-            const name = token.value.slice(0, eqIdx);
-            const valText = token.value.slice(eqIdx + 1);
-            // Build value parts from the assignment
-            const valueParts: WordPart[] = [];
-            if (token.parts) {
-              // Reconstruct parts after the =
-              let consumed = 0;
-              for (const part of token.parts) {
-                const partEnd = consumed + part.text.length;
-                if (partEnd <= eqIdx + 1) {
-                  consumed = partEnd;
-                  continue;
-                }
-                if (consumed < eqIdx + 1) {
-                  // Part spans the =
-                  valueParts.push({ ...part, text: part.text.slice(eqIdx + 1 - consumed) });
-                } else {
-                  valueParts.push(part);
-                }
-                consumed = partEnd;
-              }
-            }
-            if (valueParts.length === 0) {
-              valueParts.push({ text: valText, quoted: 'none' });
-            }
-            assignments.push({ name, value: valueParts });
+            assignments.push(assignment);
             continue;
           }
         }
@@ -676,4 +653,59 @@ class Parser {
       || kind === TokenKind.RedirectErrAppend
       || kind === TokenKind.RedirectAll;
   }
+}
+
+/**
+ * `NAME=value`, `NAME+=value`, `NAME[expr]=value` and `NAME=(word …)`.
+ *
+ * The lexer keeps a parenthesised list attached to its assignment, so an array
+ * assignment arrives as one word and is recognised here by its shape. Returns
+ * null for anything that is an ordinary word rather than an assignment.
+ */
+function parseAssignment(token: Token): AssignmentNode | null {
+  const head = /^([a-zA-Z_][a-zA-Z0-9_]*)(\[[^\]]*\])?(\+)?=/.exec(token.value);
+  if (head === null) return null;
+
+  const [matched, name, bracket, plus] = head;
+  const value = partsAfter(token, matched.length);
+  const assignment: AssignmentNode = { name, value };
+  if (bracket !== undefined) assignment.subscript = bracket.slice(1, -1);
+  if (plus !== undefined) assignment.append = true;
+
+  const elements = parseArrayLiteral(token.value.slice(matched.length));
+  if (elements !== null) {
+    assignment.elements = elements;
+    assignment.value = [];
+  }
+  return assignment;
+}
+
+/** `(word …)` — the words inside are lexed and expanded like any argument. */
+function parseArrayLiteral(text: string): WordPart[][] | null {
+  if (!text.startsWith('(') || !text.endsWith(')')) return null;
+  const elements: WordPart[][] = [];
+  for (const token of lex(text.slice(1, -1))) {
+    if (token.kind !== TokenKind.Word) continue;
+    elements.push(token.parts ?? [{ text: token.value, quoted: 'none' }]);
+  }
+  return elements;
+}
+
+/** The word parts that fall after `offset` characters of a token's text. */
+function partsAfter(token: Token, offset: number): WordPart[] {
+  if (!token.parts) return [{ text: token.value.slice(offset), quoted: 'none' }];
+
+  const parts: WordPart[] = [];
+  let consumed = 0;
+  for (const part of token.parts) {
+    const end = consumed + part.text.length;
+    if (end <= offset) {
+      consumed = end;
+      continue;
+    }
+    parts.push(consumed < offset ? { ...part, text: part.text.slice(offset - consumed) } : part);
+    consumed = end;
+  }
+  if (parts.length === 0) parts.push({ text: '', quoted: 'none' });
+  return parts;
 }

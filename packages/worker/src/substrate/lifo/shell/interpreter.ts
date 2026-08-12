@@ -14,6 +14,7 @@ import type {
   GroupNode,
   SubshellNode,
   RedirectionNode,
+  AssignmentNode,
 } from './types.js';
 import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandRegistry } from '../commands/registry.js';
@@ -27,7 +28,10 @@ import type {
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
-import { expandWords, expandWord, ExpansionError, type ExpandContext } from './expander.js';
+import {
+  expandWords, expandWord, evaluateSubscript, ExpansionError,
+  type ExpandContext, type CapturedCommand,
+} from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
@@ -114,6 +118,8 @@ export interface TrapTable {
 
 export interface BuiltinExecutionContext {
   vfs: VFS;
+  /** The working directory a builtin resolves its relative path operands against. */
+  cwd: string;
   stdin?: CommandInputStream;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
@@ -124,6 +130,8 @@ export interface BuiltinExecutionContext {
   getPositionals(): readonly string[];
   setPositionals(args: string[]): void;
   executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
+  /** Bind a name to the running function. False outside one, where it is an error. */
+  declareLocal(name: string): boolean;
 }
 
 export interface InlineExecutionOptions {
@@ -196,8 +204,20 @@ type PositionalFrame = {
   args: string[];
 };
 
+/** A variable's complete binding: its scalar value, or its array, or neither. */
+type SavedVariable = {
+  scalar: string | undefined;
+  array: (string | undefined)[] | undefined;
+};
+
 export interface InterpreterConfig {
   env: Record<string, string>;
+  /**
+   * Indexed arrays; `env` holds the scalars. A name lives in exactly one of
+   * them, so `$arr` and `${arr[0]}` cannot disagree, and only `unset` moves a
+   * name from one to the other.
+   */
+  arrays: Map<string, (string | undefined)[]>;
   getCwd: () => string;
   setCwd: (cwd: string) => void;
   vfs: VFS;
@@ -214,6 +234,22 @@ export interface InterpreterConfig {
   readonlyNames: ReadonlySet<string>;
 }
 
+/**
+ * Assign a plain value to a name. A name that already holds an array keeps it:
+ * `a=(x y); a=plain` sets `a[0]` and leaves `a[1]` alone, which is bash's rule
+ * and the reason a variable's type only changes through `unset`.
+ */
+export function assignScalar(
+  env: Record<string, string>,
+  arrays: Map<string, (string | undefined)[]>,
+  name: string,
+  value: string,
+): void {
+  const array = arrays.get(name);
+  if (array === undefined) env[name] = value;
+  else array[0] = value;
+}
+
 export class Interpreter {
   private config: InterpreterConfig;
   private lastExitCode = 0;
@@ -224,6 +260,8 @@ export class Interpreter {
   private persistentTerminalInputFds = new Set<number>();
   private errexitSuppressionDepth = 0;
   private exitTrapDepth = 0;
+  /** One frame per running function call, holding the bindings `local` shadowed. */
+  private localFrames: Array<Map<string, SavedVariable>> = [];
 
   constructor(config: InterpreterConfig) {
     this.config = config;
@@ -557,6 +595,7 @@ export class Interpreter {
         stderr,
         {
           vfs: builtinIo.vfs ?? this.config.vfs,
+          cwd: this.config.getCwd(),
           stdin: builtinIo.stdin,
           stdout,
           stderr,
@@ -571,6 +610,7 @@ export class Interpreter {
           getPositionals: () => this.readPositionals(builtinIo),
           setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
           executeInline: (input, options) => this.executeInline(input, builtinIo, options),
+          declareLocal: (name) => this.declareLocal(name),
         },
       ));
       this.lastExitCode = exitCode;
@@ -720,6 +760,8 @@ export class Interpreter {
   private async executeSubshell(node: SubshellNode, io: ExecutionIo): Promise<number> {
     const savedCwd = this.config.getCwd();
     const savedEnv = { ...this.config.env };
+    const savedArrays = new Map<string, (string | undefined)[]>();
+    for (const [name, elements] of this.config.arrays) savedArrays.set(name, [...elements]);
     let exitCode = 0;
     const subshellIo = this.createCommandIo(io);
     subshellIo.positionals = this.forkPositionals(io);
@@ -739,6 +781,8 @@ export class Interpreter {
       this.config.setCwd(savedCwd);
       for (const key of Object.keys(this.config.env)) delete this.config.env[key];
       Object.assign(this.config.env, savedEnv);
+      this.config.arrays.clear();
+      for (const [name, elements] of savedArrays) this.config.arrays.set(name, elements);
     }
     this.lastExitCode = exitCode;
     return exitCode;
@@ -768,14 +812,15 @@ export class Interpreter {
     if (expandedArgs.length === 0 && cmd.assignments.length > 0) {
       // Bare assignment -- set env vars
       for (const assign of cmd.assignments) {
-        const value = await expandWord(assign.value, expandCtx);
-        if (!this.assignEnv(assign.name, value)) {
+        if (!await this.applyAssignment(assign, expandCtx)) {
           this.writeTerminal(io, `${assign.name}: readonly variable\n`);
           if (io.scriptMode === true) throw new ErrexitSignal(1);
           return 1;
         }
       }
-      return 0;
+      // A command that is only assignments exits with the status of the last
+      // command substitution it ran, so `out="$(cmd)" || die` sees cmd fail.
+      return expandCtx.lastSubstitutionExitCode ?? 0;
     }
 
     if (expandedArgs.length === 0) {
@@ -796,15 +841,13 @@ export class Interpreter {
     }
 
     // Apply per-command assignments (temporary env)
-    const savedEnv: Record<string, string | undefined> = {};
+    const saved = new Map<string, SavedVariable>();
     for (const assign of cmd.assignments) {
-      const value = await expandWord(assign.value, expandCtx);
-      if (this.config.readonlyNames.has(assign.name)) {
+      if (!saved.has(assign.name)) saved.set(assign.name, this.saveVariable(assign.name));
+      if (!await this.applyAssignment(assign, expandCtx)) {
         (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`);
         return 1;
       }
-      savedEnv[assign.name] = this.config.env[assign.name];
-      this.assignEnv(assign.name, value);
     }
 
     // Set up stdout/stderr (per-execution io target, then the terminal sink)
@@ -862,6 +905,7 @@ export class Interpreter {
             const builtinIo = this.createIoFromFds(io, fds);
             exitCode = await builtin(args, stdout, stderr, stdin, {
               vfs: builtinIo.vfs ?? this.config.vfs,
+              cwd: this.config.getCwd(),
               stdin,
               stdout,
               stderr,
@@ -876,6 +920,7 @@ export class Interpreter {
               getPositionals: () => this.readPositionals(builtinIo),
               setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
               executeInline: (input, options) => this.executeInline(input, builtinIo, options),
+          declareLocal: (name) => this.declareLocal(name),
             });
           } else {
             // Check registry
@@ -993,13 +1038,7 @@ export class Interpreter {
     } finally {
       this.flushFds(fds);
       // Restore env from per-command assignments
-      for (const [key, val] of Object.entries(savedEnv)) {
-        if (val === undefined) {
-          delete this.config.env[key];
-        } else {
-          this.config.env[key] = val;
-        }
-      }
+      for (const [name, value] of saved) this.restoreVariable(name, value);
     }
 
     const fatalSpecialBuiltin = io.scriptMode === true
@@ -1012,14 +1051,75 @@ export class Interpreter {
 
   private assignEnv(name: string, value: string): boolean {
     if (this.config.readonlyNames.has(name)) return false;
-    this.config.env[name] = value;
+    assignScalar(this.config.env, this.config.arrays, name, value);
     return true;
+  }
+
+  /**
+   * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.
+   * Returns false when the name is readonly, which the caller reports.
+   */
+  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<boolean> {
+    const { name } = assign;
+    if (this.config.readonlyNames.has(name)) return false;
+
+    if (assign.elements !== undefined) {
+      const values = await expandWords(assign.elements, ctx);
+      const existing = assign.append ? this.config.arrays.get(name) ?? [] : [];
+      delete this.config.env[name];
+      this.config.arrays.set(name, [...existing, ...values]);
+      return true;
+    }
+
+    const value = await expandWord(assign.value, ctx);
+
+    if (assign.subscript !== undefined) {
+      const array = this.arrayFor(name);
+      const index = await evaluateSubscript(assign.subscript, array.length, ctx);
+      array[index] = assign.append ? (array[index] ?? '') + value : value;
+      return true;
+    }
+
+    // A plain assignment to an array name lands on its first element, and
+    // `arr+=x` appends to that element rather than adding one.
+    const array = this.config.arrays.get(name);
+    if (array !== undefined) {
+      array[0] = assign.append ? (array[0] ?? '') + value : value;
+      return true;
+    }
+
+    this.config.env[name] = assign.append ? (this.config.env[name] ?? '') + value : value;
+    return true;
+  }
+
+  /** One variable's whole binding, so a scope can put it back exactly. */
+  private saveVariable(name: string): SavedVariable {
+    return { scalar: this.config.env[name], array: this.config.arrays.get(name) };
+  }
+
+  private restoreVariable(name: string, saved: SavedVariable): void {
+    if (saved.array === undefined) this.config.arrays.delete(name);
+    else this.config.arrays.set(name, saved.array);
+    if (saved.scalar === undefined) delete this.config.env[name];
+    else this.config.env[name] = saved.scalar;
+  }
+
+  /** The array behind a subscripted assignment, promoting a scalar if needed. */
+  private arrayFor(name: string): (string | undefined)[] {
+    const existing = this.config.arrays.get(name);
+    if (existing !== undefined) return existing;
+    const scalar = this.config.env[name];
+    const array: (string | undefined)[] = scalar === undefined ? [] : [scalar];
+    delete this.config.env[name];
+    this.config.arrays.set(name, array);
+    return array;
   }
 
   private async executeFunction(body: CompoundCommandNode, args: string[], io: ExecutionIo): Promise<number> {
     let exitCode: number;
     const functionIo = this.createCommandIo(io);
     functionIo.positionals = { args: [...args] };
+    this.localFrames.push(new Map());
     try {
       exitCode = await this.executeCommand(body, functionIo);
     } catch (e) {
@@ -1028,13 +1128,33 @@ export class Interpreter {
       } else {
         throw e;
       }
+    } finally {
+      const frame = this.localFrames.pop();
+      if (frame !== undefined) {
+        for (const [name, saved] of frame) this.restoreVariable(name, saved);
+      }
     }
 
     this.lastExitCode = exitCode;
     return exitCode;
   }
 
-  async executeCapture(input: string, io: ExecutionIo = {}): Promise<string> {
+  /**
+   * Bind a name to the running function, unset, so an assignment to it does
+   * not outlive the call. Shell variables are dynamically scoped, so a callee
+   * still sees its caller's locals — which is what bash does. Returns false
+   * outside a function, where `local` is an error.
+   */
+  private declareLocal(name: string): boolean {
+    const frame = this.localFrames[this.localFrames.length - 1];
+    if (frame === undefined) return false;
+    if (!frame.has(name)) frame.set(name, this.saveVariable(name));
+    delete this.config.env[name];
+    this.config.arrays.delete(name);
+    return true;
+  }
+
+  async executeCapture(input: string, io: ExecutionIo = {}): Promise<CapturedCommand> {
     let captured = '';
     const stdout: CommandOutputStream = {
       write: (text: string) => { captured += text; },
@@ -1043,9 +1163,9 @@ export class Interpreter {
     const captureIo = this.createCommandIo(io);
     captureIo.stdout = stdout;
     captureIo.positionals = this.forkPositionals(io);
-    await this.executeLineWithIo(input, captureIo);
+    const exitCode = await this.executeLineWithIo(input, captureIo);
 
-    return captured;
+    return { output: captured, exitCode };
   }
 
   private async executeInline(
@@ -1133,6 +1253,7 @@ export class Interpreter {
   private createExpandContext(io: ExecutionIo = {}): ExpandContext {
     return {
       env: this.config.env,
+      arrays: this.config.arrays,
       positionals: this.readPositionals(io),
       lastExitCode: this.lastExitCode,
       cwd: this.config.getCwd(),
