@@ -164,6 +164,17 @@ class TransactionPlanBuilder {
             paths: 1,
         }));
     }
+    /**
+     * Would admitting one removal — the inode row it deletes, the statement
+     * that deletes it, and the content it orphans — exceed the bound?
+     */
+    wouldExceedDeletion(orphansContent) {
+        return exceededTransactionLimit(this.metricsWith({
+            deletedInodes: 1,
+            gcContentIds: orphansContent ? 1 : 0,
+            paths: 1,
+        }));
+    }
     get empty() {
         return this.inodes.length === 0
             && this.chunks.length === 0
@@ -209,16 +220,17 @@ class TransactionPlanBuilder {
         const inodeRows = this.inodes.length + (addition.inodeRows ?? 0);
         const chunkRows = this.chunks.length + (addition.chunkRows ?? 0);
         const gcIds = this.gcContentIds.size + (addition.gcContentIds ?? 0);
+        const deletedInodeRows = this.deletedInodeRows + (addition.deletedInodes ?? 0);
         return {
             blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
             logicalRows: inodeRows
                 + chunkRows
                 + this.deletedChunks.length
-                + this.deletedInodeRows
+                + deletedInodeRows
                 + this.stagingContentIds.size
                 + this.publishedContentIds.size
                 + gcIds,
-            sqlExecs: this.deletedPaths.size
+            sqlExecs: this.deletedPaths.size + (addition.deletedInodes ?? 0)
                 + groupedSqlExecs(this.stagingContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
                 + groupedSqlExecs(this.publishedContentIds.size, CONTENT_IDS_PER_SQL_EXEC)
                 + groupedSqlExecs(gcIds, CONTENT_IDS_PER_SQL_EXEC)
@@ -949,6 +961,7 @@ export class SqliteVFS {
             list: (after, limit) => this.list(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT), bound),
             unlink: (path) => this.unlink(path, bound),
             rmdir: (path) => this.rmdir(path, bound),
+            removeRecursive: (path) => this.removeRecursive(path, bound),
             rename: (oldPath, newPath) => this.rename(oldPath, newPath, bound),
             copyFile: (src, dest) => this.copyFile(src, dest, bound),
             writeBatch: (payload) => this.writeBatch(payload, bound),
@@ -2265,6 +2278,62 @@ export class SqliteVFS {
             throw vfsError('ENOTDIR', path);
         this.writeBatch({ inodes: [], chunks: [], deletePaths: [np] }, cred);
     }
+    /**
+     * Remove a path and everything beneath it, in bounded transactions.
+     *
+     * Walking the tree and issuing one transaction per entry cost a commit and
+     * a content-maintenance pass apiece — 19,429 of each for a single npm
+     * install's tree, on top of the whole-filesystem scan every one of them
+     * paid. A bounded group of entries commits together instead, closed on the
+     * entry before the one that would overflow it.
+     *
+     * Removal is group-atomic rather than path-atomic. Because entries go
+     * deepest first, every committed prefix is a consistent smaller tree —
+     * exactly the state an interrupted per-entry walk left behind.
+     */
+    removeRecursive(path, cred) {
+        this.assertMutationsAllowed([path]);
+        const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
+        if (!resolved.inode)
+            throw vfsError('ENOENT', normalizeVfsPath(path));
+        this.checkParentAccess(resolved.path, cred);
+        const removable = this.collectSubtreeInodes([resolved.path]);
+        // The directories the recursive walk used to enumerate are exactly the
+        // directory inodes of the subtree, and enumerating one needed read
+        // permission. Answering from the index would otherwise skip that check.
+        for (const inode of removable) {
+            if (inode.isDir && !this.accessInode(inode, 0o4, cred)) {
+                throw vfsError('EACCES', inode.path);
+            }
+        }
+        let removed = 0;
+        let group = [];
+        let budget = new TransactionPlanBuilder();
+        const flush = () => {
+            if (group.length === 0)
+                return;
+            const paths = group;
+            group = [];
+            budget = new TransactionPlanBuilder();
+            // Every group re-authorises its own paths and re-checks the mutation
+            // guard through writeBatch, so each check is contemporaneous with the
+            // transaction that acts on it.
+            this.writeBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
+            removed += paths.length;
+        };
+        for (const inode of removable) {
+            // Close the group before the entry that would overflow it. The estimate
+            // only picks the boundary — writeBatch asserts the bound it commits.
+            if (budget.wouldExceedDeletion(!inode.isDir) !== null)
+                flush();
+            budget.addDeletedPath(inode.path, inode);
+            if (!inode.isDir)
+                budget.addGcContent(this.contentIdForInode(inode));
+            group.push(inode.path);
+        }
+        flush();
+        return removed;
+    }
     rename(oldPath, newPath, cred) {
         this.assertMutationsAllowed([oldPath, newPath]);
         this.checkAccess(oldPath, 0, cred, { followLeaf: false });
@@ -2300,12 +2369,14 @@ export class SqliteVFS {
                 throw new Error("EISDIR: cannot rename file onto existing directory");
             }
         }
-        const moving = [...this.inodes.values()]
-            .filter((entry) => entry.path === oldPath || entry.path.startsWith(`${oldPath}/`))
-            .sort((a, b) => a.path.length - b.path.length);
+        // Both questions a rename asks — what moves, and what is already at the
+        // destination — are subtree queries, and the index answers them in the
+        // size of those subtrees. Scanning every inode twice made an atomic write
+        // (write temp, rename over) cost the whole filesystem per call.
+        const moving = this.collectSubtreeInodes([oldPath]).reverse();
         const movingPaths = new Set(moving.map((entry) => entry.path));
         const targetPaths = new Set(moving.map((entry) => newPath + entry.path.substring(oldPath.length)));
-        for (const existing of this.inodes.values()) {
+        for (const existing of this.collectSubtreeInodes([newPath])) {
             if (movingPaths.has(existing.path) || existing === destInode)
                 continue;
             if (targetPaths.has(existing.path) || existing.path.startsWith(`${newPath}/`)) {
@@ -2757,7 +2828,7 @@ export class SqliteVFS {
                         phase = 'publish';
                         flushGroup();
                         flushDirectories();
-                        const affected = Math.max(1, this.collectBatchDeletions([record.path]).length);
+                        const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
                         this.withMutationOwner(options.mutationOwner, () => {
                             this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
                         });
@@ -3260,7 +3331,7 @@ export class SqliteVFS {
         }
     }
     prepareBatchTransaction(payload, allocateContentIds) {
-        const deletedInodes = this.collectBatchDeletions(payload.deletePaths ?? []);
+        const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? []);
         const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
         const builder = new TransactionPlanBuilder();
         const deletedPaths = new Set(payload.deletePaths ?? []);
@@ -3522,20 +3593,42 @@ export class SqliteVFS {
         this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
         return { inodes: inodeCount, chunks: chunkCount };
     }
-    collectBatchDeletions(deletePaths) {
-        if (deletePaths.length === 0)
+    /**
+     * Every inode at or under each root, deepest first.
+     *
+     * The children index answers "what is under this prefix?" in the size of
+     * the subtree. The scan it replaces answered it in the size of the whole
+     * filesystem, so removing a tree of N entries one path at a time cost
+     * O(N²) — a 19,429-file tree was ~190 million synchronous comparisons on
+     * the object's only thread, long enough to drop the session's socket.
+     */
+    collectSubtreeInodes(roots) {
+        if (roots.length === 0)
             return [];
-        const roots = new Set(deletePaths);
-        const deleted = [];
-        for (const inode of this.inodes.values()) {
-            for (const root of roots) {
-                if (inode.path === root || inode.path.startsWith(`${root}/`)) {
-                    deleted.push(inode);
-                    break;
-                }
+        const collected = [];
+        const visited = new Set();
+        const frontier = [];
+        for (const root of roots) {
+            frontier.push(root);
+            while (frontier.length > 0) {
+                const path = frontier.pop();
+                if (visited.has(path))
+                    continue;
+                visited.add(path);
+                const inode = this.inodes.get(path);
+                if (inode)
+                    collected.push(inode);
+                const children = this.children.get(path);
+                if (children)
+                    for (const child of children)
+                        frontier.push(child);
             }
         }
-        return deleted.sort((a, b) => b.path.length - a.path.length);
+        // A child's path is always longer than its parent's, so length order
+        // removes every descendant before the directory holding it. Ties break on
+        // the path itself: nothing a delete publishes should depend on traversal
+        // or insertion order.
+        return collected.sort((a, b) => (b.path.length - a.path.length || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)));
     }
     /**
      * Bulk mkdir: create all directories in a single transactionSync.
