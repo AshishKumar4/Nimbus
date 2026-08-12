@@ -117,6 +117,8 @@ export declare const R2_CACHE_PREFIX = "v2";
  *  No data migration; existing R2 packument entries' customMetadata
  *  .expiresAt stamps remain valid against either TTL. */
 export declare const PACKUMENT_TTL_MS: number;
+/** The registry URL a packument is read from — also what `npm http` lines report. */
+export declare function packumentUrl(name: string): string;
 /** Cap on tarball bytes returned via this RPC. Workerd structured-clone
  *  cap is 32 MiB; we keep a comfortable margin to leave room for RPC
  *  framing + the call's own arg bytes. Tarballs above this size skip

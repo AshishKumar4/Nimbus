@@ -122,6 +122,12 @@ export interface ResolveOneResult {
     packumentBytesDecoded: number;
     packumentSource: 'cache-hit' | 'r2-cache' | 'network' | 'skipped';
     /**
+     * Round trip of the packument read as this task observed it. Reported
+     * verbatim in the supervisor's `npm http fetch` line, so it must stay a
+     * measurement — zero when no read was issued.
+     */
+    packumentElapsedMs: number;
+    /**
      * cache-obs-2: per-tier cache events captured during this resolve.
      *
      * Each entry records a single L2/L3/L4 hit-or-miss observed when

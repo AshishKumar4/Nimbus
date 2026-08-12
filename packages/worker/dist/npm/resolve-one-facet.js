@@ -106,6 +106,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // (spliced from supervisor RPC return.events) and the L4 path
     // (post-network-fetch). Threaded through `out()` into the result.
     const cacheStatEvents = [];
+    let packumentElapsedMs = 0;
     const out = (pkg, bytes, source, error) => ({
         pkg,
         deps: pkg?.dependencies ?? {},
@@ -117,6 +118,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         events,
         packumentBytesDecoded: bytes,
         packumentSource: source,
+        packumentElapsedMs,
         cacheStatEvents,
         error,
     });
@@ -275,10 +277,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         });
     }
     {
+        const packumentStart = Date.now();
         const result = await __nimbusUseRpcResult(env.SUPERVISOR.getPackument(effName, {
             retries: Math.max(0, spec.retries ?? 3),
             timeoutMs: spec.fetchTimeoutMs ?? 15_000,
         }), (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }));
+        packumentElapsedMs = Date.now() - packumentStart;
         // Splice the supervisor's per-tier events into our accumulator.
         // Filter to known tiers/kinds so a future schema change cannot
         // poison the result.
