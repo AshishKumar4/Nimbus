@@ -74,6 +74,15 @@ export class Sandbox {
 		const kernel = new Kernel();
 		await kernel.boot({ persist: options?.persist ?? false });
 
+		// 1b. Provider-backed directories, before anything reads the filesystem.
+		// `initFilesystem` has already seeded the in-memory tree; mounting after
+		// it is what keeps a durable /etc from being overwritten by the defaults
+		// on every boot, and mounting before step 8 is what lets the profile
+		// sourced there be the durable one.
+		for (const mount of options?.providerMounts ?? []) {
+			kernel.vfs.mount(mount.virtualPath, mount.provider);
+		}
+
 		// 2. Create command registry
 		const registry = createDefaultRegistry();
 		bootLifoPackages(kernel.vfs, registry);

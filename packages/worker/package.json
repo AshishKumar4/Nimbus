@@ -28,6 +28,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./workspace": {
+      "workspace": "./src/workspace/nimbus-workspace.ts",
+      "types": "./dist/workspace/nimbus-workspace.d.ts",
+      "import": "./dist/workspace/nimbus-workspace.js"
+    },
     "./router": {
       "workspace": "./src/router/index.ts",
       "types": "./dist/router/index.d.ts",
