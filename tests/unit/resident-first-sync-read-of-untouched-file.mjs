@@ -22,6 +22,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
@@ -162,7 +163,7 @@ const env = {
 };
 
 const ctx = createFacetCtx(world, 'first-sync-read-session');
-const manager = new FacetManager(ctx, env, new SessionProcessSupervisor(), new PortRegistry(), {});
+const manager = new FacetManager(ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
 manager.setVfs(sessionVfs);
 delete globalThis.__portRegistry;
 

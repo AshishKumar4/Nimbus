@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/worker/src/_shared/vfs-write-ledger.ts';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
@@ -48,7 +49,7 @@ const env = {
 const ctx = createFacetCtx(world, 'request-durability-test');
 const processes = new SessionProcessSupervisor();
 const ports = new PortRegistry();
-const manager = new FacetManager(ctx, env, processes, ports, {});
+const manager = new FacetManager(ctx, env, processes, ports, processHostFor, {});
 // The spawn materializes its generated module map in the session's image store
 // and boots from the path, so the manager needs a real disk.
 const harness = createSqliteVfsTestHarness();
@@ -1623,6 +1624,7 @@ process.exit(0);
     executingEnv,
     oneShotProcesses,
     new PortRegistry(),
+    processHostFor,
     {},
   );
   const result = await oneShotManager.exec(`

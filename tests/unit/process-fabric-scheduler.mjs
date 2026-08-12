@@ -28,14 +28,16 @@
 
 import assert from 'node:assert/strict';
 import {
-  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   ProcessFabric,
   ResidentProcessHandle,
   RESIDENT_PROCESS_CLASS,
   facetImageDigest,
   facetImagePath,
-  residentFacetName,
 } from '../../packages/worker/src/loaders/process-fabric.ts';
+import {
+  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
+  residentFacetName,
+} from '../../packages/worker/src/loaders/workerd-facet-host.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 import {
   PROCESS_HOST_MODES,

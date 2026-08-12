@@ -30,7 +30,6 @@ import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '../vfs/sqlite-vfs.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import type { PortRegistry } from '../runtime/port-registry.js';
-import { getCtxExports } from '../session/ctx-exports.js';
 import { prefetchForRequire } from '../runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '../runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta-transform.js';
@@ -42,19 +41,22 @@ import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exe
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
-  createLoadedWorkerEntrypoint,
-  getNimbusCtxExports,
   ProcessFabric,
   ResidentProcessHandle,
   FACET_IMAGE_DIR,
   facetImageDigest,
   facetImagePath,
-  type LoadedWorkerEntrypointStub,
+  type ProcessHost,
+  type ProcessHostFactory,
   type ResidentBootSpec,
   type ResidentDiskReader,
   type StartContract,
 } from '../loaders/process-fabric.js';
-import { processHostFor } from '../loaders/process-host.js';
+import {
+  createLoadedWorkerEntrypoint,
+  getNimbusCtxExports,
+  type LoadedWorkerEntrypointStub,
+} from '../loaders/workerd-facet-host.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
@@ -3467,6 +3469,12 @@ export class FacetManager {
    * workerd process a facet landed in.
    */
   private processFabric: ProcessFabric;
+  /**
+   * The same substrate the fabric runs residents on, held directly because a
+   * one-shot has no lifecycle for the fabric to own — it is started, read and
+   * gone inside one call.
+   */
+  private processHost: ProcessHost;
   /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
   private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
@@ -3553,6 +3561,7 @@ export class FacetManager {
     env: unknown,
     processes: SessionProcessSupervisor,
     portRegistry: PortRegistry,
+    host: ProcessHostFactory,
     hooks: FacetManagerHooks = {},
   ) {
     this.ctx = ctx;
@@ -3560,7 +3569,8 @@ export class FacetManager {
     this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
-    this.processFabric = new ProcessFabric(processHostFor(ctx, env, () => this._residentDisk()));
+    this.processHost = host(ctx, env, () => this._residentDisk());
+    this.processFabric = new ProcessFabric(this.processHost);
     const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
@@ -4099,41 +4109,10 @@ export class FacetManager {
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeShimsCode(this.env),
     ]);
-    // The module map is the largest thing this DO builds — pi's is ~23 MB —
-    // and it is dead the moment LOADER.load has taken it. Everything that
-    // holds it is therefore scoped to the load: the generated source is not
-    // named by this frame, the serialized forms it was built from are released
-    // unless the prefetch cache is keeping them, and `modules` is dropped
-    // below. Otherwise the coordinator carries a second full copy of the
-    // program for the whole FACET_TIMEOUT_MS the facet then runs for, which is
-    // the window the isolate was being reset in.
-    let modules: WorkerCode['modules'] | undefined = await (async () => {
-      const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims);
-      if (diagSink) {
-        diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
-        for (const source of Object.values(generatedWorker.modules)) {
-          diagSink.moduleMapBytes += _encodedSourceBytes(source);
-        }
-        for (const m of Object.values(sqliteModules)) {
-          diagSink.moduleMapBytes += m.wasm.byteLength;
-        }
-        // Read before the release below, which is the last moment the three
-        // parts of that total are separable.
-        diagSink.bundleBytes = _encodedSourceBytes(vfsState.bundleSource?.expression ?? '');
-        for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
-          diagSink.bundleBytes += _encodedSourceBytes(source);
-        }
-        diagSink.manifestBytes = _encodedSourceBytes(vfsState.serializedManifest ?? '');
-        diagSink.metadataBytes = _encodedSourceBytes(vfsState.serializedMetadata ?? '');
-      }
-      if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
-      return { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules };
-    })();
-    // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
-    const ctxExports = getCtxExports();
     const writerId = crypto.randomUUID();
-    let supervisorBinding: ReturnType<NonNullable<typeof ctxExports>['SupervisorRPC']> | undefined;
     let writerActivated = false;
+    let __loadStart = 0;
+    let __runStart = 0;
 
     const body = JSON.stringify({
       argv: opts.argv || [],
@@ -4155,58 +4134,75 @@ export class FacetManager {
       ...(diagSink ? { diag: true } : {}),
     });
 
-    let worker: LoadedWorkerStub | undefined;
-    let entrypoint: LoadedWorkerEntrypointStub | undefined;
     try {
-      if (ctxExports?.SupervisorRPC) {
-        this._activateProcessVfsWriter(entry.pid, writerId);
-        writerActivated = true;
-        supervisorBinding = ctxExports.SupervisorRPC({
-          props: {
-            doId: this.ctx.id.toString(),
-            pid: entry.pid,
-            writerId,
+      return await this.processHost.runOnce(
+        {
+          pid: entry.pid,
+          writerId,
+          // The module map is the largest thing this DO builds — pi's is ~23 MB
+          // — and it is dead the moment the loader has taken it. Everything
+          // that holds it is therefore scoped to the load: it is assembled in
+          // here rather than named by the enclosing frame, and the serialized
+          // forms it was built from are released unless the prefetch cache is
+          // keeping them. Otherwise the coordinator carries a second full copy
+          // of the program for the whole FACET_TIMEOUT_MS the facet then runs
+          // for, which is the window the isolate was being reset in.
+          code: async () => {
+            const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims);
+            if (diagSink) {
+              diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
+              for (const source of Object.values(generatedWorker.modules)) {
+                diagSink.moduleMapBytes += _encodedSourceBytes(source);
+              }
+              for (const m of Object.values(sqliteModules)) {
+                diagSink.moduleMapBytes += m.wasm.byteLength;
+              }
+              // Read before the release below, which is the last moment the
+              // three parts of that total are separable.
+              diagSink.bundleBytes = _encodedSourceBytes(vfsState.bundleSource?.expression ?? '');
+              for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
+                diagSink.bundleBytes += _encodedSourceBytes(source);
+              }
+              diagSink.manifestBytes = _encodedSourceBytes(vfsState.serializedManifest ?? '');
+              diagSink.metadataBytes = _encodedSourceBytes(vfsState.serializedMetadata ?? '');
+            }
+            if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
+            if (diagSink) __loadStart = Date.now();
+            return {
+              compatibilityDate: CF_COMPAT_DATE,
+              compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
+              mainModule: 'runner.js',
+              modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules },
+            };
           },
-        });
-      }
-      const __loadStart = diagSink ? Date.now() : 0;
-      worker = this.env.LOADER.load({
-        compatibilityDate: CF_COMPAT_DATE,
-        compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
-        mainModule: 'runner.js',
-        modules,
-        ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-      });
-      modules = undefined;
-
-      entrypoint = worker.getEntrypoint();
-      if (typeof entrypoint.fetch !== 'function') {
-        throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
-      }
-      if (diagSink) diagSink.loadMs = Date.now() - __loadStart;
-      const __runStart = diagSink ? Date.now() : 0;
-      const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', {
-        method: 'POST',
-        body,
-        signal,
-      }));
-      try {
-        const result = await response.json() as FacetExecResult;
-        if (diagSink) diagSink.runMs = Date.now() - __runStart;
-        return result;
-      } finally {
-        disposeRpcResource(response);
-      }
+          request: new Request('http://nimbus-runtime.local/run', {
+            method: 'POST',
+            body,
+            signal,
+          }),
+          onWriterActivated: (id) => {
+            this._activateProcessVfsWriter(entry.pid, id);
+            writerActivated = true;
+          },
+          onLoaded: () => {
+            if (!diagSink) return;
+            diagSink.loadMs = Date.now() - __loadStart;
+            __runStart = Date.now();
+          },
+        },
+        async (response) => {
+          const result = await response.json() as FacetExecResult;
+          if (diagSink) diagSink.runMs = Date.now() - __runStart;
+          return result;
+        },
+      );
     } finally {
-      // A one-shot facet is unkeyed (LOADER.load) and cannot be re-resolved
-      // into a later request's context, so it can never be a routeable target
-      // (server scripts are promoted to the keyed long-running facet instead).
-      // But its http shim still calls SUPERVISOR.registerPort on listen(); drop
-      // any such reservation here so a dead facet leaves no stale null-stub port.
+      // A one-shot worker is unkeyed and cannot be re-resolved into a later
+      // request's context, so it can never be a routeable target (server
+      // scripts are promoted to the keyed long-running facet instead). But its
+      // http shim still calls SUPERVISOR.registerPort on listen(); drop any
+      // such reservation here so a dead facet leaves no stale null-stub port.
       this.portRegistry.unregisterByPid(entry.pid);
-      disposeRpcResource(entrypoint);
-      disposeRpcResource(worker);
-      disposeRpcResource(supervisorBinding);
       if (writerActivated) this.vfs?.revokeAppendWriter(entry.pid, writerId);
     }
   }

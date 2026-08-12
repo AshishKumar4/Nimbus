@@ -14,6 +14,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
@@ -55,7 +56,7 @@ const env = {
 const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(
   createFacetCtx(world, 'image-store-test'),
-  env, processes, new PortRegistry(), {},
+  env, processes, new PortRegistry(), processHostFor, {},
 );
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);

@@ -15,10 +15,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
-import { residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { residentFacetName } from '../../packages/worker/src/loaders/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -93,7 +94,7 @@ const env = {
 const ctx = createFacetCtx(world, 'routed-durability-session');
 const processes = new SessionProcessSupervisor();
 const ports = new PortRegistry();
-const manager = new FacetManager(ctx, env, processes, ports, {});
+const manager = new FacetManager(ctx, env, processes, ports, processHostFor, {});
 const harness = createSqliteVfsTestHarness();
 sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(sessionVfs);

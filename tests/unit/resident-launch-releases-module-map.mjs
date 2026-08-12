@@ -35,6 +35,7 @@ import {
   generateLongRunningNodeCode,
   releaseResidentLaunchSources,
 } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
@@ -130,7 +131,7 @@ const env = {
 };
 
 const manager = new FacetManager(
-  ctx, env, new SessionProcessSupervisor(), new PortRegistry(), {},
+  ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);

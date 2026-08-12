@@ -12,7 +12,7 @@
 // costs no new ID.
 
 import assert from 'node:assert/strict';
-import { openResidentFacet, residentFacetName } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { openResidentFacet, residentFacetName } from '../../packages/worker/src/loaders/workerd-facet-host.ts';
 
 // ── The name is a slot, and slots are what get reused ───────────────────────
 assert.equal(residentFacetName(0), 'proc-slot-0');

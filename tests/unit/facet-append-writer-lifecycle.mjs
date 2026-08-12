@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
 import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
@@ -70,7 +71,7 @@ const env = {
 };
 const ctx = { id: { toString: () => 'writer-lifecycle-test' }, waitUntil() {} };
 const processes = new SessionProcessSupervisor();
-const manager = new FacetManager(ctx, env, processes, new PortRegistry(), {});
+const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {});
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(rawVfs);

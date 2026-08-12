@@ -33,12 +33,14 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import {
   ResidentBootSpecSchema,
-  getNimbusCtxExports,
-  openResidentFacet,
   type ResidentDiskReader,
-  type ResidentFacet,
   type ResidentSupervisorProps,
 } from '../loaders/process-fabric.js';
+import {
+  getNimbusCtxExports,
+  openResidentFacet,
+  type ResidentFacet,
+} from '../loaders/workerd-facet-host.js';
 import {
   headerPairs,
   isolateToken,

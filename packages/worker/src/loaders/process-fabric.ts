@@ -5,7 +5,7 @@
  * Every long-lived process Nimbus runs — node servers, python/ruby socket
  * servers, the opencode TUI and its headless server — runs as a **DO Facet**:
  * a named child actor whose class comes from a dynamic worker, opened by
- * `openResidentFacet` below.
+ * `openResidentFacet` in `loaders/workerd-facet-host.ts`.
  *
  *   ctx.facets.get(`proc-${pid}`, () => ({
  *     class: env.LOADER.get(workerKey, buildConfig)
@@ -74,14 +74,8 @@
  */
 
 import { z } from 'zod/v4';
-import {
-  OpencodeStageSpecSchema,
-  assembleOpencodeFacetConfig,
-  type OpencodeAssetsEnv,
-  type OpencodeStageSpec,
-} from '../facets/opencode-staging.js';
-import type { RouteableFacetTarget } from '../runtime/port-registry.js';
-import { getCtxExports } from '../session/ctx-exports.js';
+import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
+import type { RouteableFacetTarget } from '../runtime/os-contracts.js';
 
 /**
  * The class every generated resident runner exports. One name for every
@@ -201,63 +195,6 @@ export function facetImagePath(digest: string): string {
 export function facetImagePathDigest(path: string): string | null {
   const match = /(?:^|\/)([0-9a-f]{64})\.js$/.exec(path);
   return match ? match[1] : null;
-}
-
-// ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
-
-/** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
-export interface LoadedWorkerEntrypointStub {
-  handleHttpRequest?: (request: Request) => Promise<Response>;
-  fetch?(request: Request): Promise<Response>;
-}
-
-export interface NimbusCtxExports {
-  SupervisorRPC?: (options: {
-    props: { doId: string; pid: number; writerId: string };
-  }) => unknown;
-  NimbusLoadedEntrypoint?: (options: {
-    props: {
-      key: string;
-      name: string | null;
-      depth: number;
-      supervisor: { doId: string; pid: number; writerId: string };
-      stage?: OpencodeStageSpec;
-    };
-  }) => LoadedWorkerEntrypointStub;
-}
-
-export function getNimbusCtxExports(): NimbusCtxExports {
-  const ctxExports = getCtxExports();
-  if (!ctxExports || typeof ctxExports !== 'object') {
-    throw new Error('Nimbus: ctx.exports unavailable');
-  }
-  return ctxExports as NimbusCtxExports;
-}
-
-/**
- * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. Used by the
- * one-shot runtime paths, which run a program to completion inside a single
- * request rather than leaving it resident: their module map is assembled in
- * that stateless entrypoint's own isolate, never in a session DO.
- */
-export async function createLoadedWorkerEntrypoint(
-  ctxExports: NimbusCtxExports,
-  supervisor: { doId: string; pid: number; writerId: string },
-  stage: OpencodeStageSpec,
-  name: string | null = null,
-): Promise<LoadedWorkerEntrypointStub> {
-  if (!ctxExports.NimbusLoadedEntrypoint) {
-    throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
-  }
-  return await ctxExports.NimbusLoadedEntrypoint({
-    props: {
-      key: `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
-      name,
-      depth: 0,
-      supervisor,
-      stage,
-    },
-  });
 }
 
 // ── Module-map assembly ─────────────────────────────────────────────────────
@@ -394,16 +331,6 @@ export interface HostedProcess {
 }
 
 /**
- * Total bytes a dynamic Worker's module map may carry, across every member of
- * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
- * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
- * size of 67108864 bytes", confirmed at five sizes with two trials each. The
- * budget is shared, so a ruby process is already 34.3 MiB down before its disk
- * is counted.
- */
-export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
-
-/**
  * How a whole session-filesystem image can reach a process on a substrate, and
  * what stops it.
  *
@@ -473,247 +400,105 @@ export interface ProcessImageDelivery {
  * mechanism, one selection for the whole deployment — see
  * `loaders/process-host.ts`.
  */
+/**
+ * A one-shot's module map: every member inline.
+ *
+ * Deliberately without {@link ResidentCodeSpec}'s by-path members. A resident
+ * process names its large members by VFS path because the map has to reach
+ * whichever actor ends up hosting it; a one-shot's is assembled and consumed
+ * inside a single call, so a path buys nothing and a host that accepted one
+ * would be promising a read it never performs.
+ */
+export interface OneShotCodeSpec {
+  compatibilityDate: string;
+  compatibilityFlags: string[];
+  mainModule: string;
+  modules: Record<string, string | { wasm: ArrayBuffer }>;
+}
+
+/**
+ * Everything a host needs to run one program to completion.
+ *
+ * Separate from {@link ProcessHostParams} because the two differ in whether
+ * anything survives the call, and every other difference follows from that: a
+ * one-shot has no route target, no independent death to observe and no
+ * residency to release. One spec carrying all of it would leave three members
+ * meaningless for half its uses.
+ */
+export interface OneShotParams {
+  /** Supervisor-assigned pid — the identity the callback capability reports as. */
+  pid: number;
+  /**
+   * Binds this run's VFS appends to this concrete incarnation. Supplied by the
+   * caller rather than minted here so it can revoke the identity it authorised
+   * instead of one it has to read back.
+   */
+  writerId: string;
+  /**
+   * The module map, assembled on demand.
+   *
+   * A thunk, and that is load-bearing rather than stylistic. The map is the
+   * largest thing a session builds — pi's is ~23 MB — and it is dead the moment
+   * the loader has taken it. Building it inside the load is what keeps it out
+   * of the caller's frame, which would otherwise hold a second full copy of the
+   * program for as long as the program runs.
+   */
+  code(): Promise<OneShotCodeSpec>;
+  /** The invocation. Its body carries argv/env/cwd; its signal bounds the run. */
+  request: Request;
+  /**
+   * Called before any capability able to write as `writerId` exists, and only
+   * if this host can mint one at all. Granting append authority to an identity
+   * nothing will ever present would leave a writer live with no writer.
+   */
+  onWriterActivated(writerId: string): void;
+  /**
+   * Called once the program is loaded and about to be entered.
+   *
+   * The boundary between paying for the isolate and paying for the program.
+   * They are separate costs with separate fixes — a 12 s exec was once read as
+   * a slow load and was a fresh isolate parsing a 23 MB map — and only the host
+   * can see where one ends and the other begins.
+   */
+  onLoaded?(): void;
+}
+
 export interface ProcessHost {
   /** What this substrate can and cannot deliver, for operators and callers. */
   readonly imageDelivery: ProcessImageDelivery;
+  /**
+   * Run one program to completion and hand its response to `consume`.
+   *
+   * Scoped to the call rather than returned, because the isolate that produced
+   * the response must outlive the reading of its body. A host that released its
+   * stubs before the caller had read would sever a body still streaming, and
+   * one that buffered instead would hold a second copy of every result — the
+   * cost the thunk above exists to avoid. `consume` runs while the program's
+   * resources are still held; they are released as it returns.
+   */
+  runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
   open(params: ProcessHostParams): Promise<HostedProcess>;
 }
 
-/** The subset of a facet stub a resident process exposes to whoever opened it. */
-interface ResidentFacetStub {
-  startProcess(args?: unknown): Promise<unknown>;
-  handleHttpRequest(request: Request): Promise<Response>;
-}
-
-/** `ctx.facets` — a Durable Object's named child actors. */
-interface FacetContainer {
-  get(name: string, start: () => Promise<{ class: unknown }>): ResidentFacetStub;
-  abort(name: string, reason?: unknown): void;
-  delete(name: string): void;
-}
-
-/** `env.LOADER` — the Worker Loader binding, as used from inside a DO. */
-interface WorkerLoaderBinding {
-  get(id: string, code: () => Promise<unknown>): { getDurableObjectClass(name: string): unknown };
-}
-
-/** The bindings `openResidentFacet` needs off whichever DO is hosting. */
-export interface ResidentFacetEnv extends Partial<OpencodeAssetsEnv> {
-  LOADER?: WorkerLoaderBinding;
-}
-
-function facetContainer(ctx: DurableObjectState): FacetContainer {
-  const facets = (ctx as { facets?: unknown }).facets as FacetContainer | undefined;
-  if (!facets || typeof facets.get !== 'function') {
-    throw new Error(
-      'Nimbus: ctx.facets is unavailable in this Durable Object; '
-        + 'resident processes cannot be hosted',
-    );
-  }
-  return facets;
-}
-
 /**
- * The facet name for a slot. Reused, and that is the entire point.
+ * How a caller supplies the substrate a process manager will run programs on.
  *
- * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so the bound is on facets ever CREATED,
- * not facets alive at once. Naming a facet after its pid, when pids never
- * repeat, therefore burned one of those IDs on every spawn — a long-lived
- * session would eventually exhaust its facet index with no way back, and the
- * failure is unrecoverable rather than merely slow.
+ * A factory rather than a finished {@link ProcessHost}, because the substrate
+ * needs the disk its processes boot from and only the manager can produce one:
+ * that reader answers as the credential that WROTE the boot images and
+ * deliberately uncached, since they are the largest files a session holds.
+ * Demanding a finished host would make every caller reproduce that policy, and
+ * a second copy of a credential rule is a second thing to keep in step.
  *
- * Reusing a NAME costs no new ID. So the name comes from a free list and the
- * pid stays what it always was: the process identity in the ProcessTable. The
- * two were only ever conflated because one of them happened to be handy.
+ * The parameters are exactly what a manager already holds, so the deployment's
+ * own selector (`processHostFor`) satisfies this type as it stands — the
+ * workerd substrate is named, not wrapped.
  */
-export function residentFacetName(slot: number): string {
-  return `proc-slot-${slot}`;
-}
-
-/** One hosting actor's slot book. */
-interface SlotBook {
-  /** Returned slots, lowest reused first so the high-water mark stays low. */
-  free: number[];
-  /** The next never-yet-issued slot. */
-  next: number;
-  /** Slot held by each live pid, so release can find it. */
-  held: Map<number, number>;
-}
-
-/**
- * Slot books, per hosting actor, because the facet index is per Durable
- * Object.
- *
- * Keyed weakly off `ctx`, and that is sound rather than lossy: a facet cannot
- * outlive the Durable Object hosting it, so a book that goes away with its
- * host describes nothing that still exists. A fresh incarnation restarts at
- * slot 0 and re-attaches to the SQLite a previous incarnation left there —
- * which is safe for the reason the store is sealed until it has reconciled.
- * Its persisted cursor is either datable against the current authority, in
- * which case the ACQUIRE delta brings it current, or it carries a different
- * VFS epoch, in which case `invalidatedSince` can only answer poison and the
- * whole store is dropped. A process therefore cannot boot onto a previous
- * tenant's filesystem even when release never ran.
- */
-const slotBooks = new WeakMap<DurableObjectState, SlotBook>();
-
-function slotBook(ctx: DurableObjectState): SlotBook {
-  let book = slotBooks.get(ctx);
-  if (!book) {
-    book = { free: [], next: 0, held: new Map() };
-    slotBooks.set(ctx, book);
-  }
-  return book;
-}
-
-/** Take a slot for `pid`, reusing a returned one before minting a new name. */
-function acquireSlot(ctx: DurableObjectState, pid: number): number {
-  const book = slotBook(ctx);
-  const existing = book.held.get(pid);
-  if (existing !== undefined) return existing;
-  const slot = book.free.length > 0 ? book.free.shift()! : book.next++;
-  book.held.set(pid, slot);
-  return slot;
-}
-
-/** Return `pid`'s slot to the free list. */
-function releaseSlot(ctx: DurableObjectState, pid: number): void {
-  const book = slotBook(ctx);
-  const slot = book.held.get(pid);
-  if (slot === undefined) return;
-  book.held.delete(pid);
-  book.free.push(slot);
-  book.free.sort((a, b) => a - b);
-}
-
-
-/**
- * What `openResidentFacet` hands back: a running process, minus its placement.
- *
- * `slot` rides along because the caller's `describe` needs the facet's real
- * name and the slot is not derivable from the pid — that indirection is the
- * whole point of the free list. Reading it back out of the book later would
- * also race the release that empties it.
- */
-export type ResidentFacet = Omit<HostedProcess, 'describe'> & { slot: number };
-
-/**
- * Open a resident process as a facet of the actor whose `ctx` and `env` are
- * given, and start its runner.
- *
- * This is the ONE way a resident process comes into existence, and every
- * substrate goes through it: the facet host calls it with the coordinator's
- * own `ctx`, the peer host calls it — over one RPC — with a sibling session
- * DO's. Everything a substrate could plausibly want to special-case is a
- * PARAMETER here rather than a branch: which actor hosts the child, and how
- * the boot spec's by-path members are read.
- */
-export function openResidentFacet(
+export type ProcessHostFactory = (
   ctx: DurableObjectState,
-  env: ResidentFacetEnv,
+  env: unknown,
   disk: () => ResidentDiskReader,
-  supervisor: ResidentSupervisorProps,
-  params: ProcessHostParams,
-): ResidentFacet {
-  const facets = facetContainer(ctx);
-  const slot = acquireSlot(ctx, params.pid);
-  const name = residentFacetName(slot);
-  // The start callback is the ONLY way this facet is ever created, and it
-  // fires AT MOST ONCE. Every later use goes through the stub below, so the
-  // callback running a second time means the facet was released or died —
-  // and re-running it would evaluate the user's program again, answering a
-  // request from a process they never started while the one they did start
-  // is gone. Both cases are reported instead.
-  let evaluated = false;
-  let released = false;
-  const start = async (): Promise<{ class: unknown }> => {
-    if (released) {
-      throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
-    }
-    if (evaluated) {
-      throw new Error(
-        `Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
-          + 'it is not restarted',
-      );
-    }
-    evaluated = true;
-    return { class: residentProcessClass(env, disk, supervisor, params) };
-  };
-  const facet: ResidentFacetStub = facets.get(name, start);
-
-  let disposed = false;
-  const release = async () => {
-    if (disposed) return;
-    disposed = true;
-    released = true;
-    try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
-    try { facets.delete(name); } catch { /* already gone */ }
-    // Only after the facet is gone. A slot handed out while its previous
-    // tenant were still being torn down would have two processes on one name.
-    releaseSlot(ctx, params.pid);
-  };
-
-  let started: Promise<unknown>;
-  try {
-    started = facet.startProcess(params.startArgs);
-  } catch (error) {
-    void release();
-    throw error;
-  }
-  // A caller reads whichever of `started` and the lifecycle it needs, so keep
-  // the runtime from reporting the other as an unhandled rejection.
-  started.catch(() => {});
-  return {
-    started,
-    // A facet cannot die without taking its Durable Object — and this object —
-    // with it, so there is no independent death to report.
-    lost: new Promise<never>(() => {}),
-    handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
-    release,
-    slot,
-  };
-}
-
-/**
- * The dynamic worker's Durable Object class, minted in the caller's request
- * context. `LOADER.get` runs its callback only on a cache miss, so a process
- * assembles its module map at most once and the bytes never stay resident in
- * the hosting DO's heap.
- */
-function residentProcessClass(
-  env: ResidentFacetEnv,
-  disk: () => ResidentDiskReader,
-  supervisor: ResidentSupervisorProps,
-  params: ProcessHostParams,
-): unknown {
-  const loader = env.LOADER;
-  if (!loader || typeof loader.get !== 'function') {
-    throw new Error(
-      'Nimbus: env.LOADER binding missing or invalid. Resident processes require '
-        + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
-    );
-  }
-  return loader
-    .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-    .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
-}
-
-async function residentWorkerConfig(
-  env: ResidentFacetEnv,
-  disk: () => ResidentDiskReader,
-  supervisor: ResidentSupervisorProps,
-  boot: ResidentBootSpec,
-): Promise<Record<string, unknown>> {
-  const config = boot.kind === 'staged'
-    ? await assembleOpencodeFacetConfig(env, boot.stage)
-    : await residentLoaderConfig(boot.code, disk());
-  const ctxExports = getNimbusCtxExports();
-  if (!ctxExports.SupervisorRPC) {
-    throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
-  }
-  return { ...config, env: { SUPERVISOR: ctxExports.SupervisorRPC({ props: supervisor }) } };
-}
+) => ProcessHost;
 
 // ── Handle ──────────────────────────────────────────────────────────────────
 
