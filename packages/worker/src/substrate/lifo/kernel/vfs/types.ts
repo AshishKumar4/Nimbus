@@ -1,6 +1,14 @@
 import type { VfsCred } from '../../../../runtime/os-contracts.js';
 
-export type FileType = 'file' | 'directory';
+/**
+ * What a stat can report.
+ *
+ * `symlink` is here because a mounted provider can return one — the durable
+ * filesystem models symlinks — and the in-memory tree simply never produces
+ * it. Leaving it out did not make symlinks go away; it made the one mount
+ * that has them require a cast at every call site.
+ */
+export type FileType = 'file' | 'directory' | 'symlink';
 
 export type VFSEventType = 'create' | 'modify' | 'delete' | 'rename';
 

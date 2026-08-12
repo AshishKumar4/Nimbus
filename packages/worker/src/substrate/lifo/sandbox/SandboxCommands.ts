@@ -12,7 +12,7 @@ export class SandboxCommandsImpl implements ISandboxCommands {
 
   constructor(
     private shell: Shell,
-    private registry: CommandRegistry,
+    readonly registry: CommandRegistry,
   ) {}
 
   run(cmd: string, options?: RunOptions): Promise<CommandResult> {

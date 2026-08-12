@@ -1,8 +1,10 @@
 import type { Command } from '../commands/types.js';
+import type { CommandRegistry } from '../commands/registry.js';
 import type { Kernel } from '../kernel/index.js';
 import type { Shell } from '../shell/Shell.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
 import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
+import type { FileType, MountProvider } from '../kernel/vfs/types.js';
 
 // ─── Sandbox Options ───
 
@@ -30,6 +32,21 @@ export interface SandboxOptions {
     readOnly?: boolean;
     /** Custom fs module implementing NativeFsModule. If omitted, node:fs is used. */
     fsModule?: NativeFsModule;
+  }>;
+  /**
+   * Directories whose storage comes from a provider rather than from the
+   * in-memory tree — a durable filesystem, for instance.
+   *
+   * Applied before anything reads the filesystem, because boot reads it:
+   * `create` sources `/etc/profile`, and a provider that arrived afterwards
+   * would have been invisible to it. Native `mounts` overlay an already-booted
+   * sandbox and keep their existing position.
+   */
+  providerMounts?: Array<{
+    /** Path inside the virtual filesystem where the mount will appear. */
+    virtualPath: string;
+    /** Supplies every operation under `virtualPath`. */
+    provider: MountProvider;
   }>;
 }
 
@@ -63,6 +80,13 @@ export interface CommandResult {
 export interface SandboxCommands {
   run(cmd: string, options?: RunOptions): Promise<CommandResult>;
   register(name: string, handler: Command): void;
+  /**
+   * The command table itself, for layering a command set over the defaults.
+   * Public because composing a workspace means replacing builtins wholesale —
+   * the durable-filesystem coreutils override ~25 of them — and every caller
+   * that needed it was already reaching through the private field.
+   */
+  readonly registry: CommandRegistry;
 }
 
 // ─── SandboxFs ───
@@ -71,8 +95,8 @@ export interface SandboxFs {
   readFile(path: string): Promise<string>;
   readFile(path: string, encoding: null): Promise<Uint8Array>;
   writeFile(path: string, content: string | Uint8Array): Promise<void>;
-  readdir(path: string): Promise<Array<{ name: string; type: 'file' | 'directory' }>>;
-  stat(path: string): Promise<{ type: 'file' | 'directory'; size: number; mtime: number }>;
+  readdir(path: string): Promise<Array<{ name: string; type: FileType }>>;
+  stat(path: string): Promise<{ type: FileType; size: number; mtime: number }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   rm(path: string, options?: { recursive?: boolean }): Promise<void>;
   exists(path: string): Promise<boolean>;

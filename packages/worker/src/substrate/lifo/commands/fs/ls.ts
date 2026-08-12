@@ -1,4 +1,5 @@
 import type { Command } from '../types.js';
+import type { FileType } from '../../kernel/vfs/types.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { BOLD, BLUE, RESET } from '../../utils/colors.js';
@@ -38,7 +39,7 @@ function formatDate(ts: number): string {
 
 interface LsEntry {
   name: string;
-  type: 'file' | 'directory';
+  type: FileType;
   size: number;
   mtime: number;
   mode: number;

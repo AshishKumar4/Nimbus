@@ -1,5 +1,6 @@
 import type { VFS } from '../kernel/vfs/index.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
+import type { FileType } from '../kernel/vfs/types.js';
 import { resolve, dirname } from '../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
 import type { TarEntry } from '../utils/archive.js';
@@ -33,12 +34,12 @@ export class SandboxFsImpl implements ISandboxFs {
     this.vfs.writeFile(abs, content);
   }
 
-  async readdir(path: string): Promise<Array<{ name: string; type: 'file' | 'directory' }>> {
+  async readdir(path: string): Promise<Array<{ name: string; type: FileType }>> {
     const abs = this.resolvePath(path);
     return this.vfs.readdir(abs);
   }
 
-  async stat(path: string): Promise<{ type: 'file' | 'directory'; size: number; mtime: number }> {
+  async stat(path: string): Promise<{ type: FileType; size: number; mtime: number }> {
     const abs = this.resolvePath(path);
     const s = this.vfs.stat(abs);
     return { type: s.type, size: s.size, mtime: s.mtime };

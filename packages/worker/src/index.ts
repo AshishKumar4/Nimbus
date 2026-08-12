@@ -72,6 +72,18 @@ export {
 // Embedders that run their own route table ahead of the Nimbus handler MUST
 // test this first — see the doc comment on `isPreviewHostRequest`.
 export { isPreviewHostRequest } from './_shared/preview-host.js';
+
+// The embeddable form of Nimbus: a durable filesystem and a shell over it,
+// constructed from a host's own SQLite. See ./workspace/nimbus-workspace.ts.
+export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
+export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
+export type {
+  SqlDatabase,
+  SqlTransactions,
+  SqlRow,
+  SqlValue,
+  TransactionHost,
+} from './runtime/os-contracts.js';
 export {
   base64Utf8,
   base64Url,
