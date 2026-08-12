@@ -1077,6 +1077,31 @@ export function releaseSerializedSources(vfsState) {
         vfsState.metadata = {};
 }
 /**
+ * Drop everything a resident launch has finished reading, in place.
+ *
+ * The one-shot path releases its map at LOADER.load; this is the same policy
+ * for the path `spawnNode` takes, which is the path every attached-TTY npm bin
+ * takes — how a real agentic CLI starts. The generated source is a total
+ * encoding of the cells, the manifest and the metadata, and the only thing the
+ * rest of a launch reads off the state is `cursor`. Everything else is a second
+ * copy of the largest thing this DO builds — 22.9 MB for pi — held for exactly
+ * as long as the facet takes to boot on it.
+ *
+ * Holding it reset the session isolate with exceededMemory, and an isolate
+ * reset tears the terminal WebSocket down with no exit frame: the dead screen
+ * reading "[process terminal closed]".
+ *
+ * An emptied state can still generate a map — it would just generate one with
+ * no program in it — so this marks the state instead of trusting callers to
+ * stop.
+ */
+export function releaseResidentLaunchSources(vfsState) {
+    vfsState.bundle = {};
+    vfsState.manifest = {};
+    vfsState.metadata = {};
+    vfsState.generatedSourcesReleased = true;
+}
+/**
  * Drop the serialized forms once a module map has been generated from them.
  *
  * The generated source is a total encoding of all three: every byte of the
@@ -4370,19 +4395,37 @@ export class FacetManager {
             fetchNodeShimsCode(this.env),
         ]);
         const __generateStart = diagOn ? Date.now() : 0;
-        const generatedWorker = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
-        const workerCode = generatedWorker.code;
+        let generatedWorker = generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims);
         if (diagOn)
             await diagClockTick();
         const generateMs = diagOn ? Date.now() - __generateStart : 0;
+        // Sized here, while the map is still in hand. Reading these after the load
+        // would itself be what keeps the map alive, and the whole point of the
+        // scoping below is that nothing does.
+        let moduleMapBytes = 0;
+        let bundleBytes = 0;
+        if (diagOn) {
+            for (const source of Object.values(generatedWorker.modules)) {
+                bundleBytes += _encodedSourceBytes(source);
+            }
+            moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
+        }
+        const manifestBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.manifest)) : 0;
+        const metadataBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.metadata)) : 0;
+        const cacheHit = vfsState.cacheHit ?? false;
+        const vfsCursor = vfsState.cursor;
+        releaseResidentLaunchSources(vfsState);
         let handle;
         let resourcesTracked = false;
         try {
             const __materializeStart = diagOn ? Date.now() : 0;
             const vfsTextModules = await this._materializeFacetImages(entry.pid, {
-                'worker.js': workerCode,
+                'worker.js': generatedWorker.code,
                 ...generatedWorker.modules,
             });
+            // The image store has taken it; this frame must not be what holds the
+            // only other copy while the facet boots.
+            generatedWorker = undefined;
             if (diagOn)
                 await diagClockTick();
             const materializeMs = diagOn ? Date.now() - __materializeStart : 0;
@@ -4391,7 +4434,7 @@ export class FacetManager {
                 // The attached-TTY runner holds startProcess open for the process's
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
-                startArgs: { vfsCursor: vfsState.cursor },
+                startArgs: { vfsCursor },
                 boot: {
                     kind: 'code',
                     code: {
@@ -4407,33 +4450,26 @@ export class FacetManager {
             });
             if (diagOn) {
                 await diagClockTick();
-                const loadMs = Date.now() - __loadStart;
-                // The side modules ARE the VFS bundle whenever the map was split;
-                // when it was small enough to stay inline it rides inside worker.js
-                // and shows up in the total instead. Manifest and metadata are
-                // re-derived rather than read off vfsState because this path builds
-                // its map directly and never populates the serialized forms.
-                let bundleBytes = 0;
-                for (const source of Object.values(generatedWorker.modules)) {
-                    bundleBytes += _encodedSourceBytes(source);
-                }
                 recordExecTelemetry({
                     command,
                     bundleMs,
                     generateMs,
                     materializeMs,
-                    loadMs,
+                    loadMs: Date.now() - __loadStart,
                     // A resident process does not "run and return"; its lifetime is the
                     // process's, so there is no run span to attribute to the launch.
                     runMs: 0,
                     drainPasses: 0,
-                    moduleMapBytes: _encodedSourceBytes(workerCode) + bundleBytes,
+                    moduleMapBytes,
+                    // The side modules ARE the VFS bundle whenever the map was split;
+                    // when it stayed inline it rides inside worker.js and shows up only
+                    // in the total.
                     bundleBytes,
-                    manifestBytes: _encodedSourceBytes(JSON.stringify(vfsState.manifest)),
-                    metadataBytes: _encodedSourceBytes(JSON.stringify(vfsState.metadata)),
+                    manifestBytes,
+                    metadataBytes,
                     rpcWrites: 0,
                     fsRpcReads: 0,
-                    cacheHit: vfsState.cacheHit ?? false,
+                    cacheHit,
                     exitCode: 0,
                     at: Date.now(),
                 });
