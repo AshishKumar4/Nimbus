@@ -118,6 +118,8 @@ export interface TrapTable {
 
 export interface BuiltinExecutionContext {
   vfs: VFS;
+  /** The working directory a builtin resolves its relative path operands against. */
+  cwd: string;
   stdin?: CommandInputStream;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
@@ -593,6 +595,7 @@ export class Interpreter {
         stderr,
         {
           vfs: builtinIo.vfs ?? this.config.vfs,
+          cwd: this.config.getCwd(),
           stdin: builtinIo.stdin,
           stdout,
           stderr,
@@ -902,6 +905,7 @@ export class Interpreter {
             const builtinIo = this.createIoFromFds(io, fds);
             exitCode = await builtin(args, stdout, stderr, stdin, {
               vfs: builtinIo.vfs ?? this.config.vfs,
+              cwd: this.config.getCwd(),
               stdin,
               stdout,
               stderr,
