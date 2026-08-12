@@ -1647,6 +1647,54 @@ function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
 }
 
 /**
+ * Byte cost of the serializer's fixed scaffolding: the IIFE and the three
+ * empty literals it always emits, with and without the `export default …;`
+ * a side module wraps it in. Measured off the serializer itself so the
+ * counts and the thing they count cannot drift.
+ */
+const _FACET_INLINE_ENVELOPE_BYTES = _encodedSourceBytes(_serializeBundleForFacet({}));
+const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSource({}));
+
+/**
+ * What one cell adds to a generated bundle source, counted rather than built.
+ *
+ * `_serializeBundleForFacet` sorts a cell into one of three literals — the
+ * text map, the base64 map, or the denied-path array — and each is a plain
+ * JSON encoding, so a cell's contribution is additive and knowable without
+ * materializing anything. Base64 is pure ASCII of a length fixed by the
+ * source byte count, so a binary cell can be sized without being encoded.
+ *
+ * Sizing a bundle used to mean serializing it: the caller built the whole
+ * 22.9 MB source, read `.length` off it, and threw it away — three times per
+ * pi launch, once whole and twice more per-cell inside the split loop.
+ */
+function _facetBundleCellBytes(path: string, cell: FacetVfsBundle[string]): number {
+  if (typeof cell === 'string') {
+    return _jsonEncodedBytes(path) + 1 + _jsonEncodedBytes(cell);
+  }
+  if (cell instanceof Uint8Array) {
+    return _jsonEncodedBytes(path) + 1 + 4 * Math.ceil(cell.byteLength / 3) + 2;
+  }
+  // A denial cell rides in the path array, which carries no key.
+  return _jsonEncodedBytes(path);
+}
+
+/** Encoded size of the inline bundle expression, without building it. */
+function _inlineBundleSourceBytes(bundle: FacetVfsBundle): number {
+  let bytes = _FACET_INLINE_ENVELOPE_BYTES;
+  const counts = { str: 0, bin: 0, denied: 0 };
+  for (const [path, cell] of Object.entries(bundle)) {
+    bytes += _facetBundleCellBytes(path, cell);
+    if (typeof cell === 'string') counts.str++;
+    else if (cell instanceof Uint8Array) counts.bin++;
+    else counts.denied++;
+  }
+  // One separator between siblings in each of the three literals.
+  for (const n of Object.values(counts)) if (n > 1) bytes += n - 1;
+  return bytes;
+}
+
+/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Small bundles remain inline. Large bundles are partitioned into side
@@ -1659,22 +1707,24 @@ export function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
 ): FacetVfsBundleSource {
-  const inlineExpression = _serializeBundleForFacet(bundle);
+  // Size the inline form before building it. A bundle that will be split has
+  // no use for the whole-bundle expression, and building one to read its
+  // length off cost a second full copy of the largest string this DO makes.
   if (
     !forceSideModules
-    && _encodedSourceBytes(inlineExpression) <= BUNDLE_MAX_ENCODED_BYTES
+    && _inlineBundleSourceBytes(bundle) <= BUNDLE_MAX_ENCODED_BYTES
   ) {
-    return { expression: inlineExpression, imports: '', modules: {} };
+    return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
   if (Object.keys(bundle).length === 0) {
-    return { expression: inlineExpression, imports: '', modules: {} };
+    return { expression: _serializeBundleForFacet(bundle), imports: '', modules: {} };
   }
 
   const maxModuleBytes = BUNDLE_MAX_ENCODED_BYTES - FACET_VFS_MODULE_SOURCE_MARGIN;
   type BundlePiece = [path: string, cell: FacetVfsBundle[string]];
 
   function sourceBytes(path: string, cell: FacetVfsBundle[string]): number {
-    return _encodedSourceBytes(_facetBundleModuleSource({ [path]: cell }));
+    return _FACET_MODULE_ENVELOPE_BYTES + _facetBundleCellBytes(path, cell);
   }
 
   function splitCell(path: string, cell: FacetVfsBundle[string]): BundlePiece[] {
