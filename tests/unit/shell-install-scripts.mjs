@@ -31,6 +31,12 @@ import { registerUnixCommands } from '../../packages/worker/src/shell/unix-comma
 import { registerShellEntrypointCommands } from '../../packages/worker/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/worker/src/shell/exec-dispatch.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { installCompressionStreams } from './lib/web-compression-streams.mjs';
+
+// gzip is a Workers global; this host is bun, which lacks it. Without this the
+// archive commands cannot be exercised at all — which is how their argument
+// handling stayed broken.
+installCompressionStreams();
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -105,16 +111,33 @@ await check('an option the command does not have is still an error',
   `cd /tmp\nprintf p > e.txt\nzip -q e.zip e.txt\nunzip -oZ e.zip\necho "rc=$?"\n`,
   { stdout: 'rc=1\n', stderr: 'unzip: invalid option: -Z\n' });
 
-// gzip/gunzip run their bytes through CompressionStream, which the Workers
-// runtime has and this test host does not, so assert on the argument parse:
-// a cluster must reach the file, not bounce off the option table.
-await check('gzip reads -dk as -d -k rather than rejecting the cluster',
-  `cd /tmp\nif gzip -dk absent.gz 2>&1 | grep -q 'invalid option'; then echo rejected; else echo parsed; fi\n`,
-  { stdout: 'parsed\n' });
+await check('gzip -dk is -d -k, and keeps the original',
+  `cd /tmp\nprintf body > g.txt\ngzip g.txt\ngzip -dk g.txt.gz\ncat g.txt\necho\n`
+  + `test -f g.txt.gz && echo kept\n`,
+  { stdout: 'body\nkept\n' });
+
+await check('gzip round-trips a file through a real gzip stream',
+  `cd /tmp\nprintf 'the payload' > r.txt\ngzip r.txt\ntest ! -e r.txt && echo source-gone\n`
+  + `gunzip r.txt.gz\ncat r.txt\necho\n`,
+  { stdout: 'source-gone\nthe payload\n' });
 
 await check('gzip accepts a compression level and ignores it',
-  `cd /tmp\nif gzip -9 absent.txt 2>&1 | grep -q 'invalid option'; then echo rejected; else echo parsed; fi\n`,
-  { stdout: 'parsed\n' });
+  `cd /tmp\nprintf body > lv.txt\ngzip -9 lv.txt\ntest -f lv.txt.gz && echo compressed\n`,
+  { stdout: 'compressed\n' });
+
+await check('gunzip -k keeps the compressed file',
+  `cd /tmp\nprintf body > k.txt\ngzip k.txt\ngunzip -k k.txt.gz\ncat k.txt\necho\n`
+  + `test -f k.txt.gz && echo kept\n`,
+  { stdout: 'body\nkept\n' });
+
+await check('tar -czf then -xzf round-trips a directory',
+  `cd /tmp\nmkdir -p t/inner\nprintf leaf > t/inner/f.txt\ntar -czf t.tgz t\n`
+  + `rm -rf t\nmkdir -p out\ntar -xzf t.tgz -C out\ncat out/t/inner/f.txt\necho\n`,
+  { stdout: 'leaf\n' });
+
+await check('tar stores a multi-component operand under the path given',
+  `cd /tmp\nmkdir -p m/sub\nprintf x > m/sub/f\ntar -czf m.tgz m/sub/f\ntar -tzf m.tgz\n`,
+  { stdout: 'm/sub/f\n' });
 
 await check('gunzip still rejects an option it does not have',
   `cd /tmp\ngunzip -Z absent.gz\necho "rc=$?"\n`,
@@ -408,6 +431,93 @@ await check('the shell still answers --help given before a script',
     + 'sha256sum -c /tmp/bad.txt\necho "rc=$?"\n',
     { stdout: '/tmp/every-byte.bin: FAILED\nrc=1\n' });
 }
+
+// ── file tests resolve against the working directory ──────────────────────
+// `[ -f name ]` handed the VFS a bare name, which it read as a path at the
+// root, so the test was false for a file sitting in the working directory —
+// and a false file test does not fail, it takes the other branch.
+
+await check('a file test finds a file by its relative name',
+  'cd /tmp\nprintf x > rel.txt\nmkdir -p reld\n'
+  + '[ -f rel.txt ] && echo f\n[ -e rel.txt ] && echo e\n[ -r rel.txt ] && echo r\n'
+  + '[ -s rel.txt ] && echo s\n[ -d reld ] && echo d\n[[ -f rel.txt ]] && echo dbl\n'
+  + '[ -f nope ] || echo absent-still-absent\n',
+  { stdout: 'f\ne\nr\ns\nd\ndbl\nabsent-still-absent\n' });
+
+await check('a relative file test follows the working directory',
+  'cd /tmp\nprintf x > cwd-rel.txt\ncd /\n[ -f cwd-rel.txt ] || echo not-here\n'
+  + 'cd /tmp\n[ -f cwd-rel.txt ] && echo here\n',
+  { stdout: 'not-here\nhere\n' });
+
+// ── clustered flags across the text utilities ─────────────────────────────
+// Same defect as unzip's, in the commands scripts lean on hardest: each one
+// matched flags with `args.includes('-r')`, so a cluster matched nothing and
+// the command silently did the default thing. `wc -lw` printed no counts at
+// all, `sort -rn` sorted lexically, `head -qn 1` was an unrecognised option.
+// Alongside them, defects the cluster work uncovered: `uniq` ignored file
+// operands outright, `tail -n 1` printed the blank line after the last one,
+// and `grep -q` did not exist. Expectations are GNU's own output.
+
+const SETUP = "cd /tmp\nprintf 'ab\\nAB\\nab\\ncd\\n' > f.txt\n"
+  + "printf 'ab\\nAB\\nab\\nce\\n' > f2.txt\nprintf '10\\n9\\n9\\n100\\n' > n.txt\n";
+
+await check("wc -lw clusters, and lays columns out like GNU",
+  SETUP + "wc -lw < f.txt\n",
+  { stdout: "      4       4\n" });
+await check("wc pads every column to the same width",
+  SETUP + "wc f.txt\n",
+  { stdout: " 4  4 12 f.txt\n" });
+await check("wc totals several files",
+  SETUP + "wc -l f.txt f2.txt\n",
+  { stdout: " 4 f.txt\n 4 f2.txt\n 8 total\n" });
+await check("wc -l of standard input has no padding",
+  SETUP + "wc -l < f.txt\n",
+  { stdout: "4\n" });
+await check("sort -rn clusters",
+  SETUP + "sort -rn n.txt\n",
+  { stdout: "100\n10\n9\n9\n" });
+await check("sort -nu clusters",
+  SETUP + "sort -nu n.txt\n",
+  { stdout: "9\n10\n100\n" });
+await check("uniq reads a file operand",
+  SETUP + "uniq f.txt\n",
+  { stdout: "ab\nAB\nab\ncd\n" });
+await check("uniq -ci clusters",
+  SETUP + "sort f.txt | uniq -ci\n",
+  { stdout: "      3 ab\n      1 cd\n" });
+await check("tr -ds deletes SET1 then squeezes SET2",
+  SETUP + "printf aabbcc | tr -ds b a; echo\n",
+  { stdout: "acc\n" });
+await check("head -qn clusters",
+  SETUP + "head -qn 1 f.txt\n",
+  { stdout: "ab\n" });
+await check("head separates several files with a blank line",
+  SETUP + "head -n 1 f.txt f2.txt\n",
+  { stdout: "==> f.txt <==\nab\n\n==> f2.txt <==\nab\n" });
+await check("tail -n 1 is the last line, not a blank one",
+  SETUP + "tail -n 1 f.txt\n",
+  { stdout: "cd\n" });
+await check("tail -1 is a count",
+  SETUP + "tail -1 f.txt\n",
+  { stdout: "cd\n" });
+await check("tail -qn clusters",
+  SETUP + "tail -qn 1 f.txt\n",
+  { stdout: "cd\n" });
+await check("tail -n +2 counts from the start",
+  SETUP + "tail -n +2 f.txt\n",
+  { stdout: "AB\nab\ncd\n" });
+await check("grep -q is quiet and reports through its status",
+  SETUP + "grep -q ab f.txt; echo \"rc=$?\"; grep -q zz f.txt; echo \"rc=$?\"\n",
+  { stdout: "rc=0\nrc=1\n" });
+await check("grep -Eq clusters",
+  SETUP + "grep -Eq \"a.\" f.txt; echo \"rc=$?\"\n",
+  { stdout: "rc=0\n" });
+await check("base64 -dw clusters",
+  SETUP + "printf YWJj | base64 -dw 0; echo\n",
+  { stdout: "abc\n" });
+await check("base64 wraps at 76 columns by default",
+  SETUP + "printf %s xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx | base64 | wc -l\n",
+  { stdout: "2\n" });
 
 box.destroy();
 
