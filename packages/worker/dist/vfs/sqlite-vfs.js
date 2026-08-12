@@ -2316,9 +2316,9 @@ export class SqliteVFS {
             group = [];
             budget = new TransactionPlanBuilder();
             // Every group re-authorises its own paths and re-checks the mutation
-            // guard through writeBatch, so each check is contemporaneous with the
+            // guard through commitBatch, so each check is contemporaneous with the
             // transaction that acts on it.
-            this.writeBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
+            this.commitBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
             removed += paths.length;
         };
         for (const inode of removable) {
@@ -2332,6 +2332,7 @@ export class SqliteVFS {
             group.push(inode.path);
         }
         flush();
+        this.runContentMaintenanceSafely(1);
         return removed;
     }
     rename(oldPath, newPath, cred) {
@@ -2519,11 +2520,21 @@ export class SqliteVFS {
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     writeBatch(payload, cred, onCommit) {
-        const normalized = this.authorizeBatch(payload, cred);
-        this.assertMutationsAllowed(batchMutationPaths(normalized));
-        const result = this._writeBatchWithRetry(normalized, { source: 'strict-batch', limitMode: 'bounded' }, true, onCommit);
+        const result = this.commitBatch(payload, cred, onCommit);
         this.runContentMaintenanceSafely(1);
         return result;
+    }
+    /**
+     * Authorise and commit one batch, without the maintenance pass. A standalone
+     * mutation owes that pass; an operation built from several transactions owes
+     * exactly one when it is finished. Charging it per transaction made removing
+     * a tree run the orphan scan — which reads the chunk table — once for every
+     * bounded group of the removal.
+     */
+    commitBatch(payload, cred, onCommit) {
+        const normalized = this.authorizeBatch(payload, cred);
+        this.assertMutationsAllowed(batchMutationPaths(normalized));
+        return this._writeBatchWithRetry(normalized, { source: 'strict-batch', limitMode: 'bounded' }, true, onCommit);
     }
     replaceFileWithStagedContent(inode, chunks, onPhase, onCommit) {
         this.validateFileChunks(inode, chunks);

@@ -512,6 +512,14 @@ export declare class SqliteVFS {
      * grouping. Oversized strict calls fail with E2BIG before mutation.
      */
     private writeBatch;
+    /**
+     * Authorise and commit one batch, without the maintenance pass. A standalone
+     * mutation owes that pass; an operation built from several transactions owes
+     * exactly one when it is finished. Charging it per transaction made removing
+     * a tree run the orphan scan — which reads the chunk table — once for every
+     * bounded group of the removal.
+     */
+    private commitBatch;
     private replaceFileWithStagedContent;
     /**
      * Copy-on-write replacement for an over-limit range/truncate mutation.
