@@ -3192,8 +3192,7 @@ function mkRm(vfs) {
                         exit = 1;
                         continue;
                     }
-                    // Recursive delete: walk children, unlink files, rmdir dirs.
-                    rmDirRec(vfs, fp);
+                    vfs.removeRecursive(fp);
                 }
                 else {
                     vfs.unlink(fp);
@@ -3214,22 +3213,6 @@ function mkRm(vfs) {
         }
         return exit;
     };
-}
-/**
- * Internal helper: recursive directory delete via SqliteVFS readdir +
- * unlink/rmdir. vfs.readdir returns `{name, type}[]` not `string[]` —
- * iterate the name property explicitly.
- */
-function rmDirRec(vfs, path) {
-    const entries = vfs.readdir(path);
-    for (const entry of entries) {
-        const childPath = path + '/' + entry.name;
-        if (entry.type === 'directory')
-            rmDirRec(vfs, childPath);
-        else
-            vfs.unlink(childPath);
-    }
-    vfs.rmdir(path);
 }
 function mkTouch(vfs) {
     return (ctx) => {

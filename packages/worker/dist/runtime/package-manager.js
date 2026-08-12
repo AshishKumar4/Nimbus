@@ -601,8 +601,8 @@ async function runUninstall(args, ctx, deps) {
                 deps.registry.unregister(ep.binName);
             }
         }
-        // Recursive delete via VFS — readdir + unlink + rmdir.
-        rmrfVfs(deps.vfs, m.root);
+        if (deps.vfs.exists(m.root))
+            deps.vfs.removeRecursive(m.root);
         ctx.stdout.write(`[${m.manifest.name}@${m.manifest.version}] uninstalled (removed ${m.root})\n`);
     }
     // Clean up empty parent dirs (~/.nimbus/runtimes/<name>/ if no
@@ -611,20 +611,6 @@ async function runUninstall(args, ctx, deps) {
     cleanupEmpty(deps.vfs, runtimeDir);
     cleanupEmpty(deps.vfs, `${home.replace(/^\/+/, '').replace(/\/+$/, '')}/.nimbus/runtimes`);
     return 0;
-}
-function rmrfVfs(vfs, path) {
-    if (!vfs.exists(path))
-        return;
-    for (const entry of vfs.readdir(path)) {
-        const child = `${path}/${entry.name}`;
-        if (entry.type === 'directory') {
-            rmrfVfs(vfs, child);
-        }
-        else {
-            vfs.unlink(child);
-        }
-    }
-    vfs.rmdir(path);
 }
 function cleanupEmpty(vfs, path) {
     if (!vfs.exists(path))
