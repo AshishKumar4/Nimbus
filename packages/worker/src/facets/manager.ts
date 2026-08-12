@@ -3811,6 +3811,9 @@ export class FacetManager {
         recordExecTelemetry({
           command,
           bundleMs,
+          // A one-shot's map rides to LOADER.load by value; nothing is
+          // materialized.
+          materializeMs: 0,
           loadMs: diagSink.loadMs,
           runMs: diagSink.runMs,
           drainPasses: result.diag?.drainPasses ?? 0,
@@ -4735,10 +4738,13 @@ export class FacetManager {
       try { this.esbuild = new EsbuildService(this.vfs); } catch { this.esbuild = null; }
     }
     if (this.vfs) this._ensureImageStoreDir(this.vfs);
+    const diagOn = isExecDiagEnabled();
+    const __bundleStart = diagOn ? Date.now() : 0;
     const processVfs = this.vfs?.as(entry.cred);
     const vfsState: FacetVfsState = processVfs
       ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+    const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     const processEnv = opts.attachedTty
       ? {
           ...(opts.env || {}),
@@ -4769,6 +4775,13 @@ export class FacetManager {
     let resourcesTracked = false;
 
     try {
+      const __materializeStart = diagOn ? Date.now() : 0;
+      const vfsTextModules = await this._materializeFacetImages(entry.pid, {
+        'worker.js': workerCode,
+        ...generatedWorker.modules,
+      });
+      const materializeMs = diagOn ? Date.now() - __materializeStart : 0;
+      const __loadStart = diagOn ? Date.now() : 0;
       handle = await this._startResidentProcess(entry.pid, {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
@@ -4783,13 +4796,40 @@ export class FacetManager {
             // Only the sqlite sidecar rides by value: it is a fixed-size
             // asset of the worker's own, not of the user's disk.
             modules: sqliteModules,
-            vfsTextModules: await this._materializeFacetImages(entry.pid, {
-              'worker.js': workerCode,
-              ...generatedWorker.modules,
-            }),
+            vfsTextModules,
           },
         },
       });
+      if (diagOn) {
+        // The side modules ARE the VFS bundle whenever the map was split;
+        // when it was small enough to stay inline it rides inside worker.js
+        // and shows up in the total instead. Manifest and metadata are
+        // re-derived rather than read off vfsState because this path builds
+        // its map directly and never populates the serialized forms.
+        let bundleBytes = 0;
+        for (const source of Object.values(generatedWorker.modules)) {
+          bundleBytes += _encodedSourceBytes(source);
+        }
+        recordExecTelemetry({
+          command,
+          bundleMs,
+          materializeMs,
+          loadMs: Date.now() - __loadStart,
+          // A resident process does not "run and return"; its lifetime is the
+          // process's, so there is no run span to attribute to the launch.
+          runMs: 0,
+          drainPasses: 0,
+          moduleMapBytes: _encodedSourceBytes(workerCode) + bundleBytes,
+          bundleBytes,
+          manifestBytes: _encodedSourceBytes(JSON.stringify(vfsState.manifest)),
+          metadataBytes: _encodedSourceBytes(JSON.stringify(vfsState.metadata)),
+          rpcWrites: 0,
+          fsRpcReads: 0,
+          cacheHit: vfsState.cacheHit ?? false,
+          exitCode: 0,
+          at: Date.now(),
+        });
+      }
       this.trackProcessRpcResources(
         entry.pid,
         [handle],

@@ -27,6 +27,15 @@ export interface ExecTelemetryRecord {
     command: string;
     /** buildPrefetchBundle wall time (real I/O — clock advances). */
     bundleMs: number;
+    /**
+     * `_materializeFacetImages` wall time — resident processes only.
+     *
+     * A one-shot hands its module map to LOADER.load by value and never
+     * materializes anything, so this stays 0 there. A resident process writes
+     * the map to the content-addressed image store first, and that write is on
+     * the same DO turn as everything else in the launch.
+     */
+    materializeMs: number;
     /** LOADER.load + getEntrypoint wall time. */
     loadMs: number;
     /** entrypoint.fetch() wall time (the run + supervisor RPC). */
