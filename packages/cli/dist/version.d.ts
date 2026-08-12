@@ -3,5 +3,5 @@
  * `require('./package.json')` because that breaks under bun's
  * single-file binary mode.
  */
-export declare const CLI_VERSION = "0.1.7";
+export declare const CLI_VERSION = "0.1.8";
 //# sourceMappingURL=version.d.ts.map
