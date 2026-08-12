@@ -16,12 +16,12 @@
  * such session was unrecoverable after eviction.
  */
 
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
-import { rewriteCirrusViteConfigBundle } from '../runtime/cirrus-vite-config-rewriter.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
-import { makeLongRunningPortStub } from '../runtime/long-running-handle.js';
-import { acquireHeavyAlloc } from '../observability/heavy-alloc-coord.js';
+import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import { acquireHeavyAlloc } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 
 export interface StartRealViteOptions {

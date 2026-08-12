@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 
 // `session/routes.ts` reaches `cloudflare:workers` through its bindings
 // module, which bun cannot resolve outside workerd. Same stub-and-bundle

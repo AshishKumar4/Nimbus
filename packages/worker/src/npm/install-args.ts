@@ -1,4 +1,4 @@
-import { parseArgs } from '../substrate/lifo/utils/args.js';
+import { parseArgs } from '@nimbus-sh/core/substrate/lifo/utils/args.js';
 import { parseNpmLogLevel, type NpmLogLevel } from './npm-log.js';
 
 export interface NpmInstallInvocation {

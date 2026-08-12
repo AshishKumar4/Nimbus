@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { parseViteConfigSource } from '../../packages/worker/src/runtime/vite-config-parser.ts';
+import { parseViteConfigSource } from '../../packages/core/src/runtime/vite-config-parser.ts';
 
 {
   const config = parseViteConfigSource(`

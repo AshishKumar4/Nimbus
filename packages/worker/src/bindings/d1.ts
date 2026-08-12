@@ -33,7 +33,7 @@
  * are NOT supported (D1 itself doesn't support them).
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
 // ── Public types (subset of @cloudflare/workers-types D1 surface) ───────
 

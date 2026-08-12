@@ -27,9 +27,9 @@
  */
 
 import { fetchCatalog, fetchManifest, fetchBlob, parseRuntimeManifest, type RuntimeCatalogEnv, type RuntimeCatalog, type RuntimeManifest, type ManifestEntrypoint } from './runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, type RuntimePackageAbi } from './os-contracts.js';
-import type { CommandContext } from '../substrate/lifo/commands/types.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, type RuntimePackageAbi } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 
 /** Minimal shell ctx shape we depend on (matches existing handlers). */
 export interface ShellCtx extends Pick<CommandContext, 'pid' | 'cred' | 'setUmask' | 'runAs'> {

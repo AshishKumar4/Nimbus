@@ -13,7 +13,7 @@
 // differ, the same path is stable across calls, and no inode is zero.
 
 import assert from 'node:assert';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;

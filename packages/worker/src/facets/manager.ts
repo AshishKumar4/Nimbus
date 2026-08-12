@@ -16,29 +16,29 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 
-import type { ProcessEntry } from '../runtime/process-table.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { fetchNodeShimsCode } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
-import { getRealNodeImportsCode } from '../_shared/real-node-imports.js';
+import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { FACET_RESIDENT_STORE_SOURCE } from '../vfs/facet-resident-store.js';
 import {
   VFS_CURSOR_SEED_SOURCE,
   serializeFacetVfsCursor,
-} from '../_shared/facet-vfs-cursor.js';
-import { VFS_WRITE_LEDGER_SOURCE } from '../_shared/vfs-write-ledger.js';
-import type { CredentialedVfs, SqliteVFS, VfsStat } from '../vfs/sqlite-vfs.js';
-import { vfsPathExtension } from '../vfs/path.js';
-import type { PortRegistry } from '../runtime/port-registry.js';
-import { prefetchForRequire } from '../runtime/require-resolver.js';
-import { hasTopLevelModuleSyntax } from '../runtime/javascript-ast.js';
-import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta-transform.js';
-import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
-import { classifyError } from '../observability/oom-classify.js';
+} from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
+import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
+import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import { LaunchPacer, launchChunkMaxBytes, type LaunchTurnScheduler } from './launch-pacer.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
-import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
   ProcessFabric,
@@ -62,25 +62,25 @@ import {
   type OpencodeRunnerOptions,
   type OpencodeRunnerMode,
 } from '../runtime/opencode-facet-runner.js';
-import { parsePortFromArgv, resolveLongRunningPort } from '../runtime/long-running-handle.js';
+import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { WorkerCode } from '../loaders/vendor/types.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
   type FacetBundleProfile,
-} from '../runtime/bundle-profile.js';
+} from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
   BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
-} from '../constants.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
+} from '@nimbus-sh/core/constants.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import {
   prefetchBundleStart,
   prefetchBundleEnd,
   setPrefetchCacheBytes,
-} from '../observability/diag-counters.js';
+} from '@nimbus-sh/core/observability/diag-counters.js';
 
 /** Result returned from a facet execution */
 export interface FacetExecResult {

@@ -2,7 +2,7 @@ import {
   base64Utf8,
   sealJson,
   unsealJson,
-} from '../_shared/crypto.js';
+} from '@nimbus-sh/core/_shared/crypto.js';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';

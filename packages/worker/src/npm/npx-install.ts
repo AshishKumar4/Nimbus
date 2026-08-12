@@ -29,8 +29,8 @@
  */
 
 import type { NpmInstaller } from './installer.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import { bundleProfileForNpmBin, type FacetBundleProfile } from '../runtime/bundle-profile.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { bundleProfileForNpmBin, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */

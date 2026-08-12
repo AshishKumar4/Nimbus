@@ -26,15 +26,15 @@
  */
 
 import { getCtxExports } from '../session/ctx-exports.js';
-import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '../constants.js';
+import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/core/constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
-import { ESBUILD_NAME_GLOBAL_SHIM } from '../_shared/esbuild-facet-shim.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import {
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
-} from '../_shared/w7-frame.js';
+} from '@nimbus-sh/core/_shared/w7-frame.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 

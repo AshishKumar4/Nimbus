@@ -2,9 +2,9 @@
 
 import assert from 'node:assert/strict';
 
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { registerShellEntrypointCommands } from '../../packages/worker/src/shell/shell-entrypoints.ts';
-import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
+import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 
 const box = await Sandbox.create({ persist: false });
 

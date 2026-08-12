@@ -6,11 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
-import { createDefaultRegistry } from '../../packages/worker/src/substrate/lifo/commands/registry.ts';
-import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
+import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { encodeWriteBatchStream } from '../../packages/core/src/_shared/w7-frame.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });

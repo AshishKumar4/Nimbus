@@ -27,8 +27,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { prefetchForRequire } from '../../packages/worker/src/runtime/require-resolver.ts';
-import { typescriptFallbackCandidates } from '../../packages/worker/src/_shared/typescript-specifiers.ts';
+import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
+import { typescriptFallbackCandidates } from '../../packages/core/src/_shared/typescript-specifiers.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
   bundleTypescriptLoader,

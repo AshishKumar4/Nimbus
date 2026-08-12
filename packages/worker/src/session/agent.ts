@@ -25,7 +25,7 @@ import {
   randomBase64Url,
   sealJson,
   unsealJson,
-} from '../_shared/crypto.js';
+} from '@nimbus-sh/core/_shared/crypto.js';
 import {
   clearNimbusAgentOAuthCookie,
   fetchNimbusCloudflareAccounts,
@@ -61,7 +61,7 @@ import {
   rpcStartProcess,
   type ProgrammaticHost,
 } from './programmatic.js';
-import { resolveVfsPath } from '../vfs/path.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import {
   appendTextPart,
   interruptRunningTools,
@@ -74,8 +74,8 @@ import {
   type StoredMessageStatus,
   type StoredTurnPart,
 } from './agent-contract.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
 interface AgentStorage {
   get(key: string): Promise<unknown>;

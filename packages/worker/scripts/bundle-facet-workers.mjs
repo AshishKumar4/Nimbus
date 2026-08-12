@@ -34,7 +34,7 @@
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
  *   src/runtime/virtual-socket-kernel.generated.ts — exports
  *       VIRTUAL_SOCKET_KERNEL_SRC: string
- *   src/runtime/wasi-instance.generated.ts — exports
+ *   @nimbus-sh/core src/runtime/wasi-instance.generated.ts — exports
  *       WASI_INSTANCE_BODY_SRC: string
  *   src/runtime/bash-runner.generated.ts — exports
  *       BASH_RUNNER_BODY_SRC: string
@@ -49,6 +49,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
+const coreRoot = join(root, '..', 'core');
 
 /**
  * Bundle one TS source into a self-contained ESM string suitable for
@@ -94,7 +95,7 @@ async function bundleVirtualSocketKernel() {
         "import { installVirtualSocketKernel } from './src/runtime/virtual-socket-kernel.ts';",
         'installVirtualSocketKernel();',
       ].join('\n'),
-      resolveDir: root,
+      resolveDir: coreRoot,
       loader: 'ts',
     },
     bundle: true,
@@ -216,7 +217,7 @@ async function bundleWasiInstance() {
  */
 async function bundleBashRunner() {
   const result = await build({
-    entryPoints: [join(root, 'src', 'runtime', 'bash', 'preamble.ts')],
+    entryPoints: [join(coreRoot, 'src', 'runtime', 'bash', 'preamble.ts')],
     bundle: true,
     format: 'iife',
     target: 'esnext',
@@ -275,7 +276,7 @@ async function main() {
   //    which esbuild's type-stripping handles transparently. The
   //    runtime output has no imports.
   const w7Stripped = await bundleAsPreamble(
-    join(root, 'src', '_shared', 'w7-frame.ts'),
+    join(coreRoot, 'src', '_shared', 'w7-frame.ts'),
     'w7-frame',
   );
 
@@ -289,7 +290,7 @@ async function main() {
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - src/npm/tarball-stream.ts (streaming tar primitives)',
-    ' *   - src/_shared/w7-frame.ts   (W7 streaming bulk-write encoder)',
+    ' *   - @nimbus-sh/core src/_shared/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *',
     ' * Consumed by src/loaders/loader-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -321,7 +322,7 @@ async function main() {
     ' * virtual-socket-kernel.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
-    ' *   - src/runtime/virtual-socket-kernel.ts',
+    ' *   - @nimbus-sh/core src/runtime/virtual-socket-kernel.ts',
     ' *',
     ' * Self-contained IIFE that installs globalThis.__nimbusVirtualSockets.',
     ' * Consumed by python-runner.ts and ruby-runner.ts: spliced into the',
@@ -341,7 +342,7 @@ async function main() {
     `w7=${(w7Stripped.length / 1024).toFixed(2)} KiB)`,
   );
   const wasiSrc = await bundleWasiInstance();
-  const wasiOutPath = join(root, 'src', 'runtime', 'wasi-instance.generated.ts');
+  const wasiOutPath = join(coreRoot, 'src', 'runtime', 'wasi-instance.generated.ts');
   writeFileSync(wasiOutPath, [
     '/**',
     ' * wasi-instance.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
@@ -367,7 +368,7 @@ async function main() {
     ' * bash-runner.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
-    ' *   - src/runtime/bash/preamble.ts',
+    ' *   - @nimbus-sh/core src/runtime/bash/preamble.ts',
     ' *',
     ' * The facet-side bash scheduler as a self-contained IIFE that installs',
     ' * globalThis.__bashBoot / globalThis.__bashFeed. bash-runner.ts re-exports it',

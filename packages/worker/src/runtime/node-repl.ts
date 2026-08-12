@@ -26,7 +26,7 @@ import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
-import { NODE_VERSION } from '../constants.js';
+import { NODE_VERSION } from '@nimbus-sh/core/constants.js';
 
 export interface NodeReplDeps {
   facetMgr: FacetManager;

@@ -50,7 +50,7 @@
  *   can read it even though TypeScript doesn't compile it.
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
 /**
  * Walk the VFS and produce a snapshot suitable for seeding the facet's

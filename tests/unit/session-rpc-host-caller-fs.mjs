@@ -7,8 +7,8 @@
 
 import assert from 'node:assert/strict';
 
-import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import {
   _rpcChmod,
   _rpcExists,
@@ -22,7 +22,7 @@ import {
   _rpcStat,
   _rpcWriteFile,
 } from '../../packages/worker/src/session/rpc.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();

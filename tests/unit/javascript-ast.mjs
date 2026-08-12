@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { hasTopLevelModuleSyntax } from '../../packages/worker/src/runtime/javascript-ast.ts';
+import { hasTopLevelModuleSyntax } from '../../packages/core/src/runtime/javascript-ast.ts';
 
 assert.equal(hasTopLevelModuleSyntax('const x = 1; module.exports = x;'), false);
 assert.equal(hasTopLevelModuleSyntax('export function f() { return 1; }'), true);

@@ -18,7 +18,7 @@
 // nested `shell.execute`. Its output must land on the real terminal verbatim.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
+import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 
 // Minimal ITerminal that records everything written to the real terminal.
 function makeRecordingTerminal() {

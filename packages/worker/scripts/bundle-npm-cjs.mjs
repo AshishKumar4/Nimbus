@@ -354,7 +354,7 @@ async function main() {
  * is rewritten to point at one of these bundles at request time.
  */
 
-import { loadAssetText, type AssetsFetcher } from './runtime/assets-loader.js';
+import { loadAssetText, type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';
 
 export interface CirrusNpmCjsBundle {
   moduleName: string;

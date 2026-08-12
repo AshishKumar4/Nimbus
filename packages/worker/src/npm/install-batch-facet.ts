@@ -38,7 +38,7 @@
  */
 
 import type { FacetPackageSpec } from './install-facet.js';
-import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
 declare const __nimbusUseRpcResult: <T, R>(
   promise: Promise<T>,

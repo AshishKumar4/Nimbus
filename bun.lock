@@ -86,6 +86,21 @@
         "typescript": "^5.7.0",
       },
     },
+    "packages/core": {
+      "name": "@nimbus-sh/core",
+      "version": "0.1.0",
+      "dependencies": {
+        "acorn": "^8.15.0",
+        "acorn-walk": "^8.3.5",
+        "esbuild-wasm": "0.24.2",
+        "magic-string": "^0.30.21",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250327.0",
+        "typescript": "^5.7.0",
+      },
+    },
     "packages/create-nimbus-app": {
       "name": "create-nimbus-app",
       "version": "0.1.6",
@@ -129,9 +144,8 @@
       "version": "0.2.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
+        "@nimbus-sh/core": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
-        "acorn": "^8.15.0",
-        "acorn-walk": "^8.3.5",
         "ai": "^6.0.182",
         "clean-git-ref": "^2.0.1",
         "crc-32": "^1.2.2",
@@ -141,7 +155,6 @@
         "ignore": "^5.1.4",
         "is-git-ref-name-valid": "^1.0.0",
         "isomorphic-git": "npm:@ashishkumar472/cf-git@1.0.5",
-        "magic-string": "^0.30.21",
         "minimisted": "^2.0.1",
         "pako": "1.0.11",
         "pify": "^4.0.1",
@@ -421,6 +434,8 @@
     "@nimbus-sh/cli": ["@nimbus-sh/cli@workspace:packages/cli"],
 
     "@nimbus-sh/config": ["@nimbus-sh/config@workspace:packages/config"],
+
+    "@nimbus-sh/core": ["@nimbus-sh/core@workspace:packages/core"],
 
     "@nimbus-sh/docs": ["@nimbus-sh/docs@workspace:apps/docs"],
 

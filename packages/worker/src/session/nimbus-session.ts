@@ -9,32 +9,32 @@
 import {
   Kernel,
   Shell,
-} from '../substrate/lifo/index.js';
+} from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS, type WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
-import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
+import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import {
   CRED_KERNEL,
   CRED_SESSION_USER,
   type VfsAcquireResult,
   type VfsCred,
   type VfsListPage,
-} from '../runtime/os-contracts.js';
+} from '@nimbus-sh/core/runtime/os-contracts.js';
 // S4: PersistAdapter + ProcessExitInfo + configureWsHibernation moved with
 // the hibernation surface to ./nimbus-session-hib.ts. Type for _w9WsConfig
 // re-imported below from the same place (re-exported by -hib.ts).
 import type { WsHibernationConfigResult } from './hibernation.js';
-import { PortRegistry } from '../runtime/port-registry.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
+import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
-import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
+import { registerAllocObserver } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
@@ -50,11 +50,11 @@ import { NpmInstaller } from '../npm/installer.js';
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { setCtxExports } from './ctx-exports.js';
-import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '../constants.js';
-import { seedProject } from '../vfs/seed-project.js';
+import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
-import { enc, dec } from '../_shared/bytes.js';
+import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // ── W12 — Lever 12/G3/H1 + Lever 7/G4 — DO read replicas + Smart Placement
 //
@@ -190,7 +190,7 @@ export {
 // unit-level tests can import it without pulling in cloudflare:workers.
 // Re-export here so the existing import surface (callers that already
 // import from nimbus-session) continues to work.
-export { detectCloudflareWorkersProject } from '../runtime/project-detect.js';
+export { detectCloudflareWorkersProject } from '@nimbus-sh/core/runtime/project-detect.js';
 
 /**
  * Render the welcome MOTD banner with column-counted padding so every
@@ -988,7 +988,7 @@ export class NimbusSession extends CloudflareDurableObject {
 
   /** B'.4 — live initSession phase. Surfaced via
    *  /api/_diag/session.phase. null pre-first-init. */
-  _b4Phase: import('../observability/oom-discriminator.js').SessionState | null = null;
+  _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null = null;
 
   /** B'.5 — count of warm-rejoin /ws upgrades. Increments each
    *  time the join path is taken (Phase B skipped). 0 means no
@@ -1286,7 +1286,7 @@ export class NimbusSession extends CloudflareDurableObject {
           const cred = this.processes.cred(pid);
           const setUmask = (mask: number) => { this.processes.setUmask(pid, mask); };
           const runAs = async (
-            _parent: import('../substrate/lifo/commands/types.js').CommandContext,
+            _parent: import('@nimbus-sh/core/substrate/lifo/commands/types.js').CommandContext,
             targetCred: VfsCred,
             argv: string[],
           ): Promise<number> => {

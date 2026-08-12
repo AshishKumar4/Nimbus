@@ -16,7 +16,7 @@ import {
   isWasmMagic,
   isExecutableMode,
   EXEC_HEAD_BYTES,
-} from '../../packages/worker/src/shell/exec-dispatch.ts';
+} from '../../packages/core/src/shell/exec-dispatch.ts';
 
 const enc = new TextEncoder();
 const WASM = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);

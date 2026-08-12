@@ -26,10 +26,10 @@ import type {
   BatchInodeEntry,
   BatchWritePayload,
   WriteBatchStreamResult,
-} from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import type { EsbuildService } from '../runtime/esbuild-service.js';
-import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
+} from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
   computeHoistPlan,
@@ -47,8 +47,8 @@ import {
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
-import { resolvePackageEntry } from '../_shared/exports-resolver.js';
-import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
+import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { encodeWriteBatchStream } from '@nimbus-sh/core/_shared/w7-frame.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
 import { NimbusFanoutPool, IN_DO_THRESHOLD } from '../loaders/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
@@ -64,9 +64,9 @@ import {
   recordR2RaceCounters,
   recordCacheStatEvents,
   readDiagCounters,
-} from '../observability/diag-counters.js';
-import { estimateSupervisorHeap } from '../observability/heap-estimate.js';
-import { describeError } from '../observability/oom-classify.js';
+} from '@nimbus-sh/core/observability/diag-counters.js';
+import { estimateSupervisorHeap } from '@nimbus-sh/core/observability/heap-estimate.js';
+import { describeError } from '@nimbus-sh/core/observability/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
   resolveOnePackumentInFacet,
@@ -88,9 +88,9 @@ import {
   PRE_BUNDLE_CONCURRENCY,
   PRE_BUNDLE_SLICE_CAP_BYTES,
   SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
-} from '../constants.js';
-import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '../runtime/barrel-detect.js';
+} from '@nimbus-sh/core/constants.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import {
   scanNamedImports,
   namedImportSignature,
@@ -99,7 +99,7 @@ import {
   syntheticEntryPath,
   type NamedImportMap,
 } from '../runtime/barrel-synthesizer.js';
-import { enc } from '../_shared/bytes.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   createNpmBinManifest,
   createNpmBinShim,
@@ -110,7 +110,7 @@ import {
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-import type { InstallPhase } from '../_shared/install-phase.js';
+import type { InstallPhase } from '@nimbus-sh/core/_shared/install-phase.js';
 
 export interface InstallProgress {
   phase: InstallPhase;
@@ -1187,7 +1187,7 @@ export class NpmInstaller {
       if (!this.vfs.exists(pkgPath)) return false;
       const pkg = JSON.parse(this.vfs.readFileString(pkgPath));
       // Lazy-load the detector to avoid a hard dep cycle.
-      const { detectFramework } = await import('../runtime/framework-detect.js');
+      const { detectFramework } = await import('@nimbus-sh/core/runtime/framework-detect.js');
       // Snapshot root files. Best-effort — if readdir throws we proceed
       // with an empty set (still detects via deps for most frameworks).
       const files = new Set<string>();

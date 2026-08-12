@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { NimbusLoaderPool } from '../../packages/worker/src/loaders/loader-pool.ts';
-import { classifyError } from '../../packages/worker/src/observability/oom-classify.ts';
+import { classifyError } from '../../packages/core/src/observability/oom-classify.ts';
 
 const cloneVersionError =
   'Unable to deserialize cloned data due to invalid or unsupported version';

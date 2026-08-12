@@ -15,9 +15,9 @@ import {
   MAX_TX_BLOB_BYTES,
   MAX_TX_LOGICAL_ROWS,
   MAX_TX_SQL_EXECS,
-} from '../../packages/worker/src/constants.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+} from '../../packages/core/src/constants.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {

@@ -11,7 +11,7 @@
  * since they're small enough to not warrant a network round-trip.
  */
 
-import { loadAssetText, loadAssetBytes, type AssetsFetcher } from './runtime/assets-loader.js';
+import { loadAssetText, loadAssetBytes, type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';
 
 export const REAL_VITE_VERSION = "6.4.2";
 

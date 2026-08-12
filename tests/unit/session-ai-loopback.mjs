@@ -16,8 +16,8 @@
 
 import assert from 'node:assert/strict';
 import { routeSessionLoopback } from '../../packages/worker/src/session/loopback.ts';
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
-import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/worker/src/constants.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
+import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/core/src/constants.ts';
 
 function makeHost(portRegistry) {
   const store = new Map();

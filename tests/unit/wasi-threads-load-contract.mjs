@@ -19,7 +19,7 @@ import {
   WASI_THREADS_NAMESPACE,
   NIMBUS_THREADS_NAMESPACE,
   WASI_THREAD_START_EXPORT,
-} from '../../packages/worker/src/runtime/wasi-threads.ts';
+} from '../../packages/core/src/runtime/wasi-threads.ts';
 
 let failures = 0;
 const check = (name, fn) => {

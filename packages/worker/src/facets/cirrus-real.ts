@@ -66,7 +66,7 @@ import {
   getCirrusPluginReactBundle,
 } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
-import { CF_COMPAT_DATE } from '../constants.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
 import {
   buildFsSnapshot,
@@ -80,11 +80,11 @@ import {
   generateWsShimModuleCode,
   generateChokidarShimModuleCode,
 } from './real-vite-hmr.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '../runtime/os-contracts.js';
-import type { VfsEventEmitter } from '../vfs/events.js';
-import type { ParsedViteConfig } from '../runtime/vite-config-parser.js';
-import { stripLeadingSlashes } from '../vfs/path.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
+import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
+import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 
 /**
  * Compatibility flags for the real-vite facet.

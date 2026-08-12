@@ -40,8 +40,8 @@ import {
   nimbusPatchOpenTUI,
   OPENTUI_FFI_CHUNK_MARKER,
 } from '../../packages/worker/scripts/opencode/bundle-patches.ts';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
-import { OpenTUIWasmBackend } from '../../packages/worker/src/runtime/opentui-wasm-backend.ts';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { OpenTUIWasmBackend } from '../../packages/core/src/runtime/opentui-wasm-backend.ts';
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
 
 function findOpenTUICoreDir() {

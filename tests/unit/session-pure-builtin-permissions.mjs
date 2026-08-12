@@ -6,14 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
-import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
-import { createDefaultRegistry } from '../../packages/worker/src/substrate/lifo/commands/registry.ts';
-import { VFS } from '../../packages/worker/src/substrate/lifo/kernel/vfs/VFS.ts';
-import { ProcessRegistry } from '../../packages/worker/src/substrate/lifo/shell/ProcessRegistry.ts';
-import { Shell } from '../../packages/worker/src/substrate/lifo/shell/Shell.ts';
-import { SqliteVFS, SqliteVFSProvider } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
+import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
+import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
+import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-pure-builtin-permissions-'));

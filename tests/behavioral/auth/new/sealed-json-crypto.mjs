@@ -13,7 +13,7 @@ const {
   sealJson,
   sha256Base64Url,
   unsealJson,
-} = await import('../../../../packages/worker/src/_shared/crypto.ts');
+} = await import('../../../../packages/core/src/_shared/crypto.ts');
 
 const secret = '0123456789abcdef0123456789abcdef';
 const payload = { userId: 'cf_user', ts: 123 };

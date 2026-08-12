@@ -55,9 +55,9 @@
  */
 
 import { z } from 'zod/v4';
-import { sha256Hex } from '../_shared/crypto.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
-import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
+import { PYODIDE_PACKAGE_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {

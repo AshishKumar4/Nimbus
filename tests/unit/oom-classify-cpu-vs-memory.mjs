@@ -33,7 +33,7 @@
 import assert from 'node:assert/strict';
 import {
   classifyError, classifyMessage, isOomCause, isTransientDoReset,
-} from '../../packages/worker/src/observability/oom-classify.ts';
+} from '../../packages/core/src/observability/oom-classify.ts';
 
 // ── Memory kills land in 'oom' ──────────────────────────────────────────
 // Verbatim `broken.exceededMemory` actor break.

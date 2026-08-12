@@ -11,7 +11,7 @@
 // concludes a syscall is missing and works around a function that is right
 // there.
 
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from '../../packages/core/src/runtime/wasi-instance.ts';
 
 let failures = 0;
 const check = (name, ok, detail) => {

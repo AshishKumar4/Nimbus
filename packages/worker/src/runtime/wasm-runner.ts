@@ -50,15 +50,15 @@
  */
 
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
-import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
-import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
-import type { WasiAbi } from './wasi-instance.js';
-import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
-import { manifestVfs } from './vfs-manifest.js';
-import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from '@nimbus-sh/core/runtime/wasi/types.js';
+import type { WasiAbi } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import { inspectWasmThreads, wasiThreadsLoadError } from '@nimbus-sh/core/runtime/wasi-threads.js';
+import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
+import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from '@nimbus-sh/core/runtime/wasm-memory.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -671,7 +671,7 @@ export function makeWasmRunner(deps: {
     //
     // For direct mode there's no FS exposure — wasm runs in pure
     // compute-only mode, no preopens.
-    let wasiFs: import('./wasi-instance.js').WasiFsSnapshot | undefined;
+    let wasiFs: import('@nimbus-sh/core/runtime/wasi-instance.js').WasiFsSnapshot | undefined;
     let wasiFsBytes = 0;
     let wasiFsFiles = 0;
     if (isWasi) {

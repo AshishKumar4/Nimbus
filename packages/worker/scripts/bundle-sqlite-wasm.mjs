@@ -50,6 +50,7 @@ import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+const CORE_ROOT = path.resolve(ROOT, '..', 'core');
 
 const PKG_DIR = resolvePackageDir('sql.js', { start: ROOT });
 const JS_SRC = path.join(PKG_DIR, 'dist', 'sql-wasm.js');
@@ -61,7 +62,7 @@ const OUT_ASSETS_DIR = path.join(ROOT, 'public', '_assets');
 // SQLJS_VERSION is the source of truth (src/constants.ts). Read it back
 // out of the TS source rather than importing (constants.ts is ESM TS).
 async function readPinnedVersion() {
-  const src = await fs.readFile(path.join(ROOT, 'src', 'constants.ts'), 'utf8');
+  const src = await fs.readFile(path.join(CORE_ROOT, 'src', 'constants.ts'), 'utf8');
   const m = src.match(/SQLJS_VERSION\s*=\s*'([^']+)'/);
   if (!m) throw new Error('[bundle-sqlite-wasm] SQLJS_VERSION not found in constants.ts');
   return m[1];

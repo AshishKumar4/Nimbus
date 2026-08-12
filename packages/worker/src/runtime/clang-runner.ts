@@ -27,13 +27,13 @@
  */
 
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { resolveVfsPath } from '../vfs/path.js';
-import { hasLeadingCliFlag } from './cli-flags.js';
-import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { hasLeadingCliFlag } from '@nimbus-sh/core/runtime/cli-flags.js';
+import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 

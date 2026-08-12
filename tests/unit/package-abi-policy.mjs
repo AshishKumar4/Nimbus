@@ -16,7 +16,7 @@ import {
   NIMBUS_ABI_TARGET,
   PYODIDE_PACKAGE_ABI,
   NATIVE_UNSUPPORTED_ABI,
-} from '../../packages/worker/src/runtime/os-contracts.ts';
+} from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   PACKAGE_ABI_POLICY,
   applySwaps,

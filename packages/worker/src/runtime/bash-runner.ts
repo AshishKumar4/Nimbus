@@ -23,16 +23,16 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
-import type { Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
+import type { Command, CommandContext, CommandInputStream } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import { z } from 'zod';
-import type { WasiFsDiff } from './vfs-snapshot.js';
-import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
+import type { WasiFsDiff } from '@nimbus-sh/core/runtime/vfs-snapshot.js';
+import type { BashBootArgs, BashFeedArgs, BashSlice } from '@nimbus-sh/core/runtime/bash/types.js';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
-import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
-import { requireVfsCred } from './os-contracts.js';
-import { resolveVfsPath } from '../vfs/path.js';
+import { flushVfsDiff, snapshotVfs } from '@nimbus-sh/core/runtime/vfs-snapshot.js';
+import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 
 type BashRunnerFactory = (

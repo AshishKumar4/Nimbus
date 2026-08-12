@@ -24,7 +24,7 @@ import {
 import {
   decodeWriteBatchStream,
   encodeWriteBatchStream,
-} from '../../packages/worker/src/_shared/w7-frame.ts';
+} from '../../packages/core/src/_shared/w7-frame.ts';
 
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;

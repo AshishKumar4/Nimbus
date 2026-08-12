@@ -14,10 +14,10 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import type { EsbuildService } from '../runtime/esbuild-service.js';
-import type { VfsEvent, VfsEventEmitter } from '../vfs/events.js';
-import { normalizeVfsPath } from '../vfs/path.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { registerInnerDoClass, clearInnerDoClasses } from '../facets/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';

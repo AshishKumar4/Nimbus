@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
-import { parseProcessLogClientFrame } from '../../packages/worker/src/runtime/process-io-protocol.ts';
-import { applyProcessClientFrame } from '../../packages/worker/src/runtime/process-input-routing.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { parseProcessLogClientFrame } from '../../packages/core/src/runtime/process-io-protocol.ts';
+import { applyProcessClientFrame } from '../../packages/core/src/runtime/process-input-routing.ts';
 
 const processes = new SessionProcessSupervisor();
 const pid = 42;

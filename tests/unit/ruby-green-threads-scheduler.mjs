@@ -25,7 +25,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { RUBY_GREEN_THREADS } from '../../packages/worker/src/runtime/ruby-green-threads.ts';
+import { RUBY_GREEN_THREADS } from '../../packages/core/src/runtime/ruby-green-threads.ts';
 
 let failures = 0;
 const check = (name, fn) => {

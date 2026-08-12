@@ -60,13 +60,14 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+const CORE_ROOT = path.resolve(ROOT, '..', 'core');
 const OUT_TS = path.join(ROOT, 'src', 'opencode-artifact.generated.ts');
 
 const DIST_DIR =
   process.env.NIMBUS_OPENCODE_DIST || '/tmp/opencode-research/dist-nimbus';
 
 async function readPinnedVersion() {
-  const src = await fs.readFile(path.join(ROOT, 'src', 'constants.ts'), 'utf8');
+  const src = await fs.readFile(path.join(CORE_ROOT, 'src', 'constants.ts'), 'utf8');
   const m = src.match(/OPENCODE_VERSION\s*=\s*'([^']+)'/);
   if (!m) throw new Error('[bundle-opencode] OPENCODE_VERSION not found in constants.ts');
   return m[1];

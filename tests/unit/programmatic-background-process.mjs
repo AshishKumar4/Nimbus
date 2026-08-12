@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import {
   rpcExec,
   rpcKillProcess,

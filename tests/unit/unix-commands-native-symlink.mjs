@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();

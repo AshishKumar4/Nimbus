@@ -1,5 +1,5 @@
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import type { ResolvedPackage } from './resolver.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';

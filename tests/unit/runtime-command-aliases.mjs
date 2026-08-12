@@ -13,7 +13,7 @@ import {
   installRuntimeProgrammatic,
   registerRunnerFactory,
 } from '../../packages/worker/src/runtime/package-manager.ts';
-import { NIMBUS_RUNTIME_ABIS } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contracts.ts';
 
 // ── 1. Mechanical validation against the runtime catalog contracts ─────
 

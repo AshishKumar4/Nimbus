@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 
-import { VFS_CURSOR_SEED_SOURCE } from '../../packages/worker/src/_shared/facet-vfs-cursor.ts';
+import { VFS_CURSOR_SEED_SOURCE } from '../../packages/core/src/_shared/facet-vfs-cursor.ts';
 import {
   generateEntrypointCode,
   generateLongRunningNodeCode,

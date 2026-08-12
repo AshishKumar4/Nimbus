@@ -2,13 +2,13 @@
 
 import assert from 'node:assert/strict';
 
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { createDefaultRegistry } from '../../packages/worker/src/substrate/lifo/commands/registry.ts';
-import { registerUnixCommands } from '../../packages/worker/src/shell/unix-commands.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { VFS } from '../../packages/worker/src/substrate/lifo/kernel/vfs/VFS.ts';
-import { SqliteVFSProvider } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { evaluateTest } from '../../packages/worker/src/substrate/lifo/shell/test-builtin.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { evaluateTest } from '../../packages/core/src/substrate/lifo/shell/test-builtin.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });

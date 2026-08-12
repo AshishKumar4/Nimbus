@@ -13,7 +13,7 @@ import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
   VFS_BUNDLE_MAX_BYTES,
   VFS_BUNDLE_MAX_FILES,
-} from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/constants.ts';
 
 class FakeVfs {
   // The bundle is stamped with the cursor it was read at, so a stand-in

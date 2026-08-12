@@ -5,8 +5,8 @@
 // a test can drive the real `clangBinHandler` end to end without a wasm boot.
 
 import { makeClangRunnerFactory } from '../../packages/worker/src/runtime/clang-runner.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 export const USER = Object.freeze({

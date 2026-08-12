@@ -26,8 +26,8 @@ import {
   OPENCODE_ARTIFACT_PRESENT,
   OPENCODE_ARTIFACT_VERSION,
 } from '../opencode-artifact.generated.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { sha256Hex } from '../_shared/crypto.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 /** Base asset path of the staged opencode bundle directory. */
 const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;

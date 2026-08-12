@@ -8,7 +8,7 @@ import {
 } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { serializeFunction } from '../../packages/worker/src/loaders/vendor/serialize.ts';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
-import { parseJavaScriptModule } from '../../packages/worker/src/runtime/javascript-ast.ts';
+import { parseJavaScriptModule } from '../../packages/core/src/runtime/javascript-ast.ts';
 import { buildCPythonPreamble } from '../../packages/worker/src/runtime/cpython-runner.ts';
 import {
   buildRubyPreamble,

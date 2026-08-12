@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { prefetchForRequire } from '../../packages/worker/src/runtime/require-resolver.ts';
+import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 
 class FakeVfs {
   constructor(files = {}) {

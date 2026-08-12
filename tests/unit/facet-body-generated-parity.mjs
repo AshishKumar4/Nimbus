@@ -25,20 +25,20 @@ import {
   bundleBashRunner,
   bundleWasiInstance,
 } from '../../packages/worker/scripts/bundle-facet-workers.mjs';
-import { WASI_INSTANCE_BODY_SRC } from '../../packages/worker/src/runtime/wasi-instance.generated.ts';
+import { WASI_INSTANCE_BODY_SRC } from '../../packages/core/src/runtime/wasi-instance.generated.ts';
 import { BASH_RUNNER_BODY_SRC } from '../../packages/worker/src/runtime/bash-runner.generated.ts';
 
 const cases = [
   {
     label: 'WASI shim',
     source: 'packages/worker/src/runtime/wasi/preamble.ts',
-    generated: 'packages/worker/src/runtime/wasi-instance.generated.ts',
+    generated: 'packages/core/src/runtime/wasi-instance.generated.ts',
     committed: WASI_INSTANCE_BODY_SRC,
     rebuild: bundleWasiInstance,
   },
   {
     label: 'bash scheduler',
-    source: 'packages/worker/src/runtime/bash/preamble.ts',
+    source: 'packages/core/src/runtime/bash/preamble.ts',
     generated: 'packages/worker/src/runtime/bash-runner.generated.ts',
     committed: BASH_RUNNER_BODY_SRC,
     rebuild: bundleBashRunner,

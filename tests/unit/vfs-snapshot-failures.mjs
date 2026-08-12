@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { snapshotVfs } from '../../packages/worker/src/runtime/vfs-snapshot.ts';
+import { snapshotVfs } from '../../packages/core/src/runtime/vfs-snapshot.ts';
 
 function fakeVfs({ readdir, readFile }) {
   return {

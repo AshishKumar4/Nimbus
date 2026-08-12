@@ -2,9 +2,9 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { bytesToB64, flushVfsDiff, snapshotVfs } from '../../packages/worker/src/runtime/vfs-snapshot.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { bytesToB64, flushVfsDiff, snapshotVfs } from '../../packages/core/src/runtime/vfs-snapshot.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });

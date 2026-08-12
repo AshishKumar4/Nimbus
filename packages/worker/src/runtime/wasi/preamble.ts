@@ -19,7 +19,7 @@
  *     scope that has no module system.
  *   - `wasi-threads.ts` is concatenated after this and shares one evaluated scope.
  */
-import type { AcceptedVirtualConnection, VirtualSocketKernel } from '../virtual-socket-kernel.js';
+import type { AcceptedVirtualConnection, VirtualSocketKernel } from '@nimbus-sh/core/runtime/virtual-socket-kernel.js';
 import type {
   DirEntry,
   Errno,
@@ -42,7 +42,7 @@ import type {
   WasiSyscallFn,
   WasiThreadScheduler,
   WriteU32LE,
-} from './types.js';
+} from '@nimbus-sh/core/runtime/wasi/types.js';
 
 // errno constants
 const __WASI_ESUCCESS       = 0;

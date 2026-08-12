@@ -38,12 +38,12 @@
  */
 
 import type { FacetManager } from '../facets/manager.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
-import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
-import type { EsbuildService } from './esbuild-service.js';
-import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
-import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { parseFacetBundleProfile, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors

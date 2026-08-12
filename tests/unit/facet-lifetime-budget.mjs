@@ -14,7 +14,7 @@
 // being replaced by the supervisor's generic kill.
 
 import assert from 'node:assert/strict';
-import { FACET_TIMEOUT_MS } from '../../packages/worker/src/constants.ts';
+import { FACET_TIMEOUT_MS } from '../../packages/core/src/constants.ts';
 import {
   ONE_SHOT_ENTRY_DEADLINE_MS,
   ONE_SHOT_EXIT_RESERVE_MS,

@@ -6,11 +6,11 @@ import {
   defaultShellPath,
   makeChshCommand,
   readDefaultShell,
-} from '../../packages/worker/src/substrate/lifo/shell/default-shell.ts';
-import { createDefaultRegistry } from '../../packages/worker/src/substrate/lifo/commands/registry.ts';
-import { VFS } from '../../packages/worker/src/substrate/lifo/kernel/vfs/VFS.ts';
-import { ProcessRegistry } from '../../packages/worker/src/substrate/lifo/shell/ProcessRegistry.ts';
-import { Shell } from '../../packages/worker/src/substrate/lifo/shell/Shell.ts';
+} from '../../packages/core/src/substrate/lifo/shell/default-shell.ts';
+import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
+import { VFS } from '../../packages/core/src/substrate/lifo/kernel/vfs/VFS.ts';
+import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
+import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 
 function output() {
   let text = '';

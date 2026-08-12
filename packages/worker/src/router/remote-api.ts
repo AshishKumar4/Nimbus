@@ -11,7 +11,7 @@ import {
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
 } from '../auth/index.js';
-import { useRpcResource } from '../_shared/rpc-dispose.js';
+import { useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 
 export type NimbusRuntimeName =
   | 'node'

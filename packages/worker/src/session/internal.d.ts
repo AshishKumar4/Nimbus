@@ -38,17 +38,17 @@
  * context. Originally drafted in the plan; this is the live implementation.
  */
 
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { PortRegistry } from '../runtime/port-registry.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
-import type { EsbuildService } from '../runtime/esbuild-service.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
-import type { Kernel, Shell } from '../substrate/lifo/index.js';
+import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import type { W12EnableResult } from './replica-routes.js';
 
@@ -132,7 +132,7 @@ export interface SessionInternal {
   // boundary; reset to 'drained' in wsClose. Pre-first-init the field
   // is null so the diag endpoint can distinguish "never inited" from
   // "init returned but didn't set a phase".
-  _b4Phase: import('../observability/oom-discriminator.js').SessionState | null;
+  _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null;
 
   // ── B'.5 warm-join counter ─────────────────────────────────────────
   // Increments each time /ws takes the warm-rejoin path (skipping

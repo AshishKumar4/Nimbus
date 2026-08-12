@@ -1,0 +1,69 @@
+{
+  "name": "@nimbus-sh/core",
+  "version": "0.1.0",
+  "description": "Backend-agnostic half of Nimbus — the durable filesystem, the shell, and the OS/process contracts, over a host-supplied SQL port.",
+  "keywords": [
+    "filesystem",
+    "shell",
+    "sandbox",
+    "sqlite",
+    "webassembly",
+    "wasi"
+  ],
+  "homepage": "https://github.com/AshishKumar4/Nimbus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishKumar4/Nimbus.git",
+    "directory": "packages/core"
+  },
+  "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./workspace": {
+      "workspace": "./src/workspace/nimbus-workspace.ts",
+      "bun": "./src/workspace/nimbus-workspace.ts",
+      "types": "./dist/workspace/nimbus-workspace.d.ts",
+      "import": "./dist/workspace/nimbus-workspace.js"
+    },
+    "./*.js": {
+      "workspace": "./src/*.ts",
+      "bun": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.5",
+    "esbuild-wasm": "0.24.2",
+    "magic-string": "^0.30.21",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250327.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

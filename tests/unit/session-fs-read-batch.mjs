@@ -20,19 +20,19 @@ import assert from 'node:assert/strict';
 import {
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
-} from '../../packages/worker/src/constants.ts';
+} from '../../packages/core/src/constants.ts';
 import {
   acquireSupervisorAllocation,
   readSupervisorAllocationBudget,
-} from '../../packages/worker/src/observability/heavy-alloc-coord.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+} from '../../packages/core/src/observability/heavy-alloc-coord.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import {
   _rpcFsReadBatch,
   _rpcFsReadRange,
 } from '../../packages/worker/src/session/rpc.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES — one ranged read

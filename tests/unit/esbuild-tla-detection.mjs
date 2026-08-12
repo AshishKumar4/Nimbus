@@ -8,7 +8,7 @@
 // ("Cannot use import statement outside a module" at facet startup).
 
 import assert from 'node:assert/strict';
-import { hasTopLevelAwait } from '../../packages/worker/src/runtime/esbuild-service.ts';
+import { hasTopLevelAwait } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 // No await → false.
 assert.equal(hasTopLevelAwait('const x = 1;'), false);

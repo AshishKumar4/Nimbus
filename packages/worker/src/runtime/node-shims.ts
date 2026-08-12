@@ -36,12 +36,12 @@
  *   - argv, env, filename, dirname: from args
  *   - stdout, stderr, exitCode: capture variables
  */
-import { generateStreamsCode } from './streams.js';
+import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
 import { generateSqliteShimCode } from './sqlite-shim.js';
-import { generateUndiciShimCode } from './undici-shim.js';
-import { getExportsResolverJS } from '../_shared/exports-resolver.js';
-import { getTypescriptSpecifiersJS } from '../_shared/typescript-specifiers.js';
-import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '../_shared/ai-egress.js';
+import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
+import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
+import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -50,7 +50,7 @@ import {
   NIMBUS_AI_GATEWAY_PORT,
   NODE_VERSION,
   NODE_VERSIONS,
-} from '../constants.js';
+} from '@nimbus-sh/core/constants.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();

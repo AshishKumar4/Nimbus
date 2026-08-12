@@ -13,7 +13,7 @@
  */
 
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { normalizeTerminalNewlines } from '../_shared/terminal.js';
+import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 
 /**
  * Per-runtime adapter contract. The shell-side ReplSession orchestrates

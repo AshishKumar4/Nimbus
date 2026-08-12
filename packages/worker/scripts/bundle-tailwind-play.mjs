@@ -126,7 +126,7 @@ async function main() {
  * predev / predeploy / postinstall.
  */
 
-import { loadAssetText, type AssetsFetcher } from './runtime/assets-loader.js';
+import { loadAssetText, type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';
 
 export const TAILWIND_PLAY_VERSION: string = ${JSON.stringify(TAILWIND_PLAY_VERSION)};
 export const TAILWIND_PLAY_INTEGRITY: string = ${JSON.stringify('sha256-' + sha256)};

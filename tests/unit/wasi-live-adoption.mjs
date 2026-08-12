@@ -9,7 +9,7 @@
 // that adopting a per-process capability introduces.
 
 import assert from 'node:assert';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/worker/src/runtime/wasi-instance.ts';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-runner.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 import { readFileSync } from 'node:fs';

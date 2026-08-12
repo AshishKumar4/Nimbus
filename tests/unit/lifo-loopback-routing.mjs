@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
-import { createHttp } from '../../packages/worker/src/substrate/lifo/node-compat/http.ts';
+import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
+import { createHttp } from '../../packages/core/src/substrate/lifo/node-compat/http.ts';
 
 const box = await Sandbox.create({ persist: false });
 const originalFetch = globalThis.fetch;

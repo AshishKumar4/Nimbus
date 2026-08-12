@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { encodeWriteBatchStream } from '../../packages/worker/src/_shared/w7-frame.ts';
-import { getSymlinkRegistry } from '../../packages/worker/src/vfs/symlink-registry.ts';
-import { SqliteVFS } from '../../packages/worker/src/vfs/sqlite-vfs.ts';
-import { SqliteRuntimeFsBridge } from '../../packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts';
-import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
+import { encodeWriteBatchStream } from '../../packages/core/src/_shared/w7-frame.ts';
+import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();

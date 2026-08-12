@@ -32,7 +32,7 @@ import {
   readMemoryLimits,
   withMemoryLimit,
   WASM_PAGE_BYTES,
-} from '../../packages/worker/src/runtime/wasm-memory.ts';
+} from '../../packages/core/src/runtime/wasm-memory.ts';
 
 const BASH = new Uint8Array(
   readFileSync(new URL('../../packages/worker/wasm/bash/bash.async.wasm', import.meta.url)),

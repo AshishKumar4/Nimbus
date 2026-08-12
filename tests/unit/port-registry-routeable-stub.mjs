@@ -19,7 +19,7 @@
 //      never lingers as a routeable target.
 
 import assert from 'node:assert/strict';
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 
 // A stub shaped like the one-shot exec entrypoint: exposes `fetch` (the shape
 // routeableFacetTarget binds first). routeRequest invokes it as the handler.

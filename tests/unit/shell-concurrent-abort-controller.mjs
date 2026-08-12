@@ -6,7 +6,7 @@
 // interactive command that is still running.
 
 import assert from 'node:assert/strict';
-import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
+import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 
 const box = await Sandbox.create({ persist: false });
 const shell = box.shell;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { PortRegistry } from '../../packages/worker/src/runtime/port-registry.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 
 const registry = new PortRegistry();
 registry.bindFacetStub(42, {

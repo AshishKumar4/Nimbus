@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   parseModeSpec,
   applyModeSpec,
-} from '../../packages/worker/src/substrate/lifo/commands/fs/chmod.ts';
+} from '../../packages/core/src/substrate/lifo/commands/fs/chmod.ts';
 
 function apply(spec, current, isDir = false) {
   const parsed = parseModeSpec(spec);

@@ -9,8 +9,8 @@
 // so cross-generation collision is impossible by construction.
 
 import assert from 'node:assert/strict';
-import { ProcessTable, PID_GEN_STRIDE } from '../../packages/worker/src/runtime/process-table.ts';
-import { SessionProcessSupervisor } from '../../packages/worker/src/runtime/session-process-supervisor.ts';
+import { ProcessTable, PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { wireProcessLogSocketBroadcast } from '../../packages/worker/src/runtime/process-logs-api.ts';
 
 // ── generation-disjoint allocation ────────────────────────────────────────
