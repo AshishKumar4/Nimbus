@@ -89,6 +89,18 @@ assert.equal(unameMR.stdout, unameRM.stdout, 'field order is fixed, not argument
 const nodename = await run('uname -n');
 assert.notEqual(nodename.stdout, (await run('uname')).stdout);
 
+// A long option must match whole. Scanning it as a cluster of short flags
+// picked the `o` and `s` out of `--bogus` and answered "Linux GNU/Linux" —
+// a confident answer to a typo rather than an error.
+const unameTypo = await run('uname --bogus');
+assert.notEqual(unameTypo.exitCode, 0);
+assert.match(unameTypo.stderr, /unrecognized option '--bogus'/);
+assert.equal(unameTypo.stdout, '', 'a typo must not produce a field listing');
+
+// The long spellings that DO exist still work.
+assert.equal((await run('uname --operating-system')).stdout.trim(), 'GNU/Linux');
+assert.equal((await run('uname --kernel-name')).stdout.trim(), 'Linux');
+
 // `strings -n` rejects a length that is not a length instead of using 4.
 const badLength = await run('strings -n zero three.txt');
 assert.notEqual(badLength.exitCode, 0);
