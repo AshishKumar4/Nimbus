@@ -36,10 +36,44 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
-import { vfsPathExtension } from '../vfs/path.js';
+import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
 import { CRED_KERNEL } from './os-contracts.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
+/** Extensions probed when a target names no exact file, in Node's order. */
+const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
+/**
+ * Resolve a runtime target — `./cli.ts`, `sub/x`, `.`, or a bare name — to a
+ * canonical VFS key, or null when nothing runnable sits there.
+ *
+ * A directory never resolves to itself: it falls through to the index
+ * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
+ * rather than trying to read the directory as source.
+ */
+export function resolveRuntimeScriptPath(fs, cwd, target, opts) {
+    const base = normalizeVfsPath(cwd || '/home/user');
+    let resolved;
+    if (target === '.' || target === './') {
+        // `node .` / `bun .` — the package's declared entry point.
+        let main = 'index.js';
+        try {
+            const pkg = JSON.parse(fs.readFileString(`${base}/package.json`));
+            main = (opts?.preferModuleField ? pkg.module : undefined) || pkg.main || 'index.js';
+        }
+        catch { /* no readable package.json — index.js */ }
+        resolved = resolveVfsPath(main, base);
+    }
+    else {
+        resolved = resolveVfsPath(target, base);
+    }
+    if (fs.isFile(resolved))
+        return resolved;
+    for (const candidate of SCRIPT_RESOLUTION_CANDIDATES) {
+        if (fs.isFile(resolved + candidate))
+            return resolved + candidate;
+    }
+    return null;
+}
 /**
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
@@ -51,8 +85,13 @@ import { bindImportMetaResolve, importMetaDefines } from './import-meta-transfor
 export function buildRuntimeHandler(spec, ctx0) {
     const { vfs, facetMgr, getEsbuild, registry } = ctx0;
     const fs = vfs.as(CRED_KERNEL);
-    return async function runtimeHandler(ctx) {
-        const args = ctx.args || [];
+    /**
+     * The standard invocation: flag span, --version/--help/-e, then the
+     * script-path flow. Subcommand verbs are NOT considered here — the
+     * caller has already consumed them — so a verb handler can delegate
+     * back in with a rewritten argv without re-triggering itself.
+     */
+    async function runtimeInvocation(ctx, args) {
         const name = spec.name;
         const nimbusCtx = ctx;
         // A facet-hosted runtime streams its output to the session terminal over
@@ -67,14 +106,6 @@ export function buildRuntimeHandler(spec, ctx0) {
             || ctx.isFdTerminal?.(1) === false
             || ctx.isFdTerminal?.(2) === false;
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
-        // ── Subcommand dispatch ──
-        //
-        // BEFORE flag-span computation: subcommands like `bun install`
-        // have their first positional arg as the verb, NOT a node-style
-        // flag. Run the subcommand handler if matched.
-        if (spec.subcommands && args.length > 0 && spec.subcommands[args[0]]) {
-            return spec.subcommands[args[0]](ctx, registry);
-        }
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -137,37 +168,14 @@ export function buildRuntimeHandler(spec, ctx0) {
             ctx.stderr.write(`${name}: REPL not supported. Use ${name} -e "code" or ${name} script.js\n`);
             return 1;
         }
-        // Resolve script path against cwd (unless absolute).
-        let resolvedPath = scriptPath;
-        if (!scriptPath.startsWith('/')) {
-            const c = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-            resolvedPath = c + '/' + scriptPath;
-        }
-        else {
-            resolvedPath = scriptPath.replace(/^\/+/, '');
-        }
-        // `node .` / `bun .` — read package.json main field.
-        // Native-WASM runtimes skip this — `wasm-runner .` is meaningless.
-        if (!spec.bypassesScriptRead && (scriptPath === '.' || scriptPath === './')) {
-            const c = (ctx.cwd || '/home/user').replace(/^\/+/, '');
-            const pkgPath = c + '/package.json';
-            try {
-                const pkg = JSON.parse(fs.readFileString(pkgPath));
-                // bun prefers .module over .main when both exist; node uses .main.
-                const main = (name === 'bun' && pkg.module) || pkg.main || 'index.js';
-                resolvedPath = c + '/' + main;
-            }
-            catch {
-                resolvedPath = c + '/index.js';
-            }
-        }
         // ── bypassesScriptRead branch (wasm-runner) ──
         //
         // The runner takes the path AS-IS (it's a .wasm, not JS source).
         // We don't read or transform here; the runner reads the bytes
-        // and instantiates them.
+        // and instantiates them. `.` resolution and extension probing are
+        // meaningless for a .wasm target and stay out of this branch.
         if (spec.bypassesScriptRead) {
-            const filename = '/' + resolvedPath;
+            const filename = '/' + resolveVfsPath(scriptPath, ctx.cwd || '/home/user');
             const dirname = filename.includes('/')
                 ? filename.substring(0, filename.lastIndexOf('/'))
                 : '/';
@@ -190,21 +198,19 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(result.stderr);
             return result.exitCode;
         }
-        // Try common JS extensions if the file doesn't exist verbatim.
-        if (!fs.exists(resolvedPath)) {
-            const exts = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
-            for (const ext of exts) {
-                if (fs.exists(resolvedPath + ext)) {
-                    resolvedPath += ext;
-                    break;
-                }
+        // Resolve against cwd: `.` → the package entry, then extension probing.
+        const resolvedPath = resolveRuntimeScriptPath(fs, ctx.cwd || '/home/user', scriptPath, {
+            // bun prefers .module over .main when both exist; node uses .main.
+            preferModuleField: name === 'bun',
+        });
+        let code = null;
+        if (resolvedPath !== null) {
+            try {
+                code = fs.readFileString(resolvedPath);
             }
+            catch { /* unreadable — reported below */ }
         }
-        let code;
-        try {
-            code = fs.readFileString(resolvedPath);
-        }
-        catch {
+        if (resolvedPath === null || code === null) {
             ctx.stderr.write(`${name}: cannot find module '${scriptPath}'\n`);
             return 1;
         }
@@ -340,5 +346,19 @@ export function buildRuntimeHandler(spec, ctx0) {
         if (result.stderr)
             ctx.stderr.write(result.stderr);
         return result.exitCode;
+    }
+    return async function runtimeHandler(ctx) {
+        const args = ctx.args || [];
+        // ── Subcommand dispatch ──
+        //
+        // BEFORE flag-span computation: subcommands like `bun install`
+        // have their first positional arg as the verb, NOT a node-style
+        // flag. A verb owns the whole invocation, but it may hand a
+        // rewritten argv back to the standard flow — that is how
+        // `bun run <file>` reaches the same execution path as `bun <file>`.
+        if (spec.subcommands && args.length > 0 && spec.subcommands[args[0]]) {
+            return spec.subcommands[args[0]](ctx, registry, (rewritten) => runtimeInvocation(ctx, rewritten));
+        }
+        return runtimeInvocation(ctx, args);
     };
 }

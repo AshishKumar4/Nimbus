@@ -74,6 +74,30 @@ export interface RuntimeRunOpts {
     /** Invoking process credentials for credential-bound runtime snapshots. */
     cred?: VfsCred;
 }
+/** The VFS surface script resolution needs. */
+export interface ScriptResolutionFs {
+    isFile(path: string): boolean;
+    readFileString(path: string): string;
+}
+/**
+ * Resolve a runtime target — `./cli.ts`, `sub/x`, `.`, or a bare name — to a
+ * canonical VFS key, or null when nothing runnable sits there.
+ *
+ * A directory never resolves to itself: it falls through to the index
+ * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
+ * rather than trying to read the directory as source.
+ */
+export declare function resolveRuntimeScriptPath(fs: ScriptResolutionFs, cwd: string, target: string, opts?: {
+    preferModuleField?: boolean;
+}): string | null;
+/**
+ * A subcommand handler. `runAsRuntime` re-enters the standard flow — flag
+ * span, script resolution, transform, exec — with a rewritten argv, as if
+ * the verb had never been typed. `bun run <file>` uses it to hand a path
+ * to the very same execution path `bun <file>` takes, rather than growing
+ * a second one.
+ */
+export type RuntimeSubcommand = (ctx: any, registry: ShellRegistry, runAsRuntime: (args: string[]) => Promise<number>) => Promise<number>;
 export interface RuntimeSpec {
     /** Shell-command name: 'node' / 'bun' / 'wasm-runner' / 'python'. */
     name: string;
@@ -93,7 +117,7 @@ export interface RuntimeSpec {
      * this map, the handler is invoked instead of the standard
      * script-execution flow. Used by `bun install`, `bun run <script>`.
      */
-    subcommands?: Record<string, (ctx: any, registry: ShellRegistry) => Promise<number>>;
+    subcommands?: Record<string, RuntimeSubcommand>;
     /**
      * When true, the runtime treats the args list as a binary file
      * path (NOT a JS script). Used by `wasm-runner` — the args[0] is a
