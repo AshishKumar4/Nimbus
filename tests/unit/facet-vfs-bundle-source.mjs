@@ -87,4 +87,37 @@ for (const [label, char, bytesPerChar] of [
   );
 }
 
+// A binary cell is sized from its byte count alone — base64 is ASCII of a
+// length fixed by the source, so the counter never encodes one to measure it.
+// That shortcut is only sound if it lands on the same byte as the encoder, so
+// pin it at the ceiling the way the text cases above are pinned.
+{
+  const BIN = 'src/data.bin';
+  const binOverhead = new TextEncoder()
+    .encode(buildFacetVfsBundleSource({ [BIN]: new Uint8Array(0) }).expression).length;
+  // Base64 spends 4 characters per 3 bytes, so back the payload out of the
+  // room left under the ceiling and leave the same eight bytes of slack.
+  const fittingBytes = Math.floor((BUNDLE_MAX_ENCODED_BYTES - 8 - binOverhead) / 4) * 3;
+  const justUnder = new Uint8Array(fittingBytes).fill(0xff);
+  const fits = buildFacetVfsBundleSource({ [BIN]: justUnder });
+  assert.deepEqual(
+    fits.modules, {},
+    'a binary bundle that truly fits the ceiling is not split (the counter does not over-count)',
+  );
+  assert.ok(
+    new TextEncoder().encode(fits.expression).length <= BUNDLE_MAX_ENCODED_BYTES,
+    'an inline binary bundle really is within the ceiling (the counter does not under-count)',
+  );
+  assert.deepEqual(
+    evaluateBundleSource(fits), { [BIN]: justUnder },
+    'a ceiling-sized binary cell still revives byte-for-byte',
+  );
+
+  const justOver = new Uint8Array(fittingBytes + 3_000).fill(0xff);
+  assert.ok(
+    Object.keys(buildFacetVfsBundleSource({ [BIN]: justOver }).modules).length >= 1,
+    'a binary bundle past the ceiling is split across side modules',
+  );
+}
+
 console.log('facet VFS bundle source: ok');
