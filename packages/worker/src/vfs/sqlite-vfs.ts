@@ -3307,10 +3307,12 @@ export class SqliteVFS {
    *
    * Publication is group-atomic with a committed prefix: a bounded group of
    * whole files commits in one transaction, and either every file in it is
-   * durable or none is. A file never publishes partially, and a group is
-   * closed on the record boundary before the file that would overflow it,
-   * so a file too large for one transaction is alone in its group and
-   * stages across several — the original per-file path, unchanged.
+   * durable or none is. A file never publishes partially — a group is closed
+   * on the record boundary before the file that would overflow it, so a file
+   * too large for one transaction stages across several and publishes on the
+   * last, exactly as the per-file path did. Chunks staged for a file still
+   * in flight may ride along in a group that publishes other files; they
+   * carry a content id no inode references yet, so nothing observes them.
    *
    * Publishing per file cost three transactions each (stage the content
    * row, flush the chunks, publish), which at ~0.9 ms of commit apiece made
@@ -3377,9 +3379,9 @@ export class SqliteVFS {
       groupStagedBytes = 0;
       try {
         if (inodes.length === 0) {
-          // Nothing completed yet: this is a file too large for one
-          // transaction, staging across several. It is alone in the group,
-          // so the plan publishes nothing and the chunks stay staged.
+          // No file has completed, so the plan publishes nothing: these are
+          // the staged chunks of a file still in flight, and the bytes stay
+          // charged to it until its publication commits.
           this.executeStagedChunkPlan(plan);
           this._stagedStreamBytes += plan.metrics.blobBytes;
           this._peakStagedStreamBytes = Math.max(
@@ -3390,11 +3392,17 @@ export class SqliteVFS {
           return;
         }
         this.assertTransactionFits(plan.metrics);
-        const result = this._writeBatchOnce(
-          { payload: { inodes, chunks: [] }, plan, deletedInodes: [] },
-          { source: 'content-publish', limitMode: 'bounded' },
-          publishedChunks,
-        );
+        // Re-check the mutation guard here rather than only where each file
+        // was accepted: a group commits after the records that follow it, so
+        // this is the check that is contemporaneous with the write.
+        const result = this.withMutationOwner(options.mutationOwner, () => {
+          this.assertMutationsAllowed(inodes.map((inode) => inode.path));
+          return this._writeBatchOnce(
+            { payload: { inodes, chunks: [] }, plan, deletedInodes: [] },
+            { source: 'content-publish', limitMode: 'bounded' },
+            publishedChunks,
+          );
+        });
         this._stagedStreamBytes = Math.max(0, this._stagedStreamBytes - stagedBytes);
         for (const contentId of contentIds) {
           this.activeStagingContentIds.delete(contentId);
