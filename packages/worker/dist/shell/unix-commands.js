@@ -1039,7 +1039,10 @@ function mkFind(vfs, registry) {
                     let terminator = null;
                     while (pos < args.length) {
                         const a = next();
-                        if (a === ';' || a === '\;') {
+                        // Exactly `;`, as GNU requires. The usual `\;` is the shell's
+                        // escaping of it; a quoted '\;' keeps its backslash and GNU
+                        // rejects that as a missing terminator, so this does too.
+                        if (a === ';') {
                             terminator = ';';
                             break;
                         }
