@@ -37,7 +37,7 @@ import { bindImportMetaResolve, importMetaDefines } from '../runtime/import-meta
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '../observability/oom-discriminator.js';
 import { classifyError } from '../observability/oom-classify.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
-import { type ExecDiagSink, diagClockTick, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
+import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '../_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
@@ -3814,7 +3814,7 @@ export class FacetManager {
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     const diagSink: ExecDiagSink | undefined = diagOn
-      ? { generateMs: 0, loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
+      ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
       : undefined;
 
     const abortController = new AbortController();
@@ -3837,10 +3837,6 @@ export class FacetManager {
         recordExecTelemetry({
           command,
           bundleMs,
-          generateMs: diagSink.generateMs,
-          // A one-shot's map rides to LOADER.load by value; nothing is
-          // materialized.
-          materializeMs: 0,
           loadMs: diagSink.loadMs,
           runMs: diagSink.runMs,
           drainPasses: result.diag?.drainPasses ?? 0,
@@ -3954,7 +3950,6 @@ export class FacetManager {
     // below. Otherwise the coordinator carries a second full copy of the
     // program for the whole FACET_TIMEOUT_MS the facet then runs for, which is
     // the window the isolate was being reset in.
-    const __generateStart = diagSink ? Date.now() : 0;
     let modules: WorkerCode['modules'] | undefined = (() => {
       const generatedWorker = generateEntrypointCode(code, vfsState, usesSqlite, shims);
       if (diagSink) {
@@ -3977,11 +3972,6 @@ export class FacetManager {
       if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
       return { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules };
     })();
-    if (diagSink) {
-      await diagClockTick();
-      diagSink.generateMs = Date.now() - __generateStart;
-    }
-
     // Pass SUPERVISOR binding for runtime-worker -> supervisor RPC.
     const ctxExports = getCtxExports();
     const writerId = crypto.randomUUID();
@@ -4776,7 +4766,6 @@ export class FacetManager {
     const vfsState: FacetVfsState = processVfs
       ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
-    if (diagOn) await diagClockTick();
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     const processEnv = opts.attachedTty
       ? {
@@ -4795,7 +4784,6 @@ export class FacetManager {
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeShimsCode(this.env),
     ]);
-    const __generateStart = diagOn ? Date.now() : 0;
     let generatedWorker: GeneratedNodeFacetCode | undefined = generateLongRunningNodeCode(
       code,
       vfsState,
@@ -4803,8 +4791,6 @@ export class FacetManager {
       usesSqlite,
       shims,
     );
-    if (diagOn) await diagClockTick();
-    const generateMs = diagOn ? Date.now() - __generateStart : 0;
 
     // Sized here, while the map is still in hand. Reading these after the load
     // would itself be what keeps the map alive, and the whole point of the
@@ -4828,7 +4814,6 @@ export class FacetManager {
     let resourcesTracked = false;
 
     try {
-      const __materializeStart = diagOn ? Date.now() : 0;
       const vfsTextModules = await this._materializeFacetImages(entry.pid, {
         'worker.js': generatedWorker.code,
         ...generatedWorker.modules,
@@ -4836,9 +4821,6 @@ export class FacetManager {
       // The image store has taken it; this frame must not be what holds the
       // only other copy while the facet boots.
       generatedWorker = undefined;
-      if (diagOn) await diagClockTick();
-      const materializeMs = diagOn ? Date.now() - __materializeStart : 0;
-      const __loadStart = diagOn ? Date.now() : 0;
       handle = await this._startResidentProcess(entry.pid, {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
@@ -4858,15 +4840,14 @@ export class FacetManager {
         },
       });
       if (diagOn) {
-        await diagClockTick();
         recordExecTelemetry({
           command,
           bundleMs,
-          generateMs,
-          materializeMs,
-          loadMs: Date.now() - __loadStart,
-          // A resident process does not "run and return"; its lifetime is the
-          // process's, so there is no run span to attribute to the launch.
+          // Both spans are pure computation plus SQLite, and workerd's clock
+          // only moves on I/O, so timing them here reads 0 however many
+          // seconds they burn. The tail's per-turn cpuTime is the authority on
+          // what a launch costs; what this record adds is what it is made OF.
+          loadMs: 0,
           runMs: 0,
           drainPasses: 0,
           moduleMapBytes,
