@@ -8,11 +8,18 @@ export interface ArgSpec {
 export interface ParsedArgs {
   flags: Record<string, string | boolean>;
   positional: string[];
+  /**
+   * Options the spec does not declare, in the spelling the caller used —
+   * `-z` for a short inside a cluster, `--zap` for a long. Commands that
+   * reject unknown options the way GNU does read this; the rest ignore it.
+   */
+  unknown: string[];
 }
 
 export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
+  const unknown: string[] = [];
 
   // Build short -> long map
   const shortMap: Record<string, string> = {};
@@ -43,6 +50,8 @@ export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs {
         const value = arg.slice(eqIdx + 1);
         if (name in spec) {
           flags[name] = spec[name].type === 'boolean' ? true : value;
+        } else {
+          unknown.push(`--${name}`);
         }
       } else {
         const name = arg.slice(2);
@@ -52,6 +61,8 @@ export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs {
           } else {
             flags[name] = true;
           }
+        } else {
+          unknown.push(arg);
         }
       }
       continue;
@@ -62,7 +73,7 @@ export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs {
     for (let j = 0; j < chars.length; j++) {
       const ch = chars[j];
       const longName = shortMap[ch];
-      if (!longName) continue;
+      if (!longName) { unknown.push(`-${ch}`); continue; }
       if (spec[longName].type === 'string') {
         // Rest of chars or next arg is value
         const rest = chars.slice(j + 1);
@@ -74,5 +85,5 @@ export function parseArgs(args: string[], spec: ArgSpec): ParsedArgs {
     }
   }
 
-  return { flags, positional };
+  return { flags, positional, unknown };
 }

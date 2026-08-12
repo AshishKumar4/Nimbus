@@ -1,27 +1,31 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { decompressGzip } from '../../utils/archive.js';
+import { parseArgs } from '../../utils/args.js';
 import { VFSError } from '../../kernel/vfs/index.js';
 
-const command: Command = async (ctx) => {
-  let keep = false;
-  const files: string[] = [];
+const spec = {
+  keep: { type: 'boolean' as const, short: 'k' },
+  force: { type: 'boolean' as const, short: 'f' },
+  quiet: { type: 'boolean' as const, short: 'q' },
+  help: { type: 'boolean' as const },
+};
 
-  for (const arg of ctx.args) {
-    switch (arg) {
-      case '-k': case '--keep': keep = true; break;
-      case '--help':
-        ctx.stdout.write('Usage: gunzip [-k] file.gz\n');
-        ctx.stdout.write('  -k, --keep   keep original file\n');
-        return 0;
-      default:
-        if (arg.startsWith('-')) {
-          ctx.stderr.write(`gunzip: unknown option: ${arg}\n`);
-          return 1;
-        }
-        files.push(arg);
-    }
+const command: Command = async (ctx) => {
+  const { flags, positional, unknown } = parseArgs(ctx.args, spec);
+  if (flags.help) {
+    ctx.stdout.write('Usage: gunzip [-kfq] file.gz...\n');
+    ctx.stdout.write('  -k, --keep    keep original file\n');
+    ctx.stdout.write('  -f, --force   overwrite an existing output file\n');
+    ctx.stdout.write('  -q, --quiet   suppress warnings\n');
+    return 0;
   }
+  if (unknown.length > 0) {
+    ctx.stderr.write(`gunzip: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+    return 1;
+  }
+  const keep = flags.keep === true;
+  const files = positional;
 
   if (files.length === 0) {
     ctx.stderr.write('gunzip: missing file operand\n');

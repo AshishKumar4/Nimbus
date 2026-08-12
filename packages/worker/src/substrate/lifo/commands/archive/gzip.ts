@@ -1,30 +1,37 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { compressGzip, decompressGzip } from '../../utils/archive.js';
+import { parseArgs } from '../../utils/args.js';
 import { VFSError } from '../../kernel/vfs/index.js';
 
-const command: Command = async (ctx) => {
-  let keep = false;
-  let decompress = false;
-  const files: string[] = [];
+const spec = {
+  keep: { type: 'boolean' as const, short: 'k' },
+  decompress: { type: 'boolean' as const, short: 'd' },
+  force: { type: 'boolean' as const, short: 'f' },
+  quiet: { type: 'boolean' as const, short: 'q' },
+  help: { type: 'boolean' as const },
+};
 
-  for (const arg of ctx.args) {
-    switch (arg) {
-      case '-k': case '--keep': keep = true; break;
-      case '-d': case '--decompress': decompress = true; break;
-      case '--help':
-        ctx.stdout.write('Usage: gzip [-k] [-d] file\n');
-        ctx.stdout.write('  -k, --keep         keep original file\n');
-        ctx.stdout.write('  -d, --decompress   decompress\n');
-        return 0;
-      default:
-        if (arg.startsWith('-')) {
-          ctx.stderr.write(`gzip: unknown option: ${arg}\n`);
-          return 1;
-        }
-        files.push(arg);
-    }
+const command: Command = async (ctx) => {
+  const { flags, positional, unknown } = parseArgs(ctx.args, spec);
+  if (flags.help) {
+    ctx.stdout.write('Usage: gzip [-kdfq] file...\n');
+    ctx.stdout.write('  -k, --keep         keep original file\n');
+    ctx.stdout.write('  -d, --decompress   decompress\n');
+    ctx.stdout.write('  -f, --force        overwrite an existing output file\n');
+    ctx.stdout.write('  -q, --quiet        suppress warnings\n');
+    return 0;
   }
+  // Compression levels are accepted and ignored: the gzip stream this VFS
+  // writes comes from CompressionStream, which exposes no level control.
+  const rejected = unknown.filter((o) => !/^-[1-9]$/.test(o));
+  if (rejected.length > 0) {
+    ctx.stderr.write(`gzip: invalid option -- '${rejected[0].replace(/^-+/, '')}'\n`);
+    return 1;
+  }
+  const keep = flags.keep === true;
+  const decompress = flags.decompress === true;
+  const files = positional;
 
   if (files.length === 0) {
     ctx.stderr.write('gzip: missing file operand\n');
