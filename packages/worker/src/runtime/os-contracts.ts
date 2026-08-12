@@ -1,5 +1,53 @@
 import type { VfsEvent } from '../vfs/events.js';
 
+/**
+ * A value SQLite can return in a row.
+ *
+ * `ArrayBufferView` is in the union because the host decides the blob
+ * representation and the hosts disagree: workerd's SqlStorage hands back an
+ * `ArrayBuffer`, `bun:sqlite` and `better-sqlite3` hand back a `Uint8Array`.
+ * Both are read through `blobToUint8Array`, which has always accepted either.
+ */
+export type SqlValue = ArrayBuffer | ArrayBufferView | string | number | bigint | null;
+
+export type SqlRow = Record<string, SqlValue>;
+
+/**
+ * The whole of the SQL surface the Nimbus filesystem needs.
+ *
+ * One method, because that is what the filesystem actually calls — 88 sites,
+ * all `exec`, all consuming the result by spreading it. workerd's `SqlStorage`
+ * satisfies this structurally, so the Durable Object path passes
+ * `ctx.storage.sql` unchanged and pays nothing for the indirection.
+ *
+ * NOT named `SqlStorage`, deliberately. That name is an ambient global from
+ * `@cloudflare/workers-types`: a port sharing it would still resolve in any
+ * file that forgot the import, silently re-binding to workerd's type while
+ * appearing decoupled. A distinct name makes the choice visible at the import.
+ */
+export interface SqlDatabase {
+  exec(query: string, ...bindings: unknown[]): Iterable<SqlRow>;
+}
+
+/**
+ * Synchronous, all-or-nothing grouping of `exec` calls.
+ *
+ * Separate from {@link NimbusSqlDatabase} because it is a property of the
+ * STORE, not of the statement runner, and because hosts expose it apart from
+ * `exec`: workerd puts it on `ctx.storage`, `bun:sqlite` builds one with
+ * `db.transaction(fn)`. The filesystem's atomicity guarantees rest entirely on
+ * this being a real transaction — an implementation that merely calls the
+ * callback silently converts every atomic write into a torn one.
+ */
+export interface SqlTransactions {
+  transactionSync<T>(callback: () => T): T;
+}
+
+/** Host object carrying the transaction primitive (workerd: `ctx`). */
+export interface TransactionHost {
+  readonly storage?: SqlTransactions;
+}
+
 export interface VfsCred {
   readonly uid: number;
   readonly gid: number;

@@ -71,6 +71,8 @@ import {
   type VfsInvalidatedPath,
   type VfsListEntry,
   type VfsListPage,
+  type SqlDatabase,
+  type TransactionHost,
 } from '../runtime/os-contracts.js';
 
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
@@ -572,8 +574,8 @@ interface CacheEntry {
 // ── SqliteVFS ───────────────────────────────────────────────────────────────
 
 export class SqliteVFS {
-  private sql: SqlStorage;
-  private ctx: DurableObjectState;
+  private sql: SqlDatabase;
+  private ctx: TransactionHost;
   public readonly events: VfsEventEmitter;
 
   // ── INode tree (always resident) ──────────────────────────────────────
@@ -720,7 +722,7 @@ export class SqliteVFS {
   private _batchWrites = 0;
   private _batchWriteRows = 0;
 
-  constructor(sql: SqlStorage, ctx?: DurableObjectState) {
+  constructor(sql: SqlDatabase, ctx?: TransactionHost) {
     this.sql = sql;
     this.ctx = ctx!;
     this.events = new VfsEventEmitter();
