@@ -27,6 +27,9 @@ function makeHandler(files) {
   let ranWith = null;
   const fs = {
     exists: (p) => Object.hasOwn(files, p),
+    // Every fixture entry is a file; the bound VFS distinguishes the two so
+    // script resolution can send a directory on to its index.
+    isFile: (p) => Object.hasOwn(files, p),
     readFileString: (p) => {
       if (!Object.hasOwn(files, p)) throw new Error('ENOENT ' + p);
       return files[p];
