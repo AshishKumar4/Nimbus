@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // Removing a tree resolves the subtree through the children index and commits
 // it in bounded groups, instead of scanning every inode once per entry and
-// committing one transaction apiece. A 19,429-file tree cost ~190 million
-// synchronous comparisons that way — long enough on the object's only thread
-// to drop the session's socket.
+// committing one transaction apiece. Removing a 19,429-file tree that way was
+// ~4.8 × 10^8 synchronous comparisons and ~41,000 transactions — long enough
+// on the object's only thread to exceed its per-request CPU budget, which
+// reset the object and closed every WebSocket it held.
 //
 // What must not change: the same entries disappear, the same inodes are freed,
 // superseded content is still collected, permissions still govern what may be
