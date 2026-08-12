@@ -492,8 +492,11 @@ export declare class SqliteVFS {
      * Walking the tree and issuing one transaction per entry cost a commit and
      * a content-maintenance pass apiece — 19,429 of each for a single npm
      * install's tree, on top of the whole-filesystem scan every one of them
-     * paid. A bounded group of entries commits together instead, closed on the
-     * entry before the one that would overflow it.
+     * paid. That took long enough on the object's only thread to exceed its
+     * per-request CPU budget: the removal committed, the object was reset, and
+     * every WebSocket it held closed 1006. A bounded group of entries commits
+     * together instead, closed on the entry before the one that would overflow
+     * it, and the removal owes one maintenance pass rather than one per group.
      *
      * Removal is group-atomic rather than path-atomic. Because entries go
      * deepest first, every committed prefix is a consistent smaller tree —
