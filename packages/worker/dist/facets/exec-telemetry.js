@@ -31,6 +31,23 @@ const _ring = [];
 export function isExecDiagEnabled() {
     return globalThis.process?.env?.NIMBUS_DIAG_EXEC === '1';
 }
+/**
+ * Advance workerd's clock so the span just measured has a real duration.
+ *
+ * `Date.now()` in workerd only moves when I/O completes, so a span of pure
+ * computation — which is most of what a launch is — reads 0 no matter how
+ * many seconds it burned. That is not a small distortion: it is why
+ * `bundleMs` was read as "the build stopped happening" and why the resident
+ * launch's materialize and load phases both reported 0 out of a turn that the
+ * tail measured at 21,274 ms of CPU.
+ *
+ * A timer is I/O, so awaiting one lets the clock catch up to real time before
+ * the next phase starts. Diagnostics only: every call site is behind
+ * `isExecDiagEnabled()`, so the measured path is never the shipped one.
+ */
+export function diagClockTick() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+}
 /** Append a record to the ring. No-op when telemetry is disabled. */
 export function recordExecTelemetry(rec) {
     if (!isExecDiagEnabled())
