@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import { CRED_KERNEL } from '../../packages/worker/src/runtime/os-contracts.ts';
 import { Sandbox } from '../../packages/worker/src/substrate/lifo/sandbox/Sandbox.ts';
@@ -177,6 +178,236 @@ await check('set -e aborts on an assignment whose substitution fails',
 await check('a substitution in an argument does not set the command status',
   'echo "$(false)"\necho "rc=$?"\n',
   { stdout: '\nrc=0\n' });
+
+// ── arrays ────────────────────────────────────────────────────────────────
+// `commands=(…)` and `"${arr[@]}"` are what the bun installer writes shell
+// profiles with, and nothing in the shell understood either: the lexer broke
+// the word at `(` so the list read as a subshell. Every expectation below is
+// what real GNU bash prints for the same snippet.
+
+await check("literal",
+  "a=(x y z); echo \"${a[0]} ${a[1]} ${a[2]}\"\n",
+  { stdout: "x y z\n" });
+await check("whole @",
+  "a=(x y z); echo \"${a[@]}\"\n",
+  { stdout: "x y z\n" });
+await check("whole *",
+  "a=(x y z); echo \"${a[*]}\"\n",
+  { stdout: "x y z\n" });
+await check("bare name is [0]",
+  "a=(x y z); echo \"$a\"\n",
+  { stdout: "x\n" });
+await check("count",
+  "a=(x y z); echo \"${#a[@]}\"\n",
+  { stdout: "3\n" });
+await check("count star",
+  "a=(x y z); echo \"${#a[*]}\"\n",
+  { stdout: "3\n" });
+await check("element length",
+  "a=(xx yyy); echo \"${#a[1]}\"\n",
+  { stdout: "3\n" });
+await check("quoted @ fields",
+  "a=(\"a b\" c); for e in \"${a[@]}\"; do echo \"[$e]\"; done\n",
+  { stdout: "[a b]\n[c]\n" });
+await check("unquoted @ splits",
+  "a=(\"a b\" c); for e in ${a[@]}; do echo \"[$e]\"; done\n",
+  { stdout: "[a]\n[b]\n[c]\n" });
+await check("quoted * one field",
+  "a=(\"a b\" c); for e in \"${a[*]}\"; do echo \"[$e]\"; done\n",
+  { stdout: "[a b c]\n" });
+await check("* joins on IFS",
+  "IFS=-; a=(x y z); echo \"${a[*]}\"\n",
+  { stdout: "x-y-z\n" });
+await check("@ ignores IFS",
+  "IFS=-; a=(x y z); echo \"${a[@]}\"\n",
+  { stdout: "x y z\n" });
+await check("empty array count",
+  "a=(); echo \"${#a[@]}\"\n",
+  { stdout: "0\n" });
+await check("empty array @",
+  "a=(); for e in \"${a[@]}\"; do echo \"[$e]\"; done; echo done\n",
+  { stdout: "done\n" });
+await check("empty array in args",
+  "a=(); f(){ echo \"$#\"; }; f \"${a[@]}\"\n",
+  { stdout: "0\n" });
+await check("append",
+  "a=(x); a+=(y z); echo \"${a[@]}\"\n",
+  { stdout: "x y z\n" });
+await check("append to empty",
+  "a=(); a+=(y); echo \"${a[@]}\"\n",
+  { stdout: "y\n" });
+await check("element assign",
+  "a=(x y); a[1]=Q; echo \"${a[@]}\"\n",
+  { stdout: "x Q\n" });
+await check("element beyond end",
+  "a=(x); a[3]=Q; echo \"${a[@]}\"\n",
+  { stdout: "x Q\n" });
+await check("sparse count",
+  "a=(x); a[3]=Q; echo \"${#a[@]}\"\n",
+  { stdout: "2\n" });
+await check("sparse indices",
+  "a=(x); a[3]=Q; echo \"${!a[@]}\"\n",
+  { stdout: "0 3\n" });
+await check("dense indices",
+  "a=(x y z); echo \"${!a[@]}\"\n",
+  { stdout: "0 1 2\n" });
+await check("negative index",
+  "a=(x y z); echo \"${a[-1]}\"\n",
+  { stdout: "z\n" });
+await check("arithmetic index",
+  "a=(x y z); i=1; echo \"${a[i+1]}\"\n",
+  { stdout: "z\n" });
+await check("dollar index",
+  "a=(x y z); i=2; echo \"${a[$i]}\"\n",
+  { stdout: "z\n" });
+await check("unset element read",
+  "a=(x); echo \"[${a[9]}]\"\n",
+  { stdout: "[]\n" });
+await check("default on element",
+  "a=(x); echo \"${a[9]:-fb}\"\n",
+  { stdout: "fb\n" });
+await check("slice",
+  "a=(p q r s); echo \"${a[@]:1:2}\"\n",
+  { stdout: "q r\n" });
+await check("slice to end",
+  "a=(p q r s); echo \"${a[@]:2}\"\n",
+  { stdout: "r s\n" });
+await check("trim each",
+  "a=(/a/x /a/y); echo \"${a[@]#/a/}\"\n",
+  { stdout: "x y\n" });
+await check("substitute each",
+  "a=(ab cb); echo \"${a[@]/b/Z}\"\n",
+  { stdout: "aZ cZ\n" });
+await check("case each",
+  "a=(ab cd); echo \"${a[@]^^}\"\n",
+  { stdout: "AB CD\n" });
+await check("from command sub",
+  "a=($(echo p q r)); echo \"${#a[@]} ${a[1]}\"\n",
+  { stdout: "3 q\n" });
+await check("from positional",
+  "f(){ local -a c; c=(\"$@\"); echo \"${#c[@]} [${c[0]}]\"; }; f \"x y\" z\n",
+  { stdout: "2 [x y]\n" });
+await check("quoted elements",
+  "a=(\"x y\" \"z w\"); echo \"${#a[@]} [${a[0]}]\"\n",
+  { stdout: "2 [x y]\n" });
+await check("expansion in elem",
+  "v=hi; a=($v there); echo \"${a[0]}-${a[1]}\"\n",
+  { stdout: "hi-there\n" });
+await check("scalar then index",
+  "v=one; v[1]=two; echo \"${v[@]}\"\n",
+  { stdout: "one two\n" });
+await check("array then scalar",
+  "a=(x y); a=plain; echo \"[${a[@]}] [${a[1]}]\"\n",
+  { stdout: "[plain y] [y]\n" });
+await check("unset whole",
+  "a=(x y); unset a; echo \"[${a[@]}] ${#a[@]}\"\n",
+  { stdout: "[] 0\n" });
+await check("loop over array",
+  "a=(one two); for e in \"${a[@]}\"; do echo \"-$e\"; done\n",
+  { stdout: "-one\n-two\n" });
+await check("array in condition",
+  "a=(x); if [ \"${#a[@]}\" -gt 0 ]; then echo nonempty; fi\n",
+  { stdout: "nonempty\n" });
+await check("nested quotes",
+  "a=(\"a\\\"b\"); echo \"${a[0]}\"\n",
+  { stdout: "a\"b\n" });
+await check("set -u empty array",
+  "set -u; a=(); echo \"${#a[@]}\"; f(){ echo \"$#\"; }; f \"${a[@]}\"\n",
+  { stdout: "0\n0\n" });
+await check("append scalar",
+  "v=a; v+=b; echo \"$v\"\n",
+  { stdout: "ab\n" });
+await check("append element",
+  "a=(x y); a[0]+=Z; echo \"${a[@]}\"\n",
+  { stdout: "xZ y\n" });
+await check("bun config shape",
+  "P=/bin; cmds=(\"export A=1\" \"export PATH=\\\"x:$P\\\"\"); for c in \"${cmds[@]}\"; do echo \"  $c\"; done\n",
+  { stdout: "  export A=1\n  export PATH=\"x:/bin\"\n" });
+await check("local basic",
+  "f(){ local v=in; echo \"$v\"; }; v=out; f; echo \"$v\"\n",
+  { stdout: "in\nout\n" });
+await check("local unset outside",
+  "f(){ local v=in; }; f; echo \"[${v-unset}]\"\n",
+  { stdout: "[unset]\n" });
+await check("local no value",
+  "v=out; f(){ local v; echo \"[$v]\"; }; f; echo \"[$v]\"\n",
+  { stdout: "[]\n[out]\n" });
+await check("local several",
+  "f(){ local a=1 b=2; echo \"$a$b\"; }; f\n",
+  { stdout: "12\n" });
+await check("local is dynamic",
+  "g(){ echo \"$v\"; }; f(){ local v=inner; g; }; v=outer; f\n",
+  { stdout: "inner\n" });
+await check("local recursion",
+  "f(){ local d=$1; [ \"$1\" -eq 0 ] && { echo \"$d\"; return; }; f $(( $1 - 1 )); echo \"$d\"; }; f 2\n",
+  { stdout: "0\n1\n2\n" });
+await check("local restores on return",
+  "f(){ local v=x; return 3; }; v=keep; f; echo \"$? $v\"\n",
+  { stdout: "3 keep\n" });
+await check("local array",
+  "f(){ local a=(p q); echo \"${#a[@]} ${a[1]}\"; }; a=(z); f; echo \"${a[@]}\"\n",
+  { stdout: "2 q\nz\n" });
+await check("local -r",
+  "f(){ local -r c=1; echo \"$c\"; }; f\n",
+  { stdout: "1\n" });
+await check("declare in fn",
+  "f(){ declare v=in; echo \"$v\"; }; v=out; f; echo \"$v\"\n",
+  { stdout: "in\nout\n" });
+await check("declare at top",
+  "declare v=top; echo \"$v\"\n",
+  { stdout: "top\n" });
+await check("typeset alias",
+  "f(){ typeset v=in; echo \"$v\"; }; f\n",
+  { stdout: "in\n" });
+await check("local shadows array",
+  "f(){ local a; a=(1 2); echo \"${#a[@]}\"; }; a=(x y z); f; echo \"${#a[@]}\"\n",
+  { stdout: "2\n3\n" });
+await check("bash_configs shape",
+  "cfg=(\"$HOME/.bash_profile\" \"$HOME/.bashrc\"); cfg+=(\"$HOME/x\"); echo \"${#cfg[@]}\"\n",
+  { stdout: "3\n" });
+
+// ── the shell's own options end at the script ─────────────────────────────
+// `bash script.sh --help` printed the shell's usage and exited 0, because the
+// entrypoint scanned all of argv for --help instead of parsing options up to
+// the first operand. Any installer that runs `"$CLI" --help` got the shell's
+// banner and concluded its download was broken.
+
+await check('a script receives --help rather than the shell answering it',
+  'printf \'#!/usr/bin/env bash\\necho "script saw: $*"\\n\' > /tmp/cli.sh\n'
+  + 'chmod 755 /tmp/cli.sh\n/tmp/cli.sh --help\nbash /tmp/cli.sh --version\n',
+  { stdout: 'script saw: --help\nscript saw: --version\n' });
+
+await check('the shell still answers --help given before a script',
+  'bash --help | head -n 1\n',
+  { stdout: 'usage: bash [-c command] [script]\n' });
+
+// ── sha256sum over the real bytes ─────────────────────────────────────────
+// The digest was taken over enc.encode(readFileString(path)) — a UTF-8 decode
+// and re-encode, which turns every byte that is not valid UTF-8 into U+FFFD.
+// Any binary file hashed to something it does not contain, silently, so an
+// installer verifying a downloaded tarball saw a mismatch on a good download.
+
+{
+  const bytes = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) bytes[i] = i & 0xff;
+  root.writeFile('tmp/every-byte.bin', bytes, { mode: 0o644 });
+  const expected = createHash('sha256').update(bytes).digest('hex');
+
+  await check('sha256sum digests a binary file byte for byte',
+    'sha256sum /tmp/every-byte.bin | cut -d" " -f1\n',
+    { stdout: expected + '\n' });
+
+  await check('sha256sum -c verifies a checksum list',
+    `printf '%s  /tmp/every-byte.bin\\n' ${expected} > /tmp/sums.txt\n`
+    + 'sha256sum -c /tmp/sums.txt\n',
+    { stdout: '/tmp/every-byte.bin: OK\n' });
+
+  await check('sha256sum -c reports a file whose contents changed',
+    "printf '%s  /tmp/every-byte.bin\\n' "
+    + "'0000000000000000000000000000000000000000000000000000000000000000' > /tmp/bad.txt\n"
+    + 'sha256sum -c /tmp/bad.txt\necho "rc=$?"\n',
+    { stdout: '/tmp/every-byte.bin: FAILED\nrc=1\n' });
+}
 
 box.destroy();
 
