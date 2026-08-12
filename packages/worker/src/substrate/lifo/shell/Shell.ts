@@ -226,9 +226,9 @@ export class Shell {
     this.builtins.set('alias', (args, stdout) => this.builtinAlias(args, stdout));
     this.builtins.set('unalias', (args, _stdout, stderr) => this.builtinUnalias(args, stderr));
     this.builtins.set('test', (args, _stdout, stderr, _stdin, context) =>
-      Promise.resolve(evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+      evaluateTest(args, context?.vfs ?? this.vfs, stderr, context));
     this.builtins.set('[', (args, _stdout, stderr, _stdin, context) =>
-      Promise.resolve(evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+      evaluateTest(args, context?.vfs ?? this.vfs, stderr, context));
   }
 
   getJobTable(): JobTable {
