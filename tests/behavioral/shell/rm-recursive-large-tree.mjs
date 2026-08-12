@@ -48,7 +48,8 @@ try {
   await t.waitForPrompt(60_000);
 
   const install = await t.run(
-    `mkdir -p ${PROJECT} && cd ${PROJECT} && npm install --ignore-scripts ${PACKAGE}; echo INSTALLED_${token}`,
+    `mkdir -p ${PROJECT} && cd ${PROJECT} && echo keep-me > sibling.txt`
+    + ` && npm install --ignore-scripts ${PACKAGE}; echo INSTALLED_${token}`,
     600_000,
   );
   const installOut = stripAnsi(install.output);
@@ -90,15 +91,15 @@ try {
   t.cmd(`ls ${TREE} 2>&1; echo LISTED_${token}`);
   const listed = await expect(t, `LISTED_${token}`, 60_000, 'the post-removal listing');
   a.check('the tree is actually gone',
-    typeof listed === 'string' && /No such file|not found/i.test(listed),
+    typeof listed === 'string' && /ENOENT|No such file|cannot access/i.test(listed),
     typeof listed === 'string' ? JSON.stringify(listed.slice(-400)) : JSON.stringify(listed));
 
-  // Everything outside the removed tree survives it.
+  // The removal took the subtree and nothing beside it.
   t.reset();
-  t.cmd(`ls ${PROJECT} 2>&1; echo SIBLING_${token}`);
-  const sibling = await expect(t, `SIBLING_${token}`, 60_000, 'the surviving project listing');
-  a.check('the project directory holding the tree survives',
-    typeof sibling === 'string' && /package\.json|package-lock\.json/.test(sibling),
+  t.cmd(`cat ${PROJECT}/sibling.txt 2>&1; echo SIBLING_${token}`);
+  const sibling = await expect(t, `SIBLING_${token}`, 60_000, 'the surviving sibling');
+  a.check("a file beside the removed tree survives it",
+    typeof sibling === 'string' && /keep-me/.test(sibling),
     typeof sibling === 'string' ? JSON.stringify(sibling.slice(-400)) : JSON.stringify(sibling));
 } finally {
   await t.close();
