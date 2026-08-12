@@ -3,6 +3,85 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## 2026-08-11
+
+The first publish since 2026-06-06. Everything on npm until now was built from
+that day's tree, so the jump is large — this entry covers only what changes for
+someone consuming the packages, not the several hundred commits behind it.
+
+### Background Processes (breaking)
+
+- `startProcess` now returns as soon as the command has a pid, instead of
+  waiting for it to finish. Until now it awaited the command to completion and
+  then guessed which pid it had started by diffing the process table, so
+  `sleep 5` took five seconds and dev servers, watchers, and anything else
+  long-running were impossible.
+- `NimbusStartResult` changed shape to match: it is now
+  `{ command, pid, process, ports, startedAt }`. The exec fields it used to
+  carry — `exitCode`, `stdout`, `stderr`, `success`, `duration`, `timestamp` —
+  are gone, because they described a finished command and cannot describe one
+  that has just started. `pid` and `process` are no longer nullable.
+- Read the output and the exit through `processes.logs(pid)`, which returns a
+  cursor, the chunks since that cursor, and the exit record once it lands. Or
+  use `processes.attach(pid)`, which is async-iterable and can also write to
+  stdin, resize, signal, and kill.
+- **If you read `exitCode` or `stdout` off a `startProcess` result, that code
+  needs updating.** This is the reason both packages move to `0.2.0` rather
+  than a patch: a `^0.1.x` range will not pick the new versions up, which is
+  deliberate.
+
+### Files
+
+- Added `files.lstat`, `files.rename`, `files.chmod`, and `files.readRange`.
+  `readRange` reads a window of a file without materializing the whole thing.
+- `processes.logs` is now typed as `NimbusProcessLogsResult` instead of
+  `unknown`.
+
+### Port Previews
+
+- Added preview host URLs — `<port>--<session>.<suffix>` — alongside the
+  existing path-style previews. Set `NIMBUS_PREVIEW_HOST_SUFFIX` on the
+  deployment; `Nimbus.fromEnv` reads it off the bindings, and remote clients
+  pass `previewHostSuffix` in config. A preview host reaches the port forward
+  and nothing else.
+- Added `isPreviewHostRequest` and the `@nimbus-sh/worker/preview-host`
+  subpath.
+
+### Session Agent
+
+- Added the session agent and its Cloudflare OAuth surface, with the
+  credentials held in encrypted cookies. `@nimbus-sh/config` takes an optional
+  `agent` block; the secrets stay out of it and belong in
+  `wrangler secret put`.
+
+### Fixes
+
+- Fixed remote `files.write` throwing after the write had already landed. The
+  client validated the result against `z.undefined()` while the Durable Object
+  answers with the byte count it wrote. This one never reached npm — it was
+  introduced and fixed between releases — but it is here because anyone
+  tracking `main` in that window hit it.
+- `nimbus session new` authenticates with a bearer token.
+
+### Packages
+
+- Published:
+  - `@nimbus-sh/worker@0.2.0`
+  - `@nimbus-sh/sdk@0.2.0`
+  - `@nimbus-sh/cli@0.1.8`
+  - `@nimbus-sh/react@0.1.4`
+  - `@nimbus-sh/config@0.1.4`
+- Unchanged, not republished: `create-nimbus-app@0.1.6`.
+- `@nimbus-sh/react@0.1.4` is a range fix and nothing else — every shipped
+  file is byte-identical to `0.1.3`. Its peer on the SDK was `^0.1.4`, which
+  npm cannot satisfy with `0.2.0`, so installing the new SDK beside the React
+  component failed to resolve. It now accepts `^0.1.4 || ^0.2.0`. The
+  component imports nothing from the SDK — it is an iframe wrapper — so the
+  breaking type change does not reach it.
+- `@nimbus-sh/sdk` needs `@nimbus-sh/worker` at the matching major-equivalent
+  range: it imports `@nimbus-sh/worker/preview-host` at runtime, and that
+  subpath does not exist before `0.2.0`.
+
 ## 2026-06-05
 
 ### Open-source Alpha
