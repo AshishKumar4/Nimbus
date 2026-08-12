@@ -1,48 +1,47 @@
+import { parseArgs } from '../../utils/args.js';
+const info = {
+    sysname: 'Lifo',
+    nodename: 'lifo',
+    release: '1.0.0',
+    version: '#1',
+    machine: 'wasm',
+    operatingSystem: 'Lifo',
+};
+const spec = {
+    all: { type: 'boolean', short: 'a' },
+    'kernel-name': { type: 'boolean', short: 's' },
+    nodename: { type: 'boolean', short: 'n' },
+    'kernel-release': { type: 'boolean', short: 'r' },
+    'kernel-version': { type: 'boolean', short: 'v' },
+    machine: { type: 'boolean', short: 'm' },
+    'operating-system': { type: 'boolean', short: 'o' },
+};
 const command = async (ctx) => {
-    const info = {
-        sysname: 'Lifo',
-        release: '1.0.0',
-        machine: 'wasm',
-    };
-    if (ctx.args.length === 0) {
-        ctx.stdout.write(info.sysname + '\n');
+    const parsed = parseArgs('uname', ctx.args, spec);
+    if (!parsed.ok) {
+        ctx.stderr.write(parsed.error);
+        return 1;
+    }
+    const { flags } = parsed;
+    if (flags.all) {
+        ctx.stdout.write(`${info.sysname} ${info.nodename} ${info.release} ${info.version} ${info.machine} ${info.operatingSystem}\n`);
         return 0;
     }
-    let showAll = false;
-    let showSysname = false;
-    let showRelease = false;
-    let showMachine = false;
-    for (const arg of ctx.args) {
-        if (arg.startsWith('-')) {
-            for (let i = 1; i < arg.length; i++) {
-                switch (arg[i]) {
-                    case 'a':
-                        showAll = true;
-                        break;
-                    case 's':
-                        showSysname = true;
-                        break;
-                    case 'r':
-                        showRelease = true;
-                        break;
-                    case 'm':
-                        showMachine = true;
-                        break;
-                }
-            }
-        }
-    }
-    if (showAll) {
-        ctx.stdout.write(`${info.sysname} ${info.release} ${info.machine}\n`);
-        return 0;
-    }
+    // GNU prints the selected fields in a fixed order, not the order given.
     const parts = [];
-    if (showSysname)
+    if (flags['kernel-name'])
         parts.push(info.sysname);
-    if (showRelease)
+    if (flags.nodename)
+        parts.push(info.nodename);
+    if (flags['kernel-release'])
         parts.push(info.release);
-    if (showMachine)
+    if (flags['kernel-version'])
+        parts.push(info.version);
+    if (flags.machine)
         parts.push(info.machine);
+    if (flags['operating-system'])
+        parts.push(info.operatingSystem);
+    // Selecting nothing means -s, which is also what a bare `uname` prints.
     if (parts.length === 0)
         parts.push(info.sysname);
     ctx.stdout.write(parts.join(' ') + '\n');

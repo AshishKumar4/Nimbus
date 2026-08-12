@@ -24,13 +24,39 @@ const command = async (ctx) => {
         if (arg === '-d' || arg === '--decode') {
             decode = true;
         }
-        else if (arg === '-w' && i + 1 < ctx.args.length) {
-            wrap = parseInt(ctx.args[++i], 10);
+        else if (arg === '-w' || arg === '--wrap') {
+            const value = ctx.args[++i];
+            if (value === undefined) {
+                ctx.stderr.write(`base64: option '${arg}' requires an argument\n`);
+                return 1;
+            }
+            wrap = parseInt(value, 10);
+            if (isNaN(wrap) || wrap < 0) {
+                ctx.stderr.write(`base64: invalid wrap size: '${value}'\n`);
+                return 1;
+            }
         }
-        else if (arg === '--wrap' && i + 1 < ctx.args.length) {
-            wrap = parseInt(ctx.args[++i], 10);
+        else if (arg.startsWith('--wrap=')) {
+            wrap = parseInt(arg.slice('--wrap='.length), 10);
+            if (isNaN(wrap) || wrap < 0) {
+                ctx.stderr.write(`base64: invalid wrap size: '${arg.slice('--wrap='.length)}'\n`);
+                return 1;
+            }
         }
-        else if (!arg.startsWith('-') || arg === '-') {
+        else if (arg === '-i' || arg === '--ignore-garbage') {
+            // Decoding already strips whitespace and rejects nothing else, so this
+            // asks for the behaviour that is already in effect.
+        }
+        else if (arg !== '-' && arg.startsWith('-')) {
+            // Anything else used to be dropped, so `base64 -D file` silently
+            // ENCODED the file instead of decoding it.
+            ctx.stderr.write(arg.startsWith('--')
+                ? `base64: unrecognized option '${arg}'\n`
+                : `base64: invalid option -- '${arg[1]}'\n`);
+            ctx.stderr.write("Usage: base64 [-d] [-w COLS] [FILE]\n");
+            return 1;
+        }
+        else {
             files.push(arg);
         }
     }

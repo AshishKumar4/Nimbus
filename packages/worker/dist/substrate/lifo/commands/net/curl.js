@@ -8,6 +8,11 @@ const MAX_REDIRECTS = 20;
 function createCurlImpl(kernel) {
     return async (ctx) => {
         const options = parseCurlArgs(ctx.args);
+        if (options.unknownOption) {
+            ctx.stderr.write(`curl: option ${options.unknownOption}: is unknown\n`);
+            ctx.stderr.write("curl: try 'curl --help' for more information\n");
+            return 2;
+        }
         let url = options.url;
         if (!url) {
             ctx.stderr.write('curl: no URL specified\n');
@@ -187,7 +192,10 @@ function parseLongOption(options, arg, args, index) {
         case '--progress-bar':
             options.progressBar = true;
             return 0;
+        case '--no-buffer':
+            return 0; // see -N above: this response is never buffered.
         default:
+            options.unknownOption ??= name;
             return 0;
     }
 }
@@ -227,6 +235,13 @@ function applyShortBooleanOption(options, flag) {
             break;
         case '#':
             options.progressBar = true;
+            break;
+        case 'N':
+            // Output is already written through as it arrives, so --no-buffer
+            // asks for the behaviour that is always in effect here.
+            break;
+        default:
+            options.unknownOption ??= `-${flag}`;
             break;
     }
 }

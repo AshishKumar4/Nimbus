@@ -17,7 +17,14 @@ const command = async (ctx) => {
         else if (arg === '-maxdepth' && i + 1 < ctx.args.length) {
             maxDepth = parseInt(ctx.args[++i], 10);
         }
-        else if (!arg.startsWith('-')) {
+        else if (arg.startsWith('-')) {
+            // An unimplemented predicate used to be dropped, so `find . -size +1M`
+            // and `find . -newer x` quietly returned EVERY entry instead — a
+            // result that looks like a correct answer to a different question.
+            ctx.stderr.write(`find: unknown predicate '${arg}'\n`);
+            return 1;
+        }
+        else {
             searchPath = arg;
         }
     }

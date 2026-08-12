@@ -1,3 +1,4 @@
+import { parseArgs } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
 import { VFSError } from '../../kernel/vfs/index.js';
 function extractStrings(data, minLen) {
@@ -21,24 +22,27 @@ function extractStrings(data, minLen) {
     }
     return results;
 }
+const spec = {
+    bytes: { type: 'string', short: 'n' },
+    // Every byte of every file is scanned already, so -a asks for the default.
+    all: { type: 'boolean', short: 'a' },
+};
 const command = async (ctx) => {
+    const parsed = parseArgs('strings', ctx.args, spec, { numericShorthand: 'bytes' });
+    if (!parsed.ok) {
+        ctx.stderr.write(parsed.error);
+        return 1;
+    }
+    const files = parsed.positional;
     let minLen = 4;
-    const files = [];
-    for (let i = 0; i < ctx.args.length; i++) {
-        const arg = ctx.args[i];
-        if (arg === '-n' && i + 1 < ctx.args.length) {
-            minLen = parseInt(ctx.args[++i], 10);
-            if (isNaN(minLen) || minLen < 1)
-                minLen = 4;
+    if (parsed.flags.bytes !== '') {
+        const requested = parseInt(parsed.flags.bytes, 10);
+        // A length that is not a length used to fall back to 4 in silence.
+        if (isNaN(requested) || requested < 1) {
+            ctx.stderr.write(`strings: invalid minimum string length ${parsed.flags.bytes}\n`);
+            return 1;
         }
-        else if (arg.startsWith('-') && arg.length > 1 && !isNaN(parseInt(arg.slice(1), 10))) {
-            minLen = parseInt(arg.slice(1), 10);
-            if (minLen < 1)
-                minLen = 4;
-        }
-        else {
-            files.push(arg);
-        }
+        minLen = requested;
     }
     let exitCode = 0;
     if (files.length === 0) {

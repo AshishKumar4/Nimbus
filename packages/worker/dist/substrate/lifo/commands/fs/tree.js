@@ -3,16 +3,36 @@ import { VFSError } from '../../kernel/vfs/index.js';
 const command = async (ctx) => {
     let maxDepth = Infinity;
     let dirsOnly = false;
+    let showAll = false;
+    let noReport = false;
     let targetPath = '.';
     for (let i = 0; i < ctx.args.length; i++) {
         const arg = ctx.args[i];
         if (arg === '-L' && i + 1 < ctx.args.length) {
-            maxDepth = parseInt(ctx.args[++i], 10);
+            const level = parseInt(ctx.args[++i], 10);
+            if (isNaN(level) || level < 1) {
+                ctx.stderr.write('tree: Invalid level, must be greater than 0.\n');
+                return 1;
+            }
+            maxDepth = level;
         }
         else if (arg === '-d') {
             dirsOnly = true;
         }
-        else if (!arg.startsWith('-')) {
+        else if (arg === '-a') {
+            showAll = true;
+        }
+        else if (arg === '--noreport') {
+            noReport = true;
+        }
+        else if (arg.startsWith('-')) {
+            ctx.stderr.write(arg.startsWith('--')
+                ? `tree: unrecognized option '${arg}'\n`
+                : `tree: invalid option -- '${arg[1]}'\n`);
+            ctx.stderr.write('Usage: tree [-adL level] [--noreport] [PATH]\n');
+            return 1;
+        }
+        else {
             targetPath = arg;
         }
     }
@@ -23,7 +43,10 @@ const command = async (ctx) => {
         if (depth > maxDepth)
             return;
         try {
-            const entries = ctx.vfs.readdir(dirPath);
+            const entries = ctx.vfs.readdir(dirPath)
+                // Real `tree` hides dotfiles unless -a; listing them always left -a
+                // with nothing to do.
+                .filter((e) => showAll || !e.name.startsWith('.'));
             const filtered = dirsOnly
                 ? entries.filter((e) => e.type === 'directory')
                 : entries;

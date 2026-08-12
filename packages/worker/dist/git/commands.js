@@ -369,7 +369,17 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     return 0;
                 }
                 case 'add': {
-                    const paths = subArgs.filter(a => !a.startsWith('-'));
+                    // `-A`/`--all` means the same thing here as naming no path at all.
+                    // Everything else was dropped, so `git add -n` (dry run) STAGED the
+                    // files it was only supposed to list.
+                    const addAllFlags = new Set(['-A', '--all', '--no-ignore-removal']);
+                    const unknownFlag = subArgs.find((a) => a.startsWith('-') && a !== '-' && !addAllFlags.has(a));
+                    if (unknownFlag) {
+                        ctx.stderr.write(`error: unknown switch \`${unknownFlag}'\n`);
+                        ctx.stderr.write('usage: git add [-A] [--] <pathspec>...\n');
+                        return 129;
+                    }
+                    const paths = subArgs.filter((a) => !a.startsWith('-'));
                     if (paths.length === 0 || paths.includes('.')) {
                         // Add all
                         const matrix = await git.statusMatrix({ fs, dir });
@@ -437,13 +447,21 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                         }
                     }
                     else if (subArgs.includes('-d') || subArgs.includes('-D')) {
-                        const name = subArgs.find(a => !a.startsWith('-'));
+                        const name = subArgs.find((a) => !a.startsWith('-'));
                         if (name) {
                             await git.deleteBranch({ fs, dir, ref: name });
                             ctx.stdout.write(`Deleted branch ${name}\n`);
                         }
                     }
                     else {
+                        // `name = subArgs[0]` took the FLAG when one was given, so
+                        // `git branch -m old new` created a branch literally named `-m`.
+                        const flag = subArgs.find((a) => a.startsWith('-'));
+                        if (flag) {
+                            ctx.stderr.write(`error: unknown switch \`${flag}'\n`);
+                            ctx.stderr.write('usage: git branch [-a] [-d|-D] [<branchname>]\n');
+                            return 129;
+                        }
                         const name = subArgs[0];
                         await git.branch({ fs, dir, ref: name });
                         ctx.stdout.write(`Created branch ${name}\n`);
@@ -451,7 +469,20 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     return 0;
                 }
                 case 'checkout': {
-                    const ref = subArgs.find(a => !a.startsWith('-'));
+                    // `git checkout -- <path>` discards changes to a FILE; treating it
+                    // as a branch name switched branches instead, which is a different
+                    // and destructive operation.
+                    if (subArgs.includes('--')) {
+                        ctx.stderr.write('git checkout -- <path> (restore a file) is not supported here\n');
+                        return 1;
+                    }
+                    const checkoutFlag = subArgs.find((a) => a.startsWith('-') && a !== '-b');
+                    if (checkoutFlag) {
+                        ctx.stderr.write(`error: unknown switch \`${checkoutFlag}'\n`);
+                        ctx.stderr.write('usage: git checkout [-b] <branch>\n');
+                        return 129;
+                    }
+                    const ref = subArgs.find((a) => !a.startsWith('-'));
                     if (!ref) {
                         ctx.stderr.write('error: specify a branch\n');
                         return 1;
@@ -639,11 +670,20 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                             ctx.stdout.write(t + '\n');
                     }
                     else if (subArgs.includes('-d')) {
-                        const name = subArgs.find(a => !a.startsWith('-'));
+                        const name = subArgs.find((a) => !a.startsWith('-'));
                         if (name)
                             await git.deleteTag({ fs, dir, ref: name });
                     }
                     else {
+                        // Same shape as `git branch`: `git tag -a v1 -m msg` created a
+                        // tag named `-a`. Annotated tags are not supported here, so the
+                        // flag has to be refused rather than turned into the tag name.
+                        const flag = subArgs.find((a) => a.startsWith('-'));
+                        if (flag) {
+                            ctx.stderr.write(`error: unknown switch \`${flag}'\n`);
+                            ctx.stderr.write('usage: git tag [-d] [<tagname>]\n');
+                            return 129;
+                        }
                         const name = subArgs[0];
                         await git.tag({ fs, dir, ref: name });
                         ctx.stdout.write(`Created tag ${name}\n`);
@@ -651,7 +691,18 @@ export function registerGitCommands(registry, vfs, doCtx, doEnv) {
                     return 0;
                 }
                 case 'config': {
-                    const key = subArgs.find(a => !a.startsWith('-'));
+                    // There is one config store here, so --global and --local address
+                    // the same file. Saying so beats writing somewhere else in silence.
+                    for (const scope of subArgs.filter((a) => a.startsWith('-'))) {
+                        if (scope === '--global' || scope === '--local' || scope === '--worktree') {
+                            ctx.stderr.write(`warning: ${scope} ignored; this repository has a single config\n`);
+                        }
+                        else {
+                            ctx.stderr.write(`error: unknown switch \`${scope}'\n`);
+                            return 129;
+                        }
+                    }
+                    const key = subArgs.find((a) => !a.startsWith('-'));
                     const value = subArgs[subArgs.indexOf(key || '') + 1];
                     if (key && value) {
                         const [section, ...rest] = key.split('.');

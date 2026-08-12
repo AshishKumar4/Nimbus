@@ -1507,7 +1507,11 @@ export function initSession(self, ws) {
             ctx.stderr.write('Only "npm-fast install" is supported. Use "npm" for other commands.\n');
             return 1;
         }
-        const packages = args.slice(1).filter((a) => !a.startsWith('-'));
+        const fastArgs = args.slice(1);
+        for (const option of fastArgs.filter((a) => a.startsWith('-') && a !== '-')) {
+            ctx.stderr.write(`npm warn Unknown cli config "${option}". It was ignored.\n`);
+        }
+        const packages = fastArgs.filter((a) => !a.startsWith('-'));
         if (packages.length === 0) {
             ctx.stderr.write('Specify packages to install: npm-fast install react react-dom\n');
             return 1;
@@ -2077,7 +2081,11 @@ export function initSession(self, ws) {
         }
         // npm uninstall <pkg>
         if (sub === 'uninstall' || sub === 'un' || sub === 'remove' || sub === 'rm') {
-            const packages = args.slice(1).filter(a => !a.startsWith('-'));
+            const uninstallArgs = args.slice(1);
+            for (const option of uninstallArgs.filter((a) => a.startsWith('-') && a !== '-')) {
+                ctx.stderr.write(`npm warn Unknown cli config "${option}". It was ignored.\n`);
+            }
+            const packages = uninstallArgs.filter((a) => !a.startsWith('-'));
             if (packages.length === 0) {
                 ctx.stderr.write('Usage: npm uninstall <pkg>\n');
                 return 1;
@@ -2124,6 +2132,9 @@ export function initSession(self, ws) {
         // npm install (no args or with packages) — use NpmInstaller v2 (batched writes)
         if (sub === 'install' || sub === 'i' || sub === 'add') {
             const installInvocation = parseNpmInstallInvocation(args.slice(1));
+            for (const option of installInvocation.unknownOptions) {
+                ctx.stderr.write(`npm warn Unknown cli config "${option}". It was ignored.\n`);
+            }
             const explicitPkgs = installInvocation.packages;
             const globalPrefix = installInvocation.global
                 ? resolveNpmPrefix(installInvocation.prefix ?? String(ctx.env?.npm_config_prefix || '/usr/local'), ctx.cwd || '/home/user')

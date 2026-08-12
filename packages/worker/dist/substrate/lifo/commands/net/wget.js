@@ -8,6 +8,7 @@ const command = async (ctx) => {
         const arg = args[i];
         switch (arg) {
             case '-O':
+            case '--output-document':
                 outputFile = args[++i] ?? '';
                 break;
             case '-q':
@@ -15,7 +16,18 @@ const command = async (ctx) => {
                 quiet = true;
                 break;
             default:
-                if (!arg.startsWith('-')) {
+                if (arg.startsWith('--output-document=')) {
+                    outputFile = arg.slice('--output-document='.length);
+                }
+                else if (arg.startsWith('-') && arg !== '-') {
+                    // Dropping these meant `wget -O out.txt url` worked but
+                    // `wget --output-document=out.txt url` silently wrote to the
+                    // filename guessed from the URL instead.
+                    ctx.stderr.write(`wget: unrecognized option '${arg}'\n`);
+                    ctx.stderr.write('Usage: wget [-O file] [-q] url\n');
+                    return 1;
+                }
+                else {
                     url = arg;
                 }
                 break;

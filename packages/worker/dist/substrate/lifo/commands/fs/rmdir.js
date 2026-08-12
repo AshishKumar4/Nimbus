@@ -5,7 +5,12 @@ const spec = {
     parents: { type: 'boolean', short: 'p' },
 };
 const command = async (ctx) => {
-    const { flags, positional } = parseArgs(ctx.args, spec);
+    const parsed = parseArgs('rmdir', ctx.args, spec);
+    if (!parsed.ok) {
+        ctx.stderr.write(parsed.error);
+        return 1;
+    }
+    const { flags, positional } = parsed;
     if (positional.length === 0) {
         ctx.stderr.write('rmdir: missing operand\n');
         return 1;

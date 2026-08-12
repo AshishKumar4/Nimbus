@@ -13,7 +13,12 @@ function randomChars(n) {
     return result;
 }
 const command = async (ctx) => {
-    const { flags, positional } = parseArgs(ctx.args, spec);
+    const parsed = parseArgs('mktemp', ctx.args, spec);
+    if (!parsed.ok) {
+        ctx.stderr.write(parsed.error);
+        return 1;
+    }
+    const { flags, positional } = parsed;
     const dir = flags.tmpdir || '/tmp';
     const template = positional[0] || 'tmp.XXXXXXXXXX';
     // Replace X's at end with random chars

@@ -12,6 +12,11 @@ const command = async (ctx) => {
         if (arg === '-k' && i + 1 < ctx.args.length) {
             keyField = parseInt(ctx.args[++i], 10);
         }
+        else if (arg.startsWith('--')) {
+            ctx.stderr.write(`sort: unrecognized option '${arg}'\n`);
+            ctx.stderr.write("Usage: sort [-rnu] [-k FIELD] [FILE]...\n");
+            return 2;
+        }
         else if (arg.startsWith('-') && arg.length > 1) {
             for (let j = 1; j < arg.length; j++) {
                 switch (arg[j]) {
@@ -24,6 +29,10 @@ const command = async (ctx) => {
                     case 'u':
                         unique = true;
                         break;
+                    default:
+                        ctx.stderr.write(`sort: invalid option -- '${arg[j]}'\n`);
+                        ctx.stderr.write("Usage: sort [-rnu] [-k FIELD] [FILE]...\n");
+                        return 2;
                 }
             }
         }

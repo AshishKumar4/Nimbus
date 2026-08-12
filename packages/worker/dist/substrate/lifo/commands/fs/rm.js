@@ -7,7 +7,12 @@ const spec = {
     force: { type: 'boolean', short: 'f' },
 };
 const command = async (ctx) => {
-    const { flags, positional } = parseArgs(ctx.args, spec);
+    const parsed = parseArgs('rm', ctx.args, spec);
+    if (!parsed.ok) {
+        ctx.stderr.write(parsed.error);
+        return 1;
+    }
+    const { flags, positional } = parsed;
     const recursive = (flags.recursive || flags.Recursive);
     const force = flags.force;
     if (positional.length === 0) {

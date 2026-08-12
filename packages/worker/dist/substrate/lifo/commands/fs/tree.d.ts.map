@@ -1,1 +1,1 @@
-{"version":3,"file":"tree.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/fs/tree.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAI3C,QAAA,MAAM,OAAO,EAAE,OAqEd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"tree.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/fs/tree.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAI3C,QAAA,MAAM,OAAO,EAAE,OA2Fd,CAAC;AAEF,eAAe,OAAO,CAAC"}

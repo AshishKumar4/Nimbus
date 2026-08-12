@@ -1,16 +1,41 @@
-export function parseArgs(args, spec) {
+/**
+ * Strict getopt-shaped option parsing, shared by the substrate commands and
+ * the `unix-commands` implementations that override them.
+ *
+ * The contract that matters: an option this command does not implement is an
+ * ERROR, never a silently dropped argument. Dropping it produces confidently
+ * wrong output — `stat -c '%s'` used to treat the format string as a filename
+ * — and a caller cannot tell that apart from the command having worked.
+ *
+ * Diagnostics match GNU getopt verbatim so the text a caller matches against a
+ * real tool keeps matching here:
+ *
+ *   prog: unrecognized option '--bogus'
+ *   prog: invalid option -- 'Q'
+ *   prog: option '--format' requires an argument
+ *   prog: option requires an argument -- 'c'
+ */
+/** GNU prints a `Try ...` pointer under the diagnostic; keep that shape. */
+function fail(name, message) {
+    return {
+        ok: false,
+        error: `${name}: ${message}\nTry '${name} --help' for more information.\n`,
+    };
+}
+export function parseArgs(name, args, spec, options = {}) {
     const flags = {};
     const positional = [];
-    // Build short -> long map
+    const unknown = [];
     const shortMap = {};
     for (const [long, def] of Object.entries(spec)) {
-        if (def.short)
-            shortMap[def.short] = long;
+        for (const ch of def.short ?? '')
+            shortMap[ch] = long;
         flags[long] = def.type === 'boolean' ? false : '';
     }
     let stopFlags = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
+        // A bare `-` is stdin, a positional everywhere GNU accepts it.
         if (stopFlags || !arg.startsWith('-') || arg === '-') {
             positional.push(arg);
             continue;
@@ -19,46 +44,73 @@ export function parseArgs(args, spec) {
             stopFlags = true;
             continue;
         }
-        // --long or --long=value
         if (arg.startsWith('--')) {
             const eqIdx = arg.indexOf('=');
-            if (eqIdx !== -1) {
-                const name = arg.slice(2, eqIdx);
-                const value = arg.slice(eqIdx + 1);
-                if (name in spec) {
-                    flags[name] = spec[name].type === 'boolean' ? true : value;
+            const long = eqIdx === -1 ? arg.slice(2) : arg.slice(2, eqIdx);
+            const def = spec[long];
+            if (!def) {
+                if (!options.tolerateUnknown) {
+                    return fail(name, `unrecognized option '${arg}'`);
                 }
+                unknown.push(arg);
+                continue;
+            }
+            if (eqIdx !== -1) {
+                const value = arg.slice(eqIdx + 1);
+                if (def.type === 'boolean') {
+                    if (!options.booleanValues) {
+                        return fail(name, `option '--${long}' doesn't allow an argument`);
+                    }
+                    flags[long] = value !== 'false';
+                    continue;
+                }
+                flags[long] = value;
+                continue;
+            }
+            if (def.type === 'string') {
+                const value = args[++i];
+                if (value === undefined) {
+                    return fail(name, `option '--${long}' requires an argument`);
+                }
+                flags[long] = value;
             }
             else {
-                const name = arg.slice(2);
-                if (name in spec) {
-                    if (spec[name].type === 'string') {
-                        flags[name] = args[++i] ?? '';
-                    }
-                    else {
-                        flags[name] = true;
-                    }
-                }
+                flags[long] = true;
             }
             continue;
         }
-        // Short flags: -abc combined
-        const chars = arg.slice(1);
-        for (let j = 0; j < chars.length; j++) {
-            const ch = chars[j];
-            const longName = shortMap[ch];
-            if (!longName)
+        const cluster = arg.slice(1);
+        if (options.numericShorthand && /^\d+$/.test(cluster)) {
+            flags[options.numericShorthand] = cluster;
+            continue;
+        }
+        for (let j = 0; j < cluster.length; j++) {
+            const ch = cluster[j];
+            const long = shortMap[ch];
+            if (!long) {
+                if (!options.tolerateUnknown) {
+                    return fail(name, `invalid option -- '${ch}'`);
+                }
+                unknown.push(`-${ch}`);
                 continue;
-            if (spec[longName].type === 'string') {
-                // Rest of chars or next arg is value
-                const rest = chars.slice(j + 1);
-                flags[longName] = rest || (args[++i] ?? '');
+            }
+            if (spec[long].type === 'string') {
+                // GNU takes the rest of the cluster as the value, else the next argv.
+                const rest = cluster.slice(j + 1);
+                if (rest) {
+                    flags[long] = rest;
+                }
+                else {
+                    const value = args[++i];
+                    if (value === undefined) {
+                        return fail(name, `option requires an argument -- '${ch}'`);
+                    }
+                    flags[long] = value;
+                }
                 break;
             }
-            else {
-                flags[longName] = true;
-            }
+            flags[long] = true;
         }
     }
-    return { flags, positional };
+    return { ok: true, flags, positional, unknown };
 }

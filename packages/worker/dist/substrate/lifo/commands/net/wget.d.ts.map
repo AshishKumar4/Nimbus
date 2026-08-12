@@ -1,1 +1,1 @@
-{"version":3,"file":"wget.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/net/wget.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAG3C,QAAA,MAAM,OAAO,EAAE,OAkFd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"wget.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/net/wget.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAG3C,QAAA,MAAM,OAAO,EAAE,OA4Fd,CAAC;AAEF,eAAe,OAAO,CAAC"}

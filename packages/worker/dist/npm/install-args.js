@@ -29,11 +29,18 @@ const INSTALL_ARG_SPEC = {
     workspaces: { type: 'boolean' },
 };
 export function parseNpmInstallInvocation(args) {
-    const parsed = parseArgs(args, INSTALL_ARG_SPEC);
+    const parsed = parseArgs('npm', args, INSTALL_ARG_SPEC, {
+        tolerateUnknown: true,
+        booleanValues: true,
+    });
+    // `tolerateUnknown` makes the parse infallible; the union narrows for TS.
+    if (!parsed.ok)
+        throw new Error(parsed.error);
     return {
         packages: parsed.positional,
         global: parsed.flags.global === true,
         prefix: stringFlag(parsed.flags.prefix),
+        unknownOptions: parsed.unknown,
     };
 }
 function stringFlag(value) {

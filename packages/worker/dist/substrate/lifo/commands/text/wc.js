@@ -7,6 +7,11 @@ const command = async (ctx) => {
     let showBytes = false;
     const files = [];
     for (const arg of ctx.args) {
+        if (arg.startsWith('--')) {
+            ctx.stderr.write(`wc: unrecognized option '${arg}'\n`);
+            ctx.stderr.write("Usage: wc [-lwc] [FILE]...\n");
+            return 1;
+        }
         if (arg.startsWith('-') && arg.length > 1) {
             for (let j = 1; j < arg.length; j++) {
                 switch (arg[j]) {
@@ -19,6 +24,10 @@ const command = async (ctx) => {
                     case 'c':
                         showBytes = true;
                         break;
+                    default:
+                        ctx.stderr.write(`wc: invalid option -- '${arg[j]}'\n`);
+                        ctx.stderr.write("Usage: wc [-lwc] [FILE]...\n");
+                        return 1;
                 }
             }
         }

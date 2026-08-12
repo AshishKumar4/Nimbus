@@ -7,6 +7,11 @@ const command = async (ctx) => {
     let onlyUnique = false;
     const files = [];
     for (const arg of ctx.args) {
+        if (arg.startsWith('--')) {
+            ctx.stderr.write(`uniq: unrecognized option '${arg}'\n`);
+            ctx.stderr.write("Usage: uniq [-cdu] [FILE]\n");
+            return 1;
+        }
         if (arg.startsWith('-') && arg.length > 1) {
             for (let j = 1; j < arg.length; j++) {
                 switch (arg[j]) {
@@ -19,6 +24,10 @@ const command = async (ctx) => {
                     case 'u':
                         onlyUnique = true;
                         break;
+                    default:
+                        ctx.stderr.write(`uniq: invalid option -- '${arg[j]}'\n`);
+                        ctx.stderr.write("Usage: uniq [-cdu] [FILE]\n");
+                        return 1;
                 }
             }
         }

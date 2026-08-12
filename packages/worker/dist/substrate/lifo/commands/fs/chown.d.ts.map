@@ -1,1 +1,1 @@
-{"version":3,"file":"chown.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/fs/chown.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAQ3C,QAAA,MAAM,OAAO,EAAE,OAiCd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"chown.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/fs/chown.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAQ3C,QAAA,MAAM,OAAO,EAAE,OAsCd,CAAC;AAEF,eAAe,OAAO,CAAC"}

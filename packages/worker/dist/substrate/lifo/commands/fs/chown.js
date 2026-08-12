@@ -5,7 +5,12 @@ const spec = {
     recursive: { type: 'boolean', short: 'R' },
 };
 const command = async (ctx) => {
-    const { flags, positional } = parseArgs(ctx.args, spec);
+    const parsed = parseArgs('chown', ctx.args, spec);
+    if (!parsed.ok) {
+        ctx.stderr.write(parsed.error);
+        return 1;
+    }
+    const { flags, positional } = parsed;
     if (positional.length < 2) {
         ctx.stderr.write('chown: missing operand\n');
         return 1;
