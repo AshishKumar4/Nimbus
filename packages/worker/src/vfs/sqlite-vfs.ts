@@ -449,6 +449,15 @@ class TransactionPlanBuilder {
   }
 
   /**
+   * Would admitting one inode row — and the path it touches — exceed the
+   * bound? The admission test for a move, which republishes an existing
+   * inode at a new path and writes no content of its own.
+   */
+  wouldExceedInode(): TransactionLimit | null {
+    return exceededTransactionLimit(this.metricsWith({ inodeRows: 1, paths: 1 }));
+  }
+
+  /**
    * Would admitting one removal — the inode row it deletes, the statement
    * that deletes it, and the content it orphans — exceed the bound?
    */
@@ -3070,6 +3079,13 @@ export class SqliteVFS {
         }
         throw new Error("EISDIR: cannot rename file onto existing directory");
       }
+      // POSIX: a directory never replaces a non-directory. Refusing it also
+      // keeps an occupied destination to the single-entry file-onto-file
+      // move, whose publication is one transaction — so the destination this
+      // move supersedes is never dropped by a group that later fails.
+      if (inode.isDir) {
+        throw new Error(`ENOTDIR: cannot overwrite non-directory ${newPath} with directory ${oldPath}`);
+      }
     }
 
     // Both questions a rename asks — what moves, and what is already at the
@@ -3087,8 +3103,40 @@ export class SqliteVFS {
         throw new Error(`ENOTEMPTY: rename target subtree conflicts at ${existing.path}`);
       }
     }
-    const builder = new TransactionPlanBuilder();
+    // `moving` is shallowest-first, which is the order publication needs: a
+    // parent directory exists before the children that name it. Retiring the
+    // source needs the opposite.
+    const retiring = [...moving].reverse();
+    const touchedPaths = new Set<string>();
+    const commit = (builder: TransactionPlanBuilder): void => {
+      if (builder.empty) return;
+      const plan = builder.build();
+      this.assertTransactionFits(plan.metrics);
+      this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+      this.cacheInvalidateBatch(plan.affectedPaths);
+      for (const path of plan.affectedPaths) touchedPaths.add(path);
+      const rows = plan.inodes.length + plan.deletedPaths.length;
+      this._sqlWrites += rows;
+      this._batchWrites++;
+      this._batchWriteRows += rows;
+    };
+
+    // ── Phase 1: publish the whole tree at the destination ────────────────
+    //
+    // Content moves by id, so a file is reachable from both paths for the
+    // width of this phase and its bytes are written once. Nothing leaves the
+    // source until this phase has committed in full, so an entry is never at
+    // neither path — the guarantee a caller that has already cleared the
+    // destination is relying on.
+    //
+    // A failure here unwinds what it published, leaving exactly the pre-move
+    // state: a partially populated destination would otherwise refuse the
+    // retry as a subtree conflict.
+    let builder = new TransactionPlanBuilder();
     if (destInode) {
+      // Path uniqueness: the occupant goes in the same transaction as the
+      // inode replacing it. That is only ever the file-onto-file case, whose
+      // subtree is a single entry, so this group is the whole move.
       builder.addDeletedPath(newPath, destInode);
       builder.addGcContent(this.contentIdForInode(destInode));
     }
@@ -3106,42 +3154,116 @@ export class SqliteVFS {
         uid: entry.uid,
         gid: entry.gid,
         chunkCount: entry.chunkCount,
-        // Materialize the old legacy key before changing the logical path.
+        // Materialize the old legacy key before the logical path changes, so
+        // the published inode names the content explicitly rather than
+        // inheriting a path-derived key that is about to stop existing.
         contentId: entry.isDir ? null : this.contentIdForInode(entry),
       };
-      builder.addDeletedPath(entry.path, entry);
-      builder.addInode(stored);
       return { entry, stored };
     });
-    const plan = builder.build();
-    this.assertTransactionFits(plan.metrics);
-    this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
-
-    const touchedPaths = new Set(plan.affectedPaths);
-    this.cacheInvalidateBatch(touchedPaths);
+    const committed: StoredInodeEntry[] = [];
+    let group: StoredInodeEntry[] = [];
+    const flushPublished = (): void => {
+      if (builder.empty) return;
+      commit(builder);
+      committed.push(...group);
+      group = [];
+      builder = new TransactionPlanBuilder();
+    };
+    try {
+      for (const { stored } of renamed) {
+        // Close the group before the entry that would overflow it. The
+        // estimate only picks the boundary — the commit asserts the bound it
+        // writes.
+        if (builder.wouldExceedInode() !== null) flushPublished();
+        builder.addInode(stored);
+        group.push(stored);
+      }
+      flushPublished();
+    } catch (error) {
+      this.unpublishRenameDestination(committed);
+      throw error;
+    }
+    // The superseded occupant goes first: it shares its path with the entry
+    // published over it, exactly as the transaction deleted before inserting.
     if (destInode) {
       this._removeFromChildrenIndex(destInode.parentPath, destInode.path);
       this.inodes.delete(destInode.path);
       this._totalFiles--;
       this._usedBytes -= destInode.size;
     }
-    for (const { entry } of renamed) {
+    for (const { entry, stored } of renamed) {
+      const moved: INode = {
+        ...entry,
+        path: stored.path,
+        parentPath: stored.parentPath,
+        contentId: stored.contentId,
+      };
+      this.inodes.set(moved.path, moved);
+      this._addToChildrenIndex(moved.parentPath, moved.path);
+      if (moved.isDir) this._totalDirs++;
+      else { this._totalFiles++; this._usedBytes += moved.size; }
+    }
+
+    // ── Phase 2: retire the source ────────────────────────────────────────
+    //
+    // Deepest-first, so every committed prefix leaves a smaller consistent
+    // tree behind — the same property the batched removal relies on. No
+    // content is collected here: the destination inodes published above
+    // reference it, so these paths orphan nothing.
+    builder = new TransactionPlanBuilder();
+    for (const entry of retiring) {
+      if (builder.wouldExceedDeletion(false) !== null) {
+        commit(builder);
+        builder = new TransactionPlanBuilder();
+      }
+      builder.addDeletedPath(entry.path, entry);
+    }
+    commit(builder);
+    for (const entry of retiring) {
       this._removeFromChildrenIndex(entry.parentPath, entry.path);
       this.inodes.delete(entry.path);
+      if (entry.isDir) this._totalDirs--;
+      else { this._totalFiles--; this._usedBytes -= entry.size; }
     }
-    for (const { entry, stored } of renamed) {
-      entry.path = stored.path;
-      entry.parentPath = stored.parentPath;
-      entry.contentId = stored.contentId;
-      this.inodes.set(entry.path, entry);
-      this._addToChildrenIndex(entry.parentPath, entry.path);
-    }
-    this._sqlWrites += plan.inodes.length + plan.deletedPaths.length;
-    this._batchWrites++;
-    this._batchWriteRows += plan.inodes.length + plan.deletedPaths.length;
+
     this.bumpRevision([...touchedPaths]);
     this.events.emit('rename', newPath, oldPath);
     this.runContentMaintenanceSafely(1);
+  }
+
+  /**
+   * Unwind the destination inodes a failed move had already published.
+   *
+   * These rows name content the source still owns, so removing them collects
+   * nothing — the point is only that a retry sees an empty destination rather
+   * than a subtree conflict. Deepest-first in bounded groups, like any other
+   * removal. A failure here is swallowed: the caller is already unwinding, and
+   * the source tree — which is what the data lives in — is untouched either
+   * way.
+   */
+  private unpublishRenameDestination(published: readonly StoredInodeEntry[]): void {
+    if (published.length === 0) return;
+    const deepestFirst = [...published].reverse();
+    let builder = new TransactionPlanBuilder();
+    const flush = (): void => {
+      if (builder.empty) return;
+      const plan = builder.build();
+      builder = new TransactionPlanBuilder();
+      this.assertTransactionFits(plan.metrics);
+      this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+      this.cacheInvalidateBatch(plan.affectedPaths);
+    };
+    try {
+      for (const stored of deepestFirst) {
+        if (builder.wouldExceedDeletion(false) !== null) flush();
+        // The published row is the inode being removed; the in-memory index
+        // has not adopted it yet, so the entry that was written is the one
+        // the plan must account for.
+        builder.addDeletedPath(stored.path, { ...stored, atime: stored.atime ?? stored.mtime });
+      }
+      flush();
+    } catch { /* the source is intact; report the original failure */ }
   }
 
   private copyFile(src: string, dest: string, cred: VfsCred): void {
