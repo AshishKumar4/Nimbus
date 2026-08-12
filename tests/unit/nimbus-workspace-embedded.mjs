@@ -105,6 +105,22 @@ try {
   });
   assert.equal(await ws.fs.readFile('/home/user/keep.txt'), 'survives\n');
 
+  // ── destroy() removes the workspace, not the host's database ────────────
+  // The host owns this Durable Object; the workspace is a tenant in it. A
+  // destroy that reached for deleteAll would take the host's data with it.
+  db.run("CREATE TABLE proteus_sessions (id TEXT PRIMARY KEY, payload TEXT)");
+  db.run("INSERT INTO proteus_sessions VALUES ('s1', 'host-owned')");
+
+  ws.destroy();
+
+  const hostRows = db.query('SELECT payload FROM proteus_sessions').all();
+  assert.deepEqual(hostRows, [{ payload: 'host-owned' }], 'destroy() ate the host table');
+
+  const left = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND (name='inodes' OR name LIKE 'vfs_%')")
+    .all();
+  assert.deepEqual(left, [], `destroy() left workspace tables behind: ${JSON.stringify(left)}`);
+
   db.close();
   console.log('nimbus-workspace-embedded: all assertions passed');
 } finally {
