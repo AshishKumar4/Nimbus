@@ -4366,9 +4366,6 @@ export class FacetManager {
             ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
-        const __stopAfter = opts.env?.NIMBUS_LAUNCH_STOP_AFTER;
-        if (__stopAfter === 'bundle')
-            throw new Error('NIMBUS_LAUNCH_STOP_AFTER=bundle');
         const processEnv = opts.attachedTty
             ? {
                 ...(opts.env || {}),
@@ -4401,8 +4398,6 @@ export class FacetManager {
         const manifestBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.manifest)) : 0;
         const metadataBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.metadata)) : 0;
         const cacheHit = vfsState.cacheHit ?? false;
-        if (__stopAfter === 'generate')
-            throw new Error('NIMBUS_LAUNCH_STOP_AFTER=generate');
         const vfsCursor = vfsState.cursor;
         releaseResidentLaunchSources(vfsState);
         let handle;
@@ -4415,8 +4410,6 @@ export class FacetManager {
             // The image store has taken it; this frame must not be what holds the
             // only other copy while the facet boots.
             generatedWorker = undefined;
-            if (__stopAfter === 'materialize')
-                throw new Error('NIMBUS_LAUNCH_STOP_AFTER=materialize');
             handle = await this._startResidentProcess(entry.pid, {
                 // The attached-TTY runner holds startProcess open for the process's
                 // life; the server/watch runner returns once it is up.
