@@ -311,6 +311,9 @@ function isWordBreak(ch: string): boolean {
     || ch === '>' || ch === '<' || ch === '#' || ch === '\n' || ch === '(' || ch === ')';
 }
 
+/** Everything a word may hold before the `(` of an array assignment. */
+const ARRAY_ASSIGNMENT_PREFIX = /^[a-zA-Z_][a-zA-Z0-9_]*(\[[^\]]*\])?\+?=$/;
+
 function readWord(input: string, pos: number): { token: Token; end: number } | null {
   const parts: WordPart[] = [];
   let i = pos;
@@ -473,6 +476,16 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
         hasContent = true;
         continue;
       }
+    }
+
+    // `name=(word …)` — an array assignment is a single word, so the list in
+    // parentheses must not lex as a subshell the way a bare `(` would.
+    if (ch === '(' && parts.length === 0 && ARRAY_ASSIGNMENT_PREFIX.test(currentText)) {
+      const balanced = readBalancedCommand(input, i + 1, '(', ')');
+      currentText += '(' + balanced.body + (balanced.closed ? ')' : '');
+      i = balanced.end;
+      hasContent = true;
+      continue;
     }
 
     // Check for operator/break chars that end the word

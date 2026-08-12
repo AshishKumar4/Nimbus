@@ -6,6 +6,12 @@ import type { ShellOptions } from './interpreter.js';
 
 export interface ExpandContext {
   env: Record<string, string>;
+  /**
+   * Indexed arrays, sparse: a hole is an index that was never assigned, which
+   * `${arr[@]}` skips and `${!arr[@]}` omits. A name lives here or in `env`,
+   * never both, so `$arr` and `${arr[0]}` have one answer.
+   */
+  arrays?: ReadonlyMap<string, readonly (string | undefined)[]>;
   positionals?: readonly string[];
   lastExitCode: number;
   cwd: string;
@@ -50,7 +56,11 @@ type Piece =
 /** A parameter is either a plain string or the positional-parameter list. */
 type Parameter =
   | { kind: 'scalar'; value: string | undefined }
-  | { kind: 'list'; values: readonly string[] };
+  /** `star` distinguishes `$*` / `${arr[*]}` from `$@` / `${arr[@]}`. */
+  | { kind: 'list'; values: readonly string[]; star: boolean };
+
+/** A parameter as written: a name, optionally subscripted by an array index. */
+type ParameterRef = { name: string; subscript?: string };
 
 /**
  * Expand all words for a command's arguments: brace expansion, tilde,
@@ -351,7 +361,7 @@ async function expandDollar(
 
   const name = readParameterName(text, pos + 1);
   if (name === null) return { pieces: null, end: pos + 1 };
-  return { pieces: expandParameter(name, ctx, quoted), end: pos + 1 + name.length };
+  return { pieces: await expandParameter({ name }, ctx, quoted), end: pos + 1 + name.length };
 }
 
 /**
@@ -404,15 +414,53 @@ function isPositionalParameterName(name: string): boolean {
   return /^[1-9][0-9]*$/.test(name);
 }
 
-function resolveParameter(name: string, ctx: ExpandContext): Parameter {
+async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<Parameter> {
+  const { name, subscript } = ref;
   const positionals = ctx.positionals ?? [];
-  if (name === '@' || name === '*') return { kind: 'list', values: positionals };
+  if (name === '@' || name === '*') return { kind: 'list', values: positionals, star: name === '*' };
   if (name === '#') return { kind: 'scalar', value: String(positionals.length) };
   if (name === '?') return { kind: 'scalar', value: String(ctx.lastExitCode) };
   if (isPositionalParameterName(name)) {
     return { kind: 'scalar', value: positionals[Number.parseInt(name, 10) - 1] };
   }
-  return { kind: 'scalar', value: ctx.env[name] };
+
+  const array = ctx.arrays?.get(name);
+  if (subscript === '@' || subscript === '*') {
+    // A plain variable answers `${v[@]}` with its single value, as bash does.
+    const values = array !== undefined
+      ? array.filter((element): element is string => element !== undefined)
+      : ctx.env[name] === undefined ? [] : [ctx.env[name]];
+    return { kind: 'list', values, star: subscript === '*' };
+  }
+  if (array === undefined) {
+    const value = ctx.env[name];
+    if (subscript === undefined) return { kind: 'scalar', value };
+    return { kind: 'scalar', value: await evaluateSubscript(subscript, 1, ctx) === 0 ? value : undefined };
+  }
+  const index = subscript === undefined ? 0 : await evaluateSubscript(subscript, array.length, ctx);
+  return { kind: 'scalar', value: array[index] };
+}
+
+/** A subscript is an arithmetic expression; a negative index counts from the end. */
+export async function evaluateSubscript(
+  subscript: string, length: number, ctx: ExpandContext,
+): Promise<number> {
+  const expanded = await expandParameterWord(subscript, ctx);
+  if (expanded.trim() === '') return 0;
+  const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+  return index < 0 ? length + index : index;
+}
+
+/** The indices `${!arr[@]}` reports: every index that holds a value. */
+function arrayIndices(ref: ParameterRef, ctx: ExpandContext): readonly string[] | null {
+  if (ref.subscript !== '@' && ref.subscript !== '*') return null;
+  const array = ctx.arrays?.get(ref.name);
+  if (array === undefined) return ctx.env[ref.name] === undefined ? [] : ['0'];
+  const indices: string[] = [];
+  array.forEach((element, index) => {
+    if (element !== undefined) indices.push(String(index));
+  });
+  return indices;
 }
 
 /** `$0`, `$$` and `$!` are shell state; the rest must exist under `set -u`. */
@@ -428,10 +476,12 @@ function requireSet(name: string, value: string | undefined, ctx: ExpandContext)
   return '';
 }
 
-function expandParameter(name: string, ctx: ExpandContext, quoted: boolean): Piece[] {
-  const parameter = resolveParameter(name, ctx);
-  if (parameter.kind === 'list') return listPieces(parameter.values, name === '*', ctx, quoted);
-  return [valuePiece(requireSet(name, parameter.value, ctx), quoted)];
+async function expandParameter(
+  ref: ParameterRef, ctx: ExpandContext, quoted: boolean,
+): Promise<Piece[]> {
+  const parameter = await resolveParameter(ref, ctx);
+  if (parameter.kind === 'list') return listPieces(parameter.values, parameter.star, ctx, quoted);
+  return [valuePiece(requireSet(ref.name, parameter.value, ctx), quoted)];
 }
 
 function valuePiece(text: string, quoted: boolean): Piece {
@@ -461,11 +511,11 @@ const DEFAULT_OPERATORS = new Set(['-', '=', '?', '+']);
 async function expandBraced(inner: string, ctx: ExpandContext, quoted: boolean): Promise<Piece[]> {
   if (inner === '') return [];
 
-  // ${#param} -- string length, or element count for $@ / $*
+  // ${#param} -- string length, or element count for $@ / $* / ${arr[@]}
   if (inner.length > 1 && inner[0] === '#') {
     const parameter = parseParameterRef(inner.slice(1));
     if (parameter !== null && parameter.rest === '') {
-      const resolved = resolveParameter(parameter.name, ctx);
+      const resolved = await resolveParameter(parameter, ctx);
       const length = resolved.kind === 'list'
         ? resolved.values.length
         : requireSet(parameter.name, resolved.value, ctx).length;
@@ -473,57 +523,69 @@ async function expandBraced(inner: string, ctx: ExpandContext, quoted: boolean):
     }
   }
 
-  // ${!param} -- expand the parameter whose name this parameter holds
+  // ${!param} -- the indices of an array, or the parameter this one names
   if (inner.length > 1 && inner[0] === '!') {
     const parameter = parseParameterRef(inner.slice(1));
     if (parameter !== null) {
-      const target = scalarOf(resolveParameter(parameter.name, ctx), ctx);
+      const indices = parameter.rest === '' ? arrayIndices(parameter, ctx) : null;
+      if (indices !== null) return listPieces(indices, parameter.subscript === '*', ctx, quoted);
+      const target = scalarOf(await resolveParameter(parameter, ctx), ctx);
       const indirect = parseParameterRef(target);
       if (indirect === null || indirect.rest !== '') return [valuePiece('', quoted)];
-      if (parameter.rest === '') return expandParameter(target, ctx, quoted);
-      return applyModifier(target, parameter.rest, ctx, quoted);
+      if (parameter.rest === '') return expandParameter(indirect, ctx, quoted);
+      return applyModifier(indirect, parameter.rest, ctx, quoted);
     }
   }
 
   const parameter = parseParameterRef(inner);
   if (parameter === null) return [valuePiece('', quoted)];
-  if (parameter.rest === '') return expandParameter(parameter.name, ctx, quoted);
-  return applyModifier(parameter.name, parameter.rest, ctx, quoted);
+  if (parameter.rest === '') return expandParameter(parameter, ctx, quoted);
+  return applyModifier(parameter, parameter.rest, ctx, quoted);
 }
 
-/** Split `${name<modifier>}` into its parameter name and the modifier tail. */
-function parseParameterRef(inner: string): { name: string; rest: string } | null {
-  const match = /^(?:[a-zA-Z_][a-zA-Z0-9_]*|[0-9]+|[@*#?!$])/.exec(inner);
-  if (match === null) return null;
-  return { name: match[0], rest: inner.slice(match[0].length) };
+/**
+ * Split `${name[subscript]<modifier>}` into its parameter and the modifier
+ * tail. The subscript is kept as written — it is an arithmetic expression, or
+ * `@` / `*` for the whole array — and evaluated when the value is read.
+ */
+function parseParameterRef(inner: string): (ParameterRef & { rest: string }) | null {
+  const match = /^(?:([a-zA-Z_][a-zA-Z0-9_]*)(\[([^[\]]*(?:\[[^\]]*\])?[^[\]]*)\])?|[0-9]+|[@*#?!$])/
+    .exec(inner);
+  if (match === null || match[0] === '') return null;
+  const ref: ParameterRef & { rest: string } = {
+    name: match[1] ?? match[0],
+    rest: inner.slice(match[0].length),
+  };
+  if (match[3] !== undefined) ref.subscript = match[3];
+  return ref;
 }
 
 async function applyModifier(
-  name: string, rest: string, ctx: ExpandContext, quoted: boolean,
+  ref: ParameterRef, rest: string, ctx: ExpandContext, quoted: boolean,
 ): Promise<Piece[]> {
   const colon = rest[0] === ':';
   const operator = colon ? rest[1] : rest[0];
 
   if (operator !== undefined && DEFAULT_OPERATORS.has(operator)) {
-    return applyDefault(name, operator, colon, rest.slice(colon ? 2 : 1), ctx, quoted);
+    return applyDefault(ref, operator, colon, rest.slice(colon ? 2 : 1), ctx, quoted);
   }
-  if (colon) return applySlice(name, rest.slice(1), ctx, quoted);
-  if (rest[0] === '#' || rest[0] === '%') return applyTrim(name, rest, ctx, quoted);
-  if (rest[0] === '/') return applySubstitution(name, rest.slice(1), ctx, quoted);
-  if (rest[0] === '^' || rest[0] === ',') return applyCase(name, rest, ctx, quoted);
+  if (colon) return applySlice(ref, rest.slice(1), ctx, quoted);
+  if (rest[0] === '#' || rest[0] === '%') return applyTrim(ref, rest, ctx, quoted);
+  if (rest[0] === '/') return applySubstitution(ref, rest.slice(1), ctx, quoted);
+  if (rest[0] === '^' || rest[0] === ',') return applyCase(ref, rest, ctx, quoted);
   return [valuePiece('', quoted)];
 }
 
 /** `${p:-w}` `${p-w}` `${p:=w}` `${p=w}` `${p:?w}` `${p?w}` `${p:+w}` `${p+w}` */
 async function applyDefault(
-  name: string,
+  ref: ParameterRef,
   operator: string,
   colon: boolean,
   word: string,
   ctx: ExpandContext,
   quoted: boolean,
 ): Promise<Piece[]> {
-  const parameter = resolveParameter(name, ctx);
+  const parameter = await resolveParameter(ref, ctx);
   const set = parameter.kind === 'list'
     ? parameter.values.length > 0
     : parameter.value !== undefined && (!colon || parameter.value !== '');
@@ -531,19 +593,22 @@ async function applyDefault(
   if (operator === '+') {
     return [valuePiece(set ? await expandParameterWord(word, ctx) : '', quoted)];
   }
-  if (set) return parameterPieces(parameter, name === '*', ctx, quoted);
+  if (set) return parameterPieces(parameter, ctx, quoted);
 
   const value = await expandParameterWord(word, ctx);
   if (operator === '?') {
-    throw new ExpansionError(`${name}: ${value || 'parameter null or not set'}`);
+    throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
   }
-  if (operator === '=' && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) ctx.env[name] = value;
+  if (operator === '=' && ref.subscript === undefined
+    && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(ref.name)) {
+    ctx.env[ref.name] = value;
+  }
   return [valuePiece(value, quoted)];
 }
 
 /** `${p:offset}` and `${p:offset:length}` -- substring, or a slice of `$@`/`$*`. */
 async function applySlice(
-  name: string, spec: string, ctx: ExpandContext, quoted: boolean,
+  ref: ParameterRef, spec: string, ctx: ExpandContext, quoted: boolean,
 ): Promise<Piece[]> {
   const separator = topLevelColon(spec);
   const offsetText = separator === -1 ? spec : spec.slice(0, separator);
@@ -551,13 +616,16 @@ async function applySlice(
   const offset = await evaluateSliceIndex(offsetText, ctx);
   const length = lengthText === null ? null : await evaluateSliceIndex(lengthText, ctx);
 
-  const parameter = resolveParameter(name, ctx);
+  const parameter = await resolveParameter(ref, ctx);
   if (parameter.kind === 'list') {
-    // Positional slices are indexed from $0, so `${@:1}` is the whole list.
-    const all = [ctx.env['0'] ?? '', ...parameter.values];
-    return listPieces(sliceRange(all, offset, length), name === '*', ctx, quoted);
+    // Positional slices are indexed from $0, so `${@:1}` is the whole list;
+    // an array slice is indexed from its own first element.
+    const all = ref.subscript === undefined
+      ? [ctx.env['0'] ?? '', ...parameter.values]
+      : parameter.values;
+    return listPieces(sliceRange(all, offset, length), parameter.star, ctx, quoted);
   }
-  const value = requireSet(name, parameter.value, ctx);
+  const value = requireSet(ref.name, parameter.value, ctx);
   return [valuePiece(sliceRange([...value], offset, length).join(''), quoted)];
 }
 
@@ -586,12 +654,12 @@ function topLevelColon(spec: string): number {
 
 /** `${p#pat}` `${p##pat}` `${p%pat}` `${p%%pat}` -- strip a matching prefix/suffix. */
 async function applyTrim(
-  name: string, rest: string, ctx: ExpandContext, quoted: boolean,
+  ref: ParameterRef, rest: string, ctx: ExpandContext, quoted: boolean,
 ): Promise<Piece[]> {
   const operator = rest[0];
   const longest = rest[1] === operator;
   const pattern = await expandParameterWord(rest.slice(longest ? 2 : 1), ctx);
-  return mapParameter(name, ctx, quoted, (value) => operator === '#'
+  return mapParameter(ref, ctx, quoted, (value) => operator === '#'
     ? trimPrefix(value, pattern, longest)
     : trimSuffix(value, pattern, longest));
 }
@@ -624,7 +692,7 @@ function range(from: number, to: number, step: number): number[] {
 
 /** `${p/pat/rep}` `${p//pat/rep}` `${p/#pat/rep}` `${p/%pat/rep}` */
 async function applySubstitution(
-  name: string, rest: string, ctx: ExpandContext, quoted: boolean,
+  ref: ParameterRef, rest: string, ctx: ExpandContext, quoted: boolean,
 ): Promise<Piece[]> {
   const mode = rest[0] === '/' ? 'all' : rest[0] === '#' ? 'prefix' : rest[0] === '%' ? 'suffix' : 'first';
   const body = mode === 'first' ? rest : rest.slice(1);
@@ -632,7 +700,7 @@ async function applySubstitution(
   const pattern = await expandParameterWord(cut === -1 ? body : body.slice(0, cut), ctx);
   const replacement = cut === -1 ? '' : await expandParameterWord(body.slice(cut + 1), ctx);
 
-  return mapParameter(name, ctx, quoted, (value) => {
+  return mapParameter(ref, ctx, quoted, (value) => {
     if (mode === 'all') return replaceAll(value, pattern, replacement);
     if (mode === 'first') return replaceFirst(value, pattern, replacement);
     if (mode === 'prefix') return replaceAnchored(value, pattern, replacement, 'prefix');
@@ -668,7 +736,7 @@ function replaceAnchored(
 
 /** `${p^pat}` `${p^^pat}` `${p,pat}` `${p,,pat}` -- case conversion. */
 async function applyCase(
-  name: string, rest: string, ctx: ExpandContext, quoted: boolean,
+  ref: ParameterRef, rest: string, ctx: ExpandContext, quoted: boolean,
 ): Promise<Piece[]> {
   const operator = rest[0];
   const every = rest[1] === operator;
@@ -676,7 +744,7 @@ async function applyCase(
   const convert = (c: string): string => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
   const matches = (c: string): boolean => pattern === '' || globMatch(pattern, c);
 
-  return mapParameter(name, ctx, quoted, (value) => {
+  return mapParameter(ref, ctx, quoted, (value) => {
     if (!every) {
       return value === '' || !matches(value[0]) ? value : convert(value[0]) + value.slice(1);
     }
@@ -684,20 +752,18 @@ async function applyCase(
   });
 }
 
-function mapParameter(
-  name: string, ctx: ExpandContext, quoted: boolean, transform: (value: string) => string,
-): Piece[] {
-  const parameter = resolveParameter(name, ctx);
+async function mapParameter(
+  ref: ParameterRef, ctx: ExpandContext, quoted: boolean, transform: (value: string) => string,
+): Promise<Piece[]> {
+  const parameter = await resolveParameter(ref, ctx);
   if (parameter.kind === 'list') {
-    return listPieces(parameter.values.map(transform), name === '*', ctx, quoted);
+    return listPieces(parameter.values.map(transform), parameter.star, ctx, quoted);
   }
-  return [valuePiece(transform(requireSet(name, parameter.value, ctx)), quoted)];
+  return [valuePiece(transform(requireSet(ref.name, parameter.value, ctx)), quoted)];
 }
 
-function parameterPieces(
-  parameter: Parameter, star: boolean, ctx: ExpandContext, quoted: boolean,
-): Piece[] {
-  if (parameter.kind === 'list') return listPieces(parameter.values, star, ctx, quoted);
+function parameterPieces(parameter: Parameter, ctx: ExpandContext, quoted: boolean): Piece[] {
+  if (parameter.kind === 'list') return listPieces(parameter.values, parameter.star, ctx, quoted);
   return [valuePiece(parameter.value ?? '', quoted)];
 }
 
