@@ -11,7 +11,7 @@
  * live in src/runtime/<name>-repl.ts and implement the ReplAdapter
  * interface declared below.
  */
-import { normalizeTerminalNewlines } from '../_shared/terminal.js';
+import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 /**
  * Manages an interactive REPL session: stdin buffering with minimal
  * readline UX (line-mode), output routing to the WS terminal, prompt

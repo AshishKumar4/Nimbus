@@ -49,8 +49,8 @@
  *     workerd CSP rejects that path.
  */
 import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
-import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export declare const WASM_RUNNER_VERSION = "0.3.0";
 export declare const WASM_RUNNER_HELP: string;
 export declare function formatWasmRunnerWasiInfo(): string;

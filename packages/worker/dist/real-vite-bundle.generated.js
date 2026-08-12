@@ -10,7 +10,7 @@
  * getters below. Constants + browser-runtime mjs files remain inline
  * since they're small enough to not warrant a network round-trip.
  */
-import { loadAssetText, loadAssetBytes } from './runtime/assets-loader.js';
+import { loadAssetText, loadAssetBytes } from '@nimbus-sh/core/runtime/assets-loader.js';
 export const REAL_VITE_VERSION = "6.4.2";
 /** Asset path for the bundled Vite source. Use {@link getRealViteBundle}. */
 export const REAL_VITE_BUNDLE_PATH = "/_assets/real-vite-bundle.js";

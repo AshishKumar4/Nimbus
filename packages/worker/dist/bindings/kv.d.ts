@@ -23,7 +23,7 @@
  * Test seam: `_setKvNow(() => ts)` replaces the wall clock (Date.now/1000)
  * for TTL probes. Production reads Date.now() / 1000.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export interface KvEmulatorOptions {
     vfs: CredentialedVfs;
     root: string;

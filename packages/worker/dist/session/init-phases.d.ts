@@ -32,7 +32,7 @@
  * preserved — old probes still see it. New phase entries are
  * additional ring entries, not replacements.
  */
-import { type SessionState } from '../observability/oom-discriminator.js';
+import { type SessionState } from '@nimbus-sh/core/observability/oom-discriminator.js';
 /**
  * Set the current phase + record a transition. Fail-soft on the
  * observability call; the phase update on `self` is direct and

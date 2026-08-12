@@ -14,7 +14,7 @@
  * The ring buffer keeps state for 10 min post-exit so a tab that's still
  * open after a crash continues to show the final output.
  */
-import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 /**
  * Parameters for `handleLogsWebSocketRequest`. The process supervisor
  * lets the handler distinguish "brand-new pid, not yet written to" from

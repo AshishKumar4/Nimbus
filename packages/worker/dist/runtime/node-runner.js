@@ -39,7 +39,7 @@
  *   warm `node script.js`   : ~50–100 ms
  * All under the 250ms warm-pool gate; no warm-pool needed.
  */
-import { parsePortFromArgv } from './long-running-handle.js';
+import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 /**
  * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)

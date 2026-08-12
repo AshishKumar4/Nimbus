@@ -1,8 +1,8 @@
 import { resolveNpmBin, resolveNpmBinFromPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
-import { bundleProfileForNpmBin } from '../runtime/bundle-profile.js';
+import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
-import { normalizeVfsPath } from '../vfs/path.js';
-import { DEFAULT_PATH, FACET_TIMEOUT_MS } from '../constants.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { DEFAULT_PATH, FACET_TIMEOUT_MS } from '@nimbus-sh/core/constants.js';
 import { z } from 'zod/v4';
 /**
  * How long a bin invocation may take before the shell stops waiting for it.

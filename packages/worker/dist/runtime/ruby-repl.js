@@ -26,7 +26,7 @@
  */
 import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from './ruby-runner.js';
-import { CRED_KERNEL } from './os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 class RubyReplAdapter {
     pool = null;
     deps;

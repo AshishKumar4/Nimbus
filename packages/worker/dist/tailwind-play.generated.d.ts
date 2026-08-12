@@ -17,7 +17,7 @@
  * If you change this file by hand it WILL be overwritten by the next
  * predev / predeploy / postinstall.
  */
-import { type AssetsFetcher } from './runtime/assets-loader.js';
+import { type AssetsFetcher } from '@nimbus-sh/core/runtime/assets-loader.js';
 export declare const TAILWIND_PLAY_VERSION: string;
 export declare const TAILWIND_PLAY_INTEGRITY: string;
 /** Asset path for the vendored Tailwind Play bundle. Use {@link getTailwindPlayBundle}. */

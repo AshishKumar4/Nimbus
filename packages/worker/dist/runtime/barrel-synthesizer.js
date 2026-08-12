@@ -52,7 +52,7 @@
  * sees a clear remediation: "add a static import for the
  * dynamically-referenced icon."
  */
-import { packageNameFromSpecifier } from './barrel-detect.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 /**
  * Stable signature for a barrel bundle's source import set. Stored in
  * pkg_esm_bundles.input_hash so a synthetic bundle generated for

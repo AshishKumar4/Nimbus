@@ -64,8 +64,8 @@
  * acceptable and matches the W9 flush debounce pattern at
  * hibernation.ts:236-256).
  */
-import type { VfsEvent } from '../vfs/events.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 /** Per-subscription state. Closed over a single WebSocket. */
 export interface FsWatchSub {
     /** Stable id for client-side correlation. */

@@ -34,9 +34,9 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
-import type { Command } from '../substrate/lifo/commands/types.js';
+import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 type RubyRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 /**
  * Build the ruby-runner factory. Called once at session init; the

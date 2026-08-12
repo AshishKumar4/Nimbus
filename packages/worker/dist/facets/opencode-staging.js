@@ -30,7 +30,7 @@ import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import { OPENCODE_CHUNKS_PACK, OPENCODE_TREE_SITTER_WASMS, OPENCODE_TUI_WORKERS, OPENCODE_YOGA_WASM, } from '../opencode-artifact.generated.js';
 import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, YOGA_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
-import { CF_COMPAT_DATE } from '../constants.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 /**
  * Everything a facet spawn needs beyond the artifact sources themselves.
  * Small enough to ride in NimbusLoadedEntrypoint props (the VFS snapshot is

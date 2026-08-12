@@ -27,7 +27,7 @@
  * every call (the body is one-shot per real-R2 contract), plus convenience
  * helpers text() / arrayBuffer() / json() / blob().
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 export interface R2HTTPMetadata {
     contentType?: string;
     contentLanguage?: string;

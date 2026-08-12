@@ -13,9 +13,9 @@
  * The dynamic worker IS the user's Worker — running on the actual
  * Cloudflare Workers runtime, not a simulation.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import type { EsbuildService } from '../runtime/esbuild-service.js';
-import type { VfsEventEmitter } from '../vfs/events.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 export interface NimbusWranglerOptions {
     vfs: CredentialedVfs;
     vfsEvents: VfsEventEmitter;

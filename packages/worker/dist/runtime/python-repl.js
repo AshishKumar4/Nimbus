@@ -23,7 +23,7 @@ import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from './python-pip.js';
 import { buildCPythonPreamble } from './cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { CRED_KERNEL } from './os-contracts.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
 /**
@@ -186,7 +186,7 @@ class PythonReplAdapter {
             throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
         }
         this.wasmBytes = toArrayBuffer(vfs.readFile(wasmPath));
-        const { manifestVfs } = await import('./vfs-manifest.js');
+        const { manifestVfs } = await import('@nimbus-sh/core/runtime/vfs-manifest.js');
         // The install root is the Python prefix, so the manifest covers lib/ and
         // etc/ as they are — nothing is aliased into a path the supervisor could
         // not serve.

@@ -26,7 +26,7 @@
  * catch-and-continue around loader failures.
  */
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 /** Build the runner factory. Closes over facetMgr + vfs. */
 export declare function makeClangRunnerFactory(deps: {

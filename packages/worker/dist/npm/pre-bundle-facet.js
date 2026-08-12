@@ -44,7 +44,7 @@
  * fallbacks but the bundle path MUST NOT use it — slice-up-front is the
  * contract.
  */
-import { getSharedRuntimeExternals, BUNDLER_VERSION } from '../runtime/esbuild-service.js';
+import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 export function buildSliceForSpecifier(vfs, specifier, nmDir) {
     return buildSliceForSpecifierWithCap(vfs, specifier, nmDir, 24 * 1024 * 1024);
 }

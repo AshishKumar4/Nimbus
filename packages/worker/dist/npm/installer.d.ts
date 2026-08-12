@@ -19,12 +19,12 @@
  *   - Lockfile stored in SQLite (not JSON file)
  *   - ESM pre-bundles cached in SQLite for /@modules/ serving
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { EsbuildService } from '../runtime/esbuild-service.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
 import { type NpmLogEmitter } from './npm-log.js';
-import type { InstallPhase } from '../_shared/install-phase.js';
+import type { InstallPhase } from '@nimbus-sh/core/_shared/install-phase.js';
 export interface InstallProgress {
     phase: InstallPhase;
     resolved: number;

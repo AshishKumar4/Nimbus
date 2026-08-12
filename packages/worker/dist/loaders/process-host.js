@@ -59,10 +59,10 @@
  * HMR — terminates on the session DO and reaches the process, if at all, as
  * events on a supervisor poll. That is substrate-independent by construction.
  */
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { isTransientDoReset } from '../observability/oom-classify.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
-import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, openResidentFacet, residentFacetName, } from './process-fabric.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, openResidentFacet, residentFacetName, runOneShotWorker, } from './workerd-facet-host.js';
 import { BindingError } from './vendor/errors.js';
 /**
  * The var that picks the substrate, and the only place its name appears.
@@ -112,6 +112,9 @@ class FacetProcessHost {
         this.disk = disk;
         this.env = (env ?? {});
         this.coordDoId = ctx.id.toString();
+    }
+    runOnce(params, consume) {
+        return runOneShotWorker(this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
         const supervisor = {
@@ -206,13 +209,26 @@ class PeerProcessHost {
         storageSharedWithSession: false,
     };
     ns;
+    env;
     coordDoId;
     /** pid → the isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
     constructor(ctx, env) {
         this.ctx = ctx;
         this.ns = peerNamespace(env);
+        this.env = (env ?? {});
         this.coordDoId = ctx.id.toString();
+    }
+    /**
+     * Not placed on a sibling, and that is not a gap in this substrate.
+     * `peer` exists to buy a resident process independent CPU; a program that
+     * ends with the call it was started by has no residency to place, and its
+     * map is fully inline — so a hop would meet the RPC ceiling that by-path
+     * boot specs exist to avoid while buying nothing. It runs as a dynamic
+     * worker of the coordinator here exactly as it does on `facet`.
+     */
+    runOnce(params, consume) {
+        return runOneShotWorker(this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
         const placement = await this._place(params.pid);

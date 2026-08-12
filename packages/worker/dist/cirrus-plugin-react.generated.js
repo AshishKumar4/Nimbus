@@ -17,7 +17,7 @@
  * of inline. Use {@link getCirrusPluginReactBundle}. Version constant
  * stays inline.
  */
-import { loadAssetText } from './runtime/assets-loader.js';
+import { loadAssetText } from '@nimbus-sh/core/runtime/assets-loader.js';
 export const CIRRUS_PLUGIN_REACT_VERSION = "4.3.4";
 /** Asset path for the bundle. Use {@link getCirrusPluginReactBundle}. */
 export const CIRRUS_PLUGIN_REACT_BUNDLE_PATH = "/_assets/cirrus-plugin-react.bundle.js";

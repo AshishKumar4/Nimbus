@@ -1,4 +1,4 @@
-import { parseArgs } from '../substrate/lifo/utils/args.js';
+import { parseArgs } from '@nimbus-sh/core/substrate/lifo/utils/args.js';
 import { parseNpmLogLevel } from './npm-log.js';
 const INSTALL_ARG_SPEC = {
     global: { type: 'boolean', short: 'g' },

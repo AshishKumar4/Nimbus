@@ -51,9 +51,9 @@
  *                               facet loop  ──>  chokidar / ws shim
  */
 import { HmrBridge } from './real-vite-hmr.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { VfsEventEmitter } from '../vfs/events.js';
-import type { ParsedViteConfig } from '../runtime/vite-config-parser.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
+import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 /**
  * Resolve opt-in mode.
  *

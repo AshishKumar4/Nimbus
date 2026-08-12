@@ -6,12 +6,12 @@
  * duplicating the interactive terminal boot path.
  */
 import { type MinShellRegistry } from '../runtime/package-manager.js';
-import type { ProcessLogReadOptions } from '../runtime/process-logs.js';
+import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { PortRegistry } from '../runtime/port-registry.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 interface ProgrammaticShell {
     env?: Record<string, string>;
     getEnv?(): Record<string, string>;
@@ -180,7 +180,7 @@ export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<{
     installed: import("../runtime/package-manager.js").RuntimeSummary[];
     available: {
         name: string;
-        abi: import("../runtime/os-contracts.js").RuntimePackageAbi;
+        abi: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimePackageAbi;
         defaultVersion: string;
         versions: Array<{
             version: string;
@@ -215,11 +215,11 @@ export declare function rpcSignalProcess(self: ProgrammaticHost, pid: number, si
 }>;
 export declare function rpcProcessLogs(self: ProgrammaticHost, pid: number, options?: ProcessLogReadOptions): Promise<{
     pid: number;
-    chunks: import("../runtime/process-logs.js").SequencedLogChunk[];
+    chunks: import("@nimbus-sh/core/runtime/process-logs.js").SequencedLogChunk[];
     text: string;
     cursor: number;
     truncated: boolean;
-    exit: import("../runtime/process-logs.js").ProcessExitInfo | null;
+    exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
 }>;
 export declare function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]>;
 export declare function rpcExposePort(self: ProgrammaticHost, port: number): Promise<{

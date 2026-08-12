@@ -44,9 +44,9 @@
  * fallbacks but the bundle path MUST NOT use it — slice-up-front is the
  * contract.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
-import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
+import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 /**
  * One file inside a facet spec's slice. `bytes` is a Uint8Array — esbuild's
  * loader inferences (js/ts/css/binary) need raw bytes for binary entries

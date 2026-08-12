@@ -47,8 +47,8 @@
  * program that wrote a file and then raised still wrote the file.
  */
 import type { FacetManager } from '../facets/manager.js';
-import type { CommandContext } from '../substrate/lifo/commands/types.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { RuntimeManifest } from './runtime-catalog.js';
 /**
  * The one canonical facet preamble. Composed in exactly one place: a

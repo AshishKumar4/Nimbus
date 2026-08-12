@@ -9,7 +9,7 @@
  * the Vite resolver's output (e.g. /home/user/app/node_modules/react/index.js)
  * is rewritten to point at one of these bundles at request time.
  */
-import { loadAssetText } from './runtime/assets-loader.js';
+import { loadAssetText } from '@nimbus-sh/core/runtime/assets-loader.js';
 export const CIRRUS_NPM_CJS_VERSIONS = {
     "react": "18.3.1",
     "react-dom": "18.3.1",

@@ -15,10 +15,10 @@
  * asset URL, ASSETS as the source of truth, and a sha-256 integrity check on
  * both tiers so a stale or tampered asset never gets compiled.
  */
-import { SQLJS_VERSION } from '../constants.js';
+import { SQLJS_VERSION } from '@nimbus-sh/core/constants.js';
 import { SQLITE_WASM_SHA256 } from '../sqlite-wasm-bundle.generated.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
-import { sha256Hex } from '../_shared/crypto.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
  * Path inside env.ASSETS where the sql.js wasm binary lives. Versioned so
  * a future sql.js bump produces a different asset name and forces a fresh

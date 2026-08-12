@@ -14,7 +14,7 @@
  * endpoint to the internet. Serving it here keeps it reachable only from
  * inside the session.
  */
-import { NIMBUS_AI_GATEWAY_PORT } from '../constants.js';
+import { NIMBUS_AI_GATEWAY_PORT } from '@nimbus-sh/core/constants.js';
 import { handleSessionAiRequest } from './ai.js';
 /**
  * Resolve one loopback request. Returns null when nothing is listening on the

@@ -46,17 +46,17 @@
  * pair for the same reason. The drain in the `finally` is the other half: a
  * program that wrote a file and then raised still wrote the file.
  */
-import { resolveVfsPath } from '../vfs/path.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
-import { hasLeadingCliFlag } from './cli-flags.js';
-import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
-import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
+import { hasLeadingCliFlag } from '@nimbus-sh/core/runtime/cli-flags.js';
+import { CPYTHON_PREAMBLE_TAIL } from '@nimbus-sh/core/runtime/cpython-preamble.js';
+import { PYTHON_SERVER_ADAPTER } from '@nimbus-sh/core/runtime/python-server-adapter.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { requireVfsCred } from './os-contracts.js';
+import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { buildPipInvocation, PYTHON_SITE_PACKAGES_ROOT, sessionUsesSciVariant, } from './python-pip.js';
-import { manifestVfs } from './vfs-manifest.js';
+import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
-import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */

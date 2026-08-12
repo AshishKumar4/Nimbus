@@ -32,12 +32,12 @@
  * `host as any` patterns where required (here only `safePersistRing`
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
-import { dec } from '../_shared/bytes.js';
-import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '../observability/oom-discriminator.js';
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { persistShellState } from './state-store.js';
 import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose, } from './fs-watch.js';
-import { parseProcessLogClientFrame } from '../runtime/process-io-protocol.js';
-import { applyProcessClientFrame } from '../runtime/process-input-routing.js';
+import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
+import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 /**

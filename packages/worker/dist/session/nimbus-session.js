@@ -6,16 +6,16 @@
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { FacetManager } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { PID_GEN_STRIDE } from '../runtime/process-table.js';
-import { CRED_KERNEL, CRED_SESSION_USER, } from '../runtime/os-contracts.js';
-import { PortRegistry } from '../runtime/port-registry.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
-import { registerAllocObserver } from '../observability/heavy-alloc-coord.js';
+import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
+import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { registerAllocObserver } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import { NpmInstaller } from '../npm/installer.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
@@ -30,11 +30,11 @@ import { NpmInstaller } from '../npm/installer.js';
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { setCtxExports } from './ctx-exports.js';
-import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '../constants.js';
-import { seedProject } from '../vfs/seed-project.js';
+import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
-import { dec } from '../_shared/bytes.js';
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState, } from './replica-routes.js';
@@ -50,6 +50,7 @@ import { initSession as _w11InitSession } from './init.js';
 import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
+import { processHostFor } from '../loaders/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from './ws-relay.js';
@@ -110,7 +111,7 @@ export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUns
 // unit-level tests can import it without pulling in cloudflare:workers.
 // Re-export here so the existing import surface (callers that already
 // import from nimbus-session) continues to work.
-export { detectCloudflareWorkersProject } from '../runtime/project-detect.js';
+export { detectCloudflareWorkersProject } from '@nimbus-sh/core/runtime/project-detect.js';
 /**
  * Render the welcome MOTD banner with column-counted padding so every
  * line lands the right ║ on the same column regardless of how many
@@ -851,7 +852,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     ensureFacetManager() {
         if (!this.facetManager) {
-            this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, {
+            this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, processHostFor, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
                 requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
                 onSpawn: (pid, command, longRunning) => {

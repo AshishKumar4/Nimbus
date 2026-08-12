@@ -22,12 +22,12 @@
  * The vendored directory contains only the upstream serialization, error,
  * and binding types used by this implementation.
  */
-import { CF_COMPAT_DATE } from '../constants.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports } from '../session/ctx-exports.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { recordFailure, setLastFacetId, getLastRpcFrame } from '../observability/oom-discriminator.js';
-import { classifyError } from '../observability/oom-classify.js';
+import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
 /**
  * esbuild runtime helpers re-declared at the top of every generated facet

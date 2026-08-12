@@ -18,7 +18,7 @@
  *   Hit = row(s) returned with size > 0; miss = empty result set. Callers
  *   fall through to L2/L3/L4 on miss.
  */
-import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '../_shared/cache-stats.js';
+import { recordHit as _l1RecordHit, recordMiss as _l1RecordMiss } from '@nimbus-sh/core/_shared/cache-stats.js';
 // ── NpmCache ────────────────────────────────────────────────────────────
 export class NpmCache {
     sql;

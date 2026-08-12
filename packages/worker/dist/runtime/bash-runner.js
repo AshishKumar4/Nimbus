@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
-import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
-import { requireVfsCred } from './os-contracts.js';
-import { resolveVfsPath } from '../vfs/path.js';
+import { flushVfsDiff, snapshotVfs } from '@nimbus-sh/core/runtime/vfs-snapshot.js';
+import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 const BashSliceSchema = z.object({
     state: z.enum(['need-input', 'exited', 'error']),

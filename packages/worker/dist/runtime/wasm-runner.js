@@ -48,11 +48,11 @@
  *   - NO direct WebAssembly.instantiate(bytes) at request time —
  *     workerd CSP rejects that path.
  */
-import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
-import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
-import { manifestVfs } from './vfs-manifest.js';
-import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
+import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import { inspectWasmThreads, wasiThreadsLoadError } from '@nimbus-sh/core/runtime/wasi-threads.js';
+import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
+import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from '@nimbus-sh/core/runtime/wasm-memory.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
     '       wasm-runner --version\n' +

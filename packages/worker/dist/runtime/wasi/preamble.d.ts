@@ -1,4 +1,4 @@
-import type { FdEntry, WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions, WasiRunResult, WasiStartInstance, WasiSupervisorStub } from './types.js';
+import type { FdEntry, WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions, WasiRunResult, WasiStartInstance, WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 export declare function __wasiAdoptSupervisor(sup: WasiSupervisorStub | null): void;
 /**
  * Re-sync the cache with the session VFS. A resident process (a server) must

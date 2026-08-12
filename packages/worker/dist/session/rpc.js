@@ -21,24 +21,25 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { enc, dec } from '../_shared/bytes.js';
-import { normalizeTerminalNewlines } from '../_shared/terminal.js';
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { getInnerDoClass } from '../facets/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
-import { EsbuildService } from '../runtime/esbuild-service.js';
-import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { ResidentBootSpecSchema, getNimbusCtxExports, openResidentFacet, } from '../loaders/process-fabric.js';
+import { ResidentBootSpecSchema, } from '../loaders/process-fabric.js';
+import { getNimbusCtxExports, openResidentFacet, } from '../loaders/workerd-facet-host.js';
 import { headerPairs, isolateToken, } from '../loaders/process-host.js';
-import { recordFailure, getLastRpcFrame, getLastFacetId, } from '../observability/oom-discriminator.js';
-import { classifyError } from '../observability/oom-classify.js';
-import { acquireSupervisorReadAllocation, } from '../observability/heavy-alloc-coord.js';
-import { rpcPayloadEnd, rpcPayloadStart, } from '../observability/diag-counters.js';
-import { CRED_KERNEL, CRED_SESSION_USER, } from '../runtime/os-contracts.js';
-import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
-import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '../constants.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
+import { acquireSupervisorReadAllocation, } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/core/observability/diag-counters.js';
+import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
+import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
@@ -968,7 +969,7 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
     // want to refresh the bundle mid-execution; today only the
     // SupervisorRPC.prefetch surface exposes it externally.
     self.ensureSqliteFs();
-    const { prefetchForRequire } = await import('../runtime/require-resolver.js');
+    const { prefetchForRequire } = await import('@nimbus-sh/core/runtime/require-resolver.js');
     return prefetchForRequire(self.sqliteFs, entryCode, cwd).bundle;
 }
 export async function _rpcRegisterPort(self, pid, port) {
@@ -1521,7 +1522,7 @@ export async function _rpcCancelHostProcess(self, workerKey) {
 // One forward per (tier, kind, isHit, bytes) tuple. Batch via the
 // `events` array so a single supervisor RPC handler can flush multiple
 // bumps in one round-trip.
-import { recordHit as _rpcRecordHit, recordMiss as _rpcRecordMiss } from '../_shared/cache-stats.js';
+import { recordHit as _rpcRecordHit, recordMiss as _rpcRecordMiss } from '@nimbus-sh/core/_shared/cache-stats.js';
 export async function _rpcRecordCacheStats(_self, events) {
     // Defensive iteration — caller is in-house (supervisor-rpc.ts) but
     // a malformed event must NOT throw and break the install. Iterate

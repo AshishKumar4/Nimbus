@@ -21,8 +21,8 @@
  * HMR: VFS events → ViteDevServer detects changes → sends {type:'hmr'}
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { EsbuildService } from '../runtime/esbuild-service.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 export interface ViteDevServerOptions {
     vfs: SqliteVFS;
     esbuild: EsbuildService;

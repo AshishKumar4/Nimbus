@@ -24,7 +24,7 @@
  *   - Ctrl-C mid-execution.
  *   - irb history pickling.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 export interface RubyReplDeps {

@@ -19,7 +19,7 @@
  * so `1 + 1` prints `2` and `x = 1` prints nothing, with no wrapper of ours
  * deciding what counts as a result.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from './runtime-catalog.js';

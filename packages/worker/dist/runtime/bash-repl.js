@@ -1,4 +1,4 @@
-import { formatShellPrompt } from '../substrate/lifo/shell/Shell.js';
+import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { createBashFacetSession } from './bash-runner.js';
 import { ReplSession, } from './repl-session.js';
 class BashReplAdapter {

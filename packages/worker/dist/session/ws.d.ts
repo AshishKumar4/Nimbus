@@ -33,11 +33,11 @@
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
 import { type FsWatchSub } from './fs-watch.js';
-import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { Kernel, Shell } from '../substrate/lifo/index.js';
+import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 /**
  * Minimal host shape for WS lifecycle. Per plan §IX.1 b': fields here
  * drop `private` on the class. `ctx` NOT on the interface (D1).
@@ -68,7 +68,7 @@ export interface WsHost {
     _w5LastPersistAt: number;
     _w5LastPersistRingSize: number;
     /** [B'.4] live phase indicator — see nimbus-session-internal.d.ts */
-    _b4Phase: import('../observability/oom-discriminator.js').SessionState | null;
+    _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null;
     _w5PersistRing(): Promise<void> | null;
     _w9FlushOnClose(): void;
 }

@@ -13,7 +13,7 @@
  * The dynamic worker IS the user's Worker — running on the actual
  * Cloudflare Workers runtime, not a simulation.
  */
-import { normalizeVfsPath } from '../vfs/path.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { registerInnerDoClass, clearInnerDoClasses } from '../facets/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';

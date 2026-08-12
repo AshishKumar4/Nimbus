@@ -1,0 +1,284 @@
+/**
+ * workerd-facet-host.ts — how a resident process is actually made, on workerd.
+ *
+ * `loaders/process-fabric.ts` says what a resident process IS, in terms no
+ * runtime owns: a boot spec, a start contract, a handle that can be routed to
+ * and released. This module is the one implementation of that on Cloudflare,
+ * and everything here is a workerd mechanism rather than a Nimbus concept —
+ * `ctx.facets`, the Worker Loader, `ctx.exports`, and the facet-index
+ * arithmetic the slot book exists to satisfy.
+ *
+ * The split is what lets the contract be read without the platform: a host
+ * that is not a Durable Object implements `ProcessHost` against the same
+ * `HostedProcess` and never imports this file.
+ */
+import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { assembleOpencodeFacetConfig, } from '../facets/opencode-staging.js';
+import { getCtxExports } from '../session/ctx-exports.js';
+import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
+export function getNimbusCtxExports() {
+    const ctxExports = getCtxExports();
+    if (!ctxExports || typeof ctxExports !== 'object') {
+        throw new Error('Nimbus: ctx.exports unavailable');
+    }
+    return ctxExports;
+}
+/**
+ * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. Used by the
+ * one-shot runtime paths, which run a program to completion inside a single
+ * request rather than leaving it resident: their module map is assembled in
+ * that stateless entrypoint's own isolate, never in a session DO.
+ */
+export async function createLoadedWorkerEntrypoint(ctxExports, supervisor, stage, name = null) {
+    if (!ctxExports.NimbusLoadedEntrypoint) {
+        throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
+    }
+    return await ctxExports.NimbusLoadedEntrypoint({
+        props: {
+            key: `nimbus-process:${supervisor.doId}:${supervisor.pid}`,
+            name,
+            depth: 0,
+            supervisor,
+            stage,
+        },
+    });
+}
+/**
+ * Total bytes a dynamic Worker's module map may carry, across every member of
+ * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
+ * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
+ * size of 67108864 bytes", confirmed at five sizes with two trials each. The
+ * budget is shared, so a ruby process is already 34.3 MiB down before its disk
+ * is counted.
+ */
+export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
+function facetContainer(ctx) {
+    const facets = ctx.facets;
+    if (!facets || typeof facets.get !== 'function') {
+        throw new Error('Nimbus: ctx.facets is unavailable in this Durable Object; '
+            + 'resident processes cannot be hosted');
+    }
+    return facets;
+}
+/**
+ * The facet name for a slot. Reused, and that is the entire point.
+ *
+ * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
+ * append-only and are never reclaimed, so the bound is on facets ever CREATED,
+ * not facets alive at once. Naming a facet after its pid, when pids never
+ * repeat, therefore burned one of those IDs on every spawn — a long-lived
+ * session would eventually exhaust its facet index with no way back, and the
+ * failure is unrecoverable rather than merely slow.
+ *
+ * Reusing a NAME costs no new ID. So the name comes from a free list and the
+ * pid stays what it always was: the process identity in the ProcessTable. The
+ * two were only ever conflated because one of them happened to be handy.
+ */
+export function residentFacetName(slot) {
+    return `proc-slot-${slot}`;
+}
+/**
+ * Slot books, per hosting actor, because the facet index is per Durable
+ * Object.
+ *
+ * Keyed weakly off `ctx`, and that is sound rather than lossy: a facet cannot
+ * outlive the Durable Object hosting it, so a book that goes away with its
+ * host describes nothing that still exists. A fresh incarnation restarts at
+ * slot 0 and re-attaches to the SQLite a previous incarnation left there —
+ * which is safe for the reason the store is sealed until it has reconciled.
+ * Its persisted cursor is either datable against the current authority, in
+ * which case the ACQUIRE delta brings it current, or it carries a different
+ * VFS epoch, in which case `invalidatedSince` can only answer poison and the
+ * whole store is dropped. A process therefore cannot boot onto a previous
+ * tenant's filesystem even when release never ran.
+ */
+const slotBooks = new WeakMap();
+function slotBook(ctx) {
+    let book = slotBooks.get(ctx);
+    if (!book) {
+        book = { free: [], next: 0, held: new Map() };
+        slotBooks.set(ctx, book);
+    }
+    return book;
+}
+/** Take a slot for `pid`, reusing a returned one before minting a new name. */
+function acquireSlot(ctx, pid) {
+    const book = slotBook(ctx);
+    const existing = book.held.get(pid);
+    if (existing !== undefined)
+        return existing;
+    const slot = book.free.length > 0 ? book.free.shift() : book.next++;
+    book.held.set(pid, slot);
+    return slot;
+}
+/** Return `pid`'s slot to the free list. */
+function releaseSlot(ctx, pid) {
+    const book = slotBook(ctx);
+    const slot = book.held.get(pid);
+    if (slot === undefined)
+        return;
+    book.held.delete(pid);
+    book.free.push(slot);
+    book.free.sort((a, b) => a - b);
+}
+/**
+ * Open a resident process as a facet of the actor whose `ctx` and `env` are
+ * given, and start its runner.
+ *
+ * This is the ONE way a resident process comes into existence, and every
+ * substrate goes through it: the facet host calls it with the coordinator's
+ * own `ctx`, the peer host calls it — over one RPC — with a sibling session
+ * DO's. Everything a substrate could plausibly want to special-case is a
+ * PARAMETER here rather than a branch: which actor hosts the child, and how
+ * the boot spec's by-path members are read.
+ */
+export function openResidentFacet(ctx, env, disk, supervisor, params) {
+    const facets = facetContainer(ctx);
+    const slot = acquireSlot(ctx, params.pid);
+    const name = residentFacetName(slot);
+    // The start callback is the ONLY way this facet is ever created, and it
+    // fires AT MOST ONCE. Every later use goes through the stub below, so the
+    // callback running a second time means the facet was released or died —
+    // and re-running it would evaluate the user's program again, answering a
+    // request from a process they never started while the one they did start
+    // is gone. Both cases are reported instead.
+    let evaluated = false;
+    let released = false;
+    const start = async () => {
+        if (released) {
+            throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
+        }
+        if (evaluated) {
+            throw new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
+                + 'it is not restarted');
+        }
+        evaluated = true;
+        return { class: residentProcessClass(env, disk, supervisor, params) };
+    };
+    const facet = facets.get(name, start);
+    let disposed = false;
+    const release = async () => {
+        if (disposed)
+            return;
+        disposed = true;
+        released = true;
+        try {
+            facets.abort(name, new Error('Nimbus: resident process released'));
+        }
+        catch { /* already gone */ }
+        try {
+            facets.delete(name);
+        }
+        catch { /* already gone */ }
+        // Only after the facet is gone. A slot handed out while its previous
+        // tenant were still being torn down would have two processes on one name.
+        releaseSlot(ctx, params.pid);
+    };
+    let started;
+    try {
+        started = facet.startProcess(params.startArgs);
+    }
+    catch (error) {
+        void release();
+        throw error;
+    }
+    // A caller reads whichever of `started` and the lifecycle it needs, so keep
+    // the runtime from reporting the other as an unhandled rejection.
+    started.catch(() => { });
+    return {
+        started,
+        // A facet cannot die without taking its Durable Object — and this object —
+        // with it, so there is no independent death to report.
+        lost: new Promise(() => { }),
+        handleHttpRequest: (request) => facet.handleHttpRequest(request),
+        release,
+        slot,
+    };
+}
+/**
+ * The dynamic worker's Durable Object class, minted in the caller's request
+ * context. `LOADER.get` runs its callback only on a cache miss, so a process
+ * assembles its module map at most once and the bytes never stay resident in
+ * the hosting DO's heap.
+ */
+function residentProcessClass(env, disk, supervisor, params) {
+    const loader = env.LOADER;
+    if (!loader || typeof loader.get !== 'function') {
+        throw new Error('Nimbus: env.LOADER binding missing or invalid. Resident processes require '
+            + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
+    }
+    return loader
+        .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+        .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+}
+/**
+ * Run one program to completion as an UNKEYED dynamic worker.
+ *
+ * Unkeyed is the whole difference from `openResidentFacet`: nothing can
+ * re-resolve this worker into a later request's context, so it can never be a
+ * routeable target and never has to be released by name. It exists for the
+ * duration of one call and its stubs are dropped as that call unwinds.
+ *
+ * Shared by both substrates on purpose. `peer` places processes that have a
+ * residency to place; a one-shot has none, and shipping its fully-inline map
+ * across a sibling hop would meet the 32 MiB RPC ceiling that by-path boot
+ * specs exist to avoid — for a run that gains nothing by moving.
+ */
+export async function runOneShotWorker(env, supervisor, params, consume) {
+    const loader = env.LOADER;
+    if (!loader || typeof loader.load !== 'function') {
+        throw new Error('Nimbus: env.LOADER binding missing or invalid. Running a program requires '
+            + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
+    }
+    const ctxExports = getCtxExports();
+    let supervisorBinding;
+    let worker;
+    let entrypoint;
+    try {
+        // Built before the capability is minted: nothing can write as this writer
+        // until there is a program to do the writing, and a map that fails to
+        // assemble should not have granted append authority on its way out.
+        let spec = await params.code();
+        if (ctxExports?.SupervisorRPC) {
+            params.onWriterActivated(params.writerId);
+            supervisorBinding = ctxExports.SupervisorRPC({ props: supervisor });
+        }
+        worker = loader.load({
+            compatibilityDate: spec.compatibilityDate,
+            compatibilityFlags: spec.compatibilityFlags,
+            mainModule: spec.mainModule,
+            modules: spec.modules,
+            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+        });
+        // The loader has taken the map; holding it here would keep a second full
+        // copy of the program alive for as long as the program runs.
+        spec = undefined;
+        entrypoint = worker.getEntrypoint();
+        if (typeof entrypoint.fetch !== 'function') {
+            throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
+        }
+        params.onLoaded?.();
+        const response = await entrypoint.fetch(params.request);
+        try {
+            return await consume(response);
+        }
+        finally {
+            disposeRpcResource(response);
+        }
+    }
+    finally {
+        disposeRpcResource(entrypoint);
+        disposeRpcResource(worker);
+        disposeRpcResource(supervisorBinding);
+    }
+}
+async function residentWorkerConfig(env, disk, supervisor, boot) {
+    const config = boot.kind === 'staged'
+        ? await assembleOpencodeFacetConfig(env, boot.stage)
+        : await residentLoaderConfig(boot.code, disk());
+    const ctxExports = getNimbusCtxExports();
+    if (!ctxExports.SupervisorRPC) {
+        throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+    }
+    return { ...config, env: { SUPERVISOR: ctxExports.SupervisorRPC({ props: supervisor }) } };
+}

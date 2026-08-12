@@ -33,8 +33,8 @@
  *     in-flight reportExit RPC a chance to land (and be no-op'd by the
  *     idempotent guard).
  */
-import { resolveVfsPath } from '../vfs/path.js';
-import { parseShellInvocation } from '../shell/shell-invocation.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { parseShellInvocation } from '@nimbus-sh/core/shell/shell-invocation.js';
 /** Cap recursion depth to defend against runaway spawn loops. */
 export const CHILD_PROCESS_MAX_DEPTH = 8;
 /**

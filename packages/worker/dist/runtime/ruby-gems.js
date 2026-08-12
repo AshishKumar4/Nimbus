@@ -1,5 +1,5 @@
 import { extractTarball } from '../npm/tarball.js';
-import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 const RUBYGEMS_API = 'https://rubygems.org';
 const DEFAULT_GEM_HOME = 'home/user/.gem';
 export function defaultGemHome() {

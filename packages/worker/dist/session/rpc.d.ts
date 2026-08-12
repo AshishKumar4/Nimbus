@@ -21,10 +21,10 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { type ResidentFacet } from '../loaders/process-fabric.js';
+import { type ResidentFacet } from '../loaders/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '../loaders/process-host.js';
-import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsListPage } from '../runtime/os-contracts.js';
-import type { WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
 export declare function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null>;
@@ -488,7 +488,7 @@ export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wi
 export declare function _rpcCancelHostProcess(self: RpcHost, workerKey: string): Promise<{
     cancelled: boolean;
 }>;
-import { type CacheTier, type CacheKind } from '../_shared/cache-stats.js';
+import { type CacheTier, type CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 export type CacheStatEvent = {
     kind: 'hit';
     tier: CacheTier;

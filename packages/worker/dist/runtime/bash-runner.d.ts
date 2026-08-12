@@ -23,10 +23,10 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
-import type { Command } from '../substrate/lifo/commands/types.js';
-import type { BashSlice } from './bash/types.js';
+import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import type { BashSlice } from '@nimbus-sh/core/runtime/bash/types.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export interface BashFacetSession {
     readonly initial: BashSlice;

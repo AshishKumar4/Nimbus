@@ -3,7 +3,7 @@
  *
  * Produced by scripts/bundle-facet-workers.mjs from:
  *   - src/npm/tarball-stream.ts (streaming tar primitives)
- *   - src/_shared/w7-frame.ts   (W7 streaming bulk-write encoder)
+ *   - @nimbus-sh/core src/_shared/w7-frame.ts (W7 streaming bulk-write encoder)
  *
  * Consumed by src/loaders/loader-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -16,7 +16,7 @@
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 4.14 KiB
- * W7 size:  29.17 KiB
+ * W7 size:  29.18 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;

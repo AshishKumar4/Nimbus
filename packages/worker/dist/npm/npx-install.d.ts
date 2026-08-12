@@ -28,8 +28,8 @@
  *      tracking, log buffer, process table membership)
  */
 import type { NpmInstaller } from './installer.js';
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
-import { type FacetBundleProfile } from '../runtime/bundle-profile.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
 export declare const NPX_CACHE_DIR = "/tmp/.npx-cache";

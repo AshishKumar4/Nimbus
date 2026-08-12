@@ -54,7 +54,7 @@
  * makes a stale pin a cache miss rather than an outage.
  */
 import { z } from 'zod/v4';
-import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
+import { PYODIDE_PACKAGE_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {
     get(key: string): Promise<{

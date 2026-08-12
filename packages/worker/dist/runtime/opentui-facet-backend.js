@@ -21,8 +21,8 @@
  * The WASI host the backend needs (`__wasiMakeImports` / `__wasiInitFS`) comes
  * from WASI_INSTANCE_PREAMBLE_SRC, which the runner injects ahead of this glue.
  */
-import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { OpenTUIWasmBackend, OPENTUI_FFI_TYPES, ARENA_ALIGN, toOffset, viewBytes, } from './opentui-wasm-backend.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import { OpenTUIWasmBackend, OPENTUI_FFI_TYPES, ARENA_ALIGN, toOffset, viewBytes, } from '@nimbus-sh/core/runtime/opentui-wasm-backend.js';
 /** Module-map specifier for the staged OpenTUI wasm32-wasi reactor Module. */
 export const OPENTUI_WASM_MODULE_NAME = 'opentui.wasm';
 /** Global the patched @opentui/core seams read their FFI backend from. */
