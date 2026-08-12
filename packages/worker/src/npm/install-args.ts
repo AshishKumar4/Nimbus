@@ -1,9 +1,12 @@
 import { parseArgs } from '../substrate/lifo/utils/args.js';
+import { parseNpmLogLevel, type NpmLogLevel } from './npm-log.js';
 
 export interface NpmInstallInvocation {
   packages: string[];
   global: boolean;
   prefix: string | null;
+  /** `--loglevel`, when it names a level npm recognises; null otherwise. */
+  loglevel: NpmLogLevel | null;
 }
 
 const INSTALL_ARG_SPEC = {
@@ -42,6 +45,7 @@ export function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation 
     packages: parsed.positional,
     global: parsed.flags.global === true,
     prefix: stringFlag(parsed.flags.prefix),
+    loglevel: parseNpmLogLevel(parsed.flags.loglevel),
   };
 }
 

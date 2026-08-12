@@ -64,6 +64,13 @@ export interface InstallBatchPerPackage {
   warnings: string[];
   /** When set, the package failed; caller surfaces this in install log. */
   errorText?: string;
+  /**
+   * Which tier served this tarball, and how long acquiring it took. The
+   * supervisor reports both verbatim in its `npm http` lines, so they must
+   * stay measurements — absent when the tarball was never acquired.
+   */
+  tarballSource?: 'cache' | 'registry';
+  tarballElapsedMs?: number;
 }
 
 export interface InstallBatchResult {
@@ -573,6 +580,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // §11 finding #4 lifecycle correctness.
       let capturedTgzBytes: Uint8Array | null = null;
       let r2HitBytes: Uint8Array | null = null;
+      // Acquisition span, measured from the first cache probe to the moment
+      // the tarball body is in hand.
+      let tarballElapsedMs = 0;
 
       // 1b. Try R2 first (bounded wait).
       if (r2Available) {
@@ -625,6 +635,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         // proven to be spec.integrity's tarball — there is exactly one
         // verification point and it is not here.
         discardPendingNetwork();
+        tarballElapsedMs = Date.now() - r2WaitStart;
         pipelinedTarballRaceWins++;
         tarballsCompleted++;
         cumulativeBytesDecoded += r2HitBytes.length;
@@ -690,6 +701,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
             errorText: 'no response body',
           };
         }
+        tarballElapsedMs = Date.now() - r2WaitStart;
 
         // cache-obs-2: record the L4 (registry.npmjs.org) hit. We're
         // about to stream the body — the byte count is known either
@@ -884,6 +896,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         name: spec.name, version: spec.version,
         fileCount: totalFileInodes, bytesWritten: totalBytesWritten,
         elapsed: Date.now() - t0, warnings,
+        tarballSource: r2HitBytes ? 'cache' : 'registry',
+        tarballElapsedMs: tarballElapsedMs,
       };
     } catch (e: any) {
       return {

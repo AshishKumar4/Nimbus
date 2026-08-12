@@ -23,6 +23,8 @@ import { CRED_KERNEL } from '../runtime/os-contracts.js';
 import { BUNDLER_VERSION } from '../runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
+import { packumentUrl } from './r2-cache.js';
+import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from './npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '../_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '../_shared/w7-frame.js';
@@ -61,6 +63,12 @@ export class NpmInstaller {
      * when the feature flag is on, using the facet's own global fetch.
      */
     fetchFn;
+    /**
+     * npm-protocol log sink for the install in flight. Set per invocation
+     * because `--loglevel` is a per-invocation flag; the no-op default is
+     * what every caller that didn't pass one gets.
+     */
+    npmLog = () => { };
     constructor(vfs, sql, opts) {
         this.store = vfs;
         this.vfs = vfs.as(CRED_KERNEL);
@@ -85,6 +93,7 @@ export class NpmInstaller {
         const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
         const nmDir = projDir + '/node_modules';
         const log = (msg) => this.onProgress?.(msg);
+        this.npmLog = opts?.npmLog ?? (() => { });
         // Reset phase to 'idle' on any exit path so /api/_diag/memory
         // never reports a stale phase after a crash unwound the install.
         // The DO reboot would zero this anyway; finally is defense against
@@ -94,6 +103,7 @@ export class NpmInstaller {
         }
         finally {
             setInstallPhase('idle');
+            this.npmLog = () => { };
         }
     }
     async _installInner(projDir, nmDir, opts, log, start) {
@@ -104,6 +114,7 @@ export class NpmInstaller {
         let cachedHits = 0;
         // ── Phase 0: Lock-check ─────────────────────────────────────────
         setInstallPhase('idle');
+        this.npmLog('verbose', npmTitleLine(opts?.packages ?? []));
         let phaseStart = Date.now();
         log('Checking lockfile...');
         const specs = await this.buildSpecs(projDir, opts?.packages, opts?.production);
@@ -374,6 +385,11 @@ export class NpmInstaller {
         }
         else {
             log(`Done! ${installed.length} packages, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
+            // npm's own summary line, unstyled: the styled one the command site
+            // prints carries a colour prefix that no log parser matches. Carried
+            // at `http` — the level from which this stream is machine-readable —
+            // so a caller reading prose never sees the summary twice.
+            this.npmLog('http', npmAddedLine(installed.length, elapsed));
         }
         if (cachedHits > 0) {
             log(`  (${cachedHits} from cache)`);
@@ -585,6 +601,14 @@ export class NpmInstaller {
                 // cache-obs-2: harvest per-task cache events for end-of-walk fold.
                 if (res.cacheStatEvents)
                     fanoutCacheStatEvents.push(...res.cacheStatEvents);
+                // One `npm http` line per packument, reporting the tier that actually
+                // served it. A skipped task issued no request, so it gets no line.
+                if (res.packumentSource === 'network') {
+                    this.npmLog('http', npmHttpFetchLine(packumentUrl(taskName), res.packumentElapsedMs));
+                }
+                else if (res.packumentSource !== 'skipped') {
+                    this.npmLog('http', npmHttpCacheLine(packumentUrl(taskName)));
+                }
                 totalPackumentBytes += res.packumentBytesDecoded;
                 if (res.packumentSource === 'r2-cache')
                     r2Wins++;
@@ -880,8 +904,16 @@ export class NpmInstaller {
             let okCount = 0;
             let failCount = 0;
             const reported = new Set();
+            const specByPackage = new Map(specs.map((s) => [`${s.name}@${s.version}`, s]));
             for (const r of result.perPackage) {
                 reported.add(`${r.name}@${r.version}`);
+                // One `npm http` line per tarball, reporting the tier that served it.
+                const spec = specByPackage.get(`${r.name}@${r.version}`);
+                if (spec && r.tarballSource) {
+                    this.npmLog('http', r.tarballSource === 'registry'
+                        ? npmHttpFetchLine(spec.tarballUrl, r.tarballElapsedMs ?? 0)
+                        : npmHttpCacheLine(spec.tarballUrl, spec.integrity || undefined));
+                }
                 if (r.errorText) {
                     failed.push(`${r.name}@${r.version}`);
                     log(`  [warn] ${r.name}@${r.version}: ${r.errorText}`);
