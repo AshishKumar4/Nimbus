@@ -158,6 +158,26 @@ await check('mv -n keeps an existing destination',
   'mv -n /tmp/keep /home/user/keep\ncat /home/user/keep\necho\n',
   { stdout: 'old\n' });
 
+// ── the exit status of an assignment ───────────────────────────────────────
+// `help="$(… --help)" || die` never fired, so a failing download reported a
+// misleading error several lines later.
+
+await check('an assignment takes the status of its command substitution',
+  'v="$(false)" || echo propagated\nw=$(exit 7)\necho "rc=$?"\n',
+  { stdout: 'propagated\nrc=7\n' });
+
+await check('an assignment from a command that succeeds is still 0',
+  'ok=$(echo hi)\necho "ok=$ok rc=$?"\n',
+  { stdout: 'ok=hi rc=0\n' });
+
+await check('set -e aborts on an assignment whose substitution fails',
+  'set -e\nx=$(exit 3)\necho UNREACHED\n',
+  { stdout: '', exitCode: 3 });
+
+await check('a substitution in an argument does not set the command status',
+  'echo "$(false)"\necho "rc=$?"\n',
+  { stdout: '\nrc=0\n' });
+
 box.destroy();
 
 if (failures.length > 0) {

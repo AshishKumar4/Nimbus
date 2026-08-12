@@ -11,7 +11,19 @@ export interface ExpandContext {
   cwd: string;
   vfs: VFS;
   options: ShellOptions;
-  executeCapture?: (input: string) => Promise<string>;
+  executeCapture?: (input: string) => Promise<CapturedCommand>;
+  /**
+   * Exit status of the most recent command substitution expanded through this
+   * context, or undefined when there was none. A command made up only of
+   * assignments — `out="$(cmd)"` — takes its own status from here, which is
+   * what makes `out="$(cmd)" || die` and `set -e` see a failing `cmd`.
+   */
+  lastSubstitutionExitCode?: number;
+}
+
+export interface CapturedCommand {
+  output: string;
+  exitCode: number;
 }
 
 /**
@@ -271,7 +283,8 @@ function tildeExpanded(text: string, ctx: ExpandContext, preceding: readonly Pie
 
 async function expandCommandSubstitution(command: string, ctx: ExpandContext): Promise<string> {
   if (!ctx.executeCapture) return '';
-  const output = await ctx.executeCapture(command);
+  const { output, exitCode } = await ctx.executeCapture(command);
+  ctx.lastSubstitutionExitCode = exitCode;
   return output.replace(/\n+$/, '');
 }
 

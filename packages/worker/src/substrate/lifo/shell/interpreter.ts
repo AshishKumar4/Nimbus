@@ -27,7 +27,10 @@ import type {
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
-import { expandWords, expandWord, ExpansionError, type ExpandContext } from './expander.js';
+import {
+  expandWords, expandWord, ExpansionError,
+  type ExpandContext, type CapturedCommand,
+} from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
@@ -775,7 +778,9 @@ export class Interpreter {
           return 1;
         }
       }
-      return 0;
+      // A command that is only assignments exits with the status of the last
+      // command substitution it ran, so `out="$(cmd)" || die` sees cmd fail.
+      return expandCtx.lastSubstitutionExitCode ?? 0;
     }
 
     if (expandedArgs.length === 0) {
@@ -1034,7 +1039,7 @@ export class Interpreter {
     return exitCode;
   }
 
-  async executeCapture(input: string, io: ExecutionIo = {}): Promise<string> {
+  async executeCapture(input: string, io: ExecutionIo = {}): Promise<CapturedCommand> {
     let captured = '';
     const stdout: CommandOutputStream = {
       write: (text: string) => { captured += text; },
@@ -1043,9 +1048,9 @@ export class Interpreter {
     const captureIo = this.createCommandIo(io);
     captureIo.stdout = stdout;
     captureIo.positionals = this.forkPositionals(io);
-    await this.executeLineWithIo(input, captureIo);
+    const exitCode = await this.executeLineWithIo(input, captureIo);
 
-    return captured;
+    return { output: captured, exitCode };
   }
 
   private async executeInline(
