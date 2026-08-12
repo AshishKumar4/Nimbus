@@ -32,7 +32,7 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '../runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
-import { buildRuntimeHandler } from '../runtime/runtime-registry.js';
+import { buildRuntimeHandler, resolveRuntimeScriptPath, } from '../runtime/runtime-registry.js';
 import { parseViteConfigSource } from '../runtime/vite-config-parser.js';
 import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
@@ -594,6 +594,17 @@ export function initSession(self, ws) {
     // chain doesn't share PID state with the .bin handler — the .bin
     // handler always dispatches through `node`, not `bun`). So
     // supportsBinSpawn=false (default).
+    /** `scripts` from the cwd's package.json; empty when there is none. */
+    const readPackageScripts = (cwd) => {
+        try {
+            const pkg = JSON.parse(kernelFs.readFileString(cwd + '/package.json'));
+            const scripts = pkg?.scripts;
+            return scripts && typeof scripts === 'object' ? scripts : {};
+        }
+        catch {
+            return {};
+        }
+    };
     const bunSpec = {
         name: 'bun',
         version: BUN_VERSION,
@@ -632,41 +643,67 @@ export function initSession(self, ws) {
                 ctx.stderr.write('bun add: npm handler unavailable\n');
                 return 1;
             },
-            // bun run <script> — read package.json scripts.<name>, execute via shell.
-            run: async (ctx) => {
+            // bun run <target> — a package.json script, or a file.
+            //
+            // Real bun's precedence, and the reason this is not just a script
+            // lookup: a path-shaped target (`./cli.ts`, `sub/x`, `.`) is ALWAYS
+            // a file and never consults scripts, while a bare name checks
+            // scripts first and only then falls back to a file. The file case
+            // delegates to the standard runtime flow, so `bun run ./cli.ts`
+            // and `bun cli.ts` execute through one path — TypeScript transform,
+            // facet dispatch and all.
+            run: async (ctx, _reg, runAsBun) => {
                 const args = ctx.args || [];
-                const scriptName = args[1];
-                if (!scriptName) {
-                    ctx.stderr.write('bun run: missing script name\n');
+                // bun's own run flags sit between the verb and the target.
+                let targetIdx = 1;
+                while (targetIdx < args.length && args[targetIdx].startsWith('-'))
+                    targetIdx++;
+                const target = args[targetIdx];
+                const cwd = normalizeVfsPath(ctx.cwd || '/home/user');
+                const scripts = readPackageScripts(cwd);
+                if (!target) {
+                    ctx.stdout.write('Usage: bun run [flags] <file or script>\n');
+                    const names = Object.keys(scripts);
+                    if (names.length) {
+                        ctx.stdout.write(`\npackage.json scripts (${names.length} found):\n\n`);
+                        for (const n of names)
+                            ctx.stdout.write(`  bun run ${n}\n    ${scripts[n]}\n\n`);
+                    }
+                    return 0;
+                }
+                const pathShaped = target === '.' || target === '..' || target.includes('/');
+                const pkgScript = pathShaped ? undefined : scripts[target];
+                if (pkgScript) {
+                    // Trailing args append to the script command; bun drops a single
+                    // `--` separator between the script name and them.
+                    const extra = args.slice(targetIdx + 1);
+                    if (extra[0] === '--')
+                        extra.shift();
+                    const command = extra.length ? `${pkgScript} ${extra.join(' ')}` : pkgScript;
+                    try {
+                        const shellResult = await shell.execute(command, {
+                            cwd: ctx.cwd,
+                            env: ctx.env,
+                            onStdout: (d) => ctx.stdout.write(d),
+                            onStderr: (d) => ctx.stderr.write(d),
+                        });
+                        return shellResult.exitCode;
+                    }
+                    catch (e) {
+                        ctx.stderr.write(`bun run: ${e?.message ?? String(e)}\n`);
+                        return 1;
+                    }
+                }
+                const resolved = resolveRuntimeScriptPath(kernelFs, cwd, target, {
+                    preferModuleField: true,
+                });
+                if (resolved === null) {
+                    ctx.stderr.write(pathShaped
+                        ? `error: Module not found "${target}"\n`
+                        : `error: Script not found "${target}"\n`);
                     return 1;
                 }
-                const pkgPath = normalizeVfsPath(ctx.cwd || '/home/user') + '/package.json';
-                let pkgScript;
-                try {
-                    const pkg = JSON.parse(kernelFs.readFileString(pkgPath));
-                    pkgScript = pkg.scripts?.[scriptName];
-                }
-                catch {
-                    ctx.stderr.write(`bun run: cannot read package.json at ${pkgPath}\n`);
-                    return 1;
-                }
-                if (!pkgScript) {
-                    ctx.stderr.write(`bun run: script "${scriptName}" not found in package.json\n`);
-                    return 1;
-                }
-                try {
-                    const shellResult = await shell.execute(pkgScript, {
-                        cwd: ctx.cwd,
-                        env: ctx.env,
-                        onStdout: (d) => ctx.stdout.write(d),
-                        onStderr: (d) => ctx.stderr.write(d),
-                    });
-                    return shellResult.exitCode;
-                }
-                catch (e) {
-                    ctx.stderr.write(`bun run: ${e?.message ?? String(e)}\n`);
-                    return 1;
-                }
+                return runAsBun([...args.slice(1, targetIdx), '/' + resolved, ...args.slice(targetIdx + 1)]);
             },
         },
     };
