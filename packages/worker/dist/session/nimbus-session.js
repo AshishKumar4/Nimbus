@@ -42,7 +42,7 @@ import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState
 // sibling modules (-hib, -diag, -ws). The class file itself no longer
 // references any storage key directly.
 // S4: W9 hibernation surface extracted.
-import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen, flushOnClose as _w9DoFlushOnClose, } from './hibernation.js';
+import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, scheduleAlarm as _w9ScheduleAlarm, maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen, flushOnClose as _w9DoFlushOnClose, } from './hibernation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -502,7 +502,17 @@ export class NimbusSession extends CloudflareDurableObject {
      * orphan-pid predicate so we close over the process supervisor here.
      */
     async alarm() {
-        return _w9DoDispatchAlarm(this, this.ctx, _rpc._logJanitorOrphanCheck(this));
+        return _w9DoDispatchAlarm(this, this.ctx, _rpc._logJanitorOrphanCheck(this), () => this.facetManager?.pumpResidentLaunches() ?? Promise.resolve());
+    }
+    /**
+     * Re-enter this object so a suspended resident launch can run its next
+     * chunk. An alarm at a deadline already past is delivered as soon as the
+     * object is free, which is precisely when the launch should resume — and
+     * it arrives as a new invocation, so the chunk runs against a fresh CPU
+     * budget rather than the one the launch has already been spending.
+     */
+    _scheduleLaunchTurn() {
+        return _w9ScheduleAlarm(this, this.ctx, 'resident-launch', Date.now());
     }
     /** W9: increment + persist isolate-gen counter once per fresh isolate. */
     async _w9MaybeBumpIsolateGen() {
@@ -843,6 +853,7 @@ export class NimbusSession extends CloudflareDurableObject {
         if (!this.facetManager) {
             this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
+                requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
                 onSpawn: (pid, command, longRunning) => {
                     const attachedTty = this.processes.get(pid)?.attachedTty === true;
                     if (longRunning) {

@@ -109,7 +109,7 @@ export declare function ensureHibSchema(host: HibHost, ctx: any): void;
  * drops unknown reasons so a rollback from a future deploy that added
  * new reasons doesn't leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch';
 /**
  * W1: schedule (or re-schedule) an alarm reason. Coordinated via a
  * single map in DO storage so multiple subsystems (W9 debounced flush +
@@ -161,7 +161,7 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  *
  * Forward/back-compat: unknown reasons silently dropped.
  */
-export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanCheck?: (pid: number) => boolean): Promise<void>;
+export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanCheck?: (pid: number) => boolean, pumpResidentLaunches?: () => Promise<void>): Promise<void>;
 /** W9: increment + persist isolate-gen counter once per fresh isolate. */
 export declare function maybeBumpIsolateGen(host: HibHost, ctx: any): Promise<void>;
 /**
