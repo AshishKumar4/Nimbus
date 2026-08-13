@@ -20,3 +20,12 @@ export type {
   SqlValue,
   TransactionHost,
 } from './runtime/os-contracts.js';
+export { localFacetHost } from './runtime/local-facet-host.js';
+export type {
+  Facet,
+  FacetBindings,
+  FacetFn,
+  FacetHost,
+  FacetSpec,
+  FacetSubmitOptions,
+} from './runtime/facet-host.js';

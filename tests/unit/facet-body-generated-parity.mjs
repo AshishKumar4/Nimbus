@@ -4,7 +4,7 @@
 // The WASI shim (runtime/wasi/preamble.ts) and the bash scheduler
 // (runtime/bash/preamble.ts) are real, type-checked modules. What actually
 // ships is the STRING scripts/bundle-facet-workers.mjs esbuilds out of them
-// into runtime/wasi-instance.generated.ts and runtime/bash-runner.generated.ts,
+// into core's runtime/wasi-instance.generated.ts and runtime/bash-runner.generated.ts,
 // which the runners splice into their facet module sources.
 //
 // Both generated files are tracked, so an edit to a preamble without re-running
@@ -26,7 +26,7 @@ import {
   bundleWasiInstance,
 } from '../../packages/worker/scripts/bundle-facet-workers.mjs';
 import { WASI_INSTANCE_BODY_SRC } from '../../packages/core/src/runtime/wasi-instance.generated.ts';
-import { BASH_RUNNER_BODY_SRC } from '../../packages/worker/src/runtime/bash-runner.generated.ts';
+import { BASH_RUNNER_BODY_SRC } from '../../packages/core/src/runtime/bash-runner.generated.ts';
 
 const cases = [
   {
@@ -39,7 +39,7 @@ const cases = [
   {
     label: 'bash scheduler',
     source: 'packages/core/src/runtime/bash/preamble.ts',
-    generated: 'packages/worker/src/runtime/bash-runner.generated.ts',
+    generated: 'packages/core/src/runtime/bash-runner.generated.ts',
     committed: BASH_RUNNER_BODY_SRC,
     rebuild: bundleBashRunner,
   },

@@ -36,10 +36,10 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
-import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { parseFacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
+import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
+import { CRED_KERNEL } from './os-contracts.js';
+import { parseFacetBundleProfile } from './bundle-profile.js';
+import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 /** Extensions probed when a target names no exact file, in Node's order. */
 const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
 /**
@@ -78,12 +78,11 @@ export function resolveRuntimeScriptPath(fs, cwd, target, opts) {
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
  *
- * Captures `vfs`, `facetMgr`, `esbuild`, `getEsbuild` (for lazy init)
- * + the spec. The same factory is used for every runtime; the only
+ * Captures `vfs`, `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
  * runtime-specific code lives in `spec`.
  */
 export function buildRuntimeHandler(spec, ctx0) {
-    const { vfs, facetMgr, getEsbuild, registry } = ctx0;
+    const { vfs, getEsbuild, registry } = ctx0;
     const fs = vfs.as(CRED_KERNEL);
     /**
      * The standard invocation: flag span, --version/--help/-e, then the
@@ -144,7 +143,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(`${name}: -e requires an argument\n`);
                 return 1;
             }
-            const result = await spec.run(facetMgr, code, {
+            const result = await spec.run(code, {
                 cred: ctx.cred,
                 argv: args.slice(evalIdx + 2),
                 env: ctx.env,
@@ -181,7 +180,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 : '/';
             // `args.slice(scriptIdx + 1)` are the runner's user args (e.g.
             // [exportName, intArg1, intArg2, ...] for wasm-runner).
-            const result = await spec.run(facetMgr, '', {
+            const result = await spec.run('', {
                 cred: ctx.cred,
                 argv: args.slice(scriptIdx + 1),
                 env: ctx.env,
@@ -324,7 +323,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // supports it (currently node only).
         const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
         const leadingFlags = args.slice(0, scriptIdx);
-        const result = await spec.run(facetMgr, code, {
+        const result = await spec.run(code, {
             cred: ctx.cred,
             argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
             env: ctx.env,

@@ -1,5 +1,6 @@
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import { createBashFacetSession } from './bash-runner.js';
+import { createBashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
+import { facetHostForManager } from './facet-loader-host.js';
 import { ReplSession, } from './repl-session.js';
 class BashReplAdapter {
     deps;
@@ -49,7 +50,7 @@ class BashReplAdapter {
         if (this.session)
             return null;
         this.session = await createBashFacetSession({
-            facetMgr: this.deps.facetMgr,
+            facets: facetHostForManager(this.deps.facetMgr),
             vfs: this.deps.vfs.as(this.deps.cred),
             manifest: this.deps.manifest,
             installRoot: this.deps.installRoot,

@@ -5,7 +5,8 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, listInstalledRuntimes, } from '../runtime/package-manager.js';
+import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, } from '../runtime/package-manager.js';
+import { listInstalledRuntimes, } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';

@@ -60,6 +60,19 @@ export declare const W1_NEXT_ALARM_REASONS_KEY = "w1_next_alarm_reasons";
  * metadata is the deliberate cost of keeping destroyed sessions inert.
  */
 export declare const SESSION_DESTROYED_KEY = "session_destroyed";
+/**
+ * Prefix for the resident-launch journal: one row per launch in flight, keyed
+ * by the pid it is building for.
+ *
+ * A launch spans many turns and holds its state in memory, so an instance
+ * reset destroys it silently — the process, the terminal and the work all go
+ * with the object. The row is what a LATER instance reads to know a launch
+ * ended that way rather than by finishing: a pid at or below the reader's own
+ * pid base was allocated by a previous generation (see PID_GEN_STRIDE).
+ * Written before the launch's first byte of work and removed when it settles,
+ * so a row that outlives its instance is exactly an interrupted launch.
+ */
+export declare const RESIDENT_LAUNCH_KEY_PREFIX = "resident-launch:";
 /** Prefix for consumed single-use attach bootstrap token ids (`jti`).
  *  Written set-if-absent by `_rpcConsumeAttachBootstrap` on the attach
  *  exchange; an existing row means the bootstrap URL was replayed.

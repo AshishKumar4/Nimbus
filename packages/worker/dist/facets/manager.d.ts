@@ -573,6 +573,16 @@ export interface FacetManagerHooks {
      * a fresh CPU budget, and a launch needs each for a different reason.
      */
     requestLaunchTurn?: () => void;
+    /**
+     * Put a line in front of the user, whether or not a terminal is attached.
+     *
+     * Distinct from writing to a process's output: what this reports happened to
+     * the SESSION, and the socket that would have shown it is typically the one
+     * the event destroyed. The session satisfies it with the live terminal when
+     * there is one and the persisted scrollback when there is not, so the line
+     * survives until someone reconnects to read it.
+     */
+    notify?: (line: string) => void;
 }
 export interface LongRunningWorkerSpawnOptions {
     port?: number;
@@ -634,10 +644,14 @@ export declare class FacetManager {
      *
      * In-memory on purpose: a launch is only meaningful while the process table
      * entry it is building for exists, and both are lost together if the isolate
-     * resets. Persisting the queue would resurrect launches for pids that no
-     * longer exist.
+     * resets. What survives a reset is the journal, which names the launch's
+     * INPUTS rather than its position — a resumed queue would be resurrecting
+     * half-built work for pids that no longer exist, where re-driving a launch
+     * from its inputs is the same idempotent work again.
      */
     private launchWaiters;
+    /** Whether this instance has already read the journal a reset leaves behind. */
+    private launchesRecovered;
     private timedOutProcessIds;
     private _pairedServeFacet;
     /**
@@ -979,6 +993,31 @@ export declare class FacetManager {
      * the runtime may tear the context down mid-chunk.
      */
     pumpResidentLaunches(): Promise<void>;
+    /**
+     * Re-drive the launches a previous instance was building when it was reset.
+     *
+     * The platform resets a session Durable Object over what one turn has
+     * outstanding in storage ("Internal error in Durable Object storage caused
+     * object to be reset"), and a launch is the largest writer this session has.
+     * Everything the launch held was in memory, so the process it was building
+     * and the terminal watching it both went with the instance, and until now
+     * the user was told nothing at all.
+     *
+     * Sited on the pump because the pump is what an alarm calls, and a launch
+     * that was suspended has an alarm armed for it — a reset during a chunk
+     * fails that alarm, and the platform re-delivers it to the instance that
+     * replaces this one. So the first turn after a reset is already this one.
+     *
+     * Runs once per instance: the journal only changes when a launch of THIS
+     * instance starts or settles, and those are rows this instance wrote.
+     */
+    private _recoverInterruptedLaunches;
+    /**
+     * Record a launch as in flight, so an instance that replaces this one knows
+     * it never finished. Best-effort: a launch that cannot be journalled still
+     * runs, and a reset then costs exactly what it cost before the journal.
+     */
+    private _journalLaunch;
     /** Whether any launch is suspended waiting for a turn. */
     get hasPendingLaunchTurns(): boolean;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -1024,6 +1063,12 @@ export declare class FacetManager {
     spawnNode(code: string, opts?: ResidentSpawnOptions): Promise<{
         pid: number;
     }>;
+    /**
+     * `attempt` distinguishes the launch the user asked for from the one re-drive
+     * an instance reset earns it, and is carried in the journal rather than in
+     * the caller's options because no caller has an opinion about it.
+     */
+    private _spawnResident;
     /**
      * Build and boot a resident process across as many turns as it takes.
      *

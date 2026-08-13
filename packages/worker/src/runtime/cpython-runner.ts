@@ -65,7 +65,7 @@ import {
   type PythonPipRuntimeContext,
   sessionUsesSciVariant,
 } from './python-pip.js';
-import type { RuntimeManifest } from './runtime-catalog.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';

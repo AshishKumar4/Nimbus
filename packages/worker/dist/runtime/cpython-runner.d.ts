@@ -49,7 +49,7 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { RuntimeManifest } from './runtime-catalog.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 /**
  * The one canonical facet preamble. Composed in exactly one place: a
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose

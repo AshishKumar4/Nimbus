@@ -3,7 +3,7 @@ import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { RuntimeManifest } from './runtime-catalog.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 export interface BashReplDeps {
     facetMgr: FacetManager;
     vfs: SqliteVFS;

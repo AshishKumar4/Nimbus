@@ -5,7 +5,7 @@ import { buildPipInvocation } from '../../packages/worker/src/runtime/python-pip
 import {
   isRuntimePythonPackageArtifactMetadata,
   parseRuntimeManifest,
-} from '../../packages/worker/src/runtime/runtime-catalog.ts';
+} from '../../packages/core/src/runtime/runtime-manifest.ts';
 
 class FakeVfs {
   constructor(files = {}, deniedPaths = []) {

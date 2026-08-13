@@ -15,17 +15,9 @@
  * Catalog schema (RuntimeCatalog):
  *   { version: 1, runtimes: { <name>: { default, versions: { <ver>: { manifest, manifest_sha256, size_bytes, license } } } } }
  *
- * Manifest schema (RuntimeManifest):
- *   { name, version, license, wasi_namespace,
- *     files: [{ path, content, sha256, size, mode? }],
- *     entrypoints: [{ binName, runner, args[], kind? }],
- *     runtime_artifacts?: [
- *       { path, kind: "workerd-adapter", id, source_sha256?, sha256 },
- *       { path, kind: "python-package", id, language: "python", packageName,
- *         version, abi, pyodideVersion, pythonVersion, wheelFileName,
- *         wheelSha256, loadMode: "startup-module", imports[], dependencies[],
- *         extensionModules[] }
- *     ] }
+ * Manifest schema: `@nimbus-sh/core` runtime/runtime-manifest.ts. What a
+ * runtime IS does not depend on which tier served it, so this module only
+ * fetches and verifies manifests; it does not describe them.
  *
  * R2 and Cache API failures throw; the shell verb formats the diagnostic for
  * the user.
@@ -56,8 +48,7 @@
 import { z } from 'zod/v4';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
-import { PYODIDE_PACKAGE_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
-const HexSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+import { HexSha256Schema, parseRuntimeManifest, } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 const CatalogVersionEntrySchema = z.object({
     manifest: z.string().min(1),
     manifest_sha256: HexSha256Schema.optional(),
@@ -71,62 +62,8 @@ const RuntimeCatalogSchema = z.object({
         versions: z.record(z.string(), CatalogVersionEntrySchema),
     })),
 });
-const ManifestFileSchema = z.object({
-    path: z.string().min(1),
-    content: z.string().min(1),
-    sha256: HexSha256Schema,
-    size: z.number().int().nonnegative(),
-    mode: z.literal('exec').optional(),
-});
-const ManifestEntrypointSchema = z.object({
-    binName: z.string().min(1),
-    runner: z.string().min(1),
-    args: z.array(z.string()),
-    kind: z.string().optional(),
-});
-const RuntimeArtifactMetadataSchema = z.object({
-    path: z.string().min(1),
-    kind: z.string().min(1),
-    id: z.string().min(1),
-    source_sha256: HexSha256Schema.optional(),
-    sha256: HexSha256Schema,
-}).passthrough();
-export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(z.object({
-    kind: z.literal('python-package'),
-    language: z.literal('python'),
-    packageName: z.string().min(1),
-    version: z.string().min(1),
-    abi: z.literal(PYODIDE_PACKAGE_ABI),
-    pyodideVersion: z.string().min(1),
-    pythonVersion: z.string().min(1),
-    wheelFileName: z.string().min(1),
-    wheelSha256: HexSha256Schema,
-    loadMode: z.literal('startup-module'),
-    imports: z.array(z.string()),
-    dependencies: z.array(z.string()),
-    extensionModules: z.array(z.object({
-        path: z.string().min(1),
-        runtimePath: z.string().min(1),
-        sha256: HexSha256Schema,
-    })),
-}));
-const RuntimeManifestSchema = z.object({
-    name: z.string().min(1),
-    version: z.string().min(1),
-    license: z.string(),
-    wasi_namespace: z.string().nullable(),
-    files: z.array(ManifestFileSchema),
-    entrypoints: z.array(ManifestEntrypointSchema),
-    runtime_artifacts: z.array(RuntimeArtifactMetadataSchema).optional(),
-});
 export function parseRuntimeCatalog(value) {
     return RuntimeCatalogSchema.parse(value);
-}
-export function parseRuntimeManifest(value) {
-    return RuntimeManifestSchema.parse(value);
-}
-export function isRuntimePythonPackageArtifactMetadata(artifact) {
-    return RuntimePythonPackageArtifactMetadataSchema.safeParse(artifact).success;
 }
 // ── L2 content addressing ────────────────────────────────────────────
 /** R2 key of the top-level catalog. */

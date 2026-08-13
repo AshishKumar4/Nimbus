@@ -11,9 +11,9 @@
  * mechanisms) as a facet preamble.
  *
  * Architecture (mirrors ruby-runner's facet dispatch):
- *  - bash.async.wasm + the coreutil exec targets ride the LOADER
- *    modules map (compiled by workerd at module-load; exposed on
- *    globalThis.__NIMBUS_WASM).
+ *  - bash.async.wasm + the coreutil exec targets ship through the facet
+ *    host, which compiles them and exposes them on
+ *    globalThis.__NIMBUS_WASM.
  *  - The preamble defines __bashBoot / __bashFeed. Boot instantiates
  *    bash, pumps the scheduler until the process tree exits or the
  *    root parks on a terminal stdin read; each feed delivers stdin
@@ -22,18 +22,17 @@
  *  - stdout/stderr accumulate per pump slice and stream back to the
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
-import type { RuntimeManifest } from './runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FacetManager } from '../facets/manager.js';
-import type { Command, CommandContext, CommandInputStream } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import type { RuntimeManifest } from './runtime-manifest.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { Facet, FacetHost } from './facet-host.js';
+import type { Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
-import type { WasiFsDiff } from '@nimbus-sh/core/runtime/vfs-snapshot.js';
-import type { BashBootArgs, BashFeedArgs, BashSlice } from '@nimbus-sh/core/runtime/bash/types.js';
+import type { WasiFsDiff } from './vfs-snapshot.js';
+import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
-import { flushVfsDiff, snapshotVfs } from '@nimbus-sh/core/runtime/vfs-snapshot.js';
-import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { getFacetManagerLoaderHost } from './facet-loader-host.js';
+import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
+import { requireVfsCred } from './os-contracts.js';
+import { resolveVfsPath } from '../vfs/path.js';
 
 type BashRunnerFactory = (
   manifest: RuntimeManifest,
@@ -101,7 +100,7 @@ export interface BashFacetSession {
 }
 
 export async function createBashFacetSession(deps: {
-  facetMgr: FacetManager;
+  facets: FacetHost;
   vfs: CredentialedVfs;
   manifest: RuntimeManifest;
   installRoot: string;
@@ -156,12 +155,12 @@ export async function createBashFacetSession(deps: {
       .filter(Boolean)
     : [];
 
-  const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-  const { env, ctx } = getFacetManagerLoaderHost(deps.facetMgr);
-  const pool = new NimbusLoaderPool(env, ctx, {
+  const facet: Facet = deps.facets.open({
     tag: 'bash-runner',
     concurrency: 1,
-    omitSupervisor: true,
+    // No supervisor capability: bash is seeded with its subtree by value and
+    // hands the whole mutation back as a diff on exit, so it makes no syscall
+    // into the session while it runs.
     preamble: BASH_RUNNER_PREAMBLE,
     wasmModules,
   });
@@ -170,7 +169,7 @@ export async function createBashFacetSession(deps: {
   let closed = false;
   const submit = async (args: BashStepArgs): Promise<BashSlice> => {
     const slice = normalizeSlice(
-      await pool.submit<BashStepArgs, unknown>(bashFacetStep, args, { timeoutMs: 300_000 }),
+      await facet.submit<BashStepArgs, unknown>(bashFacetStep, args, { timeoutMs: 300_000 }),
     );
     if (!slice) throw new Error('facet returned an invalid payload');
     if (slice.state === 'exited') {
@@ -209,12 +208,12 @@ export async function createBashFacetSession(deps: {
           // reports dispatch failures from boot/push.
         } finally {
           closed = true;
-          pool.dispose();
+          facet.dispose();
         }
       },
     };
   } catch (error: unknown) {
-    pool.dispose();
+    facet.dispose();
     throw error;
   }
 }
@@ -247,7 +246,7 @@ function findScriptArgIndex(argv: string[]): number {
 }
 
 export function makeBashRunnerFactory(deps: {
-  facetMgr: FacetManager;
+  facets: FacetHost;
   vfs: SqliteVFS;
 }): BashRunnerFactory {
   return function bashRunnerFactory(manifest, installRoot, binName, _binKind) {
@@ -294,7 +293,7 @@ export function makeBashRunnerFactory(deps: {
       let session: BashFacetSession | null = null;
       try {
         session = await createBashFacetSession({
-          facetMgr: deps.facetMgr,
+          facets: deps.facets,
           vfs,
           manifest,
           installRoot,
@@ -338,9 +337,9 @@ export function makeBashRunnerFactory(deps: {
 }
 
 /**
- * Source string injected as the loader-pool `preamble`. The facet's module init
- * evaluates it verbatim so `__bashBoot` / `__bashFeed` are in scope when the
- * user fn runs. Self-contained — no closure captures, no imports.
+ * Source string injected as the facet `preamble`. The facet's scope evaluates
+ * it verbatim so `__bashBoot` / `__bashFeed` are in scope when the user fn
+ * runs. Self-contained — no closure captures, no imports.
  *
  * The scheduler itself lives in `bash/preamble.ts` as real TypeScript; the build
  * bundles it into `bash-runner.generated.ts`.

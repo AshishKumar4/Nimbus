@@ -207,6 +207,24 @@ export declare class NimbusSession extends CloudflareDurableObject {
      */
     alarm(): Promise<void>;
     /**
+     * Grant the fresh turn a suspended launch asked for.
+     *
+     * The session is stood up first because of the case where it is NOT already:
+     * an instance reset out from under a launch leaves the re-delivered alarm as
+     * the first thing to run on its replacement, and the launch that alarm
+     * recovers needs a filesystem to be re-driven onto. In every other case both
+     * calls are the no-ops they look like — the alarm reason only exists while a
+     * launch of this instance is suspended.
+     */
+    private _pumpResidentLaunches;
+    /**
+     * Put a line in front of the user. Written to the live terminal when there
+     * is one — which tees it to scrollback — and straight to scrollback when
+     * there is not, because what this reports is typically what closed the
+     * socket that would have shown it.
+     */
+    private _notifySession;
+    /**
      * Re-enter this object so a suspended resident launch can run its next
      * chunk. An alarm at a deadline already past is delivered as soon as the
      * object is free, which is precisely when the launch should resume — and
@@ -378,7 +396,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         force?: boolean;
     }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
     _rpcListRuntimes(): Promise<{
-        installed: import("../runtime/package-manager.js").RuntimeSummary[];
+        installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
         available: {
             name: string;
             abi: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimePackageAbi;

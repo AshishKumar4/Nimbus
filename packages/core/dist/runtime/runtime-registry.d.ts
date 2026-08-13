@@ -36,11 +36,10 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
-import type { FacetManager } from '../facets/manager.js';
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type VfsCred } from './os-contracts.js';
+import type { EsbuildService } from './esbuild-service.js';
+import { type FacetBundleProfile } from './bundle-profile.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -107,11 +106,13 @@ export interface RuntimeSpec {
     /** Multi-line help text for `<name> --help`. */
     helpText: string;
     /**
-     * Runner function. Usually wraps facetMgr.exec / facetMgr.spawn.
-     * For native-WASM, this is a thin WebAssembly.instantiate +
-     * function-call helper.
+     * Runner function. Closes over whatever substrate the runtime executes on —
+     * a FacetManager for node and bun, a {@link ./facet-host.js FacetHost} for
+     * wasm-runner — because this factory never inspects it. It used to travel
+     * through here as a first parameter, which is the only thing that tied the
+     * shared handler to a Durable Object.
      */
-    run(facetMgr: FacetManager, code: string, opts: RuntimeRunOpts): Promise<RuntimeRunResult>;
+    run(code: string, opts: RuntimeRunOpts): Promise<RuntimeRunResult>;
     /**
      * Subcommand router. When the first positional arg is a key in
      * this map, the handler is invoked instead of the standard
@@ -147,13 +148,11 @@ export interface ShellRegistry {
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
  *
- * Captures `vfs`, `facetMgr`, `esbuild`, `getEsbuild` (for lazy init)
- * + the spec. The same factory is used for every runtime; the only
+ * Captures `vfs`, `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
  * runtime-specific code lives in `spec`.
  */
 export declare function buildRuntimeHandler(spec: RuntimeSpec, ctx0: {
     vfs: SqliteVFS;
-    facetMgr: FacetManager;
     /** Lazy esbuild initialiser. Called once per first .ts/.tsx/.jsx
      *  invocation — the host owns the init lifecycle. */
     getEsbuild(): EsbuildService;

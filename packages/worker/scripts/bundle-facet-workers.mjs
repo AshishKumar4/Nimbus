@@ -36,7 +36,7 @@
  *       VIRTUAL_SOCKET_KERNEL_SRC: string
  *   @nimbus-sh/core src/runtime/wasi-instance.generated.ts — exports
  *       WASI_INSTANCE_BODY_SRC: string
- *   src/runtime/bash-runner.generated.ts — exports
+ *   @nimbus-sh/core src/runtime/bash-runner.generated.ts — exports
  *       BASH_RUNNER_BODY_SRC: string
  *
  * Runs as a postinstall + predev + predeploy step via package.json.
@@ -362,7 +362,7 @@ async function main() {
   ].join('\n'));
 
   const bashSrc = await bundleBashRunner();
-  const bashOutPath = join(root, 'src', 'runtime', 'bash-runner.generated.ts');
+  const bashOutPath = join(coreRoot, 'src', 'runtime', 'bash-runner.generated.ts');
   writeFileSync(bashOutPath, [
     '/**',
     ' * bash-runner.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
@@ -372,7 +372,7 @@ async function main() {
     ' *',
     ' * The facet-side bash scheduler as a self-contained IIFE that installs',
     ' * globalThis.__bashBoot / globalThis.__bashFeed. bash-runner.ts re-exports it',
-    ' * as BASH_RUNNER_PREAMBLE and passes it as the loader-pool preamble.',
+    ' * as BASH_RUNNER_PREAMBLE and passes it as the facet preamble.',
     ' *',
     ` * Size: ${(bashSrc.length / 1024).toFixed(2)} KiB`,
     ' */',

@@ -8,11 +8,13 @@
 
 import assert from 'node:assert/strict';
 import {
-  RUNTIME_EXTRA_ENTRYPOINTS,
   createRuntimeCommandHintResolver,
   installRuntimeProgrammatic,
-  registerRunnerFactory,
 } from '../../packages/worker/src/runtime/package-manager.ts';
+import {
+  RUNTIME_EXTRA_ENTRYPOINTS,
+  registerRunnerFactory,
+} from '../../packages/core/src/runtime/installed-runtimes.ts';
 import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contracts.ts';
 
 // ── 1. Mechanical validation against the runtime catalog contracts ─────

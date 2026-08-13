@@ -12,7 +12,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { BASH_RUNNER_PREAMBLE } from '../../../packages/worker/src/runtime/bash-runner.ts';
+import { BASH_RUNNER_PREAMBLE } from '../../../packages/core/src/runtime/bash-runner.ts';
 
 const wasmDir = fileURLToPath(new URL('../../../packages/worker/wasm/bash/', import.meta.url));
 
