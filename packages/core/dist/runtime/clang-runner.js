@@ -12,8 +12,8 @@
  * The filesystem both halves see is the one WASI layer every other
  * non-node runtime uses (wasi-instance.ts), seeded and sealed.
  *
- * Splitting compile and link into separate LOADER calls keeps each
- * call under the empirical loader payload ceiling. Each ships:
+ * Splitting compile and link into separate facet calls keeps each
+ * call under the empirical payload ceiling. Each ships:
  *
  *   - compile: 31 MiB clang.wasm + ~1.3 MiB sysroot subset (C includes).
  *   - link   : 19 MiB lld.wasm + ~0.75 MiB libs + tiny .o.
@@ -25,14 +25,13 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { hasLeadingCliFlag } from '@nimbus-sh/core/runtime/cli-flags.js';
-import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { resolveVfsPath } from '../vfs/path.js';
+import { hasLeadingCliFlag } from './cli-flags.js';
+import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
-/** Build the runner factory. Closes over facetMgr + vfs. */
+/** Build the runner factory. Closes over the facet host + vfs. */
 export function makeClangRunnerFactory(deps) {
-    const { facetMgr } = deps;
     const runtimeVfs = deps.vfs.as(CRED_KERNEL);
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
@@ -44,7 +43,7 @@ export function makeClangRunnerFactory(deps) {
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
         let runtimePromise = null;
         return async function clangBinHandler(ctx) {
-            const vfs = deps.vfs.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName));
+            const vfs = deps.vfs.as(requireVfsCred(ctx.cred, binName));
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
             // Fast paths — no wasm boot.
@@ -118,7 +117,7 @@ export function makeClangRunnerFactory(deps) {
             let runtime;
             try {
                 if (!runtimePromise) {
-                    runtimePromise = createClangFacetRuntime(facetMgr, {
+                    runtimePromise = createClangFacetRuntime(deps.facets, {
                         clangVfsPath,
                         lldVfsPath,
                         sysrootVfsPath,
@@ -129,7 +128,7 @@ export function makeClangRunnerFactory(deps) {
             }
             catch (e) {
                 runtimePromise = null;
-                ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${e?.message || e}\n`);
+                ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorMessage(e)}\n`);
                 return 1;
             }
             // Walk the user's cwd to gather headers (.h/.hpp/.hxx/.inc/...)
@@ -657,7 +656,7 @@ function filterSysrootForLink(all) {
     }
     return out;
 }
-async function createClangFacetRuntime(facetMgr, args) {
+async function createClangFacetRuntime(facets, args) {
     if (!args.clangVfsPath || !args.lldVfsPath || !args.sysrootVfsPath) {
         throw new Error('installed clang manifest is missing required files');
     }
@@ -677,17 +676,20 @@ async function createClangFacetRuntime(facetMgr, args) {
     const clangBytes = args.vfs.readFileUncached(args.clangVfsPath);
     const lldBytes = args.vfs.readFileUncached(args.lldVfsPath);
     const sysroot = parseUstar(args.vfs.readFileUncached(args.sysrootVfsPath));
-    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-    const env = facetMgr.env;
-    const ctx = facetMgr.ctx;
     const makeTarget = (primaryName, primaryBytes, sysrootFiles) => ({
         primaryName,
         sysrootFiles,
-        pool: new NimbusLoaderPool(env, ctx, {
+        facet: facets.open({
             tag: `clang-runner-${primaryName}`,
             concurrency: 1,
-            omitSupervisor: true,
-            cacheScope: 'global',
+            // No `syscalls`: the toolchain is sealed. It sees the sysroot subset and
+            // the translation unit it was handed, and the outputs are read back out
+            // of that filesystem — a compile cannot reach the session at all.
+            //
+            // Which is also why one warm facet may serve every tenant: with nothing
+            // of the session in it and nothing kept between calls, `clang main.c` is
+            // the same compile whoever asks.
+            reuse: 'global',
             preamble: CLANG_RUNNER_PREAMBLE,
             wasmModules: { 'primary.wasm': toAB(primaryBytes) },
         }),
@@ -705,7 +707,8 @@ async function dispatchClangFacet(target, args) {
         filesB64[path] = uint8ToBase64(bytes);
     }
     const facetFn = async function clangFacetCall(inArgs) {
-        const primaryMod = (globalThis.__NIMBUS_WASM || {})['primary.wasm'];
+        const wasm = Reflect.get(globalThis, '__NIMBUS_WASM');
+        const primaryMod = wasm?.['primary.wasm'];
         if (!primaryMod) {
             return {
                 exitCode: 127, stdout: '', stderr: '',
@@ -713,7 +716,7 @@ async function dispatchClangFacet(target, args) {
                 error: 'clang-runner: __NIMBUS_WASM missing primary.wasm',
             };
         }
-        const fn = globalThis.__clangRun;
+        const fn = Reflect.get(globalThis, '__clangRun');
         if (typeof fn !== 'function') {
             return {
                 exitCode: 127, stdout: '', stderr: '',
@@ -730,7 +733,7 @@ async function dispatchClangFacet(target, args) {
         });
     };
     try {
-        const result = await target.pool.submit(facetFn, {
+        const result = await target.facet.submit(facetFn, {
             primaryName: target.primaryName,
             argv: args.argv,
             filesB64,
@@ -740,14 +743,12 @@ async function dispatchClangFacet(target, args) {
         });
         // Decode outputFiles from base64 → Uint8Array.
         const outputFiles = {};
-        if (result.outputFiles) {
-            for (const [path, b64] of Object.entries(result.outputFiles)) {
-                const bin = atob(b64);
-                const u8 = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++)
-                    u8[i] = bin.charCodeAt(i);
-                outputFiles[path] = u8;
-            }
+        for (const [path, b64] of Object.entries(result.outputFiles || {})) {
+            const bin = atob(b64);
+            const u8 = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++)
+                u8[i] = bin.charCodeAt(i);
+            outputFiles[path] = u8;
         }
         return {
             exitCode: result.exitCode,
@@ -763,7 +764,7 @@ async function dispatchClangFacet(target, args) {
             stdout: '',
             stderr: '',
             outputFiles: {},
-            error: `clang-runner dispatch failed: ${e?.message || e}`,
+            error: `clang-runner dispatch failed: ${errorMessage(e)}`,
         };
     }
 }

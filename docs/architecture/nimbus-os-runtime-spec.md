@@ -32,16 +32,18 @@ Important source areas:
 | Durable Object session | `packages/worker/src/session/nimbus-session.ts` |
 | Programmatic sandbox RPC | `packages/worker/src/session/programmatic.ts` |
 | SDK sandbox handle | `packages/sdk/src/sandbox.ts` |
-| SQLite VFS | `packages/worker/src/vfs/sqlite-vfs.ts` |
+| SQLite VFS | `packages/core/src/vfs/sqlite-vfs.ts` |
 | VFS event bus and browser file watch | `packages/worker/src/session/fs-watch.ts` |
 | Runtime package manager | `packages/worker/src/runtime/package-manager.ts` |
-| Runtime OS contracts | `packages/worker/src/runtime/os-contracts.ts` |
-| SQLite runtime FS bridge | `packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts` |
+| Runtime OS contracts | `packages/core/src/runtime/os-contracts.ts` |
+| SQLite runtime FS bridge | `packages/core/src/runtime/sqlite-runtime-fs-bridge.ts` |
 | WASI/POSIX shim | `packages/worker/src/runtime/wasi/preamble.ts` (bundled into the facet payload at build time; `wasi-instance.ts` re-exports the result) |
 | Node compatibility shims | `packages/worker/src/runtime/node-shims.ts` |
-| Python runner | `packages/worker/src/runtime/python-runner.ts` |
-| Ruby runner | `packages/worker/src/runtime/ruby-runner.ts` |
-| Preview port registry | `packages/worker/src/runtime/port-registry.ts` |
+| Python runner | `packages/core/src/runtime/cpython-runner.ts`, with its resident half in `packages/worker/src/runtime/cpython-resident.ts` |
+| Ruby runner | `packages/core/src/runtime/ruby-runner.ts`, with its resident half in `packages/worker/src/runtime/ruby-resident.ts` |
+| Preview port registry | `packages/core/src/runtime/port-registry.ts` |
+| C toolchain runner | `packages/core/src/runtime/clang-runner.ts` |
+| Where a compiled program runs | `packages/core/src/runtime/facet-host.ts`, over `local-facet-host.ts` off Cloudflare and `packages/worker/src/runtime/facet-loader-host.ts` on it |
 
 External platform constraints checked for this spec:
 

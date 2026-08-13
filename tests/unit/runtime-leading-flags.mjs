@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { makeClangRunnerFactory } from '../../packages/worker/src/runtime/clang-runner.ts';
-import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
+import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 
 function outputContext(args) {
   let stdout = '';
@@ -21,6 +21,14 @@ function outputContext(args) {
   };
 }
 
+// A missing install is refused before anything is compiled, so a host that
+// throws on use proves the refusal happened first.
+const unreachableFacets = {
+  parking: 'none',
+  seedFilesystem() { throw new Error('the runtime is missing — nothing may be seeded'); },
+  open() { throw new Error('the runtime is missing — nothing may be opened'); },
+};
+
 const missingRuntimeVfs = {
   as() { return this; },
   exists: () => false,
@@ -32,7 +40,7 @@ const missingRuntimeVfs = {
     files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
   };
   const runRuby = makeRubyRunnerFactory({
-    facetMgr: {},
+    facets: unreachableFacets,
     vfs: missingRuntimeVfs,
   })(manifest, '/runtime/ruby', 'ruby', undefined);
   const invocation = outputContext(['script.rb', '--version']);
@@ -50,7 +58,7 @@ const missingRuntimeVfs = {
     ],
   };
   const runClang = makeClangRunnerFactory({
-    facetMgr: {},
+    facets: unreachableFacets,
     vfs: missingRuntimeVfs,
   })(manifest, '/runtime/clang', 'clang', undefined);
   const invocation = outputContext(['main.c', '--version']);

@@ -10,10 +10,8 @@ import { serializeFunction } from '../../packages/worker/src/loaders/vendor/seri
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import { parseJavaScriptModule } from '../../packages/core/src/runtime/javascript-ast.ts';
 import { buildCPythonPreamble } from '../../packages/core/src/runtime/cpython-runner.ts';
-import {
-  buildRubyPreamble,
-  buildRubySocketProcessWorker,
-} from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { buildRubyPreamble } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
 
 const facetWorkers = [
   {

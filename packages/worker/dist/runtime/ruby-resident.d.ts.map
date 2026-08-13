@@ -1,0 +1,1 @@
+{"version":3,"file":"ruby-resident.d.ts","sourceRoot":"","sources":["../../src/runtime/ruby-resident.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;GAUG;AAGH,OAAO,EAIL,KAAK,iBAAiB,EACvB,MAAM,wCAAwC,CAAC;AAEhD,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,sBAAsB,CAAC;AAezD;;;GAGG;AACH,wBAAgB,iBAAiB,CAAC,QAAQ,EAAE,YAAY,GAAG,iBAAiB,CA8E3E;AAED,wBAAgB,4BAA4B,CAAC,QAAQ,EAAE,MAAM,GAAG,MAAM,CAiLrE"}

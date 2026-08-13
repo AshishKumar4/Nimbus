@@ -10,7 +10,7 @@
 
 import assert from 'node:assert';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
-import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const RUBY_RUNNER_SRC = join(
   dirname(fileURLToPath(import.meta.url)), '..', '..',
-  'packages', 'worker', 'src', 'runtime', 'ruby-runner.ts',
+  'packages', 'core', 'src', 'runtime', 'ruby-runner.ts',
 );
 
 const enc = new TextEncoder();

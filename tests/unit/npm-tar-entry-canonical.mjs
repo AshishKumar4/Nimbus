@@ -9,7 +9,7 @@
 // "successful" install.
 
 import assert from 'node:assert/strict';
-import { canonicalTarName, streamTarEntries, parseTarHeader } from '../../packages/worker/src/npm/tarball-stream.ts';
+import { canonicalTarName, streamTarEntries, parseTarHeader } from '../../packages/core/src/_shared/tarball-stream.ts';
 
 // ── canonicalTarName: collapse ./ and .. ; reject root escapes ──────────
 assert.equal(canonicalTarName('dist/index.js'), 'dist/index.js');

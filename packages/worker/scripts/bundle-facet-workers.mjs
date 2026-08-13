@@ -11,7 +11,8 @@
  *   into a self-contained source string at build time.
  *
  *   For the npm install facet we need the streaming tar parser
- *   (src/npm/tarball-stream.ts) available as a top-level named export
+ *   (@nimbus-sh/core src/_shared/tarball-stream.ts) available as a
+ *   top-level named export
  *   the user function can call. We esbuild-bundle that source file into
  *   a self-contained ES module string, and NimbusFacetPool's `preamble`
  *   option splices it into the generated module between the
@@ -261,7 +262,7 @@ async function bundleBashRunner() {
 async function main() {
   // 1. Tar-parser preamble (existing W2.5/W4 hot-path helpers).
   const tarStripped = await bundleAsPreamble(
-    join(root, 'src', 'npm', 'tarball-stream.ts'),
+    join(coreRoot, 'src', '_shared', 'tarball-stream.ts'),
     'tar-stream',
   );
 
@@ -289,7 +290,7 @@ async function main() {
     ' * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.',
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
-    ' *   - src/npm/tarball-stream.ts (streaming tar primitives)',
+    ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
     ' *   - @nimbus-sh/core src/_shared/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *',
     ' * Consumed by src/loaders/loader-pool.ts callers via the `preamble`',

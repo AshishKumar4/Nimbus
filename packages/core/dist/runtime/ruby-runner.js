@@ -17,10 +17,19 @@
  * `ruby` with no args is handled by the session-level ruby-repl wrapper;
  * this file owns args-bearing Ruby execution and Ruby package commands.
  *
- * Architecture: SAME LOADER-modules transport as python-runner / wasm-
- * runner. ruby+stdlib.wasm bytes ship via the LOADER `modules` map
- * (workerd compiles at child-facet module-init time, where CSP
- * permits). Per-user-VFS path: ~/.nimbus/runtimes/ruby/3.3.4/share/ruby/.
+ * Architecture: the interpreter runs in a FACET (runtime/facet-host.ts), and
+ * ruby+stdlib.wasm reaches it as a `wasmModules` entry the HOST compiles —
+ * because on workerd nothing else may. Per-user-VFS path:
+ * ~/.nimbus/runtimes/ruby/3.3.4/share/ruby/.
+ *
+ * Two things follow from that being a port rather than a Durable Object, and
+ * they are the whole of what is host-specific here:
+ *   - the seed is whatever `seedFilesystem` returned — a manifest the facet
+ *     demand-loads against where a guest can be parked mid-syscall, the bytes
+ *     themselves where it cannot. Nothing below branches on which it got.
+ *   - a program that keeps serving needs an actor to hold it, which is
+ *     {@link RubyResidentStart}: supplied on Cloudflare, absent elsewhere, and
+ *     where it is absent such a program is refused by name.
  *
  *   - Wasm size 34.3 MiB (well under empirical 32 MiB-ish per-call
  *     ceiling we cleared with Pyodide + clang).
@@ -34,15 +43,12 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import { z } from 'zod';
-import { hasLeadingCliFlag } from '@nimbus-sh/core/runtime/cli-flags.js';
-import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
-import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
-import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { VIRTUAL_SOCKET_KERNEL_SRC } from '@nimbus-sh/core/runtime/virtual-socket-kernel.generated.js';
-import { RUBY_SOCKET_SHIM } from '@nimbus-sh/core/runtime/ruby-socket-shim.js';
-import { RUBY_GREEN_THREADS } from '@nimbus-sh/core/runtime/ruby-green-threads.js';
+import { hasLeadingCliFlag } from './cli-flags.js';
+import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { resolveVfsPath } from '../vfs/path.js';
+import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
+import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
 import { defaultGemHome, installRubyBundle, installRubyGems, installedGemBins, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
@@ -52,7 +58,7 @@ const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
  * registered entrypoint (`ruby`, `ruby3`).
  */
 export function makeRubyRunnerFactory(deps) {
-    const { facetMgr, registry } = deps;
+    const { registry } = deps;
     return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
@@ -178,11 +184,11 @@ export function makeRubyRunnerFactory(deps) {
                 ? fsSnapshotCache.result
                 : null;
             if (!fsSnapshot) {
-                // A manifest, not a copy: sizes and modes only. The facet demand-loads
-                // the few files the program opens and writes back as it goes, so a
-                // spawn no longer pays to base64 the whole subtree — and no longer
-                // fails outright on a tree over 5000 files or 32 MiB.
-                fsSnapshot = manifestVfs(vfs, cwd, {
+                // The host decides what a seed IS: a manifest whose entries the facet
+                // demand-loads through its supervisor, or the bytes themselves. Which
+                // one follows from whether that host can park a guest mid-syscall, and
+                // nothing here depends on the answer.
+                fsSnapshot = deps.facets.seedFilesystem(vfs, cwd, {
                     extraRoots: [defaultGemHome()],
                     revision,
                 });
@@ -202,10 +208,23 @@ export function makeRubyRunnerFactory(deps) {
                 cwd,
                 fsSnapshot: fsSnapshot.snapshot,
             };
-            const command = formatRubyCommand(binName, argv);
-            const result = needsResidentProcess(parsed)
-                ? await spawnRubySocketProcess(facetMgr, facetArgs, command)
-                : await dispatchRubyFacet(facetMgr, facetArgs, ctx.pid);
+            let result;
+            if (needsResidentProcess(parsed)) {
+                if (!deps.startResident) {
+                    ctx.stderr.write(`${binName}: this program keeps running after it starts, and this host has no `
+                        + 'process substrate to keep it on\n');
+                    return 1;
+                }
+                result = await deps.startResident({
+                    wasmVfsPath: facetArgs.wasmVfsPath,
+                    startArgs: toRubyCallArgs(facetArgs),
+                    cwd,
+                    command: formatRubyCommand(binName, argv),
+                });
+            }
+            else {
+                result = await dispatchRubyFacet(deps.facets, vfs, facetArgs, ctx.pid);
+            }
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
             if (result.stderr)
@@ -498,14 +517,11 @@ const RubyFacetResultSchema = z.object({
     stderr: z.string().optional(),
     error: z.string().optional(),
 }).passthrough();
-const RubySocketProcessBootResponseSchema = z.object({
-    state: z.string().optional(),
-    port: z.number().optional(),
-    stdout: z.string().optional(),
-    stderr: z.string().optional(),
-    result: RubyFacetResultSchema.optional(),
-}).passthrough();
-function normalizeRubyFacetResult(raw) {
+/**
+ * A facet's answer, checked at the trust boundary. Exported for the resident
+ * substrate, whose boot payload carries the same object from the same VM.
+ */
+export function normalizeRubyFacetResult(raw) {
     const parsed = RubyFacetResultSchema.safeParse(raw);
     if (!parsed.success)
         return null;
@@ -516,283 +532,33 @@ function normalizeRubyFacetResult(raw) {
         error: parsed.data.error,
     };
 }
-async function spawnRubySocketProcess(facetMgr, args, command) {
-    const workerCode = buildRubySocketProcessWorker(buildRubyPreamble());
-    const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
-        compatibilityFlags: ['nodejs_compat'],
-        // By path, not by value: the image is 34.3 MiB — more than a single RPC
-        // value may carry — so whichever host runs this process reads it itself.
-        vfsWasmModules: { 'ruby+stdlib.wasm': args.wasmVfsPath },
-        startArgs: {
-            userCode: args.userCode,
-            rbArgv: args.rbArgv,
-            userEnv: args.userEnv,
-            progName: args.progName,
-            cwd: args.cwd,
-            fsSnapshot: args.fsSnapshot,
-        },
-    }).catch(() => null);
-    if (!spawned) {
-        return { exitCode: 1, stdout: '', stderr: 'ruby process boot failed\n' };
-    }
-    const parsed = RubySocketProcessBootResponseSchema.safeParse(spawned.boot);
-    if (!parsed.success) {
-        facetMgr.finishProcess(spawned.pid, 1, 'ruby process boot failed');
-        return {
-            exitCode: 1,
-            stdout: '',
-            stderr: 'ruby process boot failed\n',
-        };
-    }
-    const boot = parsed.data;
-    if (boot.state === 'listening' && typeof boot.port === 'number' && boot.port > 0) {
-        facetMgr.registerPort(spawned.pid, Number(boot.port));
-        const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid);
-        const routeablePort = routeablePorts.includes(Number(boot.port)) ? Number(boot.port) : routeablePorts[0];
-        if (!routeablePort) {
-            facetMgr.kill(spawned.pid);
-            return {
-                exitCode: 1,
-                stdout: boot.stdout || '',
-                stderr: `${boot.stderr || ''}ruby: virtual socket port ${boot.port} failed to attach a route handler\n`,
-            };
-        }
-        return {
-            exitCode: 0,
-            stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${routeablePort}]\x1b[0m\n`,
-            stderr: boot.stderr || '',
-            spawnedPid: spawned.pid,
-            port: routeablePort,
-        };
-    }
-    const reservedPorts = await facetMgr.waitForRouteablePorts(spawned.pid);
-    if (reservedPorts.length > 0) {
-        return {
-            exitCode: 0,
-            stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}" port=${reservedPorts[0]}]\x1b[0m\n`,
-            stderr: boot.stderr || '',
-            spawnedPid: spawned.pid,
-            port: reservedPorts[0],
-        };
-    }
-    if (boot.state === 'exited') {
-        const result = normalizeRubyFacetResult(boot.result) || {
-            exitCode: 1,
-            stdout: '',
-            stderr: 'ruby process returned an invalid exit payload\n',
-        };
-        facetMgr.finishProcess(spawned.pid, result.exitCode, result.stderr || 'ruby process exited');
-        return {
-            exitCode: result.exitCode,
-            stdout: result.stdout,
-            stderr: result.stderr || result.error || '',
-        };
-    }
+/** The per-call payload, from the invocation's own state. */
+function toRubyCallArgs(args) {
     return {
-        exitCode: 0,
-        stdout: `${boot.stdout || ''}\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`,
-        stderr: boot.stderr || '',
-        spawnedPid: spawned.pid,
+        userCode: args.userCode,
+        rbArgv: args.rbArgv,
+        userEnv: args.userEnv,
+        progName: args.progName,
+        cwd: args.cwd,
+        fsSnapshot: args.fsSnapshot,
     };
 }
-export function buildRubySocketProcessWorker(preamble) {
-    return [
-        'import { DurableObject } from "cloudflare:workers";',
-        "import __NIMBUS_WASM_ruby_stdlib from './ruby+stdlib.wasm';",
-        'globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};',
-        "globalThis.__NIMBUS_WASM['ruby+stdlib.wasm'] = __NIMBUS_WASM_ruby_stdlib;",
-        '',
-        VIRTUAL_SOCKET_KERNEL_SRC,
-        '',
-        // Listener lifecycle only. Socket bytes never cross this bridge: Ruby opens
-        // both accepted and dialed connections as file descriptors and reads and
-        // writes them as ordinary IO.
-        'globalThis.__nimbusRubySockets = {',
-        '  listen(port) { return globalThis.__nimbusVirtualSockets.listen(Number(port)); },',
-        '  closeListener(port) { globalThis.__nimbusVirtualSockets.closeListener(Number(port)); return true; },',
-        '  pending(port) { return globalThis.__nimbusVirtualSockets.pending(Number(port)); },',
-        '  acceptNowJson(port) { const conn = globalThis.__nimbusVirtualSockets.acceptNow(Number(port)); return conn ? JSON.stringify(conn) : ""; },',
-        '};',
-        '',
-        // Outbound half of the same loopback the shell's curl and node's patched
-        // fetch use: one mechanism, reached here through the supervisor RPC.
-        'globalThis.__nimbusVirtualSocketRouteLoopback = function __nimbusVirtualSocketRouteLoopback(port, request) {',
-        '  const supervisor = globalThis.__nimbusRubySupervisor;',
-        '  if (!supervisor || typeof supervisor.routeLoopback !== "function") {',
-        '    return Promise.reject(new Error("this Ruby process has no supervisor binding for loopback routing"));',
-        '  }',
-        '  return Promise.resolve(supervisor.routeLoopback(Number(port), request));',
-        '};',
-        '',
-        'globalThis.__nimbusVirtualPortRegistrationPromises = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
-        'globalThis.__nimbusVirtualSocketDidListen = function __nimbusVirtualSocketDidListen(port) {',
-        '  const supervisor = globalThis.__nimbusRubySupervisor;',
-        '  if (!supervisor || typeof supervisor.registerPort !== "function") return;',
-        '  try {',
-        '    const p = supervisor.registerPort(Number(port)).catch((e) => {',
-        '      const msg = e && e.message ? e.message : String(e);',
-        '      (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push("[ruby-runner] port registration failed: " + msg + "\\n");',
-        '    });',
-        '    globalThis.__nimbusVirtualPortRegistrationPromises.push(p);',
-        '  } catch (e) {',
-        '    const msg = e && e.message ? e.message : String(e);',
-        '    (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push("[ruby-runner] port registration failed: " + msg + "\\n");',
-        '  }',
-        '};',
-        '',
-        preamble,
-        '',
-        // Drive the process when a connection is queued. This is the whole of the
-        // runtime's involvement in serving: it knows nothing about what is
-        // listening, only that the process should run until it parks.
-        //
-        // Steps go through the shared resume queue in the preamble, so a handler
-        // that parks does not stall other connections and no two drivers can enter
-        // a live fiber at once.
-        // Timed work the process still owes: the wall-clock moment its earliest
-        // sleeper is due. It lives on the global rather than in one driver's
-        // closure because no single request may own it. A timer belongs to the
-        // request context that created it, and workerd cancels that timer without
-        // a word when the request ends - so a driver anchored to the first
-        // connection stops dead the moment that connection answers, and every
-        // other connection waits out the response timeout instead.
-        'globalThis.__nimbusRubyWakeAt = globalThis.__nimbusRubyWakeAt || null;',
-        'globalThis.__nimbusRubyIdleDrivers = globalThis.__nimbusRubyIdleDrivers || new Set();',
-        'function __nimbusRubyNoteWake(wakeAfter) {',
-        '  globalThis.__nimbusRubyWakeAt = (wakeAfter === null || wakeAfter === undefined)',
-        '    ? null',
-        '    : Date.now() + Math.max(0, wakeAfter) * 1000;',
-        '  if (globalThis.__nimbusRubyWakeAt === null) return;',
-        '  const waiting = Array.from(globalThis.__nimbusRubyIdleDrivers);',
-        '  globalThis.__nimbusRubyIdleDrivers.clear();',
-        '  for (const wake of waiting) wake();',
-        '}',
-        // So instead every live request drives, for as long as it is live, and the
-        // moment one of them answers the others are already carrying the work.
-        // Steps are serialized by the resume queue, and a driver that wakes to
-        // find the deadline already moved knows another one got there first.
-        'async function __nimbusRubyDrive() {',
-        '  for (;;) {',
-        '    const due = globalThis.__nimbusRubyWakeAt;',
-        '    if (due === null) {',
-        '      // Nothing is due yet. Stay available anyway: this request holds a',
-        '      // live context, and whichever request discovers the next piece of',
-        '      // timed work may answer and be gone before that work comes due.',
-        '      await new Promise((resolve) => globalThis.__nimbusRubyIdleDrivers.add(resolve));',
-        '      continue;',
-        '    }',
-        '    const delay = due - Date.now();',
-        '    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));',
-        '    if (globalThis.__nimbusRubyWakeAt !== due) continue;',
-        '    const step = await globalThis.__nimbusRubyStep();',
-        '    if (!step.resumed || !step.alive) { globalThis.__nimbusRubyWakeAt = null; return; }',
-        '    __nimbusRubyNoteWake(step.wakeAfter);',
-        '  }',
-        '}',
-        'globalThis.__nimbusVirtualSocketRequestQueued = async function __nimbusVirtualSocketRequestQueued(port) {',
-        '  const step = await globalThis.__nimbusRubyStep();',
-        '  if (!step.resumed) return false;',
-        '  __nimbusRubyNoteWake(step.wakeAfter);',
-        '  __nimbusRubyDrive().catch((e) => {',
-        '    (globalThis.__nimbusRubyStderr || (globalThis.__nimbusRubyStderr = [])).push(',
-        '      "[ruby-runner] driving the process failed: " + ((e && e.message) || e) + "\\n");',
-        '  });',
-        '  return true;',
-        '};',
-        '',
-        'async function __nimbusStartRubyProcess(args) {',
-        '  if (!globalThis.__nimbusRubyProcessPromise) {',
-        '    const stdoutStart = (globalThis.__nimbusRubyStdout || []).length;',
-        '    const stderrStart = (globalThis.__nimbusRubyStderr || []).length;',
-        '    globalThis.__nimbusRubyProcessOutputStart = { stdoutStart, stderrStart };',
-        '    globalThis.__nimbusRubyProcessArgs = {',
-        '      userCode: args.userCode,',
-        '      rbArgv: args.rbArgv || [],',
-        '      userEnv: args.userEnv || {},',
-        '      progName: args.progName || "ruby",',
-        '      cwd: args.cwd || "/home/user",',
-        '      fsSnapshot: args.fsSnapshot,',
-        '    };',
-        '    globalThis.__nimbusRubyProcessPromise = globalThis.__rubyRun(globalThis.__nimbusRubyProcessArgs).then((result) => {',
-        '      globalThis.__nimbusRubyProcessResult = result;',
-        '      return result;',
-        '    });',
-        '  }',
-        '  const started = globalThis.__nimbusRubyProcessOutputStart || { stdoutStart: 0, stderrStart: 0 };',
-        '  const listen = globalThis.__nimbusVirtualSockets.waitForListen(10_000).then((port) => ({ state: port ? "listening" : "pending", port }));',
-        '  const exit = globalThis.__nimbusRubyProcessPromise.then((result) => ({ state: "exited", result }));',
-        '  const first = await Promise.race([listen, exit]);',
-        '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
-        '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
-        '  const stdout = (globalThis.__nimbusRubyStdout || []).slice(started.stdoutStart).join("");',
-        '  const stderr = (globalThis.__nimbusRubyStderr || []).slice(started.stderrStart).join("");',
-        '  if (first.state === "listening") return { state: "listening", port: first.port, stdout, stderr };',
-        '  if (first.state === "exited") return { state: "exited", result: first.result, stdout, stderr };',
-        '  const currentPort = globalThis.__nimbusVirtualSockets.firstListeningPort();',
-        '  if (currentPort) return { state: "listening", port: currentPort, stdout, stderr };',
-        '  return { state: "running", stdout, stderr };',
-        '}',
-        '',
-        // Only adopt a real binding: routed handleHttpRequest/fetch hops resolve
-        // the entrypoint without a supervisor, and overwriting with undefined
-        // would drop the live stub the process needs for its whole lifetime.
-        'function __nimbusAdoptRubySupervisor(env) {',
-        '  const supervisor = env && env.SUPERVISOR;',
-        '  if (supervisor) globalThis.__nimbusRubySupervisor = supervisor;',
-        // The WASI filesystem takes the same stub. That is what turns the
-        // spawn-time seed into a cache over the session VFS, so a server that
-        // never exits still persists its writes instead of losing them entirely.
-        '  __wasiAdoptSupervisor(supervisor);',
-        '}',
-        // A resident process parks between requests, and parking is the only
-        // moment "durable while running" can be made true: by the time the caller
-        // holds a response, everything the request wrote has reached the VFS.
-        'async function __nimbusParkRuby(value) {',
-        // Revalidate drains first, then spends ONE round trip on the subtree
-        // revision. An unchanged subtree keeps the whole cache; a changed one
-        // drops the clean half so the next read sees another process's writes.
-        '  await __wasiRevalidateFS();',
-        '  return value;',
-        '}',
-        'export class NimbusProcess extends DurableObject {',
-        '  async startProcess(args) {',
-        '    __nimbusAdoptRubySupervisor(this.env);',
-        '    return __nimbusParkRuby(await __nimbusStartRubyProcess(args || {}));',
-        '  }',
-        '  async fetch(request) {',
-        '    __nimbusAdoptRubySupervisor(this.env);',
-        '    return this.handleHttpRequest(request);',
-        '  }',
-        '  async handleHttpRequest(request) {',
-        '    __nimbusAdoptRubySupervisor(this.env);',
-        '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
-        '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
-        '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
-        '    return __nimbusParkRuby(await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request));',
-        '  }',
-        '}',
-    ].join('\n');
-}
-async function dispatchRubyFacet(facetMgr, args, pid) {
-    // The Ruby preamble runs the entire bootstrap at child-facet module-
-    // init time (same architecture as Pyodide v2). The wasm Module is
-    // instantiated synchronously where workerd permits, _initialize +
-    // ruby-init-loadpath + ruby-init run, and the live instance is
-    // cached on globalThis.__rubyInstance for per-call use.
+async function dispatchRubyFacet(facets, vfs, args, pid) {
+    // The Ruby preamble runs the entire bootstrap in the facet's own scope,
+    // before any function is submitted: the wasm Module is instantiated where
+    // the host permits it, _initialize + __wasi_vfs_rt_init run, and the live
+    // instance stays in that scope for every later call.
     //
     // The preamble also includes WASI_INSTANCE_PREAMBLE_SRC so
     // __wasiMakeImports / __wasiInitFS / __wasiRunStart are in scope.
-    const preamble = buildRubyPreamble();
-    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-    const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
-    const pool = new NimbusLoaderPool(env, ctx, {
+    const facet = facets.open({
         tag: 'ruby-runner',
         concurrency: 1,
-        // The supervisor derives the write credential from this pid, so a pool
-        // that binds SUPERVISOR without one has a filesystem it can read and
-        // never write — every write-back rejected as an unauthorized process.
-        supervisorPid: pid,
-        preamble,
+        // Never absent. The supervisor derives the write credential from the pid,
+        // so a facet given the capability without one has a filesystem it can read
+        // and never write — every write-back rejected as an unauthorized process.
+        syscalls: { vfs, pid },
+        preamble: buildRubyPreamble(),
     });
     const facetFn = async function rubyFacetCall(inArgs, facetEnv) {
         const fn = Reflect.get(globalThis, '__rubyRun');
@@ -825,14 +591,7 @@ async function dispatchRubyFacet(facetMgr, args, pid) {
         }
     };
     try {
-        const rawResult = await pool.submit(facetFn, {
-            userCode: args.userCode,
-            rbArgv: args.rbArgv,
-            userEnv: args.userEnv,
-            progName: args.progName,
-            cwd: args.cwd,
-            fsSnapshot: args.fsSnapshot,
-        }, {
+        const rawResult = await facet.submit(facetFn, toRubyCallArgs(args), {
             wasmModules: {
                 'ruby+stdlib.wasm': toArrayBuffer(args.wasmBytes),
             },
@@ -853,12 +612,20 @@ async function dispatchRubyFacet(facetMgr, args, pid) {
             error: `ruby-runner dispatch failed: ${errorMessage(e)}`,
         };
     }
+    finally {
+        facet.dispose();
+    }
 }
 /**
- * Compose the per-call preamble. The preamble runs at child-facet
- * module-init time; it instantiates ruby+stdlib.wasm via the LOADER-
- * provided WebAssembly.Module and bootstraps the Ruby VM. Per-call
- * __rubyRun then drives `rb-eval-string-protect` for each request.
+ * Compose the facet preamble. It is evaluated once in the facet's scope,
+ * instantiates ruby+stdlib.wasm from the module the host compiled, and
+ * bootstraps the Ruby VM. Per-call __rubyRun then drives
+ * `rb-eval-string-protect` for each invocation.
+ *
+ * Exported because the resident-process substrate composes the same source
+ * into its own worker module: a server and a `ruby -e` one-liner are the same
+ * language, and a second hand-rolled copy of this is how ruby-repl once booted
+ * a VM whose language prelude was missing.
  */
 export function buildRubyPreamble() {
     return [
@@ -908,6 +675,11 @@ export const RUBY_RUNNER_PREAMBLE_TAIL = `
 // slices from these to isolate output per invocation.
 globalThis.__nimbusRubyStdout = globalThis.__nimbusRubyStdout || [];
 globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
+
+// Whether this facet can suspend the VM mid-syscall, asked of the engine
+// rather than passed in: the answer is a property of where this scope was
+// built, and the scope is the only thing that knows.
+const __nimbusRubyParking = typeof WebAssembly.promising === 'function' ? 'jspi' : 'none';
 
 function __nimbusInstallRubyFsSnapshot(snapshot) {
   const dirs = new Set(['tmp', 'home']);
@@ -996,6 +768,11 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   const wasi = __wasiMakeImports({
     argv: ['ruby'],
     env: { HOME: '/home/ruby', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' },
+    // Stated, not defaulted. A host that cannot park a guest hands over the
+    // whole filesystem instead of a manifest, so nothing here needs to block —
+    // and saying so is what makes a syscall that blocks anyway fail loudly
+    // instead of returning a Promise where the guest expects an errno.
+    parking: __nimbusRubyParking,
     getMemory: () => memRef,
     stdoutWrite: (s) => { globalThis.__nimbusRubyStdout.push(s); },
     stderrWrite: (s) => { globalThis.__nimbusRubyStderr.push(s); },
@@ -1146,7 +923,10 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   // cabi_realloc is deliberately not wrapped. It is the guest allocator, not a
   // VM entry — it never reaches WASI, and it is reached from the synchronous
   // rb-js-abi-host callbacks, which cannot await.
-  const enterVm = (fn) => WebAssembly.promising(fn);
+  //
+  // Where there is no JSPI there is also nothing suspending to enter, so the
+  // wrapper is the identity: same VM, same call, on a plain stack.
+  const enterVm = (fn) => (__nimbusRubyParking === 'jspi' ? WebAssembly.promising(fn) : fn);
 
   // ── Ruby bootstrap sequence ────────────────────────────────────
   // Order matters (per ruby.wasm DefaultRubyVM):

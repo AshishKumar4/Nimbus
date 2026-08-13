@@ -21,7 +21,16 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const RUNTIME_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'worker', 'src', 'runtime');
+// Both packages, because a runtime is not where it happens to live: the
+// serialization rule is the facet's, and bash, CPython, Ruby, clang and
+// wasm-runner all moved to `core` while their REPL and resident halves stayed
+// in `worker`. Scanning one directory would have kept passing while checking
+// none of the runners this test names.
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const RUNTIME_DIRS = [
+  join(REPO, 'packages', 'core', 'src', 'runtime'),
+  join(REPO, 'packages', 'worker', 'src', 'runtime'),
+];
 
 /** Named value imports — the ones that become free identifiers when serialized. */
 function importedNames(src) {
@@ -78,23 +87,30 @@ const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$
 let checked = 0;
 const findings = [];
 
-for (const file of readdirSync(RUNTIME_DIR).filter((f) => f.endsWith('.ts'))) {
-  const src = readFileSync(join(RUNTIME_DIR, file), 'utf8');
-  const imports = importedNames(src);
-  if (imports.size === 0) continue;
+for (const dir of RUNTIME_DIRS) {
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+    const src = readFileSync(join(dir, file), 'utf8');
+    const imports = importedNames(src);
+    if (imports.size === 0) continue;
 
-  // Every function actually handed to a loader pool, by name at the call site.
-  const submitted = new Set([...src.matchAll(/\.submit\w*\(\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
-  for (const name of submitted) {
-    const body = functionBody(src, name);
-    if (!body) continue;   // inline expression form; nothing to resolve here
-    checked++;
-    const code = stripComments(body);
-    for (const imported of imports) {
-      // A value use: called, indexed, or a property read. Type positions and
-      // string/property occurrences do not produce a runtime reference.
-      if (new RegExp(`(^|[^\\w.'"\`])${imported}\\s*[[(.]`, 'm').test(code)) {
-        findings.push(`${file} :: ${name}() references the module import '${imported}'`);
+    // Every function actually handed to a facet, by name at the call site. The
+    // optional type-argument list is not decoration: ruby-runner writes
+    // `submit<RubyFacetCallArgs, unknown>(facetFn, …)`, and a pattern that
+    // stopped at `submit(` skipped the very runner this test's own comments
+    // name — silently, since it still found others and still reported a count.
+    const submitted = new Set(
+      [...src.matchAll(/\.submit\w*(?:<[^<>()]*>)?\(\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
+    for (const name of submitted) {
+      const body = functionBody(src, name);
+      if (!body) continue;   // inline expression form; nothing to resolve here
+      checked++;
+      const code = stripComments(body);
+      for (const imported of imports) {
+        // A value use: called, indexed, or a property read. Type positions and
+        // string/property occurrences do not produce a runtime reference.
+        if (new RegExp(`(^|[^\\w.'"\`])${imported}\\s*[[(.]`, 'm').test(code)) {
+          findings.push(`${file} :: ${name}() references the module import '${imported}'`);
+        }
       }
     }
   }
