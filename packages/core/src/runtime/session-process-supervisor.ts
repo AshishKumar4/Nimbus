@@ -67,6 +67,8 @@ export class SessionProcessSupervisor {
   private terminators = new Map<number, () => void>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
   private logActivity: (() => void) | null = null;
+  /** Fires once per pid on its first terminal transition; see setOnTerminal. */
+  private onTerminalCb: ((pid: number) => void) | null = null;
 
   // ── Lifecycle / PID authority ─────────────────────────────────────────
 
@@ -130,10 +132,33 @@ export class SessionProcessSupervisor {
     return this.table.setUmask(pid, umask);
   }
 
+  /**
+   * Observe every pid's FIRST transition out of `running`, whichever door it
+   * leaves by — exit(), kill(), a facet's self-reported exit, a timeout abort:
+   * all of them end here, which is what makes this one callback a complete
+   * seam for per-pid durable state (the resident-launch journal) that must be
+   * released exactly when the process ends and never before.
+   *
+   * One slot, owned by the FacetManager. A second subscriber would mean two
+   * owners of process-end policy; grow this into a list only when a second
+   * genuine owner exists.
+   */
+  setOnTerminal(cb: (pid: number) => void): void {
+    this.onTerminalCb = cb;
+  }
+
+  private fireTerminal(pid: number, wasRunning: boolean): void {
+    if (!wasRunning || !this.onTerminalCb) return;
+    if (this.table.get(pid)?.state === 'running') return;
+    try { this.onTerminalCb(pid); } catch { /* the process is gone regardless */ }
+  }
+
   /** Mark a process as exited. First terminal state wins. */
   exit(pid: number, exitCode: number): void {
+    const wasRunning = this.table.get(pid)?.state === 'running';
     this.table.exit(pid, exitCode);
     this.terminators.delete(pid);
+    this.fireTerminal(pid, wasRunning);
   }
 
   /**
@@ -141,9 +166,11 @@ export class SessionProcessSupervisor {
    * stdin can't outlive the process.
    */
   kill(pid: number): boolean {
+    const wasRunning = this.table.get(pid)?.state === 'running';
     const killed = this.table.kill(pid);
     this.terminate(pid);
     this.input.close(pid);
+    this.fireTerminal(pid, wasRunning);
     return killed;
   }
 
