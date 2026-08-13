@@ -1,8 +1,14 @@
+<p align="center">
+  <img src="docs/banner.svg" alt="Nimbus — a POSIX-like cloud OS on Cloudflare Durable Objects" width="100%">
+</p>
+
 # Nimbus
 
 > This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rough edges, and I only work on it in my spare time. This README is edited and maintained with Claude (AI) and presented as-is.
 
-**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network — instant, effectively unlimited, isolate-native sandboxes. Open a URL (or call the SDK) and get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands. No Docker. No containers. No VMs. No image pull.
+**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network — instant, effectively unlimited, isolate-native sandboxes with no Docker, no VM boot, and no image pull. Open a URL (or call the SDK) and get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands.
+
+The OS half is also a library. [`@nimbus-sh/core`](packages/core) runs the same durable filesystem, shell, and wasm runtimes in bun or node over a local SQLite — no Cloudflare account involved — and embeds inside other people's Durable Objects. See [Use Nimbus as a library](#use-nimbus-as-a-library).
 
 🌐 **Try it now:** https://nimbus-os.dev
 
@@ -163,6 +169,49 @@ bun run dev      # wrangler dev --ip 0.0.0.0 --port 8787
 
 Open http://localhost:8787 and click **Launch**.
 
+## Use Nimbus as a library
+
+[`@nimbus-sh/core`](packages/core) is the OS without the Worker: the durable
+filesystem, the shell with 60+ Unix commands, and the WASI runtime layer,
+over two narrow SQL ports instead of any Cloudflare API. The same class runs
+inside a Durable Object (`ctx.storage.sql`) and in a plain bun or node
+process (`bun:sqlite`, `node:sqlite`).
+
+```ts
+import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+await ws.fs.writeFile('/home/user/hello.txt', 'hi\n');
+await ws.exec('cat /home/user/hello.txt | wc -c');   // exitCode 0, stdout "3\n"
+```
+
+The wasm runtimes ship as separate npm packages, so a filesystem-only
+embedder never downloads a Python interpreter:
+
+```bash
+npm install @nimbus-sh/runtime-bash @nimbus-sh/runtime-cpython
+```
+
+```ts
+import bash from '@nimbus-sh/runtime-bash';
+import cpython from '@nimbus-sh/runtime-cpython';
+import { localFacetHost } from '@nimbus-sh/core';
+
+const ws = await NimbusWorkspace.create({
+  sql, transactions, generation: 1,
+  facets: localFacetHost(),
+  runtimes: [bash, cpython],
+});
+await ws.exec('bash -c "echo $((6*7))"');   // GNU bash 5.2, real BusyBox children
+await ws.exec('python -c "print(6*7)"');    // CPython 3.13 with the real stdlib
+```
+
+Ruby 3.3 and clang work the same way. Every runtime package carries the same
+manifest and sha256-verified blobs the hosted product serves from R2 — one
+publisher, two transports. The workspace behaves as a tenant in a database
+you own: it touches only its own tables, and `destroy()` drops exactly those.
+[Full details in the package README](packages/core).
+
 ## Embed Nimbus in your Workers project
 
 Nimbus can be embedded as both an interactive dev environment and a
@@ -274,8 +323,10 @@ listeners.
 
 | Package | What |
 |---|---|
+| [`@nimbus-sh/core`](packages/core) | The backend-agnostic OS: durable SQLite filesystem, shell + coreutils, WASI runtime layer, and `NimbusWorkspace`. Runs in Durable Objects, bun, and node. |
+| `@nimbus-sh/runtime-bash` / `-cpython` / `-ruby` / `-clang` | The wasm runtimes as optional npm packages — same manifests and sha256-verified blobs the hosted product serves from R2. Pass to `NimbusWorkspace.create({ runtimes })`. |
 | [`@nimbus-sh/sdk`](packages/sdk) | Public SDK surface: Worker embedder (`@nimbus-sh/sdk/worker`), programmatic sandboxes (`@nimbus-sh/sdk/sandbox`), Flue connector (`@nimbus-sh/sdk/flue`), token mint/verify, typed errors, and session URL helpers. |
-| [`@nimbus-sh/worker`](packages/worker) | Runtime package used by the SDK: `NimbusSession` DO, router, assets, runtimes, VFS, and auth internals. |
+| [`@nimbus-sh/worker`](packages/worker) | The Cloudflare half, composed on core: `NimbusSession` DO, router, assets, facet fabric, and auth internals. |
 | [`@nimbus-sh/react`](packages/react) | `<NimbusTerminal />` React component. |
 | [`@nimbus-sh/cli`](packages/cli) | `nimbus init`, `nimbus setup cloudflare`, `token mint`, and `runtime sync`. |
 | [`create-nimbus-app`](packages/create-nimbus-app) | `npx create-nimbus-app` scaffold wrapper. |
