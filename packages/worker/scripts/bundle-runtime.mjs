@@ -927,8 +927,11 @@ function writeNpmPackage(outDir, manifest, downloaded) {
     },
     files: ['index.js', 'index.d.ts', 'manifest.json', 'blobs', 'LICENSE', 'README.md'],
     // The runtime is inert without the half that installs and runs it, and
-    // `index.d.ts` types itself against that package's exports.
-    peerDependencies: { '@nimbus-sh/core': '>=0.2.0' },
+    // `index.d.ts` types itself against that package's exports. The floor is
+    // the core release whose FacetHost carries every runner generated from
+    // this tree — earlier cores would seed the files and then have no
+    // command to run them.
+    peerDependencies: { '@nimbus-sh/core': '>=0.4.0' },
     publishConfig: { access: 'public' },
   }, null, 2)}\n`);
 
