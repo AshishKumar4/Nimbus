@@ -69,11 +69,12 @@ import {
   type FacetBundleProfile,
 } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
-  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
+  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, CHUNK_SIZE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
-  BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
+  BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, MAX_TX_BLOB_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
+import { RESIDENT_LAUNCH_KEY_PREFIX } from '../session/keys.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import {
@@ -3421,6 +3422,16 @@ export interface FacetManagerHooks {
    * a fresh CPU budget, and a launch needs each for a different reason.
    */
   requestLaunchTurn?: () => void;
+  /**
+   * Put a line in front of the user, whether or not a terminal is attached.
+   *
+   * Distinct from writing to a process's output: what this reports happened to
+   * the SESSION, and the socket that would have shown it is typically the one
+   * the event destroyed. The session satisfies it with the live terminal when
+   * there is one and the persisted scrollback when there is not, so the line
+   * survives until someone reconnects to read it.
+   */
+  notify?: (line: string) => void;
 }
 
 export interface LongRunningWorkerSpawnOptions {
@@ -3455,6 +3466,37 @@ export interface ResidentSpawnOptions {
   bundleProfile?: FacetBundleProfile;
 }
 
+/**
+ * Bytes of an image written in one storage transaction.
+ *
+ * The bound is the VFS's own, not a knob: a `writeRange` whose chunks fit
+ * inside one transaction is committed in place, and one that does not falls
+ * back to copy-on-write — which rewrites every chunk of the file, per slice,
+ * making a sliced write quadratic in its size. A whole number of chunks is
+ * the other half of that: a slice that ends mid-chunk makes the next one read
+ * the partial chunk back to complete it.
+ */
+const FACET_IMAGE_WRITE_SLICE_BYTES = Math.floor(MAX_TX_BLOB_BYTES / CHUNK_SIZE) * CHUNK_SIZE;
+
+/**
+ * A resident launch in flight, as a later instance would have to re-drive it.
+ *
+ * The launch's own inputs and nothing derived from them: everything a launch
+ * builds is a pure function of these, and the images it writes are content-
+ * addressed, so re-driving is the same work again rather than a repair.
+ */
+interface ResidentLaunchRecord {
+  pid: number;
+  command: string;
+  code: string;
+  opts: ResidentSpawnOptions;
+  /** 0 for a launch the user asked for; 1 for the one re-drive it may get. */
+  attempt: number;
+}
+
+/** A launch is re-driven once. A reset that recurs is not the transient one. */
+const RESIDENT_LAUNCH_MAX_ATTEMPT = 1;
+
 export class FacetManager {
   private ctx: DurableObjectState;
   private env: FacetManagerEnv;
@@ -3485,10 +3527,14 @@ export class FacetManager {
    *
    * In-memory on purpose: a launch is only meaningful while the process table
    * entry it is building for exists, and both are lost together if the isolate
-   * resets. Persisting the queue would resurrect launches for pids that no
-   * longer exist.
+   * resets. What survives a reset is the journal, which names the launch's
+   * INPUTS rather than its position — a resumed queue would be resurrecting
+   * half-built work for pids that no longer exist, where re-driving a launch
+   * from its inputs is the same idempotent work again.
    */
   private launchWaiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
+  /** Whether this instance has already read the journal a reset leaves behind. */
+  private launchesRecovered = false;
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
@@ -4595,7 +4641,7 @@ export class FacetManager {
   private async _materializeFacetImages(
     pid: number,
     modules: Record<string, string>,
-    pacer?: LaunchPacer,
+    pacer: LaunchPacer,
   ): Promise<Record<string, string>> {
     const vfs = this.vfs;
     if (!vfs) {
@@ -4610,7 +4656,7 @@ export class FacetManager {
       const path = facetImagePath(await facetImageDigest(source));
       images[moduleName] = path;
       sources.set(path, source);
-      if (pacer) await pacer.spend(source.length);
+      await pacer.spend(source.length);
     }
     // Register the WHOLE root set here, in one synchronous step, before any
     // byte of it exists on disk. That ordering is the entire protocol between
@@ -4625,14 +4671,30 @@ export class FacetManager {
     for (const [path, source] of sources) {
       const stored = path.replace(/^\/+/, '');
       const bytes = new TextEncoder().encode(source);
-      // A whole-file write is atomic against the DO's single thread, so an
-      // image already present at the right size cannot be a torn one, and
-      // rewriting it would only cost the disk. Size is enough of a check here
+      // An image at its full size is a COMPLETE one: a write only ever grows
+      // the file from offset zero, so a write cut short by a reset leaves a
+      // strictly shorter file and fails this test. Size is enough of a check
       // because the reader verifies the digest before the loader sees it.
-      if (!(fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength)) {
-        fs.writeFile(stored, bytes, { mode: 0o644 });
+      if (fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength) {
+        await pacer.spend(bytes.byteLength);
+        continue;
       }
-      if (pacer) await pacer.spend(bytes.byteLength);
+      // Sliced because the platform resets the object over what ONE TURN has
+      // outstanding, not over what it eventually writes — pi's 22.9 MB map
+      // went in as a single write and took the session down with it ~25% of
+      // the time. Spending between slices is what puts the rest of the image
+      // on later turns; the slice bound is what keeps any one of them small.
+      let offset = 0;
+      do {
+        const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
+        // The first slice REPLACES the file, so an interrupted write's remains
+        // are truncated to a known length rather than left as a tail past this
+        // content — and the mode is chosen here, at creation, as POSIX has it.
+        if (offset === 0) fs.writeFile(stored, slice, { mode: 0o644 });
+        else fs.writeRange(stored, offset, slice);
+        offset += slice.byteLength;
+        await pacer.spend(slice.byteLength);
+      } while (offset < bytes.byteLength);
     }
     this._sweepFacetImages(fs);
     return images;
@@ -4747,11 +4809,83 @@ export class FacetManager {
    * the runtime may tear the context down mid-chunk.
    */
   async pumpResidentLaunches(): Promise<void> {
+    await this._recoverInterruptedLaunches();
     const waiting = this.launchWaiters;
     if (waiting.length === 0) return;
     this.launchWaiters = [];
     for (const waiter of waiting) waiter.resume();
     await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
+  }
+
+  /**
+   * Re-drive the launches a previous instance was building when it was reset.
+   *
+   * The platform resets a session Durable Object over what one turn has
+   * outstanding in storage ("Internal error in Durable Object storage caused
+   * object to be reset"), and a launch is the largest writer this session has.
+   * Everything the launch held was in memory, so the process it was building
+   * and the terminal watching it both went with the instance, and until now
+   * the user was told nothing at all.
+   *
+   * Sited on the pump because the pump is what an alarm calls, and a launch
+   * that was suspended has an alarm armed for it — a reset during a chunk
+   * fails that alarm, and the platform re-delivers it to the instance that
+   * replaces this one. So the first turn after a reset is already this one.
+   *
+   * Runs once per instance: the journal only changes when a launch of THIS
+   * instance starts or settles, and those are rows this instance wrote.
+   */
+  private async _recoverInterruptedLaunches(): Promise<void> {
+    if (this.launchesRecovered) return;
+    this.launchesRecovered = true;
+    const journal = await this.ctx.storage.list<ResidentLaunchRecord>({
+      prefix: RESIDENT_LAUNCH_KEY_PREFIX,
+    });
+    for (const [key, record] of journal) {
+      // A pid at or below this instance's base was allocated by a PREVIOUS one
+      // (process-table.ts, PID_GEN_STRIDE), so its launch never finished; above
+      // the base is this instance's own, still running. Same predicate as
+      // `session/rpc.ts` uses to attribute a prior generation's pid.
+      if (!(record.pid > 0 && record.pid <= this.processes.pidBase)) continue;
+      await this.ctx.storage.delete(key);
+      if (record.attempt >= RESIDENT_LAUNCH_MAX_ATTEMPT) {
+        this.hooks.notify?.(
+          '\x1b[2m[nimbus: the session restarted again while '
+          + `"${record.command}" was starting — leaving it stopped]\x1b[0m\r\n`,
+        );
+        continue;
+      }
+      this.hooks.notify?.(
+        '\x1b[2m[nimbus: the session restarted while '
+        + `"${record.command}" was starting — restarting it]\x1b[0m\r\n`,
+      );
+      // Not awaited: this call is running inside the alarm that granted the
+      // turn, and the launch it starts asks for turns of its own through that
+      // same alarm — awaiting it here would be waiting on an alarm that cannot
+      // be scheduled until this one returns.
+      this.ctx.waitUntil(
+        this._spawnResident(record.code, record.opts, record.attempt + 1)
+          .catch((e: unknown) => {
+            this.hooks.notify?.(
+              `\x1b[2m[nimbus: "${record.command}" could not be restarted: `
+              + `${errorMessage(e)}]\x1b[0m\r\n`,
+            );
+          }),
+      );
+    }
+  }
+
+  /**
+   * Record a launch as in flight, so an instance that replaces this one knows
+   * it never finished. Best-effort: a launch that cannot be journalled still
+   * runs, and a reset then costs exactly what it cost before the journal.
+   */
+  private async _journalLaunch(record: ResidentLaunchRecord): Promise<void> {
+    try {
+      await this.ctx.storage.put(`${RESIDENT_LAUNCH_KEY_PREFIX}${record.pid}`, record);
+    } catch (e: unknown) {
+      console.warn('[nimbus] resident launch journal write failed:', errorMessage(e));
+    }
   }
 
   /** Whether any launch is suspended waiting for a turn. */
@@ -4939,9 +5073,19 @@ export class FacetManager {
    * is the largest thing Nimbus generates, so it travels by VFS path rather
    * than inside the boot spec and is read only when the facet loads.
    */
-  async spawnNode(
+  spawnNode(code: string, opts: ResidentSpawnOptions = {}): Promise<{ pid: number }> {
+    return this._spawnResident(code, opts, 0);
+  }
+
+  /**
+   * `attempt` distinguishes the launch the user asked for from the one re-drive
+   * an instance reset earns it, and is carried in the journal rather than in
+   * the caller's options because no caller has an opinion about it.
+   */
+  private async _spawnResident(
     code: string,
-    opts: ResidentSpawnOptions = {},
+    opts: ResidentSpawnOptions,
+    attempt: number,
   ): Promise<{ pid: number }> {
     this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
@@ -4962,7 +5106,7 @@ export class FacetManager {
       try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}
     }
 
-    const launch = this._runResidentLaunch(entry, code, command, opts);
+    const launch = this._runResidentLaunch(entry, code, command, opts, attempt);
     if (!opts.attachedTty) {
       // A server's caller is told a port is bound, so it has to wait for the
       // boot that binds it. The wait costs this turn nothing: every chunk of
@@ -4998,6 +5142,7 @@ export class FacetManager {
     code: string,
     command: string,
     opts: ResidentSpawnOptions,
+    attempt: number,
   ): Promise<void> {
     const cwd = opts.cwd || '/home/user';
     const pacer = new LaunchPacer(
@@ -5005,10 +5150,25 @@ export class FacetManager {
       launchChunkMaxBytes(this.env),
       () => this._assertLaunchStillOwned(entry.pid),
     );
+    // Journalled before the first byte of work and removed when the launch
+    // settles either way, so a row that outlives its instance means one thing:
+    // the launch was still running when the object was reset. A re-drive owns
+    // its own process, so the caller's pid goes with the instance that had it.
+    await this._journalLaunch({
+      pid: entry.pid,
+      command,
+      code,
+      opts: { ...opts, skipSpawn: undefined, callerPid: undefined },
+      attempt,
+    });
     try {
       await this._residentLaunchBody(entry, code, command, cwd, opts, pacer);
     } finally {
       pacer.settle();
+      try { await this.ctx.storage.delete(`${RESIDENT_LAUNCH_KEY_PREFIX}${entry.pid}`); }
+      catch (e: unknown) {
+        console.warn('[nimbus] resident launch journal delete failed:', errorMessage(e));
+      }
     }
   }
 

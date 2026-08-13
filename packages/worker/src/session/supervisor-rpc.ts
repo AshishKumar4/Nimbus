@@ -102,29 +102,19 @@ function _estimateWriteBatchBytes(payload: any): number {
 
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
-   * Cached supervisor DO stub. WorkerEntrypoint instances live for one
-   * facet invocation — caching inside the instance is correct per-facet
-   * scoping with no cross-invocation leak.
+   * The supervisor DO stub for RPC routing, found from the doId in ctx.props.
    *
-   * Before this cache every method (readFile, writeFile, stdout, ...)
-   * called NIMBUS_SESSION.get(id) which mints a fresh RPC stub per call.
-   * During npm install / git clone that multiplies to tens of thousands
-   * of undisposed stubs per session, exhausting workerd's RPC queue
-   * (queueState != ACTIVE fatal). See CRASH-INVESTIGATION-V2.md.
-   */
-  private _stubCache: any = null;
-
-  /**
-   * Get the supervisor DO stub for RPC routing.
-   * Uses doId from ctx.props to find the correct NimbusSession instance.
+   * Minted per call, because that is the only lifetime an instance of this
+   * class has: workerd constructs a NEW WorkerEntrypoint for every RPC call,
+   * not one per facet invocation, so a field cached here is written and
+   * discarded by the same call and never read by another (measured: two calls
+   * on one stub produced instances #3 and #4, each having served one call).
    */
   private _getStub(): any {
-    if (this._stubCache) return this._stubCache;
     const doId = (this.ctx as any).props?.doId;
     if (!doId) throw new Error('SupervisorRPC: missing doId in props');
     const id = (this.env as any).NIMBUS_SESSION.idFromString(doId);
-    this._stubCache = (this.env as any).NIMBUS_SESSION.get(id);
-    return this._stubCache;
+    return (this.env as any).NIMBUS_SESSION.get(id);
   }
 
   private _call<T>(promise: Promise<T>): Promise<T> {

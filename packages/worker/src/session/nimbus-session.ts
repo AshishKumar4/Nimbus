@@ -54,6 +54,7 @@ import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '
 import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
+import { appendScrollback } from './state-store.js';
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // ── W12 — Lever 12/G3/H1 + Lever 7/G4 — DO read replicas + Smart Placement
@@ -602,8 +603,39 @@ export class NimbusSession extends CloudflareDurableObject {
       this,
       this.ctx,
       _rpc._logJanitorOrphanCheck(this as any),
-      () => this.facetManager?.pumpResidentLaunches() ?? Promise.resolve(),
+      () => this._pumpResidentLaunches(),
     );
+  }
+
+  /**
+   * Grant the fresh turn a suspended launch asked for.
+   *
+   * The session is stood up first because of the case where it is NOT already:
+   * an instance reset out from under a launch leaves the re-delivered alarm as
+   * the first thing to run on its replacement, and the launch that alarm
+   * recovers needs a filesystem to be re-driven onto. In every other case both
+   * calls are the no-ops they look like — the alarm reason only exists while a
+   * launch of this instance is suspended.
+   */
+  private _pumpResidentLaunches(): Promise<void> {
+    this.ensureSqliteFs();
+    this.ensureFacetManager();
+    return this.facetManager?.pumpResidentLaunches() ?? Promise.resolve();
+  }
+
+  /**
+   * Put a line in front of the user. Written to the live terminal when there
+   * is one — which tees it to scrollback — and straight to scrollback when
+   * there is not, because what this reports is typically what closed the
+   * socket that would have shown it.
+   */
+  private _notifySession(line: string): void {
+    if (this.terminal) {
+      this.terminal.write(line);
+      return;
+    }
+    try { appendScrollback(this.ctx, line, Date.now()); }
+    catch (e: any) { console.warn('[nimbus] session notice failed:', e?.message); }
   }
 
   /**
@@ -1015,6 +1047,7 @@ export class NimbusSession extends CloudflareDurableObject {
         {
           onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
           requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
+          notify: (line) => this._notifySession(line),
           onSpawn: (pid, command, longRunning) => {
             const attachedTty = this.processes.get(pid)?.attachedTty === true;
             if (longRunning) {
