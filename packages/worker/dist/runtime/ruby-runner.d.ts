@@ -33,7 +33,7 @@
  *     ruby-init-loadpath, rb-eval-string-protect, cabi_realloc,
  *     canonical_abi_drop_rb-abi-value, memory.
  */
-import type { RuntimeManifest } from './runtime-catalog.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';

@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import {
   buildRuntimeHandler,
   resolveRuntimeScriptPath,
-} from '../../packages/worker/src/runtime/runtime-registry.ts';
+} from '../../packages/core/src/runtime/runtime-registry.ts';
 
 // ── a VFS standing in for the session's ─────────────────────────────────────
 
@@ -133,7 +133,7 @@ const spec = {
   name: 'testbun',
   version: '1.0.0',
   helpText: 'usage: testbun',
-  run: async (_facetMgr, code, opts) => {
+  run: async (code, opts) => {
     ran = { code, opts };
     return { exitCode: 0, stdout: 'RAN\n', stderr: '' };
   },
@@ -157,7 +157,6 @@ const spec = {
 
 const handler = buildRuntimeHandler(spec, {
   vfs: { as: () => fs },
-  facetMgr: {},
   getEsbuild: () => ({
     transform: async (code) => {
       transformed.push(code);
@@ -207,7 +206,6 @@ const handler = buildRuntimeHandler(spec, {
     { ...spec, subcommands: { run: async (ctx, _r, go) => go(['./run', ...ctx.args.slice(1)]) } },
     {
       vfs: { as: () => loopFs },
-      facetMgr: {},
       getEsbuild: () => { throw new Error('esbuild must not be needed here'); },
       registry: { resolve: () => null },
     },
@@ -227,7 +225,6 @@ const handler = buildRuntimeHandler(spec, {
     { name: 'testnode', version: '1.0.0', helpText: 'h', run: spec.run },
     {
       vfs: { as: () => fs },
-      facetMgr: {},
       getEsbuild: () => ({ transform: async (c) => ({ code: c }) }),
       registry: { resolve: () => null },
     },

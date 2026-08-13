@@ -37,13 +37,12 @@
  *     observable behaviour, not implementation shape.
  */
 
-import type { FacetManager } from '../facets/manager.js';
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
-import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { parseFacetBundleProfile, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
+import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
+import type { EsbuildService } from './esbuild-service.js';
+import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
+import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -145,11 +144,13 @@ export interface RuntimeSpec {
   /** Multi-line help text for `<name> --help`. */
   helpText: string;
   /**
-   * Runner function. Usually wraps facetMgr.exec / facetMgr.spawn.
-   * For native-WASM, this is a thin WebAssembly.instantiate +
-   * function-call helper.
+   * Runner function. Closes over whatever substrate the runtime executes on —
+   * a FacetManager for node and bun, a {@link ./facet-host.js FacetHost} for
+   * wasm-runner — because this factory never inspects it. It used to travel
+   * through here as a first parameter, which is the only thing that tied the
+   * shared handler to a Durable Object.
    */
-  run(facetMgr: FacetManager, code: string, opts: RuntimeRunOpts): Promise<RuntimeRunResult>;
+  run(code: string, opts: RuntimeRunOpts): Promise<RuntimeRunResult>;
   /**
    * Subcommand router. When the first positional arg is a key in
    * this map, the handler is invoked instead of the standard
@@ -187,22 +188,20 @@ export interface ShellRegistry {
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
  *
- * Captures `vfs`, `facetMgr`, `esbuild`, `getEsbuild` (for lazy init)
- * + the spec. The same factory is used for every runtime; the only
+ * Captures `vfs`, `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
  * runtime-specific code lives in `spec`.
  */
 export function buildRuntimeHandler(
   spec: RuntimeSpec,
   ctx0: {
     vfs: SqliteVFS;
-    facetMgr: FacetManager;
     /** Lazy esbuild initialiser. Called once per first .ts/.tsx/.jsx
      *  invocation — the host owns the init lifecycle. */
     getEsbuild(): EsbuildService;
     registry: ShellRegistry;
   },
 ): (ctx: any) => Promise<number> {
-  const { vfs, facetMgr, getEsbuild, registry } = ctx0;
+  const { vfs, getEsbuild, registry } = ctx0;
   const fs = vfs.as(CRED_KERNEL);
 
   /**
@@ -276,7 +275,7 @@ export function buildRuntimeHandler(
         ctx.stderr.write(`${name}: -e requires an argument\n`);
         return 1;
       }
-      const result = await spec.run(facetMgr, code, {
+      const result = await spec.run(code, {
         cred: ctx.cred,
         argv: args.slice(evalIdx + 2),
         env: ctx.env,
@@ -315,7 +314,7 @@ export function buildRuntimeHandler(
         : '/';
       // `args.slice(scriptIdx + 1)` are the runner's user args (e.g.
       // [exportName, intArg1, intArg2, ...] for wasm-runner).
-      const result = await spec.run(facetMgr, '', {
+      const result = await spec.run('', {
         cred: ctx.cred,
         argv: args.slice(scriptIdx + 1),
         env: ctx.env,
@@ -465,7 +464,7 @@ export function buildRuntimeHandler(
     const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
 
     const leadingFlags = args.slice(0, scriptIdx);
-    const result = await spec.run(facetMgr, code, {
+    const result = await spec.run(code, {
       cred: ctx.cred,
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       env: ctx.env,

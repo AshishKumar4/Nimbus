@@ -45,7 +45,7 @@ import {
   buildRuntimeHandler,
   resolveRuntimeScriptPath,
   type RuntimeSpec,
-} from '../runtime/runtime-registry.js';
+} from '@nimbus-sh/core/runtime/runtime-registry.js';
 import { parseViteConfigSource, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
@@ -77,10 +77,12 @@ import { registerGitCommands } from '../git/commands.js';
 import {
   makeNimbusVerbHandler,
   createRuntimeCommandHintResolver,
+} from '../runtime/package-manager.js';
+import {
   listInstalledRuntimes,
   rehydrateInstalledRuntimes,
   registerRunnerFactory,
-} from '../runtime/package-manager.js';
+} from '@nimbus-sh/core/runtime/installed-runtimes.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
 // first-use inside their registered handlers — see the registrations below.
 // Keeping them off the top-level import graph shaves their module-eval cost
@@ -502,8 +504,9 @@ export function initSession(self: InitHost, ws: WebSocket): void {
             shell: self.shell ?? undefined,
           });
         }
-        const { makeBashRunnerFactory } = await import('../runtime/bash-runner.js');
-        return await makeBashRunnerFactory({ facetMgr, vfs: sqliteFs })(
+        const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), vfs: sqliteFs })(
           manifest, installRoot, binName, binKind,
         )(ctx);
       },
@@ -624,13 +627,12 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         '  -v, --version       Print version\n' +
         '  -h, --help          Print help\n' +
         '\nExecution via DO Facets (isolated V8 isolate)',
-      run: runFresh,
+      run: (code, opts) => runFresh(facetMgr, code, opts),
       supportsBinSpawn: true,
     };
     {
       const oneShotNode = buildRuntimeHandler(nodeSpec, {
         vfs: sqliteFs,
-        facetMgr,
         getEsbuild: () => {
           if (!self.esbuildService) {
             self.ensureSqliteFs();
@@ -688,7 +690,7 @@ export function initSession(self: InitHost, ws: WebSocket): void {
         'Bun.spawn/Bun.password/Bun.gunzip backed by Workers-native\n' +
         'primitives. Bun.serve / Bun.sql / Bun.S3 throw with supported alternatives.\n' +
         'Execution via DO Facets (isolated V8 isolate per call).',
-      run: runBunScript,
+      run: (code, opts) => runBunScript(facetMgr, code, opts),
       subcommands: {
         // bun install / i / add → npm install (same VFS, same R2 caches).
         install: async (ctx: any, reg) => {
@@ -783,7 +785,6 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     {
       const oneShotBun = buildRuntimeHandler(bunSpec, {
         vfs: sqliteFs,
-        facetMgr,
         getEsbuild: () => {
           if (!self.esbuildService) {
             self.ensureSqliteFs();
@@ -804,19 +805,14 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       });
     }
 
-    // ── wasm-runner: native WebAssembly runtime via LOADER-modules transport ──
+    // ── wasm-runner: native WebAssembly, on this session's facet host ──
     //
-    // Re-introduced after the runtime registry refactor's revert. Bytes
-    // ride INSIDE the worker code blob (LOADER's modules map, the
-    // one phase where wasm code generation IS allowed); request-time
+    // Bytes ride INSIDE the inner worker's code blob, the one phase where
+    // workerd permits wasm code generation; request-time
     // WebAssembly.instantiate(bytes) is CSP-blocked and avoided.
     //
     // wasm-csp/findings.md — add(3,4)===7 in 11ms warm against the
     // deployed Cloudflare fleet.
-    //
-    // bypassesScriptRead: the registry skips the read-source/
-    // shebang-strip/esbuild-transform flow. wasm-runner reads bytes
-    // itself in spec.run() and ships via NimbusLoaderPool.
     //
     // Lazy: the wasm-runner module (WASI instance preamble + snapshot
     // machinery) is imported on first `wasm-runner` invocation and the
@@ -826,33 +822,18 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       let wasmHandler: ((ctx: any) => Promise<number>) | null = null;
       registry.register('wasm-runner', async (ctx: any): Promise<number> => {
         if (!wasmHandler) {
-          const {
-            makeWasmRunner, WASM_RUNNER_VERSION, WASM_RUNNER_HELP, formatWasmRunnerWasiInfo,
-          } = await import('../runtime/wasm-runner.js');
-          const wasmSpec: RuntimeSpec = {
-            name: 'wasm-runner',
-            version: WASM_RUNNER_VERSION,
-            helpText: WASM_RUNNER_HELP,
-            subcommands: {
-              '--wasi-info': async (c: any) => {
-                c.stdout.write(formatWasmRunnerWasiInfo());
-                return 0;
-              },
-            },
-            run: makeWasmRunner({
-              // filesystem WASI: extended VFS surface for WASI file-IO. The
-              // wasm-runner snapshots a session subtree into the facet, flushes
-              // the diff back via this surface after _start returns.
-              vfs: sqliteFs,
-              env: self.env,
-              ctx: self.ctx,
-              processes: self.processes,
-            }),
-            bypassesScriptRead: true,
-          };
+          const { wasmRunnerSpec } = await import('@nimbus-sh/core/runtime/wasm-runner.js');
+          const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
+          const wasmSpec: RuntimeSpec = wasmRunnerSpec({
+            // filesystem WASI: extended VFS surface for WASI file-IO. The
+            // wasm-runner snapshots a session subtree into the facet, flushes
+            // the diff back via this surface after _start returns.
+            vfs: sqliteFs,
+            facets: loaderFacetHost(self.env, self.ctx),
+            processes: self.processes,
+          });
           wasmHandler = buildRuntimeHandler(wasmSpec, {
             vfs: sqliteFs,
-            facetMgr,
             getEsbuild: () => {
               if (!self.esbuildService) {
                 self.ensureSqliteFs();

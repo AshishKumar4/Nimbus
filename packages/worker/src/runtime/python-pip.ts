@@ -25,7 +25,7 @@ import {
   RuntimePythonPackageArtifactMetadataSchema,
   type RuntimeArtifactMetadata,
   type RuntimePythonPackageArtifactMetadata,
-} from './runtime-catalog.js';
+} from '@nimbus-sh/core/runtime/runtime-manifest.js';
 
 export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
 export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;

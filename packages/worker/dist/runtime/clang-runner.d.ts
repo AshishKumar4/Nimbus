@@ -25,7 +25,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import type { RuntimeManifest } from './runtime-catalog.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 /** Build the runner factory. Closes over facetMgr + vfs. */

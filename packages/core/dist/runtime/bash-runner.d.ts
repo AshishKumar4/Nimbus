@@ -11,9 +11,9 @@
  * mechanisms) as a facet preamble.
  *
  * Architecture (mirrors ruby-runner's facet dispatch):
- *  - bash.async.wasm + the coreutil exec targets ride the LOADER
- *    modules map (compiled by workerd at module-load; exposed on
- *    globalThis.__NIMBUS_WASM).
+ *  - bash.async.wasm + the coreutil exec targets ship through the facet
+ *    host, which compiles them and exposes them on
+ *    globalThis.__NIMBUS_WASM.
  *  - The preamble defines __bashBoot / __bashFeed. Boot instantiates
  *    bash, pumps the scheduler until the process tree exits or the
  *    root parks on a terminal stdin read; each feed delivers stdin
@@ -22,11 +22,11 @@
  *  - stdout/stderr accumulate per pump slice and stream back to the
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
-import type { RuntimeManifest } from './runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { FacetManager } from '../facets/manager.js';
-import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
-import type { BashSlice } from '@nimbus-sh/core/runtime/bash/types.js';
+import type { RuntimeManifest } from './runtime-manifest.js';
+import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { FacetHost } from './facet-host.js';
+import type { Command } from '../substrate/lifo/commands/types.js';
+import type { BashSlice } from './bash/types.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export interface BashFacetSession {
     readonly initial: BashSlice;
@@ -34,7 +34,7 @@ export interface BashFacetSession {
     close(): Promise<void>;
 }
 export declare function createBashFacetSession(deps: {
-    facetMgr: FacetManager;
+    facets: FacetHost;
     vfs: CredentialedVfs;
     manifest: RuntimeManifest;
     installRoot: string;
@@ -47,13 +47,13 @@ export declare function createBashFacetSession(deps: {
     extraRoots?: string[];
 }): Promise<BashFacetSession>;
 export declare function makeBashRunnerFactory(deps: {
-    facetMgr: FacetManager;
+    facets: FacetHost;
     vfs: SqliteVFS;
 }): BashRunnerFactory;
 /**
- * Source string injected as the loader-pool `preamble`. The facet's module init
- * evaluates it verbatim so `__bashBoot` / `__bashFeed` are in scope when the
- * user fn runs. Self-contained — no closure captures, no imports.
+ * Source string injected as the facet `preamble`. The facet's scope evaluates
+ * it verbatim so `__bashBoot` / `__bashFeed` are in scope when the user fn
+ * runs. Self-contained — no closure captures, no imports.
  *
  * The scheduler itself lives in `bash/preamble.ts` as real TypeScript; the build
  * bundles it into `bash-runner.generated.ts`.

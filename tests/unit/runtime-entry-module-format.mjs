@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { buildRuntimeHandler } from '../../packages/worker/src/runtime/runtime-registry.ts';
+import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
 
 const TRANSFORM_MARKER = '/* nimbus-test: transformed */';
 
@@ -41,14 +41,13 @@ function makeHandler(files) {
       version: 'v22.0.0',
       helpText: 'help',
       supportsBinSpawn: true,
-      async run(_facetMgr, code) {
+      async run(code) {
         ranWith = code;
         return { exitCode: 0, stdout: '', stderr: '' };
       },
     },
     {
       vfs: { as: () => fs },
-      facetMgr: {},
       getEsbuild: () => ({
         async transform(code, opts) {
           transforms.push({ code, opts });

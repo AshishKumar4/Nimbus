@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import { makeCPythonRunnerFactory } from '../../packages/worker/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
-import { makeWasmRunner } from '../../packages/worker/src/runtime/wasm-runner.ts';
+import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 
 const USER_CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -94,8 +94,8 @@ function runtimeVfs(runtimeFiles, deniedPath) {
 {
   const deniedPath = 'home/user/locked/program.wasm';
   const vfs = runtimeVfs({}, deniedPath);
-  const run = makeWasmRunner({ vfs, env: {}, ctx: {}, processes: {} });
-  const result = await run(null, '', {
+  const run = makeWasmRunner({ vfs, facets: { open: () => { throw new Error('unreachable'); } }, processes: {} });
+  const result = await run('', {
     argv: [],
     env: {},
     cwd: '/home/user',

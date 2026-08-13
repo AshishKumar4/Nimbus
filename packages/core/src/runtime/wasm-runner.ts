@@ -1,14 +1,13 @@
 /**
- * wasm-runner.ts — native-WASM runner via the LOADER-modules transport.
+ * wasm-runner.ts — native-WASM runner over the facet host.
  *
- * Direct `WebAssembly.instantiate(bytes)` is blocked by workerd CSP at
- * request time in both the supervisor and facet isolates. This runner routes
- * through the LOADER modules map:
- * bytes ride INSIDE the worker code blob, workerd compiles them
- * during the inner worker's MODULE-LOAD phase (the one phase where
- * wasm code generation IS allowed), and the resulting
- * WebAssembly.Module is exposed to the user fn via the
- * NimbusLoaderPool's `globalThis.__NIMBUS_WASM[<name>]` table.
+ * The runner never compiles the user's bytes itself: it hands them to a facet
+ * ({@link ./facet-host.js}) as `user.wasm` and reads the compiled
+ * `WebAssembly.Module` back off `globalThis.__NIMBUS_WASM['user.wasm']`. On
+ * workerd that indirection is not stylistic — direct
+ * `WebAssembly.instantiate(bytes)` is refused by CSP at request time in both
+ * the supervisor and facet isolates, and the modules map is the one path where
+ * the compile happens during module load, which is permitted.
  *
  * Shell command shape
  * ───────────────────
@@ -19,13 +18,12 @@
  * Each invocation:
  *   1. Reads bytes from VFS (or any caller-supplied source).
  *   2. Allocates a PID via the process supervisor (Process tab integration).
- *   3. NimbusLoaderPool.submit() with wasmModules: { 'user.wasm': bytes }
- *      — pool merges per-call wasm with constructor-time entries,
- *      generates a worker.js that imports './user.wasm', and ships
- *      the modules map to env.LOADER.get(...).
+ *   3. Facet.submit() with wasmModules: { 'user.wasm': bytes } — the
+ *      host compiles the image and publishes it on the facet's
+ *      `globalThis.__NIMBUS_WASM`.
  *   4. The submitted fn runs inside the inner facet:
  *      - reads globalThis.__NIMBUS_WASM['user.wasm'] (the precompiled
- *        Module the pool registered)
+ *        Module the facet host registered)
  *      - WebAssembly.instantiate(module, {}) — allowed because the
  *        Module is precompiled
  *      - looks up the export, calls with parsed integer args, returns
@@ -41,24 +39,25 @@
  *
  * Dispatch constraints
  * ────────────────────
- *   - No sleeps, caller-side retries, or catch-and-continue around loader
- *     failures. The pool's resilience options own retry behavior.
+ *   - No sleeps, caller-side retries, or catch-and-continue around facet
+ *     failures. The host owns retry behavior.
  *   - The try/catch around vfs.readFile is a legitimate I/O boundary;
  *     the diagnostic propagates as exitCode 1 + stderr line.
- *   - NO direct WebAssembly.instantiate(bytes) at request time —
- *     workerd CSP rejects that path.
+ *   - NO direct WebAssembly.instantiate(bytes) at request time — workerd
+ *     CSP rejects that path, and the facet host exists to make it moot.
  */
 
-import type { RuntimeRunOpts, RuntimeRunResult } from './runtime-registry.js';
-import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from '@nimbus-sh/core/runtime/wasi-instance.js';
-import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from '@nimbus-sh/core/runtime/wasi/types.js';
-import type { WasiAbi } from '@nimbus-sh/core/runtime/wasi-instance.js';
-import { inspectWasmThreads, wasiThreadsLoadError } from '@nimbus-sh/core/runtime/wasi-threads.js';
-import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
-import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from '@nimbus-sh/core/runtime/wasm-memory.js';
+import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
+import type { Facet, FacetHost } from './facet-host.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
+import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
+import type { WasiAbi } from './wasi-instance.js';
+import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
+import { manifestVfs } from './vfs-manifest.js';
+import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -139,7 +138,7 @@ export const WASM_RUNNER_HELP =
   '    one thread at a time. Build with --target=wasm32-wasip1-threads -pthread\n' +
   '    -Wl,--import-memory,--shared-memory,--max-memory=<bytes> and link\n' +
   '    runtime-contracts/nimbus-threads.c; other threads builds are rejected.\n' +
-  '  - Transport: bytes ship via the LOADER modules map, NOT\n' +
+  '  - Transport: bytes ship through the facet host, NOT\n' +
   '    WebAssembly.instantiate(bytes) at request time (CSP-blocked).';
 
 export function formatWasmRunnerWasiInfo(): string {
@@ -194,19 +193,16 @@ function detectWasiAbi(bytes: Uint8Array): WasiAbi | null {
 
 /**
  * Build a `run` function suitable for RuntimeSpec.run(). Parameterised
- * over the VFS, env (for env.LOADER), ctx (for the pool's doId-scoped
- * cache key), and the session process supervisor (for `ps` /
- * `logs <pid>` / Process tab integration). Returns a fn that matches
- * the runtime-registry's contract.
+ * over the VFS, the facet host the module is compiled and run on, and the
+ * session process supervisor (for `ps` / `logs <pid>` / Process tab
+ * integration). Returns a fn that matches the runtime-registry's contract.
  */
 export function makeWasmRunner(deps: {
   vfs: SqliteVFS;
-  env: any;
-  ctx: DurableObjectState;
+  facets: FacetHost;
   processes: SessionProcessSupervisor;
 }) {
   return async function runWasm(
-    _facetMgr: unknown,
     _code: string,
     opts: RuntimeRunOpts,
   ): Promise<RuntimeRunResult> {
@@ -336,7 +332,7 @@ export function makeWasmRunner(deps: {
     }
 
     // Convert Uint8Array (SqliteVFS native) into ArrayBuffer.
-    // structuredClone-safe ArrayBuffer is required by the pool's
+    // structuredClone-safe ArrayBuffer is required by the facet host's
     // wasmModules contract; sub-views aren't accepted by workerd's
     // modules map either. The slice() call always returns a fresh
     // ArrayBuffer regardless of whether bytes.buffer was originally
@@ -348,7 +344,7 @@ export function makeWasmRunner(deps: {
     ) as ArrayBuffer;
 
     // The submitted function runs INSIDE the facet isolate. It reads
-    // the precompiled WebAssembly.Module the pool injected via
+    // the precompiled WebAssembly.Module the facet host injected via
     // globalThis.__NIMBUS_WASM, instantiates it (with WASI imports
     // when needed), and either calls the named export or _start.
     //
@@ -417,8 +413,8 @@ export function makeWasmRunner(deps: {
           ok: false,
           mode: args.mode,
           error:
-            'globalThis.__NIMBUS_WASM[\'user.wasm\'] not found — the pool ' +
-            'did not register the module. Internal error.',
+            'globalThis.__NIMBUS_WASM[\'user.wasm\'] not found — the facet ' +
+            'host did not register the module. Internal error.',
         };
       }
 
@@ -639,8 +635,7 @@ export function makeWasmRunner(deps: {
     // PID + log integration. The runtime-registry's contract is
     // runtime-agnostic at the PID layer; node + bun get this for
     // free via runFresh → facetMgr.exec which spawns through the
-    // process supervisor. wasm-runner uses NimbusLoaderPool directly
-    // (compute-only, no SUPERVISOR binding needed) so we have to
+    // process supervisor. wasm-runner opens a facet directly, so it has to
     // allocate the PID + log entries by hand.
     const cmdLabel =
       'wasm-runner ' +
@@ -700,25 +695,24 @@ export function makeWasmRunner(deps: {
       | { ok: false; mode?: 'direct' | 'wasi'; error: string };
 
     let outcome: DispatchOutcome;
+    let facet: Facet | null = null;
     try {
-      // Built here, not earlier: the pool bakes the invoking process's pid
-      // into the SUPERVISOR binding's props, and the pid does not exist until
-      // the process is spawned above. The supervisor derives the write
-      // credential from it, so a pool that binds SUPERVISOR without one has a
+      // Opened here, not earlier: the host bakes the invoking process's pid
+      // into the facet's supervisor capability, and the pid does not exist
+      // until the process is spawned above. The supervisor derives the write
+      // credential from it, so a facet given the capability without one has a
       // filesystem that can read but never write.
-      const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-      const pool = new NimbusLoaderPool(deps.env, deps.ctx, {
+      facet = deps.facets.open({
         tag: isWasi ? 'wasm-runner-wasi' : 'wasm-runner',
         concurrency: 1,
-        // WASI mode needs the SUPERVISOR binding: it is what backs the
+        // WASI mode needs the supervisor capability: it is what backs the
         // filesystem with the live session VFS instead of a spawn-time copy.
-        // Direct (compute-only) mode has no filesystem at all, so it keeps the
-        // bindings table empty and the facet isolate boots fast.
-        omitSupervisor: !isWasi,
-        supervisorPid: pid,
-        // WASI mode: ship the WASI shim source as a module-init preamble
-        // so `__wasiMakeImports` is in scope when the facet fn runs.
-        // Direct mode: no preamble (saves a few KB per submit).
+        // Direct (compute-only) mode has no filesystem at all, so it asks for
+        // no capability and the facet boots fast.
+        supervisorPid: isWasi ? pid : undefined,
+        // WASI mode: ship the WASI shim source as a facet preamble so
+        // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
+        // no preamble (saves a few KB per submit).
         preamble: isWasi ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
       });
 
@@ -733,19 +727,21 @@ export function makeWasmRunner(deps: {
             wasiFs,
           }
         : { mode: 'direct' as const, exportName: exportName!, intArgs: parsedArgs };
-      outcome = (await pool.submit(
+      outcome = (await facet.submit(
         facetFn,
         submitArgs,
         {
           wasmModules: { 'user.wasm': buf },
           // 30s ceiling for compute. Most wasm calls return in
-          // microseconds; runaway loops hit this and the pool returns
-          // a TimeoutError that surfaces as exitCode 1 + stderr.
+          // microseconds; runaway loops hit this and a host that can
+          // abandon the facet surfaces a timeout as exitCode 1 + stderr.
           timeoutMs: 30_000,
         },
       )) as DispatchOutcome;
     } catch (e: any) {
       outcome = { ok: false, error: `dispatch failed: ${e?.message || e}` };
+    } finally {
+      facet?.dispose();
     }
 
     let exitCode: number;
@@ -806,5 +802,35 @@ export function makeWasmRunner(deps: {
     } catch {}
 
     return { exitCode, stdout, stderr };
+  };
+}
+
+/**
+ * The `wasm-runner` command, whole.
+ *
+ * Its name, its version, its help and its `--wasi-info` verb belong to the
+ * runner, not to whoever registers it. Two callers restating them — a Durable
+ * Object session and an embedded workspace — is two places for the help text
+ * to drift from the shim it describes.
+ */
+export function wasmRunnerSpec(deps: {
+  vfs: SqliteVFS;
+  facets: FacetHost;
+  processes: SessionProcessSupervisor;
+}): RuntimeSpec {
+  return {
+    name: 'wasm-runner',
+    version: WASM_RUNNER_VERSION,
+    helpText: WASM_RUNNER_HELP,
+    subcommands: {
+      '--wasi-info': async (ctx): Promise<number> => {
+        ctx.stdout.write(formatWasmRunnerWasiInfo());
+        return 0;
+      },
+    },
+    // The registry skips the read-source / shebang-strip / esbuild-transform
+    // flow: args[0] is a .wasm path, and this runner reads the bytes itself.
+    bypassesScriptRead: true,
+    run: makeWasmRunner(deps),
   };
 }

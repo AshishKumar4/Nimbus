@@ -5,7 +5,7 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-import { type MinShellRegistry } from '../runtime/package-manager.js';
+import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -177,7 +177,7 @@ export declare function rpcEnsureRuntimes(self: ProgrammaticHost, specs: string[
     force?: boolean;
 }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
 export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<{
-    installed: import("../runtime/package-manager.js").RuntimeSummary[];
+    installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
     available: {
         name: string;
         abi: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimePackageAbi;

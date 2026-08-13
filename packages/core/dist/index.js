@@ -11,3 +11,4 @@
  * depends on this package.
  */
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
+export { localFacetHost } from './runtime/local-facet-host.js';

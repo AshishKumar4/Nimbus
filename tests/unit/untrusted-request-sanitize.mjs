@@ -10,7 +10,7 @@ import {
   isPlatformCookie,
   sanitizeUntrustedHeaders,
   sanitizeUntrustedRequest,
-} from '../../packages/worker/dist/_shared/untrusted-request.js';
+} from '../../packages/core/dist/_shared/untrusted-request.js';
 import { NIMBUS_TOKEN_COOKIE } from '../../packages/worker/dist/auth/middleware.js';
 
 // ── every platform cookie in the codebase is recognised ───────────────────

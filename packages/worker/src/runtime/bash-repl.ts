@@ -4,8 +4,9 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { RuntimeManifest } from './runtime-catalog.js';
-import { createBashFacetSession, type BashFacetSession } from './bash-runner.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { createBashFacetSession, type BashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
+import { facetHostForManager } from './facet-loader-host.js';
 import type { BashSlice } from '@nimbus-sh/core/runtime/bash/types.js';
 import {
   ReplSession,
@@ -75,7 +76,7 @@ class BashReplAdapter implements ReplAdapter {
   private async ensureSession(): Promise<ReplPushResult | null> {
     if (this.session) return null;
     this.session = await createBashFacetSession({
-      facetMgr: this.deps.facetMgr,
+      facets: facetHostForManager(this.deps.facetMgr),
       vfs: this.deps.vfs.as(this.deps.cred),
       manifest: this.deps.manifest,
       installRoot: this.deps.installRoot,

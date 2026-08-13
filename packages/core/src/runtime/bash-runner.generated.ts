@@ -6,7 +6,7 @@
  *
  * The facet-side bash scheduler as a self-contained IIFE that installs
  * globalThis.__bashBoot / globalThis.__bashFeed. bash-runner.ts re-exports it
- * as BASH_RUNNER_PREAMBLE and passes it as the loader-pool preamble.
+ * as BASH_RUNNER_PREAMBLE and passes it as the facet preamble.
  *
  * Size: 58.56 KiB
  */

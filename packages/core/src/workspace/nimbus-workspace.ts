@@ -25,11 +25,17 @@ import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
 import { DEFAULT_MOUNT_POINTS, DEFAULT_PATH } from '../constants.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
+import { PID_GEN_STRIDE } from '../runtime/process-table.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import type { FacetHost } from '../runtime/facet-host.js';
+import {
+  rehydrateInstalledRuntimesView,
+  type RunnerFactory,
+} from '../runtime/installed-runtimes.js';
+import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
+import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
-
-/** Pids are `generation * PID_GEN_STRIDE + seq`; mirrors process-table.ts. */
-const PID_GEN_STRIDE = 1_000_000;
 
 export interface NimbusWorkspaceOptions {
   /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
@@ -55,6 +61,21 @@ export interface NimbusWorkspaceOptions {
   readonly cwd?: string;
   /** Absent means headless: `.exec` captures output and nothing is drawn. */
   readonly terminal?: ITerminal;
+  /**
+   * Where WebAssembly runs.
+   *
+   * Absent, the workspace is the JavaScript half of Nimbus: the durable
+   * filesystem, the shell and the coreutils, and `bash` or `./prog.wasm` is
+   * "command not found" — not disabled, ABSENT, because nothing has been
+   * supplied that could compile a module or run one. Supplied, the wasm
+   * runtimes already installed in this filesystem become invokable commands
+   * and `wasm-runner` joins them, which is what makes a `\0asm` file on the
+   * PATH executable (see shell/exec-dispatch.ts).
+   *
+   * A Durable Object passes the workerd host (`@nimbus-sh/worker`'s
+   * `loaderFacetHost`); a plain process passes `localFacetHost()`.
+   */
+  readonly facets?: FacetHost;
 }
 
 /**
@@ -116,6 +137,16 @@ export class NimbusWorkspace {
     registerUnixCommands(sandbox.commands.registry, vfs);
     installPathExecResolver(sandbox.commands.registry, vfs.as(CRED_SESSION_USER), () => sandbox.shell.getCwd());
 
+    if (options.facets) {
+      await registerWasmRuntimes({
+        facets: options.facets,
+        vfs,
+        registry: sandbox.commands.registry,
+        generation: options.generation ?? 1,
+        home: options.env?.HOME ?? '/home/user',
+      });
+    }
+
     return new NimbusWorkspace(sandbox, vfs, options.sql);
   }
 
@@ -148,6 +179,64 @@ export class NimbusWorkspace {
       this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
   }
+}
+
+/**
+ * Turn a facet host into commands: the runtimes this filesystem already holds,
+ * plus `wasm-runner` for everything else with a `\0asm` header.
+ *
+ * The runner factories are held here rather than in the process-global table
+ * `nimbus install` writes to, because each one closes over THIS workspace's
+ * filesystem and THIS workspace's facet host — a second workspace in the same
+ * process would otherwise silently retarget the first one's bash.
+ *
+ * Imported on demand: the runners carry the WASI shim and the bash scheduler as
+ * source strings, and a workspace with no facet host must not pay to parse
+ * them.
+ */
+async function registerWasmRuntimes(deps: {
+  facets: FacetHost;
+  vfs: SqliteVFS;
+  registry: CommandRegistry;
+  generation: number;
+  home: string;
+}): Promise<void> {
+  const [{ makeBashRunnerFactory }, { wasmRunnerSpec }, { buildRuntimeHandler }, esbuildModule] =
+    await Promise.all([
+      import('../runtime/bash-runner.js'),
+      import('../runtime/wasm-runner.js'),
+      import('../runtime/runtime-registry.js'),
+      import('../runtime/esbuild-service.js'),
+    ]);
+
+  // wasm-runner allocates pids for what it runs, so it needs a process table
+  // whose pid space is this generation's — the same rule the append writers
+  // above are revoked by.
+  const processes = new SessionProcessSupervisor();
+  processes.setPidBase(deps.generation * PID_GEN_STRIDE);
+
+  let esbuild: EsbuildService | null = null;
+  deps.registry.register('wasm-runner', buildRuntimeHandler(
+    wasmRunnerSpec({ vfs: deps.vfs, facets: deps.facets, processes }),
+    {
+      vfs: deps.vfs,
+      getEsbuild: () => {
+        if (!esbuild) esbuild = new esbuildModule.EsbuildService(deps.vfs);
+        return esbuild;
+      },
+      registry: deps.registry,
+    },
+  ));
+
+  const runners: Record<string, RunnerFactory> = {
+    'bash-runner': makeBashRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
+  };
+  rehydrateInstalledRuntimesView(
+    deps.vfs.as(CRED_KERNEL),
+    deps.registry,
+    deps.home,
+    (key) => runners[key],
+  );
 }
 
 /**

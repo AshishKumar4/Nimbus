@@ -10,9 +10,11 @@ import {
   ensureRuntimesProgrammatic,
   installRuntimeProgrammatic,
   listAvailableRuntimes,
+} from '../runtime/package-manager.js';
+import {
   listInstalledRuntimes,
   type MinShellRegistry,
-} from '../runtime/package-manager.js';
+} from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';

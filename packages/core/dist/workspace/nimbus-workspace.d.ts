@@ -20,6 +20,7 @@ import type { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
+import type { FacetHost } from '../runtime/facet-host.js';
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
     readonly sql: SqlDatabase;
@@ -44,6 +45,21 @@ export interface NimbusWorkspaceOptions {
     readonly cwd?: string;
     /** Absent means headless: `.exec` captures output and nothing is drawn. */
     readonly terminal?: ITerminal;
+    /**
+     * Where WebAssembly runs.
+     *
+     * Absent, the workspace is the JavaScript half of Nimbus: the durable
+     * filesystem, the shell and the coreutils, and `bash` or `./prog.wasm` is
+     * "command not found" — not disabled, ABSENT, because nothing has been
+     * supplied that could compile a module or run one. Supplied, the wasm
+     * runtimes already installed in this filesystem become invokable commands
+     * and `wasm-runner` joins them, which is what makes a `\0asm` file on the
+     * PATH executable (see shell/exec-dispatch.ts).
+     *
+     * A Durable Object passes the workerd host (`@nimbus-sh/worker`'s
+     * `loaderFacetHost`); a plain process passes `localFacetHost()`.
+     */
+    readonly facets?: FacetHost;
 }
 /**
  * A durable filesystem and a shell over it.
