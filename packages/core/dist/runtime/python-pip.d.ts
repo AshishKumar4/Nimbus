@@ -1,5 +1,5 @@
 import { z } from 'zod/v4';
-import { type RuntimeArtifactMetadata, type RuntimePythonPackageArtifactMetadata } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { type RuntimeArtifactMetadata, type RuntimePythonPackageArtifactMetadata } from './runtime-manifest.js';
 export declare const PYTHON_SITE_PACKAGES_ROOT = "home/user/.nimbus-python/site-packages";
 export declare const PYTHON_PYODIDE_PACKAGE_MANIFEST = "home/user/.nimbus-python/site-packages/.nimbus-pyodide-packages.json";
 interface PythonPipVfs {

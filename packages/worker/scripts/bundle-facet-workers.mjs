@@ -32,7 +32,7 @@
  *   src/loaders/generated-workers.ts — exports
  *       TAR_STREAM_PREAMBLE: string
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
- *   src/runtime/virtual-socket-kernel.generated.ts — exports
+ *   @nimbus-sh/core src/runtime/virtual-socket-kernel.generated.ts — exports
  *       VIRTUAL_SOCKET_KERNEL_SRC: string
  *   @nimbus-sh/core src/runtime/wasi-instance.generated.ts — exports
  *       WASI_INSTANCE_BODY_SRC: string
@@ -316,7 +316,7 @@ async function main() {
   writeFileSync(outPath, tsWrapper);
 
   const kernelSrc = await bundleVirtualSocketKernel();
-  const kernelOutPath = join(root, 'src', 'runtime', 'virtual-socket-kernel.generated.ts');
+  const kernelOutPath = join(coreRoot, 'src', 'runtime', 'virtual-socket-kernel.generated.ts');
   const kernelWrapper = [
     '/**',
     ' * virtual-socket-kernel.generated.ts — AUTO-GENERATED. DO NOT EDIT.',

@@ -392,8 +392,14 @@ export function initSession(self, ws) {
         }
         // Args present (one-shot mode: -c, script, -m, -). Fall through
         // to the canonical handler (imported lazily on first use).
-        const { makeCPythonRunnerFactory } = await import('../runtime/cpython-runner.js');
-        return await makeCPythonRunnerFactory({ facetMgr, vfs: sqliteFs })(manifest, installRoot, binName, binKind)(ctx);
+        const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
+        return await makeCPythonRunnerFactory({
+            facets: facetHostForManager(facetMgr),
+            vfs: sqliteFs,
+            startResident: cpythonResidentStart(facetMgr),
+        })(manifest, installRoot, binName, binKind)(ctx);
     });
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,

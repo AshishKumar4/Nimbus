@@ -1,0 +1,1 @@
+{"version":3,"file":"vfs-supervisor.d.ts","sourceRoot":"","sources":["../../src/runtime/vfs-supervisor.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;GAgBG;AAEH,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,sBAAsB,CAAC;AAC5D,OAAO,KAAK,EAAkB,kBAAkB,EAAE,MAAM,iBAAiB,CAAC;AAE1E,iFAAiF;AACjF,wBAAgB,aAAa,CAAC,GAAG,EAAE,eAAe,GAAG,kBAAkB,CA4CtE"}

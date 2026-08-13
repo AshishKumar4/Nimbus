@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { buildPipInvocation } from '../../packages/worker/src/runtime/python-pip.ts';
+import { buildPipInvocation } from '../../packages/core/src/runtime/python-pip.ts';
 import {
   isRuntimePythonPackageArtifactMetadata,
   parseRuntimeManifest,

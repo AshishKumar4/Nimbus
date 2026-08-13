@@ -201,13 +201,19 @@ async function registerWasmRuntimes(deps: {
   generation: number;
   home: string;
 }): Promise<void> {
-  const [{ makeBashRunnerFactory }, { wasmRunnerSpec }, { buildRuntimeHandler }, esbuildModule] =
-    await Promise.all([
-      import('../runtime/bash-runner.js'),
-      import('../runtime/wasm-runner.js'),
-      import('../runtime/runtime-registry.js'),
-      import('../runtime/esbuild-service.js'),
-    ]);
+  const [
+    { makeBashRunnerFactory },
+    { makeCPythonRunnerFactory },
+    { wasmRunnerSpec },
+    { buildRuntimeHandler },
+    esbuildModule,
+  ] = await Promise.all([
+    import('../runtime/bash-runner.js'),
+    import('../runtime/cpython-runner.js'),
+    import('../runtime/wasm-runner.js'),
+    import('../runtime/runtime-registry.js'),
+    import('../runtime/esbuild-service.js'),
+  ]);
 
   // wasm-runner allocates pids for what it runs, so it needs a process table
   // whose pid space is this generation's — the same rule the append writers
@@ -230,6 +236,10 @@ async function registerWasmRuntimes(deps: {
 
   const runners: Record<string, RunnerFactory> = {
     'bash-runner': makeBashRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
+    // No `startResident`: a workspace owns no actor that could outlive the
+    // call, so a program that keeps serving is refused by name rather than
+    // run as a one-shot that dies with it.
+    'cpython-runner': makeCPythonRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
   };
   rehydrateInstalledRuntimesView(
     deps.vfs.as(CRED_KERNEL),

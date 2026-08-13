@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { VirtualSocketKernel } from '../../packages/core/src/runtime/virtual-socket-kernel.ts';
-import { VIRTUAL_SOCKET_KERNEL_SRC } from '../../packages/worker/src/runtime/virtual-socket-kernel.generated.ts';
+import { VIRTUAL_SOCKET_KERNEL_SRC } from '../../packages/core/src/runtime/virtual-socket-kernel.generated.ts';
 
 function withTimeout(promise, label) {
   return Promise.race([

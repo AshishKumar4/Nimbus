@@ -45,7 +45,7 @@ import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contract
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from '@nimbus-sh/core/runtime/wasi-instance.js';
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
+import { VIRTUAL_SOCKET_KERNEL_SRC } from '@nimbus-sh/core/runtime/virtual-socket-kernel.generated.js';
 import { RUBY_SOCKET_SHIM } from '@nimbus-sh/core/runtime/ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from '@nimbus-sh/core/runtime/ruby-green-threads.js';
 import {

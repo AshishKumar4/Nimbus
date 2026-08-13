@@ -18,14 +18,14 @@ import type {
   VersionSpec,
 } from 'pip-requirements-js';
 import { z } from 'zod/v4';
-import { parentVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { PYODIDE_PACKAGE_ABI } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { parentVfsPath, resolveVfsPath } from '../vfs/path.js';
+import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import {
   isRuntimePythonPackageArtifactMetadata,
   RuntimePythonPackageArtifactMetadataSchema,
   type RuntimeArtifactMetadata,
   type RuntimePythonPackageArtifactMetadata,
-} from '@nimbus-sh/core/runtime/runtime-manifest.js';
+} from './runtime-manifest.js';
 
 export const PYTHON_SITE_PACKAGES_ROOT = 'home/user/.nimbus-python/site-packages';
 export const PYTHON_PYODIDE_PACKAGE_MANIFEST = `${PYTHON_SITE_PACKAGES_ROOT}/.nimbus-pyodide-packages.json`;

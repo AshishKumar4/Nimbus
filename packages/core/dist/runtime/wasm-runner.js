@@ -49,7 +49,6 @@
 import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
-import { manifestVfs } from './vfs-manifest.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
@@ -529,7 +528,7 @@ export function makeWasmRunner(deps) {
         if (isWasi) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
             const cwd = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            const seed = manifestVfs(vfs, cwd, { revision: vfs.revision(cwd) });
+            const seed = deps.facets.seedFilesystem(vfs, cwd, { revision: vfs.revision(cwd) });
             if ('error' in seed) {
                 return {
                     exitCode: 1,
@@ -560,7 +559,7 @@ export function makeWasmRunner(deps) {
                 // filesystem with the live session VFS instead of a spawn-time copy.
                 // Direct (compute-only) mode has no filesystem at all, so it asks for
                 // no capability and the facet boots fast.
-                supervisorPid: isWasi ? pid : undefined,
+                syscalls: isWasi ? { vfs, pid } : undefined,
                 // WASI mode: ship the WASI shim source as a facet preamble so
                 // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
                 // no preamble (saves a few KB per submit).

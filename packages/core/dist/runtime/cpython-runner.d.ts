@@ -46,26 +46,41 @@
  * pair for the same reason. The drain in the `finally` is the other half: a
  * program that wrote a file and then raised still wrote the file.
  */
-import type { FacetManager } from '../facets/manager.js';
-import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import type { Command } from '../substrate/lifo/commands/types.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { FacetHost } from './facet-host.js';
+import type { RuntimeManifest } from './runtime-manifest.js';
 /**
  * The one canonical facet preamble. Composed in exactly one place: a
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose
  * language prelude was missing.
  */
 export declare function buildCPythonPreamble(): string;
+export interface CPythonFacetResult {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    error?: string;
+}
 /**
- * The worker source for a resident Python process. Same shape as
- * buildRubySocketProcessWorker: the socket kernel and the interpreter live in a
- * DurableObject, startProcess runs the program until it stops, and inbound
- * requests arrive on handleHttpRequest and are dispatched into the server the
- * program registered before exiting.
+ * Start a program that outlives the invocation, and report where it went.
+ *
+ * A separate dependency rather than a branch, because a resident process is a
+ * property of the DEPLOYMENT and not of Python: it needs a substrate that can
+ * keep an actor alive between requests and route inbound HTTP into it. A host
+ * that has none does not get a degraded version — it gets none, and says so.
  */
-export declare function buildCPythonSocketProcessWorker(preamble: string): string;
+export type CPythonResidentStart = (spawn: {
+    /** VFS path of the interpreter. By path, not by value: it is 10.6 MiB. */
+    wasmVfsPath: string;
+    startArgs: Record<string, unknown>;
+    cwd: string;
+    command: string;
+}) => Promise<CPythonFacetResult>;
 export declare function makeCPythonRunnerFactory(deps: {
-    facetMgr: FacetManager;
+    facets: FacetHost;
     vfs: SqliteVFS;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => (ctx: CommandContext) => Promise<number>;
+    /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
+    startResident?: CPythonResidentStart;
+}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 //# sourceMappingURL=cpython-runner.d.ts.map

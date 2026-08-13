@@ -90,10 +90,12 @@
       "name": "@nimbus-sh/core",
       "version": "0.1.0",
       "dependencies": {
+        "@renovatebot/pep440": "^5.0.0",
         "acorn": "^8.15.0",
         "acorn-walk": "^8.3.5",
         "esbuild-wasm": "0.24.2",
         "magic-string": "^0.30.21",
+        "pip-requirements-js": "^1.0.3",
         "zod": "^4.4.3",
       },
       "devDependencies": {

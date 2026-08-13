@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { makeCPythonRunnerFactory } from '../../packages/worker/src/runtime/cpython-runner.ts';
+import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
+import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
 
 const encoder = new TextEncoder();
@@ -46,7 +47,7 @@ function loaderHarness() {
     },
   };
   const ctx = { id: { toString: () => 'unit-runtime-home' }, waitUntil() {} };
-  return { calls, facetMgr: { env, ctx } };
+  return { calls, env, ctx, facetMgr: { env, ctx } };
 }
 
 function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) {
@@ -79,7 +80,7 @@ function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umas
       kind: 'workerd-adapter',
     }],
   };
-  const run = makeCPythonRunnerFactory({ facetMgr: harness.facetMgr, vfs })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx), vfs })(
     manifest,
     '/runtime/python',
     'python',

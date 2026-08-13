@@ -127,8 +127,9 @@ export class NimbusWorkspace {
  * them.
  */
 async function registerWasmRuntimes(deps) {
-    const [{ makeBashRunnerFactory }, { wasmRunnerSpec }, { buildRuntimeHandler }, esbuildModule] = await Promise.all([
+    const [{ makeBashRunnerFactory }, { makeCPythonRunnerFactory }, { wasmRunnerSpec }, { buildRuntimeHandler }, esbuildModule,] = await Promise.all([
         import('../runtime/bash-runner.js'),
+        import('../runtime/cpython-runner.js'),
         import('../runtime/wasm-runner.js'),
         import('../runtime/runtime-registry.js'),
         import('../runtime/esbuild-service.js'),
@@ -150,6 +151,10 @@ async function registerWasmRuntimes(deps) {
     }));
     const runners = {
         'bash-runner': makeBashRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
+        // No `startResident`: a workspace owns no actor that could outlive the
+        // call, so a program that keeps serving is refused by name rather than
+        // run as a one-shot that dies with it.
+        'cpython-runner': makeCPythonRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
     };
     rehydrateInstalledRuntimesView(deps.vfs.as(CRED_KERNEL), deps.registry, deps.home, (key) => runners[key]);
 }

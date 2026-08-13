@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 
-import { makeCPythonRunnerFactory } from '../../packages/worker/src/runtime/cpython-runner.ts';
+import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';

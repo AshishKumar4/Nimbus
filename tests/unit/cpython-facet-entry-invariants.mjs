@@ -18,8 +18,11 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const RUNTIME_DIR = join(dirname(fileURLToPath(import.meta.url)),
-  '..', '..', 'packages', 'worker', 'src', 'runtime');
+// Both halves: the runners live in @nimbus-sh/core now, and the workerd-only
+// resident-process spawn stayed behind. A discovery pass that looked in one
+// would pass vacuously over the other.
+const RUNTIME_DIRS = ['core', 'worker'].map((pkg) => join(
+  dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', pkg, 'src', 'runtime'));
 
 /** Brace-matched body of the function declared at `from`, parameters skipped. */
 function bodyAt(src, from) {
@@ -77,8 +80,9 @@ const REQUIREMENTS = [
 ];
 
 const entries = [];
-for (const file of readdirSync(RUNTIME_DIR).filter((f) => f.endsWith('.ts'))) {
-  const src = readFileSync(join(RUNTIME_DIR, file), 'utf8');
+for (const dir of RUNTIME_DIRS)
+for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+  const src = readFileSync(join(dir, file), 'utf8');
   for (const m of src.matchAll(/\.submit\w*\(\s*([A-Za-z_$][\w$]*)/g)) {
     const name = m[1];
     const body = functionBody(src, name);
