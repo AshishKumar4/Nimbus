@@ -1,7 +1,10 @@
 # @nimbus-sh/worker
 
-The Nimbus runtime package: Durable Object, router, assets, VFS, runtime
-manager, and facet machinery.
+The Cloudflare half of Nimbus: the `NimbusSession` Durable Object, router,
+static assets, facet machinery, and auth internals. The filesystem, shell,
+and WASI runtime layer live in
+[`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core), which
+this package composes on — core also runs standalone in bun or node.
 
 Application code should import the deploy-time API through
 `@nimbus-sh/sdk/worker`. This package is still installed because it carries

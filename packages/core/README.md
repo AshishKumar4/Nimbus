@@ -1,0 +1,112 @@
+# @nimbus-sh/core
+
+> Part of [Nimbus](https://github.com/AshishKumar4/Nimbus), my hobby/research
+> cloud OS. This README is edited and maintained with Claude (AI) and
+> presented as-is.
+
+The backend-agnostic half of Nimbus: a durable POSIX-like filesystem, a shell
+with 60+ Unix commands, and the WASI runtime layer — with no Cloudflare
+dependency. You hand it a SQLite and get back `.fs` and `.exec`. On
+Cloudflare that SQLite is `ctx.storage.sql` inside your Durable Object; in bun
+or node it is `bun:sqlite` or `node:sqlite`.
+
+I extracted this package because I kept wanting Nimbus *inside* other
+projects — a Durable Object that already does something else but needs a real
+workspace, or a local script that needs the same filesystem semantics the
+hosted product has. The whole of it runs on two narrow ports (`SqlDatabase`
+and `SqlTransactions`), so the same code serves both hosts.
+
+## Quick start
+
+```ts
+import { Database } from 'bun:sqlite';
+import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+
+const db = new Database('workspace.sqlite');
+const sql = {
+  exec(q, ...p) {
+    const st = db.query(q);
+    if (st.columnNames.length === 0) { db.run(q, ...p); return []; }
+    return st.all(...p);
+  },
+};
+const transactions = { storage: { transactionSync: (cb) => db.transaction(cb)() } };
+
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+
+await ws.fs.writeFile('/home/user/hello.txt', 'hi\n');
+const out = await ws.exec('cat /home/user/hello.txt | wc -c');   // { stdout: '3\n', exitCode: 0 }
+```
+
+Inside a Cloudflare Durable Object the same call is:
+
+```ts
+const ws = await NimbusWorkspace.create({
+  sql: this.ctx.storage.sql,
+  transactions: this.ctx,
+  generation,
+});
+```
+
+Files written through `.fs` are owned by the session user (uid 1000), not
+root, and the shell enforces the same permission model either way: a
+root-owned `/etc/passwd` refuses a write from `.fs`, and `id` resolves names
+through it.
+
+## Real runtimes, off Cloudflare
+
+The wasm runtimes are separate npm packages so nobody downloads a Python
+interpreter to get a filesystem. Install the ones you want and pass them in:
+
+```bash
+npm install @nimbus-sh/runtime-bash @nimbus-sh/runtime-cpython
+```
+
+```ts
+import bash from '@nimbus-sh/runtime-bash';
+import cpython from '@nimbus-sh/runtime-cpython';
+import { localFacetHost } from '@nimbus-sh/core';
+
+const ws = await NimbusWorkspace.create({
+  sql, transactions, generation: 1,
+  facets: localFacetHost(),
+  runtimes: [bash, cpython],
+});
+
+await ws.exec('bash -c "echo $((6*7))"');       // 42 — GNU bash 5.2, real BusyBox children
+await ws.exec(`python -c "import sqlite3; print('live')"`);  // CPython 3.13, real stdlib
+```
+
+`@nimbus-sh/runtime-ruby` (Ruby 3.3) and `@nimbus-sh/runtime-clang` (clang →
+`wasm32-wasi`, compile and run C in the workspace) work the same way. Every
+package carries the same manifest and the same sha256-verified blobs the
+hosted product serves from R2 — one publisher, two transports.
+
+Without `facets` and `runtimes` you still get the full shell and coreutils;
+the wasm runtimes are a dependency you add, not a mode you enable.
+
+## Sharing a database with your own app
+
+The workspace is designed to be a tenant in a database you own, not the owner
+of it:
+
+- It creates and touches only its own tables (`inodes`, `file_chunks`,
+  `content_lifecycle`, `vfs_*`).
+- `destroy()` drops exactly those tables. It never calls `deleteAll()`.
+- `transactionSync` must be a real transaction. An implementation that only
+  calls the callback turns every atomic write into a torn one.
+- `generation` must never repeat across restarts of your host — pids derive
+  from it, and a repeated generation would hand a dead process live write
+  authority.
+
+## What needs the Worker package instead
+
+Resident processes (long-running servers, attached TUIs), the session
+protocol, port routing to the public internet, and the hosted terminal all
+live in [`@nimbus-sh/worker`](https://www.npmjs.com/package/@nimbus-sh/worker),
+which composes on this package. If you want the full hosted product shape,
+start from `npx create-nimbus-app`.
+
+## License
+
+MIT.
