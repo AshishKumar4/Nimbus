@@ -61,16 +61,18 @@ export const W1_NEXT_ALARM_REASONS_KEY = 'w1_next_alarm_reasons';
  */
 export const SESSION_DESTROYED_KEY = 'session_destroyed';
 /**
- * Prefix for the resident-launch journal: one row per launch in flight, keyed
- * by the pid it is building for.
+ * Prefix for the resident-process journal: one row per resident this session
+ * owes the user, keyed by the pid it was built for.
  *
- * A launch spans many turns and holds its state in memory, so an instance
- * reset destroys it silently — the process, the terminal and the work all go
- * with the object. The row is what a LATER instance reads to know a launch
- * ended that way rather than by finishing: a pid at or below the reader's own
- * pid base was allocated by a previous generation (see PID_GEN_STRIDE).
- * Written before the launch's first byte of work and removed when it settles,
- * so a row that outlives its instance is exactly an interrupted launch.
+ * A resident holds its state in memory — the process table entry, the facet
+ * handle, the terminal — so an instance reset destroys it silently. The row
+ * is what a LATER instance reads to know a resident ended that way rather
+ * than on purpose: a pid at or below the reader's own pid base was allocated
+ * by a previous generation (see PID_GEN_STRIDE). Written (and synced) before
+ * the launch's first byte of work, rewritten as `running` when the launch
+ * settles, and released only when the PROCESS ends — because the resets this
+ * row survives strike after the launch as often as during it (measured live,
+ * staging 2026-08-13: every observed reset landed seconds AFTER settle).
  */
 export const RESIDENT_LAUNCH_KEY_PREFIX = 'resident-launch:';
 /** Prefix for consumed single-use attach bootstrap token ids (`jti`).

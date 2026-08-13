@@ -652,6 +652,14 @@ export declare class FacetManager {
     private launchWaiters;
     /** Whether this instance has already read the journal a reset leaves behind. */
     private launchesRecovered;
+    /**
+     * Pids THIS instance holds journal rows for. What keeps the terminal hook —
+     * which fires for every process, shells and one-shots included — from
+     * paying a storage delete for pids that never had a row. In-memory is
+     * correct: rows from a previous instance are recovery's to consume, never
+     * this hook's.
+     */
+    private journalledPids;
     private timedOutProcessIds;
     private _pairedServeFacet;
     /**
@@ -1016,6 +1024,16 @@ export declare class FacetManager {
      * Record a launch as in flight, so an instance that replaces this one knows
      * it never finished. Best-effort: a launch that cannot be journalled still
      * runs, and a reset then costs exactly what it cost before the journal.
+     *
+     * Synced, not merely put: `await put()` resolves before durability, and the
+     * reset this journal exists for destroys every write its turn still had
+     * outstanding — measured live, a launch killed in its first chunks left NO
+     * row for the replacement instance to find, which is how the recovery this
+     * feeds sat inert while its own test stayed green. `sync()` is the storage
+     * layer's durability barrier: the row is on disk before the launch performs
+     * its first byte of real work. What remains is a reset between the put and
+     * the sync's completion — and a launch that dies there has not started, so
+     * losing its row costs a retype, not a recovery.
      */
     private _journalLaunch;
     /** Whether any launch is suspended waiting for a turn. */
@@ -1080,6 +1098,12 @@ export declare class FacetManager {
      * the launch faster would have given it.
      */
     private _runResidentLaunch;
+    /**
+     * The journal row's one release: the process is over, nothing is owed.
+     * Synced so an instance reset moments later cannot roll the delete back and
+     * resurrect a process the user watched end.
+     */
+    private _releaseResidentJournal;
     private _residentLaunchBody;
     /**
      * Spawn a long-running dynamic Worker, boot it, and return its boot payload.

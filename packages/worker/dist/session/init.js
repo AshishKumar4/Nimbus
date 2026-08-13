@@ -164,6 +164,17 @@ export async function initSession(self, ws) {
         self.terminal.write('\x1b[33m[nimbus] this session resumed on a new instance. Anything still '
             + 'running was lost with the old one — re-run it if it had not finished.\x1b[0m\r\n');
     }
+    // A reset that killed a resident launch left its journal row behind
+    // (facets/manager.ts, _recoverInterruptedLaunches). The alarm the dying
+    // instance was using for launch turns is NOT a trigger recovery can rely
+    // on — measured live, a launch killed early in its first chunks rolls the
+    // alarm-map put back with the rest of the dying turn, so the replacement
+    // instance never fires an alarm at all. What always follows a dead session
+    // is this reconnect, so recovery runs here: after the terminal exists (the
+    // report lands in front of the user, live) and after the constructor's
+    // pidBase gate (the journal predicate needs this instance's generation).
+    // Idempotent per instance; a no-op whenever no launch was interrupted.
+    await self.facetManager.pumpResidentLaunches();
     // [B'.4] Phase B — Build. Compose the workspace (kernel + mounts +
     // shell + the OS command set), then install the session's own
     // commands and wiring on top. CPU-intensive phase. Spans from here

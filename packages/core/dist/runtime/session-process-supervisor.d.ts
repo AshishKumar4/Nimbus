@@ -55,6 +55,8 @@ export declare class SessionProcessSupervisor {
     private terminators;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     private logActivity;
+    /** Fires once per pid on its first terminal transition; see setOnTerminal. */
+    private onTerminalCb;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
     /** Mark an existing entry as long-running. Idempotent. */
@@ -76,6 +78,19 @@ export declare class SessionProcessSupervisor {
     private terminate;
     cred(pid: number): VfsCred;
     setUmask(pid: number, umask: number): number;
+    /**
+     * Observe every pid's FIRST transition out of `running`, whichever door it
+     * leaves by — exit(), kill(), a facet's self-reported exit, a timeout abort:
+     * all of them end here, which is what makes this one callback a complete
+     * seam for per-pid durable state (the resident-launch journal) that must be
+     * released exactly when the process ends and never before.
+     *
+     * One slot, owned by the FacetManager. A second subscriber would mean two
+     * owners of process-end policy; grow this into a list only when a second
+     * genuine owner exists.
+     */
+    setOnTerminal(cb: (pid: number) => void): void;
+    private fireTerminal;
     /** Mark a process as exited. First terminal state wins. */
     exit(pid: number, exitCode: number): void;
     /**
