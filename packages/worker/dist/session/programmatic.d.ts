@@ -94,7 +94,7 @@ export interface ProgrammaticHost {
     _w9WireProcessLogPersist?(): void;
     ensureSqliteFs(): void;
     ensureFacetManager(): void;
-    initSession(ws: WebSocket): void;
+    initSession(ws: WebSocket): Promise<void>;
 }
 export interface ProgrammaticReadyOptions {
     preinstall?: string[];

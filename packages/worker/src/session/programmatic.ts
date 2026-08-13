@@ -113,7 +113,7 @@ export interface ProgrammaticHost {
   _w9WireProcessLogPersist?(): void;
   ensureSqliteFs(): void;
   ensureFacetManager(): void;
-  initSession(ws: WebSocket): void;
+  initSession(ws: WebSocket): Promise<void>;
 }
 
 export interface ProgrammaticReadyOptions {
@@ -242,7 +242,7 @@ export async function ensureProgrammaticReady(
   options: ProgrammaticReadyOptions = {},
 ): Promise<{ ok: true; preinstalled: string[] }> {
   if (!self.shell) {
-    self.initSession(makeHeadlessWebSocket());
+    await self.initSession(makeHeadlessWebSocket());
     // Programmatic boot owns no real terminal socket. Mark the session
     // drained so a later browser /ws can warm-join instead of 409ing.
     self._b4Phase = 'drained';

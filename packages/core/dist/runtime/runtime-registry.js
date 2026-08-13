@@ -283,7 +283,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             scriptExt === '.jsx' ||
             needsEsmTransform) {
             try {
-                const eb = getEsbuild();
+                const eb = await getEsbuild();
                 const loader = scriptExt === '.tsx' ? 'tsx' :
                     scriptExt === '.jsx' ? 'jsx' :
                         scriptExt === '.ts' ? 'ts' :

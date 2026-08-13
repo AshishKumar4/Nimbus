@@ -3,37 +3,49 @@
  *
  * A workspace is a durable filesystem plus a shell over it. It owns no
  * transport, no session, no socket and no Durable Object: the host supplies
- * SQLite and gets back `.fs` and `.exec`. That is what makes it embeddable in
- * a Durable Object that is already busy powering something else, and what
- * makes it runnable in a plain bun process over `bun:sqlite`.
+ * the filesystem and gets back `.fs`, `.exec`, and a command registry to add
+ * to. That is what makes it embeddable in a Durable Object that is already
+ * busy powering something else, and what makes it runnable in a plain bun
+ * process over `bun:sqlite`.
  *
- * The composition here is not new. It is the one `session/init.ts` performs,
- * lifted out of the session so there is one recipe rather than one per caller
- * — five unit tests were already hand-rolling it, one of them reaching a
- * private field to do so. The boot itself still belongs to `Sandbox.create`;
- * this adds only what a durable, credentialed filesystem needs on top and
- * nothing the sandbox already knows how to do.
+ * The composition here is not new. It is the one `session/init.ts` performed
+ * inline, lifted out of the session so there is one recipe rather than one per
+ * caller — the session now reads its kernel, shell and registry off a
+ * workspace, and five unit tests were already hand-rolling the same steps.
+ *
+ * Deliberately not `Sandbox.create`, which is the lifo demo sandbox's boot
+ * rather than this one: it registers `systemctl`, `tunnel` and the network
+ * command set, boots enabled service units out of `/etc/systemd`, and starts
+ * the shell before the host can register a command of its own. A session
+ * routed through it would silently acquire all of that.
  */
-import { Sandbox } from '../substrate/lifo/sandbox/Sandbox.js';
+import { Kernel } from '../substrate/lifo/kernel/index.js';
+import { Shell } from '../substrate/lifo/shell/Shell.js';
+import { createDefaultRegistry } from '../substrate/lifo/commands/registry.js';
+import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
+import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
-import { DEFAULT_MOUNT_POINTS, DEFAULT_PATH } from '../constants.js';
+import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { rehydrateInstalledRuntimesView, } from '../runtime/installed-runtimes.js';
+import { seedRuntimePackage } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 /**
  * A durable filesystem and a shell over it.
  *
- * Created with {@link NimbusWorkspace.create} rather than `new` because the
- * boot it delegates to sources `/etc/profile`, which is genuinely async. A
- * Durable Object constructor cannot await, so a host constructs the workspace
- * in its first request rather than in its constructor.
+ * The composition itself is synchronous. {@link create} awaits only the
+ * optional work — installing runtime packages, loading the wasm runner modules
+ * — so a host that asks for neither is never suspended between mounting the
+ * filesystem and registering the commands. A Durable Object needs that: it
+ * must not take delivery of an event with a half-built shell. The remaining
+ * async step, running the user's login files, is {@link start}, which the host
+ * calls once its own commands are in place.
  */
 export class NimbusWorkspace {
-    sandbox;
     sql;
     /**
      * Credentialed and mount-aware. Acts as the session user, never as the
@@ -45,48 +57,84 @@ export class NimbusWorkspace {
     vfs;
     kernel;
     shell;
-    constructor(sandbox, vfs, sql) {
-        this.sandbox = sandbox;
+    /** What the shell resolves a command name against. A host adds its own. */
+    registry;
+    /**
+     * The environment the shell was composed with. The shell's own copy drifts
+     * from this one the moment the user exports anything; this is what a host
+     * hands to a subordinate shell it starts itself.
+     */
+    env;
+    commands;
+    constructor(vfs, kernel, shell, registry, env, sql) {
         this.sql = sql;
         this.vfs = vfs;
-        this.kernel = sandbox.kernel;
-        this.shell = sandbox.shell;
-        // NOT `sandbox.fs`, which wraps the raw kernel VFS. The mount is
-        // kernel-credentialed because the shell re-credentials per command; a host
-        // calling `.fs` has no process behind it and must not inherit that.
-        this.fs = new SandboxFsImpl(sandbox.kernel.vfs.as(CRED_SESSION_USER), () => sandbox.shell.getCwd());
+        this.kernel = kernel;
+        this.shell = shell;
+        this.registry = registry;
+        this.env = env;
+        this.commands = new SandboxCommandsImpl(shell, registry);
+        // NOT the kernel VFS as it stands, which is kernel-credentialed because
+        // the shell re-credentials per command; a host calling `.fs` has no
+        // process behind it and must not inherit that.
+        this.fs = new SandboxFsImpl(kernel.vfs.as(CRED_SESSION_USER), () => shell.getCwd());
     }
     static async create(options) {
-        const vfs = new SqliteVFS(options.sql, options.transactions);
-        vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
+        const vfs = options.vfs ?? openFilesystem(options);
         const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
         seedBaseFilesystem(vfs, mounts);
-        const sandbox = await Sandbox.create({
-            env: options.env,
-            cwd: options.cwd,
-            terminal: options.terminal,
-            providerMounts: mounts.map((mount) => ({
-                virtualPath: '/' + mount,
-                provider: new SqliteVFSProvider(vfs, mount),
-            })),
-        });
+        const kernel = new Kernel();
+        // Seeds the in-memory tree. Mounting AFTER it is what keeps a durable
+        // /etc from being overwritten by the defaults on every boot.
+        kernel.initFilesystem();
+        for (const mount of mounts) {
+            kernel.vfs.mount(`/${mount}`, new SqliteVFSProvider(vfs, mount));
+        }
+        const registry = createDefaultRegistry();
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
-        registerUnixCommands(sandbox.commands.registry, vfs);
-        installPathExecResolver(sandbox.commands.registry, vfs.as(CRED_SESSION_USER), () => sandbox.shell.getCwd());
+        registerUnixCommands(registry, vfs);
+        const env = { ...defaultEnv(), ...options.env };
+        const shell = new Shell(options.terminal ?? new HeadlessTerminal(), kernel.vfs, registry, env, kernel.processRegistry, options.identity);
+        if (options.cwd)
+            shell.setCwd(options.cwd);
+        // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
+        // to run it, and re-checks the caller's own execute permission at
+        // invocation time — the `authorize` wrapper in exec-dispatch.ts.
+        installPathExecResolver(registry, vfs.as(CRED_KERNEL), () => shell.getCwd());
+        const home = env.HOME ?? DEFAULT_HOME;
+        // Before the runners are wired, because registration reads what the
+        // filesystem holds — the same order `nimbus install` observes, and the
+        // same order a Durable Object observes when it rehydrates after eviction.
+        for (const runtimePackage of options.runtimes ?? []) {
+            await seedRuntimePackage(vfs.as(CRED_KERNEL), home, runtimePackage);
+        }
         if (options.facets) {
             await registerWasmRuntimes({
                 facets: options.facets,
                 vfs,
-                registry: sandbox.commands.registry,
+                registry,
                 generation: options.generation ?? 1,
-                home: options.env?.HOME ?? '/home/user',
+                home,
             });
         }
-        return new NimbusWorkspace(sandbox, vfs, options.sql);
+        return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql);
     }
     exec(command, options) {
-        return this.sandbox.commands.run(command, options);
+        return this.commands.run(command, options);
+    }
+    /**
+     * Apply the login files, and begin reading the terminal when there is one.
+     *
+     * Separate from {@link create} because a host with commands of its own must
+     * register them first: `/etc/profile` and `~/.nimbusrc` are the user's
+     * files, and either may name a command the host has yet to supply.
+     */
+    async start() {
+        // Sources /etc/profile and the first user rc file it finds, then prompts.
+        this.shell.start();
+        // Nimbus's own rc file, which the shell's list predates.
+        await this.shell.sourceFile(`${this.shell.getEnv().HOME ?? DEFAULT_HOME}/.nimbusrc`);
     }
     /**
      * Files, directories and bytes this workspace occupies.
@@ -114,6 +162,51 @@ export class NimbusWorkspace {
     }
 }
 /**
+ * Open the durable filesystem for a host that has not opened one itself.
+ *
+ * The revocation is here rather than in `create` because it is the act of
+ * OPENING that carries it: pids at or below this generation's floor belong to
+ * an instance that is gone, and their append capabilities must stop being
+ * honoured before the first read. A host that opened the filesystem itself has
+ * already done this, at the same seam, for the same reason.
+ */
+function openFilesystem(options) {
+    const vfs = new SqliteVFS(options.sql, options.transactions);
+    vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
+    return vfs;
+}
+/**
+ * The environment a Nimbus shell starts in.
+ *
+ * `PATH` and `EDITOR` restate what the seeded `/etc/profile` exports, so a
+ * workspace whose host never runs the login files is still on the real PATH.
+ * `PORT` and `HOST` are here because every scaffolded server reads them and
+ * gets `undefined` otherwise — Express's default app, every create-vite
+ * template, `${PORT:-3000}` in a package.json script.
+ */
+function defaultEnv() {
+    return {
+        HOME: DEFAULT_HOME,
+        USER: DEFAULT_USER,
+        SHELL: DEFAULT_SHELL,
+        HOSTNAME: DEFAULT_HOSTNAME,
+        TERM: 'xterm-256color',
+        PWD: DEFAULT_HOME,
+        PATH: DEFAULT_PATH,
+        PS1: `\x1b[1;32muser@${DEFAULT_HOSTNAME}\x1b[0m:\x1b[1;34m\\w\x1b[0m$ `,
+        NODE_ENV: 'development',
+        LANG: 'en_US.UTF-8',
+        EDITOR: 'nano',
+        NIMBUS_VERSION: NIMBUS_VERSION,
+        TMPDIR: '/tmp',
+        XDG_CONFIG_HOME: `${DEFAULT_HOME}/.config`,
+        XDG_DATA_HOME: `${DEFAULT_HOME}/.local/share`,
+        npm_config_prefix: '/usr/local',
+        PORT: '3000',
+        HOST: '0.0.0.0',
+    };
+}
+/**
  * Turn a facet host into commands: the runtimes this filesystem already holds,
  * plus `wasm-runner` for everything else with a `\0asm` header.
  *
@@ -127,24 +220,29 @@ export class NimbusWorkspace {
  * them.
  */
 async function registerWasmRuntimes(deps) {
-    const [{ makeBashRunnerFactory }, { makeCPythonRunnerFactory }, { wasmRunnerSpec }, { buildRuntimeHandler }, esbuildModule,] = await Promise.all([
+    const [{ makeBashRunnerFactory }, { makeCPythonRunnerFactory }, { wasmRunnerSpec }, { buildRuntimeHandler },] = await Promise.all([
         import('../runtime/bash-runner.js'),
         import('../runtime/cpython-runner.js'),
         import('../runtime/wasm-runner.js'),
         import('../runtime/runtime-registry.js'),
-        import('../runtime/esbuild-service.js'),
     ]);
     // wasm-runner allocates pids for what it runs, so it needs a process table
-    // whose pid space is this generation's — the same rule the append writers
-    // above are revoked by.
+    // whose pid space is this generation's.
     const processes = new SessionProcessSupervisor();
     processes.setPidBase(deps.generation * PID_GEN_STRIDE);
+    // Loaded on the first TypeScript or ESM script and not before. The module
+    // statically imports `esbuild-wasm/esbuild.wasm`, which only wrangler
+    // resolves — node instantiates it as a wasm module and fails on its Go
+    // imports — so a host outside Cloudflare must be able to run a shell, bash
+    // and python without that module ever entering its graph.
     let esbuild = null;
     deps.registry.register('wasm-runner', buildRuntimeHandler(wasmRunnerSpec({ vfs: deps.vfs, facets: deps.facets, processes }), {
         vfs: deps.vfs,
         getEsbuild: () => {
-            if (!esbuild)
-                esbuild = new esbuildModule.EsbuildService(deps.vfs);
+            if (!esbuild) {
+                esbuild = import('../runtime/esbuild-service.js')
+                    .then((module) => new module.EsbuildService(deps.vfs));
+            }
             return esbuild;
         },
         registry: deps.registry,
@@ -185,8 +283,14 @@ const WORKSPACE_TABLES = [
  * a workspace reopened over a populated database keeps whatever the user did
  * to these files. `/etc/passwd` and `/etc/group` are load-bearing rather than
  * decorative — `id`, `chown` and `su` resolve names through them.
+ *
+ * What a PRODUCT puts in a fresh filesystem — a banner, a welcome file, a
+ * starter app — is not here. This is the base an OS needs in order to boot,
+ * and it is exported because a host may need the filesystem before it needs a
+ * shell: the Nimbus session seeds its starter project for a browser that hits
+ * `/preview` without ever opening a terminal.
  */
-function seedBaseFilesystem(vfs, mounts) {
+export function seedBaseFilesystem(vfs, mounts) {
     const fs = vfs.as(CRED_SESSION_USER);
     const rootFs = vfs.as(CRED_KERNEL);
     // Created AS the session user, so the user owns their own tree. Seeding
@@ -195,12 +299,37 @@ function seedBaseFilesystem(vfs, mounts) {
         if (mount !== 'etc' && !fs.exists(mount))
             fs.mkdir(mount, { recursive: true });
     }
-    for (const dir of ['home/user', 'usr/bin', 'usr/local/bin', 'var/log', 'tmp']) {
+    for (const dir of [
+        'home/user', 'home/user/.config', 'home/user/projects',
+        'tmp', 'var/log',
+        'usr/bin', 'usr/lib', 'usr/lib/node_modules',
+        'usr/share', 'usr/share/pkg', 'usr/share/pkg/node_modules',
+        'usr/local', 'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/bin',
+    ]) {
         if (!fs.exists(dir))
             fs.mkdir(dir, { recursive: true });
     }
-    if (!rootFs.exists('etc'))
+    // /etc belongs to root, and is re-asserted rather than only created: a
+    // user-writable /etc is an authority bug, not an untidy directory.
+    if (!rootFs.exists('etc')) {
         rootFs.mkdir('etc', { mode: 0o755 });
+    }
+    else {
+        const etc = rootFs.stat('etc');
+        if (etc.uid !== 0 || etc.gid !== 0)
+            rootFs.chown('etc', 0, 0);
+        if ((etc.mode & 0o7777) !== 0o755)
+            rootFs.chmod('etc', 0o755);
+    }
+    if (!rootFs.exists('etc/hostname')) {
+        rootFs.writeFile('etc/hostname', `${DEFAULT_HOSTNAME}\n`);
+        rootFs.chown('etc/hostname', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    }
+    if (!rootFs.exists('etc/os-release')) {
+        rootFs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n`
+            + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
+        rootFs.chown('etc/os-release', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    }
     // Root-owned 0644, and re-asserted rather than only created: these decide
     // what `id`, `chown` and `su` believe, so a user-writable /etc/passwd would
     // be an authority bug rather than an untidy file.
@@ -215,8 +344,17 @@ function seedBaseFilesystem(vfs, mounts) {
     };
     accountFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:/home/user:/bin/sh\n');
     accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
+    const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
     if (!rootFs.exists('etc/profile')) {
-        rootFs.writeFile('etc/profile', `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`);
+        rootFs.writeFile('etc/profile', defaultProfile);
         rootFs.chown('etc/profile', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    }
+    else if (rootFs.readFileString('etc/profile') === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
+        // The lifo default, from before Nimbus had a PATH of its own. Nobody ever
+        // chose it, so replacing it is not overwriting a user's file.
+        rootFs.writeFile('etc/profile', defaultProfile);
+    }
+    if (!fs.exists('home/user/.nimbusrc')) {
+        fs.writeFile('home/user/.nimbusrc', '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n');
     }
 }

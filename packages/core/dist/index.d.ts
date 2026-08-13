@@ -13,6 +13,9 @@
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
 export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
 export type { SqlDatabase, SqlTransactions, SqlRow, SqlValue, TransactionHost, } from './runtime/os-contracts.js';
+export { seedRuntimePackage } from './runtime/runtime-package.js';
+export type { RuntimePackage, SeededRuntime } from './runtime/runtime-package.js';
+export type { ManifestEntrypoint, ManifestFile, RuntimeManifest, } from './runtime/runtime-manifest.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
 export type { Facet, FacetBindings, FacetFn, FacetHost, FacetSpec, FacetSubmitOptions, } from './runtime/facet-host.js';
 //# sourceMappingURL=index.d.ts.map

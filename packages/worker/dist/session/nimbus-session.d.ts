@@ -560,8 +560,18 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * private API across modules.
      */
     _envFlagDefaultOn(name: string): boolean;
-    initSession(ws: WebSocket): void;
+    initSession(ws: WebSocket): Promise<void>;
     ensureGlobalPrefixDirs(prefix: string): void;
+    /**
+     * The starter content a fresh Nimbus session shows a user: the banner, the
+     * sample files, and the Vite starter app.
+     *
+     * The base the OS boots on — the mount directories, /etc/passwd, /etc/group,
+     * /etc/profile, ~/.nimbusrc — comes from the workspace's own seed, which
+     * this calls rather than restates. Both are idempotent, so the workspace
+     * re-running it when it composes the shell costs a handful of existence
+     * checks and changes nothing.
+     */
     seedFilesystem(): void;
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
     webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void>;

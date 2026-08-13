@@ -196,8 +196,9 @@ export function buildRuntimeHandler(
   ctx0: {
     vfs: SqliteVFS;
     /** Lazy esbuild initialiser. Called once per first .ts/.tsx/.jsx
-     *  invocation — the host owns the init lifecycle. */
-    getEsbuild(): EsbuildService;
+     *  invocation — the host owns the init lifecycle, including whether
+     *  the module is loaded eagerly or on this call. */
+    getEsbuild(): EsbuildService | Promise<EsbuildService>;
     registry: ShellRegistry;
   },
 ): (ctx: any) => Promise<number> {
@@ -421,7 +422,7 @@ export function buildRuntimeHandler(
       needsEsmTransform
     ) {
       try {
-        const eb = getEsbuild();
+        const eb = await getEsbuild();
         const loader =
           scriptExt === '.tsx' ? 'tsx' :
           scriptExt === '.jsx' ? 'jsx' :

@@ -143,6 +143,15 @@ nimbus runtime sync --bucket nimbus-runtime-cache python clang ruby
 Do not tell users to run `packages/worker/scripts/bundle-runtime.mjs` unless
 they are changing the runtime ingestion pipeline itself.
 
+Embedders off Cloudflare have no R2 binding, so the same runtimes are also
+published to npm — `@nimbus-sh/runtime-bash` and `@nimbus-sh/runtime-cpython`,
+which `NimbusWorkspace.create({ runtimes })` installs into the workspace
+filesystem at the path `nimbus install` uses. One publisher builds both: the
+package is `bundle-runtime.mjs <name> <version> --npm-package <dir>`, whose
+`manifest.json` is byte-identical to the one in the bucket. A runtime joins the
+npm set by gaining an `npm` entry in its spec, and only bash and cpython have
+one; the others have no runner that works off workerd yet.
+
 Current runtime substrate:
 
 | Runtime | Bins | Notes |

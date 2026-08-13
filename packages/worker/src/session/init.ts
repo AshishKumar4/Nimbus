@@ -3,12 +3,21 @@
  *
  * Why this is one big function and not a class:
  * initSession runs once per /ws upgrade and walks the session
- * through Phase R (rehydrate from SQL), Phase B (build kernel +
- * shell + register commands), Phase W (attach terminal), and
- * (cold-only) Phase O (MOTD + framework hint). The phases share
- * lots of locals (vfs, kernel, registry, shell) and ordering
- * matters strictly — there's no interesting reuse boundary that a
- * class decomposition would expose.
+ * through Phase R (rehydrate from SQL), Phase B (compose the
+ * workspace + register the session's commands), Phase W (attach
+ * terminal), and (cold-only) Phase O (MOTD + framework hint). The
+ * phases share lots of locals (vfs, kernel, registry, shell) and
+ * ordering matters strictly — there's no interesting reuse boundary
+ * that a class decomposition would expose.
+ *
+ * What it no longer does is COMPOSE the operating system. The kernel,
+ * the provider mounts, the command registry, the coreutils, the exec
+ * resolver, the default environment and the shell come from
+ * `NimbusWorkspace` (@nimbus-sh/core/workspace), which an embedder off
+ * Cloudflare builds the same way. What stays here is everything that
+ * only makes sense with a socket, a Durable Object and a product behind
+ * it: the terminal and its scrollback, the phase machine, the persisted
+ * shell state, npm, git, vite, wrangler and the facet-backed runtimes.
  *
  * The function is intentionally written so that a reader sees:
  *   1. setPhase('rehydrate') ...
@@ -26,16 +35,14 @@
  */
 
 import {
-  Kernel, Shell, createDefaultRegistry, ProcessRegistry,
-  MemoryPersistenceBackend, createCurlCommand, createNpmCommand,
+  Shell, createCurlCommand, createNpmCommand,
   NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand,
   rehydrateGlobalPackages,
 } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import type { CommandContext, CommandRunAsHost } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import { SqliteVFSProvider } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -50,9 +57,6 @@ import { parseViteConfigSource, type ParsedViteConfig } from '@nimbus-sh/core/ru
 import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
-import {
-  installPathExecResolver,
-} from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import {
@@ -66,7 +70,6 @@ import {
   detectUnsupportedWranglerConfig,
 } from './helpers.js';
 import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
-import { registerUnixCommands } from '@nimbus-sh/core/shell/unix-commands.js';
 import { registerShellEntrypointCommands, type ShellEntrypointExecutor } from '@nimbus-sh/core/shell/shell-entrypoints.js';
 import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
@@ -92,8 +95,7 @@ import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '@nimbus-sh/core
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import {
-  NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE,
-  NODE_VERSION, DEFAULT_PATH,
+  DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE, NODE_VERSION,
 } from '@nimbus-sh/core/constants.js';
 import {
   ensureSessionStateSchema, loadShellState, persistShellState,
@@ -131,7 +133,7 @@ function quoteShellArgument(value: string): string {
 }
 
 
-export function initSession(self: InitHost, ws: WebSocket): void {
+export async function initSession(self: InitHost, ws: WebSocket): Promise<void> {
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
     self.ensureFacetManager();
@@ -207,43 +209,163 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       );
     }
 
-    // [B'.4] Phase B — Build. Construct Kernel + Shell + registry +
-    // install all commands. CPU-intensive phase. Spans from here
-    // through ~line 1925 (just before Phase O).
+    // [B'.4] Phase B — Build. Compose the workspace (kernel + mounts +
+    // shell + the OS command set), then install the session's own
+    // commands and wiring on top. CPU-intensive phase. Spans from here
+    // through Phase O.
     setPhase(self, 'build', 'init-session');
 
-    // ── Boot kernel with in-memory VFS (mounts delegate to SqliteFS) ──
-    self.kernel = new Kernel(new MemoryPersistenceBackend());
-    self.kernel.initFilesystem();
-
-    // ── Mount SqliteFSProvider at all top-level directories [B'.2] ──
+    // ── Mount list = DEFAULT_MOUNT_POINTS ∪ persisted-mounts [B'.2] ──
     //
-    // Mount list = DEFAULT_MOUNT_POINTS ∪ persisted-mounts. The
-    // defaults are always present (they're platform invariants);
+    // The defaults are always present (they're platform invariants);
     // any extras a future custom-mount feature might add survive
-    // reconnect via the nimbus_kernel_mounts table. The persist
-    // step at the end writes the merged list back so the table
-    // tracks the live mount tree.
+    // reconnect via the nimbus_kernel_mounts table. The persist step
+    // below writes the merged list back so the table tracks the live
+    // mount tree — today the same 7 rows every initSession.
     const persistedMounts = loadKernelMounts(self.ctx);
     const mountPoints = Array.from(new Set([
       ...DEFAULT_MOUNT_POINTS,
       ...persistedMounts,
     ]));
-    for (const mp of mountPoints) {
-      const provider = new SqliteVFSProvider(self.sqliteFs!, mp);
-      self.kernel.vfs.mount('/' + mp, provider as any);
-    }
-    // Persist the mount-tree. Today this writes the same
-    // DEFAULT_MOUNT_POINTS list every initSession (idempotent — the
-    // table just keeps the same 7 rows). Future custom mounts will
-    // flow through the same code path.
-    try { persistKernelMounts(self.ctx, mountPoints); } catch { /* fail-soft */ }
 
-    // ── Create command registry ──
-    const registry = createDefaultRegistry();
-    const kernel = self.kernel;
+    // ── What the session adds to the workspace's environment [B'.1] ──
+    //
+    // The platform defaults — PATH, PS1, HOME, PORT, HOST and the rest —
+    // belong to the workspace (core/workspace/nimbus-workspace.ts) because
+    // they are the OS's, not this transport's. What is genuinely the
+    // session's layers here:
+    //
+    //   NIMBUS_SESSION_ID — derived from sessionBasePath = "/s/<id>". Set
+    //                here as a placeholder ("") and patched below right
+    //                after the shell exists, so the user's first command
+    //                sees the real id. Sentry / Datadog / any ops
+    //                integration that wants a session-stable token reads it.
+    //
+    //   sessionAiEnv() — the session AI gateway (session/ai.ts). A coding
+    //                agent, a user's own script or curl reaches the
+    //                session's models from these without being configured:
+    //                by OPENAI_BASE_URL if it reads one, and otherwise by
+    //                CLOUDFLARE_API_KEY, this session's capability token,
+    //                which mediates the tool's own egress back to the
+    //                gateway (_shared/ai-egress.ts).
+    //
+    //   persisted.env — the user's own `export FOO=bar`, which survives
+    //                reconnect and wins over everything above. A user who
+    //                exports their own OPENAI_BASE_URL or CLOUDFLARE_API_KEY
+    //                still wins; their key is not this session's token, so
+    //                their request goes to their own account.
+    const envOverlay: Record<string, string> = {
+      NIMBUS_SESSION_ID: '',
+      ...sessionAiEnv(),
+      ...(persisted.env || {}),
+    };
+
+    // ── The identity the shell acts under ──
+    //
+    // Every command the shell runs is credentialed by a live entry in the
+    // session's process table, which is what makes `sudo`, `chown` and the
+    // per-process umask mean anything. A workspace with no host process
+    // table falls back to a bare uid-1000 identity; this one has one.
+    if (self.shellProcessPid !== null) {
+      self.processes.exit(self.shellProcessPid, 0);
+    }
+    const shellProcess = self.processes.spawn(
+      'sh',
+      ['sh'],
+      persisted.cwd || '/home/user',
+    );
+    self.shellProcessPid = shellProcess.pid;
+
+    const runAsProcess: CommandRunAsHost = async (parent, cred, argv) => {
+      if (argv.length === 0) return 0;
+      const child = self.processes.spawn(
+        argv.join(' '),
+        argv,
+        parent.cwd,
+        { parentPid: parent.pid, cred },
+      );
+      const activeShell = self.shell;
+      if (!activeShell) {
+        self.processes.exit(child.pid, 1);
+        throw new Error('shell is not initialized');
+      }
+
+      const identity = commandIdentityFor(child.pid);
+      let exitCode = 1;
+      try {
+        const stdin = parent.stdin && parent.stdin !== parent.terminalStdin
+          ? await parent.stdin.readAll()
+          : undefined;
+        const result = await activeShell.execute(
+          argv.map(quoteShellArgument).join(' '),
+          {
+            cwd: parent.cwd,
+            env: parent.env,
+            stdin,
+            terminalStdin: parent.terminalStdin,
+            signal: parent.signal,
+            isolateShellState: true,
+            terminalFds: {
+              stdin: parent.isFdTerminal?.(0) ?? false,
+              stdout: parent.isFdTerminal?.(1) ?? false,
+              stderr: parent.isFdTerminal?.(2) ?? false,
+            },
+            onStdout: (data) => parent.stdout.write(data),
+            onStderr: (data) => parent.stderr.write(data),
+            commandContext: {
+              pid: identity.pid,
+              cred: identity.cred,
+              setUmask: identity.setUmask,
+            },
+            runAs: runAsProcess,
+          },
+        );
+        exitCode = result.exitCode;
+        return exitCode;
+      } finally {
+        self.processes.exit(child.pid, exitCode);
+      }
+    };
+
+    const commandIdentityFor = (pid: number): ShellCommandIdentity => ({
+      pid,
+      get cred() {
+        return self.processes.cred(pid);
+      },
+      setUmask(mask: number) {
+        self.processes.setUmask(pid, mask);
+      },
+      runAs: runAsProcess,
+    });
+
+    // ── The workspace: one recipe for kernel + mounts + shell + coreutils ──
+    //
+    // No `facets`: the session registers its own runtime factories below,
+    // because the ones it needs carry REPLs, a resident-process substrate
+    // and clang, none of which a bare facet host reaches. Everything the
+    // workspace does register is the OS, and is identical either way.
+    const workspace = await NimbusWorkspace.create({
+      sql: self.ctx.storage.sql,
+      // The filesystem this DO already opened. `ensureSqliteFs` above may
+      // have been called many requests ago; a second SqliteVFS over the
+      // same rows would be a second cache serving stale reads.
+      vfs: self.sqliteFs!,
+      mounts: mountPoints,
+      env: envOverlay,
+      terminal: self.terminal,
+      identity: commandIdentityFor(shellProcess.pid),
+    });
+    self.kernel = workspace.kernel;
+    self.shell = workspace.shell;
+
+    const kernel = workspace.kernel;
+    const registry = workspace.registry;
+    const processRegistry = kernel.processRegistry;
+    const env = workspace.env;
     const sqliteFs = self.sqliteFs!;
     const facetMgr = self.facetManager!;
+
+    try { persistKernelMounts(self.ctx, mountPoints); } catch { /* fail-soft */ }
 
     // ── editor/monaco (2026-05-13): editor-pane fs bridge ──
     //
@@ -359,29 +481,11 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       }
     });
 
-    // ── WASI Stage 1: exec dispatch for path-shaped invocations ──
-    // `./x`, `/abs/x`, `../x` go through POSIX execve semantics
-    // (shell/exec-dispatch.ts): exec-bit check (with the wasm-magic
-    // grandfather rule for pre-chmod modes), then format dispatch —
-    // `\0asm` → wasm-runner, `#!` → the named interpreter, binary
-    // junk → honest ENOEXEC, plain text → sh (the POSIX ENOEXEC
-    // fallback). Bare-word "X" still must come from the registered set.
-    //
-    // Implementation: monkey-patch registry.resolve. cwd and file
-    // state are read at every resolve call (not cached) so `cd` and
-    // recompiles between invocations are honoured.
-    installPathExecResolver(
-      registry,
-      kernelFs,
-      () => self.shell?.getCwd() || '/home/user',
-    );
     // W8: hand the registry to the cp broker so child_process.spawn from
     // a parent facet can resolve and dispatch commands the same way the
-    // shell does. Done AFTER all registrations are complete (below).
+    // shell does.
     self._setCpRegistry(registry);
 
-    // ── Unix commands (30+ real implementations) ──
-    registerUnixCommands(registry, sqliteFs);
     registry.register('chsh', makeChshCommand({
       isBashInstalled: (home) =>
         listInstalledRuntimes(sqliteFs, home).some((runtime) => runtime.name === 'bash'),
@@ -1684,181 +1788,28 @@ export function initSession(self: InitHost, ws: WebSocket): void {
       return result.failed.length > 0 ? 1 : 0;
     });
 
-    // ── Set up environment [B'.1: rehydrate from SQL] ──
-    //
-    // Cold start: env is the platform default below.
-    // Silent re-init (persisted env present): the Shell's constructor
-    // does `this.env = { ...n }`, so we layer the persisted env over
-    // the defaults — defaults provide PATH/PS1/etc. (which the user
-    // never sets explicitly), persisted overlays whatever the user
-    // did set (NIMBUS_TEST=cool, etc.).
-    //
-    // Primitive #7 (runtime primitive support): PORT/HOST and
-    // NIMBUS_SESSION_ID are part of the standard contract.
-    //
-    //   PORT=3000  — the same default Markflow's `${PORT:-3000}` shell
-    //                expansion targets, and what every Express/Hono/
-    //                fastify/Bun.serve script reads when the user
-    //                doesn't set it explicitly. Long-running spawns
-    //                still pull from `--port` argv first (see
-    //                runtime/long-running-handle.ts:resolveLongRunningPort);
-    //                this default is the SOURCE for that fall-through.
-    //
-    //   HOST=0.0.0.0 — Cloudflare Workers / DO have no localhost vs.
-    //                external distinction (the supervisor never opens
-    //                a real socket); 0.0.0.0 is what every tutorial
-    //                tells users to bind to and matches CF docs.
-    //
-    //   NIMBUS_SESSION_ID — derived from sessionBasePath = "/s/<id>".
-    //                Set lazily here as a placeholder ("") and patched
-    //                below right after Shell construction so the user's
-    //                first command sees the real id.
-    //
-    //   Why these aren't optional: package.json scripts that hardcode
-    //   process.env.PORT (Express's default app, every "create-vite"
-    //   template) get `undefined` without this. Sentry / Datadog / any
-    //   ops integration that wants a session-stable token uses
-    //   NIMBUS_SESSION_ID.
-    const env: Record<string, string> = {
-      HOME: '/home/user',
-      USER: 'user',
-      SHELL: '/bin/sh',
-      HOSTNAME: DEFAULT_HOSTNAME,
-      TERM: 'xterm-256color',
-      PWD: '/home/user',
-      PATH: DEFAULT_PATH,
-      PS1: `\x1b[1;32muser@${DEFAULT_HOSTNAME}\x1b[0m:\x1b[1;34m\\w\x1b[0m$ `,
-      NODE_ENV: 'development',
-      LANG: 'en_US.UTF-8',
-      EDITOR: 'nano',
-      NIMBUS_VERSION: NIMBUS_VERSION,
-      TMPDIR: '/tmp',
-      XDG_CONFIG_HOME: '/home/user/.config',
-      XDG_DATA_HOME: '/home/user/.local/share',
-      npm_config_prefix: '/usr/local',
-      // Primitive #7 contract additions.
-      PORT: '3000',
-      HOST: '0.0.0.0',
-      NIMBUS_SESSION_ID: '', // patched after Shell ctor — see below.
-      // The session AI gateway (session/ai.ts). A coding agent, a user's own
-      // script or curl reaches the session's models from these without being
-      // configured: by OPENAI_BASE_URL if it reads one, and otherwise by
-      // CLOUDFLARE_API_KEY, this session's capability token, which mediates the
-      // tool's own egress back to the gateway (_shared/ai-egress.ts). A user
-      // who exports their own OPENAI_BASE_URL or CLOUDFLARE_API_KEY still wins,
-      // via the persisted spread — their key is not this session's token, so
-      // their request goes to their own account.
-      ...sessionAiEnv(),
-      // Persisted env keys win over defaults — the user's `export FOO=bar`
-      // survives reconnect.
-      ...(persisted.env || {}),
-    };
-
-    // ── Create shell ──
-    const processRegistry = new ProcessRegistry();
-    if (self.shellProcessPid !== null) {
-      self.processes.exit(self.shellProcessPid, 0);
-    }
-    const shellProcess = self.processes.spawn(
-      'sh',
-      ['sh'],
-      persisted.cwd || '/home/user',
-    );
-    self.shellProcessPid = shellProcess.pid;
-
-    const runAsProcess: CommandRunAsHost = async (parent, cred, argv) => {
-      if (argv.length === 0) return 0;
-      const child = self.processes.spawn(
-        argv.join(' '),
-        argv,
-        parent.cwd,
-        { parentPid: parent.pid, cred },
-      );
-      const activeShell = self.shell;
-      if (!activeShell) {
-        self.processes.exit(child.pid, 1);
-        throw new Error('shell is not initialized');
-      }
-
-      const identity = commandIdentityFor(child.pid);
-      let exitCode = 1;
-      try {
-        const stdin = parent.stdin && parent.stdin !== parent.terminalStdin
-          ? await parent.stdin.readAll()
-          : undefined;
-        const result = await activeShell.execute(
-          argv.map(quoteShellArgument).join(' '),
-          {
-            cwd: parent.cwd,
-            env: parent.env,
-            stdin,
-            terminalStdin: parent.terminalStdin,
-            signal: parent.signal,
-            isolateShellState: true,
-            terminalFds: {
-              stdin: parent.isFdTerminal?.(0) ?? false,
-              stdout: parent.isFdTerminal?.(1) ?? false,
-              stderr: parent.isFdTerminal?.(2) ?? false,
-            },
-            onStdout: (data) => parent.stdout.write(data),
-            onStderr: (data) => parent.stderr.write(data),
-            commandContext: {
-              pid: identity.pid,
-              cred: identity.cred,
-              setUmask: identity.setUmask,
-            },
-            runAs: runAsProcess,
-          },
-        );
-        exitCode = result.exitCode;
-        return exitCode;
-      } finally {
-        self.processes.exit(child.pid, exitCode);
-      }
-    };
-
-    const commandIdentityFor = (pid: number): ShellCommandIdentity => ({
-      pid,
-      get cred() {
-        return self.processes.cred(pid);
-      },
-      setUmask(mask: number) {
-        self.processes.setUmask(pid, mask);
-      },
-      runAs: runAsProcess,
-    });
-
-    self.shell = new Shell(
-      self.terminal,
-      self.kernel.vfs,
-      registry,
-      env,
-      processRegistry,
-      commandIdentityFor(shellProcess.pid),
-    );
-
     // Primitive #7: patch NIMBUS_SESSION_ID into the live shell env.
     // sessionBasePath is "/s/<sid>" set by the X-Nimbus-Base header on
     // the first /ws upgrade — by the time initSession runs (after the
     // ws handshake), it's populated. Older /ws-pre-base callers see
     // an empty string, which is the safe placeholder (no false id).
     //
-    // We patch the live env (not the local `env` map above) so persisted
-    // shell state on warm-rejoin still picks up the SAME session id —
-    // the DO's name is stable across hibernation cycles. Any user
-    // `export NIMBUS_SESSION_ID=...` would have been persisted to
-    // persisted.env and the spread above would have overridden the
-    // empty placeholder; we only set when the live env is empty
-    // (don't clobber a user-set value).
+    // We patch the live env (not the overlay the workspace was built
+    // from) so persisted shell state on warm-rejoin still picks up the
+    // SAME session id — the DO's name is stable across hibernation
+    // cycles. Any user `export NIMBUS_SESSION_ID=...` would have been
+    // persisted to persisted.env and the overlay's spread would have
+    // overridden the empty placeholder; we only set when the live env
+    // is empty (don't clobber a user-set value).
     const sessionIdFromBase = (self.sessionBasePath || '').replace(/^\/s\//, '');
     if (sessionIdFromBase) {
       // Shell.env is declared private but mutable at runtime — there's
       // no public setter. We `any`-cast deliberately; the alternative
-      // (replacing the whole Shell after ctor) would lose the kernel +
-      // registry wiring. Anti-req note: this is NOT a defensive cast,
-      // it's a deliberate single-write operation to plug the contract
-      // gap that env-construction couldn't fill (sessionBasePath
-      // wasn't yet hydrated at ctor time).
+      // (replacing the whole Shell after construction) would lose the
+      // kernel + registry wiring. Anti-req note: this is NOT a defensive
+      // cast, it's a deliberate single-write operation to plug the
+      // contract gap that env-construction couldn't fill (sessionBasePath
+      // wasn't yet hydrated when the workspace was composed).
       const shellAny = self.shell as any;
       if (!shellAny.env.NIMBUS_SESSION_ID) {
         shellAny.env.NIMBUS_SESSION_ID = sessionIdFromBase;
@@ -2907,12 +2858,15 @@ export function initSession(self: InitHost, ws: WebSocket): void {
     }
 
     // ── Start shell ──
-    self.shell.start();
-
-    (async () => {
-      try { await self.shell!.sourceFile('/etc/profile'); } catch {}
-      try { await self.shell!.sourceFile('/home/user/.nimbusrc'); } catch {}
-    })();
+    //
+    // Now, and not inside the workspace, because the login files are the
+    // user's and may name any of the commands registered above. Not awaited:
+    // `shell.start()` runs synchronously and the rc files apply as they
+    // finish, which is what the terminal has always done. A user's broken
+    // rc file must not take the socket down with it.
+    workspace.start().catch((e: any) => {
+      console.warn('[nimbus] shell start failed:', e?.message || e);
+    });
 
     ws.send(JSON.stringify({ type: 'ready' }));
 }

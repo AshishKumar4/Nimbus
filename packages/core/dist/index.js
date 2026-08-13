@@ -11,4 +11,5 @@
  * depends on this package.
  */
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
+export { seedRuntimePackage } from './runtime/runtime-package.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
