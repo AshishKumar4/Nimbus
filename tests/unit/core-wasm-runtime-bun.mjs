@@ -26,47 +26,83 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
 
 const WASM_DIR = new URL('../../packages/worker/wasm/', import.meta.url).pathname;
-const BASH_FILES = [
-  ['share/bash/bash.async.wasm', `${WASM_DIR}bash/bash.async.wasm`],
-  ['share/bash/coreutils/busybox.wasm', `${WASM_DIR}bash/coreutils/busybox.wasm`],
-  ['share/bash/coreutils/busybox.applets', `${WASM_DIR}bash/coreutils/busybox.applets`],
+const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
+const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+
+/**
+ * The two runtimes, laid out exactly as `scripts/bundle-runtime.mjs` publishes
+ * them. `null` content is a file the publisher synthesises rather than ships —
+ * the stdlib marker is what makes the install root look like a Python prefix to
+ * getpath.c, and without it the interpreter cannot find its own encodings.
+ */
+const RUNTIMES = [
+  {
+    name: 'bash',
+    version: '5.2.37',
+    license: 'GPL-3.0-or-later',
+    entrypoints: [{ binName: 'bash', runner: 'bash-runner', args: [] }],
+    files: [
+      ['share/bash/bash.async.wasm', `${WASM_DIR}bash/bash.async.wasm`],
+      ['share/bash/coreutils/busybox.wasm', `${WASM_DIR}bash/coreutils/busybox.wasm`],
+      ['share/bash/coreutils/busybox.applets', `${WASM_DIR}bash/coreutils/busybox.applets`],
+    ],
+  },
+  {
+    name: 'cpython',
+    version: '3.13.14',
+    license: 'PSF-2.0',
+    entrypoints: [
+      { binName: 'python', runner: 'cpython-runner', args: [] },
+      { binName: 'python3', runner: 'cpython-runner', args: [] },
+    ],
+    files: [
+      ['share/cpython/python.wasm', `${WASM_DIR}python/python.wasm`],
+      ['lib/python313.zip', `${WASM_DIR}python/python313.zip`],
+      ['etc/ssl/cert.pem', `${WASM_DIR}python/cacert.pem`],
+      ['lib/python3.13/os.py', null, '# Nimbus stdlib marker.\n'],
+    ],
+  },
 ];
 
 // The artifacts are committed, but a worktree mid-rebuild has neither.
-if (BASH_FILES.some(([, disk]) => !existsSync(disk))) {
-  console.log('core-wasm-runtime-bun: SKIPPED (bash.async.wasm not built)');
+const missing = RUNTIMES.flatMap((r) => r.files)
+  .filter(([, disk]) => disk !== null && !existsSync(disk));
+if (missing.length > 0) {
+  console.log(`core-wasm-runtime-bun: SKIPPED (${missing[0][0]} not built)`);
   process.exit(0);
 }
 
-const INSTALL_ROOT = 'home/user/.nimbus/runtimes/bash/5.2.37';
+const installRoot = (r) => `home/user/.nimbus/runtimes/${r.name}/${r.version}`;
 
 /**
- * Write the bash runtime into the workspace exactly as an install does: the
- * files under their manifest paths, and a manifest.json beside them naming the
- * runner each command dispatches to.
+ * Write a runtime into the workspace exactly as an install does: the files
+ * under their manifest paths, and a manifest.json beside them naming the runner
+ * each command dispatches to. What makes a runtime invokable is this tree, not
+ * the publisher that produced it.
  */
-function seedBashRuntime(vfs) {
-  const fs = vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+function seedRuntime(vfs, runtime) {
+  const fs = vfs.as(KERNEL);
+  const root = installRoot(runtime);
   const files = [];
-  for (const [path, disk] of BASH_FILES) {
-    const bytes = readFileSync(disk);
-    const target = `${INSTALL_ROOT}/${path}`;
+  for (const [path, disk, synthetic] of runtime.files) {
+    const bytes = disk === null ? Buffer.from(synthetic, 'utf8') : readFileSync(disk);
+    const target = `${root}/${path}`;
     fs.mkdir(target.replace(/\/[^/]+$/, ''), { recursive: true });
     fs.writeFile(target, new Uint8Array(bytes));
     files.push({
       path,
-      content: `blobs/bash-5.2.37/${path}`,
+      content: `blobs/${runtime.name}-${runtime.version}/${path}`,
       sha256: createHash('sha256').update(bytes).digest('hex'),
       size: bytes.length,
     });
   }
-  fs.writeFile(`${INSTALL_ROOT}/manifest.json`, JSON.stringify({
-    name: 'bash',
-    version: '5.2.37',
-    license: 'GPL-3.0-or-later',
+  fs.writeFile(`${root}/manifest.json`, JSON.stringify({
+    name: runtime.name,
+    version: runtime.version,
+    license: runtime.license,
     wasi_namespace: 'wasi_snapshot_preview1',
     files,
-    entrypoints: [{ binName: 'bash', runner: 'bash-runner', args: [] }],
+    entrypoints: runtime.entrypoints,
   }));
 }
 
@@ -92,7 +128,7 @@ const open = (options) => NimbusWorkspace.create({
   assert.equal(runner.exitCode, 127, 'and neither is wasm-runner');
   console.log('  ok  a workspace with no facet host has no wasm runtimes at all');
 
-  seedBashRuntime(plain.vfs);
+  for (const runtime of RUNTIMES) seedRuntime(plain.vfs, runtime);
 }
 
 // ── The same database, reopened with a facet host ───────────────────────────
@@ -154,8 +190,7 @@ const ws = await open({ facets: localFacetHost() });
     0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
   ]);
-  ws.vfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 })
-    .writeFile('home/user/add.wasm', addWasm, { mode: 0o755 });
+  ws.vfs.as(USER).writeFile('home/user/add.wasm', addWasm, { mode: 0o755 });
 
   const direct = await ws.exec('wasm-runner ./add.wasm add 3 4');
   assert.equal(direct.exitCode, 0, `wasm-runner failed: ${direct.stderr}`);
@@ -167,18 +202,68 @@ const ws = await open({ facets: localFacetHost() });
   console.log('  ok  a wasm binary on the PATH runs through exec-dispatch');
 }
 
-// ── The port refuses what it cannot honour ──────────────────────────────────
-// A facet asking for a supervisor capability is asking for a write credential
-// over the session. A host that cannot mint one must say so: handed the seed
-// without it, a guest reads a filesystem it can never write to and reports
-// success. That is the failure this refusal exists to make impossible.
+// ── Real CPython ────────────────────────────────────────────────────────────
+// The interpreter is the same wasm32-wasi build production runs, on the same
+// WASI layer. What differs is how it is PROVISIONED, and that is the host's
+// choice: workerd can suspend a guest mid-syscall, so it seeds a manifest and
+// the facet fetches what it opens; this host cannot, so the seed carries the
+// bytes. Neither is a mode the runner knows about — it asks for a seed.
 {
-  assert.throws(
-    () => localFacetHost().open({ tag: 'probe', supervisorPid: 7 }),
-    /supervisor capability/,
-    'a local facet host must refuse a supervisor it cannot mint',
-  );
-  console.log('  ok  a capability the host cannot mint is refused, not faked');
+  const t0 = Date.now();
+  const arithmetic = await ws.exec('python -c "print(6*7)"');
+  assert.equal(arithmetic.exitCode, 0, `python failed: ${arithmetic.stderr}`);
+  assert.equal(arithmetic.stdout, '42\n');
+  console.log(`  ok  python -c "print(6*7)" prints 42 (${Date.now() - t0} ms cold)`);
+
+  // The real stdlib, out of the real zip: json and sqlite3 are compiled
+  // extensions plus Python halves, so neither answers without it.
+  const stdlib = await ws.exec(
+    'python -c \'import sys, json, sqlite3; '
+    + 'c = sqlite3.connect(":memory:"); c.execute("create table t(a)"); '
+    + 'c.execute("insert into t values(?)", ("live",)); '
+    + 'print(json.dumps({"v": sys.version_info[:2], "row": c.execute("select a from t").fetchone()[0]}))\'');
+  assert.equal(stdlib.exitCode, 0, `python failed: ${stdlib.stderr}`);
+  assert.equal(stdlib.stdout.trim(), '{"v": [3, 13], "row": "live"}');
+  console.log('  ok  json and sqlite3 come out of the real stdlib');
+
+  // python3 is the same runtime under its other manifest entrypoint.
+  const alias = await ws.exec('python3 -c "print(\'alias\')"');
+  assert.equal(alias.exitCode, 0, `python3 failed: ${alias.stderr}`);
+  assert.equal(alias.stdout, 'alias\n');
+  console.log('  ok  python3 is the same runtime');
+}
+
+// ── python and the durable filesystem are the same filesystem ───────────────
+// The seed is by value, so a read proves the provisioning carried the bytes;
+// the write proves the local supervisor carried them BACK, which is the half a
+// sealed facet would silently lose.
+{
+  await ws.fs.writeFile('/home/user/note.txt', 'written by fs\n');
+  const io = await ws.exec(
+    'python -c \'print(open("/home/user/note.txt").read().strip()); '
+    + 'open("/home/user/from-python.txt", "w").write("written by python\\n")\'');
+  assert.equal(io.exitCode, 0, `python failed: ${io.stderr}`);
+  assert.equal(io.stdout, 'written by fs\n');
+  assert.equal(await ws.fs.readFile('/home/user/from-python.txt'), 'written by python\n');
+  console.log('  ok  python reads a file .fs wrote and writes one .fs reads back');
+
+  // And the shell sees it too — one filesystem, not a per-runtime copy.
+  const shared = await ws.exec('bash -c "cat from-python.txt"');
+  assert.equal(shared.exitCode, 0, `bash failed: ${shared.stderr}`);
+  assert.equal(shared.stdout, 'written by python\n');
+  console.log('  ok  bash sees what python wrote');
+}
+
+// ── A capability the host does not have is named, not faked ─────────────────
+// A resident process outlives the call that started it, which needs an actor to
+// keep it on. A workspace owns none, so `python script.py` is refused by name
+// rather than quietly run as a one-shot that dies with the invocation.
+{
+  await ws.fs.writeFile('/home/user/server.py', 'print("never reached")\n');
+  const resident = await ws.exec('python server.py');
+  assert.equal(resident.exitCode, 1);
+  assert.match(resident.stderr, /no process substrate/);
+  console.log('  ok  a program that keeps running is refused, not degraded');
 }
 
 db.close();

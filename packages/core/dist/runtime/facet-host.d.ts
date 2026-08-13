@@ -19,6 +19,9 @@
  * whole of what a runtime needs from it, so a runner cannot tell which
  * substrate answered and never asks.
  */
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { WasiFsSnapshot } from './wasi-instance.js';
+import type { WasiParking } from './wasi/types.js';
 /**
  * A function submitted into a facet.
  *
@@ -55,17 +58,48 @@ export interface FacetSpec {
      */
     wasmModules?: Record<string, ArrayBuffer>;
     /**
-     * Pid the facet's `SUPERVISOR` capability acts as, or absent for a facet
-     * that makes no syscalls back into the session.
+     * The session filesystem this facet's syscalls act on, and the process they
+     * act as. Absent for a facet that makes no syscall back into the session.
      *
-     * Not a boolean and not optional-with-a-default: the supervisor derives the
-     * WRITE credential from this pid, so a facet given the capability without a
-     * pid can read the filesystem it was seeded with and silently write nowhere.
-     * Making the pid the only way to ask for it removes that state.
+     * Both halves, because the two hosts reach the same authority differently: a
+     * dynamic worker is a different isolate, so it is handed a capability minted
+     * for the PID and routed back to the session; a facet in the caller's own
+     * isolate is handed the credentialed VIEW. Naming only the pid would leave
+     * the second host nothing to serve from, and naming only the view would
+     * leave the first nothing to mint.
+     *
+     * Not a boolean: the supervisor derives the WRITE credential from the pid,
+     * so a facet given the capability without one can read the filesystem it was
+     * seeded with and silently write nowhere.
      */
-    supervisorPid?: number;
+    syscalls?: FacetSyscalls;
     /** Facets the host may keep warm for this spec. Default 1. */
     concurrency?: number;
+}
+/** The session a facet's syscalls reach, and who they reach it as. */
+export interface FacetSyscalls {
+    readonly vfs: CredentialedVfs;
+    readonly pid: number;
+}
+/**
+ * A seeded WASI filesystem: what {@link FacetHost.seedFilesystem} produced, and
+ * how much of the session it had to carry to produce it.
+ */
+export interface FacetFilesystemSeed {
+    snapshot: WasiFsSnapshot;
+    files: number;
+    bytes: number;
+}
+/** What a runner knows about the subtree its guest should see. */
+export interface FacetFilesystemOptions {
+    /** Directories outside `root` the program must also reach. */
+    extraRoots?: Iterable<string>;
+    /**
+     * The session revision the seed describes, when the caller has computed one.
+     * A host that serves reads back stamps it, which is what marks the seed a
+     * CACHE rather than the whole world; one that cannot has no use for it.
+     */
+    revision?: number;
 }
 export interface FacetSubmitOptions {
     /**
@@ -93,6 +127,33 @@ export interface Facet {
     dispose(): void;
 }
 export interface FacetHost {
+    /**
+     * Whether a guest in this host can be SUSPENDED in the middle of a syscall.
+     *
+     * The one place the substrates are not interchangeable, so it is stated
+     * rather than smoothed over — the same posture as `ProcessImageDelivery` in
+     * the process fabric. Everything else about running a wasm program is the
+     * same code either way; this is not, and it decides two things at once:
+     * which import table the guest gets ({@link WasiParking}), and how much
+     * filesystem it must be handed before it starts.
+     *
+     * `jspi` — the host can park the guest on a promise, so a syscall may go
+     *   back to the session mid-instruction and the seed can be a manifest.
+     * `none` — it cannot; V8 traps any call into a suspending import off a
+     *   stack `WebAssembly.promising` did not enter. Every syscall must answer
+     *   synchronously, so the seed has to BE the filesystem.
+     */
+    readonly parking: WasiParking;
+    /**
+     * Hand a facet the part of the session filesystem its program needs.
+     *
+     * The host decides the strategy, because the strategy IS the consequence of
+     * {@link FacetHost.parking} and nothing about the program bears on it. A
+     * runner names the roots and gets a seed; it never learns which kind it got.
+     */
+    seedFilesystem(vfs: CredentialedVfs, root: string, options?: FacetFilesystemOptions): FacetFilesystemSeed | {
+        error: string;
+    };
     open(spec: FacetSpec): Facet;
 }
 //# sourceMappingURL=facet-host.d.ts.map

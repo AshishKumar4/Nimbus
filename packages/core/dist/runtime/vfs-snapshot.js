@@ -144,7 +144,21 @@ export function snapshotVfs(vfs, vfsRoot, caps = {}) {
         return { error: `runtime filesystem snapshot incomplete: ${failures.join('; ')}` };
     }
     return {
-        snapshot: { root, roots, preopens: [], files, dirs: Array.from(dirsSet).sort(), modes },
+        snapshot: {
+            root,
+            roots,
+            preopens: [],
+            files,
+            dirs: Array.from(dirsSet).sort(),
+            modes,
+            // Only when the walk hid nothing. The walk either finishes or returns an
+            // error above, so a snapshot taken with no skip list HAS listed each root
+            // exhaustively — which is what lets a guest treat a path it does not find
+            // as absent instead of asking for it. With the default skip list it has
+            // not, and claiming otherwise would make node_modules invisible rather
+            // than merely unseeded.
+            ...(skipSubdirs.size === 0 ? { enumeratedRoots: roots } : {}),
+        },
         bytes: totalBytes,
         files: fileCount,
     };

@@ -21,7 +21,7 @@ import {
   buildPipInvocation,
   PYTHON_SITE_PACKAGES_ROOT,
   sessionUsesSciVariant,
-} from '../../packages/worker/src/runtime/python-pip.ts';
+} from '../../packages/core/src/runtime/python-pip.ts';
 
 /** A VFS that knows only which paths exist, which is all the selector reads. */
 function vfsWith(paths) {

@@ -26,8 +26,8 @@ import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
-import { sessionUsesSciVariant } from './python-pip.js';
-import { buildCPythonPreamble } from './cpython-runner.js';
+import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
+import { buildCPythonPreamble } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 

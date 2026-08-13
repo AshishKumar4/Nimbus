@@ -23,16 +23,16 @@ import type { FacetHost } from './facet-host.js';
 /**
  * Run facets in this isolate.
  *
- * Two things a substrate with its own isolates gives for free are not here, and
- * a caller that needs them needs a different host:
+ * `parking: 'none'` is the whole character of this host, and everything else
+ * follows from it: the guest is entered on an ordinary stack, so no syscall may
+ * suspend it, so {@link FacetHost.seedFilesystem} hands over the bytes rather
+ * than a manifest to fetch them with, and the supervisor it mints serves only
+ * the writes — which drain after the program returns, where a promise is free.
  *
- *   - {@link FacetSubmitOptions.timeoutMs} is not honoured. A guest spinning
- *     synchronously holds the only thread, so no timer fires until it is
- *     already finished; racing one would return while the program ran on.
- *   - {@link FacetSpec.supervisorPid} is refused. The capability it names is a
- *     write credential over the session, and a facet handed the seed without it
- *     reads a filesystem it can never write to — silently. Refusing is the only
- *     answer that cannot be mistaken for working.
+ * The one thing a substrate with its own isolates gives that this cannot:
+ * {@link FacetSubmitOptions.timeoutMs} is not honoured. A guest spinning
+ * synchronously holds the only thread, so no timer fires until it is already
+ * finished; racing one would return while the program ran on.
  */
 export declare function localFacetHost(): FacetHost;
 //# sourceMappingURL=local-facet-host.d.ts.map

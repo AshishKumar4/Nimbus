@@ -22,7 +22,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { buildCPythonPreamble, buildCPythonSocketProcessWorker } from '../../packages/worker/src/runtime/cpython-runner.ts';
+import { buildCPythonPreamble } from '../../packages/core/src/runtime/cpython-runner.ts';
+import { buildCPythonSocketProcessWorker } from '../../packages/worker/src/runtime/cpython-resident.ts';
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -85,7 +86,7 @@ assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   // 5. The pool is built per invocation: supervisorPid is baked into the
   //    SUPERVISOR binding at construction, so a held pool hands every later
   //    caller the first caller's write credential.
-  const runnerSrc = readFileSync(path.join(RUNTIME_DIR, '../../src/runtime/cpython-runner.ts'), 'utf8');
+  const runnerSrc = readFileSync(path.join(RUNTIME_DIR, '../../../core/src/runtime/cpython-runner.ts'), 'utf8');
   assert.ok(!/let\s+pool\s*:\s*NimbusLoaderPool\s*\|\s*null/.test(runnerSrc),
     'the loader pool must not be cached across invocations');
   console.log('  ok  the preamble-text invariants ruby already knew are asserted, not documented');
