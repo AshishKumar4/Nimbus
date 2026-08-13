@@ -144,13 +144,15 @@ Do not tell users to run `packages/worker/scripts/bundle-runtime.mjs` unless
 they are changing the runtime ingestion pipeline itself.
 
 Embedders off Cloudflare have no R2 binding, so the same runtimes are also
-published to npm — `@nimbus-sh/runtime-bash` and `@nimbus-sh/runtime-cpython`,
-which `NimbusWorkspace.create({ runtimes })` installs into the workspace
-filesystem at the path `nimbus install` uses. One publisher builds both: the
-package is `bundle-runtime.mjs <name> <version> --npm-package <dir>`, whose
-`manifest.json` is byte-identical to the one in the bucket. A runtime joins the
-npm set by gaining an `npm` entry in its spec, and only bash and cpython have
-one; the others have no runner that works off workerd yet.
+published to npm — `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
+`@nimbus-sh/runtime-ruby` and `@nimbus-sh/runtime-clang`, which
+`NimbusWorkspace.create({ runtimes })` installs into the workspace filesystem
+at the path `nimbus install` uses. One publisher builds them all: the package
+is `bundle-runtime.mjs <name> <version> --npm-package <dir>`, which stages what
+the R2 path stages and lays the blobs out under the keys its own manifest
+names. A runtime joins the npm set by gaining an `npm` entry in its spec;
+`node` and `bun` have none, because they are workerd's `nodejs_compat` rather
+than an artifact to ship.
 
 Current runtime substrate:
 

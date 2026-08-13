@@ -2,7 +2,7 @@
  * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.
  *
  * Produced by scripts/bundle-facet-workers.mjs from:
- *   - src/npm/tarball-stream.ts (streaming tar primitives)
+ *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)
  *   - @nimbus-sh/core src/_shared/w7-frame.ts (W7 streaming bulk-write encoder)
  *
  * Consumed by src/loaders/loader-pool.ts callers via the `preamble`
@@ -15,7 +15,7 @@
  * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
- * Tar size: 4.14 KiB
+ * Tar size: 4.15 KiB
  * W7 size:  29.18 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;

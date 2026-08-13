@@ -150,6 +150,15 @@ const SPECS = {
     license: 'Apache-2.0-with-LLVM-exception',
     wasi_namespace: 'wasi_unstable',
     upstream_base: 'https://raw.githubusercontent.com/binji/wasm-clang/master',
+    npm: {
+      name: '@nimbus-sh/runtime-clang',
+      summary: 'clang 8.0.1 and wasm-ld for wasm32-wasi, with a wasi-libc sysroot',
+      // npm demands semver and this runtime's Nimbus version is a channel
+      // name, so the compiler's own version is what the package carries. The
+      // two namespaces stay separate: the manifest still says `binji-2020`,
+      // and that is what the install root under ~/.nimbus/runtimes is named.
+      version: '8.0.1',
+    },
     files: [
       { src: 'clang',       vfs: 'bin/clang',                  mode: 'exec',   runner: 'clang-runner', binName: 'clang' },
       { src: 'lld',         vfs: 'bin/wasm-ld',                mode: 'exec',   runner: 'clang-runner', binName: 'wasm-ld', kind: 'linker' },
@@ -177,6 +186,10 @@ const SPECS = {
     license: 'Ruby+BSD-2-Clause',
     wasi_namespace: 'wasi_snapshot_preview1',
     upstream_base: 'https://registry.npmjs.org/@ruby/3.3-wasm-wasi/-/3.3-wasm-wasi-2.9.3-2.9.4.tgz',
+    npm: {
+      name: '@nimbus-sh/runtime-ruby',
+      summary: 'Ruby 3.3.4 (ruby.wasm) for wasm32-wasi, with its stdlib packed in',
+    },
     tarball_extract: 'package/dist',  // strip this prefix from src paths inside the tarball
     files: [
       // The Ruby wasm — includes Ruby 3.3.x interpreter + stdlib packed
@@ -892,9 +905,10 @@ function writeNpmPackage(outDir, manifest, downloaded) {
   writeFileSync(join(outDir, 'index.js'), runtimePackageEntry());
   writeFileSync(join(outDir, 'index.d.ts'), runtimePackageTypes());
   writeFileSync(join(outDir, 'README.md'), runtimePackageReadme());
+  const npmVersion = spec.npm.version ?? VERSION;
   writeFileSync(join(outDir, 'package.json'), `${JSON.stringify({
     name: spec.npm.name,
-    version: VERSION,
+    version: npmVersion,
     description: `${spec.npm.summary}, as a Nimbus runtime package.`,
     keywords: ['nimbus', 'wasm', 'wasi', 'runtime', RUNTIME],
     homepage: 'https://github.com/AshishKumar4/Nimbus',
@@ -919,7 +933,7 @@ function writeNpmPackage(outDir, manifest, downloaded) {
   }, null, 2)}\n`);
 
   console.log(`\n[bundle-runtime] DONE (npm package)`);
-  console.log(`[bundle-runtime] ${spec.npm.name}@${VERSION} → ${outDir}`);
+  console.log(`[bundle-runtime] ${spec.npm.name}@${npmVersion} → ${outDir}`);
   console.log(`[bundle-runtime] ${written.size} blobs, ${(unpackedBytes / 1024 / 1024).toFixed(2)} MiB unpacked`);
   console.log(`[bundle-runtime] publish with: npm publish ${outDir}`);
   console.log(`[bundle-runtime] R2: UNTOUCHED (nothing was read from or written to Cloudflare)`);

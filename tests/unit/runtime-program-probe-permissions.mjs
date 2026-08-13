@@ -3,11 +3,19 @@
 import assert from 'node:assert/strict';
 
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
-import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 
 const USER_CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+
+// The probe is refused before any program is compiled, so a facet host that
+// throws on use proves the refusal came first.
+const unreachableFacets = {
+  parking: 'none',
+  seedFilesystem() { throw new Error('a denied program must never be seeded'); },
+  open() { throw new Error('a denied program must never open a facet'); },
+};
 
 function accessDenied(path) {
   return Object.assign(new Error(`EACCES: ${path}`), { code: 'EACCES' });
@@ -57,7 +65,7 @@ function runtimeVfs(runtimeFiles, deniedPath) {
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
     '/runtime/python/lib/python313.zip': new Uint8Array(),
   }, deniedPath);
-  const run = makeCPythonRunnerFactory({ facetMgr: {}, vfs })(
+  const run = makeCPythonRunnerFactory({ facets: unreachableFacets, vfs })(
     {
       files: [
         { path: 'share/cpython/python.wasm' },
@@ -79,7 +87,7 @@ function runtimeVfs(runtimeFiles, deniedPath) {
   const vfs = runtimeVfs({
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   }, deniedPath);
-  const run = makeRubyRunnerFactory({ facetMgr: {}, vfs })(
+  const run = makeRubyRunnerFactory({ facets: unreachableFacets, vfs })(
     { files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] },
     '/runtime/ruby',
     'ruby',

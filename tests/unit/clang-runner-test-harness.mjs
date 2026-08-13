@@ -1,10 +1,10 @@
 // Shared harness for the clang-runner unit tests.
 //
 // Builds a session VFS with an installed clang runtime (the three blobs the
-// manifest names) and a loader whose facet returns a plausible object file, so
+// manifest names) and a facet host that returns a plausible object file, so
 // a test can drive the real `clangBinHandler` end to end without a wasm boot.
 
-import { makeClangRunnerFactory } from '../../packages/worker/src/runtime/clang-runner.ts';
+import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -40,32 +40,28 @@ export function makeInvocationVfs() {
   root.chown('home/user', USER.uid, USER.gid);
   root.chmod('home/user', 0o755);
 
-  const loader = {
-    get() {
+  // clang carries its own filesystem by value, so a host that seeds one is a
+  // host this runner must never ask.
+  const facets = {
+    parking: 'none',
+    seedFilesystem() { throw new Error('clang seeds its own filesystem, by value'); },
+    open() {
       return {
-        getEntrypoint() {
+        async submit(_fn, args) {
           return {
-            async execute(args) {
-              const outputPath = args.outputPaths[0];
-              return {
-                exitCode: 0,
-                stdout: '',
-                stderr: '',
-                outputFiles: { [outputPath]: btoa('\0asm') },
-              };
-            },
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            outputFiles: { [args.outputPaths[0]]: btoa('\0asm') },
           };
         },
+        dispose() {},
       };
     },
   };
-  const run = makeClangRunnerFactory({
-    facetMgr: {
-      env: { LOADER: loader },
-      ctx: { id: { toString: () => 'clang-runner-test' } },
-    },
-    vfs: raw,
-  })(MANIFEST, '/runtime/clang', 'clang', undefined);
+  const run = makeClangRunnerFactory({ facets, vfs: raw })(
+    MANIFEST, '/runtime/clang', 'clang', undefined,
+  );
 
   return { root, run, user };
 }

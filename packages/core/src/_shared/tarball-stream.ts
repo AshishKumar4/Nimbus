@@ -1,10 +1,10 @@
 /**
- * npm-tarball-stream.ts — pure streaming tar primitives.
+ * tarball-stream.ts — pure streaming tar primitives.
  *
- * Extracted from npm-tarball.ts so these helpers can be esbuild-bundled
- * WITHOUT dragging in NpmCache / NpmResolver / SqliteVFS. Consumed by
- * scripts/bundle-facet-workers.mjs which emits a string constant the
- * NimbusLoaderPool uses to inject the tar parser into dynamic workers.
+ * A leaf with no imports at all, deliberately: `bundle-facet-workers.mjs`
+ * esbuilds this file into a string constant the loader pool injects into
+ * dynamic workers, and a facet isolate resolves no specifier. Anything this
+ * file imported would have to travel with it.
  *
  * Zero dependencies. Works identically on the supervisor and inside a
  * facet isolate. Never buffers the full decompressed tarball — peak

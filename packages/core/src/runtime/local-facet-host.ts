@@ -113,12 +113,21 @@ export function localFacetHost(): FacetHost {
       root: string,
       options?: FacetFilesystemOptions,
     ): FacetFilesystemSeed | { error: string } {
-      return snapshotVfs(vfs, root, {
+      const seeded = snapshotVfs(vfs, root, {
         extraRoots: options?.extraRoots,
         skipSubdirs: [],
         maxBytes: LOCAL_SEED_MAX_BYTES,
         maxFiles: LOCAL_SEED_MAX_FILES,
       });
+      if ('error' in seeded) return seeded;
+      // The seed is also the WHOLE of what this guest has, which is a stronger
+      // claim than the walk's: `snapshotVfs` reports the roots it listed
+      // exhaustively, and this says every path outside them is absent too. It
+      // is — a miss out there could only be answered by suspending the guest
+      // mid-syscall, which this host cannot do, so the alternative to "absent"
+      // is not "fetched" but a read the guest can never receive. Ruby's VM
+      // startup stats dozens of prefixes it was never given.
+      return { ...seeded, snapshot: { ...seeded.snapshot, enumeratedRoots: [''] } };
     },
     open: (spec) => new LocalFacet(spec),
   };
@@ -152,8 +161,7 @@ class LocalFacet implements Facet {
 
   private async call<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<R> {
     if (this.disposed) throw new Error(`Nimbus: facet '${this.spec.tag}' is disposed`);
-    const scope = await this.scope();
-    await this.addModules(options?.wasmModules);
+    const scope = await this.scope(options?.wasmModules);
     let scoped = this.scoped.get(fn as FacetFn<never, unknown>);
     if (!scoped) {
       const value = scope(`(${fn.toString()})`);
@@ -172,17 +180,29 @@ class LocalFacet implements Facet {
    * The returned closure's `eval` is a DIRECT eval inside the body the preamble
    * was evaluated in, which is what puts the preamble's top-level declarations
    * in scope for every function submitted afterwards.
+   *
+   * Both wasm tables are filled BEFORE that body runs, per-call images merged
+   * over the spec's. A preamble may boot its runtime as it is evaluated — Ruby
+   * instantiates the interpreter right there — so it reads the table at that
+   * moment and an image added afterwards would arrive to a facet that had
+   * already given up on it. workerd has the same ordering for the same reason:
+   * per-call images ride in the module map the inner worker is built from.
    */
-  private async scope(): Promise<(source: string) => unknown> {
-    if (this.evaluate) return this.evaluate;
-    await this.addModules(this.spec.wasmModules);
+  private async scope(
+    callModules: Record<string, ArrayBuffer> | undefined,
+  ): Promise<(source: string) => unknown> {
+    const built = this.evaluate;
+    if (!built) await this.addModules(this.spec.wasmModules);
+    await this.addModules(callModules);
+    if (built) return built;
     const globals = { __NIMBUS_WASM: this.wasmTable };
     const build = new AsyncFunction(
       'globalThis',
       `${this.spec.preamble ?? ''}\nreturn (source) => eval(source);`,
     );
-    this.evaluate = await build.call(globals, globals) as (source: string) => unknown;
-    return this.evaluate;
+    const evaluate = await build.call(globals, globals) as (source: string) => unknown;
+    this.evaluate = evaluate;
+    return evaluate;
   }
 
   private async addModules(modules: Record<string, ArrayBuffer> | undefined): Promise<void> {

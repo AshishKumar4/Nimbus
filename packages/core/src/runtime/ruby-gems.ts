@@ -1,6 +1,6 @@
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { extractTarball } from '../npm/tarball.js';
-import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import { extractTarball } from '../_shared/tarball.js';
+import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 
 const RUBYGEMS_API = 'https://rubygems.org';
 const DEFAULT_GEM_HOME = 'home/user/.gem';

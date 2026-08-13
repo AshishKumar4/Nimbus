@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
-import { makeRubyRunnerFactory } from '../../packages/worker/src/runtime/ruby-runner.ts';
+import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 
 const encoder = new TextEncoder();
 
@@ -105,7 +105,7 @@ function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umas
   const manifest = {
     files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
   };
-  const run = makeRubyRunnerFactory({ facetMgr: harness.facetMgr, vfs })(
+  const run = makeRubyRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx), vfs })(
     manifest,
     '/runtime/ruby',
     'ruby',

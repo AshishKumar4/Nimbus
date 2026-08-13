@@ -21,6 +21,7 @@ export function loaderFacetHost(env, ctx) {
                 wasmModules: spec.wasmModules,
                 omitSupervisor: spec.syscalls === undefined,
                 supervisorPid: spec.syscalls?.pid,
+                cacheScope: spec.reuse,
             });
         },
     };

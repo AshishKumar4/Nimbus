@@ -506,9 +506,10 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
     //    bins reappear in the registry after DO eviction or WS reconnect.
     registerRunnerFactory(
       'clang-runner',
-      (manifest, installRoot, binName, binKind) => async (ctx: any) => {
-        const { makeClangRunnerFactory } = await import('../runtime/clang-runner.js');
-        return await makeClangRunnerFactory({ facetMgr, vfs: sqliteFs })(
+      (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
+        const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), vfs: sqliteFs })(
           manifest, installRoot, binName, binKind,
         )(ctx);
       },
@@ -581,10 +582,15 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
             installRoot,
           });
         }
-        const { makeRubyRunnerFactory } = await import('../runtime/ruby-runner.js');
-        return await makeRubyRunnerFactory({ facetMgr, vfs: sqliteFs, registry })(
-          manifest, installRoot, binName, binKind,
-        )(ctx);
+        const { makeRubyRunnerFactory } = await import('@nimbus-sh/core/runtime/ruby-runner.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        const { rubyResidentStart } = await import('../runtime/ruby-resident.js');
+        return await makeRubyRunnerFactory({
+          facets: facetHostForManager(facetMgr),
+          vfs: sqliteFs,
+          registry,
+          startResident: rubyResidentStart(facetMgr),
+        })(manifest, installRoot, binName, binKind)(ctx);
       },
     );
     // GNU bash 5.2.37 (wasm32-wasi, asyncified) — dedicated facet

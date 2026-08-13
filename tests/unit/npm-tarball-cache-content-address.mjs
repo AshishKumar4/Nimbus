@@ -29,7 +29,7 @@ import {
 import {
   readableStreamToAsyncIterable,
   streamTarEntries,
-} from '../../packages/worker/src/npm/tarball-stream.ts';
+} from '../../packages/core/src/_shared/tarball-stream.ts';
 import {
   decodeWriteBatchStream,
   encodeWriteBatchStream,

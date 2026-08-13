@@ -75,6 +75,18 @@ export interface FacetSpec {
     syscalls?: FacetSyscalls;
     /** Facets the host may keep warm for this spec. Default 1. */
     concurrency?: number;
+    /**
+     * Who a warm facet may be reused FOR. Default `session`.
+     *
+     * A scope keeps whatever the last call left in it, so by default it may only
+     * ever answer for the session that opened it. `global` is a claim the
+     * RUNTIME makes about itself and one only a pure function can make: no
+     * syscalls binding, nothing retained between calls, output decided entirely
+     * by the arguments. The clang toolchain is that — a compile is the same
+     * compile for every tenant — and one warm isolate holding its 31 MiB of
+     * compiled compiler serves all of them.
+     */
+    reuse?: 'session' | 'global';
 }
 /** The session a facet's syscalls reach, and who they reach it as. */
 export interface FacetSyscalls {

@@ -352,11 +352,15 @@ async function registerWasmRuntimes(deps: {
   const [
     { makeBashRunnerFactory },
     { makeCPythonRunnerFactory },
+    { makeRubyRunnerFactory },
+    { makeClangRunnerFactory },
     { wasmRunnerSpec },
     { buildRuntimeHandler },
   ] = await Promise.all([
     import('../runtime/bash-runner.js'),
     import('../runtime/cpython-runner.js'),
+    import('../runtime/ruby-runner.js'),
+    import('../runtime/clang-runner.js'),
     import('../runtime/wasm-runner.js'),
     import('../runtime/runtime-registry.js'),
   ]);
@@ -391,8 +395,13 @@ async function registerWasmRuntimes(deps: {
     'bash-runner': makeBashRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
     // No `startResident`: a workspace owns no actor that could outlive the
     // call, so a program that keeps serving is refused by name rather than
-    // run as a one-shot that dies with it.
+    // run as a one-shot that dies with it. Same for ruby, where a script is
+    // the shape that may bind a port.
     'cpython-runner': makeCPythonRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
+    'ruby-runner': makeRubyRunnerFactory({
+      facets: deps.facets, vfs: deps.vfs, registry: deps.registry,
+    }),
+    'clang-runner': makeClangRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
   };
   rehydrateInstalledRuntimesView(
     deps.vfs.as(CRED_KERNEL),
