@@ -96,9 +96,39 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
  * journal, which is the one thing a FacetManager keeps outside its own memory.
  * Pass a `storage` map to share one across instances, which is how an instance
  * reset is modelled: the object is new, the rows it left behind are not.
+ *
+ * `crashable: true` models the platform's real commit semantics instead of a
+ * Map's: a put or delete lands in a PENDING overlay that only `sync()` — the
+ * storage layer's durability barrier — promotes to the durable map, because
+ * `await put()` resolves before durability and the reset that destroys an
+ * instance rolls back everything its turns still had outstanding. `crash()`
+ * is that reset, dropping every write sync has not flushed. The instant-commit
+ * default is how the resident-launch recovery test stayed green while the
+ * production journal it modelled was being destroyed with its writer; an
+ * instance a test resets must be crashable, or the test is asserting against
+ * storage guarantees the platform does not give.
+ *
+ * Reads see pending writes in either mode — an instance always reads its own.
  */
-export function createFacetCtx(world, doId = 'do-test', storage = new Map()) {
+export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { crashable = false } = {}) {
   const waited = [];
+  /** key → { deleted: boolean, value? } — writes awaiting durability. */
+  const pending = new Map();
+  const flush = () => {
+    for (const [key, w] of pending) {
+      if (w.deleted) storage.delete(key);
+      else storage.set(key, w.value);
+    }
+    pending.clear();
+  };
+  const view = () => {
+    const merged = new Map(storage);
+    for (const [key, w] of pending) {
+      if (w.deleted) merged.delete(key);
+      else merged.set(key, w.value);
+    }
+    return merged;
+  };
   return {
     id: { toString: () => doId },
     facets: world.facets,
@@ -106,14 +136,26 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map()) {
     waited,
     storage: {
       rows: storage,
-      async get(key) { return storage.get(key); },
-      async put(key, value) { storage.set(key, value); },
-      async delete(key) { return storage.delete(key); },
+      async get(key) { return view().get(key); },
+      async put(key, value) {
+        pending.set(key, { deleted: false, value });
+        if (!crashable) flush();
+      },
+      async delete(key) {
+        const had = view().has(key);
+        pending.set(key, { deleted: true });
+        if (!crashable) flush();
+        return had;
+      },
       async list({ prefix = '' } = {}) {
         return new Map(
-          [...storage].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1)),
+          [...view()].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1)),
         );
       },
+      /** The durability barrier: promote every pending write to the map. */
+      async sync() { flush(); },
+      /** The reset: everything sync has not flushed dies with the instance. */
+      crash() { pending.clear(); },
     },
   };
 }
