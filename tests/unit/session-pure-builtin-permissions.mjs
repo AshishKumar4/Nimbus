@@ -117,14 +117,20 @@ try {
   );
 
   let supervisorSpawnRequest;
-  const supervisor = Object.create(SupervisorRPC.prototype);
-  supervisor.ctx = { props: { pid: userParent.pid } };
-  supervisor._stubCache = {
+  const sessionStub = {
     async _rpcCpSpawn(request) {
       supervisorSpawnRequest = request;
       return { childPid: 99 };
     },
   };
+  // Routed the way a facet's binding routes: the entrypoint resolves the
+  // session by the doId it was given, once per call.
+  const sessionBinding = {
+    NIMBUS_SESSION: { idFromString: (id) => id, get: () => sessionStub },
+  };
+  const supervisor = Object.create(SupervisorRPC.prototype);
+  supervisor.ctx = { props: { pid: userParent.pid, doId: 'session-do' } };
+  supervisor.env = sessionBinding;
   assert.deepEqual(
     await supervisor.cpSpawn({
       command: 'cat',
@@ -142,8 +148,8 @@ try {
     'facet input cannot replace the supervisor-bound invoking pid',
   );
   const identitylessSupervisor = Object.create(SupervisorRPC.prototype);
-  identitylessSupervisor.ctx = { props: { pid: 0 } };
-  identitylessSupervisor._stubCache = supervisor._stubCache;
+  identitylessSupervisor.ctx = { props: { pid: 0, doId: 'session-do' } };
+  identitylessSupervisor.env = sessionBinding;
   await assert.rejects(
     identitylessSupervisor.cpSpawn({
       command: 'cat', args: ['readable.txt'], env: {}, cwd: '/', stdio: ['pipe', 'pipe', 'pipe'],

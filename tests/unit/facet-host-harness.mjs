@@ -89,14 +89,32 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
   };
 }
 
-/** A DurableObjectState with a facet host, for a FacetManager or ProcessFabric. */
-export function createFacetCtx(world, doId = 'do-test') {
+/**
+ * A DurableObjectState with a facet host, for a FacetManager or ProcessFabric.
+ *
+ * `storage` is the key-value half only — enough for the resident-launch
+ * journal, which is the one thing a FacetManager keeps outside its own memory.
+ * Pass a `storage` map to share one across instances, which is how an instance
+ * reset is modelled: the object is new, the rows it left behind are not.
+ */
+export function createFacetCtx(world, doId = 'do-test', storage = new Map()) {
   const waited = [];
   return {
     id: { toString: () => doId },
     facets: world.facets,
     waitUntil(p) { waited.push(Promise.resolve(p).catch(() => {})); },
     waited,
+    storage: {
+      rows: storage,
+      async get(key) { return storage.get(key); },
+      async put(key, value) { storage.set(key, value); },
+      async delete(key) { return storage.delete(key); },
+      async list({ prefix = '' } = {}) {
+        return new Map(
+          [...storage].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1)),
+        );
+      },
+    },
   };
 }
 
