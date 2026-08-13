@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/worker",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Nimbus runtime package for Cloudflare Workers, re-exported publicly through @nimbus-sh/sdk/worker.",
   "keywords": [
     "cloudflare",
@@ -84,7 +84,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.41",
-    "@nimbus-sh/core": "^0.2.0",
+    "@nimbus-sh/core": "^0.3.0",
     "@renovatebot/pep440": "^5.0.0",
     "ai": "^6.0.182",
     "clean-git-ref": "^2.0.1",

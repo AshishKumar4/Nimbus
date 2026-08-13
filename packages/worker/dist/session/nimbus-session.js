@@ -30,12 +30,12 @@ import { NpmInstaller } from '../npm/installer.js';
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
 import { setCtxExports } from './ctx-exports.js';
-import { NIMBUS_VERSION, DEFAULT_HOSTNAME, DEFAULT_PATH, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
 import { appendScrollback } from './state-store.js';
-import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState, } from './replica-routes.js';
@@ -1359,64 +1359,20 @@ export class NimbusSession extends CloudflareDurableObject {
                 fs.mkdir(dir, { recursive: true });
         }
     }
+    /**
+     * The starter content a fresh Nimbus session shows a user: the banner, the
+     * sample files, and the Vite starter app.
+     *
+     * The base the OS boots on — the mount directories, /etc/passwd, /etc/group,
+     * /etc/profile, ~/.nimbusrc — comes from the workspace's own seed, which
+     * this calls rather than restates. Both are idempotent, so the workspace
+     * re-running it when it composes the shell costs a handful of existence
+     * checks and changes nothing.
+     */
     seedFilesystem() {
+        seedBaseFilesystem(this.sqliteFs, DEFAULT_MOUNT_POINTS);
         const fs = this.sqliteFs.as(CRED_SESSION_USER);
         const rootFs = this.sqliteFs.as(CRED_KERNEL);
-        const dirs = [
-            'bin', 'home', 'home/user', 'home/user/.config',
-            'tmp', 'var', 'var/log', 'usr', 'usr/bin', 'usr/lib',
-            'usr/lib/node_modules', 'usr/share', 'usr/share/pkg',
-            'usr/share/pkg/node_modules', 'opt',
-            'home/user/projects',
-        ];
-        for (const dir of dirs) {
-            if (!fs.exists(dir))
-                fs.mkdir(dir, { recursive: true });
-        }
-        this.ensureGlobalPrefixDirs('usr/local');
-        if (!rootFs.exists('etc')) {
-            rootFs.mkdir('etc', { mode: 0o755 });
-        }
-        else {
-            const etc = rootFs.stat('etc');
-            if (etc.uid !== 0 || etc.gid !== 0)
-                rootFs.chown('etc', 0, 0);
-            if ((etc.mode & 0o7777) !== 0o755)
-                rootFs.chmod('etc', 0o755);
-        }
-        if (!rootFs.exists('etc/hostname')) {
-            rootFs.writeFile('etc/hostname', DEFAULT_HOSTNAME + '\n');
-            rootFs.chown('etc/hostname', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-        }
-        if (!rootFs.exists('etc/os-release')) {
-            rootFs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` +
-                'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
-            rootFs.chown('etc/os-release', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-        }
-        const seedRootAccountFile = (path, content) => {
-            if (!rootFs.exists(path))
-                rootFs.writeFile(path, content, { mode: 0o644 });
-            const stat = rootFs.stat(path);
-            if (stat.uid !== 0 || stat.gid !== 0)
-                rootFs.chown(path, 0, 0);
-            if ((stat.mode & 0o7777) !== 0o644)
-                rootFs.chmod(path, 0o644);
-        };
-        seedRootAccountFile('etc/passwd', 'root:x:0:0:root:/root:/bin/sh\n' +
-            'user:x:1000:1000:Nimbus User:/home/user:/bin/sh\n');
-        seedRootAccountFile('etc/group', 'root:x:0:\n' +
-            'user:x:1000:user\n');
-        const defaultProfile = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;
-        if (!rootFs.exists('etc/profile')) {
-            rootFs.writeFile('etc/profile', defaultProfile);
-            rootFs.chown('etc/profile', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-        }
-        else if (dec.decode(rootFs.readFile('etc/profile')) === 'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n') {
-            rootFs.writeFile('etc/profile', defaultProfile);
-        }
-        if (!fs.exists('home/user/.nimbusrc')) {
-            fs.writeFile('home/user/.nimbusrc', '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n');
-        }
         {
             // [BANNER ALIGNMENT FIX] Always re-render the motd so existing
             // sessions whose VFS has the pre-fix mis-aligned banner get the

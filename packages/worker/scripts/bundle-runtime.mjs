@@ -7,6 +7,13 @@
  *   node scripts/bundle-runtime.mjs clang binji-2020 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs python 0.29.4 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs --pin-catalog        (read-only; publishes nothing)
+ *   node scripts/bundle-runtime.mjs bash 5.2.37 --npm-package <dir>   (local; no R2)
+ *
+ * `--npm-package` is the SECOND publisher for the same artifacts: it stages
+ * exactly what the R2 path stages, composes the same manifest bytes, and lays
+ * the blobs out under the same content-addressed keys — into a directory that
+ * `npm publish` takes, for the embedders who have npm and no bucket. It reads
+ * nothing from Cloudflare and writes nothing to it. See §--npm-package below.
  *
  * Per `2026-05-10-true-os/plan.md` §2.4:
  *   - Blobs are content-addressed under `blobs/<name>-<version>/<sha256>/<file>`.
@@ -45,10 +52,6 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID;
-if (!ACCOUNT) {
-  console.error('ERROR: CLOUDFLARE_ACCOUNT_ID env var required');
-  process.exit(1);
-}
 // Resolve the wrangler bin from either the package-local or the
 // repo-root node_modules (this script runs from packages/worker but
 // the bin is hoisted to the workspace root).
@@ -62,6 +65,7 @@ const PYODIDE_WORKERD_ADAPTER = JSON.parse(
 
 const USAGE =
   'usage: bundle-runtime.mjs <name> <version> [--bucket <bucket>]\n' +
+  '       bundle-runtime.mjs <name> <version> --npm-package <dir>\n' +
   '       bundle-runtime.mjs --pin-catalog [--bucket <bucket>]';
 
 /** The bucket the deployed Worker's NIMBUS_RUNTIME_CACHE binding points at.
@@ -74,10 +78,23 @@ const rawArgs = process.argv.slice(2);
 const positionalArgs = [];
 let BUCKET = process.env.NIMBUS_RUNTIME_BUCKET || PRODUCTION_BUCKET;
 let PIN_ONLY = false;
+let NPM_OUT_DIR = null;
 for (let i = 0; i < rawArgs.length; i++) {
   const arg = rawArgs[i];
   if (arg === '--pin-catalog') {
     PIN_ONLY = true;
+    continue;
+  }
+  if (arg === '--npm-package') {
+    NPM_OUT_DIR = rawArgs[++i];
+    if (!NPM_OUT_DIR) {
+      console.error(USAGE);
+      process.exit(2);
+    }
+    continue;
+  }
+  if (arg.startsWith('--npm-package=')) {
+    NPM_OUT_DIR = arg.slice('--npm-package='.length);
     continue;
   }
   if (arg === '--bucket') {
@@ -94,6 +111,12 @@ for (let i = 0; i < rawArgs.length; i++) {
     continue;
   }
   positionalArgs.push(arg);
+}
+
+// Every mode but `--npm-package` reads or writes R2 through wrangler.
+if (!NPM_OUT_DIR && !ACCOUNT) {
+  console.error('ERROR: CLOUDFLARE_ACCOUNT_ID env var required');
+  process.exit(1);
 }
 
 // `--pin-catalog` regenerates the build-time root of trust from the catalog
@@ -194,6 +217,10 @@ const SPECS = {
     license: 'GPL-3.0-or-later AND GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',
+    npm: {
+      name: '@nimbus-sh/runtime-bash',
+      summary: 'GNU bash 5.2.37 and BusyBox 1.37.0, cross-compiled to wasm32-wasi',
+    },
     files: [
       { src: 'bash.async.wasm',           vfs: 'share/bash/bash.async.wasm' },
       { src: 'coreutils/busybox.wasm',    vfs: 'share/bash/coreutils/busybox.wasm' },
@@ -271,6 +298,10 @@ const SPECS = {
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',
+    npm: {
+      name: '@nimbus-sh/runtime-cpython',
+      summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
+    },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
       // The same interpreter with numpy and markupsafe's C speedups linked in,
@@ -383,6 +414,19 @@ if (!spec) {
   console.error(`known: ${Object.keys(SPECS).join(', ')}`);
   process.exit(2);
 }
+// Checked before anything is staged: which runtimes we publish to npm is a
+// decision, and a spec that has not made it should cost nothing to find out.
+if (NPM_OUT_DIR) {
+  if (!spec.npm) {
+    console.error(`ERROR: ${key} declares no npm package in its spec.`);
+    console.error('       Add an `npm: { name, summary }` entry to publish it that way.');
+    process.exit(2);
+  }
+  if (spec.ingest_only) {
+    console.error(`ERROR: ${key} is ingest_only — it has no manifest to publish.`);
+    process.exit(2);
+  }
+}
 
 const workDir = join(tmpdir(), `bundle-runtime-${RUNTIME}-${VERSION}`);
 rmSync(workDir, { recursive: true, force: true });
@@ -390,8 +434,12 @@ mkdirSync(workDir, { recursive: true });
 
 console.log(`[bundle-runtime] ${RUNTIME} ${VERSION}`);
 console.log(`[bundle-runtime] work dir: ${workDir}`);
-console.log(`[bundle-runtime] bucket:   ${BUCKET}`);
-console.log(`[bundle-runtime] account:  ${ACCOUNT}`);
+if (NPM_OUT_DIR) {
+  console.log(`[bundle-runtime] target:   ${NPM_OUT_DIR} (npm package; R2 is not read or written)`);
+} else {
+  console.log(`[bundle-runtime] bucket:   ${BUCKET}`);
+  console.log(`[bundle-runtime] account:  ${ACCOUNT}`);
+}
 
 // ── 0. Optional repackage step (sysroot-prep wave) ──────────────────
 // Runs BEFORE the fetch loop. Produces one or more local files inside
@@ -480,6 +528,19 @@ if (!spec.ingest_only) {
   console.log(`[bundle-runtime]   LICENSE → ${licenseBytes.length} bytes sha256=${licenseSha256.slice(0, 16)}…`);
 }
 
+const totalMb = (downloaded.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(2);
+
+// ── --npm-package: the same artifacts, published through npm ────────
+// Everything above this line is the staging the R2 path performs, and
+// everything below it is Cloudflare. A runtime package is the staged blobs
+// under their content-addressed keys plus the manifest that names them, which
+// is the R2 bucket's shape for one runtime, in a directory `npm publish`
+// takes. Nothing here reads or writes R2.
+if (NPM_OUT_DIR) {
+  writeNpmPackage(NPM_OUT_DIR, composeManifest(downloaded, packageRuntimeArtifacts), downloaded);
+  process.exit(0);
+}
+
 // ── 2. Upload each file as a content-addressed blob (deduped) ──────
 // Content path: blobs/<name>-<version>/<sha256>/<src-name>. Multiple
 // manifest entries pointing at identical content share one R2 upload.
@@ -497,8 +558,6 @@ for (const f of downloaded) {
 // ── 3 + 4. Manifest + catalog. Skipped in ingest_only mode (the swap
 // wave composes those at manifest-compose time; this prep pass only
 // stages the upstream blobs).
-const totalMb = (downloaded.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(2);
-
 if (spec.ingest_only) {
   console.log(`\n[bundle-runtime] DONE (ingest_only)`);
   console.log(`[bundle-runtime] uploaded ${downloaded.length} file(s) (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
@@ -507,43 +566,8 @@ if (spec.ingest_only) {
   console.log(`[bundle-runtime] catalog:  UNCHANGED (swap wave will flip default)`);
 } else {
   // ── 3. Write the per-version manifest ────────────────────────────
-  const runtimeArtifacts = downloaded
-    .filter((f) => f.transformMetadata)
-    .map((f) => ({
-      path: f.vfs,
-      kind: f.transformMetadata.kind,
-      id: f.transformMetadata.id,
-      source_sha256: f.transformMetadata.source_sha256,
-      sha256: f.sha256,
-    }));
-  runtimeArtifacts.push(...packageRuntimeArtifacts);
-
-  const manifest = {
-    name: RUNTIME,
-    version: VERSION,
-    license: spec.license,
-    wasi_namespace: spec.wasi_namespace || null,
-    files: downloaded.map((f) => ({
-      path: f.vfs,
-      content: f.r2Key,
-      sha256: f.sha256,
-      size: f.size,
-      ...(f.mode ? { mode: f.mode } : {}),
-    })),
-    entrypoints: spec.files
-      .filter((f) => f.runner)
-      .map((f) => ({
-        binName: f.binName,
-        runner: f.runner,
-        args: [],
-        ...(f.kind ? { kind: f.kind } : {}),
-      })),
-    ...(runtimeArtifacts.length ? { runtime_artifacts: runtimeArtifacts } : {}),
-  };
-
   const manifestLocal = join(workDir, 'manifest.json');
-  const manifestText = JSON.stringify(manifest, null, 2);
-  writeFileSync(manifestLocal, manifestText);
+  writeFileSync(manifestLocal, manifestText(composeManifest(downloaded, packageRuntimeArtifacts)));
   // Digest of the exact bytes uploaded below. The catalog carries it so the
   // supervisor can verify a manifest the same way a manifest lets it verify
   // a blob — see the trust-model note in src/runtime/runtime-catalog.ts.
@@ -786,6 +810,200 @@ function pinCatalogFromR2() {
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+// ── The manifest ─────────────────────────────────────────────────────
+//
+// What a runtime IS: the files it is made of, the digest of each, and the
+// commands they answer. Both publishers compose it here so an embedder who
+// installed the npm package and a session that ran `nimbus install` are
+// holding the same description of the same runtime, byte for byte.
+
+function composeManifest(downloaded, packageRuntimeArtifacts) {
+  const runtimeArtifacts = downloaded
+    .filter((f) => f.transformMetadata)
+    .map((f) => ({
+      path: f.vfs,
+      kind: f.transformMetadata.kind,
+      id: f.transformMetadata.id,
+      source_sha256: f.transformMetadata.source_sha256,
+      sha256: f.sha256,
+    }));
+  runtimeArtifacts.push(...packageRuntimeArtifacts);
+
+  return {
+    name: RUNTIME,
+    version: VERSION,
+    license: spec.license,
+    wasi_namespace: spec.wasi_namespace || null,
+    files: downloaded.map((f) => ({
+      path: f.vfs,
+      content: f.r2Key,
+      sha256: f.sha256,
+      size: f.size,
+      ...(f.mode ? { mode: f.mode } : {}),
+    })),
+    entrypoints: spec.files
+      .filter((f) => f.runner)
+      .map((f) => ({
+        binName: f.binName,
+        runner: f.runner,
+        args: [],
+        ...(f.kind ? { kind: f.kind } : {}),
+      })),
+    ...(runtimeArtifacts.length ? { runtime_artifacts: runtimeArtifacts } : {}),
+  };
+}
+
+function manifestText(manifest) {
+  return JSON.stringify(manifest, null, 2);
+}
+
+// ── --npm-package ────────────────────────────────────────────────────
+
+/**
+ * Write the runtime as a directory `npm publish` accepts.
+ *
+ * The blobs keep the keys the manifest already names — `blobs/<name>-<version>/
+ * <sha256>/<file>`, the R2 object keys — so the manifest needs no npm-specific
+ * rewrite and comes out byte-identical to the one in the bucket. That is the
+ * point rather than a coincidence: `content` is documented as the publisher's
+ * key for a blob, and for this publisher a path inside its own tarball IS that
+ * key. There is one manifest format and one layout, and `readBlob` below is
+ * the whole of what distinguishes the two publishers.
+ */
+function writeNpmPackage(outDir, manifest, downloaded) {
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
+
+  const written = new Set();
+  let unpackedBytes = 0;
+  for (const f of downloaded) {
+    if (written.has(f.r2Key)) continue;
+    written.add(f.r2Key);
+    unpackedBytes += f.size;
+    const dest = join(outDir, f.r2Key);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, f.bytes);
+  }
+
+  writeFileSync(join(outDir, 'manifest.json'), manifestText(manifest));
+  writeFileSync(join(outDir, 'LICENSE'), spec.license_text);
+  writeFileSync(join(outDir, 'index.js'), runtimePackageEntry());
+  writeFileSync(join(outDir, 'index.d.ts'), runtimePackageTypes());
+  writeFileSync(join(outDir, 'README.md'), runtimePackageReadme());
+  writeFileSync(join(outDir, 'package.json'), `${JSON.stringify({
+    name: spec.npm.name,
+    version: VERSION,
+    description: `${spec.npm.summary}, as a Nimbus runtime package.`,
+    keywords: ['nimbus', 'wasm', 'wasi', 'runtime', RUNTIME],
+    homepage: 'https://github.com/AshishKumar4/Nimbus',
+    // No `directory`: the package is built from the runtime spec and the wasm
+    // build tree, and has no source directory of its own to point at.
+    repository: { type: 'git', url: 'git+https://github.com/AshishKumar4/Nimbus.git' },
+    bugs: 'https://github.com/AshishKumar4/Nimbus/issues',
+    license: spec.license,
+    type: 'module',
+    main: './index.js',
+    types: './index.d.ts',
+    exports: {
+      '.': { types: './index.d.ts', import: './index.js' },
+      './manifest.json': './manifest.json',
+      './package.json': './package.json',
+    },
+    files: ['index.js', 'index.d.ts', 'manifest.json', 'blobs', 'LICENSE', 'README.md'],
+    // The runtime is inert without the half that installs and runs it, and
+    // `index.d.ts` types itself against that package's exports.
+    peerDependencies: { '@nimbus-sh/core': '>=0.2.0' },
+    publishConfig: { access: 'public' },
+  }, null, 2)}\n`);
+
+  console.log(`\n[bundle-runtime] DONE (npm package)`);
+  console.log(`[bundle-runtime] ${spec.npm.name}@${VERSION} → ${outDir}`);
+  console.log(`[bundle-runtime] ${written.size} blobs, ${(unpackedBytes / 1024 / 1024).toFixed(2)} MiB unpacked`);
+  console.log(`[bundle-runtime] publish with: npm publish ${outDir}`);
+  console.log(`[bundle-runtime] R2: UNTOUCHED (nothing was read from or written to Cloudflare)`);
+}
+
+/**
+ * The package entry point, identical in every runtime package.
+ *
+ * It is the `RuntimePackage` port from `@nimbus-sh/core`: a manifest, and the
+ * bytes it names. Core verifies every blob against the manifest before it
+ * reaches a filesystem, so this side neither hashes nor validates — it reads.
+ */
+function runtimePackageEntry() {
+  return `/**
+ * A Nimbus runtime package: a manifest, and the content-addressed blobs it
+ * names. Pass the default export to \`NimbusWorkspace.create({ runtimes })\`
+ * and the runtime installs into the workspace filesystem, digest-verified,
+ * at the same path \`nimbus install\` uses on Cloudflare.
+ *
+ * Generated by packages/worker/scripts/bundle-runtime.mjs. Do not edit.
+ */
+
+import { readFileSync } from 'node:fs';
+
+const root = new URL('./', import.meta.url);
+
+export const manifest = JSON.parse(readFileSync(new URL('manifest.json', root), 'utf8'));
+
+/** The bytes of one manifest file entry, by the publisher key it carries. */
+export function readBlob(file) {
+  // Copied rather than handed over: readFileSync returns a pooled Buffer for
+  // small files, whose backing ArrayBuffer holds other files' bytes too.
+  return new Uint8Array(readFileSync(new URL(file.content, root)));
+}
+
+export default { manifest, readBlob };
+`;
+}
+
+function runtimePackageTypes() {
+  return `import type { ManifestFile, RuntimeManifest, RuntimePackage } from '@nimbus-sh/core';
+
+export declare const manifest: RuntimeManifest;
+export declare function readBlob(file: ManifestFile): Uint8Array;
+
+declare const runtimePackage: RuntimePackage;
+export default runtimePackage;
+`;
+}
+
+function runtimePackageReadme() {
+  return `# ${spec.npm.name}
+
+${spec.npm.summary}, packaged for [Nimbus](https://github.com/AshishKumar4/Nimbus).
+
+This package is data: the runtime's wasm and support files, content-addressed,
+plus the manifest that describes them. It does nothing on its own —
+[\`@nimbus-sh/core\`](https://www.npmjs.com/package/@nimbus-sh/core) installs it
+into a workspace filesystem and runs it.
+
+\`\`\`bash
+npm install @nimbus-sh/core ${spec.npm.name}
+\`\`\`
+
+\`\`\`js
+import { NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
+import ${RUNTIME} from '${spec.npm.name}';
+
+const workspace = await NimbusWorkspace.create({
+  sql,                       // your SQLite, through the SqlDatabase port
+  facets: localFacetHost(),
+  runtimes: [${RUNTIME}],
+});
+\`\`\`
+
+Every file is verified against the manifest's SHA-256 before it reaches the
+filesystem. The same bytes are served to Cloudflare deployments from R2 by
+\`nimbus install ${RUNTIME}\`, under the same manifest.
+
+## Licence
+
+${spec.license}. See the bundled \`LICENSE\` for the notice and where to find
+the full text and corresponding source.
+`;
 }
 
 // ── Runtime transforms ───────────────────────────────────────────────

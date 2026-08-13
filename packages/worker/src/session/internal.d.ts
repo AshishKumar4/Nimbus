@@ -159,7 +159,7 @@ export interface SessionInternal {
   seedFilesystem(): void;
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).
-  initSession(ws: WebSocket): void;
+  initSession(ws: WebSocket): Promise<void>;
   _w9MaybeBumpIsolateGen(): Promise<void>;
   _w9FlushOnClose(): void;
   _w9WireProcessLogPersist(): void;

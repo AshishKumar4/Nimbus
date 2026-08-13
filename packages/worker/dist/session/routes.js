@@ -398,7 +398,7 @@ export async function handleFetch(self, request) {
         }
         // Cold init path — first ever /ws (or post-DO-eviction).
         try {
-            self.initSession(server);
+            await self.initSession(server);
         }
         catch (err) {
             console.error('initSession error:', err?.message, err?.stack);

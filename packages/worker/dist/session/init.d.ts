@@ -3,12 +3,21 @@
  *
  * Why this is one big function and not a class:
  * initSession runs once per /ws upgrade and walks the session
- * through Phase R (rehydrate from SQL), Phase B (build kernel +
- * shell + register commands), Phase W (attach terminal), and
- * (cold-only) Phase O (MOTD + framework hint). The phases share
- * lots of locals (vfs, kernel, registry, shell) and ordering
- * matters strictly — there's no interesting reuse boundary that a
- * class decomposition would expose.
+ * through Phase R (rehydrate from SQL), Phase B (compose the
+ * workspace + register the session's commands), Phase W (attach
+ * terminal), and (cold-only) Phase O (MOTD + framework hint). The
+ * phases share lots of locals (vfs, kernel, registry, shell) and
+ * ordering matters strictly — there's no interesting reuse boundary
+ * that a class decomposition would expose.
+ *
+ * What it no longer does is COMPOSE the operating system. The kernel,
+ * the provider mounts, the command registry, the coreutils, the exec
+ * resolver, the default environment and the shell come from
+ * `NimbusWorkspace` (@nimbus-sh/core/workspace), which an embedder off
+ * Cloudflare builds the same way. What stays here is everything that
+ * only makes sense with a socket, a Durable Object and a product behind
+ * it: the terminal and its scrollback, the phase machine, the persisted
+ * shell state, npm, git, vite, wrangler and the facet-backed runtimes.
  *
  * The function is intentionally written so that a reader sees:
  *   1. setPhase('rehydrate') ...
@@ -38,6 +47,6 @@ type InitHost = SessionInternal & {
     readonly ctx: any;
     readonly env: any;
 };
-export declare function initSession(self: InitHost, ws: WebSocket): void;
+export declare function initSession(self: InitHost, ws: WebSocket): Promise<void>;
 export {};
 //# sourceMappingURL=init.d.ts.map

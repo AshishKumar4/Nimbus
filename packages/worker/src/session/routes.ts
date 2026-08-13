@@ -425,7 +425,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
 
       // Cold init path — first ever /ws (or post-DO-eviction).
       try {
-        self.initSession(server);
+        await self.initSession(server);
       } catch (err: any) {
         console.error('initSession error:', err?.message, err?.stack);
         return new Response('Init failed: ' + err?.message, { status: 500 });

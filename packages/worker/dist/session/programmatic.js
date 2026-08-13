@@ -79,7 +79,7 @@ function runtimeDeps(self) {
 }
 export async function ensureProgrammaticReady(self, options = {}) {
     if (!self.shell) {
-        self.initSession(makeHeadlessWebSocket());
+        await self.initSession(makeHeadlessWebSocket());
         // Programmatic boot owns no real terminal socket. Mark the session
         // drained so a later browser /ws can warm-join instead of 409ing.
         self._b4Phase = 'drained';
