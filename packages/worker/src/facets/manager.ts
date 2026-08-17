@@ -3655,6 +3655,16 @@ export class FacetManager {
   setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
 
   /**
+   * The env/ctx pair every loader-backed runtime builds its facet pools
+   * from. A pool is constructed from exactly these two, so the manager
+   * exposes them as one narrow accessor rather than every runtime reaching
+   * into its private fields.
+   */
+  loaderHost(): { env: unknown; ctx: DurableObjectState } {
+    return { env: this.env, ctx: this.ctx };
+  }
+
+  /**
    * The image store's directory, created before the first filesystem view is
    * built rather than on the first image write.
    *

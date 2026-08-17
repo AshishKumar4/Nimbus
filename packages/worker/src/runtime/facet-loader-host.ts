@@ -53,19 +53,15 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHos
 }
 
 /**
- * The two objects a LoaderPool needs from a FacetManager.
- *
- * FacetManager does not expose its `env` and `ctx` in its type, but a loader
- * pool is constructed from exactly those, so every runtime that spawns facets
- * needs the same reach-through. Reflect.get rather than a cast: the shape is
- * checked here once, and a FacetManager built on something other than a
- * DurableObjectState fails with a sentence instead of at the first RPC.
+ * The two objects a LoaderPool needs from a FacetManager, via the manager's
+ * own `loaderHost()` accessor. The runtime guard stays: harnesses build
+ * FacetManagers on mock contexts, and one built on something other than a
+ * DurableObjectState should fail with a sentence instead of at the first RPC.
  */
 export function getFacetManagerLoaderHost(
   facetMgr: FacetManager,
 ): { env: unknown; ctx: DurableObjectState } {
-  const env = Reflect.get(facetMgr, 'env');
-  const ctx = Reflect.get(facetMgr, 'ctx');
+  const { env, ctx } = facetMgr.loaderHost();
   if (!isDurableObjectState(ctx)) {
     throw new Error('a loader-backed runtime requires a FacetManager with DurableObjectState context');
   }
