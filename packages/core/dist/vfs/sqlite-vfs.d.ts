@@ -229,6 +229,7 @@ export declare class SqliteVFS {
     private readonly activeStagingContentIds;
     /** True only while durable GC work or a known abandoned staging row exists. */
     private maintenancePending;
+    private orphanScanCursor;
     private _activeTransaction;
     private _transactionDuration;
     private _postCommitDuration;
