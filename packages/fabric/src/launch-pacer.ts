@@ -127,6 +127,91 @@ function withResolvers(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+/** What {@link LaunchTurnPump} needs from the Durable Object hosting it. */
+export interface LaunchTurnPumpHost {
+  /**
+   * Arrange for {@link LaunchTurnPump.pump} to run on a fresh Durable Object
+   * turn.
+   *
+   * The embedder satisfies this with an alarm, which is the only primitive
+   * that genuinely re-enters the object: a fresh turn is both a released
+   * thread and a fresh CPU budget, and a launch needs each for a different
+   * reason. Without it the pump degrades to a same-context timer — see
+   * {@link LaunchTurnPump.nextTurn}.
+   */
+  requestTurn?: () => void;
+  /**
+   * Awaited first on every pump, before any waiter resumes. Where the
+   * resident-launch journal's recovery sits: the pump is what an alarm calls,
+   * and the first turn after a reset is the re-delivered alarm of a launch
+   * the reset interrupted.
+   */
+  recover?: () => Promise<void>;
+}
+
+/**
+ * The granting side of {@link LaunchTurnScheduler}: parks suspended launches
+ * and resumes every one of them when the host grants a fresh turn.
+ */
+export class LaunchTurnPump implements LaunchTurnScheduler {
+  /**
+   * Launches suspended between chunks, waiting for a turn of their own.
+   *
+   * In-memory on purpose: a launch is only meaningful while the process table
+   * entry it is building for exists, and both are lost together if the isolate
+   * resets. What survives a reset is the journal, which names the launch's
+   * INPUTS rather than its position — a resumed queue would be resurrecting
+   * half-built work for pids that no longer exist, where re-driving a launch
+   * from its inputs is the same idempotent work again.
+   */
+  private waiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
+
+  constructor(private readonly host: LaunchTurnPumpHost) {}
+
+  /**
+   * How a paced launch asks for a fresh turn.
+   *
+   * The host grants one by calling {@link pump} from a context that is
+   * genuinely a new invocation — the session's alarm. Without such a host
+   * there is no fresh turn to be had, and the launch continues on this one
+   * rather than hanging: that is exactly the single-turn launch this path has
+   * always performed, so a harness or a runtime without alarms loses the
+   * responsiveness but keeps the behaviour.
+   */
+  nextTurn(chunkEnded: Promise<void>): Promise<void> {
+    return new Promise<void>((resume) => {
+      this.waiters.push({ resume, chunkEnded });
+      if (this.host.requestTurn) {
+        this.host.requestTurn();
+        return;
+      }
+      setTimeout(() => { void this.pump(); }, 0);
+    });
+  }
+
+  /**
+   * Run one chunk of every launch waiting for a turn.
+   *
+   * Awaits the chunk each resumed launch then performs, so the invocation that
+   * granted the turn is the invocation that pays for the work — rather than
+   * releasing it into a handler's microtask drain, where nothing owns it and
+   * the runtime may tear the context down mid-chunk.
+   */
+  async pump(): Promise<void> {
+    await this.host.recover?.();
+    const waiting = this.waiters;
+    if (waiting.length === 0) return;
+    this.waiters = [];
+    for (const waiter of waiting) waiter.resume();
+    await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
+  }
+
+  /** Whether any launch is suspended waiting for a turn. */
+  get hasPending(): boolean {
+    return this.waiters.length > 0;
+  }
+}
+
 /**
  * Chunk bound for this session, honouring the verification knob.
  *

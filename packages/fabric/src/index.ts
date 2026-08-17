@@ -12,6 +12,7 @@ export * from './bindings.js';
 export * from './ctx-exports.js';
 export * from './fanout-pool.js';
 export * from './inner-do-registry.js';
+export * from './launch-journal.js';
 export * from './launch-pacer.js';
 export * from './loader-pool.js';
 export * from './process-fabric.js';

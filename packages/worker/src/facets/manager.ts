@@ -35,7 +35,11 @@ import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
-import { LaunchPacer, launchChunkMaxBytes, type LaunchTurnScheduler } from '@nimbus-sh/fabric/launch-pacer.js';
+import { LaunchPacer, LaunchTurnPump, launchChunkMaxBytes } from '@nimbus-sh/fabric/launch-pacer.js';
+import {
+  ResidentLaunchJournal,
+  type ResidentLaunchRecord,
+} from '@nimbus-sh/fabric/launch-journal.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/core/_shared/rpc-dispose.js';
@@ -74,7 +78,6 @@ import {
   BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, MAX_TX_BLOB_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
-import { RESIDENT_LAUNCH_KEY_PREFIX } from '../session/keys.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import {
@@ -3479,36 +3482,20 @@ export interface ResidentSpawnOptions {
 const FACET_IMAGE_WRITE_SLICE_BYTES = Math.floor(MAX_TX_BLOB_BYTES / CHUNK_SIZE) * CHUNK_SIZE;
 
 /**
- * A resident process this session owes the user, as a later instance would
- * have to re-drive it.
- *
- * The launch's own inputs and nothing derived from them: everything a launch
- * builds is a pure function of these, and the images it writes are content-
- * addressed, so re-driving is the same work again rather than a repair.
- *
- * The row lives for the PROCESS's lifetime, not the launch's. Measured live
- * (staging, 2026-08-13): every observed reset struck seconds AFTER the launch
- * settled — the platform kills the object while the resident runs, which is
- * when a launch-scoped row had already been deleted and recovery had nothing
- * to find. A resident's facet cannot outlive its session instance (the
- * process host's held-open leg dies with it), so a row from a previous
- * generation always names a process that is genuinely gone.
+ * This session's journal record: the fabric's base plus the launch's own
+ * inputs — the entry code and the spawn options `_spawnResident` re-drives
+ * from. The journal never reads them; they ride through it opaquely.
  */
-interface ResidentLaunchRecord {
-  pid: number;
-  command: string;
+interface NodeResidentLaunchRecord extends ResidentLaunchRecord {
   code: string;
   opts: ResidentSpawnOptions;
-  /** 0 for a launch the user asked for; 1 for the one re-drive it may get. */
-  attempt: number;
-  /** Where the resident was when its instance died: still being built, or
-   *  booted and running. Running residents re-drive with a fresh attempt
-   *  budget — their launch already proved itself once. */
-  phase: 'starting' | 'running';
 }
 
-/** A launch is re-driven once. A reset that recurs is not the transient one. */
-const RESIDENT_LAUNCH_MAX_ATTEMPT = 1;
+/** 'running' is the measured common case: the platform's reset strikes
+ *  seconds after a launch settles, while the resident runs. */
+function residentLaunchDoing(record: ResidentLaunchRecord): string {
+  return record.phase === 'running' ? 'running' : 'starting';
+}
 
 export class FacetManager {
   private ctx: DurableObjectState;
@@ -3536,26 +3523,18 @@ export class FacetManager {
   /** pid → the boot images its facet loads from; the image sweep's root set. */
   private residentImages = new Map<number, string[]>();
   /**
-   * Launches suspended between chunks, waiting for a turn of their own.
-   *
-   * In-memory on purpose: a launch is only meaningful while the process table
-   * entry it is building for exists, and both are lost together if the isolate
-   * resets. What survives a reset is the journal, which names the launch's
-   * INPUTS rather than its position — a resumed queue would be resurrecting
-   * half-built work for pids that no longer exist, where re-driving a launch
-   * from its inputs is the same idempotent work again.
+   * The resident-launch journal (fabric's launch-journal.ts): the durable
+   * record of every resident this session owes the user, and its recovery
+   * after an instance reset. This manager supplies what a launch IS — the
+   * inputs `_spawnResident` re-drives from — and how its loss is reported.
    */
-  private launchWaiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
-  /** Whether this instance has already read the journal a reset leaves behind. */
-  private launchesRecovered = false;
+  private readonly launchJournal: ResidentLaunchJournal<NodeResidentLaunchRecord>;
   /**
-   * Pids THIS instance holds journal rows for. What keeps the terminal hook —
-   * which fires for every process, shells and one-shots included — from
-   * paying a storage delete for pids that never had a row. In-memory is
-   * correct: rows from a previous instance are recovery's to consume, never
-   * this hook's.
+   * The granting side of the launch pacer (fabric's launch-pacer.ts). The
+   * session's alarm re-enters the object through `pumpResidentLaunches`;
+   * journal recovery rides the first pump.
    */
-  private journalledPids = new Set<number>();
+  private readonly launchPump: LaunchTurnPump;
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
@@ -3642,13 +3621,34 @@ export class FacetManager {
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
     this.debugEnabled = debugVar === '1' || debugVar === 'true';
+    this.launchJournal = new ResidentLaunchJournal<NodeResidentLaunchRecord>(ctx.storage, {
+      generationBase: () => this.processes.pidBase,
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
+      redrive: (record, attempt) => this._spawnResident(record.code, record.opts, attempt),
+      onRedrive: (record) => this.hooks.notify?.(
+        '\x1b[2m[nimbus: the session restarted while '
+        + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`,
+      ),
+      onAbandoned: (record) => this.hooks.notify?.(
+        '\x1b[2m[nimbus: the session restarted again while '
+        + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`,
+      ),
+      onRedriveFailed: (record, e) => this.hooks.notify?.(
+        `\x1b[2m[nimbus: "${record.command}" could not be restarted: `
+        + `${errorMessage(e)}]\x1b[0m\r\n`,
+      ),
+    });
+    this.launchPump = new LaunchTurnPump({
+      requestTurn: hooks.requestLaunchTurn?.bind(hooks),
+      recover: () => this.launchJournal.recoverInterrupted(),
+    });
     // The journal row of a resident lives for the PROCESS's lifetime, so its
     // release belongs on the one seam every end-of-life passes through —
     // exit, kill, self-reported exit and timeout abort all mark the table.
     // Rooted on waitUntil: the hook fires synchronously inside whatever turn
     // ended the process, and the delete must not be a floating promise there.
     this.processes.setOnTerminal((pid) => {
-      this.ctx.waitUntil(this._releaseResidentJournal(pid));
+      this.ctx.waitUntil(this.launchJournal.release(pid));
     });
   }
 
@@ -4819,132 +4819,17 @@ export class FacetManager {
   }
 
   /**
-   * How a paced launch asks for a fresh turn.
-   *
-   * The host grants one by calling `pumpResidentLaunches` from a context that
-   * is genuinely a new invocation — the session's alarm. Without such a host
-   * there is no fresh turn to be had, and the launch continues on this one
-   * rather than hanging: that is exactly the single-turn launch this path has
-   * always performed, so a harness or a runtime without alarms loses the
-   * responsiveness but keeps the behaviour.
+   * Grant every suspended launch a chunk of this turn — the session's alarm
+   * calls this, and journal recovery rides the first pump. See fabric's
+   * `LaunchTurnPump.pump` for the ownership argument.
    */
-  private readonly launchScheduler: LaunchTurnScheduler = {
-    nextTurn: (chunkEnded: Promise<void>) => new Promise<void>((resume) => {
-      this.launchWaiters.push({ resume, chunkEnded });
-      if (this.hooks.requestLaunchTurn) {
-        this.hooks.requestLaunchTurn();
-        return;
-      }
-      setTimeout(() => { void this.pumpResidentLaunches(); }, 0);
-    }),
-  };
-
-  /**
-   * Run one chunk of every launch waiting for a turn.
-   *
-   * Awaits the chunk each resumed launch then performs, so the invocation that
-   * granted the turn is the invocation that pays for the work — rather than
-   * releasing it into a handler's microtask drain, where nothing owns it and
-   * the runtime may tear the context down mid-chunk.
-   */
-  async pumpResidentLaunches(): Promise<void> {
-    await this._recoverInterruptedLaunches();
-    const waiting = this.launchWaiters;
-    if (waiting.length === 0) return;
-    this.launchWaiters = [];
-    for (const waiter of waiting) waiter.resume();
-    await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
-  }
-
-  /**
-   * Re-drive the launches a previous instance was building when it was reset.
-   *
-   * The platform resets a session Durable Object over what one turn has
-   * outstanding in storage ("Internal error in Durable Object storage caused
-   * object to be reset"), and a launch is the largest writer this session has.
-   * Everything the launch held was in memory, so the process it was building
-   * and the terminal watching it both went with the instance, and until now
-   * the user was told nothing at all.
-   *
-   * Sited on the pump because the pump is what an alarm calls, and a launch
-   * that was suspended has an alarm armed for it — a reset during a chunk
-   * fails that alarm, and the platform re-delivers it to the instance that
-   * replaces this one. So the first turn after a reset is already this one.
-   *
-   * Runs once per instance: the journal only changes when a launch of THIS
-   * instance starts or settles, and those are rows this instance wrote.
-   */
-  private async _recoverInterruptedLaunches(): Promise<void> {
-    if (this.launchesRecovered) return;
-    this.launchesRecovered = true;
-    const journal = await this.ctx.storage.list<ResidentLaunchRecord>({
-      prefix: RESIDENT_LAUNCH_KEY_PREFIX,
-    });
-    for (const [key, record] of journal) {
-      // A pid at or below this instance's base was allocated by a PREVIOUS one
-      // (process-table.ts, PID_GEN_STRIDE), so its launch never finished; above
-      // the base is this instance's own, still running. Same predicate as
-      // `session/rpc.ts` uses to attribute a prior generation's pid.
-      if (!(record.pid > 0 && record.pid <= this.processes.pidBase)) continue;
-      await this.ctx.storage.delete(key);
-      // 'running' is the measured common case: the platform's reset strikes
-      // seconds after a launch settles, while the resident runs.
-      const doing = record.phase === 'running' ? 'running' : 'starting';
-      if (record.attempt >= RESIDENT_LAUNCH_MAX_ATTEMPT) {
-        this.hooks.notify?.(
-          '\x1b[2m[nimbus: the session restarted again while '
-          + `"${record.command}" was ${doing} — leaving it stopped]\x1b[0m\r\n`,
-        );
-        continue;
-      }
-      this.hooks.notify?.(
-        '\x1b[2m[nimbus: the session restarted while '
-        + `"${record.command}" was ${doing} — restarting it]\x1b[0m\r\n`,
-      );
-      // Not awaited: this call is running inside the alarm that granted the
-      // turn, and the launch it starts asks for turns of its own through that
-      // same alarm — awaiting it here would be waiting on an alarm that cannot
-      // be scheduled until this one returns.
-      this.ctx.waitUntil(
-        this._spawnResident(record.code, record.opts, record.attempt + 1)
-          .catch((e: unknown) => {
-            this.hooks.notify?.(
-              `\x1b[2m[nimbus: "${record.command}" could not be restarted: `
-              + `${errorMessage(e)}]\x1b[0m\r\n`,
-            );
-          }),
-      );
-    }
-  }
-
-  /**
-   * Record a launch as in flight, so an instance that replaces this one knows
-   * it never finished. Best-effort: a launch that cannot be journalled still
-   * runs, and a reset then costs exactly what it cost before the journal.
-   *
-   * Synced, not merely put: `await put()` resolves before durability, and the
-   * reset this journal exists for destroys every write its turn still had
-   * outstanding — measured live, a launch killed in its first chunks left NO
-   * row for the replacement instance to find, which is how the recovery this
-   * feeds sat inert while its own test stayed green. `sync()` is the storage
-   * layer's durability barrier: the row is on disk before the launch performs
-   * its first byte of real work. What remains is a reset between the put and
-   * the sync's completion — and a launch that dies there has not started, so
-   * losing its row costs a retype, not a recovery.
-   */
-  private async _journalLaunch(record: ResidentLaunchRecord): Promise<void> {
-    try {
-      this.journalledPids.add(record.pid);
-      await this.ctx.storage.put(`${RESIDENT_LAUNCH_KEY_PREFIX}${record.pid}`, record);
-      await this.ctx.storage.sync();
-    } catch (e: unknown) {
-      console.warn('[nimbus] resident launch journal write failed:', errorMessage(e));
-    }
+  pumpResidentLaunches(): Promise<void> {
+    return this.launchPump.pump();
   }
 
   /** Whether any launch is suspended waiting for a turn. */
   get hasPendingLaunchTurns(): boolean {
-    return this.launchWaiters.length > 0;
+    return this.launchPump.hasPending;
   }
 
   /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -5200,7 +5085,7 @@ export class FacetManager {
   ): Promise<void> {
     const cwd = opts.cwd || '/home/user';
     const pacer = new LaunchPacer(
-      this.launchScheduler,
+      this.launchPump,
       launchChunkMaxBytes(this.env),
       () => this._assertLaunchStillOwned(entry.pid),
     );
@@ -5213,7 +5098,7 @@ export class FacetManager {
     // sessions kept dying. The row is finally released by the supervisor's
     // terminal hook when the process ends. A re-drive owns its own process,
     // so the caller's pid goes with the instance that had it.
-    const record: ResidentLaunchRecord = {
+    const record: NodeResidentLaunchRecord = {
       pid: entry.pid,
       command,
       code,
@@ -5221,11 +5106,11 @@ export class FacetManager {
       attempt,
       phase: 'starting',
     };
-    await this._journalLaunch(record);
+    await this.launchJournal.journal(record);
     try {
       await this._residentLaunchBody(entry, code, command, cwd, opts, pacer);
     } catch (e: unknown) {
-      await this._releaseResidentJournal(entry.pid);
+      await this.launchJournal.release(entry.pid);
       throw e;
     } finally {
       pacer.settle();
@@ -5234,23 +5119,8 @@ export class FacetManager {
     // its running life with a fresh re-drive budget. If the process already
     // ended inside the launch body's own settlement, the terminal hook has
     // released the row — do not write it back.
-    if (this.journalledPids.has(entry.pid)) {
-      await this._journalLaunch({ ...record, attempt: 0, phase: 'running' });
-    }
-  }
-
-  /**
-   * The journal row's one release: the process is over, nothing is owed.
-   * Synced so an instance reset moments later cannot roll the delete back and
-   * resurrect a process the user watched end.
-   */
-  private async _releaseResidentJournal(pid: number): Promise<void> {
-    if (!this.journalledPids.delete(pid)) return;
-    try {
-      await this.ctx.storage.delete(`${RESIDENT_LAUNCH_KEY_PREFIX}${pid}`);
-      await this.ctx.storage.sync();
-    } catch (e: unknown) {
-      console.warn('[nimbus] resident launch journal delete failed:', errorMessage(e));
+    if (this.launchJournal.has(entry.pid)) {
+      await this.launchJournal.journal({ ...record, attempt: 0, phase: 'running' });
     }
   }
 
