@@ -15,6 +15,7 @@
   },
   "include": [
     "packages/core/src/**/*.ts",
+    "packages/fabric/src/**/*.ts",
     "packages/worker/src/**/*.ts",
     "packages/sdk/src/**/*.ts",
     "packages/config/src/**/*.ts",

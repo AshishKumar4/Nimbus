@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "nimbus-monorepo",
@@ -113,6 +114,18 @@
         "@nimbus-sh/cli": "^0.1.7",
       },
     },
+    "packages/fabric": {
+      "name": "@nimbus-sh/fabric",
+      "version": "0.1.0",
+      "dependencies": {
+        "@nimbus-sh/core": "^0.4.0",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250327.0",
+        "typescript": "^5.7.0",
+      },
+    },
     "packages/react": {
       "name": "@nimbus-sh/react",
       "version": "0.1.4",
@@ -147,6 +160,7 @@
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
         "@nimbus-sh/core": "^0.4.0",
+        "@nimbus-sh/fabric": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",
         "clean-git-ref": "^2.0.1",
@@ -440,6 +454,8 @@
     "@nimbus-sh/core": ["@nimbus-sh/core@workspace:packages/core"],
 
     "@nimbus-sh/docs": ["@nimbus-sh/docs@workspace:apps/docs"],
+
+    "@nimbus-sh/fabric": ["@nimbus-sh/fabric@workspace:packages/fabric"],
 
     "@nimbus-sh/hosted-demo": ["@nimbus-sh/hosted-demo@workspace:apps/hosted-demo"],
 
