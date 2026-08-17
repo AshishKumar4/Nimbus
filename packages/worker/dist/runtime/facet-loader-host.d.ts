@@ -13,13 +13,10 @@ import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetManager } from '../facets/manager.js';
 export declare function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHost;
 /**
- * The two objects a LoaderPool needs from a FacetManager.
- *
- * FacetManager does not expose its `env` and `ctx` in its type, but a loader
- * pool is constructed from exactly those, so every runtime that spawns facets
- * needs the same reach-through. Reflect.get rather than a cast: the shape is
- * checked here once, and a FacetManager built on something other than a
- * DurableObjectState fails with a sentence instead of at the first RPC.
+ * The two objects a LoaderPool needs from a FacetManager, via the manager's
+ * own `loaderHost()` accessor. The runtime guard stays: harnesses build
+ * FacetManagers on mock contexts, and one built on something other than a
+ * DurableObjectState should fail with a sentence instead of at the first RPC.
  */
 export declare function getFacetManagerLoaderHost(facetMgr: FacetManager): {
     env: unknown;
