@@ -65,8 +65,8 @@ Core files:
 | `packages/worker/src/runtime/os-contracts.ts` | Shared Runtime OS contracts for filesystem/process/ports/package ABI/diagnostics. |
 | `packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts` | Runtime filesystem bridge over `SqliteVFS`. |
 | `packages/worker/src/facets/process.ts` | Supervisor-side `child_process` broker. |
-| `packages/worker/src/loaders/process-fabric.ts` | Resident-process scheduler, boot specs, and `openResidentFacet` — the one way a process becomes a running facet. |
-| `packages/worker/src/loaders/process-host.ts` | Which actor hosts that facet: the user's own session DO, or a sibling. Two implementations, one deployment-wide choice. |
+| `packages/fabric/src/process-fabric.ts` | Resident-process scheduler, boot specs, and `openResidentFacet` — the one way a process becomes a running facet. Part of `@nimbus-sh/fabric`, the extracted Cloudflare DO/facet machinery (loader pools, facet host, alarm mux, binding shims). |
+| `packages/worker/src/loaders/process-host.ts` | Which actor hosts that facet: the user's own session DO, or a sibling. Two implementations in `@nimbus-sh/fabric/process-host.js`; this selector owns the one deployment-wide choice (`NIMBUS_PROCESS_HOST`). |
 | `packages/worker/src/vfs/sqlite-vfs.ts` | SQLite-backed VFS. |
 | `packages/worker/src/npm/installer.ts` | npm install pipeline. |
 | `packages/worker/src/runtime/package-manager.ts` | `nimbus install` runtime package manager. |

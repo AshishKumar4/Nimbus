@@ -14,7 +14,8 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY } from './keys.js';
+import { ISOLATE_GEN_KEY } from '@nimbus-sh/fabric/alarms.js';
 const ProcessLogsOptionsSchema = z.object({
     cursor: z.number().int().nonnegative().optional(),
     lines: z.number().int().nonnegative().optional(),
@@ -546,7 +547,7 @@ export async function rpcDestroy(self, options = {}) {
         // current-generation (pid > pidBase) — landing its output on the
         // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
         try {
-            await self.ctx.storage.put(W9_ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0);
+            await self.ctx.storage.put(ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0);
         }
         catch { /* best-effort */ }
         resetInMemorySessionState(self);

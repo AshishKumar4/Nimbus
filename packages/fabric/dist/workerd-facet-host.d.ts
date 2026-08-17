@@ -1,7 +1,7 @@
 /**
  * workerd-facet-host.ts — how a resident process is actually made, on workerd.
  *
- * `loaders/process-fabric.ts` says what a resident process IS, in terms no
+ * `process-fabric.ts` says what a resident process IS, in terms no
  * runtime owns: a boot spec, a start contract, a handle that can be routed to
  * and released. This module is the one implementation of that on Cloudflare,
  * and everything here is a workerd mechanism rather than a Nimbus concept —
@@ -12,7 +12,6 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
-import { type OpencodeAssetsEnv, type OpencodeStageSpec } from '../facets/opencode-staging.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
@@ -20,13 +19,6 @@ export interface LoadedWorkerEntrypointStub {
     fetch?(request: Request): Promise<Response>;
 }
 export interface NimbusCtxExports {
-    SupervisorRPC?: (options: {
-        props: {
-            doId: string;
-            pid: number;
-            writerId: string;
-        };
-    }) => unknown;
     NimbusLoadedEntrypoint?: (options: {
         props: {
             key: string;
@@ -37,7 +29,7 @@ export interface NimbusCtxExports {
                 pid: number;
                 writerId: string;
             };
-            stage?: OpencodeStageSpec;
+            stage?: unknown;
         };
     }) => LoadedWorkerEntrypointStub;
 }
@@ -52,7 +44,7 @@ export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExport
     doId: string;
     pid: number;
     writerId: string;
-}, stage: OpencodeStageSpec, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
+}, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /**
  * Total bytes a dynamic Worker's module map may carry, across every member of
  * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
@@ -81,8 +73,12 @@ interface WorkerLoaderBinding {
     };
     load(code: unknown): LoadedWorkerStub;
 }
-/** The bindings `openResidentFacet` needs off whichever DO is hosting. */
-export interface ResidentFacetEnv extends Partial<OpencodeAssetsEnv> {
+/**
+ * The bindings `openResidentFacet` needs off whichever DO is hosting. A
+ * staged boot's assembler may read more off the same env (Nimbus's reads
+ * ASSETS); the env travels to it whole, so nothing further is named here.
+ */
+export interface ResidentFacetEnv {
     LOADER?: WorkerLoaderBinding;
 }
 /**

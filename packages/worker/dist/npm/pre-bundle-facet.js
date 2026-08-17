@@ -1,5 +1,5 @@
 /**
- * pre-bundle-facet.ts — NimbusLoaderPool entry for esbuild pre-bundling.
+ * pre-bundle-facet.ts — LoaderPool entry for esbuild pre-bundling.
  *
  * Why this exists
  * ───────────────
@@ -14,7 +14,7 @@
  * the previous isolate.
  *
  * The fix is to dispatch each per-specifier `esbuild.build` to a
- * NimbusLoaderPool isolate. Each facet has its own 128 MB budget and
+ * LoaderPool isolate. Each facet has its own 128 MB budget and
  * stable-slot reuse keeps the warm-up cost amortized across the 8
  * concurrent specs of a typical install. The install-batch facet uses
  * the same isolate boundary for tarball extraction.
@@ -181,7 +181,7 @@ export function externalsForSpecifier(specifier) {
 }
 // ── Facet function ──────────────────────────────────────────────────────
 //
-// `prebundleOne` runs inside a NimbusLoaderPool isolate. cloudflare-parallel
+// `prebundleOne` runs inside a LoaderPool isolate. cloudflare-parallel
 // serialises it via fn.toString(); the helpers it references at module
 // scope (ESBUILD_WASM_JS_FN_BODY, resolvePackageEntry) are NOT in the
 // facet's lexical scope at runtime. Instead they're injected by the
@@ -250,7 +250,7 @@ export const prebundleOne = async function prebundleOne(spec, _env) {
     //    runs that at module-load time (where eval is permitted) and
     //    stashes the result on the module-scope const __NIMBUS_ESBUILD_NS.
     //
-    //    The WASM module is shipped into the facet via NimbusLoaderPool's
+    //    The WASM module is shipped into the facet via LoaderPool's
     //    `wasmModules` option, registered in the LOADER's modules map as
     //    { wasm: ArrayBuffer }. Workerd compiles it during the worker's
     //    module-load phase (eval permitted there), and the pool's
@@ -285,7 +285,7 @@ export const prebundleOne = async function prebundleOne(spec, _env) {
     if (!initPromise) {
         initPromise = (async () => {
             // Read the WebAssembly.Module the pool registered. The key matches
-            // the name passed to NimbusLoaderPool's `wasmModules` option (see
+            // the name passed to LoaderPool's `wasmModules` option (see
             // src/npm-installer.ts:prebundleUsedModules dispatch site).
             const wasmRegistry = globalThis.__NIMBUS_WASM;
             const wasmModule = wasmRegistry && wasmRegistry['esbuild.wasm'];

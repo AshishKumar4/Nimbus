@@ -13,17 +13,20 @@
  * The shims have NO interaction with NimbusSession internals except
  * through that RPC stub. Co-located here for grep-ability.
  *
- * Exports re-shipped from nimbus-session.ts so existing import paths work:
- *   NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- *   NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub.
+ * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace and NimbusDOStub are
+ * public API of the embedder's Worker: wrangler resolves them by class name
+ * and ctx.exports auto-populates them by export name, so the embedder's entry
+ * module re-exports them under exactly these names.
  *
- * Bundle-graph note: these classes must remain reachable from `src/index.ts`
- * for Wrangler to bundle the WorkerEntrypoint exports.
+ * Bundle-graph note: these classes must remain reachable from the embedder's
+ * entry module for Wrangler to bundle the WorkerEntrypoint exports.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { assembleOpencodeFacetConfig } from '../facets/opencode-staging.js';
+import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
+import { requireStagedBootAssembler } from './process-fabric.js';
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
 // These WorkerEntrypoint classes are top-level exports so that ctx.exports
@@ -222,10 +225,11 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
         writerId: z.string().uuid(),
     }).optional(),
     /**
-     * Staged-artifact spec (opencode), for a ONE-SHOT run. The ~23 MB module map
-     * is assembled HERE — in this stateless entrypoint's isolate — on the
-     * Worker-Loader cache-miss path, so a one-shot run never materializes the
-     * artifact sources anywhere else. Validated by the assembler.
+     * Staged-artifact spec, for a ONE-SHOT run. The module map — ~23 MB for
+     * Nimbus's largest stage — is assembled HERE, in this stateless
+     * entrypoint's isolate, on the Worker-Loader cache-miss path, so a
+     * one-shot run never materializes the artifact sources anywhere else.
+     * Validated by the registered assembler.
      */
     stage: z.unknown().optional(),
 }).passthrough();
@@ -412,10 +416,9 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     async _supervisorBinding(props) {
         if (!props.supervisor)
             return undefined;
-        const ctxExports = this.ctx.exports;
-        const factory = ctxExports?.SupervisorRPC;
-        if (typeof factory !== 'function') {
-            throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+        const factory = supervisorEntrypoint(this.ctx.exports);
+        if (!factory) {
+            throw new Error(`Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
         }
         return await factory({ props: props.supervisor });
     }
@@ -426,14 +429,14 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
             throw new Error('Nimbus: outer env.LOADER missing');
         let outerStub;
         if (props.stage !== undefined) {
-            // Staged artifact (opencode): assemble the full module map lazily, ONLY
-            // on a loader miss, in THIS stateless isolate. The facet's SUPERVISOR
+            // Staged artifact: assemble the full module map lazily, ONLY on a
+            // loader miss, in THIS stateless isolate. The facet's SUPERVISOR
             // binding is created in this request context — the caller holds the
             // one-shot fetch open for the whole run, which keeps that context
             // alive.
             const stage = props.stage;
             outerStub = outerLoader.get(props.key, async () => {
-                const assembled = await assembleOpencodeFacetConfig(this.env, stage);
+                const assembled = await requireStagedBootAssembler()(this.env, stage);
                 const supervisorBinding = await this._supervisorBinding(props);
                 if (!supervisorBinding)
                     return assembled;
@@ -461,7 +464,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
      * The body streams through an identity pipe and the entrypoint stub is
      * disposed only once the body finishes — materializing (arrayBuffer) here
      * buffered every routed response to stream-end, which froze SSE/chunked
-     * bodies (opencode's /event live-sync, `curl -N` loopback, external
+     * bodies (an agent server's /event live-sync, `curl -N` loopback, external
      * preview) until the facet closed the stream.
      */
     _relayNestedRpcResponse(ep, response) {

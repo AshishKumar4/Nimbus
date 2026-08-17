@@ -113,8 +113,8 @@ class NodeReplAdapter {
         const { facetMgr } = this.deps;
         const env = facetMgr.env;
         const ctx = facetMgr.ctx;
-        const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-        this.pool = new NimbusLoaderPool(env, ctx, {
+        const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
+        this.pool = new LoaderPool(env, ctx, {
             tag: 'node-repl',
             concurrency: 1,
             omitSupervisor: true,

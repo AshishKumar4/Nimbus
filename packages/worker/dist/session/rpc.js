@@ -24,15 +24,17 @@
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { getInnerDoClass } from '../facets/inner-do-registry.js';
+import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { ResidentBootSpecSchema, } from '../loaders/process-fabric.js';
-import { getNimbusCtxExports, openResidentFacet, } from '../loaders/workerd-facet-host.js';
-import { headerPairs, isolateToken, } from '../loaders/process-host.js';
+import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
+import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
+import { openResidentFacet, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { supervisorEntrypoint } from '@nimbus-sh/fabric/ctx-exports.js';
+import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
+import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
@@ -1135,11 +1137,11 @@ export function vfsWriteFile(self, path, data) {
     self.sqliteFs.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
 }
 /**
- * RPC: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
+ * RPC: peer-DO execute leg of FanoutPool's peer-DO fanout topology.
  *
  * Called by a coordinator NimbusSession DO via
  * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
- * THIS DO instance acts as a peer worker: it runs ONE NimbusLoaderPool
+ * THIS DO instance acts as a peer worker: it runs ONE LoaderPool
  * over its assigned shard and returns the per-task results.
  *
  * Cap-sidestep mechanic
@@ -1163,9 +1165,9 @@ export function vfsWriteFile(self, path, data) {
  * Bytes-isolation
  * ───────────────
  * The fnSource string is forwarded verbatim into a fresh
- * NimbusLoaderPool, which serializes it into the loader's worker
+ * LoaderPool, which serializes it into the loader's worker
  * code. No supervisor-side eval. Same trust posture as every other
- * NimbusLoaderPool dispatch.
+ * LoaderPool dispatch.
  */
 export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
     if (!Array.isArray(args)) {
@@ -1179,7 +1181,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
     // with N=8 peers, that's 7 tasks per peer, capped to 4 here so
     // each peer DO stays safely below the cap.
     const concurrency = Math.min(args.length, 4);
-    const pool = new NimbusLoaderPool(self.env, self.ctx, {
+    const pool = new LoaderPool(self.env, self.ctx, {
         concurrency,
         timeoutMs: poolOpts.timeoutMs,
         tag: poolOpts.tag ?? 'fanout-peer',
@@ -1189,7 +1191,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         omitSupervisor: poolOpts.omitSupervisor,
         // INSTALL-HONESTY: route SUPERVISOR.* back to the coordinator
         // (the user's session DO), not the peer DO. When undefined
-        // (back-compat with non-fanout callers), NimbusLoaderPool falls
+        // (back-compat with non-fanout callers), LoaderPool falls
         // back to ctx.id.toString() — the legacy behavior, correct for
         // single-DO callers.
         supervisorDoIdOverride: poolOpts.coordinatorDoId,
@@ -1222,6 +1224,9 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
 // Nothing here knows what the process is, and nothing here decides anything: a
 // coordinator reaches this leg only because its deployment set
 // NIMBUS_PROCESS_HOST=peer. See loaders/process-host.ts.
+/** The fabric's boot-spec shape, with the staged arm validated as Nimbus's
+ *  opencode stage — this RPC is the peer's trust boundary for it. */
+const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 const HostProcessOptsSchema = z.object({
     /** Full doId of the coordinator session (SUPERVISOR routing target). */
     coordinatorDoId: z.string().min(1),
@@ -1263,11 +1268,11 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 function peerDiskReader(supervisor) {
-    const ctxExports = getNimbusCtxExports();
-    if (!ctxExports.SupervisorRPC) {
+    const supervisorRpc = supervisorEntrypoint();
+    if (!supervisorRpc) {
         throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
     }
-    const fs = ctxExports.SupervisorRPC({ props: supervisor });
+    const fs = supervisorRpc({ props: supervisor });
     return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 async function readSupervisorFile(fs, path) {

@@ -35,7 +35,7 @@ import { generateSessionId, isValidSessionId, } from '../_shared/session-id.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
 import { issueNimbusToken, verifyNimbusToken, verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
-import { setCtxExports } from '../session/ctx-exports.js';
+import { setCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { handleNimbusRemoteApi, } from './remote-api.js';
 import { parseAgentOAuthStateParam } from '../session/agent.js';
 /**

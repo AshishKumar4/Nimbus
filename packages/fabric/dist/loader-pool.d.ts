@@ -12,18 +12,19 @@
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
  *      reach https://registry.npmjs.org without a proxy binding).
- *   3. **SupervisorRPC autoinjection**. The pool grabs a SupervisorRPC
- *      stub from `getCtxExports()` and forwards it as `env.SUPERVISOR` to
- *      every facet, same pattern as git-network-facet.ts. Callers can add
- *      more bindings via `extraBindings`.
+ *   3. **Supervisor autoinjection**. The pool grabs the embedder's
+ *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
+ *      ctx-exports.ts) and forwards it as `env.SUPERVISOR` to every facet,
+ *      same pattern as git-network-facet.ts. Callers can add more bindings
+ *      via `extraBindings`.
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
  * The vendored directory contains only the upstream serialization, error,
  * and binding types used by this implementation.
  */
-/** Options handed to NimbusLoaderPool's constructor. */
-export interface NimbusLoaderPoolOptions {
+/** Options handed to LoaderPool's constructor. */
+export interface LoaderPoolOptions {
     /** Maximum concurrent in-flight facets. Default 4. */
     concurrency?: number;
     /** Per-task timeout in ms. Default 60_000. */
@@ -35,7 +36,7 @@ export interface NimbusLoaderPoolOptions {
     retries?: number;
     /**
      * Additional bindings forwarded to each facet. These merge on top of the
-     * default `{ SUPERVISOR: SupervisorRPC({ doId, pid:0 }) }`. Use this to
+     * default `{ SUPERVISOR: supervisorRpc({ doId, pid:0 }) }`. Use this to
      * give facets access to KV, R2, AI, or additional supervisor-level APIs.
      */
     extraBindings?: Record<string, unknown>;
@@ -45,7 +46,7 @@ export interface NimbusLoaderPoolOptions {
      */
     tag?: string;
     /**
-     * If true, omit the default SupervisorRPC binding. Use this for pools
+     * If true, omit the default SUPERVISOR binding. Use this for pools
      * that don't need DO callbacks (e.g. a pure CPU compute pool).
      */
     omitSupervisor?: boolean;
@@ -60,8 +61,8 @@ export interface NimbusLoaderPoolOptions {
      * Override the `doId` baked into the auto-injected SUPERVISOR binding.
      * Default: `ctx.id.toString()` (the DO that constructs the pool).
      *
-     * Used by NimbusFanoutPool's peer-DO branch (peer-DO fanout): peer DOs
-     * construct their per-task NimbusLoaderPool from inside
+     * Used by FanoutPool's peer-DO branch (peer-DO fanout): peer DOs
+     * construct their per-task LoaderPool from inside
      * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
      * override the peer's auto-injected SUPERVISOR routes back to the
      * peer DO itself — so writes (e.g. install-batch-facet's
@@ -69,7 +70,7 @@ export interface NimbusLoaderPoolOptions {
      * COORDINATOR's. The user's terminal session is on the coordinator;
      * writes-to-peer are invisible. See INSTALL-HONESTY-retro.md.
      *
-     * When set, the auto-injected SupervisorRPC uses this string as the
+     * When set, the auto-injected supervisor binding uses this string as the
      * `props.doId`, routing all SUPERVISOR.* calls back to the
      * coordinator. Effective only when `omitSupervisor !== true`.
      */
@@ -132,7 +133,7 @@ export interface NimbusLoaderPoolOptions {
     wasmModules?: Record<string, ArrayBuffer>;
 }
 /** Per-call override (merged with pool defaults). */
-export interface NimbusLoaderCallOptions {
+export interface LoaderCallOptions {
     timeoutMs?: number;
     retries?: number;
     /**
@@ -167,7 +168,7 @@ export interface NimbusLoaderCallOptions {
     wasmModules?: Record<string, ArrayBuffer>;
 }
 /** Per-map override. Adds onError strategy for partial failures. */
-export interface NimbusLoaderMapOptions extends NimbusLoaderCallOptions {
+export interface LoaderMapOptions extends LoaderCallOptions {
     /** Concurrency override for this call. Defaults to pool's concurrency. */
     concurrency?: number;
     /**
@@ -197,7 +198,7 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  *
  * Typical use:
  *
- *   const pool = new NimbusLoaderPool(env, ctx, {
+ *   const pool = new LoaderPool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -206,7 +207,7 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  *     toFetch,
  *   );
  */
-export declare class NimbusLoaderPool {
+export declare class LoaderPool {
     #private;
     private readonly loader;
     private readonly concurrency;
@@ -219,7 +220,7 @@ export declare class NimbusLoaderPool {
     private readonly preambleHash;
     /**
      * WASM modules to ship in the LOADER `modules` map. See
-     * NimbusLoaderPoolOptions.wasmModules for the rationale. Stored in
+     * LoaderPoolOptions.wasmModules for the rationale. Stored in
      * insertion order so the per-import preamble we generate matches
      * across pool dispatches (cache-key stability).
      */
@@ -241,25 +242,25 @@ export declare class NimbusLoaderPool {
      * 12 chars is enough entropy for DO ids to collide-free per process.
      */
     private readonly doIdShort;
-    constructor(env: any, ctx: DurableObjectState, opts?: NimbusLoaderPoolOptions);
+    constructor(env: any, ctx: DurableObjectState, opts?: LoaderPoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
     /**
      * Run `fn` once with `arg` on a slot isolate. Returns the result or
      * throws TimeoutError / RetryExhaustedError / ExecutionError.
      */
-    submit<T, R>(fn: (arg: T, env: any) => R | Promise<R>, arg: T, opts?: NimbusLoaderCallOptions): Promise<Awaited<R>>;
+    submit<T, R>(fn: (arg: T, env: any) => R | Promise<R>, arg: T, opts?: LoaderCallOptions): Promise<Awaited<R>>;
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
      * pinned to stable slots so warm isolates are reused.
      *
      * Results are returned in input order. Failure handling per `onError`.
      */
-    map<T, R>(fn: (item: T, env: any) => R | Promise<R>, items: T[], opts?: NimbusLoaderMapOptions): Promise<Array<Awaited<R> | null>>;
+    map<T, R>(fn: (item: T, env: any) => R | Promise<R>, items: T[], opts?: LoaderMapOptions): Promise<Array<Awaited<R> | null>>;
     /**
      * Same shape as `map`, but accepts a pre-serialized function source
      * string instead of a live function reference. Used by
-     * `NimbusFanoutPool`'s peer-DO leg, where the function was already
+     * `FanoutPool`'s peer-DO leg, where the function was already
      * serialized on the coordinator side and forwarded over RPC.
      *
      * The fnSource MUST be the output of `serializeFunction(fn)`
@@ -273,14 +274,14 @@ export declare class NimbusLoaderPool {
      * No fn-validation runs here (it already ran on the coordinator);
      * the peer trusts the caller to forward a valid serialization.
      */
-    mapSource<T, R>(fnSource: string, items: T[], opts?: NimbusLoaderMapOptions): Promise<Array<Awaited<R> | null>>;
+    mapSource<T, R>(fnSource: string, items: T[], opts?: LoaderMapOptions): Promise<Array<Awaited<R> | null>>;
     /**
      * Release any RPC stubs held by the pool. Call this once the caller
      * is done with the pool (post-`map`/`submit`) so the underlying
      * stubs don't linger in workerd's deferred-destruction queue.
      *
      * Primary target: the SUPERVISOR binding stub we minted at
-     * construction time (via `ctxExports.SupervisorRPC({props})`). It's
+     * construction time (via the registered supervisor entrypoint). It's
      * a cross-isolate RPC stub — without explicit disposal it stays
      * referenced until the parent isolate's event-handler context
      * finishes, which during npm install means "until the whole install

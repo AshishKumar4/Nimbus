@@ -7,7 +7,7 @@
  * functions / imports persist.
  *
  * Design:
- *   - One child-facet per REPL session (NimbusLoaderPool with
+ *   - One child-facet per REPL session (LoaderPool with
  *     concurrency=1, omitSupervisor=true).
  *   - Facet-side: globalThis.__nimbus_bun_ctx caches a vm.createContext()
  *     dict; each push() runs vm.runInContext(line, ctx) and returns

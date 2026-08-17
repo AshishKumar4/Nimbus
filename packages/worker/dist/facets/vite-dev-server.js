@@ -1262,7 +1262,7 @@ export class ViteDevServer {
         this.detectTailwind();
     }
     /**
-     * Lazily construct the NimbusLoaderPool used for on-demand bundling
+     * Lazily construct the LoaderPool used for on-demand bundling
      * of /preview/@modules/<spec> requests that miss both the in-memory
      * and pkg_esm_bundles caches. Mirrors the pre-bundle pool's
      * configuration: 1 worker, internal pLimit not needed (one bundle
@@ -1278,11 +1278,11 @@ export class ViteDevServer {
         if (!this.env || !this.ctx)
             return null;
         this.onDemandPoolPromise = (async () => {
-            const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+            const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
             const { PRE_BUNDLE_PREAMBLE } = await import('../loaders/pre-bundle-preamble.js');
             const { fetchEsbuildWasmBytes } = await import('../runtime/esbuild-wasm-bytes.js');
             const wasmBytes = await fetchEsbuildWasmBytes(this.env);
-            const pool = new NimbusLoaderPool(this.env, this.ctx, {
+            const pool = new LoaderPool(this.env, this.ctx, {
                 concurrency: 1,
                 timeoutMs: 60_000,
                 retries: 0,
@@ -1797,7 +1797,7 @@ export class ViteDevServer {
         // supervisor isolate. For large modules (lucide-react, ~18 MiB
         // unpacked) that OOM'd the supervisor and surfaced as CF error
         // 1101 on /preview/@modules/lucide-react, taking down the entire
-        // preview. We now dispatch the bundle work to a NimbusLoaderPool
+        // preview. We now dispatch the bundle work to a LoaderPool
         // isolate via its own 128 MiB heap — same pattern as install-time
         // pre-bundling. Supervisor never bundles esbuild for any path.
         //

@@ -24,7 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-import { getCtxExports } from '../session/ctx-exports.js';
+import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/core/constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
@@ -430,7 +430,7 @@ export async function execGitNetwork(ctx, env, opts) {
                 //   - its own worker code (git-network-worker.js), with the
                 //     W7 frame helpers (encodeWriteBatchStream + supporting
                 //     state) prepended so the buffered fs adapter can call
-                //     them as bare identifiers — the same shape NimbusLoaderPool's
+                //     them as bare identifiers — the same shape LoaderPool's
                 //     `preamble` option provides for npm install. This is the
                 //     W7 v3 emits one bounded record per pull; the receiver owns
                 //     the aggregate 8 MiB payload-credit and transaction limits.

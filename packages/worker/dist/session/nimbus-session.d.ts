@@ -22,7 +22,7 @@ import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import * as _rpc from './rpc.js';
-import { type HostedHttpRequest, type HostedHttpResponse } from '../loaders/process-host.js';
+import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
 export { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS, WRANGLER_IGNORED_FLAGS, WRANGLER_IGNORED_FLAGS_WITH_VALUE, WRANGLER_UNSUPPORTED_CONFIG_FIELDS, } from './helpers.js';
@@ -129,6 +129,8 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _w9IsolateGen: number;
     /** True once we've persisted the bumped gen counter to storage. */
     _w9IsolateGenPersisted: boolean;
+    /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
+    _w1AlarmChain?: Promise<unknown>;
     /** SQL DDL — idempotent; run on first fetch. */
     _w9SchemaInit: boolean;
     /** Have we wired the persist adapter into ProcessLogStore yet? */
@@ -581,5 +583,5 @@ export declare class NimbusSession extends CloudflareDurableObject {
     /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./nimbus-session-ws.ts (S7). */
     _w5SafePersistRing(): void;
 }
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from './bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from '@nimbus-sh/fabric/bindings.js';
 //# sourceMappingURL=nimbus-session.d.ts.map

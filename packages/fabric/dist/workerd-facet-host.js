@@ -1,7 +1,7 @@
 /**
  * workerd-facet-host.ts — how a resident process is actually made, on workerd.
  *
- * `loaders/process-fabric.ts` says what a resident process IS, in terms no
+ * `process-fabric.ts` says what a resident process IS, in terms no
  * runtime owns: a boot spec, a start contract, a handle that can be routed to
  * and released. This module is the one implementation of that on Cloudflare,
  * and everything here is a workerd mechanism rather than a Nimbus concept —
@@ -13,9 +13,8 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { assembleOpencodeFacetConfig, } from '../facets/opencode-staging.js';
-import { getCtxExports } from '../session/ctx-exports.js';
-import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
+import { getCtxExports, supervisorEntrypoint, supervisorEntrypointName, } from './ctx-exports.js';
+import { RESIDENT_PROCESS_CLASS, requireStagedBootAssembler, residentLoaderConfig, } from './process-fabric.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -230,7 +229,7 @@ export async function runOneShotWorker(env, supervisor, params, consume) {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Running a program requires '
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
-    const ctxExports = getCtxExports();
+    const supervisorRpc = supervisorEntrypoint();
     let supervisorBinding;
     let worker;
     let entrypoint;
@@ -239,9 +238,9 @@ export async function runOneShotWorker(env, supervisor, params, consume) {
         // until there is a program to do the writing, and a map that fails to
         // assemble should not have granted append authority on its way out.
         let spec = await params.code();
-        if (ctxExports?.SupervisorRPC) {
+        if (supervisorRpc) {
             params.onWriterActivated(params.writerId);
-            supervisorBinding = ctxExports.SupervisorRPC({ props: supervisor });
+            supervisorBinding = supervisorRpc({ props: supervisor });
         }
         worker = loader.load({
             compatibilityDate: spec.compatibilityDate,
@@ -274,11 +273,11 @@ export async function runOneShotWorker(env, supervisor, params, consume) {
 }
 async function residentWorkerConfig(env, disk, supervisor, boot) {
     const config = boot.kind === 'staged'
-        ? await assembleOpencodeFacetConfig(env, boot.stage)
+        ? await requireStagedBootAssembler()(env, boot.stage)
         : await residentLoaderConfig(boot.code, disk());
-    const ctxExports = getNimbusCtxExports();
-    if (!ctxExports.SupervisorRPC) {
-        throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+    const supervisorRpc = supervisorEntrypoint();
+    if (!supervisorRpc) {
+        throw new Error(`Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
-    return { ...config, env: { SUPERVISOR: ctxExports.SupervisorRPC({ props: supervisor }) } };
+    return { ...config, env: { SUPERVISOR: supervisorRpc({ props: supervisor }) } };
 }

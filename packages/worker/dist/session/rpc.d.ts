@@ -21,8 +21,8 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { type ResidentFacet } from '../loaders/workerd-facet-host.js';
-import { type HostedHttpRequest, type HostedHttpResponse } from '../loaders/process-host.js';
+import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
@@ -342,11 +342,11 @@ export declare function vfsReaddir(self: RpcHost, path: string): {
 /** RPC: Write a file to the VFS. */
 export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): void;
 /**
- * RPC: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
+ * RPC: peer-DO execute leg of FanoutPool's peer-DO fanout topology.
  *
  * Called by a coordinator NimbusSession DO via
  * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
- * THIS DO instance acts as a peer worker: it runs ONE NimbusLoaderPool
+ * THIS DO instance acts as a peer worker: it runs ONE LoaderPool
  * over its assigned shard and returns the per-task results.
  *
  * Cap-sidestep mechanic
@@ -370,9 +370,9 @@ export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuf
  * Bytes-isolation
  * ───────────────
  * The fnSource string is forwarded verbatim into a fresh
- * NimbusLoaderPool, which serializes it into the loader's worker
+ * LoaderPool, which serializes it into the loader's worker
  * code. No supervisor-side eval. Same trust posture as every other
- * NimbusLoaderPool dispatch.
+ * LoaderPool dispatch.
  */
 export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args: unknown[], poolOpts?: {
     tag?: string;
@@ -383,7 +383,7 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     omitSupervisor?: boolean;
     /**
      * INSTALL-HONESTY: full doId of the COORDINATOR (the DO that
-     * called NimbusFanoutPool.submitMany). The peer's NimbusLoaderPool
+     * called FanoutPool.submitMany). The peer's LoaderPool
      * uses this to mint a SUPERVISOR binding that routes back to the
      * coordinator instead of the peer (default behavior pre-fix).
      * Without this, install-batch's writeBatchStream calls from inside
@@ -393,7 +393,7 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     /**
      * Invoking process pid, forwarded into the peer-side SUPERVISOR
      * binding so writeBatchStream is authorized under the caller's
-     * credential (see NimbusLoaderPoolOptions.supervisorPid).
+     * credential (see LoaderPoolOptions.supervisorPid).
      */
     supervisorPid?: number;
 }): Promise<{

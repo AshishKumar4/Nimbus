@@ -1,7 +1,7 @@
 /**
  * The workerd {@link FacetHost}: a facet is a dynamic worker.
  *
- * The whole adapter is the option renames below, because `NimbusLoaderPool`
+ * The whole adapter is the option renames below, because `LoaderPool`
  * already IS the port's shape — `submit` and `dispose`, with the same meanings.
  * The one thing it spells differently is the supervisor capability, which it
  * takes as a pid plus a separate flag saying whether to bind one at all; the
@@ -13,7 +13,7 @@ import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetManager } from '../facets/manager.js';
 export declare function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHost;
 /**
- * The two objects a NimbusLoaderPool needs from a FacetManager.
+ * The two objects a LoaderPool needs from a FacetManager.
  *
  * FacetManager does not expose its `env` and `ctx` in its type, but a loader
  * pool is constructed from exactly those, so every runtime that spawns facets

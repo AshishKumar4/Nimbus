@@ -12,10 +12,11 @@
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
  *      reach https://registry.npmjs.org without a proxy binding).
- *   3. **SupervisorRPC autoinjection**. The pool grabs a SupervisorRPC
- *      stub from `getCtxExports()` and forwards it as `env.SUPERVISOR` to
- *      every facet, same pattern as git-network-facet.ts. Callers can add
- *      more bindings via `extraBindings`.
+ *   3. **Supervisor autoinjection**. The pool grabs the embedder's
+ *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
+ *      ctx-exports.ts) and forwards it as `env.SUPERVISOR` to every facet,
+ *      same pattern as git-network-facet.ts. Callers can add more bindings
+ *      via `extraBindings`.
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
@@ -23,7 +24,7 @@
  * and binding types used by this implementation.
  */
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { getCtxExports } from '../session/ctx-exports.js';
+import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
@@ -92,7 +93,7 @@ export function assembleLoaderWorkerModuleSource(options) {
  *
  * Typical use:
  *
- *   const pool = new NimbusLoaderPool(env, ctx, {
+ *   const pool = new LoaderPool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -101,7 +102,7 @@ export function assembleLoaderWorkerModuleSource(options) {
  *     toFetch,
  *   );
  */
-export class NimbusLoaderPool {
+export class LoaderPool {
     loader;
     concurrency;
     defaultTimeoutMs;
@@ -113,7 +114,7 @@ export class NimbusLoaderPool {
     preambleHash;
     /**
      * WASM modules to ship in the LOADER `modules` map. See
-     * NimbusLoaderPoolOptions.wasmModules for the rationale. Stored in
+     * LoaderPoolOptions.wasmModules for the rationale. Stored in
      * insertion order so the per-import preamble we generate matches
      * across pool dispatches (cache-key stability).
      */
@@ -138,7 +139,7 @@ export class NimbusLoaderPool {
     constructor(env, ctx, opts) {
         const loader = env?.LOADER;
         if (!loader || typeof loader.get !== 'function') {
-            throw new BindingError('NimbusLoaderPool: env.LOADER binding missing or invalid. ' +
+            throw new BindingError('LoaderPool: env.LOADER binding missing or invalid. ' +
                 'Add a [[worker_loaders]] entry to wrangler.jsonc.');
         }
         this.loader = loader;
@@ -163,12 +164,12 @@ export class NimbusLoaderPool {
         if (opts?.wasmModules) {
             for (const [name, bytes] of Object.entries(opts.wasmModules)) {
                 if (!(bytes instanceof ArrayBuffer)) {
-                    throw new BindingError(`NimbusLoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
+                    throw new BindingError(`LoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
                         `(got ${bytes?.constructor?.name || typeof bytes}).`);
                 }
                 const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
                 if (seenIds.has(id)) {
-                    throw new BindingError(`NimbusLoaderPool: wasmModules key '${name}' collides with another after ` +
+                    throw new BindingError(`LoaderPool: wasmModules key '${name}' collides with another after ` +
                         `identifier-sanitisation (id='${id}'). Pick distinct module names.`);
                 }
                 seenIds.add(id);
@@ -197,19 +198,19 @@ export class NimbusLoaderPool {
         }
         const bindings = { ...(opts?.extraBindings ?? {}) };
         if (!opts?.omitSupervisor) {
-            const ctxExports = getCtxExports();
-            if (ctxExports?.SupervisorRPC) {
+            const supervisorRpc = supervisorEntrypoint();
+            if (supervisorRpc) {
                 // INSTALL-HONESTY: peer-DO branch supplies coordinator's doId
                 // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
                 // to the user's session DO, not the peer DO. Default to the
                 // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
                 const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
-                bindings.SUPERVISOR = ctxExports.SupervisorRPC({
+                bindings.SUPERVISOR = supervisorRpc({
                     props: { doId: supDoId, pid: opts?.supervisorPid ?? 0 },
                 });
             }
             else {
-                // SupervisorRPC unavailable — running without ctx.exports
+                // Supervisor entrypoint unavailable — running without ctx.exports
                 // (e.g. unit-test harness, or LOADER.load contexts where the
                 // bindings.SUPERVISOR auto-wire isn't set up). We still construct
                 // the pool but the facet will get env.SUPERVISOR === undefined.
@@ -247,17 +248,17 @@ export class NimbusLoaderPool {
         const seen = new Set();
         for (const [name, bytes] of Object.entries(perCall)) {
             if (!(bytes instanceof ArrayBuffer)) {
-                throw new BindingError(`NimbusLoaderPool: per-call wasmModules['${name}'] must be ` +
+                throw new BindingError(`LoaderPool: per-call wasmModules['${name}'] must be ` +
                     `ArrayBuffer (got ${bytes?.constructor?.name || typeof bytes}).`);
             }
             const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
             if (ctorIds.has(id)) {
-                throw new BindingError(`NimbusLoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+                throw new BindingError(`LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
                     `id='${id}') collides with a constructor-time wasm module. ` +
                     `Per-call modules cannot shadow pool-defaults. Pick a distinct name.`);
             }
             if (seen.has(id)) {
-                throw new BindingError(`NimbusLoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+                throw new BindingError(`LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
                     `id='${id}') collides with another per-call key. Pick distinct names.`);
             }
             seen.add(id);
@@ -340,7 +341,7 @@ export class NimbusLoaderPool {
         // re-import (the user fn is serialized via fn.toString and doesn't
         // carry import statements).
         //
-        // Per-call entries (passed via NimbusLoaderCallOptions.wasmModules
+        // Per-call entries (passed via LoaderCallOptions.wasmModules
         // — used by the wasm-runner shell command) are appended to the same
         // table. Naming collision with constructor entries is rejected
         // upstream in #materialisePerCallWasm so the import block here
@@ -560,7 +561,7 @@ export class NimbusLoaderPool {
     /**
      * Same shape as `map`, but accepts a pre-serialized function source
      * string instead of a live function reference. Used by
-     * `NimbusFanoutPool`'s peer-DO leg, where the function was already
+     * `FanoutPool`'s peer-DO leg, where the function was already
      * serialized on the coordinator side and forwarded over RPC.
      *
      * The fnSource MUST be the output of `serializeFunction(fn)`
@@ -621,7 +622,7 @@ export class NimbusLoaderPool {
      * stubs don't linger in workerd's deferred-destruction queue.
      *
      * Primary target: the SUPERVISOR binding stub we minted at
-     * construction time (via `ctxExports.SupervisorRPC({props})`). It's
+     * construction time (via the registered supervisor entrypoint). It's
      * a cross-isolate RPC stub — without explicit disposal it stays
      * referenced until the parent isolate's event-handler context
      * finishes, which during npm install means "until the whole install

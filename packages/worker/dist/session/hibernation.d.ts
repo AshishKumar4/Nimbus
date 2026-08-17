@@ -18,10 +18,14 @@
  *     w9_proc_logs + w9_proc_exits.
  *   - scheduleHibFlush(host, ctx) — debounced setTimeout + best-effort
  *     setAlarm for post-hibernation drain.
- *   - dispatchAlarm(host) — alarm() handler body.
- *   - maybeBumpIsolateGen(host, ctx) — increment + persist isolate-gen
- *     counter once per fresh isolate.
+ *   - dispatchAlarm(host) — alarm() handler body: the fabric's generic
+ *     reason dispatcher with this session's handlers registered.
  *   - flushOnClose(host) — synchronous flush on ws close.
+ *
+ * The alarm multiplexer itself (reason map, scheduleAlarm, the per-instance
+ * chain) and maybeBumpIsolateGen are fabric machinery —
+ * `@nimbus-sh/fabric/alarms.js`; this module registers the session's reasons
+ * ('w9-flush' | 'log-janitor' | 'resident-launch') on top of it.
  *
  * **`ctx` taken as a separate arg from `host`** because the parent
  * `CloudflareDurableObject` class declares `ctx` as `protected`, which
@@ -35,7 +39,8 @@
  * wireProcessLogPersist again.
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { type WsHibernationConfigResult } from './ws-hibernation-config.js';
+import { type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
+import { type AlarmHost, type IsolateGenHost } from '@nimbus-sh/fabric/alarms.js';
 export type { WsHibernationConfigResult };
 /**
  * Minimal host shape. `_w9*` fields drop `private` on the class so
@@ -44,10 +49,8 @@ export type { WsHibernationConfigResult };
  *
  * `ctx` is NOT in this interface — passed as a separate arg.
  */
-export interface HibHost {
+export interface HibHost extends AlarmHost, IsolateGenHost {
     processes: SessionProcessSupervisor;
-    _w9IsolateGen: number;
-    _w9IsolateGenPersisted: boolean;
     _w9SchemaInit: boolean;
     _w9PersistWired: boolean;
     _w9FlushTimer: any;
@@ -55,8 +58,6 @@ export interface HibHost {
     _w1JanitorArmed: boolean;
     /** W1: destroyed-session tombstone — never re-arm alarms while set. */
     _w1SessionDestroyed: boolean;
-    /** W1: serializes every alarm-map read-modify-write (see scheduleAlarm). */
-    _w1AlarmChain?: Promise<unknown>;
 }
 /**
  * Run at DO ctor time. Returns the result for the class to assign to
@@ -104,35 +105,12 @@ export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
 export declare function ensureHibSchema(host: HibHost, ctx: any): void;
 /**
- * W1: canonical alarm-reason strings. Stored in the
- * `W1_NEXT_ALARM_REASONS_KEY` map. Forward-compat: dispatcher silently
- * drops unknown reasons so a rollback from a future deploy that added
- * new reasons doesn't leave the alarm stuck.
+ * W1: this session's canonical alarm-reason strings, registered on the
+ * fabric's reason map. Forward-compat: the dispatcher silently drops unknown
+ * reasons so a rollback from a future deploy that added new reasons doesn't
+ * leave the alarm stuck.
  */
 export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch';
-/**
- * W1: schedule (or re-schedule) an alarm reason. Coordinated via a
- * single map in DO storage so multiple subsystems (W9 debounced flush +
- * W1 log-janitor sweep) don't clobber each other's `setAlarm()` calls.
- *
- * Semantics:
- *   - Reads the existing reasons map.
- *   - Sets `map[reason] = whenMs` IF `whenMs` is sooner than the
- *     currently-pending deadline for that reason (or no entry exists).
- *     Later-than-pending requests are silently ignored — the existing
- *     alarm will fire and re-arm anyway.
- *   - Writes the map back and calls `ctx.storage.setAlarm(min(deadlines))`.
- *
- * Cost: 1 storage read + 1 storage write + 1 setAlarm per call. setAlarm
- * itself is billed as 1 row written per DO pricing. At W1's 60s
- * cadence, this is ~$0.05/mo/session at scale — dwarfed by the
- * hibernation duration savings.
- *
- * Fail-soft: any throw is swallowed with a warn. On older runtimes /
- * wrangler-dev where setAlarm is unavailable, this is a no-op (the
- * subsystem's in-isolate setTimeout fallback continues to work).
- */
-export declare function scheduleAlarm(host: HibHost, ctx: any, reason: AlarmReason, whenMs: number): Promise<boolean>;
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if
@@ -141,29 +119,18 @@ export declare function scheduleAlarm(host: HibHost, ctx: any, reason: AlarmReas
  */
 export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
 /**
- * W1: multi-reason alarm dispatcher. Called from the DO's `alarm()`
- * handler.
- *
- * For each pending reason whose deadline has passed, run its handler.
- * Reasons supported today:
+ * W1: this session's alarm() handler body — the fabric's multi-reason
+ * dispatcher with this session's handlers registered:
  *   - `'w9-flush'` → processes.flushLogs()
+ *   - `'resident-launch'` → pumpResidentLaunches()
  *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
- *     for next 60s cycle.
+ *     for next 60s cycle while the session still has anything to sweep.
  *
  * `janitorOrphanCheck` is the orphan-pid predicate provided by the
  * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
  * so HibHost doesn't need to import ProcessTable.
- *
- * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
- * earliest remaining deadline. If no reasons remain, deletes the map
- * key and does NOT call setAlarm — the DO becomes hibernation-eligible
- * after the 10s idle window.
- *
- * Forward/back-compat: unknown reasons silently dropped.
  */
 export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanCheck?: (pid: number) => boolean, pumpResidentLaunches?: () => Promise<void>): Promise<void>;
-/** W9: increment + persist isolate-gen counter once per fresh isolate. */
-export declare function maybeBumpIsolateGen(host: HibHost, ctx: any): Promise<void>;
 /**
  * W9: synchronous flush of the process-log ring on session close.
  * Wraps `processes.flushLogs()` in a try/catch so a flush failure

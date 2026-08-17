@@ -1,5 +1,5 @@
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
-import { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
 export function loaderFacetHost(env, ctx) {
     return {
         // workerd suspends a guest through JSPI, which is what lets a syscall reach
@@ -14,7 +14,7 @@ export function loaderFacetHost(env, ctx) {
             return manifestVfs(vfs, root, options);
         },
         open(spec) {
-            return new NimbusLoaderPool(env, ctx, {
+            return new LoaderPool(env, ctx, {
                 tag: spec.tag,
                 concurrency: spec.concurrency,
                 preamble: spec.preamble,
@@ -27,7 +27,7 @@ export function loaderFacetHost(env, ctx) {
     };
 }
 /**
- * The two objects a NimbusLoaderPool needs from a FacetManager.
+ * The two objects a LoaderPool needs from a FacetManager.
  *
  * FacetManager does not expose its `env` and `ctx` in its type, but a loader
  * pool is constructed from exactly those, so every runtime that spawns facets

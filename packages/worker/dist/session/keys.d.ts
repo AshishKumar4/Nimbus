@@ -17,9 +17,6 @@
  *   These keys persist DO state across deploys. Renaming any key is a
  *   storage migration — never do it without an explicit migration plan.
  */
-/** W9: storage key for the isolate-generation counter (cold-start +
- *  post-hibernation wake; one increment per fresh isolate). */
-export declare const W9_ISOLATE_GEN_KEY = "w9_isolate_gen";
 /** W9: debounce window in ms before flushing pending process-log writes
  *  to SQL. Hot path (every append schedules a flush via this debounce). */
 export declare const W9_FLUSH_DEBOUNCE_MS = 250;
@@ -34,25 +31,6 @@ export declare const SESSION_BASE_PATH_KEY = "session-base-path";
  *  hibernation so vite resumes serving after wake without re-running
  *  /api/start-vite. */
 export declare const VITE_CONFIG_KEY = "vite-config";
-/** W1: multi-reason alarm coordination map.
- *
- *  JSON-serialised `Record<reason, deadlineMsEpoch>` where keys are
- *  canonical reason strings (e.g. 'w9-flush', 'log-janitor'). The
- *  alarm() dispatcher reads this on fire, dispatches every reason
- *  whose deadline has passed, and re-arms `ctx.storage.setAlarm` at
- *  the earliest remaining deadline.
- *
- *  Why a map (not a single nextAlarmAt + reason): two subsystems
- *  (W9 debounced flush + W1 log-janitor sweep) can have distinct
- *  deadlines. Without the map, the later setAlarm() call would
- *  overwrite the earlier reason silently, breaking whichever
- *  subsystem expected its deadline.
- *
- *  Forward-compat: dispatcher silently drops unknown reasons so a
- *  rollback from a future deploy that added new reasons doesn't
- *  leave the alarm stuck.
- */
-export declare const W1_NEXT_ALARM_REASONS_KEY = "w1_next_alarm_reasons";
 /**
  * Destroyed-session tombstone. Written AFTER `storage.deleteAll()` in the
  * destroy flow so a straggler facet RPC that wakes the dead DO cannot re-arm

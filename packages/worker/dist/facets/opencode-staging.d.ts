@@ -23,7 +23,7 @@
  * place; the L2 asset cache makes refetches cheap).
  */
 import { z } from 'zod/v4';
-import type { WorkerCode } from '../loaders/vendor/types.js';
+import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 export interface OpencodeAssetsEnv {
     ASSETS: {
         fetch(req: Request): Promise<Response>;

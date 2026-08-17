@@ -6,7 +6,7 @@
  * Each spawn receives its own lifecycle envelope while command semantics
  * continue to flow through the existing supervisor RPC.
  */
-import { NimbusLoaderPool } from '../loader-pool.js';
+import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
 import { runSpawnInIsolate } from './spawn-facet.js';
 export class ChildProcessSpawnPool {
     /**
@@ -23,7 +23,7 @@ export class ChildProcessSpawnPool {
      */
     chain = Promise.resolve();
     constructor(env, ctx) {
-        this.pool = new NimbusLoaderPool(env, ctx, {
+        this.pool = new LoaderPool(env, ctx, {
             tag: 'cp-spawn',
             concurrency: 1,
             timeoutMs: 2 * 60_000,

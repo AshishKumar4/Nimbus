@@ -25,7 +25,7 @@ import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, Ni
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
-import { getCtxExports as _getCtxExports } from './session/ctx-exports.js';
+import { getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
 // Re-export the composable factory + companion types. The SDK worker
 // subpath re-exports these for application embedders:

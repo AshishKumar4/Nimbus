@@ -19,9 +19,9 @@ import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { LaunchPacer } from './launch-pacer.js';
+import { LaunchPacer } from '@nimbus-sh/fabric/launch-pacer.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { type ProcessHostFactory } from '../loaders/process-fabric.js';
+import { type ProcessHostFactory } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 /** Result returned from a facet execution */

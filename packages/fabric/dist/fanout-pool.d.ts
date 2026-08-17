@@ -4,7 +4,7 @@
  *
  * A single Durable Object method can drive at most four concurrent
  * Worker Loader fetches before extra dispatches serialize or fail. Small
- * batches therefore run in the coordinator DO through NimbusLoaderPool.
+ * batches therefore run in the coordinator DO through LoaderPool.
  * Wider batches are sharded across sibling NimbusSession DOs, each of
  * which owns its own four-loader budget.
  *
@@ -75,45 +75,45 @@ export interface FanoutTask<A> {
     /** Argument passed to the user fn. */
     args: A;
 }
-/** Options handed to NimbusFanoutPool's constructor. */
-export interface NimbusFanoutPoolOptions {
+/** Options handed to FanoutPool's constructor. */
+export interface FanoutPoolOptions {
     /**
      * Tag prepended to peer-DO ids and in-DO loader ids for debugging
      * (e.g. "npm-install-batch"). Affects neither isolate identity (in-DO
-     * path uses the existing NimbusLoaderPool's tag-fold) nor peer-DO
+     * path uses the existing LoaderPool's tag-fold) nor peer-DO
      * deterministic placement (peer ids fold tag + key).
      */
     tag: string;
     /**
      * Per-task timeout in ms. Default 60_000. Forwarded to the in-DO
-     * NimbusLoaderPool's submit calls and to the peer-DO RPC's own
-     * NimbusLoaderPool.
+     * LoaderPool's submit calls and to the peer-DO RPC's own
+     * LoaderPool.
      */
     timeoutMs?: number;
     /**
      * Preamble bundled into every facet (in-DO and inside each peer
-     * DO). Same semantics as NimbusLoaderPool's preamble option.
+     * DO). Same semantics as LoaderPool's preamble option.
      */
     preamble?: string;
     /**
      * Wasm modules forwarded to every facet. Same semantics as
-     * NimbusLoaderPool's wasmModules option.
+     * LoaderPool's wasmModules option.
      */
     wasmModules?: Record<string, ArrayBuffer>;
     /**
      * Extra bindings forwarded to every facet. Same semantics as
-     * NimbusLoaderPool's extraBindings option.
+     * LoaderPool's extraBindings option.
      */
     extraBindings?: Record<string, unknown>;
     /**
      * If set, skip the supervisor-RPC binding injection (mirrors
-     * NimbusLoaderPool's omitSupervisor flag).
+     * LoaderPool's omitSupervisor flag).
      */
     omitSupervisor?: boolean;
     /**
      * Invoking process pid, baked into each facet's SUPERVISOR binding so
      * filesystem RPCs (writeBatchStream) are authorized under the caller's
-     * credential (mirrors NimbusLoaderPool's supervisorPid). Threaded to both
+     * credential (mirrors LoaderPool's supervisorPid). Threaded to both
      * the in-DO loader pool and, via `_rpcFanoutExecute`, the peer-DO pools.
      * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
      */
@@ -147,33 +147,33 @@ export interface NimbusFanoutPoolOptions {
  * exists primarily as a clean API surface; per-call dispatch state
  * lives only inside submitMany's promise.
  */
-export declare class NimbusFanoutPool {
+export declare class FanoutPool {
     private readonly env;
     private readonly ctx;
     private readonly opts;
     private readonly coordDoId;
     private readonly coordDoIdShort;
-    constructor(env: any, ctx: DurableObjectState, opts: NimbusFanoutPoolOptions);
+    constructor(env: any, ctx: DurableObjectState, opts: FanoutPoolOptions);
     /**
      * Dispatch `tasks` across the appropriate topology and return
      * results in input order.
      *
      * Routing:
-     *   tasks.length < 5   -> coordinator-local NimbusLoaderPool
+     *   tasks.length < 5   -> coordinator-local LoaderPool
      *   tasks.length >= 5  -> sibling NimbusSession DOs
      *
      * Backpressure: if `tasks.length > MAX_PEER_FANOUT (32)`, tasks
      * are sharded modulo `MAX_PEER_FANOUT` and each shard's bucket
      * runs serially inside its assigned peer DO via the in-peer
-     * NimbusLoaderPool's concurrency (capped at 4 there too). A
+     * LoaderPool's concurrency (capped at 4 there too). A
      * single submitMany call returns when ALL tasks complete (or any
      * throws).
      *
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as NimbusLoaderPool.submit. The function is serialized via
-     * the vendored serializeFunction (same as NimbusLoaderPool#prepare).
+     * as LoaderPool.submit. The function is serialized via
+     * the vendored serializeFunction (same as LoaderPool#prepare).
      */
     submitMany<A, R>(tasks: FanoutTask<A>[], fn: (item: A, env: any) => R | Promise<R>): Promise<R[]>;
     /** Report which topology a task count uses without dispatching. */

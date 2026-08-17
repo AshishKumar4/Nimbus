@@ -156,10 +156,10 @@ class RubyReplAdapter {
         // drifted (it lacked the language-prelude const __rubyRun requires, so
         // every REPL eval died on boot) — compose it in exactly one place.
         const preamble = buildRubyPreamble();
-        const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
+        const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
         const env = facetMgr.env;
         const ctx = facetMgr.ctx;
-        this.pool = new NimbusLoaderPool(env, ctx, {
+        this.pool = new LoaderPool(env, ctx, {
             tag: 'ruby-repl',
             concurrency: 1,
             omitSupervisor: true,

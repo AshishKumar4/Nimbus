@@ -13,12 +13,14 @@
  * The shims have NO interaction with NimbusSession internals except
  * through that RPC stub. Co-located here for grep-ability.
  *
- * Exports re-shipped from nimbus-session.ts so existing import paths work:
- *   NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- *   NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub.
+ * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace and NimbusDOStub are
+ * public API of the embedder's Worker: wrangler resolves them by class name
+ * and ctx.exports auto-populates them by export name, so the embedder's entry
+ * module re-exports them under exactly these names.
  *
- * Bundle-graph note: these classes must remain reachable from `src/index.ts`
- * for Wrangler to bundle the WorkerEntrypoint exports.
+ * Bundle-graph note: these classes must remain reachable from the embedder's
+ * entry module for Wrangler to bundle the WorkerEntrypoint exports.
  */
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
@@ -123,7 +125,7 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint {
      * The body streams through an identity pipe and the entrypoint stub is
      * disposed only once the body finishes — materializing (arrayBuffer) here
      * buffered every routed response to stream-end, which froze SSE/chunked
-     * bodies (opencode's /event live-sync, `curl -N` loopback, external
+     * bodies (an agent server's /event live-sync, `curl -N` loopback, external
      * preview) until the facet closed the stream.
      */
     private _relayNestedRpcResponse;

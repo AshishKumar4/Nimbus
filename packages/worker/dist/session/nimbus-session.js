@@ -29,7 +29,7 @@ import { NpmInstaller } from '../npm/installer.js';
 // longer references them directly. Phase 2 A'.5 renamed the function
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
-import { setCtxExports } from './ctx-exports.js';
+import { setCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
@@ -43,7 +43,8 @@ import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState
 // sibling modules (-hib, -diag, -ws). The class file itself no longer
 // references any storage key directly.
 // S4: W9 hibernation surface extracted.
-import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, scheduleAlarm as _w9ScheduleAlarm, maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen, flushOnClose as _w9DoFlushOnClose, } from './hibernation.js';
+import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, } from './hibernation.js';
+import { scheduleAlarm as _w9ScheduleAlarm, maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen, } from '@nimbus-sh/fabric/alarms.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -324,6 +325,8 @@ export class NimbusSession extends CloudflareDurableObject {
     _w9IsolateGen = 0;
     /** True once we've persisted the bumped gen counter to storage. */
     _w9IsolateGenPersisted = false;
+    /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
+    _w1AlarmChain;
     /** SQL DDL — idempotent; run on first fetch. */
     _w9SchemaInit = false;
     /** Have we wired the persist adapter into ProcessLogStore yet? */
@@ -709,7 +712,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcUnregisterPort(port) { return _rpc._rpcUnregisterPort(this, port); }
     async _rpcRouteLoopback(port, request) { return _rpc._rpcRouteLoopback(this, port, request); }
     async _rpcTransform(code, loader) { return _rpc._rpcTransform(this, code, loader); }
-    // two-tier-fanout: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
+    // two-tier-fanout: peer-DO execute leg of FanoutPool's peer-DO fanout topology.
     async _rpcFanoutExecute(fnSource, args, poolOpts) {
         return _rpc._rpcFanoutExecute(this, fnSource, args, poolOpts);
     }
@@ -1450,8 +1453,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return _wsDoSafePersistRing(this);
     }
 }
-// ── W10 Inner-Worker + assets bindings extracted to
-// ── ./nimbus-session-bindings.ts (S2). See plan §B.3.9.
-// ── Re-exported here so src/index.ts's wrangler entry-graph
-// ── reachability is preserved.
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from './bindings.js';
+// ── W10 Inner-Worker + assets binding shims live in the fabric.
+// ── Re-exported here under their public names so src/index.ts's wrangler
+// ── entry-graph reachability is preserved.
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from '@nimbus-sh/fabric/bindings.js';

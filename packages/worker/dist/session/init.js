@@ -480,7 +480,7 @@ export async function initSession(self, ws) {
     registerRunnerFactory('cpython-runner', (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
-        // which builds its own NimbusLoaderPool (separate from the
+        // which builds its own LoaderPool (separate from the
         // one-shot dispatch's pool) and drives a ReplSession.
         if (argv.length === 0 && self.terminal) {
             const { runPythonRepl } = await import('../runtime/python-repl.js');
