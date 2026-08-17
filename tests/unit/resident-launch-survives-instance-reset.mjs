@@ -162,7 +162,7 @@ const settle = async (predicate, tries = 400) => {
   gen1Dead = true;
   assert.equal(gen1.world.configs.size, 0, 'the launch never got far enough to boot a facet');
   // The reset destroys what the dying instance's turns still had outstanding.
-  // The journal row survives it only because _journalLaunch synced — measured
+  // The journal row survives it only because the journal's write synced — measured
   // live, an unsynced row died with its writer and recovery found nothing.
   gen1.ctx.storage.crash();
   assert.ok(
