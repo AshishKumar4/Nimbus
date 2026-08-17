@@ -4,7 +4,7 @@
  *
  * A single Durable Object method can drive at most four concurrent
  * Worker Loader fetches before extra dispatches serialize or fail. Small
- * batches therefore run in the coordinator DO through NimbusLoaderPool.
+ * batches therefore run in the coordinator DO through LoaderPool.
  * Wider batches are sharded across sibling NimbusSession DOs, each of
  * which owns its own four-loader budget.
  *
@@ -14,9 +14,9 @@
  * runtime operations do not appear successful after partial dispatch.
  */
 
-import { serializeFunction } from '@nimbus-sh/fabric/vendor/serialize.js';
-import { BindingError } from '@nimbus-sh/fabric/vendor/errors.js';
-import { NimbusLoaderPool } from './loader-pool.js';
+import { serializeFunction } from './vendor/serialize.js';
+import { BindingError } from './vendor/errors.js';
+import { LoaderPool } from './loader-pool.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
 
@@ -88,45 +88,45 @@ export interface FanoutTask<A> {
   args: A;
 }
 
-/** Options handed to NimbusFanoutPool's constructor. */
-export interface NimbusFanoutPoolOptions {
+/** Options handed to FanoutPool's constructor. */
+export interface FanoutPoolOptions {
   /**
    * Tag prepended to peer-DO ids and in-DO loader ids for debugging
    * (e.g. "npm-install-batch"). Affects neither isolate identity (in-DO
-   * path uses the existing NimbusLoaderPool's tag-fold) nor peer-DO
+   * path uses the existing LoaderPool's tag-fold) nor peer-DO
    * deterministic placement (peer ids fold tag + key).
    */
   tag: string;
   /**
    * Per-task timeout in ms. Default 60_000. Forwarded to the in-DO
-   * NimbusLoaderPool's submit calls and to the peer-DO RPC's own
-   * NimbusLoaderPool.
+   * LoaderPool's submit calls and to the peer-DO RPC's own
+   * LoaderPool.
    */
   timeoutMs?: number;
   /**
    * Preamble bundled into every facet (in-DO and inside each peer
-   * DO). Same semantics as NimbusLoaderPool's preamble option.
+   * DO). Same semantics as LoaderPool's preamble option.
    */
   preamble?: string;
   /**
    * Wasm modules forwarded to every facet. Same semantics as
-   * NimbusLoaderPool's wasmModules option.
+   * LoaderPool's wasmModules option.
    */
   wasmModules?: Record<string, ArrayBuffer>;
   /**
    * Extra bindings forwarded to every facet. Same semantics as
-   * NimbusLoaderPool's extraBindings option.
+   * LoaderPool's extraBindings option.
    */
   extraBindings?: Record<string, unknown>;
   /**
    * If set, skip the supervisor-RPC binding injection (mirrors
-   * NimbusLoaderPool's omitSupervisor flag).
+   * LoaderPool's omitSupervisor flag).
    */
   omitSupervisor?: boolean;
   /**
    * Invoking process pid, baked into each facet's SUPERVISOR binding so
    * filesystem RPCs (writeBatchStream) are authorized under the caller's
-   * credential (mirrors NimbusLoaderPool's supervisorPid). Threaded to both
+   * credential (mirrors LoaderPool's supervisorPid). Threaded to both
    * the in-DO loader pool and, via `_rpcFanoutExecute`, the peer-DO pools.
    * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
    */
@@ -152,7 +152,7 @@ export interface NimbusFanoutPoolOptions {
   maxPeers?: number;
 }
 
-interface NimbusFanoutPeerStub {
+interface FanoutPeerStub {
   _rpcFanoutExecute<R>(
     fnSource: string,
     args: unknown[],
@@ -160,7 +160,7 @@ interface NimbusFanoutPeerStub {
   ): Promise<{ results?: R[] }>;
 }
 
-function isNimbusFanoutPeerStub(value: unknown): value is NimbusFanoutPeerStub {
+function isFanoutPeerStub(value: unknown): value is FanoutPeerStub {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
     return false;
   }
@@ -168,12 +168,12 @@ function isNimbusFanoutPeerStub(value: unknown): value is NimbusFanoutPeerStub {
   return typeof execute === 'function';
 }
 
-function fanoutPeerStub(value: unknown): NimbusFanoutPeerStub {
+function fanoutPeerStub(value: unknown): FanoutPeerStub {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-    throw new BindingError('NimbusFanoutPool: NIMBUS_SESSION.get() did not return a peer stub.');
+    throw new BindingError('FanoutPool: NIMBUS_SESSION.get() did not return a peer stub.');
   }
-  if (!isNimbusFanoutPeerStub(value)) {
-    throw new BindingError('NimbusFanoutPool: peer stub does not expose _rpcFanoutExecute().');
+  if (!isFanoutPeerStub(value)) {
+    throw new BindingError('FanoutPool: peer stub does not expose _rpcFanoutExecute().');
   }
   return value;
 }
@@ -187,20 +187,20 @@ function fanoutPeerStub(value: unknown): NimbusFanoutPeerStub {
  * exists primarily as a clean API surface; per-call dispatch state
  * lives only inside submitMany's promise.
  */
-export class NimbusFanoutPool {
+export class FanoutPool {
   private readonly env: any;
   private readonly ctx: DurableObjectState;
-  private readonly opts: NimbusFanoutPoolOptions;
+  private readonly opts: FanoutPoolOptions;
   private readonly coordDoId: string;
   private readonly coordDoIdShort: string;
 
-  constructor(env: any, ctx: DurableObjectState, opts: NimbusFanoutPoolOptions) {
-    // Hard-fail on missing LOADER. NimbusLoaderPool also enforces this,
+  constructor(env: any, ctx: DurableObjectState, opts: FanoutPoolOptions) {
+    // Hard-fail on missing LOADER. LoaderPool also enforces this,
     // but we check up front so the diagnostic points at the fanout-pool
     // construction site rather than the deferred loader-pool one.
     if (!env?.LOADER || typeof env.LOADER.get !== 'function') {
       throw new BindingError(
-        'NimbusFanoutPool: env.LOADER binding missing or invalid. ' +
+        'FanoutPool: env.LOADER binding missing or invalid. ' +
           'Add a [[worker_loaders]] entry to wrangler.jsonc.',
       );
     }
@@ -216,21 +216,21 @@ export class NimbusFanoutPool {
    * results in input order.
    *
    * Routing:
-   *   tasks.length < 5   -> coordinator-local NimbusLoaderPool
+   *   tasks.length < 5   -> coordinator-local LoaderPool
    *   tasks.length >= 5  -> sibling NimbusSession DOs
    *
    * Backpressure: if `tasks.length > MAX_PEER_FANOUT (32)`, tasks
    * are sharded modulo `MAX_PEER_FANOUT` and each shard's bucket
    * runs serially inside its assigned peer DO via the in-peer
-   * NimbusLoaderPool's concurrency (capped at 4 there too). A
+   * LoaderPool's concurrency (capped at 4 there too). A
    * single submitMany call returns when ALL tasks complete (or any
    * throws).
    *
    * `fn` is the user function executed per task. It runs INSIDE a
    * Worker Loader isolate (in the in-DO path) or inside a peer DO's
    * Worker Loader isolate (in the peer-DO path); same trust posture
-   * as NimbusLoaderPool.submit. The function is serialized via
-   * the vendored serializeFunction (same as NimbusLoaderPool#prepare).
+   * as LoaderPool.submit. The function is serialized via
+   * the vendored serializeFunction (same as LoaderPool#prepare).
    */
   async submitMany<A, R>(
     tasks: FanoutTask<A>[],
@@ -268,12 +268,12 @@ export class NimbusFanoutPool {
     tasks: FanoutTask<A>[],
     fn: (item: A, env: any) => R | Promise<R>,
   ): Promise<R[]> {
-    // Use the existing NimbusLoaderPool. Concurrency = task count
+    // Use the existing LoaderPool. Concurrency = task count
     // (capped at 4 by constructor — tasks.length is already < 5
     // here, so the cap won't bite). Each task = one pool.submit;
     // pool.map runs them with stable-slot reuse.
     const concurrency = Math.min(tasks.length, IN_DO_THRESHOLD - 1);
-    const pool = new NimbusLoaderPool(this.env, this.ctx, {
+    const pool = new LoaderPool(this.env, this.ctx, {
       concurrency,
       timeoutMs: this.opts.timeoutMs,
       tag: this.opts.tag,
@@ -307,7 +307,7 @@ export class NimbusFanoutPool {
     const ns = this.env?.NIMBUS_SESSION;
     if (!ns || typeof ns.idFromName !== 'function' || typeof ns.get !== 'function') {
       throw new BindingError(
-        'NimbusFanoutPool: env.NIMBUS_SESSION binding missing or invalid. ' +
+        'FanoutPool: env.NIMBUS_SESSION binding missing or invalid. ' +
           'The peer-DO topology requires it. ' +
           'Add the binding via durable_objects.bindings in wrangler.jsonc.',
       );
@@ -321,7 +321,7 @@ export class NimbusFanoutPool {
 
     // Cap peer count at MAX_PEER_FANOUT. Tasks beyond N=32 are
     // bucketed into existing shards — each shard's peer DO then
-    // runs its bucket through its in-DO NimbusLoaderPool.map
+    // runs its bucket through its in-DO LoaderPool.map
     // (concurrency capped at 4 there).
     const peerCount = Math.min(tasks.length, this.opts.maxPeers ?? MAX_PEER_FANOUT);
     // Group tasks by deterministic shard. Same key → same shard, so
@@ -376,7 +376,7 @@ export class NimbusFanoutPool {
                 extraBindings: this.opts.extraBindings,
                 omitSupervisor: this.opts.omitSupervisor,
                 // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-                // the peer's NimbusLoaderPool can mint a SUPERVISOR
+                // the peer's LoaderPool can mint a SUPERVISOR
                 // binding that routes back HERE (the user's session DO),
                 // not to the peer DO itself. Without this, peer DOs'
                 // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /

@@ -14,7 +14,7 @@
 // overloaded` from a whole-install abort into a completed install.
 
 import assert from 'node:assert/strict';
-import { NimbusFanoutPool } from '../../packages/worker/src/loaders/fanout-pool.ts';
+import { FanoutPool } from '../../packages/fabric/src/fanout-pool.ts';
 import { describeError, isDoOverloaded, isTransientDoReset } from '../../packages/core/src/observability/oom-classify.ts';
 
 // ── Classifier: transient resets are retryable, resource resets are not ──
@@ -60,7 +60,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       return { results: args }; // echo — peer would run fn; plumbing is what we test
     },
   }));
-  const pool = new NimbusFanoutPool(env, ctx, { tag: 'reset-retry-test', omitSupervisor: true });
+  const pool = new FanoutPool(env, ctx, { tag: 'reset-retry-test', omitSupervisor: true });
   const results = await pool.submitMany(TASKS, (x) => x);
   assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after retry');
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
@@ -76,7 +76,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       throw new Error('Internal error while starting up Durable Object storage caused object to be reset; reference = x');
     },
   }));
-  const pool = new NimbusFanoutPool(env, ctx, { tag: 'reset-exhaust-test', omitSupervisor: true });
+  const pool = new FanoutPool(env, ctx, { tag: 'reset-exhaust-test', omitSupervisor: true });
   await assert.rejects(
     pool.submitMany(TASKS, (x) => x),
     /starting up Durable Object storage/,
@@ -96,7 +96,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       throw new Error('genuine task failure — not a reset');
     },
   }));
-  const pool = new NimbusFanoutPool(env, ctx, { tag: 'nonretry-test', omitSupervisor: true });
+  const pool = new FanoutPool(env, ctx, { tag: 'nonretry-test', omitSupervisor: true });
   await assert.rejects(pool.submitMany(TASKS, (x) => x), /genuine task failure/);
   // However the 8 tasks split across dispatch phases, each one that runs
   // throws exactly once and no shard is retried; a phase that aborts the
@@ -116,7 +116,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       return { results: args };
     },
   }));
-  const pool = new NimbusFanoutPool(env, ctx, { tag: 'overload-retry-test', omitSupervisor: true });
+  const pool = new FanoutPool(env, ctx, { tag: 'overload-retry-test', omitSupervisor: true });
   const results = await pool.submitMany(TASKS, (x) => x);
   assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after the shed');
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
@@ -132,7 +132,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   const env = makeEnv(() => ({
     async _rpcFanoutExecute() { throw new Error('internal error'); },
   }));
-  const pool = new NimbusFanoutPool(env, ctx, { tag: 'opaque-test', omitSupervisor: true });
+  const pool = new FanoutPool(env, ctx, { tag: 'opaque-test', omitSupervisor: true });
   const err = await pool.submitMany(TASKS, (x) => x).then(
     () => { throw new Error('expected submitMany to reject'); },
     (e) => e,

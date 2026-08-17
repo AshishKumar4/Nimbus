@@ -13,10 +13,10 @@
 
 import assert from 'node:assert/strict';
 import {
-  NimbusFanoutPool,
+  FanoutPool,
   FANOUT_PHASE_SIZE,
   MAX_PEER_FANOUT,
-} from '../../packages/worker/src/loaders/fanout-pool.ts';
+} from '../../packages/fabric/src/fanout-pool.ts';
 
 function makeEnv(seen) {
   return {
@@ -40,7 +40,7 @@ const ctx = { id: { toString: () => 'coord-do-id-abcdef' } };
 async function dispatch(count, opts = {}) {
   const seen = [];
   const phases = [];
-  const pool = new NimbusFanoutPool(makeEnv(seen), ctx, {
+  const pool = new FanoutPool(makeEnv(seen), ctx, {
     tag: 'peer-cap-test',
     omitSupervisor: true,
     onDispatchPhase: (width) => phases.push(width),

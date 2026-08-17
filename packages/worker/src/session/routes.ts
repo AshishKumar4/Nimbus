@@ -57,7 +57,7 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 // uses (they did: the packument purge used a stale `/p/` segment).
 import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
 import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-wasm-bytes.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '../loaders/fanout-pool.js';
+import { FanoutPool, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout-pool.js';
 import { z } from 'zod/v4';
 
 type RoutesHost = any;
@@ -892,7 +892,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       }
       // ── two-tier-fanout primitive probe ──────────────────────────────
       // in-DO fanout in-DO and peer-DO fanout peer-DO speedups via the
-      // NimbusFanoutPool primitive. Independent of any specific
+      // FanoutPool primitive. Independent of any specific
       // production site (install-batch, pre-bundle, etc.) so the
       // primitive's behavior can be measured cleanly without
       // confounders.
@@ -1429,7 +1429,7 @@ async function handleCacheTestEndpoint(
 
 // ── two-tier-fanout primitive benchmark endpoint ────────────────────────
 //
-// Routes under /api/_test/fanout/* exercise NimbusFanoutPool's two
+// Routes under /api/_test/fanout/* exercise FanoutPool's two
 // topologies (in-DO fanout in-DO + peer-DO fanout peer-DO) via a synthetic workload
 // that's independent of the production install-batch / pre-bundle
 // sites. The probe measures speedup, peer-DO routing determinism,
@@ -1463,7 +1463,7 @@ async function handleFanoutTestEndpoint(
 
   if (path === '/api/_test/fanout/topology' && request.method === 'GET') {
     const n = Math.max(0, parseInt(url.searchParams.get('n') || '0', 10));
-    const pool = new NimbusFanoutPool(env, self.ctx, {
+    const pool = new FanoutPool(env, self.ctx, {
       tag: 'fanout-bench',
       timeoutMs: 60_000,
     });
@@ -1479,7 +1479,7 @@ async function handleFanoutTestEndpoint(
     const keysRaw = url.searchParams.get('keys') || '';
     const keys = keysRaw.split(',').map((k) => k.trim()).filter(Boolean);
     const peerCount = Math.max(1, Math.min(parseInt(url.searchParams.get('n') || String(keys.length), 10), MAX_PEER_FANOUT));
-    const pool = new NimbusFanoutPool(env, self.ctx, {
+    const pool = new FanoutPool(env, self.ctx, {
       tag: 'fanout-bench',
       timeoutMs: 60_000,
     });
@@ -1495,7 +1495,7 @@ async function handleFanoutTestEndpoint(
     const n = Math.max(1, Math.min(64, body.n || 8));
     const sleepMs = Math.max(0, Math.min(2000, body.sleepMs || 100));
 
-    const pool = new NimbusFanoutPool(env, self.ctx, {
+    const pool = new FanoutPool(env, self.ctx, {
       tag: 'fanout-bench',
       timeoutMs: 60_000,
     });
@@ -1516,7 +1516,7 @@ async function handleFanoutTestEndpoint(
     >(tasks, async (item: { id: number; sleepMs: number }, env: any) => {
       const startMs = Date.now();
       // Identify which env we're running in. SUPERVISOR is the
-      // RPC stub auto-injected by NimbusLoaderPool; its presence
+      // RPC stub auto-injected by LoaderPool; its presence
       // tells us we're inside a loader isolate (not the supervisor).
       const loaderEnvKeys = Object.keys(env || {}).sort();
       // Sleep entirely inside the isolate — no external network.
@@ -1559,11 +1559,11 @@ async function handleFanoutTestEndpoint(
     const sleepMs = Math.max(0, Math.min(2000, body.sleepMs || 100));
 
     // Same workload, but FORCE serial dispatch by using a single
-    // NimbusLoaderPool with concurrency=1 and submitting one task
+    // LoaderPool with concurrency=1 and submitting one task
     // at a time. This is the T_serial reference for the 5× speedup
     // assertion.
-    const { NimbusLoaderPool } = await import('../loaders/loader-pool.js');
-    const pool = new NimbusLoaderPool(env, self.ctx, {
+    const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
+    const pool = new LoaderPool(env, self.ctx, {
       concurrency: 1,
       timeoutMs: 60_000,
       tag: 'fanout-serial',

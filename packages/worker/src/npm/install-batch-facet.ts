@@ -122,7 +122,7 @@ export interface InstallBatchResult {
 
 // ── Facet function ──────────────────────────────────────────────────────
 //
-// Runs inside a NimbusLoaderPool isolate. Serialised via fn.toString();
+// Runs inside a LoaderPool isolate. Serialised via fn.toString();
 // the helpers it references at top-level scope (streamTarEntries,
 // readableStreamToAsyncIterable, MAX_FILE_BYTES) are NOT in the facet's
 // lexical scope — the pool injects them via the preamble. No static

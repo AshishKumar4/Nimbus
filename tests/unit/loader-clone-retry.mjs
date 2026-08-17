@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { NimbusLoaderPool } from '../../packages/worker/src/loaders/loader-pool.ts';
+import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
 import { classifyError } from '../../packages/core/src/observability/oom-classify.ts';
 
 const cloneVersionError =
@@ -28,7 +28,7 @@ const loader = {
   },
 };
 
-const pool = new NimbusLoaderPool(
+const pool = new LoaderPool(
   { LOADER: loader },
   { id: { toString: () => 'test-session-id' } },
   { omitSupervisor: true, timeoutMs: 0, retries: 0, tag: 'clone-retry-test' },

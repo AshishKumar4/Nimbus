@@ -49,8 +49,8 @@ import {
 } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/core/_shared/w7-frame.js';
-import { NimbusLoaderPool } from '../loaders/loader-pool.js';
-import { NimbusFanoutPool, IN_DO_THRESHOLD } from '../loaders/fanout-pool.js';
+import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
+import { FanoutPool, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
@@ -283,7 +283,7 @@ export class NpmInstaller {
 
       // ── Phase 1: Resolve ──────────────────────────────────────────
       // Frontier-coordinator path. Each BFS layer dispatches to
-      // NimbusFanoutPool.submitMany — width <5 in-DO (in-DO fanout),
+      // FanoutPool.submitMany — width <5 in-DO (in-DO fanout),
       // width ≥5 peer-DO (peer-DO fanout). Per-package task body is
       // self-contained (resolveOnePackumentInFacet), supervisor builds
       // layer N+1 from layer N's edges. Missing env.LOADER throws at
@@ -367,7 +367,7 @@ export class NpmInstaller {
 
     // Fetch + extract + write new packages.
     //
-    // Single fetch path: one NimbusLoaderPool isolate (the batch facet)
+    // Single fetch path: one LoaderPool isolate (the batch facet)
     // runs the entire install. The facet streams tarballs through gunzip+tar
     // and coalesces package-owned paths into shared writeBatchStream waves;
     // every owner awaits each wave it contributed to.
@@ -570,7 +570,7 @@ export class NpmInstaller {
   /**
    * F-2 frontier-coordinator path. Replaces the single-resolve-facet
    * dispatch with a per-package fanout: each BFS layer becomes ONE
-   * `NimbusFanoutPool.submitMany` call, layer N+1 builds from the
+   * `FanoutPool.submitMany` call, layer N+1 builds from the
    * resolved metadata of layer N.
    *
    * Topology auto-routes per layer:
@@ -645,7 +645,7 @@ export class NpmInstaller {
 
     // F-2 fanout pool. One construction reused across every layer; the
     // pool is stateless across submitMany calls.
-    const fanoutPool = new NimbusFanoutPool(this.env, this.ctx!, {
+    const fanoutPool = new FanoutPool(this.env, this.ctx!, {
       tag: 'npm-resolve-fanout',
       // 5 minutes per layer is generous; typical layers complete in
       // 1-3 s. Per-task this gates each packument fetch + R2 race.
@@ -723,8 +723,8 @@ export class NpmInstaller {
         return { key: name, args: taskSpec };
       });
 
-      // Dispatch the layer. NimbusFanoutPool routes:
-      //   <5 → in-DO fanout in-DO (NimbusLoaderPool), concurrency = layer.length (capped at 4)
+      // Dispatch the layer. FanoutPool routes:
+      //   <5 → in-DO fanout in-DO (LoaderPool), concurrency = layer.length (capped at 4)
       //   ≥5 → peer-DO fanout peer-DO, N peers = min(layer.length, 32)
       let results: ResolveOneResult[];
       const layerT0 = Date.now();
@@ -930,12 +930,12 @@ export class NpmInstaller {
   }
 
   /**
-   * Batch install via two-tier fan-out (NimbusFanoutPool).
+   * Batch install via two-tier fan-out (FanoutPool).
    *
    * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
    * follows from it:
    *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-   *     1 NimbusLoaderPool with concurrency = shardCount, capped at
+   *     1 LoaderPool with concurrency = shardCount, capped at
    *     4 by V8 invariant. Each shard is one facet running its own
    *     installPackagesInFacet.
    *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
@@ -947,7 +947,7 @@ export class NpmInstaller {
    *   `shard-${i}` task key deterministically (tests can predict
    *   placement).
    *
-   * Pre-fix lineage: this site previously ran ONE NimbusLoaderPool
+   * Pre-fix lineage: this site previously ran ONE LoaderPool
    *   with concurrency=1, internal pLimit(3) — the explicit "collapses
    *   what was 4 concurrent dynamic workers (pool.map slots) into 1"
    *   Two-tier topology re-expands the fan-out without re-introducing
@@ -1028,7 +1028,7 @@ export class NpmInstaller {
     // Peer shards dispatch in bounded phases and each phase is a barrier, so
     // the phase profile is what distinguishes shard work from barrier count.
     const phaseProfile: string[] = [];
-    const fanoutPool = new NimbusFanoutPool(this.env, this.ctx!, {
+    const fanoutPool = new FanoutPool(this.env, this.ctx!, {
       tag: 'npm-install-batch',
       // Whole-batch timeout. With per-shard parallelism of N=8 peer
       // DOs each running pLimit(3), Mossaic-class 456 packages
@@ -1047,7 +1047,7 @@ export class NpmInstaller {
 
     const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
       // Stable-id router key. Same shardIdx → same peer DO across
-      // runs. Tests can predict placement via NimbusFanoutPool's
+      // runs. Tests can predict placement via FanoutPool's
       // `peerSiblingId(key, peerCount)` helper.
       key: `shard-${shardIdx}`,
       args: { packages: shardSpecs, concurrency: 3 } as InstallBatchSpec,
@@ -1158,7 +1158,7 @@ export class NpmInstaller {
       return { installed, failed, filesWritten };
     } catch (e: any) {
       // Final catch — preserved from the pre-fix shape so the error
-      // log line shape stays consistent. NimbusFanoutPool's internal
+      // log line shape stays consistent. FanoutPool's internal
       // pools dispose themselves at the end of each submitMany call,
       // so no explicit dispose() is needed here.
       // The earlier inner-catch already logged + threw; if we reach
@@ -1530,7 +1530,7 @@ export class NpmInstaller {
     projDir: string,
     installed: Map<string, ResolvedPackage>,
   ): Promise<void> {
-    // Pre-bundle now runs in NimbusLoaderPool isolates (src/pre-bundle-facet.ts);
+    // Pre-bundle now runs in LoaderPool isolates (src/pre-bundle-facet.ts);
     // each facet ships its own bundled esbuild-wasm via the preamble. The
     // supervisor's EsbuildService is no longer on the bundle path — it
     // still serves the transform path (TS/JSX → JS) which is small and
@@ -1785,7 +1785,7 @@ export class NpmInstaller {
     // (where it should live). No supervisor-side caching — see
     // src/esbuild-wasm-bytes.ts for the full architectural rationale.
     //
-    // Bytes are shipped into each facet via NimbusLoaderPool's
+    // Bytes are shipped into each facet via LoaderPool's
     // `wasmModules` option which workerd registers in the LOADER
     // `modules` map as `{ wasm: ArrayBuffer }`. Workerd compiles at
     // module-load (startup phase, where wasm code generation is
@@ -1816,7 +1816,7 @@ export class NpmInstaller {
       }
     };
 
-    let pool: NimbusLoaderPool;
+    let pool: LoaderPool;
     let retainedWasmRelease: (() => void) | null = null;
     const setupAllocation = await acquireSupervisorAllocation(
       SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
@@ -1832,12 +1832,12 @@ export class NpmInstaller {
           `pre-bundle wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`,
         );
       }
-      // NimbusLoaderPool keeps the constructor-time module bytes until
+      // LoaderPool keeps the constructor-time module bytes until
       // dispose(), so retain their exact credit rather than treating
       // construction as a handoff that immediately frees the ArrayBuffer.
       setupAllocation.shrinkTo(wasmBytes.byteLength);
       try {
-        pool = new NimbusLoaderPool(this.env, this.ctx!, {
+        pool = new LoaderPool(this.env, this.ctx!, {
           concurrency: PRE_BUNDLE_CONCURRENCY,
           timeoutMs: 60_000,
           retries: 0,

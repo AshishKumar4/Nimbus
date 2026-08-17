@@ -1,8 +1,8 @@
 /**
- * npm-resolve-preamble.ts — preamble injected into NimbusLoaderPool isolates
+ * npm-resolve-preamble.ts — preamble injected into LoaderPool isolates
  * that run src/npm/resolve-facet.ts and src/npm/resolve-one-facet.ts.
  *
- * NimbusLoaderPool serialises the user function via fn.toString() and runs
+ * LoaderPool serialises the user function via fn.toString() and runs
  * it inside a dynamic worker. Names referenced by the function at module
  * scope are NOT in that worker's lexical scope at runtime — they must be
  * re-declared in the preamble.
@@ -30,7 +30,7 @@
  * byte-equivalent — divergence would mean the facet picks different
  * versions than the in-supervisor path.
  *
- * Preamble bytes are part of the loader-cache key for NimbusLoaderPool —
+ * Preamble bytes are part of the loader-cache key for LoaderPool —
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */

@@ -12,10 +12,11 @@
  *      the supervisor worker), compatibilityFlags = ['nodejs_compat'],
  *      globalOutbound = undefined (inherit parent network so the facet can
  *      reach https://registry.npmjs.org without a proxy binding).
- *   3. **SupervisorRPC autoinjection**. The pool grabs a SupervisorRPC
- *      stub from `getCtxExports()` and forwards it as `env.SUPERVISOR` to
- *      every facet, same pattern as git-network-facet.ts. Callers can add
- *      more bindings via `extraBindings`.
+ *   3. **Supervisor autoinjection**. The pool grabs the embedder's
+ *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
+ *      ctx-exports.ts) and forwards it as `env.SUPERVISOR` to every facet,
+ *      same pattern as git-network-facet.ts. Callers can add more bindings
+ *      via `extraBindings`.
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
  *      Caller opts in to leniency.
  *
@@ -24,9 +25,9 @@
  */
 
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { serializeFunction, hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
+import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import {
@@ -34,11 +35,11 @@ import {
   ExecutionError,
   RetryExhaustedError,
   TimeoutError,
-} from '@nimbus-sh/fabric/vendor/errors.js';
-import type { WorkerLoader } from '@nimbus-sh/fabric/vendor/types.js';
+} from './vendor/errors.js';
+import type { WorkerLoader } from './vendor/types.js';
 
-/** Options handed to NimbusLoaderPool's constructor. */
-export interface NimbusLoaderPoolOptions {
+/** Options handed to LoaderPool's constructor. */
+export interface LoaderPoolOptions {
   /** Maximum concurrent in-flight facets. Default 4. */
   concurrency?: number;
   /** Per-task timeout in ms. Default 60_000. */
@@ -50,7 +51,7 @@ export interface NimbusLoaderPoolOptions {
   retries?: number;
   /**
    * Additional bindings forwarded to each facet. These merge on top of the
-   * default `{ SUPERVISOR: SupervisorRPC({ doId, pid:0 }) }`. Use this to
+   * default `{ SUPERVISOR: supervisorRpc({ doId, pid:0 }) }`. Use this to
    * give facets access to KV, R2, AI, or additional supervisor-level APIs.
    */
   extraBindings?: Record<string, unknown>;
@@ -60,7 +61,7 @@ export interface NimbusLoaderPoolOptions {
    */
   tag?: string;
   /**
-   * If true, omit the default SupervisorRPC binding. Use this for pools
+   * If true, omit the default SUPERVISOR binding. Use this for pools
    * that don't need DO callbacks (e.g. a pure CPU compute pool).
    */
   omitSupervisor?: boolean;
@@ -75,8 +76,8 @@ export interface NimbusLoaderPoolOptions {
    * Override the `doId` baked into the auto-injected SUPERVISOR binding.
    * Default: `ctx.id.toString()` (the DO that constructs the pool).
    *
-   * Used by NimbusFanoutPool's peer-DO branch (peer-DO fanout): peer DOs
-   * construct their per-task NimbusLoaderPool from inside
+   * Used by FanoutPool's peer-DO branch (peer-DO fanout): peer DOs
+   * construct their per-task LoaderPool from inside
    * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
    * override the peer's auto-injected SUPERVISOR routes back to the
    * peer DO itself — so writes (e.g. install-batch-facet's
@@ -84,7 +85,7 @@ export interface NimbusLoaderPoolOptions {
    * COORDINATOR's. The user's terminal session is on the coordinator;
    * writes-to-peer are invisible. See INSTALL-HONESTY-retro.md.
    *
-   * When set, the auto-injected SupervisorRPC uses this string as the
+   * When set, the auto-injected supervisor binding uses this string as the
    * `props.doId`, routing all SUPERVISOR.* calls back to the
    * coordinator. Effective only when `omitSupervisor !== true`.
    */
@@ -148,7 +149,7 @@ export interface NimbusLoaderPoolOptions {
 }
 
 /** Per-call override (merged with pool defaults). */
-export interface NimbusLoaderCallOptions {
+export interface LoaderCallOptions {
   timeoutMs?: number;
   retries?: number;
   /**
@@ -184,7 +185,7 @@ export interface NimbusLoaderCallOptions {
 }
 
 /** Per-map override. Adds onError strategy for partial failures. */
-export interface NimbusLoaderMapOptions extends NimbusLoaderCallOptions {
+export interface LoaderMapOptions extends LoaderCallOptions {
   /** Concurrency override for this call. Defaults to pool's concurrency. */
   concurrency?: number;
   /**
@@ -305,7 +306,7 @@ export function assembleLoaderWorkerModuleSource(
  *
  * Typical use:
  *
- *   const pool = new NimbusLoaderPool(env, ctx, {
+ *   const pool = new LoaderPool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -314,7 +315,7 @@ export function assembleLoaderWorkerModuleSource(
  *     toFetch,
  *   );
  */
-export class NimbusLoaderPool {
+export class LoaderPool {
   private readonly loader: WorkerLoader;
   private readonly concurrency: number;
   private readonly defaultTimeoutMs: number;
@@ -327,7 +328,7 @@ export class NimbusLoaderPool {
   private readonly preambleHash: string;
   /**
    * WASM modules to ship in the LOADER `modules` map. See
-   * NimbusLoaderPoolOptions.wasmModules for the rationale. Stored in
+   * LoaderPoolOptions.wasmModules for the rationale. Stored in
    * insertion order so the per-import preamble we generate matches
    * across pool dispatches (cache-key stability).
    */
@@ -360,12 +361,12 @@ export class NimbusLoaderPool {
   constructor(
     env: any,
     ctx: DurableObjectState,
-    opts?: NimbusLoaderPoolOptions,
+    opts?: LoaderPoolOptions,
   ) {
     const loader = env?.LOADER as WorkerLoader | undefined;
     if (!loader || typeof loader.get !== 'function') {
       throw new BindingError(
-        'NimbusLoaderPool: env.LOADER binding missing or invalid. ' +
+        'LoaderPool: env.LOADER binding missing or invalid. ' +
           'Add a [[worker_loaders]] entry to wrangler.jsonc.',
       );
     }
@@ -393,14 +394,14 @@ export class NimbusLoaderPool {
       for (const [name, bytes] of Object.entries(opts.wasmModules)) {
         if (!(bytes instanceof ArrayBuffer)) {
           throw new BindingError(
-            `NimbusLoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
+            `LoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
             `(got ${(bytes as any)?.constructor?.name || typeof bytes}).`,
           );
         }
         const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
         if (seenIds.has(id)) {
           throw new BindingError(
-            `NimbusLoaderPool: wasmModules key '${name}' collides with another after ` +
+            `LoaderPool: wasmModules key '${name}' collides with another after ` +
             `identifier-sanitisation (id='${id}'). Pick distinct module names.`,
           );
         }
@@ -430,18 +431,18 @@ export class NimbusLoaderPool {
 
     const bindings: Record<string, unknown> = { ...(opts?.extraBindings ?? {}) };
     if (!opts?.omitSupervisor) {
-      const ctxExports = getCtxExports();
-      if (ctxExports?.SupervisorRPC) {
+      const supervisorRpc = supervisorEntrypoint();
+      if (supervisorRpc) {
         // INSTALL-HONESTY: peer-DO branch supplies coordinator's doId
         // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
         // to the user's session DO, not the peer DO. Default to the
         // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
         const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
-        bindings.SUPERVISOR = ctxExports.SupervisorRPC({
+        bindings.SUPERVISOR = supervisorRpc({
           props: { doId: supDoId, pid: opts?.supervisorPid ?? 0 },
         });
       } else {
-        // SupervisorRPC unavailable — running without ctx.exports
+        // Supervisor entrypoint unavailable — running without ctx.exports
         // (e.g. unit-test harness, or LOADER.load contexts where the
         // bindings.SUPERVISOR auto-wire isn't set up). We still construct
         // the pool but the facet will get env.SUPERVISOR === undefined.
@@ -458,7 +459,7 @@ export class NimbusLoaderPool {
     return this.concurrency;
   }
 
-  #resolve(opts?: NimbusLoaderCallOptions): ResolvedResilience {
+  #resolve(opts?: LoaderCallOptions): ResolvedResilience {
     return {
       timeoutMs: Math.max(0, opts?.timeoutMs ?? this.defaultTimeoutMs),
       retries: Math.max(0, opts?.retries ?? this.defaultRetries),
@@ -484,21 +485,21 @@ export class NimbusLoaderPool {
     for (const [name, bytes] of Object.entries(perCall)) {
       if (!(bytes instanceof ArrayBuffer)) {
         throw new BindingError(
-          `NimbusLoaderPool: per-call wasmModules['${name}'] must be ` +
+          `LoaderPool: per-call wasmModules['${name}'] must be ` +
             `ArrayBuffer (got ${(bytes as any)?.constructor?.name || typeof bytes}).`,
         );
       }
       const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
       if (ctorIds.has(id)) {
         throw new BindingError(
-          `NimbusLoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+          `LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
             `id='${id}') collides with a constructor-time wasm module. ` +
             `Per-call modules cannot shadow pool-defaults. Pick a distinct name.`,
         );
       }
       if (seen.has(id)) {
         throw new BindingError(
-          `NimbusLoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+          `LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
             `id='${id}') collides with another per-call key. Pick distinct names.`,
         );
       }
@@ -589,7 +590,7 @@ export class NimbusLoaderPool {
     // re-import (the user fn is serialized via fn.toString and doesn't
     // carry import statements).
     //
-    // Per-call entries (passed via NimbusLoaderCallOptions.wasmModules
+    // Per-call entries (passed via LoaderCallOptions.wasmModules
     // — used by the wasm-runner shell command) are appended to the same
     // table. Naming collision with constructor entries is rejected
     // upstream in #materialisePerCallWasm so the import block here
@@ -801,7 +802,7 @@ export class NimbusLoaderPool {
   async submit<T, R>(
     fn: (arg: T, env: any) => R | Promise<R>,
     arg: T,
-    opts?: NimbusLoaderCallOptions,
+    opts?: LoaderCallOptions,
   ): Promise<Awaited<R>> {
     const { fnSource, fnHash } = this.#prepare(fn);
     const resilience = this.#resolve(opts);
@@ -824,7 +825,7 @@ export class NimbusLoaderPool {
   async map<T, R>(
     fn: (item: T, env: any) => R | Promise<R>,
     items: T[],
-    opts?: NimbusLoaderMapOptions,
+    opts?: LoaderMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     if (items.length === 0) return [];
 
@@ -835,7 +836,7 @@ export class NimbusLoaderPool {
   /**
    * Same shape as `map`, but accepts a pre-serialized function source
    * string instead of a live function reference. Used by
-   * `NimbusFanoutPool`'s peer-DO leg, where the function was already
+   * `FanoutPool`'s peer-DO leg, where the function was already
    * serialized on the coordinator side and forwarded over RPC.
    *
    * The fnSource MUST be the output of `serializeFunction(fn)`
@@ -852,7 +853,7 @@ export class NimbusLoaderPool {
   async mapSource<T, R>(
     fnSource: string,
     items: T[],
-    opts?: NimbusLoaderMapOptions,
+    opts?: LoaderMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     if (items.length === 0) return [];
     const fnHash = hashSource(fnSource);
@@ -863,7 +864,7 @@ export class NimbusLoaderPool {
     fnSource: string,
     fnHash: string,
     items: T[],
-    opts?: NimbusLoaderMapOptions,
+    opts?: LoaderMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     const resilience = this.#resolve(opts);
     const concurrency = Math.max(
@@ -922,7 +923,7 @@ export class NimbusLoaderPool {
    * stubs don't linger in workerd's deferred-destruction queue.
    *
    * Primary target: the SUPERVISOR binding stub we minted at
-   * construction time (via `ctxExports.SupervisorRPC({props})`). It's
+   * construction time (via the registered supervisor entrypoint). It's
    * a cross-isolate RPC stub — without explicit disposal it stays
    * referenced until the parent isolate's event-handler context
    * finishes, which during npm install means "until the whole install

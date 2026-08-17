@@ -30,6 +30,7 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { setSupervisorEntrypointName } from '@nimbus-sh/fabric/ctx-exports.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
@@ -99,6 +100,11 @@ function _estimateWriteBatchBytes(payload: any): number {
   for (const i of inodes) n += 80 + (i?.path?.length ?? 0);
   return n;
 }
+
+// The fabric mints `env.SUPERVISOR` bindings for the programs it hosts;
+// this names the ctx.exports entrypoint those bindings resolve to. Module
+// scope so every isolate that can reach the fabric has it before first use.
+setSupervisorEntrypointName('SupervisorRPC');
 
 export class SupervisorRPC extends WorkerEntrypoint {
   /**

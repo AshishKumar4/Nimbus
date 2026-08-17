@@ -23,10 +23,11 @@
 import assert from 'node:assert/strict';
 
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { setCtxExports, setSupervisorEntrypointName } from '../../packages/fabric/src/ctx-exports.ts';
 
 // The pool mints its SUPERVISOR through ctx.exports; without one it degrades
 // to no binding at all, which would make the pid assertion below vacuous.
+setSupervisorEntrypointName('SupervisorRPC');
 setCtxExports({ SupervisorRPC: (options) => ({ supervisorProps: options.props }) });
 
 const DO_ID = 'session-do-id-0123456789';

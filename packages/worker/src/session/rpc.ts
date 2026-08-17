@@ -30,7 +30,7 @@ import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { NimbusLoaderPool } from '../loaders/loader-pool.js';
+import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
 import {
   ResidentBootSpecSchema,
   type ResidentDiskReader,
@@ -1388,11 +1388,11 @@ export function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): vo
 }
 
 /**
- * RPC: peer-DO execute leg of NimbusFanoutPool's peer-DO fanout topology.
+ * RPC: peer-DO execute leg of FanoutPool's peer-DO fanout topology.
  *
  * Called by a coordinator NimbusSession DO via
  * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
- * THIS DO instance acts as a peer worker: it runs ONE NimbusLoaderPool
+ * THIS DO instance acts as a peer worker: it runs ONE LoaderPool
  * over its assigned shard and returns the per-task results.
  *
  * Cap-sidestep mechanic
@@ -1416,9 +1416,9 @@ export function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): vo
  * Bytes-isolation
  * ───────────────
  * The fnSource string is forwarded verbatim into a fresh
- * NimbusLoaderPool, which serializes it into the loader's worker
+ * LoaderPool, which serializes it into the loader's worker
  * code. No supervisor-side eval. Same trust posture as every other
- * NimbusLoaderPool dispatch.
+ * LoaderPool dispatch.
  */
 export async function _rpcFanoutExecute(
   self: RpcHost,
@@ -1433,7 +1433,7 @@ export async function _rpcFanoutExecute(
     omitSupervisor?: boolean;
     /**
      * INSTALL-HONESTY: full doId of the COORDINATOR (the DO that
-     * called NimbusFanoutPool.submitMany). The peer's NimbusLoaderPool
+     * called FanoutPool.submitMany). The peer's LoaderPool
      * uses this to mint a SUPERVISOR binding that routes back to the
      * coordinator instead of the peer (default behavior pre-fix).
      * Without this, install-batch's writeBatchStream calls from inside
@@ -1443,7 +1443,7 @@ export async function _rpcFanoutExecute(
     /**
      * Invoking process pid, forwarded into the peer-side SUPERVISOR
      * binding so writeBatchStream is authorized under the caller's
-     * credential (see NimbusLoaderPoolOptions.supervisorPid).
+     * credential (see LoaderPoolOptions.supervisorPid).
      */
     supervisorPid?: number;
   } = {},
@@ -1459,7 +1459,7 @@ export async function _rpcFanoutExecute(
   // with N=8 peers, that's 7 tasks per peer, capped to 4 here so
   // each peer DO stays safely below the cap.
   const concurrency = Math.min(args.length, 4);
-  const pool = new NimbusLoaderPool(self.env, self.ctx, {
+  const pool = new LoaderPool(self.env, self.ctx, {
     concurrency,
     timeoutMs: poolOpts.timeoutMs,
     tag: poolOpts.tag ?? 'fanout-peer',
@@ -1469,7 +1469,7 @@ export async function _rpcFanoutExecute(
     omitSupervisor: poolOpts.omitSupervisor,
     // INSTALL-HONESTY: route SUPERVISOR.* back to the coordinator
     // (the user's session DO), not the peer DO. When undefined
-    // (back-compat with non-fanout callers), NimbusLoaderPool falls
+    // (back-compat with non-fanout callers), LoaderPool falls
     // back to ctx.id.toString() — the legacy behavior, correct for
     // single-DO callers.
     supervisorDoIdOverride: poolOpts.coordinatorDoId,

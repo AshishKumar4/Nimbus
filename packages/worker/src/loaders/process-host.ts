@@ -62,7 +62,7 @@
 
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
-import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
+import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from '@nimbus-sh/fabric/fanout-pool.js';
 import {
   type HostedProcess,
   type OneShotParams,

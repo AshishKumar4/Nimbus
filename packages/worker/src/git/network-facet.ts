@@ -708,7 +708,7 @@ export async function execGitNetwork(
         //   - its own worker code (git-network-worker.js), with the
         //     W7 frame helpers (encodeWriteBatchStream + supporting
         //     state) prepended so the buffered fs adapter can call
-        //     them as bare identifiers — the same shape NimbusLoaderPool's
+        //     them as bare identifiers — the same shape LoaderPool's
         //     `preamble` option provides for npm install. This is the
         //     W7 v3 emits one bounded record per pull; the receiver owns
         //     the aggregate 8 MiB payload-credit and transaction limits.

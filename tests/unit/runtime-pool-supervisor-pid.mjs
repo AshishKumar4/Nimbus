@@ -26,10 +26,10 @@ import { fileURLToPath } from 'node:url';
 
 const RUNTIME_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'worker', 'src', 'runtime');
 
-/** The options object literal of each `new NimbusLoaderPool(...)`, brace-matched. */
+/** The options object literal of each `new LoaderPool(...)`, brace-matched. */
 function poolOptions(src) {
   const out = [];
-  for (const m of src.matchAll(/new NimbusLoaderPool\s*\(/g)) {
+  for (const m of src.matchAll(/new LoaderPool\s*\(/g)) {
     let depth = 0;
     for (let i = src.indexOf('{', m.index); i >= 0 && i < src.length; i++) {
       if (src[i] === '{') depth++;

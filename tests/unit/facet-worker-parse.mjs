@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
-import { assembleLoaderWorkerModuleSource } from '../../packages/worker/src/loaders/loader-pool.ts';
+import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/loader-pool.ts';
 import {
   TAR_STREAM_PREAMBLE,
   W7_FRAME_PREAMBLE,
