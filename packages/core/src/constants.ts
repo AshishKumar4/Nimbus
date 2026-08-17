@@ -142,10 +142,13 @@ export const FACET_TIMEOUT_MS = 30_000;  // 30s execution timeout
 // JavaScript, so workerd's per-module text-size limit applies to the
 // JSON-escaped form (each `\n` / `\"` / `\u` adds bytes, plus the
 // per-key string-quote overhead).
-// raw → boots, 8 MiB raw → fails. Encoded as JSON that's roughly 18-25 MiB
-// of module text. We target 22 MiB encoded as the hard ceiling, leaving
-// ~2-3 MiB of headroom for the rest of the worker module (shims, runner
-// boot code) and any minor drift in the eviction loop's accounting.
+// Measured: 8 MiB raw failed to boot; the passing raw bound was measured
+// too, but the number was lost to comment truncation before it ever
+// reached git, so only the failing side is known. Encoded as JSON that's
+// roughly 18-25 MiB of module text. We target 22 MiB encoded as the hard
+// ceiling, leaving ~2-3 MiB of headroom for the rest of the worker module
+// (shims, runner boot code) and any minor drift in the eviction loop's
+// accounting.
 //
 // facet-manager.ts:buildPrefetchBundle uses TextEncoder().encode().length
 // to measure exact UTF-8 bytes (not JS string .length, which counts UTF-16
@@ -224,20 +227,31 @@ export const CF_COMPAT_DATE = '2026-04-01';
 
 // ── Supervisor heap budget [C'.1] ───────────────────────────────────────
 //
-// The supervisor isolate's 128 MiB workerd cap is a HARD platform ceiling
-// (per docs/research/cf-primitives-dossier.md §6 invariant I1 — 128 MiB
-// per V8 isolate, may be shared across same-class peer DOs co-tenanting in
-// one process). Nimbus targets HALF of that as a self-imposed soft ceiling
-// so the supervisor always has runway when workerd LRU-evicts neighbours
-// or AIR (Asynchronous Isolate Recreation) folds growing isolates.
+// Three distinct memory regimes, not one shared pool:
 //
-// 64 MiB is a budget, not a measurement, and nothing enforces it.
+//   - Supervisor DO isolate: 128 MiB HARD platform ceiling ("Each isolate
+//     can consume up to 128 MB of memory" —
+//     https://developers.cloudflare.com/workers/platform/limits/).
+//   - Facets: ~208-256 MiB EACH, measured — memory independent of the
+//     supervisor and of each other (1,664 MiB live across 8 facets +
+//     parent) but CPU SHARED across the actor thread. See
+//     packages/worker/src/loaders/process-fabric.ts.
+//   - Peer DOs: independent memory AND CPU budgets, measured 1.2 GiB
+//     live across 8 peers.
+//
+// Nimbus targets HALF of the supervisor's 128 MiB as a self-imposed soft
+// ceiling so the supervisor always has runway when workerd LRU-evicts
+// neighbours or AIR (Asynchronous Isolate Recreation) folds growing
+// isolates.
+//
+// 64 MiB is a soft admission budget, not a measurement — the right value
+// is unmeasured — and nothing enforces it directly.
 // src/observability/heap-estimate.ts sums the INSTRUMENTED contributors —
-// the supervisor baseline, VFS LRU and in-flight writes, pre-bundle slices,
-// and streaming RPC buffers — which is a lower bound, not full coverage.
-// The prefetch-bundle path in facets/manager.ts allocates against this
-// budget without accounting for it; see HEAP_BLIND_SPOTS for the current
-// gap. Read a low percentOfCeiling accordingly.
+// the supervisor baseline, VFS LRU and in-flight writes, pre-bundle
+// slices, streaming RPC buffers, and the prefetch-bundle build lease and
+// cache gauge — which is a lower bound, not full coverage; allocation
+// sites known to be missing are listed in HEAP_BLIND_SPOTS. Read a low
+// percentOfCeiling accordingly.
 export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 
 // Shared allowance for transient allocations in the supervisor DO. With the

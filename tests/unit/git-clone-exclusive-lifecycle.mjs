@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { registerGitCommands } from '../../packages/worker/src/git/commands.ts';
+import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
 
 function registerCloneHarness() {
   let gitCommand;
@@ -90,6 +91,69 @@ function commandContext(args) {
   await harness.waitUntilPromises[0];
   assert.deepEqual(harness.releasedOwners, ['owner-1']);
   assert.equal(harness.activeOwners.size, 0);
+}
+
+{
+  // --branch reaches the facet as the clone ref; the URL stays the URL.
+  setCtxExports({
+    SupervisorRPC() {
+      return { async stdout() {}, [Symbol.dispose]() {} };
+    },
+  });
+  const facetBodies = [];
+  const env = {
+    LOADER: {
+      load() {
+        return {
+          getEntrypoint() {
+            return {
+              async fetch(request) {
+                facetBodies.push(await request.json());
+                return Response.json({ success: false, error: 'capture-only' });
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+  const registry = {
+    register(name, command) {
+      if (name === 'git') registry.gitCommand = command;
+    },
+  };
+  registerGitCommands(registry, {
+    as() { return {}; },
+    acquireExclusiveMutation(path) {
+      return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
+    },
+    releaseExclusiveMutation() {},
+  }, { id: { toString: () => 'do-branch-test' }, waitUntil() {} }, env);
+  const exitCode = await registry.gitCommand(commandContext([
+    'clone',
+    '--branch', 'dev',
+    'https://example.invalid/repo.git',
+    '/home/user/branched',
+  ]));
+  assert.equal(exitCode, 1, 'capture-only facet must surface as a failed clone');
+  assert.ok(facetBodies.length >= 1, 'clone never reached the facet');
+  assert.equal(facetBodies[0].phase, 'clone-prepare');
+  assert.equal(facetBodies[0].url, 'https://example.invalid/repo.git');
+  assert.equal(facetBodies[0].ref, 'dev', '--branch value did not reach the facet as ref');
+  assert.equal(facetBodies[0].dir, '/home/user/branched');
+  setCtxExports(undefined);
+}
+
+{
+  // Unsupported flags fail the command loudly instead of silently no-opping.
+  const harness = registerCloneHarness();
+  const stderrLines = [];
+  const ctx = commandContext(['clone', '--filter=blob:none', 'https://example.invalid/repo.git']);
+  ctx.stderr = { write(line) { stderrLines.push(line); } };
+  const exitCode = await harness.gitCommand(ctx);
+  assert.equal(exitCode, 128);
+  assert.match(stderrLines.join(''), /does not support '--filter'/);
+  assert.equal(harness.acquiredRoots.length, 0, 'refused clone must not acquire a mutation lease');
 }
 
 console.log('git clone exclusive lifecycle: ok');

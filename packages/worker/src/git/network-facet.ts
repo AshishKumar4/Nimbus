@@ -48,7 +48,7 @@ export interface GitNetworkOpts {
   url?: string;
   /** For fetch/pull: remote name (default "origin") */
   remote?: string;
-  /** For pull: branch name (default current) */
+  /** For clone: branch to clone (default remote HEAD); for pull: branch name (default current) */
   ref?: string;
   /** Shallow depth; default 1 for clone */
   depth?: number;
@@ -1562,10 +1562,25 @@ function buildPayload(writeBuffer, dirBuffer, deleteSet, metadata, authoritative
     if (size <= CHUNK_SIZE) {
       chunks.push({ path, chunkId: 0, data });
     } else {
+      // Each chunk record must hand the W7 encoder a Uint8Array over its own
+      // dedicated ArrayBuffer: the encoder enqueues chunk.data into the
+      // type:'bytes' RPC stream and workerd transfers the underlying buffer,
+      // so a subarray view would detach the parent every other chunk shares
+      // (the detached-ArrayBuffer failure class documented at the writeFile
+      // ingress). That copy is materialized LAZILY, one access at a time: an
+      // eager data.slice() per chunk held a second full copy of the file
+      // beside the writeBuffer original, and for an oversize single-file
+      // wave — a packfile — that transient 2× was the facet's peak
+      // allocation. With the getter, W7 validation and encoding each
+      // materialize one chunk-sized copy that is discarded (validation) or
+      // transferred (encode) before the next exists, so peak stays ~1× wave
+      // bytes + one chunk.
       for (let i = 0; i < chunkCount; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(size, start + CHUNK_SIZE);
         chunks.push({
           path, chunkId: i,
-          data: data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
+          get data() { return data.slice(start, end); },
         });
       }
     }
@@ -1897,20 +1912,21 @@ function createBufferedFs(
     const wavebytesWritten = bufferBytes;
     // Release facet-side buffer references BEFORE awaiting the RPC.
     //
-    // After buildPayload, payload.chunks aliases each writeBuffer entry's
-    // Uint8Array (the small-file path; large-file path uses fresh slices).
-    // payload is the only consumer that needs those bytes for the duration
-    // of the await. Holding them in writeBuffer too just doubles facet-side
-    // residency during the await.
+    // After buildPayload, payload.chunks references each writeBuffer entry's
+    // bytes — small files alias the entry's Uint8Array directly; files over
+    // CHUNK_SIZE are lazy chunk records whose getters copy one chunk at a
+    // time out of the entry (see buildPayload). payload is the only consumer
+    // that needs those bytes for the duration of the await. Holding them in
+    // writeBuffer too just doubles facet-side residency during the await.
     //
     // Empirically (Q4 prod verification at probe-prod-post-fix-2026-05-09T14-54-31Z.txt)
     // the facet OOMs around the third long-clone wave on a real repo
     // with the buffers retained. Releasing them here means the writeBuffer
     // Map drops to size 0, the underlying Uint8Array entries are reachable
-    // ONLY through payload.chunks, and as the W7 encoder advances past
-    // each chunk the JS engine can collect the consumed entries. Net
-    // facet-side residency during the await drops from ~2× wave bytes
-    // to ~1× wave bytes.
+    // ONLY through payload.chunks (directly, or via the lazy chunk-record
+    // closures), and as the W7 encoder advances past each chunk the JS
+    // engine can collect the consumed entries. Net facet-side residency
+    // during the await drops from ~2× wave bytes to ~1× wave bytes.
     //
     // Safety: if the await throws, the outer fetch handler calls flushWave()
     // again best-effort. writeBuffer is already empty, so that is a no-op.
@@ -2715,6 +2731,7 @@ export default {
           fs, http, cache,
           dir: opts.dir,
           url: opts.url,
+          ref: opts.ref || undefined,
           singleBranch: true,
           depth: opts.depth || 1,
           noCheckout: true,
@@ -2946,6 +2963,12 @@ export default {
     } catch (e) {
       // Best-effort flush of partial state so user can inspect what landed
       try { await flushWave(); } catch {}
+      // Only a failed PREPARE drops the warm job: a failed checkout chunk
+      // keeps its entry so a marker-replay retry runs warm (the cache pins
+      // the pack; a cold retry re-reads it from the supervisor). Completion
+      // and clone-abort delete the entry, and the facet isolate itself is
+      // scoped to one execGitNetwork call, so a retained entry can never
+      // outlive its clone.
       if (phase === 'clone-prepare') cloneJobs.delete(opts.jobId);
       return respond(false, {
         error: (e && e.message) || String(e),

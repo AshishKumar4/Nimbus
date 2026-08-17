@@ -195,19 +195,49 @@ export interface ParsedCloneArgs {
   depth: number | undefined;
   noShallow: boolean;
   isBg: boolean;
+  branch: string | undefined;
 }
 
+export const CLONE_USAGE =
+  'usage: git clone [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+
+/**
+ * Every flag is either handled or refused loudly. Silently skipping unknown
+ * flags corrupted positionals for value-taking ones (`--branch dev URL`
+ * parsed `dev` as the URL) and silently no-opped `--filter=blob:none` — a
+ * "blobless" clone that was not blobless.
+ */
 export function parseCloneArgs(args: string[]): ParsedCloneArgs {
-  const depthFlag = getFlag(args, '--depth');
-  const noShallow = args.includes('--no-shallow');
+  let depthFlag: string | undefined;
+  let branch: string | undefined;
+  let noShallow = false;
+  let isBg = false;
   const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--depth') {
-      i++;
-    } else if (arg === '&' || arg.startsWith('-')) {
-      continue;
+    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    const name = eq > 0 ? arg.slice(0, eq) : arg;
+    const takeValue = (): string => {
+      if (eq > 0) return arg.slice(eq + 1);
+      const value = args[++i];
+      if (value === undefined) {
+        throw new Error(`option '${name}' requires a value\n${CLONE_USAGE}`);
+      }
+      return value;
+    };
+    if (name === '--depth') depthFlag = takeValue();
+    else if (name === '--branch' || name === '-b') branch = takeValue();
+    else if (arg === '--no-shallow') noShallow = true;
+    else if (arg === '--bg' || arg === '&') isBg = true;
+    else if (name === '--filter') {
+      throw new Error(
+        "clone does not support '--filter': the bundled isomorphic-git has no " +
+        'partial-clone support, so a filter would silently download every object. ' +
+        'Use --depth <n> to bound history instead.',
+      );
+    } else if (arg.startsWith('-')) {
+      throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
     } else {
       positionals.push(arg);
     }
@@ -218,7 +248,8 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     dest: positionals[1],
     depth: depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1),
     noShallow,
-    isBg: args.includes('&') || args.includes('--bg'),
+    isBg,
+    branch,
   };
 }
 
@@ -288,8 +319,8 @@ export function registerGitCommands(
         }
 
         case 'clone': {
-          const { url, dest: destArg, depth, isBg } = parseCloneArgs(subArgs);
-          if (!url) { ctx.stderr.write('usage: git clone <url> [dir]\n'); return 1; }
+          const { url, dest: destArg, depth, isBg, branch } = parseCloneArgs(subArgs);
+          if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
           // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
           // resolved to `<cwd>//tmp/x` because the `subArgs[1]` branch
           // unconditionally prepended getDir(ctx). The clone "succeeded" into
@@ -329,6 +360,7 @@ export function registerGitCommands(
                 pid: ctx.pid,
                 dir: dest as string,
                 url,
+                ref: branch,
                 depth,
                 exclusiveDestination: true,
                 exclusiveMutationRoot: mutationLease.root,
