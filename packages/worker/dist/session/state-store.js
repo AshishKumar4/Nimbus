@@ -48,8 +48,9 @@
  *  npm-install side-effects 100 vars), we want to surface that as a
  *  clear error rather than a silent storage-row-too-long failure.
  *
- *  Per docs/research/cf-internal-dossier.md §9 the per-row cap is
- *  2 MB; we set a much tighter 256 KiB ceiling so a misbehaving
+ *  DO SQLite caps a string, BLOB or table row at 2 MB
+ *  (https://developers.cloudflare.com/durable-objects/platform/limits/);
+ *  we set a much tighter 256 KiB ceiling so a misbehaving
  *  session can't approach the platform limit. */
 export const SESSION_ENV_MAX_BYTES = 256 * 1024;
 /** Module-level cap on the per-session terminal scrollback in DO

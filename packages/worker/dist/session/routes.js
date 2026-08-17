@@ -1240,7 +1240,12 @@ export async function handleFetch(self, request) {
         const { readExecTelemetry } = await import('../facets/exec-telemetry.js');
         return Response.json({ records: readExecTelemetry() });
     }
+    // Write surfaces gated like /api/_test/*: zeroing telemetry from prod
+    // would erase the evidence an investigation is standing on, so without
+    // NIMBUS_DEBUG these 404 rather than being a free reset vector.
     if (url.pathname === '/api/_diag/exec/reset' && request.method === 'POST') {
+        if (!self.nimbusDebug)
+            return new Response('not found', { status: 404 });
         const { resetExecTelemetry } = await import('../facets/exec-telemetry.js');
         resetExecTelemetry();
         return new Response(null, { status: 204 });
@@ -1251,6 +1256,8 @@ export async function handleFetch(self, request) {
         return Response.json(snap);
     }
     if (url.pathname === '/api/_diag/cache/reset' && request.method === 'POST') {
+        if (!self.nimbusDebug)
+            return new Response('not found', { status: 404 });
         const { reset } = await import('@nimbus-sh/core/_shared/cache-stats.js');
         reset();
         return new Response(null, { status: 204 });

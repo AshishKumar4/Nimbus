@@ -35,7 +35,7 @@ export interface GitNetworkOpts {
     url?: string;
     /** For fetch/pull: remote name (default "origin") */
     remote?: string;
-    /** For pull: branch name (default current) */
+    /** For clone: branch to clone (default remote HEAD); for pull: branch name (default current) */
     ref?: string;
     /** Shallow depth; default 1 for clone */
     depth?: number;
