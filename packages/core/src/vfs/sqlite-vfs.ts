@@ -679,6 +679,9 @@ export class SqliteVFS {
   private readonly activeStagingContentIds = new Set<string>();
   /** True only while durable GC work or a known abandoned staging row exists. */
   private maintenancePending = false;
+  // Keyset cursor for the orphan scan: each maintenance call reads one bounded
+  // page of distinct content ids past this bound, wrapping to '' at the end.
+  private orphanScanCursor = '';
 
   // Stage 2 transaction/phase telemetry. Scalar writes stay cheap; the
   // percentile is computed from the fixed ring only when diagnostics read it.
@@ -4118,21 +4121,34 @@ export class SqliteVFS {
     let stagingScanComplete = true;
 
     if (transactions < maximum) {
-      const orphanRows = [...this.sql.exec(
-        `SELECT chunks.content_id
-         FROM file_chunks AS chunks
-         WHERE NOT EXISTS (
-             SELECT 1 FROM content_lifecycle AS lifecycle
-             WHERE lifecycle.content_id = chunks.content_id
-           )
-           AND ${sqlNoInodeContentReference('chunks.content_id')}
-         GROUP BY chunks.content_id
-         ORDER BY chunks.content_id
-         LIMIT ?`,
+      // The page is selected before the orphan predicates so a scan that finds
+      // nothing still reads only one page, not the whole covering index.
+      const pageRows = [...this.sql.exec(
+        `SELECT page.content_id AS content_id,
+                (NOT EXISTS (
+                   SELECT 1 FROM content_lifecycle AS lifecycle
+                   WHERE lifecycle.content_id = page.content_id
+                 )
+                 AND ${sqlNoInodeContentReference('page.content_id')}) AS orphaned
+         FROM (
+           SELECT chunks.content_id
+           FROM file_chunks AS chunks
+           WHERE chunks.content_id > ?
+           GROUP BY chunks.content_id
+           ORDER BY chunks.content_id
+           LIMIT ?
+         ) AS page
+         ORDER BY page.content_id`,
+        this.orphanScanCursor,
         CONTENT_IDS_PER_SQL_EXEC,
       )];
-      orphanScanComplete = orphanRows.length < CONTENT_IDS_PER_SQL_EXEC;
-      const contentIds = orphanRows.map((row) => String(row.content_id));
+      orphanScanComplete = pageRows.length < CONTENT_IDS_PER_SQL_EXEC;
+      this.orphanScanCursor = orphanScanComplete
+        ? ''
+        : String(pageRows[pageRows.length - 1].content_id);
+      const contentIds = pageRows
+        .filter((row) => Number(row.orphaned) === 1)
+        .map((row) => String(row.content_id));
       if (contentIds.length > 0) {
         const candidates = contentIds
           .map((_, index) => index === 0 ? 'SELECT ? AS content_id' : 'SELECT ?')

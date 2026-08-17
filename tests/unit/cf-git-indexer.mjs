@@ -43,7 +43,7 @@ function pristineSourceFromPatch(source) {
   return readFileSync(join(directory, 'index.js'), 'utf8');
 }
 
-async function loadInternals(source, label) {
+function stageInternals(source, label) {
   const instrumentedPath = join(
     cfGitDir,
     `.nimbus-indexer-${label}-${process.pid}-${randomUUID()}.mjs`,
@@ -53,15 +53,17 @@ async function loadInternals(source, label) {
     instrumentedPath,
     `${source}\nexport { GitPackIndex, pako };\n`,
   );
-  return import(`${pathToFileURL(instrumentedPath).href}?v=${randomUUID()}`);
+  return instrumentedPath;
 }
 
+// bun resolves a symlinked package directory (the isolated-linker layout)
+// from a listing cached at its first import, so every instrumented copy must
+// exist on disk before either one is imported.
 const optimizedSource = readFileSync(sourcePath, 'utf8');
-const optimized = await loadInternals(optimizedSource, 'optimized');
-const pristine = await loadInternals(
-  pristineSourceFromPatch(optimizedSource),
-  'pristine',
-);
+const optimizedPath = stageInternals(optimizedSource, 'optimized');
+const pristinePath = stageInternals(pristineSourceFromPatch(optimizedSource), 'pristine');
+const optimized = await import(`${pathToFileURL(optimizedPath).href}?v=${randomUUID()}`);
+const pristine = await import(`${pathToFileURL(pristinePath).href}?v=${randomUUID()}`);
 
 function encodePackObjectHeader(type, size) {
   const bytes = [(type << 4) | (size & 0x0f)];

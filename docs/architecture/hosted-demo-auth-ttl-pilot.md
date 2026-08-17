@@ -1,6 +1,6 @@
 # Hosted Demo Auth And Idle TTL Pilot
 
-Last refreshed: 2026-06-06
+Last refreshed: 2026-07-24
 
 Status: pilot implementation plan. This document describes the code changes
 needed before implementation. It is intentionally scoped to the hosted demo
