@@ -70,6 +70,12 @@ export declare class Shell {
     private tabCount;
     pasteQueue: string[];
     /**
+     * Accepted lines that do not form a complete command yet: an unclosed
+     * quote or a trailing `\` keeps the shell reading under PS2, as bash
+     * does, instead of executing a truncated command.
+     */
+    private pendingLine;
+    /**
      * Keystrokes that arrived while a foreground command owned the terminal and
      * nothing was reading stdin. A tty buffers type-ahead and hands it to the
      * shell when the job exits; dropping it loses whatever the user typed, and
@@ -121,6 +127,13 @@ export declare class Shell {
     private moveCursorEnd;
     private historyUp;
     private historyDown;
+    /**
+     * A line the user finished with Enter. If it leaves a quote open or ends
+     * in a line continuation it is not a command yet: bash buffers it, shows
+     * PS2 and keeps reading, and so does this shell. A `\<newline>` join drops
+     * both characters; a quoted join keeps the newline in the string.
+     */
+    private acceptLine;
     executeLine(line: string): Promise<void>;
     private builtinCd;
     private builtinPwd;
