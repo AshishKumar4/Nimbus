@@ -47,7 +47,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { startRealVite } from './start-real-vite.js';
-import { getLoadedCodesStats } from './bindings.js';
+import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';

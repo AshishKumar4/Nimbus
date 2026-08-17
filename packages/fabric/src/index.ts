@@ -7,6 +7,7 @@
  * modules they need instead.
  */
 
+export * from './bindings.js';
 export * from './ctx-exports.js';
 export * from './fanout-pool.js';
 export * from './inner-do-registry.js';

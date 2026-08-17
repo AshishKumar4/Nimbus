@@ -8,8 +8,15 @@ import { pathToFileURL } from 'node:url';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-loaded-entrypoint-writer-'));
 try {
+  // Two entries with splitting, so the bundled bindings and the ctx-exports
+  // module the test registers the supervisor name through share ONE module
+  // instance via the common chunk.
   const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/bindings.ts'],
+    entrypoints: [
+      './packages/fabric/src/bindings.ts',
+      './packages/fabric/src/ctx-exports.ts',
+    ],
+    splitting: true,
     outdir: outputDir,
     target: 'bun',
     format: 'esm',
@@ -30,7 +37,11 @@ try {
   assert.equal(build.success, true, build.logs.map(String).join('\n'));
   const entry = build.outputs.find((output) => output.path.endsWith('/bindings.js'));
   assert.ok(entry);
+  const ctxExportsEntry = build.outputs.find((output) => output.path.endsWith('/ctx-exports.js'));
+  assert.ok(ctxExportsEntry);
   const { NimbusLoadedEntrypoint } = await import(pathToFileURL(entry.path).href);
+  const { setSupervisorEntrypointName } = await import(pathToFileURL(ctxExportsEntry.path).href);
+  setSupervisorEntrypointName('SupervisorRPC');
 
   const writerId = '11111111-1111-4111-8111-111111111111';
   let boundProps;

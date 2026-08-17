@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // heap-correctness/wrangler-dev-rebuild-loop — H7 probe.
 //
-// Bug: src/session/bindings.ts:194 — _NIMBUS_LOADED_CODES: Map<string, any>
+// Bug: packages/fabric/src/bindings.ts — _NIMBUS_LOADED_CODES: Map<string, any>
 // is module-scoped and grows on every NimbusLoaderRPC.load(...) call.
 // Comment says "GC isn't needed" because "inner stubs that reference
 // them die with the DO". TRUE for stubs, but the CODE entry stays in

@@ -1670,10 +1670,9 @@ export class NimbusSession extends CloudflareDurableObject {
   }
 }
 
-// ── W10 Inner-Worker + assets bindings extracted to
-// ── ./nimbus-session-bindings.ts (S2). See plan §B.3.9.
-// ── Re-exported here so src/index.ts's wrangler entry-graph
-// ── reachability is preserved.
+// ── W10 Inner-Worker + assets binding shims live in the fabric.
+// ── Re-exported here under their public names so src/index.ts's wrangler
+// ── entry-graph reachability is preserved.
 export {
   NimbusAssetsRPC,
   NimbusLoaderRPC,
@@ -1681,4 +1680,4 @@ export {
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
   NimbusDOStub,
-} from './bindings.js';
+} from '@nimbus-sh/fabric/bindings.js';
