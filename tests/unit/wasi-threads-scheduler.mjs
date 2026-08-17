@@ -4,16 +4,18 @@
 // Drives the REAL preamble (wasi-instance.ts + wasi-threads.ts, concatenated
 // exactly as the loader pool ships them), not a reimplementation.
 //
-// The threads here are async JS functions rather than wasm instances, because
-// the runner this suite executes under has no JSPI — WebAssembly.promising and
-// WebAssembly.Suspending do not exist in bun, so a wasm guest could not be
-// suspended at all and the futex could not block. That is a mock at a real
+// The threads here are async JS functions rather than wasm instances. JSPI
+// (WebAssembly.promising / Suspending, present in bun since 1.3) suspends
+// only wasm frames, so a JS thread body can never call through the Suspending
+// wrapper hostImports() ships for wasm guests — it throws "Suspending()
+// wrapper called outside of a promising() context". That is a mock at a real
 // seam and only that seam: the scheduler takes `startThread` as a parameter
 // precisely because scheduling policy and wasm instantiation are separate
-// concerns, and an async function that awaits an import is behaviourally the
-// same caller as a promising wasm entry that suspends on one. Everything
-// below — the run queue, the level-triggered futex, the deadlock proof, the
-// token handoff — is the production code path.
+// concerns, and an async function that awaits sched.futexWait — the very
+// function the import table wraps — is behaviourally the same caller as a
+// promising wasm entry that suspends on the import. Everything below — the
+// run queue, the level-triggered futex, the deadlock proof, the token
+// handoff — is the production code path.
 //
 // Threads over REAL wasm are gated live instead, on workerd, where JSPI is:
 // tests/behavioral/wasm/pthread-parity.mjs.
@@ -77,7 +79,11 @@ function proc() {
     words,
     read: (addr) => Atomics.load(words(), addr >>> 2),
     write: (addr, v) => Atomics.store(words(), addr >>> 2, v),
-    futexWait: imports.nimbus_threads.futex_wait,
+    // The import-table futex_wait is Suspending-wrapped for wasm callers; a JS
+    // thread body drives the identical function on the scheduler directly,
+    // with the same i32 coercion the import closure applies.
+    futexWait: (addr, expected, maxWaitNs) => sched.futexWait(addr | 0, expected | 0, maxWaitNs),
+    imports,
     spawnFn: imports.wasi['thread-spawn'],
     /** Register a thread body and return the start_arg that selects it. */
     body(fn) {
@@ -346,6 +352,24 @@ function mutex(p, addr) {
     assert.equal(typeof p.sched.parkIo, 'function'));
   check('peers still run around a host round-trip', () =>
     assert.deepEqual(trace, ['main', 'peer']));
+}
+
+// ── 13. the import table ships the right calling conventions ─────────────────
+{
+  const p = proc();
+  check('thread-spawn is a plain synchronous import (never Suspending)', () =>
+    assert.equal(typeof p.imports.wasi['thread-spawn'], 'function'));
+  check('futex_wait ships Suspending-wrapped exactly when the runtime has JSPI', () => {
+    // A misaligned address returns -EINVAL before the scheduler is consulted,
+    // so the unwrapped fallback answers synchronously; the Suspending wrapper
+    // refuses any caller that is not a suspended wasm frame.
+    if (typeof WebAssembly.Suspending === 'function') {
+      assert.throws(() => p.imports.nimbus_threads.futex_wait(0x101, 0, -1n),
+        'a JSPI runtime must receive a futex_wait only a promising wasm entry can call');
+    } else {
+      assert.equal(p.imports.nimbus_threads.futex_wait(0x101, 0, -1n), -EINVAL);
+    }
+  });
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
