@@ -212,6 +212,17 @@ publisher, two transports. The workspace behaves as a tenant in a database
 you own: it touches only its own tables, and `destroy()` drops exactly those.
 [Full details in the package README](packages/core).
 
+### The Cloudflare machinery: @nimbus-sh/fabric
+
+[`@nimbus-sh/fabric`](packages/fabric) is the other half, for people building
+their own thing on Durable Objects rather than embedding Nimbus: the
+facet/process fabric behind resident processes, warm Worker Loader pools, the
+multi-reason alarm multiplexer, the generation counter that detects instance
+resets, the durable launch journal, and byte-accounted turn pacing. Its README
+carries the platform-invariant tables — the measured DO storage, CPU, facet,
+and RPC ceilings this machinery was built against — which may be worth reading
+even if you never install the package.
+
 ## Embed Nimbus in your Workers project
 
 Nimbus can be embedded as both an interactive dev environment and a
@@ -326,7 +337,8 @@ listeners.
 | [`@nimbus-sh/core`](packages/core) | The backend-agnostic OS: durable SQLite filesystem, shell + coreutils, WASI runtime layer, and `NimbusWorkspace`. Runs in Durable Objects, bun, and node. |
 | `@nimbus-sh/runtime-bash` / `-cpython` / `-ruby` / `-clang` | The wasm runtimes as optional npm packages — same manifests and sha256-verified blobs the hosted product serves from R2. Pass to `NimbusWorkspace.create({ runtimes })`. |
 | [`@nimbus-sh/sdk`](packages/sdk) | Public SDK surface: Worker embedder (`@nimbus-sh/sdk/worker`), programmatic sandboxes (`@nimbus-sh/sdk/sandbox`), Flue connector (`@nimbus-sh/sdk/flue`), token mint/verify, typed errors, and session URL helpers. |
-| [`@nimbus-sh/worker`](packages/worker) | The Cloudflare half, composed on core: `NimbusSession` DO, router, assets, facet fabric, and auth internals. |
+| [`@nimbus-sh/fabric`](packages/fabric) | The Durable Object / facet / Worker Loader machinery as a standalone library: process fabric, loader pools, alarm multiplexing, launch journal, and the measured platform-invariant tables. |
+| [`@nimbus-sh/worker`](packages/worker) | The Cloudflare half, composed on core and fabric: `NimbusSession` DO, router, assets, and auth internals. |
 | [`@nimbus-sh/react`](packages/react) | `<NimbusTerminal />` React component. |
 | [`@nimbus-sh/cli`](packages/cli) | `nimbus init`, `nimbus setup cloudflare`, `token mint`, and `runtime sync`. |
 | [`create-nimbus-app`](packages/create-nimbus-app) | `npx create-nimbus-app` scaffold wrapper. |
