@@ -68,6 +68,7 @@ export default defineConfig({
 						{ label: 'Configure the handler', slug: 'sdk/handler' },
 						{ label: 'The sandbox API', slug: 'sdk/sandbox-api' },
 						{ label: 'Tokens & auth', slug: 'sdk/tokens' },
+						{ label: 'Use as a library', slug: 'sdk/library' },
 					],
 				},
 				{
