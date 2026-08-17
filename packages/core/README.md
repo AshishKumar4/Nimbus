@@ -38,14 +38,38 @@ await ws.fs.writeFile('/home/user/hello.txt', 'hi\n');
 const out = await ws.exec('cat /home/user/hello.txt | wc -c');   // { stdout: '3\n', exitCode: 0 }
 ```
 
-Inside a Cloudflare Durable Object the same call is:
+Inside a Cloudflare Durable Object, complete:
 
 ```ts
-const ws = await NimbusWorkspace.create({
-  sql: this.ctx.storage.sql,
-  transactions: this.ctx,
-  generation,
-});
+import { DurableObject } from 'cloudflare:workers';
+import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+
+export class Workspace extends DurableObject {
+  private ws?: Promise<NimbusWorkspace>;
+
+  private workspace(): Promise<NimbusWorkspace> {
+    this.ws ??= (async () => {
+      // Bump a persisted counter once per instance. Never a constant and
+      // never Date.now(): pids derive from the generation, so a repeated
+      // one hands a dead process live write authority, and the platform
+      // re-instantiates this class far more often than it looks like it
+      // does (cold starts, hibernation wakes, resets). Use the bumped
+      // value only after the put resolves.
+      const generation = ((await this.ctx.storage.get<number>('generation')) ?? 0) + 1;
+      await this.ctx.storage.put('generation', generation);
+      return NimbusWorkspace.create({
+        sql: this.ctx.storage.sql,
+        transactions: this.ctx,
+        generation,
+      });
+    })();
+    return this.ws;
+  }
+
+  async exec(command: string) {
+    return (await this.workspace()).exec(command);
+  }
+}
 ```
 
 Files written through `.fs` are owned by the session user (uid 1000), not
@@ -83,7 +107,11 @@ package carries the same manifest and the same sha256-verified blobs the
 hosted product serves from R2 — one publisher, two transports.
 
 Without `facets` and `runtimes` you still get the full shell and coreutils;
-the wasm runtimes are a dependency you add, not a mode you enable.
+the wasm runtimes are a dependency you add, not a mode you enable. One caveat:
+`localFacetHost()` covers bun and node only — on workerd the CSP forbids
+request-time `WebAssembly.instantiate`, so wasm has to ride the Worker Loader
+module map, which is the machinery in `@nimbus-sh/worker` and
+`@nimbus-sh/fabric`; the shell, coreutils, and filesystem need none of it.
 
 ## Sharing a database with your own app
 
