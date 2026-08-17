@@ -87,7 +87,7 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 |---|:---:|
 | Real shell, 60+ Unix commands, persistent 10 GB filesystem | ✅ |
 | `node`, `bun` via Cloudflare workerd `nodejs_compat` (V8 + Node-API shim, not the upstream binaries) | ✅ |
-| `python` / `python3` — Pyodide-based CPython 3.13 (script + `-c` + `-m` + stdlib) | ✅ |
+| `python` / `python3` — CPython 3.13 on `wasm32-wasi` (script + `-c` + `-m` + stdlib) | ✅ |
 | `ruby` / `ruby3` — ruby.wasm-based Ruby 3.3 (script + `-e` + `-r` + stdlib) | ✅ |
 | `clang` — LLVM 8 → `wasm32-wasi-nimbus`, modern wasi-libc sysroot default, multi-TU + user headers + `fopen` | ✅ |
 | Interactive REPLs — `python`, `ruby`, `node`, `bun` (see [REPL](#repl) for state semantics) | ✅ |
@@ -96,7 +96,7 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | `git clone` over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation | ✅ |
 | In-session loopback networking — `curl http://127.0.0.1:<port>` reaches servers in other isolates; `node server.js` auto-promotes to a routeable resident process | ✅ |
 | Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike | ✅ |
-| Unix permissions groundwork — durable `st_mode`, real `chmod` (octal + symbolic), exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
+| Unix permissions — real uid/gid ownership with `EACCES` enforced on read/write (including inside `bash`), durable `st_mode`, persisted `chmod` (octal + symbolic) + `chown`, exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
 | Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate) | Alpha |
 | Vite SPA dev server — full HMR to the preview iframe | ✅ |
 | `wrangler dev` for single-file Workers; Workers + Static Assets | ✅ |
@@ -110,7 +110,7 @@ Covered by a behavioral probe suite in `tests/behavioral/`. Run it yourself agai
 | `node_modules/.bin/*` resolves and executes | ✅ |
 | Binary file round-trip via `fs.writeFileSync` / `readFileSync` | ✅ |
 | Session recovery — WebSocket drop → reconnect preserves cwd, env, files | ✅ |
-| WASI preview1 — 45 of 46 spec functions; outbound TCP via `path_open('/dev/tcp/<host>/<port>')` (JSPI); full `poll_oneoff` (fd / clock / socket subscriptions) | ✅ |
+| WASI preview1 — all 46 spec functions; outbound TCP via `path_open('/dev/tcp/<host>/<port>')` (JSPI); full `poll_oneoff` (fd / clock / socket subscriptions) | ✅ |
 | `wasi-threads` / pthreads — mutex, condvar, `pthread_join`, TLS, barriers, semaphores; cooperative, never parallel | ✅ ([how](docs/wasi-threads.md)) |
 
 ### Status: alpha
@@ -119,7 +119,7 @@ Nimbus is under active development. Current framework support is:
 
 - **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers, Workers with Static Assets, npm + git workflows, Python and Ruby scripts, clang C compilation (single-file and multi-file).
 - **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use the Vite path. Nuxt has Vite/Nitro caveats.
-- **Unfinished OS work:** broader Pyodide/Nimbus extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, opencode TUI first-frame rendering (the serve half boots, answers readiness, and streams SSE; the attach half's boot still trips a supervisor memory reset under investigation), index-pack CPU headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU budget on repos like microsoft/TypeScript), full POSIX PTY parity, live filesystem bridges for every long-running runtime, and permission *enforcement* beyond the exec bit (uid/gid ownership, `EACCES` on read/write, real `umask`/`chown` — designed, not yet implemented).
+- **Unfinished OS work:** broader binary-extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, an opencode `disallowed operation in global scope` boot failure (live, under investigation), index-pack CPU headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU budget on repos like microsoft/TypeScript), full POSIX PTY parity, live filesystem bridges for every long-running runtime, and a real `umask`.
 - **Active research, mechanism proven live:** real `fork()`/`exec()` for compiled binaries over the isolate fabric via Binaryen Asyncify — execution-state capture, parent/child divergence, and grandchild forks all validated inside a production facet (fork of a 16 MiB image in under 1 ms). The acid test passed: unmodified GNU bash 5.2 runs live (`nimbus install bash`) with fork/pipes/subshells/command substitution, plus a BusyBox coreutils set (ls, cat, cp, mv, rm, mkdir, grep, sed, awk, find, wc, sort, chmod, ...) compiled to wasm32-wasi and exec'd as real external commands on bash's PATH, under S2a permission enforcement.
 - **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, native Linux Python wheels, native Ruby extensions without Nimbus-compatible artifacts, and raw public TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
 
