@@ -89,8 +89,8 @@ export interface ProgrammaticHost {
     _w9PersistWired?: boolean;
     _w9FlushTimer?: ReturnType<typeof setTimeout> | null;
     _w9SchemaInit?: boolean;
-    _w9IsolateGen?: number;
-    _w9IsolateGenPersisted?: boolean;
+    _isolateGen?: number;
+    _isolateGenPersisted?: boolean;
     _w9WireProcessLogPersist?(): void;
     ensureSqliteFs(): void;
     ensureFacetManager(): void;

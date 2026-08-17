@@ -96,8 +96,8 @@ export function scheduleAlarm(host, ctx, reason, whenMs) {
             return false;
         }
     };
-    const chained = (host._w1AlarmChain ?? Promise.resolve()).then(run, run);
-    host._w1AlarmChain = chained;
+    const chained = (host._alarmChain ?? Promise.resolve()).then(run, run);
+    host._alarmChain = chained;
     return chained;
 }
 /**
@@ -123,8 +123,8 @@ export function scheduleAlarm(host, ctx, reason, whenMs) {
 export function dispatchAlarm(host, ctx, handlers, onLegacyAlarm) {
     // Same serialization as scheduleAlarm: the dispatcher's read→handlers→write
     // cycle must not interleave with an activity-hook scheduleAlarm.
-    const chained = (host._w1AlarmChain ?? Promise.resolve()).then(() => dispatchAlarmBody(ctx, handlers, onLegacyAlarm), () => dispatchAlarmBody(ctx, handlers, onLegacyAlarm));
-    host._w1AlarmChain = chained;
+    const chained = (host._alarmChain ?? Promise.resolve()).then(() => dispatchAlarmBody(ctx, handlers, onLegacyAlarm), () => dispatchAlarmBody(ctx, handlers, onLegacyAlarm));
+    host._alarmChain = chained;
     return chained;
 }
 async function dispatchAlarmBody(ctx, handlers, onLegacyAlarm) {
@@ -184,9 +184,9 @@ async function dispatchAlarmBody(ctx, handlers, onLegacyAlarm) {
 }
 /** Increment + persist the isolate-gen counter once per fresh isolate. */
 export async function maybeBumpIsolateGen(host, ctx) {
-    if (host._w9IsolateGenPersisted)
+    if (host._isolateGenPersisted)
         return;
-    host._w9IsolateGenPersisted = true;
+    host._isolateGenPersisted = true;
     try {
         const prev = (await ctx.storage.get(ISOLATE_GEN_KEY));
         // Adopt the persisted truth first, and adopt the bump only after the
@@ -202,10 +202,10 @@ export async function maybeBumpIsolateGen(host, ctx) {
         // keeps a pid from generation N from escaping before N is durable, which
         // is why marking this put `allowUnconfirmed` is not a free speedup — see
         // scratchpad/coldstart-s1.md.
-        host._w9IsolateGen = typeof prev === 'number' ? prev : 0;
-        const next = host._w9IsolateGen + 1;
+        host._isolateGen = typeof prev === 'number' ? prev : 0;
+        const next = host._isolateGen + 1;
         await ctx.storage.put(ISOLATE_GEN_KEY, next);
-        host._w9IsolateGen = next;
+        host._isolateGen = next;
     }
     catch (e) {
         console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);

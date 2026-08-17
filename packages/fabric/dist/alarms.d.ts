@@ -53,12 +53,12 @@ export declare const ISOLATE_GEN_KEY = "w9_isolate_gen";
  * read-modify-write for that instance (see {@link scheduleAlarm}).
  */
 export interface AlarmHost {
-    _w1AlarmChain?: Promise<unknown>;
+    _alarmChain?: Promise<unknown>;
 }
 /** The host instance carrying the isolate-generation state. */
 export interface IsolateGenHost {
-    _w9IsolateGen: number;
-    _w9IsolateGenPersisted: boolean;
+    _isolateGen: number;
+    _isolateGenPersisted: boolean;
 }
 /**
  * Schedule (or re-schedule) an alarm reason. Coordinated via a single map in

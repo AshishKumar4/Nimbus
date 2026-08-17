@@ -47,7 +47,7 @@ export function setPhase(self, toState, trigger) {
             fromState,
             toState,
             trigger,
-            isolateGen: self._w9IsolateGen ?? 0,
+            isolateGen: self._isolateGen ?? 0,
             dataLoss: false,
             snapshotKeysRehydrated: 0,
         });

@@ -111,6 +111,69 @@ function withResolvers() {
     return { promise, resolve };
 }
 /**
+ * The granting side of {@link LaunchTurnScheduler}: parks suspended launches
+ * and resumes every one of them when the host grants a fresh turn.
+ */
+export class LaunchTurnPump {
+    host;
+    /**
+     * Launches suspended between chunks, waiting for a turn of their own.
+     *
+     * In-memory on purpose: a launch is only meaningful while the process table
+     * entry it is building for exists, and both are lost together if the isolate
+     * resets. What survives a reset is the journal, which names the launch's
+     * INPUTS rather than its position — a resumed queue would be resurrecting
+     * half-built work for pids that no longer exist, where re-driving a launch
+     * from its inputs is the same idempotent work again.
+     */
+    waiters = [];
+    constructor(host) {
+        this.host = host;
+    }
+    /**
+     * How a paced launch asks for a fresh turn.
+     *
+     * The host grants one by calling {@link pump} from a context that is
+     * genuinely a new invocation — the session's alarm. Without such a host
+     * there is no fresh turn to be had, and the launch continues on this one
+     * rather than hanging: that is exactly the single-turn launch this path has
+     * always performed, so a harness or a runtime without alarms loses the
+     * responsiveness but keeps the behaviour.
+     */
+    nextTurn(chunkEnded) {
+        return new Promise((resume) => {
+            this.waiters.push({ resume, chunkEnded });
+            if (this.host.requestTurn) {
+                this.host.requestTurn();
+                return;
+            }
+            setTimeout(() => { void this.pump(); }, 0);
+        });
+    }
+    /**
+     * Run one chunk of every launch waiting for a turn.
+     *
+     * Awaits the chunk each resumed launch then performs, so the invocation that
+     * granted the turn is the invocation that pays for the work — rather than
+     * releasing it into a handler's microtask drain, where nothing owns it and
+     * the runtime may tear the context down mid-chunk.
+     */
+    async pump() {
+        await this.host.recover?.();
+        const waiting = this.waiters;
+        if (waiting.length === 0)
+            return;
+        this.waiters = [];
+        for (const waiter of waiting)
+            waiter.resume();
+        await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
+    }
+    /** Whether any launch is suspended waiting for a turn. */
+    get hasPending() {
+        return this.waiters.length > 0;
+    }
+}
+/**
  * Chunk bound for this session, honouring the verification knob.
  *
  * `NIMBUS_LAUNCH_CHUNK_BYTES` forces a small bound so an ordinary launch —

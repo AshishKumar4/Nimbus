@@ -126,11 +126,11 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * Lets `/api/_diag/memory` confirm whether a wake actually happened
      * between two probe calls.
      */
-    _w9IsolateGen: number;
+    _isolateGen: number;
     /** True once we've persisted the bumped gen counter to storage. */
-    _w9IsolateGenPersisted: boolean;
+    _isolateGenPersisted: boolean;
     /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
-    _w1AlarmChain?: Promise<unknown>;
+    _alarmChain?: Promise<unknown>;
     /** SQL DDL — idempotent; run on first fetch. */
     _w9SchemaInit: boolean;
     /** Have we wired the persist adapter into ProcessLogStore yet? */

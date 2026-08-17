@@ -40,7 +40,7 @@ import { type SessionState } from '@nimbus-sh/core/observability/oom-discriminat
  */
 export declare function setPhase(self: {
     _b4Phase: SessionState | null;
-    _w9IsolateGen?: number;
+    _isolateGen?: number;
 }, toState: SessionState, trigger: string): void;
 /**
  * [B'.5] Identify the original phase-based warm-rejoin case. The /ws
@@ -93,7 +93,7 @@ export declare function joinExistingSession(self: {
         write(s: string): void;
     };
     _b4Phase: SessionState | null;
-    _w9IsolateGen?: number;
+    _isolateGen?: number;
     _b4WarmJoinCount: number;
 }, ws: WebSocket, appendScrollback: (ctx: any, data: string, atMs: number) => void, loadScrollback: (ctx: any) => string): void;
 export {};

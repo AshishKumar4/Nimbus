@@ -320,7 +320,7 @@ export async function wsClose(self, ws, _code, _reason, _wasClean) {
             fromState: 'active',
             toState: 'drained',
             trigger: 'ws-close',
-            isolateGen: self._w9IsolateGen,
+            isolateGen: self._isolateGen,
             dataLoss: false,
             snapshotKeysRehydrated: 0,
         });
@@ -400,7 +400,7 @@ export async function wsError(self, ws, _error) {
             fromState: 'active',
             toState: 'drained',
             trigger: 'ws-error',
-            isolateGen: self._w9IsolateGen,
+            isolateGen: self._isolateGen,
             dataLoss: false,
             snapshotKeysRehydrated: 0,
         });

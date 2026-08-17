@@ -38,21 +38,6 @@ export declare const VITE_CONFIG_KEY = "vite-config";
  * metadata is the deliberate cost of keeping destroyed sessions inert.
  */
 export declare const SESSION_DESTROYED_KEY = "session_destroyed";
-/**
- * Prefix for the resident-process journal: one row per resident this session
- * owes the user, keyed by the pid it was built for.
- *
- * A resident holds its state in memory — the process table entry, the facet
- * handle, the terminal — so an instance reset destroys it silently. The row
- * is what a LATER instance reads to know a resident ended that way rather
- * than on purpose: a pid at or below the reader's own pid base was allocated
- * by a previous generation (see PID_GEN_STRIDE). Written (and synced) before
- * the launch's first byte of work, rewritten as `running` when the launch
- * settles, and released only when the PROCESS ends — because the resets this
- * row survives strike after the launch as often as during it (measured live,
- * staging 2026-08-13: every observed reset landed seconds AFTER settle).
- */
-export declare const RESIDENT_LAUNCH_KEY_PREFIX = "resident-launch:";
 /** Prefix for consumed single-use attach bootstrap token ids (`jti`).
  *  Written set-if-absent by `_rpcConsumeAttachBootstrap` on the attach
  *  exchange; an existing row means the bootstrap URL was replayed.

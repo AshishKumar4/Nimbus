@@ -116,7 +116,7 @@ export interface DiagRecoveryEvent {
     toState: SessionState;
     /** Human-readable trigger ('ws-close', 'isolate-evicted', etc.). */
     trigger: string;
-    /** _w9IsolateGen at the time of the event. Lets a probe detect the
+    /** _isolateGen at the time of the event. Lets a probe detect the
      *  difference between an in-isolate transition and a cross-isolate one
      *  (the latter implies workerd recycled the DO). */
     isolateGen: number;

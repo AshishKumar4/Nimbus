@@ -637,29 +637,25 @@ export declare class FacetManager {
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
-    /** pid → the boot images its facet loads from; the image sweep's root set. */
-    private residentImages;
     /**
-     * Launches suspended between chunks, waiting for a turn of their own.
-     *
-     * In-memory on purpose: a launch is only meaningful while the process table
-     * entry it is building for exists, and both are lost together if the isolate
-     * resets. What survives a reset is the journal, which names the launch's
-     * INPUTS rather than its position — a resumed queue would be resurrecting
-     * half-built work for pids that no longer exist, where re-driving a launch
-     * from its inputs is the same idempotent work again.
+     * The content-addressed boot-image store (fabric's facet-image-store.ts),
+     * writing through this session's kernel-credentialed VFS and rooted off the
+     * live process table.
      */
-    private launchWaiters;
-    /** Whether this instance has already read the journal a reset leaves behind. */
-    private launchesRecovered;
+    private readonly imageStore;
     /**
-     * Pids THIS instance holds journal rows for. What keeps the terminal hook —
-     * which fires for every process, shells and one-shots included — from
-     * paying a storage delete for pids that never had a row. In-memory is
-     * correct: rows from a previous instance are recovery's to consume, never
-     * this hook's.
+     * The resident-launch journal (fabric's launch-journal.ts): the durable
+     * record of every resident this session owes the user, and its recovery
+     * after an instance reset. This manager supplies what a launch IS — the
+     * inputs `_spawnResident` re-drives from — and how its loss is reported.
      */
-    private journalledPids;
+    private readonly launchJournal;
+    /**
+     * The granting side of the launch pacer (fabric's launch-pacer.ts). The
+     * session's alarm re-enters the object through `pumpResidentLaunches`;
+     * journal recovery rides the first pump.
+     */
+    private readonly launchPump;
     private timedOutProcessIds;
     private _pairedServeFacet;
     /**
@@ -722,23 +718,13 @@ export declare class FacetManager {
         ctx: DurableObjectState;
     };
     /**
-     * The image store's directory, created before the first filesystem view is
-     * built rather than on the first image write.
-     *
-     * Lazily created, it made the store perturb the very view every manifest is
-     * built from: the root listing gained an entry the moment an image landed,
-     * so the next spawn of an identical program generated different text and
-     * addressed a different image. Existing before the first walk makes it
-     * stable.
-     *
-     * Sited on the exec path and not in setVfs, because setVfs runs while the
-     * Durable Object is coming up — including on every wake — and a synchronous
-     * filesystem write there costs the session its startup. Measured: a
-     * throwaway built that way stopped accepting terminal connections at all,
-     * while the same build without it served them.
+     * The image store's disk: this session's VFS, as the kernel — the store is
+     * written by the kernel and read by processes through supervisor bindings
+     * that enforce their own credential. Mode 0644 at creation, as POSIX has
+     * it, is what makes the read succeed for any process by construction; the
+     * store itself decides nothing about modes.
      */
-    private _ensureImageStoreDir;
-    private imageStoreDirReady;
+    private _imageBlobs;
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -941,7 +927,7 @@ export declare class FacetManager {
      * The reader the fabric completes a boot spec's by-path members with.
      *
      * Reads as CRED_KERNEL because that is who WROTE them: the generated images
-     * are kernel-owned (`_materializeFacetImages`) and the runtime wasm images
+     * are kernel-owned (`_imageBlobs`) and the runtime wasm images
      * are installed by the kernel. Uncached because these are the session's
      * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
      * the VFS content LRU for the life of the session is what once crashed the
@@ -949,41 +935,14 @@ export declare class FacetManager {
      */
     private _residentDisk;
     /**
-     * Materialize generated module sources in the content-addressed image store
-     * and return the `vfsTextModules` map naming them.
-     *
-     * A resident process's module map is sized by the user's disk, so it does
-     * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
-     * Writing it here, once, is what lets the session stop holding it: after
-     * this returns, the only thing it keeps is a path.
-     *
-     * The store is written by the kernel and read by the process, so nothing
-     * here depends on which credential spawned what. Digest collisions are the
-     * hash's problem; everything else is idempotent — an image already present
-     * at its own digest is already the bytes we were about to write.
-     */
-    private _materializeFacetImages;
-    /**
      * Fail a paced launch whose process went away while it was suspended.
      *
-     * Between turns anything may happen to the process — a kill, a reap, a
-     * `_sweepFacetImages` that has already unrooted its images. Continuing would
+     * Between turns anything may happen to the process — a kill, a reap, an
+     * image sweep that has already unrooted its images. Continuing would
      * spend further turns building a facet for a pid nothing will ever attach
      * to, and would write image files the next sweep immediately collects.
      */
     private _assertLaunchStillOwned;
-    /**
-     * Drop every image no running process boots from.
-     *
-     * Content addressing means a changed program writes a NEW image rather than
-     * replacing one, so a watch loop — or simply a session that runs a few
-     * different programs — would otherwise leave one bundle-sized file behind
-     * per distinct version. The root set is the process table, which is exact:
-     * an image is live for precisely as long as the process that boots from it.
-     * Nothing is left for a TTL or an eviction heuristic to guess at, and after
-     * a DO reset the table is empty so every orphan goes.
-     */
-    private _sweepFacetImages;
     /**
      * The one way this manager boots a resident process. Every resident process
      * is a facet of this session; there is nothing to place and nothing here
@@ -992,60 +951,11 @@ export declare class FacetManager {
     private _startResidentProcess;
     private _activateProcessVfsWriter;
     /**
-     * How a paced launch asks for a fresh turn.
-     *
-     * The host grants one by calling `pumpResidentLaunches` from a context that
-     * is genuinely a new invocation — the session's alarm. Without such a host
-     * there is no fresh turn to be had, and the launch continues on this one
-     * rather than hanging: that is exactly the single-turn launch this path has
-     * always performed, so a harness or a runtime without alarms loses the
-     * responsiveness but keeps the behaviour.
-     */
-    private readonly launchScheduler;
-    /**
-     * Run one chunk of every launch waiting for a turn.
-     *
-     * Awaits the chunk each resumed launch then performs, so the invocation that
-     * granted the turn is the invocation that pays for the work — rather than
-     * releasing it into a handler's microtask drain, where nothing owns it and
-     * the runtime may tear the context down mid-chunk.
+     * Grant every suspended launch a chunk of this turn — the session's alarm
+     * calls this, and journal recovery rides the first pump. See fabric's
+     * `LaunchTurnPump.pump` for the ownership argument.
      */
     pumpResidentLaunches(): Promise<void>;
-    /**
-     * Re-drive the launches a previous instance was building when it was reset.
-     *
-     * The platform resets a session Durable Object over what one turn has
-     * outstanding in storage ("Internal error in Durable Object storage caused
-     * object to be reset"), and a launch is the largest writer this session has.
-     * Everything the launch held was in memory, so the process it was building
-     * and the terminal watching it both went with the instance, and until now
-     * the user was told nothing at all.
-     *
-     * Sited on the pump because the pump is what an alarm calls, and a launch
-     * that was suspended has an alarm armed for it — a reset during a chunk
-     * fails that alarm, and the platform re-delivers it to the instance that
-     * replaces this one. So the first turn after a reset is already this one.
-     *
-     * Runs once per instance: the journal only changes when a launch of THIS
-     * instance starts or settles, and those are rows this instance wrote.
-     */
-    private _recoverInterruptedLaunches;
-    /**
-     * Record a launch as in flight, so an instance that replaces this one knows
-     * it never finished. Best-effort: a launch that cannot be journalled still
-     * runs, and a reset then costs exactly what it cost before the journal.
-     *
-     * Synced, not merely put: `await put()` resolves before durability, and the
-     * reset this journal exists for destroys every write its turn still had
-     * outstanding — measured live, a launch killed in its first chunks left NO
-     * row for the replacement instance to find, which is how the recovery this
-     * feeds sat inert while its own test stayed green. `sync()` is the storage
-     * layer's durability barrier: the row is on disk before the launch performs
-     * its first byte of real work. What remains is a reset between the put and
-     * the sync's completion — and a launch that dies there has not started, so
-     * losing its row costs a retype, not a recovery.
-     */
-    private _journalLaunch;
     /** Whether any launch is suspended waiting for a turn. */
     get hasPendingLaunchTurns(): boolean;
     /** Allocate a free loopback port for a resident server facet (from 4096 up). */
@@ -1108,12 +1018,6 @@ export declare class FacetManager {
      * the launch faster would have given it.
      */
     private _runResidentLaunch;
-    /**
-     * The journal row's one release: the process is over, nothing is owed.
-     * Synced so an instance reset moments later cannot roll the delete back and
-     * resurrect a process the user watched end.
-     */
-    private _releaseResidentJournal;
     private _residentLaunchBody;
     /**
      * Spawn a long-running dynamic Worker, boot it, and return its boot payload.

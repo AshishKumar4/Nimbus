@@ -547,7 +547,7 @@ export async function rpcDestroy(self, options = {}) {
         // current-generation (pid > pidBase) — landing its output on the
         // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
         try {
-            await self.ctx.storage.put(ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0);
+            await self.ctx.storage.put(ISOLATE_GEN_KEY, self._isolateGen ?? 0);
         }
         catch { /* best-effort */ }
         resetInMemorySessionState(self);
@@ -586,7 +586,7 @@ async function quiesceInMemorySessionState(self) {
  * so `maybeBumpIsolateGen` reads it back and bumps once — landing here.
  */
 function successorGeneration(self) {
-    return (self._w9IsolateGen ?? 0) + 1;
+    return (self._isolateGen ?? 0) + 1;
 }
 /**
  * Install the empty process/port state a destroyed session leaves behind.
@@ -684,8 +684,8 @@ function resetInMemorySessionState(self) {
     const generation = successorGeneration(self);
     installEmptyProcessState(self, generation);
     self._w9SchemaInit = false;
-    self._w9IsolateGen = generation;
-    self._w9IsolateGenPersisted = false;
+    self._isolateGen = generation;
+    self._isolateGenPersisted = false;
     try {
         self._w9WireProcessLogPersist?.();
     }
