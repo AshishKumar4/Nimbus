@@ -18,7 +18,7 @@ import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { registerInnerDoClass, clearInnerDoClasses } from '../facets/inner-do-registry.js';
+import { registerInnerDoClass, clearInnerDoClasses } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
-import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 
 const calls = [];
 let supervisorDisposeCount = 0;

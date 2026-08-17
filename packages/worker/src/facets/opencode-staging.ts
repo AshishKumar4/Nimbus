@@ -47,7 +47,7 @@ import {
   SQLITE_WASM_MODULE_NAME,
   YOGA_WASM_MODULE_NAME,
 } from '../runtime/opencode-facet-runner.js';
-import type { WorkerCode } from '../loaders/vendor/types.js';
+import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 
 export interface OpencodeAssetsEnv {

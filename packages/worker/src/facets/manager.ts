@@ -35,7 +35,7 @@ import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
-import { LaunchPacer, launchChunkMaxBytes, type LaunchTurnScheduler } from './launch-pacer.js';
+import { LaunchPacer, launchChunkMaxBytes, type LaunchTurnScheduler } from '@nimbus-sh/fabric/launch-pacer.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/core/_shared/rpc-dispose.js';
@@ -63,7 +63,7 @@ import {
   type OpencodeRunnerMode,
 } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
-import type { WorkerCode } from '../loaders/vendor/types.js';
+import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import {
   DEFAULT_FACET_BUNDLE_PROFILE,
   type FacetBundleProfile,

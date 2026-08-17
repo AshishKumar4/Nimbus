@@ -11,7 +11,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';

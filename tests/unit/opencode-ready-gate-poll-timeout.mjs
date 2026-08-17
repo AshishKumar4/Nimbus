@@ -17,7 +17,7 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import { residentFacetName } from '../../packages/worker/src/loaders/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 

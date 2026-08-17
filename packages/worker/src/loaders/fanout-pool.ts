@@ -14,8 +14,8 @@
  * runtime operations do not appear successful after partial dispatch.
  */
 
-import { serializeFunction } from './vendor/serialize.js';
-import { BindingError } from './vendor/errors.js';
+import { serializeFunction } from '@nimbus-sh/fabric/vendor/serialize.js';
+import { BindingError } from '@nimbus-sh/fabric/vendor/errors.js';
 import { NimbusLoaderPool } from './loader-pool.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';

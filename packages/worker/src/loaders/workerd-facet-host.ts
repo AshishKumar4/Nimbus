@@ -19,7 +19,7 @@ import {
   type OpencodeAssetsEnv,
   type OpencodeStageSpec,
 } from '../facets/opencode-staging.js';
-import { getCtxExports } from '../session/ctx-exports.js';
+import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import {
   RESIDENT_PROCESS_CLASS,
   residentLoaderConfig,

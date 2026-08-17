@@ -25,7 +25,7 @@
  * in the PR that introduced this file.
  */
 
-import { getCtxExports } from '../session/ctx-exports.js';
+import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/core/constants.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';

@@ -66,7 +66,7 @@ import {
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
 } from '../auth/index.js';
-import { setCtxExports } from '../session/ctx-exports.js';
+import { setCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import {
   handleNimbusRemoteApi,
   type NimbusSdkRouterConfig,

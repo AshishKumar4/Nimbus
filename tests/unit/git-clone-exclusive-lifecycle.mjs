@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { registerGitCommands } from '../../packages/worker/src/git/commands.ts';
-import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 
 function registerCloneHarness() {
   let gitCommand;

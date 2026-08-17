@@ -67,7 +67,7 @@ import {
 } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { getCtxExports } from '../session/ctx-exports.js';
+import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import {
   buildFsSnapshot,
   generateFsShimModuleCode,

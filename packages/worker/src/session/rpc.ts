@@ -25,7 +25,7 @@
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { getInnerDoClass } from '../facets/inner-do-registry.js';
+import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';

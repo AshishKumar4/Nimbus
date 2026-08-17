@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 
 import { NimbusLoaderPool } from '../../packages/worker/src/loaders/loader-pool.ts';
-import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 
 const boundProps = [];
 setCtxExports({

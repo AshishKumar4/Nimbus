@@ -24,9 +24,9 @@
  */
 
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { getCtxExports } from '../session/ctx-exports.js';
+import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { serializeFunction, hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import {
@@ -34,8 +34,8 @@ import {
   ExecutionError,
   RetryExhaustedError,
   TimeoutError,
-} from './vendor/errors.js';
-import type { WorkerLoader } from './vendor/types.js';
+} from '@nimbus-sh/fabric/vendor/errors.js';
+import type { WorkerLoader } from '@nimbus-sh/fabric/vendor/types.js';
 
 /** Options handed to NimbusLoaderPool's constructor. */
 export interface NimbusLoaderPoolOptions {

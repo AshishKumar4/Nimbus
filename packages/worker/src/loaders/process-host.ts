@@ -80,7 +80,7 @@ import {
   runOneShotWorker,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
-import { BindingError } from './vendor/errors.js';
+import { BindingError } from '@nimbus-sh/fabric/vendor/errors.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';

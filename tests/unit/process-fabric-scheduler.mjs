@@ -38,7 +38,7 @@ import {
   DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   residentFacetName,
 } from '../../packages/worker/src/loaders/workerd-facet-host.ts';
-import { setCtxExports } from '../../packages/worker/src/session/ctx-exports.ts';
+import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import {
   PROCESS_HOST_MODES,
   createCtxExports,

@@ -49,7 +49,7 @@ import { NpmInstaller } from '../npm/installer.js';
 // longer references them directly. Phase 2 A'.5 renamed the function
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
-import { setCtxExports } from './ctx-exports.js';
+import { setCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
 import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
