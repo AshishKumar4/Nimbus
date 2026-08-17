@@ -45,11 +45,12 @@ import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exe
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
+  FacetImageStore,
+  type FacetImageBlobStore,
+} from '@nimbus-sh/fabric/facet-image-store.js';
+import {
   ProcessFabric,
   ResidentProcessHandle,
-  FACET_IMAGE_DIR,
-  facetImageDigest,
-  facetImagePath,
   type ProcessHost,
   type ProcessHostFactory,
   type ResidentBootSpec,
@@ -73,9 +74,9 @@ import {
   type FacetBundleProfile,
 } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
-  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, CHUNK_SIZE, FACET_TIMEOUT_MS,
+  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
-  BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, MAX_TX_BLOB_BYTES,
+  BUNDLE_MAX_ENCODED_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
 } from '@nimbus-sh/core/constants.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -3470,18 +3471,6 @@ export interface ResidentSpawnOptions {
 }
 
 /**
- * Bytes of an image written in one storage transaction.
- *
- * The bound is the VFS's own, not a knob: a `writeRange` whose chunks fit
- * inside one transaction is committed in place, and one that does not falls
- * back to copy-on-write — which rewrites every chunk of the file, per slice,
- * making a sliced write quadratic in its size. A whole number of chunks is
- * the other half of that: a slice that ends mid-chunk makes the next one read
- * the partial chunk back to complete it.
- */
-const FACET_IMAGE_WRITE_SLICE_BYTES = Math.floor(MAX_TX_BLOB_BYTES / CHUNK_SIZE) * CHUNK_SIZE;
-
-/**
  * This session's journal record: the fabric's base plus the launch's own
  * inputs — the entry code and the spawn options `_spawnResident` re-drives
  * from. The journal never reads them; they ride through it opaquely.
@@ -3520,8 +3509,15 @@ export class FacetManager {
   /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
   private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
-  /** pid → the boot images its facet loads from; the image sweep's root set. */
-  private residentImages = new Map<number, string[]>();
+  /**
+   * The content-addressed boot-image store (fabric's facet-image-store.ts),
+   * writing through this session's kernel-credentialed VFS and rooted off the
+   * live process table.
+   */
+  private readonly imageStore = new FacetImageStore(
+    () => this._imageBlobs(),
+    (pid) => this.processes.get(pid)?.state === 'running',
+  );
   /**
    * The resident-launch journal (fabric's launch-journal.ts): the durable
    * record of every resident this session owes the user, and its recovery
@@ -3665,28 +3661,29 @@ export class FacetManager {
   }
 
   /**
-   * The image store's directory, created before the first filesystem view is
-   * built rather than on the first image write.
-   *
-   * Lazily created, it made the store perturb the very view every manifest is
-   * built from: the root listing gained an entry the moment an image landed,
-   * so the next spawn of an identical program generated different text and
-   * addressed a different image. Existing before the first walk makes it
-   * stable.
-   *
-   * Sited on the exec path and not in setVfs, because setVfs runs while the
-   * Durable Object is coming up — including on every wake — and a synchronous
-   * filesystem write there costs the session its startup. Measured: a
-   * throwaway built that way stopped accepting terminal connections at all,
-   * while the same build without it served them.
+   * The image store's disk: this session's VFS, as the kernel — the store is
+   * written by the kernel and read by processes through supervisor bindings
+   * that enforce their own credential. Mode 0644 at creation, as POSIX has
+   * it, is what makes the read succeed for any process by construction; the
+   * store itself decides nothing about modes.
    */
-  private _ensureImageStoreDir(vfs: SqliteVFS): void {
-    if (this.imageStoreDirReady) return;
-    this.imageStoreDirReady = true;
-    try { vfs.as(CRED_KERNEL).mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 }); }
-    catch { /* a session whose disk is not writable has no images to store */ }
+  private _imageBlobs(): FacetImageBlobStore {
+    const vfs = this.vfs;
+    if (!vfs) {
+      throw new Error(
+        'Nimbus: a resident process needs a session filesystem to materialize its boot image',
+      );
+    }
+    const fs = vfs.as(CRED_KERNEL);
+    return {
+      mkdirp: (dir) => fs.mkdir(dir, { recursive: true, mode: 0o755 }),
+      sizeOf: (path) => (fs.exists(path) ? fs.lstat(path).size : null),
+      writeFile: (path, bytes) => fs.writeFile(path, bytes, { mode: 0o644 }),
+      writeRange: (path, offset, bytes) => fs.writeRange(path, offset, bytes),
+      list: (dir) => fs.readdir(dir).map((entry) => entry.name),
+      unlink: (path) => fs.unlink(path),
+    };
   }
-  private imageStoreDirReady = false;
   /**
    * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
    * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -4048,7 +4045,7 @@ export class FacetManager {
     }
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
-    if (this.vfs) this._ensureImageStoreDir(this.vfs);
+    if (this.vfs) this.imageStore.ensureDir();
     const processVfs = this.vfs?.as(entry.cred);
     const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
     const vfsState: FacetVfsState = processVfs
@@ -4404,7 +4401,7 @@ export class FacetManager {
     // directory manifest so readdir/stat are coherent. opencode creates its
     // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
     // other writes flush live through the SUPERVISOR RPC bridge.
-    if (this.vfs) this._ensureImageStoreDir(this.vfs);
+    if (this.vfs) this.imageStore.ensureDir();
     const processVfs = this.vfs?.as(entry.cred);
     const vfsState: FacetVfsState = processVfs
       ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined)
@@ -4648,7 +4645,7 @@ export class FacetManager {
    * The reader the fabric completes a boot spec's by-path members with.
    *
    * Reads as CRED_KERNEL because that is who WROTE them: the generated images
-   * are kernel-owned (`_materializeFacetImages`) and the runtime wasm images
+   * are kernel-owned (`_imageBlobs`) and the runtime wasm images
    * are installed by the kernel. Uncached because these are the session's
    * largest files — a ruby interpreter image is 34.3 MiB — and pinning one in
    * the VFS content LRU for the life of the session is what once crashed the
@@ -4664,120 +4661,16 @@ export class FacetManager {
   }
 
   /**
-   * Materialize generated module sources in the content-addressed image store
-   * and return the `vfsTextModules` map naming them.
-   *
-   * A resident process's module map is sized by the user's disk, so it does
-   * not ride inside the boot spec — see ResidentCodeSpec.vfsTextModules.
-   * Writing it here, once, is what lets the session stop holding it: after
-   * this returns, the only thing it keeps is a path.
-   *
-   * The store is written by the kernel and read by the process, so nothing
-   * here depends on which credential spawned what. Digest collisions are the
-   * hash's problem; everything else is idempotent — an image already present
-   * at its own digest is already the bytes we were about to write.
-   */
-  private async _materializeFacetImages(
-    pid: number,
-    modules: Record<string, string>,
-    pacer: LaunchPacer,
-  ): Promise<Record<string, string>> {
-    const vfs = this.vfs;
-    if (!vfs) {
-      throw new Error(
-        'Nimbus: a resident process needs a session filesystem to materialize its boot image',
-      );
-    }
-    const fs = vfs.as(CRED_KERNEL);
-    const images: Record<string, string> = {};
-    const sources = new Map<string, string>();
-    for (const [moduleName, source] of Object.entries(modules)) {
-      const path = facetImagePath(await facetImageDigest(source));
-      images[moduleName] = path;
-      sources.set(path, source);
-      await pacer.spend(source.length);
-    }
-    // Register the WHOLE root set here, in one synchronous step, before any
-    // byte of it exists on disk. That ordering is the entire protocol between
-    // a launch and the sweep: an image is rooted from before it is written, so
-    // a sweep can never observe a file this launch has written but not yet
-    // claimed. The old loop achieved it by not awaiting at all, which read as
-    // "the writes must not be interrupted" — they may be. What must not be
-    // interrupted is the gap between writing and rooting, and rooting first
-    // closes it for every write that follows, however many turns they span.
-    this.residentImages.set(pid, [...sources.keys()]);
-    fs.mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
-    for (const [path, source] of sources) {
-      const stored = path.replace(/^\/+/, '');
-      const bytes = new TextEncoder().encode(source);
-      // An image at its full size is a COMPLETE one: a write only ever grows
-      // the file from offset zero, so a write cut short by a reset leaves a
-      // strictly shorter file and fails this test. Size is enough of a check
-      // because the reader verifies the digest before the loader sees it.
-      if (fs.exists(stored) && fs.lstat(stored).size === bytes.byteLength) {
-        await pacer.spend(bytes.byteLength);
-        continue;
-      }
-      // Sliced because the platform resets the object over what ONE TURN has
-      // outstanding, not over what it eventually writes — pi's 22.9 MB map
-      // went in as a single write and took the session down with it ~25% of
-      // the time. Spending between slices is what puts the rest of the image
-      // on later turns; the slice bound is what keeps any one of them small.
-      let offset = 0;
-      do {
-        const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
-        // The first slice REPLACES the file, so an interrupted write's remains
-        // are truncated to a known length rather than left as a tail past this
-        // content — and the mode is chosen here, at creation, as POSIX has it.
-        if (offset === 0) fs.writeFile(stored, slice, { mode: 0o644 });
-        else fs.writeRange(stored, offset, slice);
-        offset += slice.byteLength;
-        await pacer.spend(slice.byteLength);
-      } while (offset < bytes.byteLength);
-    }
-    this._sweepFacetImages(fs);
-    return images;
-  }
-
-  /**
    * Fail a paced launch whose process went away while it was suspended.
    *
-   * Between turns anything may happen to the process — a kill, a reap, a
-   * `_sweepFacetImages` that has already unrooted its images. Continuing would
+   * Between turns anything may happen to the process — a kill, a reap, an
+   * image sweep that has already unrooted its images. Continuing would
    * spend further turns building a facet for a pid nothing will ever attach
    * to, and would write image files the next sweep immediately collects.
    */
   private _assertLaunchStillOwned(pid: number): void {
     if (this.processes.get(pid)?.state === 'running') return;
     throw new Error(`Nimbus: resident launch for pid ${pid} was cancelled while it was suspended`);
-  }
-
-  /**
-   * Drop every image no running process boots from.
-   *
-   * Content addressing means a changed program writes a NEW image rather than
-   * replacing one, so a watch loop — or simply a session that runs a few
-   * different programs — would otherwise leave one bundle-sized file behind
-   * per distinct version. The root set is the process table, which is exact:
-   * an image is live for precisely as long as the process that boots from it.
-   * Nothing is left for a TTL or an eviction heuristic to guess at, and after
-   * a DO reset the table is empty so every orphan goes.
-   */
-  private _sweepFacetImages(fs: CredentialedVfs): void {
-    const live = new Set<string>();
-    for (const [pid, paths] of this.residentImages) {
-      if (this.processes.get(pid)?.state === 'running') {
-        for (const path of paths) live.add(path);
-      } else {
-        this.residentImages.delete(pid);
-      }
-    }
-    let entries: { name: string }[];
-    try { entries = fs.readdir(FACET_IMAGE_DIR); } catch { return; }
-    for (const entry of entries) {
-      if (live.has(`/${FACET_IMAGE_DIR}/${entry.name}`)) continue;
-      try { fs.unlink(`${FACET_IMAGE_DIR}/${entry.name}`); } catch { /* already gone */ }
-    }
   }
 
   /**
@@ -5135,7 +5028,7 @@ export class FacetManager {
     if (this.vfs && !this.esbuild) {
       try { this.esbuild = new EsbuildService(this.vfs); } catch { this.esbuild = null; }
     }
-    if (this.vfs) this._ensureImageStoreDir(this.vfs);
+    if (this.vfs) this.imageStore.ensureDir();
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
     const processVfs = this.vfs?.as(entry.cred);
@@ -5194,7 +5087,7 @@ export class FacetManager {
     let resourcesTracked = false;
 
     try {
-      const vfsTextModules = await this._materializeFacetImages(entry.pid, {
+      const vfsTextModules = await this.imageStore.materialize(entry.pid, {
         'worker.js': generatedWorker.code,
         ...generatedWorker.modules,
       }, pacer);

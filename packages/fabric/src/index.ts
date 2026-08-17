@@ -10,6 +10,7 @@
 export * from './alarms.js';
 export * from './bindings.js';
 export * from './ctx-exports.js';
+export * from './facet-image-store.js';
 export * from './fanout-pool.js';
 export * from './inner-do-registry.js';
 export * from './launch-journal.js';
