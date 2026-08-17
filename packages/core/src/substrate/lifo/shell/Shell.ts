@@ -18,7 +18,7 @@ import {
   type TerminalFdState,
   assignScalar,
 } from './interpreter.js';
-import { lex } from './lexer.js';
+import { continuationState, lex } from './lexer.js';
 import { TokenKind } from './types.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
@@ -53,6 +53,9 @@ export function formatShellPrompt(env: Record<string, string>, cwd: string): str
   const { displayPath, user, host } = shellPromptParts(env, cwd);
   return `${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `;
 }
+
+/** PS2 — shown while an accepted line has not closed into a command yet. */
+const CONTINUATION_PROMPT = '> ';
 
 export interface ExecuteOptions {
   cwd?: string;
@@ -135,6 +138,13 @@ export class Shell {
 
   // Paste queue for multiline paste support
   pasteQueue: string[] = [];
+
+  /**
+   * Accepted lines that do not form a complete command yet: an unclosed
+   * quote or a trailing `\` keeps the shell reading under PS2, as bash
+   * does, instead of executing a truncated command.
+   */
+  private pendingLine: string | null = null;
 
   /**
    * Keystrokes that arrived while a foreground command owned the terminal and
@@ -442,6 +452,11 @@ export class Shell {
   }
 
   printPrompt(): void {
+    if (this.pendingLine !== null) {
+      this.terminal.write(CONTINUATION_PROMPT);
+      return;
+    }
+
     // Report finished background jobs from JobTable (legacy)
     const doneJobs = this.jobTable.collectDone();
     for (const job of doneJobs) {
@@ -462,57 +477,32 @@ export class Shell {
       return;
     }
 
-    // Multiline paste detection: if data contains newlines and has multiple chars,
-    // split into lines and execute them sequentially via the paste queue
+    // Multiline paste detection: if data contains newlines and has multiple
+    // chars, split into lines and accept them sequentially via the paste
+    // queue. Middle segments are queued even when empty — a blank pasted
+    // line is a newline inside an open quote; only the tail after the final
+    // newline is dropped when empty, because no Enter followed it.
     if (!this.running && data.length > 1 && /[\r\n]/.test(data)) {
       const lines = data.split(/\r\n|\r|\n/);
-      for (let i = 0; i < lines.length; i++) {
-        const segment = lines[i];
-        if (i === 0) {
-          // First segment: append to current lineBuffer and execute
-          if (segment) {
-            this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + segment + this.lineBuffer.slice(this.cursorPos);
-            this.cursorPos += segment.length;
-          }
-          if (i < lines.length - 1) {
-            // There's a newline after this segment, execute it
-            this.redrawLine();
-            this.terminal.write('\r\n');
-            const line = this.lineBuffer.trim();
-            this.lineBuffer = '';
-            this.cursorPos = 0;
-            this.historyIndex = -1;
-            if (line) {
-              this.history.push(line);
-              // Queue remaining lines before executing
-              for (let j = 1; j < lines.length - 1; j++) {
-                if (lines[j]) this.pasteQueue.push(lines[j]);
-              }
-              // Last segment (after final newline) goes into lineBuffer without executing
-              const lastSegment = lines[lines.length - 1];
-              if (lastSegment) {
-                this.pasteQueue.push(lastSegment);
-              }
-              this.executeLine(line);
-              return;
-            } else {
-              // Empty first line, queue the rest
-              for (let j = 1; j < lines.length - 1; j++) {
-                if (lines[j]) this.pasteQueue.push(lines[j]);
-              }
-              const lastSegment = lines[lines.length - 1];
-              if (lastSegment) {
-                this.pasteQueue.push(lastSegment);
-              }
-              this.drainPasteQueue();
-              return;
-            }
-          }
-        }
+      const first = lines[0];
+      if (first) {
+        this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + first + this.lineBuffer.slice(this.cursorPos);
+        this.cursorPos += first.length;
       }
-      // If we get here, data had newlines but only one segment (shouldn't happen)
-      // Fall through to normal handling
-      if (this.lineBuffer) this.redrawLine();
+      this.redrawLine();
+      this.terminal.write('\r\n');
+      const line = this.lineBuffer;
+      this.lineBuffer = '';
+      this.cursorPos = 0;
+      this.historyIndex = -1;
+      for (let j = 1; j < lines.length - 1; j++) {
+        this.pasteQueue.push(lines[j]);
+      }
+      const lastSegment = lines[lines.length - 1];
+      if (lastSegment) {
+        this.pasteQueue.push(lastSegment);
+      }
+      this.acceptLine(line);
       return;
     }
 
@@ -541,6 +531,7 @@ export class Shell {
         this.abortController.abort(signalAbortReason(signal));
       } else if (signal === 'INT') {
         this.terminal.write('^C\r\n');
+        this.pendingLine = null;
         this.lineBuffer = '';
         this.cursorPos = 0;
         this.screenCursorRow = 0;
@@ -606,18 +597,12 @@ export class Shell {
     // Enter
     if (data === '\r') {
       this.terminal.write('\r\n');
-      const line = this.lineBuffer.trim();
+      const line = this.lineBuffer;
       this.lineBuffer = '';
       this.cursorPos = 0;
       this.screenCursorRow = 0;
       this.historyIndex = -1;
-
-      if (line) {
-        this.history.push(line);
-        this.executeLine(line);
-      } else {
-        this.printPrompt();
-      }
+      this.acceptLine(line);
       return;
     }
 
@@ -802,6 +787,7 @@ export class Shell {
   }
 
   private getPromptWidth(): number {
+    if (this.pendingLine !== null) return CONTINUATION_PROMPT.length;
     const { displayPath, user, host } = shellPromptParts(this.env, this.cwd);
     // "user@host:path$ " — count visible chars only (no ANSI codes)
     return user.length + 1 + host.length + 1 + displayPath.length + 2;
@@ -822,7 +808,9 @@ export class Shell {
     this.terminal.write('\x1b[J');
 
     // Rewrite prompt + buffer
-    this.terminal.write(formatShellPrompt(this.env, this.cwd));
+    this.terminal.write(
+      this.pendingLine === null ? formatShellPrompt(this.env, this.cwd) : CONTINUATION_PROMPT,
+    );
     this.terminal.write(this.lineBuffer);
 
     // After writing all content, figure out which row the cursor is on.
@@ -868,18 +856,10 @@ export class Shell {
 
   drainPasteQueue(): void {
     const next = this.pasteQueue.shift();
-    if (next !== undefined) {
-      const line = next.trim();
-      if (line) {
-        this.terminal.write(line);
-        this.terminal.write('\r\n');
-        this.history.push(line);
-        this.executeLine(line);
-      } else {
-        // Skip empty lines, try next
-        this.drainPasteQueue();
-      }
-    }
+    if (next === undefined) return;
+    this.terminal.write(next);
+    this.terminal.write('\r\n');
+    this.acceptLine(next);
   }
 
   private moveCursorLeft(): void {
@@ -941,6 +921,39 @@ export class Shell {
 
     this.cursorPos = this.lineBuffer.length;
     this.redrawLine();
+  }
+
+  /**
+   * A line the user finished with Enter. If it leaves a quote open or ends
+   * in a line continuation it is not a command yet: bash buffers it, shows
+   * PS2 and keeps reading, and so does this shell. A `\<newline>` join drops
+   * both characters; a quoted join keeps the newline in the string.
+   */
+  private acceptLine(rawLine: string): void {
+    let command: string;
+    if (this.pendingLine === null) {
+      command = rawLine.trim();
+      if (!command) {
+        this.printPrompt();
+        this.drainPasteQueue();
+        return;
+      }
+    } else {
+      command = continuationState(this.pendingLine) === 'backslash'
+        ? this.pendingLine.slice(0, -1) + rawLine
+        : this.pendingLine + '\n' + rawLine;
+    }
+
+    if (continuationState(command) !== null) {
+      this.pendingLine = command;
+      this.printPrompt();
+      this.drainPasteQueue();
+      return;
+    }
+
+    this.pendingLine = null;
+    this.history.push(command);
+    this.executeLine(command);
   }
 
   async executeLine(line: string): Promise<void> {
