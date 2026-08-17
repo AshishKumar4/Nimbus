@@ -19,7 +19,14 @@ What lives here:
   isolate reuse over `env.LOADER`, and the two-tier fan-out that stays under
   workerd's per-DO dynamic-worker ceilings.
 - **Launch pacing** (`launch-pacer.ts`) — spreading a large launch across DO
-  turns so one launch never pins the actor thread or its CPU budget.
+  turns so one launch never pins the actor thread or its CPU budget, and the
+  pump that grants those turns from the embedder's alarm.
+- **Launch journal** (`launch-journal.ts`) — the durable record of every
+  resident launch, synced past the put/durability gap, and its recovery after
+  an instance reset.
+- **Image store** (`facet-image-store.ts`) — materializing boot images into
+  the content-addressed store in reset-safe slices, and the mark-sweep rooted
+  off live processes; the disk arrives through a small blob-store port.
 - **Alarm machinery** (`alarms.ts`) — the multi-reason alarm multiplexer and
   the isolate-generation counter that survive DO hibernation.
 - **Binding shims** (`bindings.ts`) — the chained `WorkerEntrypoint` proxies
