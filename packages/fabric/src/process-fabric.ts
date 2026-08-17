@@ -3,9 +3,9 @@
  * the substrate it runs on.
  *
  * Every long-lived process Nimbus runs — node servers, python/ruby socket
- * servers, the opencode TUI and its headless server — runs as a **DO Facet**:
+ * servers, an agent TUI and its headless server — runs as a **DO Facet**:
  * a named child actor whose class comes from a dynamic worker, opened by
- * `openResidentFacet` in `loaders/workerd-facet-host.ts`.
+ * `openResidentFacet` in `workerd-facet-host.ts`.
  *
  *   ctx.facets.get(`proc-${pid}`, () => ({
  *     class: env.LOADER.get(workerKey, buildConfig)
@@ -15,12 +15,12 @@
  * There is ONE process implementation. What varies is WHOSE `ctx` and `env`
  * that call runs against — the user's own session DO, or a sibling DO acting
  * as a host — and that choice is a single deployment-wide config value read in
- * `loaders/process-host.ts`. Nothing here, and nothing above here, branches on
+ * `process-host.ts`. Nothing here, and nothing above here, branches on
  * which program is running: no spawn site picks its own substrate, and no
  * program name, mode or payload size reaches the selection.
  *
  * What each substrate costs, all of it measured on the production
- * compatibility shape (see `loaders/process-host.ts` for the operator-facing
+ * compatibility shape (see `process-host.ts` for the operator-facing
  * version of this table):
  *
  *   facet  — spawn 8-16 ms warm. Memory independent: its OWN ~208 MiB
@@ -32,13 +32,13 @@
  *            or on an outbound call is indistinguishable from idle) but
  *            sustained CPU stalls every sibling for its full duration —
  *            a python HTTP server at 32-way saturation held siblings under
- *            1.06 s (p50 231 ms), the opencode attach TUI held them at the
+ *            1.06 s (p50 231 ms), an attached full-screen TUI held them at the
  *            77 ms idle baseline, and a deliberate 9,956 ms CPU burn stalled
  *            them for 9,966 ms.
  *   peer   — spawn 242-359 ms, because every spawn pays a DO create plus a
  *            SQLite open. Memory AND CPU both independent: the process runs
  *            in a different workerd process, verified per placement rather
- *            than assumed (see `_place` in `loaders/process-host.ts`).
+ *            than assumed (see `_place` in `process-host.ts`).
  *
  * Both give the process its own SQLite. Neither changes what the process is:
  * the runner, the boot spec, the class name, the writer handshake and the
@@ -58,8 +58,9 @@
  * artifact sources are materialized only when the facet actually starts, and
  * only for as long as the load takes:
  *
- *   staged — an OpencodeStageSpec; `assembleOpencodeFacetConfig` fetches the
- *            artifact sources from ASSETS.
+ *   staged — an embedder-defined stage spec; the registered
+ *            {@link StagedBootAssembler} fetches the artifact sources
+ *            (Nimbus's staged artifacts come from ASSETS).
  *   code   — a generated module map (node / python / ruby runners). Fixed-size
  *            module text rides inline; anything sized by the user's disk is
  *            named BY VFS PATH and read through the injected disk reader. A
@@ -74,7 +75,6 @@
  */
 
 import { z } from 'zod/v4';
-import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
@@ -89,7 +89,7 @@ export const RESIDENT_PROCESS_CLASS = 'NimbusProcess';
  * not of placement:
  *
  *   lifetime — the call is held open for the process's whole life and settles
- *              only at exit (opencode attached + server, attached-TTY node).
+ *              only at exit (an attached TUI or its held-open server, attached-TTY node).
  *   boot     — the call returns a boot payload once the process is up and the
  *              facet stays resident as the coordinator's named child actor
  *              (node servers, the python/ruby socket runners).
@@ -135,12 +135,58 @@ export const ResidentCodeSpecSchema = z.object({
 
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
 
-export const ResidentBootSpecSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('staged'), stage: OpencodeStageSpecSchema }),
-  z.object({ kind: z.literal('code'), code: ResidentCodeSpecSchema }),
-]);
+/**
+ * The boot-spec union, with the staged arm's payload validated by the
+ * embedder's own stage schema. The fabric defines the SHAPE of the union —
+ * `staged` boots assemble through the registered {@link StagedBootAssembler},
+ * `code` boots through {@link residentLoaderConfig} — but what a stage IS
+ * belongs to whoever registered the assembler, so the schema is composed
+ * rather than fixed. The embedder parses with this at its RPC trust boundary;
+ * the assembler re-validates at use either way.
+ */
+export function residentBootSpecSchema<Stage extends z.ZodType>(stageSchema: Stage) {
+  return z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('staged'), stage: stageSchema }),
+    z.object({ kind: z.literal('code'), code: ResidentCodeSpecSchema }),
+  ]);
+}
 
-export type ResidentBootSpec = z.infer<typeof ResidentBootSpecSchema>;
+export type ResidentBootSpec =
+  | { kind: 'staged'; stage: unknown }
+  | { kind: 'code'; code: ResidentCodeSpec };
+
+// ── Staged boots ────────────────────────────────────────────────────────────
+
+/**
+ * Assemble a complete Worker Loader config from a staged-artifact spec. The
+ * embedder supplies this: a stage names artifact sources only the embedder
+ * knows how to fetch (Nimbus's largest staged artifact is a ~23 MB module map from
+ * ASSETS), and the assembler runs inside the loader's cache-miss callback so
+ * those sources are materialized only while the facet actually loads.
+ * `env` is whichever hosting actor's env the facet is opened with.
+ */
+export type StagedBootAssembler = (
+  env: unknown,
+  stage: unknown,
+) => Promise<object>;
+
+let _stagedBootAssembler: StagedBootAssembler | null = null;
+
+/** Registered once at composition time, first-write-wins. */
+export function setStagedBootAssembler(assembler: StagedBootAssembler): void {
+  if (_stagedBootAssembler) return;
+  _stagedBootAssembler = assembler;
+}
+
+export function requireStagedBootAssembler(): StagedBootAssembler {
+  if (!_stagedBootAssembler) {
+    throw new Error(
+      'fabric: no staged-boot assembler registered; a \'staged\' boot spec '
+        + 'cannot be assembled without one (setStagedBootAssembler)',
+    );
+  }
+  return _stagedBootAssembler;
+}
 
 // ── Boot-image store ────────────────────────────────────────────────────────
 
@@ -398,7 +444,7 @@ export interface ProcessImageDelivery {
 /**
  * The substrate a resident process runs on. One implementation per hosting
  * mechanism, one selection for the whole deployment — see
- * `loaders/process-host.ts`.
+ * `process-host.ts`.
  */
 /**
  * A one-shot's module map: every member inline.

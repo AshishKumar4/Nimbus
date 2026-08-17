@@ -6,12 +6,13 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { setCtxExports, setSupervisorEntrypointName } from '../../packages/fabric/src/ctx-exports.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const bindings = [];
 const stagedEntrypoints = [];
+setSupervisorEntrypointName('SupervisorRPC');
 setCtxExports({
   SupervisorRPC({ props }) {
     const binding = {

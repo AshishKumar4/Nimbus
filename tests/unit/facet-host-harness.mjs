@@ -176,7 +176,13 @@ import {
   _rpcHostProcess,
   _rpcRouteHostedHttp,
 } from '../../packages/worker/src/session/rpc.ts';
-import { isolateToken, processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { isolateToken } from '../../packages/fabric/src/process-host.ts';
+import { setSupervisorEntrypointName } from '../../packages/fabric/src/ctx-exports.ts';
+
+// The harness plays the embedder: its ctx.exports (createCtxExports below)
+// answer to the name the real worker registers for its supervisor class.
+setSupervisorEntrypointName('SupervisorRPC');
 
 /** The two settings of NIMBUS_PROCESS_HOST, for suites that run under both. */
 export const PROCESS_HOST_MODES = ['facet', 'peer'];

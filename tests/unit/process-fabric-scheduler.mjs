@@ -33,11 +33,11 @@ import {
   RESIDENT_PROCESS_CLASS,
   facetImageDigest,
   facetImagePath,
-} from '../../packages/worker/src/loaders/process-fabric.ts';
+} from '../../packages/fabric/src/process-fabric.ts';
 import {
   DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   residentFacetName,
-} from '../../packages/worker/src/loaders/workerd-facet-host.ts';
+} from '../../packages/fabric/src/workerd-facet-host.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import {
   PROCESS_HOST_MODES,

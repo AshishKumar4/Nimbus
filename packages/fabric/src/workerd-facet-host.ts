@@ -1,7 +1,7 @@
 /**
  * workerd-facet-host.ts — how a resident process is actually made, on workerd.
  *
- * `loaders/process-fabric.ts` says what a resident process IS, in terms no
+ * `process-fabric.ts` says what a resident process IS, in terms no
  * runtime owns: a boot spec, a start contract, a handle that can be routed to
  * and released. This module is the one implementation of that on Cloudflare,
  * and everything here is a workerd mechanism rather than a Nimbus concept —
@@ -15,13 +15,13 @@
 
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import {
-  assembleOpencodeFacetConfig,
-  type OpencodeAssetsEnv,
-  type OpencodeStageSpec,
-} from '../facets/opencode-staging.js';
-import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+  getCtxExports,
+  supervisorEntrypoint,
+  supervisorEntrypointName,
+} from './ctx-exports.js';
 import {
   RESIDENT_PROCESS_CLASS,
+  requireStagedBootAssembler,
   residentLoaderConfig,
   type HostedProcess,
   type OneShotCodeSpec,
@@ -41,16 +41,13 @@ export interface LoadedWorkerEntrypointStub {
 }
 
 export interface NimbusCtxExports {
-  SupervisorRPC?: (options: {
-    props: { doId: string; pid: number; writerId: string };
-  }) => unknown;
   NimbusLoadedEntrypoint?: (options: {
     props: {
       key: string;
       name: string | null;
       depth: number;
       supervisor: { doId: string; pid: number; writerId: string };
-      stage?: OpencodeStageSpec;
+      stage?: unknown;
     };
   }) => LoadedWorkerEntrypointStub;
 }
@@ -72,7 +69,7 @@ export function getNimbusCtxExports(): NimbusCtxExports {
 export async function createLoadedWorkerEntrypoint(
   ctxExports: NimbusCtxExports,
   supervisor: { doId: string; pid: number; writerId: string },
-  stage: OpencodeStageSpec,
+  stage: unknown,
   name: string | null = null,
 ): Promise<LoadedWorkerEntrypointStub> {
   if (!ctxExports.NimbusLoadedEntrypoint) {
@@ -133,8 +130,12 @@ interface WorkerLoaderBinding {
   load(code: unknown): LoadedWorkerStub;
 }
 
-/** The bindings `openResidentFacet` needs off whichever DO is hosting. */
-export interface ResidentFacetEnv extends Partial<OpencodeAssetsEnv> {
+/**
+ * The bindings `openResidentFacet` needs off whichever DO is hosting. A
+ * staged boot's assembler may read more off the same env (Nimbus's reads
+ * ASSETS); the env travels to it whole, so nothing further is named here.
+ */
+export interface ResidentFacetEnv {
   LOADER?: WorkerLoaderBinding;
 }
 
@@ -361,7 +362,7 @@ export async function runOneShotWorker<T>(
         + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
     );
   }
-  const ctxExports = getCtxExports();
+  const supervisorRpc = supervisorEntrypoint();
   let supervisorBinding: unknown;
   let worker: LoadedWorkerStub | undefined;
   let entrypoint: LoadedWorkerEntrypointStub | undefined;
@@ -370,9 +371,9 @@ export async function runOneShotWorker<T>(
     // until there is a program to do the writing, and a map that fails to
     // assemble should not have granted append authority on its way out.
     let spec: OneShotCodeSpec | undefined = await params.code();
-    if (ctxExports?.SupervisorRPC) {
+    if (supervisorRpc) {
       params.onWriterActivated(params.writerId);
-      supervisorBinding = ctxExports.SupervisorRPC({ props: supervisor });
+      supervisorBinding = supervisorRpc({ props: supervisor });
     }
     worker = loader.load({
       compatibilityDate: spec.compatibilityDate,
@@ -409,11 +410,13 @@ async function residentWorkerConfig(
   boot: ResidentBootSpec,
 ): Promise<Record<string, unknown>> {
   const config = boot.kind === 'staged'
-    ? await assembleOpencodeFacetConfig(env, boot.stage)
+    ? await requireStagedBootAssembler()(env, boot.stage)
     : await residentLoaderConfig(boot.code, disk());
-  const ctxExports = getNimbusCtxExports();
-  if (!ctxExports.SupervisorRPC) {
-    throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+  const supervisorRpc = supervisorEntrypoint();
+  if (!supervisorRpc) {
+    throw new Error(
+      `Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`,
+    );
   }
-  return { ...config, env: { SUPERVISOR: ctxExports.SupervisorRPC({ props: supervisor }) } };
+  return { ...config, env: { SUPERVISOR: supervisorRpc({ props: supervisor }) } };
 }

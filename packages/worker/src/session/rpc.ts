@@ -32,21 +32,21 @@ import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
 import {
-  ResidentBootSpecSchema,
+  residentBootSpecSchema,
   type ResidentDiskReader,
   type ResidentSupervisorProps,
-} from '../loaders/process-fabric.js';
+} from '@nimbus-sh/fabric/process-fabric.js';
 import {
-  getNimbusCtxExports,
   openResidentFacet,
   type ResidentFacet,
-} from '../loaders/workerd-facet-host.js';
+} from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { supervisorEntrypoint } from '@nimbus-sh/fabric/ctx-exports.js';
 import {
   headerPairs,
   isolateToken,
   type HostedHttpRequest,
   type HostedHttpResponse,
-} from '../loaders/process-host.js';
+} from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
@@ -1500,6 +1500,10 @@ export async function _rpcFanoutExecute(
 // coordinator reaches this leg only because its deployment set
 // NIMBUS_PROCESS_HOST=peer. See loaders/process-host.ts.
 
+/** The fabric's boot-spec shape, with the staged arm validated as Nimbus's
+ *  opencode stage — this RPC is the peer's trust boundary for it. */
+const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
+
 const HostProcessOptsSchema = z.object({
   /** Full doId of the coordinator session (SUPERVISOR routing target). */
   coordinatorDoId: z.string().min(1),
@@ -1563,11 +1567,11 @@ interface SupervisorFileReader {
 }
 
 function peerDiskReader(supervisor: ResidentSupervisorProps): ResidentDiskReader {
-  const ctxExports = getNimbusCtxExports();
-  if (!ctxExports.SupervisorRPC) {
+  const supervisorRpc = supervisorEntrypoint();
+  if (!supervisorRpc) {
     throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
   }
-  const fs = ctxExports.SupervisorRPC({ props: supervisor }) as unknown as SupervisorFileReader;
+  const fs = supervisorRpc({ props: supervisor }) as unknown as SupervisorFileReader;
   return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 

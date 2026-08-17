@@ -111,7 +111,8 @@ import {
 } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
-import { processHostFor, type HostedHttpRequest, type HostedHttpResponse } from '../loaders/process-host.js';
+import { processHostFor } from '../loaders/process-host.js';
+import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from './ws-relay.js';

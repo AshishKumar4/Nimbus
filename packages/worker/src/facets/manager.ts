@@ -51,12 +51,12 @@ import {
   type ResidentBootSpec,
   type ResidentDiskReader,
   type StartContract,
-} from '../loaders/process-fabric.js';
+} from '@nimbus-sh/fabric/process-fabric.js';
 import {
   createLoadedWorkerEntrypoint,
   getNimbusCtxExports,
   type LoadedWorkerEntrypointStub,
-} from '../loaders/workerd-facet-host.js';
+} from '@nimbus-sh/fabric/workerd-facet-host.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,

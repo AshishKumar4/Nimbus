@@ -26,7 +26,7 @@ import {
   facetImageDigest,
   facetImagePath,
   residentLoaderConfig,
-} from '../../packages/worker/src/loaders/process-fabric.ts';
+} from '../../packages/fabric/src/process-fabric.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
 // ── writer: the store the coordinator materializes ─────────────────────────

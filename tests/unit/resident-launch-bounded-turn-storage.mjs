@@ -28,7 +28,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { FACET_IMAGE_DIR } from '../../packages/worker/src/loaders/process-fabric.ts';
+import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 
 setCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
