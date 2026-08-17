@@ -233,7 +233,8 @@ security lesson, not an optimization: without it, session B's pool reused
 session A's warm isolate — which still carried A's `env.SUPERVISOR` binding —
 and B's writes landed silently in A's filesystem while B's install reported
 success. Warm isolates are scoped to one session unless a pool explicitly opts
-into `cacheScope: 'global'`, which also forfeits the supervisor binding.
+into `cacheScope: 'global'`, which is reserved for stateless compute pools
+that take no supervisor binding and retain no user state.
 
 `FanoutPool` is the tier above: a single DO method can drive at most 4
 concurrent Worker Loader fetches, so batches of fewer than 5 tasks run in the
