@@ -98,8 +98,8 @@ export interface SessionInternal {
 
   // ── W9 hibernation persistence state ────────────────────────────────
   _w9WsConfig: WsHibernationConfigResult | null;
-  _w9IsolateGen: number;
-  _w9IsolateGenPersisted: boolean;
+  _isolateGen: number;
+  _isolateGenPersisted: boolean;
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;

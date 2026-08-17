@@ -41,7 +41,7 @@ import { recordRecoveryEvent, type SessionState } from '@nimbus-sh/core/observab
  * cheap.
  */
 export function setPhase(
-  self: { _b4Phase: SessionState | null; _w9IsolateGen?: number },
+  self: { _b4Phase: SessionState | null; _isolateGen?: number },
   toState: SessionState,
   trigger: string,
 ): void {
@@ -53,7 +53,7 @@ export function setPhase(
       fromState,
       toState,
       trigger,
-      isolateGen: self._w9IsolateGen ?? 0,
+      isolateGen: self._isolateGen ?? 0,
       dataLoss: false,
       snapshotKeysRehydrated: 0,
     });
@@ -134,7 +134,7 @@ export function joinExistingSession(
     ctx: any;
     terminal: { attach(ws: WebSocket, onFlush?: (data: string) => void): void; write(s: string): void };
     _b4Phase: SessionState | null;
-    _w9IsolateGen?: number;
+    _isolateGen?: number;
     _b4WarmJoinCount: number;
   },
   ws: WebSocket,

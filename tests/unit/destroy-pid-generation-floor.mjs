@@ -65,8 +65,8 @@ function makeHost() {
     _viteShimPort: null,
     terminal: null,
     runtimeFsBridges: new Map(),
-    _w9IsolateGen: GEN,
-    _w9IsolateGenPersisted: true,
+    _isolateGen: GEN,
+    _isolateGenPersisted: true,
     ensureSqliteFs() {},
     ensureFacetManager() {},
     initSession() {},
@@ -101,9 +101,9 @@ assert.equal(storage.get(ISOLATE_GEN_KEY), GEN,
 // use the same floor for the rest of its life.
 assert.equal(host.processes.pidBase, (GEN + 1) * PID_GEN_STRIDE,
   'post-destroy pid floor must match what the next boot will use');
-assert.equal(host._w9IsolateGen, GEN + 1,
+assert.equal(host._isolateGen, GEN + 1,
   'in-memory generation must match the pid floor it implies');
-assert.equal(host._w9IsolateGenPersisted, false,
+assert.equal(host._isolateGenPersisted, false,
   'the adopted generation is re-derived from storage on the next init');
 
 // ── The behaviour that floor exists to produce ──────────────────────────

@@ -43,8 +43,8 @@ function makeStorage() {
 function makeHost() {
   return {
     processes: new SessionProcessSupervisor(),
-    _w9IsolateGen: 0,
-    _w9IsolateGenPersisted: false,
+    _isolateGen: 0,
+    _isolateGenPersisted: false,
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,
@@ -75,7 +75,7 @@ function makeHost() {
   const host = makeHost();
   const ctx = { storage };
   ensureLogJanitor(host, ctx);
-  await host._w1AlarmChain;
+  await host._alarmChain;
   assert.ok(host._w1JanitorArmed && storage.alarm !== null, 'janitor armed on activity');
 
   // Idle session: fire the pending janitor deadline — the sweep must NOT
@@ -94,7 +94,7 @@ function makeHost() {
   const pid = host.processes.spawn('server', [], '/').pid;
   host.processes.appendOutput(pid, 'stdout', 'alive\n');
   ensureLogJanitor(host, ctx);
-  await host._w1AlarmChain;
+  await host._alarmChain;
   {
     const m = storage.map.get(ALARM_REASONS_KEY);
     m['log-janitor'] = Date.now() - 1;
@@ -111,7 +111,7 @@ function makeHost() {
   storage.put = async () => { throw new Error('storage down'); };
   const host = makeHost();
   ensureLogJanitor(host, { storage });
-  await host._w1AlarmChain;
+  await host._alarmChain;
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(host._w1JanitorArmed, false, 'failed schedule must not leave the flag set');
   console.log('  [3] a scheduleAlarm storage failure resets _w1JanitorArmed');
@@ -123,7 +123,7 @@ function makeHost() {
   const host = makeHost();
   host._w1SessionDestroyed = true;
   ensureLogJanitor(host, { storage });
-  await host._w1AlarmChain;
+  await host._alarmChain;
   assert.equal(storage.alarm, null, 'destroyed session schedules nothing');
   assert.equal(host._w1JanitorArmed, false);
   console.log('  [4] a destroyed session never re-arms the janitor');
@@ -157,7 +157,7 @@ function makeHost() {
     _cirrusHmrWsClients: null,
     _w9PersistWired: true,
   };
-  host._w9IsolateGen = 3;
+  host._isolateGen = 3;
   const result = await rpcDestroy(host, { reason: 'test' });
   assert.equal(result.ok, true);
   assert.ok(storage.deleteAlarmCalls >= 1, 'destroy deletes the pending alarm');
@@ -175,7 +175,7 @@ function makeHost() {
   assert.ok(!storage.map.has(SESSION_DESTROYED_KEY), 're-init deletes the tombstone key');
   host._w1JanitorArmed = false;
   ensureLogJanitor(host, { storage });
-  await host._w1AlarmChain;
+  await host._alarmChain;
   assert.ok(storage.alarm !== null, 'the recreated session arms the janitor again');
   // And a no-op on a live session (no spurious deletes).
   const deletes = [];

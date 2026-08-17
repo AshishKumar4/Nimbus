@@ -410,11 +410,11 @@ export class NimbusSession extends CloudflareDurableObject {
    * Lets `/api/_diag/memory` confirm whether a wake actually happened
    * between two probe calls.
    */
-  _w9IsolateGen = 0;
+  _isolateGen = 0;
   /** True once we've persisted the bumped gen counter to storage. */
-  _w9IsolateGenPersisted = false;
+  _isolateGenPersisted = false;
   /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
-  _w1AlarmChain?: Promise<unknown>;
+  _alarmChain?: Promise<unknown>;
   /** SQL DDL — idempotent; run on first fetch. */
   _w9SchemaInit = false;
   /** Have we wired the persist adapter into ProcessLogStore yet? */
@@ -520,7 +520,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // read+write per instance boot; fail-soft (replicas cannot put).
     ctx.blockConcurrencyWhile(async () => {
       await this._w9MaybeBumpIsolateGen();
-      this.processes.setPidBase(this._w9IsolateGen * PID_GEN_STRIDE);
+      this.processes.setPidBase(this._isolateGen * PID_GEN_STRIDE);
       try {
         this._w1SessionDestroyed =
           (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;

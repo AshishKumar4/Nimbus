@@ -75,8 +75,8 @@ export interface WsHost {
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
   _w9SchemaInit: boolean;
-  _w9IsolateGen: number;
-  _w9IsolateGenPersisted: boolean;
+  _isolateGen: number;
+  _isolateGenPersisted: boolean;
   _w9WsConfig: any;
   _diagPeakRss: number;
   _diagPeakHeapUsed: number;
@@ -370,7 +370,7 @@ export async function wsClose(
       fromState: 'active',
       toState: 'drained',
       trigger: 'ws-close',
-      isolateGen: self._w9IsolateGen,
+      isolateGen: self._isolateGen,
       dataLoss: false,
       snapshotKeysRehydrated: 0,
     });
@@ -447,7 +447,7 @@ export async function wsError(self: WsHost, ws: WebSocket, _error?: any): Promis
       fromState: 'active',
       toState: 'drained',
       trigger: 'ws-error',
-      isolateGen: self._w9IsolateGen,
+      isolateGen: self._isolateGen,
       dataLoss: false,
       snapshotKeysRehydrated: 0,
     });

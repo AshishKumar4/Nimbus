@@ -56,13 +56,13 @@ export const ISOLATE_GEN_KEY = 'w9_isolate_gen';
  * read-modify-write for that instance (see {@link scheduleAlarm}).
  */
 export interface AlarmHost {
-  _w1AlarmChain?: Promise<unknown>;
+  _alarmChain?: Promise<unknown>;
 }
 
 /** The host instance carrying the isolate-generation state. */
 export interface IsolateGenHost {
-  _w9IsolateGen: number;
-  _w9IsolateGenPersisted: boolean;
+  _isolateGen: number;
+  _isolateGenPersisted: boolean;
 }
 
 /**
@@ -119,8 +119,8 @@ export function scheduleAlarm(
       return false;
     }
   };
-  const chained = (host._w1AlarmChain ?? Promise.resolve()).then(run, run);
-  host._w1AlarmChain = chained;
+  const chained = (host._alarmChain ?? Promise.resolve()).then(run, run);
+  host._alarmChain = chained;
   return chained;
 }
 
@@ -165,11 +165,11 @@ export function dispatchAlarm(
 ): Promise<void> {
   // Same serialization as scheduleAlarm: the dispatcher's read→handlers→write
   // cycle must not interleave with an activity-hook scheduleAlarm.
-  const chained = (host._w1AlarmChain ?? Promise.resolve()).then(
+  const chained = (host._alarmChain ?? Promise.resolve()).then(
     () => dispatchAlarmBody(ctx, handlers, onLegacyAlarm),
     () => dispatchAlarmBody(ctx, handlers, onLegacyAlarm),
   );
-  host._w1AlarmChain = chained;
+  host._alarmChain = chained;
   return chained;
 }
 
@@ -229,8 +229,8 @@ async function dispatchAlarmBody(
 
 /** Increment + persist the isolate-gen counter once per fresh isolate. */
 export async function maybeBumpIsolateGen(host: IsolateGenHost, ctx: any): Promise<void> {
-  if (host._w9IsolateGenPersisted) return;
-  host._w9IsolateGenPersisted = true;
+  if (host._isolateGenPersisted) return;
+  host._isolateGenPersisted = true;
   try {
     const prev = (await ctx.storage.get(ISOLATE_GEN_KEY)) as number | undefined;
     // Adopt the persisted truth first, and adopt the bump only after the
@@ -246,10 +246,10 @@ export async function maybeBumpIsolateGen(host: IsolateGenHost, ctx: any): Promi
     // keeps a pid from generation N from escaping before N is durable, which
     // is why marking this put `allowUnconfirmed` is not a free speedup — see
     // scratchpad/coldstart-s1.md.
-    host._w9IsolateGen = typeof prev === 'number' ? prev : 0;
-    const next = host._w9IsolateGen + 1;
+    host._isolateGen = typeof prev === 'number' ? prev : 0;
+    const next = host._isolateGen + 1;
     await ctx.storage.put(ISOLATE_GEN_KEY, next);
-    host._w9IsolateGen = next;
+    host._isolateGen = next;
   } catch (e: any) {
     console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);
   }

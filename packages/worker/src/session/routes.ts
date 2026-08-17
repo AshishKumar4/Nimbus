@@ -699,7 +699,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // `autoResponseConfigured` reports the runtime's actual
         // capability (older workerd builds report false).
         hib: {
-          isolateGen: self._w9IsolateGen,
+          isolateGen: self._isolateGen,
           autoResponseConfigured: self._w9WsConfig?.autoResponseConfigured ?? false,
           autoResponseError: self._w9WsConfig?.autoResponseError ?? null,
           hibernationEventTimeoutMs: self._w9WsConfig?.timeoutSetMs ?? null,
@@ -854,7 +854,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           fromState: body.fromState,
           toState: body.toState,
           trigger: body.trigger,
-          isolateGen: body.isolateGen || self._w9IsolateGen,
+          isolateGen: body.isolateGen || self._isolateGen,
           dataLoss: body.dataLoss === true,
           snapshotKeysRehydrated: body.snapshotKeysRehydrated || 0,
           notes: body.notes,

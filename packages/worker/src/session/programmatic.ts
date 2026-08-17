@@ -109,8 +109,8 @@ export interface ProgrammaticHost {
   _w9PersistWired?: boolean;
   _w9FlushTimer?: ReturnType<typeof setTimeout> | null;
   _w9SchemaInit?: boolean;
-  _w9IsolateGen?: number;
-  _w9IsolateGenPersisted?: boolean;
+  _isolateGen?: number;
+  _isolateGenPersisted?: boolean;
   _w9WireProcessLogPersist?(): void;
   ensureSqliteFs(): void;
   ensureFacetManager(): void;
@@ -760,7 +760,7 @@ export async function rpcDestroy(
     // straggler facet from a HIGHER pre-destroy generation would classify as
     // current-generation (pid > pidBase) — landing its output on the
     // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-    try { await self.ctx.storage.put(ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0); } catch { /* best-effort */ }
+    try { await self.ctx.storage.put(ISOLATE_GEN_KEY, self._isolateGen ?? 0); } catch { /* best-effort */ }
 
     resetInMemorySessionState(self);
     destroyed = true;
@@ -789,7 +789,7 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
  * so `maybeBumpIsolateGen` reads it back and bumps once — landing here.
  */
 function successorGeneration(self: ProgrammaticHost): number {
-  return (self._w9IsolateGen ?? 0) + 1;
+  return (self._isolateGen ?? 0) + 1;
 }
 
 /**
@@ -868,8 +868,8 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   const generation = successorGeneration(self);
   installEmptyProcessState(self, generation);
   self._w9SchemaInit = false;
-  self._w9IsolateGen = generation;
-  self._w9IsolateGenPersisted = false;
+  self._isolateGen = generation;
+  self._isolateGenPersisted = false;
   try { self._w9WireProcessLogPersist?.(); } catch {}
 }
 

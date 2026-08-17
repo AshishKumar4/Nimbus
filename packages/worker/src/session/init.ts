@@ -2860,7 +2860,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
           fromState: fromState as any,
           toState: 'hydrated',
           trigger: 'init-session',
-          isolateGen: self._w9IsolateGen,
+          isolateGen: self._isolateGen,
           dataLoss: false,
           snapshotKeysRehydrated: snapshotKeys,
         });
