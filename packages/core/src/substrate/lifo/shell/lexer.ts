@@ -69,6 +69,44 @@ export function lex(input: string): Token[] {
   return tokens;
 }
 
+export type ContinuationState = 'single' | 'double' | 'backslash';
+
+/**
+ * How `input` leaves the lexer at end of input: inside an unclosed single or
+ * double quote, or ending in a `\` line continuation (which bash also honors
+ * inside double quotes, where `\<newline>` is removed). The interactive shell
+ * uses this to keep reading (PS2) instead of executing a truncated command.
+ * Comments are skipped exactly where lex() treats `#` as one.
+ */
+export function continuationState(input: string): ContinuationState | null {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === '\\') {
+      if (i === input.length - 1) return 'backslash';
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#') {
+      while (i + 1 < input.length && input[i + 1] !== '\n') i++;
+    }
+  }
+  if (quote === null) return null;
+  return quote === '"' ? 'double' : 'single';
+}
+
 function tryOperator(input: string, pos: number): { token: Token; end: number } | null {
   const ch = input[pos];
   const next = input[pos + 1];
