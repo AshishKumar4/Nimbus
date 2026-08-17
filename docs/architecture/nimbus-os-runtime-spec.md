@@ -1,6 +1,6 @@
 # Nimbus OS Runtime Compatibility Spec
 
-Last refreshed: 2026-06-06
+Last refreshed: 2026-08-13
 
 This document defines the runtime compatibility target for Nimbus as a
 Durable Object backed operating environment. It is source-backed by the

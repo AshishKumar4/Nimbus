@@ -232,6 +232,11 @@ const port = await box.ports.expose(3000);
 await box.ports.unexpose(3000);
 ```
 
+On deployments with a preview host suffix configured (the hosted product sets
+`NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev`), `port.url` is the hostname form
+`https://<port>--<session-id>.<suffix>/` instead; the `/s/<id>/port/<n>/`
+path route works on every deployment.
+
 Runtime policy comes from the sandbox profile:
 
 - `runtimes.preinstall` is applied by `box.ready()`.
