@@ -30,7 +30,8 @@ import {
   writeProcessInput,
 } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY, W9_ISOLATE_GEN_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY } from './keys.js';
+import { ISOLATE_GEN_KEY } from '@nimbus-sh/fabric/alarms.js';
 
 interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -759,7 +760,7 @@ export async function rpcDestroy(
     // straggler facet from a HIGHER pre-destroy generation would classify as
     // current-generation (pid > pidBase) — landing its output on the
     // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-    try { await self.ctx.storage.put(W9_ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0); } catch { /* best-effort */ }
+    try { await self.ctx.storage.put(ISOLATE_GEN_KEY, self._w9IsolateGen ?? 0); } catch { /* best-effort */ }
 
     resetInMemorySessionState(self);
     destroyed = true;

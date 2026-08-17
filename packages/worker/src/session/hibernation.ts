@@ -18,10 +18,14 @@
  *     w9_proc_logs + w9_proc_exits.
  *   - scheduleHibFlush(host, ctx) — debounced setTimeout + best-effort
  *     setAlarm for post-hibernation drain.
- *   - dispatchAlarm(host) — alarm() handler body.
- *   - maybeBumpIsolateGen(host, ctx) — increment + persist isolate-gen
- *     counter once per fresh isolate.
+ *   - dispatchAlarm(host) — alarm() handler body: the fabric's generic
+ *     reason dispatcher with this session's handlers registered.
  *   - flushOnClose(host) — synchronous flush on ws close.
+ *
+ * The alarm multiplexer itself (reason map, scheduleAlarm, the per-instance
+ * chain) and maybeBumpIsolateGen are fabric machinery —
+ * `@nimbus-sh/fabric/alarms.js`; this module registers the session's reasons
+ * ('w9-flush' | 'log-janitor' | 'resident-launch') on top of it.
  *
  * **`ctx` taken as a separate arg from `host`** because the parent
  * `CloudflareDurableObject` class declares `ctx` as `protected`, which
@@ -38,7 +42,13 @@
 import type { LogChunk, PersistAdapter, ProcessExitInfo } from '@nimbus-sh/core/runtime/process-logs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { configureWsHibernation, type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
-import { SESSION_DESTROYED_KEY, W9_ISOLATE_GEN_KEY, W9_FLUSH_DEBOUNCE_MS, W1_NEXT_ALARM_REASONS_KEY } from './keys.js';
+import {
+  dispatchAlarm as dispatchAlarmReasons,
+  scheduleAlarm,
+  type AlarmHost,
+  type IsolateGenHost,
+} from '@nimbus-sh/fabric/alarms.js';
+import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 
 export type { WsHibernationConfigResult };
 
@@ -49,10 +59,8 @@ export type { WsHibernationConfigResult };
  *
  * `ctx` is NOT in this interface — passed as a separate arg.
  */
-export interface HibHost {
+export interface HibHost extends AlarmHost, IsolateGenHost {
   processes: SessionProcessSupervisor;
-  _w9IsolateGen: number;
-  _w9IsolateGenPersisted: boolean;
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
@@ -60,8 +68,6 @@ export interface HibHost {
   _w1JanitorArmed: boolean;
   /** W1: destroyed-session tombstone — never re-arm alarms while set. */
   _w1SessionDestroyed: boolean;
-  /** W1: serializes every alarm-map read-modify-write (see scheduleAlarm). */
-  _w1AlarmChain?: Promise<unknown>;
 }
 
 /**
@@ -277,71 +283,12 @@ export function ensureHibSchema(host: HibHost, ctx: any): void {
 }
 
 /**
- * W1: canonical alarm-reason strings. Stored in the
- * `W1_NEXT_ALARM_REASONS_KEY` map. Forward-compat: dispatcher silently
- * drops unknown reasons so a rollback from a future deploy that added
- * new reasons doesn't leave the alarm stuck.
+ * W1: this session's canonical alarm-reason strings, registered on the
+ * fabric's reason map. Forward-compat: the dispatcher silently drops unknown
+ * reasons so a rollback from a future deploy that added new reasons doesn't
+ * leave the alarm stuck.
  */
 export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch';
-
-/**
- * W1: schedule (or re-schedule) an alarm reason. Coordinated via a
- * single map in DO storage so multiple subsystems (W9 debounced flush +
- * W1 log-janitor sweep) don't clobber each other's `setAlarm()` calls.
- *
- * Semantics:
- *   - Reads the existing reasons map.
- *   - Sets `map[reason] = whenMs` IF `whenMs` is sooner than the
- *     currently-pending deadline for that reason (or no entry exists).
- *     Later-than-pending requests are silently ignored — the existing
- *     alarm will fire and re-arm anyway.
- *   - Writes the map back and calls `ctx.storage.setAlarm(min(deadlines))`.
- *
- * Cost: 1 storage read + 1 storage write + 1 setAlarm per call. setAlarm
- * itself is billed as 1 row written per DO pricing. At W1's 60s
- * cadence, this is ~$0.05/mo/session at scale — dwarfed by the
- * hibernation duration savings.
- *
- * Fail-soft: any throw is swallowed with a warn. On older runtimes /
- * wrangler-dev where setAlarm is unavailable, this is a no-op (the
- * subsystem's in-isolate setTimeout fallback continues to work).
- */
-export function scheduleAlarm(
-  host: HibHost,
-  ctx: any,
-  reason: AlarmReason,
-  whenMs: number,
-): Promise<boolean> {
-  // Serialize every read-modify-write of the reasons map through one
-  // per-instance chain: scheduleHibFlush and ensureLogJanitor fire
-  // back-to-back from the same log-activity hook, and two interleaved
-  // get→put cycles would silently drop whichever reason wrote first.
-  const run = async (): Promise<boolean> => {
-    try {
-      const setAlarmFn = (ctx?.storage as any)?.setAlarm;
-      if (typeof setAlarmFn !== 'function') return false;
-      const existing = (await ctx.storage.get(W1_NEXT_ALARM_REASONS_KEY)) as
-        | Record<string, number>
-        | undefined;
-      const map: Record<string, number> = { ...(existing || {}) };
-      // Earliest-deadline-first: only update if new request is sooner or
-      // this reason has no pending entry.
-      if (!(reason in map) || whenMs < map[reason]) {
-        map[reason] = whenMs;
-        await ctx.storage.put(W1_NEXT_ALARM_REASONS_KEY, map);
-      }
-      const earliest = Math.min(...Object.values(map));
-      setAlarmFn.call(ctx.storage, earliest);
-      return true;
-    } catch (e: any) {
-      console.warn('[nimbus/W1] scheduleAlarm threw:', e?.message);
-      return false;
-    }
-  };
-  const chained = (host._w1AlarmChain ?? Promise.resolve()).then(run, run);
-  host._w1AlarmChain = chained;
-  return chained;
-}
 
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
@@ -373,25 +320,16 @@ export function scheduleHibFlush(host: HibHost, ctx: any): void {
 }
 
 /**
- * W1: multi-reason alarm dispatcher. Called from the DO's `alarm()`
- * handler.
- *
- * For each pending reason whose deadline has passed, run its handler.
- * Reasons supported today:
+ * W1: this session's alarm() handler body — the fabric's multi-reason
+ * dispatcher with this session's handlers registered:
  *   - `'w9-flush'` → processes.flushLogs()
+ *   - `'resident-launch'` → pumpResidentLaunches()
  *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
- *     for next 60s cycle.
+ *     for next 60s cycle while the session still has anything to sweep.
  *
  * `janitorOrphanCheck` is the orphan-pid predicate provided by the
  * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
  * so HibHost doesn't need to import ProcessTable.
- *
- * After running fireable reasons, re-arms `ctx.storage.setAlarm` at the
- * earliest remaining deadline. If no reasons remain, deletes the map
- * key and does NOT call setAlarm — the DO becomes hibernation-eligible
- * after the 10s idle window.
- *
- * Forward/back-compat: unknown reasons silently dropped.
  */
 export function dispatchAlarm(
   host: HibHost,
@@ -399,124 +337,44 @@ export function dispatchAlarm(
   janitorOrphanCheck?: (pid: number) => boolean,
   pumpResidentLaunches?: () => Promise<void>,
 ): Promise<void> {
-  // Same serialization as scheduleAlarm: the dispatcher's read→handlers→write
-  // cycle must not interleave with a log-activity scheduleAlarm.
-  const chained = (host._w1AlarmChain ?? Promise.resolve()).then(
-    () => dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches),
-    () => dispatchAlarmBody(host, ctx, janitorOrphanCheck, pumpResidentLaunches),
-  );
-  host._w1AlarmChain = chained;
-  return chained;
-}
-
-async function dispatchAlarmBody(
-  host: HibHost,
-  ctx: any,
-  janitorOrphanCheck?: (pid: number) => boolean,
-  pumpResidentLaunches?: () => Promise<void>,
-): Promise<void> {
-  try {
-    const now = Date.now();
-    const existing = (await ctx?.storage?.get?.(W1_NEXT_ALARM_REASONS_KEY)) as
-      | Record<string, number>
-      | undefined;
+  return dispatchAlarmReasons(host, ctx, {
+    'w9-flush': () => {
+      host.processes.flushLogs();
+    },
+    'resident-launch': async () => {
+      // Awaited, not fired and forgotten: this invocation is the fresh
+      // turn the launch asked for, and it has to stay the one paying for
+      // the chunk it just released.
+      await pumpResidentLaunches?.();
+    },
+    'log-janitor': (now) => {
+      host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);
+      // Re-arm only while the session still has running processes or
+      // buffered logs to sweep. An idle, abandoned, or destroyed
+      // session must NOT keep an eternal 60s alarm loop alive: the
+      // janitor used to self-renew unconditionally (and the DO
+      // constructor re-armed it on every alarm-triggered boot), so
+      // every session ever created kept booting its DO every ~60s
+      // forever. The accumulated fleet of deleted probe sessions
+      // produced continuous DO-storage churn (measured ~24 zombie
+      // boots/s on 2026-07-13) that intermittently reset LIVE
+      // session DOs mid-run ("Internal error in Durable Object
+      // storage caused object to be reset"). The next log append
+      // re-arms the cycle via ensureLogJanitor.
+      if (host.processes.stats.running > 0 || host.processes.logStats.totalPids > 0) {
+        return { rearmAt: now + 60_000 };
+      }
+      host._w1JanitorArmed = false;
+    },
+  }, () => {
     // Legacy path: pre-W1 deploys had no map. dispatchAlarm was called
     // with no map and unconditionally ran the log flush. Preserve
     // that on a missing map (one-time post-deploy, then the map is
     // populated by the next scheduleHibFlush / scheduleAlarm call).
-    if (!existing || Object.keys(existing).length === 0) {
-      try { host.processes.flushLogs(); } catch (e: any) {
-        console.warn('[nimbus/W9] legacy flush threw:', e?.message);
-      }
-      return;
+    try { host.processes.flushLogs(); } catch (e: any) {
+      console.warn('[nimbus/W9] legacy flush threw:', e?.message);
     }
-    const map: Record<string, number> = { ...existing };
-    // Snapshot fireable reasons BEFORE running any of them, so a
-    // handler that schedules itself for the next cycle doesn't get
-    // immediately re-fired in the same dispatch.
-    const fired: AlarmReason[] = [];
-    for (const [reason, when] of Object.entries(map)) {
-      if (when <= now) fired.push(reason as AlarmReason);
-    }
-    for (const reason of fired) {
-      delete map[reason];
-      try {
-        if (reason === 'w9-flush') {
-          host.processes.flushLogs();
-        } else if (reason === 'resident-launch') {
-          // Awaited, not fired and forgotten: this invocation is the fresh
-          // turn the launch asked for, and it has to stay the one paying for
-          // the chunk it just released.
-          await pumpResidentLaunches?.();
-        } else if (reason === 'log-janitor') {
-          host.processes.dropLogsOlderThan(undefined, janitorOrphanCheck);
-          // Re-arm only while the session still has running processes or
-          // buffered logs to sweep. An idle, abandoned, or destroyed
-          // session must NOT keep an eternal 60s alarm loop alive: the
-          // janitor used to self-renew unconditionally (and the DO
-          // constructor re-armed it on every alarm-triggered boot), so
-          // every session ever created kept booting its DO every ~60s
-          // forever. The accumulated fleet of deleted probe sessions
-          // produced continuous DO-storage churn (measured ~24 zombie
-          // boots/s on 2026-07-13) that intermittently reset LIVE
-          // session DOs mid-run ("Internal error in Durable Object
-          // storage caused object to be reset"). The next log append
-          // re-arms the cycle via ensureLogJanitor.
-          if (host.processes.stats.running > 0 || host.processes.logStats.totalPids > 0) {
-            map['log-janitor'] = now + 60_000;
-          } else {
-            host._w1JanitorArmed = false;
-          }
-        }
-        // Unknown reasons silently dropped (forward-compat).
-      } catch (e: any) {
-        console.warn(`[nimbus/W1] dispatch ${reason} threw:`, e?.message);
-      }
-    }
-    // Re-arm or clear.
-    const setAlarmFn = (ctx?.storage as any)?.setAlarm;
-    if (Object.keys(map).length > 0) {
-      await ctx.storage.put(W1_NEXT_ALARM_REASONS_KEY, map);
-      const earliest = Math.min(...Object.values(map));
-      if (typeof setAlarmFn === 'function') {
-        setAlarmFn.call(ctx.storage, earliest);
-      }
-    } else {
-      try { await ctx.storage.delete(W1_NEXT_ALARM_REASONS_KEY); } catch {}
-      // No remaining reasons → no setAlarm call → DO becomes
-      // hibernation-eligible after the 10s idle window.
-    }
-  } catch (e: any) {
-    console.warn('[nimbus/W1] dispatchAlarm threw:', e?.message);
-  }
-}
-
-/** W9: increment + persist isolate-gen counter once per fresh isolate. */
-export async function maybeBumpIsolateGen(host: HibHost, ctx: any): Promise<void> {
-  if (host._w9IsolateGenPersisted) return;
-  host._w9IsolateGenPersisted = true;
-  try {
-    const prev = (await ctx.storage.get(W9_ISOLATE_GEN_KEY)) as number | undefined;
-    // Adopt the persisted truth first, and adopt the bump only after the
-    // put resolves. An unpersisted `next` would be re-read as `prev` by the
-    // NEXT boot and re-issued — two instances sharing one generation is
-    // exactly the pid-aliasing this counter exists to prevent. Running on
-    // the previous persisted generation is the lesser lapse, and the
-    // put-failure case is replica-only in practice (replicas never spawn).
-    //
-    // What holds the guarantee is the output gate, not this await: measured,
-    // the block body resolves in 0 ms even with a confirmed put, because
-    // `await storage.put()` returns before durability. The gate is what
-    // keeps a pid from generation N from escaping before N is durable, which
-    // is why marking this put `allowUnconfirmed` is not a free speedup — see
-    // scratchpad/coldstart-s1.md.
-    host._w9IsolateGen = typeof prev === 'number' ? prev : 0;
-    const next = host._w9IsolateGen + 1;
-    await ctx.storage.put(W9_ISOLATE_GEN_KEY, next);
-    host._w9IsolateGen = next;
-  } catch (e: any) {
-    console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);
-  }
+  });
 }
 
 /**

@@ -28,7 +28,7 @@ import { SessionProcessSupervisor }
   from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
-import { W9_ISOLATE_GEN_KEY } from '../../packages/worker/src/session/keys.ts';
+import { ISOLATE_GEN_KEY } from '../../packages/fabric/src/alarms.ts';
 
 const GEN = 3;
 
@@ -73,7 +73,7 @@ function makeHost() {
   };
   // Mirror what the DO constructor does at boot for generation GEN.
   host.processes.setPidBase(GEN * PID_GEN_STRIDE);
-  storage.set(W9_ISOLATE_GEN_KEY, GEN);
+  storage.set(ISOLATE_GEN_KEY, GEN);
   return { host, storage, deletedAll: () => deletedAll };
 }
 
@@ -93,7 +93,7 @@ assert.equal(result.ok, true);
 // rpcDestroy re-persists it AFTER deleteAll so the next boot bumps to
 // GEN + 1. This assertion pins that the in-memory fix did not corrupt the
 // persisted value on its way through the destroy path.
-assert.equal(storage.get(W9_ISOLATE_GEN_KEY), GEN,
+assert.equal(storage.get(ISOLATE_GEN_KEY), GEN,
   're-persisted isolate generation must be the PRE-destroy one');
 
 // ── Memory now agrees with storage ──────────────────────────────────────

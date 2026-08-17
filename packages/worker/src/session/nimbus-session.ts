@@ -95,10 +95,12 @@ import {
   scheduleHibFlush as _w9DoScheduleHibFlush,
   clearDestroyedTombstone as _w1ClearDestroyedTombstone,
   dispatchAlarm as _w9DoDispatchAlarm,
-  scheduleAlarm as _w9ScheduleAlarm,
-  maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen,
   flushOnClose as _w9DoFlushOnClose,
 } from './hibernation.js';
+import {
+  scheduleAlarm as _w9ScheduleAlarm,
+  maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen,
+} from '@nimbus-sh/fabric/alarms.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -411,6 +413,8 @@ export class NimbusSession extends CloudflareDurableObject {
   _w9IsolateGen = 0;
   /** True once we've persisted the bumped gen counter to storage. */
   _w9IsolateGenPersisted = false;
+  /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
+  _w1AlarmChain?: Promise<unknown>;
   /** SQL DDL — idempotent; run on first fetch. */
   _w9SchemaInit = false;
   /** Have we wired the persist adapter into ProcessLogStore yet? */
