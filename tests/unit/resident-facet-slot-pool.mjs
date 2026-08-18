@@ -33,6 +33,9 @@ function makeCtx(id = 'session-under-test') {
   const live = new Set();
   return {
     id: { toString: () => id },
+    // The lifetime ledger persists its high-water through here; this test's
+    // subject is the free list, so the rows themselves are not asserted.
+    storage: { async get() { return undefined; }, async put() {} },
     everCreated,
     live,
     facets: {
