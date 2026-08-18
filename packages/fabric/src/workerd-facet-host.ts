@@ -109,6 +109,12 @@ interface FacetContainer {
   get(name: string, start: () => Promise<{ class: unknown }>): ResidentFacetStub;
   abort(name: string, reason?: unknown): void;
   delete(name: string): void;
+  /**
+   * Present on deployed Cloudflare workerd, absent from the pinned
+   * `@cloudflare/workers-types` and from local workerd ≤ 1.20260603.1 — see
+   * {@link cloneFacetStorage}, the one way the fabric calls it.
+   */
+  clone?(src: string, dst: string): void;
 }
 
 /** What an unkeyed `LOADER.load` hands back. */
@@ -148,6 +154,66 @@ function facetContainer(ctx: DurableObjectState): FacetContainer {
     );
   }
   return facets;
+}
+
+/**
+ * Fork one facet's entire SQLite into another by copy-on-write — the one way
+ * the fabric calls `ctx.facets.clone`, because the raw call carries a hazard
+ * measured on production workerd: ANY `src` that does not resolve to a
+ * populated facet — a typo, a name not created yet, not merely the obvious
+ * `''`/`'.'`/`'/'` — silently EMPTIES the destination and reports success. A
+ * blocklist of bad names would pass a typo straight through and wipe a
+ * process's filesystem while returning ok, so validation is positive on both
+ * ends: the source must answer as populated before the clone runs, the
+ * destination must answer as populated after it, and anything else fails
+ * loud.
+ *
+ * `populated` is the caller's probe because populated-ness is the caller's
+ * schema. The hosting actor cannot read a facet's SQLite from outside it, and
+ * an EMPTIED facet still reports a 4,096-byte database — one page, the empty
+ * file — so only a check that positively finds the caller's own data means
+ * anything. The post-clone probe is not redundant with the pre-clone one: the
+ * probe answers off the caller's accounting, and the capture races un-awaited
+ * writes to the source, so the destination is verified rather than inferred.
+ *
+ * The primitive itself, measured: a reflink, 18–31 ms for a 45.73 MB corpus
+ * and 34–54 ms for 1 GB — flat, because nothing is copied — with the data
+ * visible from the destination's constructor. Same-Durable-Object only.
+ * Quiesce and await writes to the source first; the destination name consumes
+ * a facet ID on first use like any other facet name; and the shared ~10 GiB
+ * storage budget grants no copy-on-write credit — crossing it resets the
+ * object rather than raising an error.
+ */
+export async function cloneFacetStorage(
+  ctx: DurableObjectState,
+  clone: {
+    src: string;
+    dst: string;
+    populated(name: string): boolean | Promise<boolean>;
+  },
+): Promise<void> {
+  const facets = facetContainer(ctx);
+  if (typeof facets.clone !== 'function') {
+    throw new Error(
+      'Nimbus: ctx.facets.clone is unavailable in this runtime; the reflink image '
+        + 'path needs deployed Cloudflare workerd (local workerd <= 1.20260603.1 lacks it)',
+    );
+  }
+  const { src, dst } = clone;
+  if (!(await clone.populated(src))) {
+    throw new Error(
+      `Nimbus: refusing to clone facet '${src}' into '${dst}': the source does not `
+        + 'answer as populated, and cloning an unresolvable source silently EMPTIES '
+        + 'the destination while reporting success',
+    );
+  }
+  facets.clone(src, dst);
+  if (!(await clone.populated(dst))) {
+    throw new Error(
+      `Nimbus: clone of facet '${src}' left the destination '${dst}' without the `
+        + "source's data; the destination must not be booted from",
+    );
+  }
 }
 
 /**

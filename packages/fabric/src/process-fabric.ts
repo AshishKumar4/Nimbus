@@ -419,7 +419,9 @@ export interface ProcessImageDelivery {
    * destination and reports success. Validation has to be positive on both
    * ends: the source exists and is populated before, the destination is
    * non-empty after. A blocklist of bad names would pass a typo straight
-   * through and wipe a process's filesystem while returning ok.
+   * through and wipe a process's filesystem while returning ok. Enforced by
+   * `cloneFacetStorage` in the workerd host, which is the one way the fabric
+   * calls clone.
    */
   readonly reflink: 'same-object' | 'impossible';
   /**

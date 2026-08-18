@@ -331,8 +331,13 @@ for 1 GB — flat, because nothing is copied) but also shares the session's
 same-object-only and workerd exposes no `VACUUM INTO`, `ATTACH`, or
 `sqlite3_backup` across objects. And a clone hazard we measured rather than
 assumed: ANY unresolvable `src` — a typo, a name not created yet — silently
-EMPTIES the destination and reports success. Validation must be positive on
-both ends.
+EMPTIES the destination and reports success. `cloneFacetStorage` is the one
+way the fabric calls clone: it takes the caller's `populated(name)` probe and
+asserts it positively on the source before the clone and on the destination
+after, so a typo is refused before the platform call and a wiped destination
+is never reported as success. An emptied facet still shows a 4,096-byte
+database — one page — which is why the probe must find the caller's own data,
+not a non-zero size.
 
 ## The image store
 
@@ -422,7 +427,7 @@ production workerd, June–August 2026.
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |
 | The facet start callback fires at most once | re-running it would re-execute the user's program |
 | ~5–6 concurrent dynamic workers per DO; at most 4 concurrent Loader fetches per DO method; loader-cache entries are never released | `IN_DO_THRESHOLD` = 5 sits under the fetch cap; every `loader.get(id)` permanently consumes a slot |
-| `ctx.facets.clone` is same-object only, absent from `@cloudflare/workers-types` and the pinned workerd, present in production | 18–31 ms / 45.7 MB, 34–54 ms / 1 GB; an unresolvable `src` silently EMPTIES the destination and reports success |
+| `ctx.facets.clone` is same-object only, absent from `@cloudflare/workers-types` and the pinned workerd, present in production | 18–31 ms / 45.7 MB, 34–54 ms / 1 GB; an unresolvable `src` silently EMPTIES the destination and reports success — `cloneFacetStorage` enforces the both-ends validation |
 | A DO dies at ~200 MiB of live wasm linear memory; reserved and written pages die at the same ceiling | lazy growth buys nothing; bound guest memory by rewriting the memory section |
 | A wasm stack suspended (JSPI) in one request cannot resume in another | 3 in-context resumes took 6 ms; the first cross-context one hit a 30 s timeout |
 
