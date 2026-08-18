@@ -14,6 +14,7 @@ export * from './fanout-pool.js';
 export * from './inner-do-registry.js';
 export * from './launch-journal.js';
 export * from './launch-pacer.js';
+export * from './loader-ledger.js';
 export * from './loader-pool.js';
 export * from './process-fabric.js';
 export * from './process-host.js';

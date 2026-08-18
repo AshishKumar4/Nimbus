@@ -27,6 +27,8 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { recordLoaderId, trackLoaderFetch, withDynamicWorkerCapNamed } from './loader-ledger.js';
+import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
@@ -104,6 +106,8 @@ export function assembleLoaderWorkerModuleSource(options) {
  */
 export class LoaderPool {
     loader;
+    /** The hosting actor, as the loader-ledger's per-DO key. */
+    ctx;
     concurrency;
     defaultTimeoutMs;
     defaultRetries;
@@ -143,6 +147,7 @@ export class LoaderPool {
                 'Add a [[worker_loaders]] entry to wrangler.jsonc.');
         }
         this.loader = loader;
+        this.ctx = ctx;
         this.concurrency = Math.max(1, opts?.concurrency ?? 4);
         this.defaultTimeoutMs = opts?.timeoutMs ?? 60_000;
         this.defaultRetries = Math.max(0, opts?.retries ?? 0);
@@ -371,6 +376,7 @@ export class LoaderPool {
         for (const w of allWasmEntries) {
             modules[w.name] = { wasm: w.bytes };
         }
+        assertModuleMapWithinCodeLimit(modules);
         return {
             compatibilityDate: workerOpts.compatibilityDate,
             compatibilityFlags: workerOpts.compatibilityFlags,
@@ -435,9 +441,10 @@ export class LoaderPool {
             // binding stub once the whole pool is done, which does NOT
             // invalidate any in-flight slot's entrypoint reference.
             const stub = this.loader.get(id, async () => code);
+            recordLoaderId(this.ctx, id);
             const entrypoint = stub.getEntrypoint();
             try {
-                const out = await entrypoint.execute(...args);
+                const out = await trackLoaderFetch(this.ctx, () => entrypoint.execute(...args));
                 return out;
             }
             catch (err) {
@@ -527,10 +534,14 @@ export class LoaderPool {
                 attempt++;
             }
         }
+        // On the way out only, so retries do not stack the annotation: a cap hit
+        // carries the ledger — which ids hold slots, and that a keyed id never
+        // gives one back — instead of the platform's bare message.
+        const named = withDynamicWorkerCapNamed(this.ctx, lastError);
         if (maxAttempts > 1) {
-            throw new RetryExhaustedError(maxAttempts, lastError);
+            throw new RetryExhaustedError(maxAttempts, named);
         }
-        throw lastError;
+        throw named;
     }
     #prepare(fn) {
         const fnSource = serializeFunction(fn);

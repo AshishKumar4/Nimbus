@@ -60,7 +60,7 @@
  * the union narrow and additive — adding a new value is fine, but
  * never re-purpose an existing one.
  */
-declare const OOM_CAUSES: readonly ["sqlite_nomem", "oom", "cpu_exceeded", "clone_refused", "rpc_timeout", "subrequest_cap", "condemnation", "hard_evict", "unknown"];
+declare const OOM_CAUSES: readonly ["sqlite_nomem", "oom", "cpu_exceeded", "clone_refused", "rpc_timeout", "subrequest_cap", "dynamic_worker_cap", "condemnation", "hard_evict", "unknown"];
 export type OomCause = typeof OOM_CAUSES[number];
 export declare function isOomCause(input: unknown): input is OomCause;
 /**

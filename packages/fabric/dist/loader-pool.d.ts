@@ -210,6 +210,8 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
 export declare class LoaderPool {
     #private;
     private readonly loader;
+    /** The hosting actor, as the loader-ledger's per-DO key. */
+    private readonly ctx;
     private readonly concurrency;
     private readonly defaultTimeoutMs;
     private readonly defaultRetries;

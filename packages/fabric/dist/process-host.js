@@ -103,7 +103,7 @@ class FacetProcessHost {
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return runOneShotWorker(this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
+        return runOneShotWorker(this.ctx, this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
         const supervisor = {
@@ -217,7 +217,7 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return runOneShotWorker(this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
+        return runOneShotWorker(this.ctx, this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
         const placement = await this._place(params.pid);
