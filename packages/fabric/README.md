@@ -288,7 +288,12 @@ Pieces worth knowing about, each earned the hard way:
   Reusing a NAME costs no new ID, so facet names come from a per-DO free list
   (`proc-slot-<n>`, lowest reused first), and a slot is released only after
   `facets.abort` + `facets.delete` — a slot handed out during teardown would
-  put two processes on one name.
+  put two processes on one name. The names the book does mint are counted
+  durably — `facetIdBudget(ctx)` reports `{ consumed, budget }`, first uses
+  only, adopted across resets — and a creation failure with the budget
+  consumed names the budget and the count instead of repeating the platform's
+  opaque message. Exhaustion is permanent for the object, so it is the one
+  failure worth naming precisely.
 - **At-most-once start.** The facet's start callback re-running would
   re-execute the user's program, answering a request from a process the user
   never started. Both re-entry cases (released, lost) throw instead.
@@ -411,7 +416,7 @@ production workerd, June–August 2026.
 | Invariant | Evidence |
 |---|---|
 | Facet memory independent, ~208–256 MiB each; facet CPU SHARED across siblings | 9,956 ms burn stalled a sibling 9,966 ms; awaited I/O costs siblings 0 ms |
-| 65,536 facets per DO LIFETIME; IDs append-only, never reclaimed; reusing a NAME costs no new ID | the slot book exists for this |
+| 65,536 facets per DO LIFETIME; IDs append-only, never reclaimed; reusing a NAME costs no new ID | the slot book exists for this; `facetIdBudget` counts consumption durably and a failure at the wall names the budget |
 | Dynamic-worker module map hard ceiling 67,108,864 bytes, shared across every member | 62 MiB lands, 64 MiB refused; boot cost roughly linear in map bytes and not the bottleneck (40 MiB → 1.42 s across 6,553 modules) |
 | Request-time `WebAssembly.compile`/`instantiate` CSP-blocked; wasm rides the loader modules map as `{ wasm: ArrayBuffer }`, compiled at module load | RPC of a compiled `Module` refused by structured clone; inlined bytes OOMed the supervisor |
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |

@@ -48,6 +48,7 @@ import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/p
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { startRealVite } from './start-real-vite.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
+import { facetIdBudget } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -683,6 +684,10 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         },
         facet: {
           lastDispatch: getLastFacetId(),
+          // Facet IDs consumed over this DO's LIFETIME against the 65,536 the
+          // platform will ever grant it. Append-only and never reclaimed;
+          // crossing the wall is unrecoverable for the object.
+          idBudget: await facetIdBudget(self.ctx),
         },
 
         // ── v3 / C' observability foundation ──────────────────────
