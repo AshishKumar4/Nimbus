@@ -20,6 +20,11 @@ import {
   supervisorEntrypointName,
 } from './ctx-exports.js';
 import {
+  recordLoaderId,
+  trackLoaderFetch,
+  withDynamicWorkerCapNamed,
+} from './loader-ledger.js';
+import {
   RESIDENT_PROCESS_CLASS,
   requireStagedBootAssembler,
   residentLoaderConfig,
@@ -438,7 +443,7 @@ export function openResidentFacet(
       );
     }
     evaluated = true;
-    return { class: residentProcessClass(env, disk, supervisor, params) };
+    return { class: residentProcessClass(ctx, env, disk, supervisor, params) };
   };
   let facet: ResidentFacetStub;
   try {
@@ -496,6 +501,7 @@ export function openResidentFacet(
  * the hosting DO's heap.
  */
 function residentProcessClass(
+  ctx: DurableObjectState,
   env: ResidentFacetEnv,
   disk: () => ResidentDiskReader,
   supervisor: ResidentSupervisorProps,
@@ -508,9 +514,15 @@ function residentProcessClass(
         + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.',
     );
   }
-  return loader
-    .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-    .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+  try {
+    const worker = loader
+      .get(params.workerKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+      .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+    recordLoaderId(ctx, params.workerKey);
+    return worker;
+  } catch (error) {
+    throw withDynamicWorkerCapNamed(ctx, error);
+  }
 }
 
 /**
@@ -527,6 +539,7 @@ function residentProcessClass(
  * specs exist to avoid — for a run that gains nothing by moving.
  */
 export async function runOneShotWorker<T>(
+  ctx: DurableObjectState,
   env: ResidentFacetEnv,
   supervisor: ResidentSupervisorProps,
   params: OneShotParams,
@@ -563,16 +576,24 @@ export async function runOneShotWorker<T>(
     // copy of the program alive for as long as the program runs.
     spec = undefined;
     entrypoint = worker.getEntrypoint();
-    if (typeof entrypoint.fetch !== 'function') {
+    // Narrowed by the runtime check; kept as a property call on the stub —
+    // extracting the method builds a pipelined `fetch.call` path workerd
+    // refuses for dynamically-loaded workers.
+    const ep = entrypoint as LoadedWorkerEntrypointStub & { fetch(request: Request): Promise<Response> };
+    if (typeof ep.fetch !== 'function') {
       throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
     }
     params.onLoaded?.();
-    const response = await entrypoint.fetch(params.request);
+    // The unkeyed worker is a live dynamic worker for exactly this call, so
+    // the run is a Loader fetch on the hosting actor's ledger.
+    const response = await trackLoaderFetch(ctx, () => ep.fetch(params.request));
     try {
       return await consume(response);
     } finally {
       disposeRpcResource(response);
     }
+  } catch (error) {
+    throw withDynamicWorkerCapNamed(ctx, error);
   } finally {
     disposeRpcResource(entrypoint);
     disposeRpcResource(worker);

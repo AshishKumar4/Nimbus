@@ -135,6 +135,7 @@ class FacetProcessHost implements ProcessHost {
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return runOneShotWorker(
+      this.ctx,
       this.env,
       { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
       params,
@@ -319,6 +320,7 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return runOneShotWorker(
+      this.ctx,
       this.env,
       { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
       params,

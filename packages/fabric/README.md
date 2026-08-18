@@ -243,6 +243,16 @@ across sibling DOs (up to 32, dispatched in phases of 4 to bound simultaneous
 cold starts). Transient peer resets retry on a 250/750/1500 ms schedule; an
 overloaded peer gets the 1/3/6 s one.
 
+Every fabric call into the loader lands on a per-DO ledger: distinct ids ever
+gotten — each permanently holds one of the ~5–6 dynamic-worker slots, because
+a keyed `loader.get(id)` is never released — plus live and peak concurrent
+Loader fetches, read via `loaderLedgerStats(ctx)`. A "Too many concurrent
+dynamic workers" refusal classifies as `dynamic_worker_cap` and is annotated
+with the ids actually holding slots. Measurement and honest failure naming
+only — no admission control, because the cap is the platform's and
+approximate, and a gate on an approximate number would refuse work the
+platform would have run.
+
 ## Running processes: the resident fabric
 
 A resident process — a dev server, a socket runner, an attached TUI — is a DO
@@ -426,7 +436,7 @@ production workerd, June–August 2026.
 | Request-time `WebAssembly.compile`/`instantiate` CSP-blocked; wasm rides the loader modules map as `{ wasm: ArrayBuffer }`, compiled at module load | RPC of a compiled `Module` refused by structured clone; inlined bytes OOMed the supervisor |
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |
 | The facet start callback fires at most once | re-running it would re-execute the user's program |
-| ~5–6 concurrent dynamic workers per DO; at most 4 concurrent Loader fetches per DO method; loader-cache entries are never released | `IN_DO_THRESHOLD` = 5 sits under the fetch cap; every `loader.get(id)` permanently consumes a slot |
+| ~5–6 concurrent dynamic workers per DO; at most 4 concurrent Loader fetches per DO method; loader-cache entries are never released | `IN_DO_THRESHOLD` = 5 sits under the fetch cap; every `loader.get(id)` permanently consumes a slot — counted per DO by the loader ledger, and a cap refusal names the ids holding them |
 | `ctx.facets.clone` is same-object only, absent from `@cloudflare/workers-types` and the pinned workerd, present in production | 18–31 ms / 45.7 MB, 34–54 ms / 1 GB; an unresolvable `src` silently EMPTIES the destination and reports success — `cloneFacetStorage` enforces the both-ends validation |
 | A DO dies at ~200 MiB of live wasm linear memory; reserved and written pages die at the same ceiling | lazy growth buys nothing; bound guest memory by rewriting the memory section |
 | A wasm stack suspended (JSPI) in one request cannot resume in another | 3 in-context resumes took 6 ms; the first cross-context one hit a 30 s timeout |

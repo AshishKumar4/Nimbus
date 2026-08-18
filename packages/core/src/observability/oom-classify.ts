@@ -68,6 +68,7 @@ const OOM_CAUSES = [
   'clone_refused',
   'rpc_timeout',
   'subrequest_cap',
+  'dynamic_worker_cap',
   'condemnation',
   'hard_evict',
   'unknown',
@@ -116,6 +117,12 @@ export function classifyMessage(msg: string): OomCause {
 
   // Subrequest cap (Cloudflare platform)
   if (m.includes('too many subrequests')) return 'subrequest_cap';
+
+  // Worker Loader concurrency cap (Cloudflare platform): a Durable Object
+  // admits ~5-6 concurrent dynamic workers, and loader-cache entries are
+  // never released — every distinct loader.get(id) permanently consumes a
+  // slot, so this cap recurs until the DO itself is replaced.
+  if (m.includes('too many concurrent dynamic workers')) return 'dynamic_worker_cap';
 
   // Memory exhaustion. workerd trace outcome `exceededMemory`; in-band it
   // arrives as a `broken.exceededMemory` actor break, a "…exceeded [its]

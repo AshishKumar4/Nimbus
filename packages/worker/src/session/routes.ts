@@ -49,6 +49,7 @@ import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-ha
 import { startRealVite } from './start-real-vite.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { facetIdBudget } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { loaderLedgerStats } from '@nimbus-sh/fabric/loader-ledger.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -679,6 +680,10 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         // (32 entries) with FIFO eviction. The counters here let
         // ops dashboards visualise the bound + the eviction rate.
         loadedCodes: getLoadedCodesStats(),
+        // Per-DO Worker Loader accounting: distinct loader ids ever gotten
+        // (each permanently holds one of the ~5-6 dynamic-worker slots) and
+        // live/peak concurrent Loader fetches.
+        loader: loaderLedgerStats(self.ctx),
         rpc: {
           lastFrame: getLastRpcFrame(),
         },
