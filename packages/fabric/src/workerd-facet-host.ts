@@ -101,6 +101,61 @@ export async function createLoadedWorkerEntrypoint(
  */
 export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
 
+/**
+ * Refuse a module map over {@link DYNAMIC_WORKER_CODE_LIMIT_BYTES}, naming
+ * the largest members. The platform's own refusal reports one number for a
+ * budget shared across every member of the map, which tells the operator
+ * nothing about WHAT to shrink — so every fabric seam that assembles a map
+ * runs this before the loader sees it.
+ *
+ * Costed to its two paths. Under the ceiling: one length read per member —
+ * UTF-16 code units for text, which equal UTF-8 bytes for the ASCII module
+ * text the generators emit and undercount otherwise; the platform's own
+ * refusal still backstops the exotic case, because this check exists to name
+ * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
+ * then, sorted so the biggest lever is first.
+ */
+export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void {
+  let estimate = 0;
+  for (const content of Object.values(modules)) {
+    estimate += memberBytes(content, null);
+  }
+  if (estimate <= DYNAMIC_WORKER_CODE_LIMIT_BYTES) return;
+
+  const encoder = new TextEncoder();
+  const sized = Object.entries(modules)
+    .map(([name, content]) => ({ name, bytes: memberBytes(content, encoder) }))
+    .sort((a, b) => b.bytes - a.bytes);
+  const total = sized.reduce((sum, member) => sum + member.bytes, 0);
+  const top = sized.slice(0, 5)
+    .map(({ name, bytes }) => `'${name}' (${bytes.toLocaleString('en-US')} bytes)`)
+    .join(', ');
+  throw new Error(
+    `Nimbus: dynamic-worker module map is ${total.toLocaleString('en-US')} bytes, over the `
+      + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte platform ceiling shared by `
+      + `every member. Largest members: ${top}`,
+  );
+}
+
+/**
+ * Bytes one module-map member carries, across the loader's content kinds
+ * (plain string, `{ js | cjs | py | text }`, `{ wasm | data }`). With an
+ * encoder, text is measured exactly; without one, by code-unit length.
+ */
+function memberBytes(content: unknown, encoder: TextEncoder | null): number {
+  const textBytes = (text: string): number =>
+    encoder ? encoder.encode(text).byteLength : text.length;
+  if (typeof content === 'string') return textBytes(content);
+  if (content !== null && typeof content === 'object') {
+    for (const value of Object.values(content)) {
+      if (typeof value === 'string') return textBytes(value);
+      if (value instanceof ArrayBuffer) return value.byteLength;
+      if (ArrayBuffer.isView(value)) return value.byteLength;
+    }
+  }
+  return 0;
+}
+
 // ── Facet plumbing ──────────────────────────────────────────────────────────
 
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
@@ -561,6 +616,7 @@ export async function runOneShotWorker<T>(
     // until there is a program to do the writing, and a map that fails to
     // assemble should not have granted append authority on its way out.
     let spec: OneShotCodeSpec | undefined = await params.code();
+    assertModuleMapWithinCodeLimit(spec.modules);
     if (supervisorRpc) {
       params.onWriterActivated(params.writerId);
       supervisorBinding = supervisorRpc({ props: supervisor });
@@ -610,6 +666,9 @@ async function residentWorkerConfig(
   const config = boot.kind === 'staged'
     ? await requireStagedBootAssembler()(env, boot.stage)
     : await residentLoaderConfig(boot.code, disk());
+  assertModuleMapWithinCodeLimit(
+    (config as { modules?: Record<string, unknown> }).modules ?? {},
+  );
   const supervisorRpc = supervisorEntrypoint();
   if (!supervisorRpc) {
     throw new Error(

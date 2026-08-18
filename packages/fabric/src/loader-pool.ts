@@ -29,6 +29,7 @@ import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { recordLoaderId, trackLoaderFetch, withDynamicWorkerCapNamed } from './loader-ledger.js';
+import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
 import {
@@ -625,6 +626,7 @@ export class LoaderPool {
     for (const w of allWasmEntries) {
       modules[w.name] = { wasm: w.bytes };
     }
+    assertModuleMapWithinCodeLimit(modules);
 
     return {
       compatibilityDate: workerOpts.compatibilityDate,

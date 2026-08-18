@@ -28,6 +28,7 @@ import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
 import { requireStagedBootAssembler } from './process-fabric.js';
+import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
 
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
@@ -455,6 +456,9 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
       const stage = props.stage;
       outerStub = outerLoader.get(props.key, async () => {
         const assembled = await requireStagedBootAssembler()(this.env, stage);
+        assertModuleMapWithinCodeLimit(
+          (assembled as { modules?: Record<string, unknown> }).modules ?? {},
+        );
         const supervisorBinding = await this._supervisorBinding(props);
         if (!supervisorBinding) return assembled;
         return { ...assembled, env: { SUPERVISOR: supervisorBinding } };

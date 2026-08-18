@@ -432,7 +432,7 @@ production workerd, June–August 2026.
 |---|---|
 | Facet memory independent, ~208–256 MiB each; facet CPU SHARED across siblings | 9,956 ms burn stalled a sibling 9,966 ms; awaited I/O costs siblings 0 ms |
 | 65,536 facets per DO LIFETIME; IDs append-only, never reclaimed; reusing a NAME costs no new ID | the slot book exists for this; `facetIdBudget` counts consumption durably and a failure at the wall names the budget |
-| Dynamic-worker module map hard ceiling 67,108,864 bytes, shared across every member | 62 MiB lands, 64 MiB refused; boot cost roughly linear in map bytes and not the bottleneck (40 MiB → 1.42 s across 6,553 modules) |
+| Dynamic-worker module map hard ceiling 67,108,864 bytes, shared across every member | 62 MiB lands, 64 MiB refused; boot cost roughly linear in map bytes and not the bottleneck (40 MiB → 1.42 s across 6,553 modules); every assembly seam refuses an over-ceiling map listing the largest members by size, because the platform's refusal names none |
 | Request-time `WebAssembly.compile`/`instantiate` CSP-blocked; wasm rides the loader modules map as `{ wasm: ArrayBuffer }`, compiled at module load | RPC of a compiled `Module` refused by structured clone; inlined bytes OOMed the supervisor |
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |
 | The facet start callback fires at most once | re-running it would re-execute the user's program |
