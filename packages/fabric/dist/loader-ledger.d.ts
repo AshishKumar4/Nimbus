@@ -24,8 +24,22 @@
  */
 /** Record a keyed `loader.get(id)` — a permanent slot if the id is new. */
 export declare function recordLoaderId(ctx: object, id: string): void;
-/** Run one call into a dynamic worker, counted as a live Loader fetch. */
-export declare function trackLoaderFetch<T>(ctx: object, run: () => Promise<T>): Promise<T>;
+/**
+ * Count one call into a dynamic worker as a live Loader fetch; the returned
+ * function ends it (idempotently), from the caller's own `finally`.
+ *
+ * A begin/end pair rather than a wrapper on purpose, and the shape is
+ * load-bearing: wrapping the stub call in a ledger-owned async frame
+ * (`trackLoaderFetch(ctx, () => entrypoint.execute(...))`) left the hosting
+ * Durable Object poisoned after every pooled dispatch — the next fabric
+ * activity hung the object or reset the instance outright (pid base jumped,
+ * every attached WebSocket dropped with no close frame), measured 7/7 on
+ * staging and gone 3/3 with the direct call restored. Same seam-quirk class
+ * as pipelined `fetch.call`, which workerd refuses for dynamically-loaded
+ * workers: an RPC stub call must stay a direct property call awaited by the
+ * frame that made it, so the ledger only brackets it.
+ */
+export declare function beginLoaderFetch(ctx: object): () => void;
 /** Snapshot for the diag surface. Pure read; no I/O. */
 export declare function loaderLedgerStats(ctx: object): {
     idsEverGotten: string[];

@@ -27,7 +27,7 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { recordLoaderId, trackLoaderFetch, withDynamicWorkerCapNamed } from './loader-ledger.js';
+import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './loader-ledger.js';
 import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
@@ -443,8 +443,11 @@ export class LoaderPool {
             const stub = this.loader.get(id, async () => code);
             recordLoaderId(this.ctx, id);
             const entrypoint = stub.getEntrypoint();
+            // Direct property call, awaited by this frame — bracketed, never
+            // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
+            const endFetch = beginLoaderFetch(this.ctx);
             try {
-                const out = await trackLoaderFetch(this.ctx, () => entrypoint.execute(...args));
+                const out = await entrypoint.execute(...args);
                 return out;
             }
             catch (err) {
@@ -452,6 +455,9 @@ export class LoaderPool {
                     throw new ExecutionError(err.message, err.stack);
                 }
                 throw new ExecutionError(String(err));
+            }
+            finally {
+                endFetch();
             }
         };
         const maxAttempts = 1 + resilience.retries;

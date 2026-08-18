@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
-import { loaderLedgerStats } from '../../packages/fabric/src/loader-ledger.ts';
+import { beginLoaderFetch, loaderLedgerStats } from '../../packages/fabric/src/loader-ledger.ts';
 import { classifyMessage } from '../../packages/core/src/observability/oom-classify.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
@@ -70,6 +70,21 @@ assert.equal(
   await pool.submit((value) => value, 'again');
   assert.equal(loaderLedgerStats(ctx).idsEverGotten.length, 2, 'warm reuse adds no id');
   pool.dispose();
+}
+
+// ── (2b) begin/end brackets are idempotent on the end side ──────────────────
+// The bracket exists because wrapping the stub call in a ledger-owned async
+// frame poisoned the hosting DO (see beginLoaderFetch); the end function may
+// therefore sit in a `finally` that can run after an error path already ended
+// the fetch, and a double end must not drive the live count negative.
+{
+  const ctx = { id: { toString: () => 'bracket-session-id' } };
+  const end = beginLoaderFetch(ctx);
+  assert.equal(loaderLedgerStats(ctx).liveFetches, 1, 'begin counts the fetch live');
+  end();
+  end();
+  assert.equal(loaderLedgerStats(ctx).liveFetches, 0, 'a second end is a no-op, not a negative count');
+  assert.equal(loaderLedgerStats(ctx).peakLiveFetches, 1, 'the peak survives');
 }
 
 // ── (3b) the cap failure names the ids holding the slots ────────────────────

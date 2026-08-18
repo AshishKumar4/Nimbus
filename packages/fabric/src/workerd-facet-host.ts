@@ -20,8 +20,8 @@ import {
   supervisorEntrypointName,
 } from './ctx-exports.js';
 import {
+  beginLoaderFetch,
   recordLoaderId,
-  trackLoaderFetch,
   withDynamicWorkerCapNamed,
 } from './loader-ledger.js';
 import {
@@ -641,8 +641,16 @@ export async function runOneShotWorker<T>(
     }
     params.onLoaded?.();
     // The unkeyed worker is a live dynamic worker for exactly this call, so
-    // the run is a Loader fetch on the hosting actor's ledger.
-    const response = await trackLoaderFetch(ctx, () => ep.fetch(params.request));
+    // the run is a Loader fetch on the hosting actor's ledger — bracketed,
+    // never wrapped: see beginLoaderFetch for the measured DO-poisoning
+    // hazard, and the pipelined-`fetch.call` note above for its sibling.
+    const endFetch = beginLoaderFetch(ctx);
+    let response: Response;
+    try {
+      response = await ep.fetch(params.request);
+    } finally {
+      endFetch();
+    }
     try {
       return await consume(response);
     } finally {
