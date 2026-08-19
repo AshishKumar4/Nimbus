@@ -162,6 +162,12 @@ function memberBytes(content: unknown, encoder: TextEncoder | null): number {
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
   handleHttpRequest(request: Request): Promise<Response>;
+  /**
+   * A facet stub is a Durable Object stub, so it fetches. That is the one path
+   * an upgrade can take: a 101 owns a live socket, which the RPC
+   * Request/Response transport reconstructs rather than hands over.
+   */
+  fetch(request: Request): Promise<Response>;
 }
 
 /** `ctx.facets` — a Durable Object's named child actors. */
@@ -544,6 +550,7 @@ export function openResidentFacet(
     // with it, so there is no independent death to report.
     lost: new Promise<never>(() => {}),
     handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
+    handleWebSocketRequest: (request: Request) => facet.fetch(request),
     release,
     slot,
   };

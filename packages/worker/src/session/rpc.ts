@@ -1513,6 +1513,8 @@ const HostProcessOptsSchema = z.object({
   writerId: z.string().uuid(),
   /** Keyed dynamic-worker identity on THIS peer's loader. */
   workerKey: z.string().min(1),
+  /** Unforgeable capability for the fetch-semantic WebSocket hop. */
+  webSocketCapability: z.string().uuid(),
   /** Opaque arguments forwarded to the runner's startProcess. */
   startArgs: z.unknown().optional(),
 });
@@ -1526,6 +1528,8 @@ const HostProcessOptsSchema = z.object({
 export interface HostedProcessRecord {
   facet: Promise<ResidentFacet>;
   started: Promise<unknown>;
+  /** Unforgeable capability for the fetch-semantic WebSocket hop. */
+  webSocketCapability: string;
   /** Settles when the coordinator cancels or the process is torn down. */
   cancelled: Promise<void>;
   cancel(): void;
@@ -1699,6 +1703,7 @@ export async function _rpcHostProcess(
   registerHostedRecord(self, workerKey, {
     facet: facetPromise,
     started: startedPromise,
+    webSocketCapability: hostOpts.webSocketCapability,
     cancelled,
     cancel,
   });
@@ -1804,6 +1809,27 @@ export async function _rpcRouteHostedHttp(
     headers: headerPairs(response.headers),
     body,
   };
+}
+
+/**
+ * The peer end of the upgrade hop. Reached by `fetch` rather than RPC, so the
+ * 101 and its live socket travel back as themselves.
+ *
+ * The workerKey names a process and is derivable from a pid, so it does not
+ * authorise on its own; the capability is minted by whoever opened the process
+ * and never leaves the two sessions that hold it. A mismatch is a 404 and not
+ * a 403, so the route reveals nothing about what this peer is hosting.
+ */
+export async function routeHostedWebSocket(
+  self: RpcHost,
+  workerKey: string,
+  capability: string,
+  request: Request,
+): Promise<Response> {
+  const record = await awaitHostedRecord(self, workerKey);
+  if (record.webSocketCapability !== capability) return new Response('Not found', { status: 404 });
+  const facet = await record.facet;
+  return facet.handleWebSocketRequest(request);
 }
 
 /**

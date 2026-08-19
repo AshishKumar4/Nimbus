@@ -475,6 +475,7 @@ for (const mode of PROCESS_HOST_MODES) {
   };
   const goodOpts = {
     coordinatorDoId: 'coord-do-id', pid: 62, writerId: crypto.randomUUID(), workerKey: 'k62',
+    webSocketCapability: crypto.randomUUID(),
   };
   const goodOpts2 = { ...goodOpts, writerId: crypto.randomUUID() };
   await assert.rejects(_rpcHostProcess(peer, CODE_BOOT, { ...goodOpts, pid: -1 }),

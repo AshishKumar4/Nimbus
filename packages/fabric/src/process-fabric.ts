@@ -367,6 +367,11 @@ export interface HostedProcess {
   /** Inbound HTTP for the process's registered ports. */
   handleHttpRequest(request: Request): Promise<Response>;
   /**
+   * Inbound WebSocket upgrade, on fetch semantics for every hop. A 101
+   * Response owns a live socket, which the parts-based RPC path cannot carry.
+   */
+  handleWebSocketRequest(request: Request): Promise<Response>;
+  /**
    * Idempotent teardown. Settles only once the process is actually gone —
    * on a remote host that is a round trip, and the writer identity this
    * incarnation holds may not be retired before it completes.
@@ -713,7 +718,10 @@ export class ProcessFabric {
     return new ResidentProcessHandle({
       done,
       booted: () => hosted.started,
-      routeTarget: { handleHttpRequest: (request: Request) => hosted.handleHttpRequest(request) },
+      routeTarget: {
+        handleHttpRequest: (request: Request) => hosted.handleHttpRequest(request),
+        handleWebSocketRequest: (request: Request) => hosted.handleWebSocketRequest(request),
+      },
       kill: () => { held.release(); void release(); },
       describe: () => hosted.describe(),
     });

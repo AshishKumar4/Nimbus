@@ -50,6 +50,11 @@ import { startRealVite } from './start-real-vite.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { facetIdBudget } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { loaderLedgerStats } from '@nimbus-sh/fabric/loader-ledger.js';
+import {
+  HOSTED_WEBSOCKET_CAPABILITY_HEADER,
+  HOSTED_WEBSOCKET_KEY_HEADER,
+} from '@nimbus-sh/fabric/process-host.js';
+import { routeHostedWebSocket } from './rpc.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -322,6 +327,27 @@ async function parseJsonBody<T>(request: Request, schema: z.ZodType<T>): Promise
 
 export async function handleFetch(self: RoutesHost, request: Request): Promise<Response> {
     const url = new URL(request.url);
+    // The peer end of the fetch-semantic WebSocket hop, before anything else:
+    // this request is a sibling coordinator's, not a browser's, and it names
+    // the hosted process rather than a route on this session. Both headers are
+    // stripped so the process never sees the transport that carried it.
+    const hostedWebSocket = request.headers.get(HOSTED_WEBSOCKET_KEY_HEADER);
+    if (hostedWebSocket) {
+      if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+        return new Response('Expected WebSocket', { status: 426 });
+      }
+      const capability = request.headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+      if (!capability) return new Response('Not found', { status: 404 });
+      const headers = new Headers(request.headers);
+      headers.delete(HOSTED_WEBSOCKET_KEY_HEADER);
+      headers.delete(HOSTED_WEBSOCKET_CAPABILITY_HEADER);
+      return routeHostedWebSocket(
+        self,
+        hostedWebSocket,
+        capability,
+        new Request(request.url, { method: request.method, headers }),
+      );
+    }
     // Capture session basePath from the routing header (if forwarded by the
     // Worker's session-router). Threaded through to ViteDevServer so the
     // served app's module URLs, HMR paths, <base href>, and router basename

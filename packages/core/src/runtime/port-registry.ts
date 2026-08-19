@@ -205,11 +205,19 @@ export class PortRegistry {
       if (hasBody) init.duplex = 'half';
       const forwarded = new Request(innerUrl.toString(), init);
 
-      // RPC: the facet receives the Request and returns a Response.
-      // Both cross the isolate boundary via Workers RPC's native
-      // Request/Response transport — bytes are streamed with
-      // flow-control, never materialised.
-      const response: Response = await entry.facetStub.handleHttpRequest(forwarded);
+      // HTTP crosses Workers RPC as Request/Response values, streamed with
+      // flow control and never materialised. A WebSocket upgrade cannot: its
+      // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
+      // which every hop preserves. A target with no such entrypoint serves
+      // HTTP only, and says so rather than dropping the socket.
+      const isWebSocket = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+      const handler = isWebSocket
+        ? entry.facetStub.handleWebSocketRequest
+        : entry.facetStub.handleHttpRequest;
+      if (!handler) {
+        return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
+      }
+      const response: Response = await handler(forwarded);
 
       if (!(response instanceof Response)) {
         // Defensive: if a facet ever returns something else (JSON
@@ -286,10 +294,20 @@ export class PortRegistry {
 
 function routeableFacetTarget(value: unknown): RouteableFacetTarget | null {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return null;
-  const method = Reflect.get(value, 'fetch') || Reflect.get(value, 'handleHttpRequest');
-  if (typeof method !== 'function') return null;
+  // A `fetch` target already has fetch semantics, so it serves both.
+  const fetchMethod = Reflect.get(value, 'fetch');
+  if (typeof fetchMethod === 'function') {
+    const fetch = fetchMethod.bind(value) as (request: Request) => Promise<Response>;
+    return { handleHttpRequest: fetch, handleWebSocketRequest: fetch };
+  }
+  const httpMethod = Reflect.get(value, 'handleHttpRequest');
+  if (typeof httpMethod !== 'function') return null;
+  const webSocketMethod = Reflect.get(value, 'handleWebSocketRequest');
   return {
-    handleHttpRequest: method.bind(value),
+    handleHttpRequest: httpMethod.bind(value),
+    ...(typeof webSocketMethod === 'function'
+      ? { handleWebSocketRequest: webSocketMethod.bind(value) }
+      : {}),
   };
 }
 
