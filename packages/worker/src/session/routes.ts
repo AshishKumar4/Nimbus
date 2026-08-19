@@ -55,6 +55,13 @@ import {
   HOSTED_WEBSOCKET_KEY_HEADER,
 } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
+import {
+  clearPortCapability,
+  persistPortCapability,
+  readPortCapability,
+  restorePortCapability,
+} from './port-capability.js';
+import { PREVIEW_CAPABILITY_HEADER } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -120,6 +127,9 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
     // were recorded predate P5 and are vite's default.
     const port = (config.port && Number.isFinite(config.port)) ? config.port : DEFAULT_VITE_PORT;
     if (onlyPort != null && onlyPort !== port) return;
+    // Read BEFORE the restore: bringing the server back re-registers the port,
+    // and a fresh registration mints a capability nobody was ever handed.
+    const persistedCapability = await readPortCapability(self, port);
 
     // A cirrus-real session rebuilds the real-vite facet, not the Cirrus shim —
     // same key, same starter the `vite` builtin uses, so a woken real-vite
@@ -138,6 +148,7 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
         configDir: config.configDir || config.root,
       }).finally(() => { self._realViteRestore = null; });
       await self._realViteRestore;
+      await readoptCapability(self, port, persistedCapability);
       return;
     }
 
@@ -174,7 +185,9 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
     // restored server across hibernation cycles.
     try {
       self.portRegistry.bindFacetStub(entry.pid, makeLongRunningPortStub(self.viteDevServer));
+      await clearPortCapability(self, port);
       self.portRegistry.register(port, entry.pid);
+      await readoptCapability(self, port, persistedCapability);
       self._viteShimPid = entry.pid;
       self._viteShimPort = port;
     } catch { /* registry full / unavailable — the server still serves /preview/ */ }
@@ -203,8 +216,19 @@ async function routeToSessionPort(
   request: Request,
   innerPath: string,
   mountBase: string,
+  capability?: string,
 ): Promise<Response> {
   await restorePersistedDevServer(self, port);
+  if (capability !== undefined) {
+    // A rebuilt supervisor holds a capability nobody was handed; the durable
+    // one is the value in circulation, so it wins before the check.
+    await restorePortCapability(self, port);
+    if (!self.portRegistry.hasCapability(port, capability)) {
+      // 404, not 403: a wrong capability must not confirm that the port is
+      // listening at all.
+      return new Response('Not found', { status: 404 });
+    }
+  }
   if (port === self._viteShimPort) {
     // The preview HMR WebSocket can't cross the port-registry RPC, so it is
     // accepted in-DO for both dev servers — the same handling `/preview/` uses.
@@ -217,9 +241,37 @@ async function routeToSessionPort(
       return self.viteDevServer.handleRequest(request, innerPath, mountBase);
     }
   }
-  const proxied = await self.portRegistry.routeRequest(port, request, innerPath);
+  const proxied = capability === undefined
+    ? await self.portRegistry.routeRequest(port, request, innerPath)
+    : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
   if (proxied) return proxied;
   return new Response(`No process listening on port ${port}`, { status: 502 });
+}
+
+/**
+ * Re-adopt a preview capability the embedder already holds, after a restore
+ * re-registered the port under a freshly minted one.
+ */
+async function readoptCapability(
+  self: RoutesHost,
+  port: number,
+  capability: string | null,
+): Promise<void> {
+  if (!capability) return;
+  if (self.portRegistry.restoreCapability(port, capability)) {
+    await persistPortCapability(self, port, capability);
+  }
+}
+
+/** Route a capability-authenticated embedder request to a guest HTTP server. */
+export function routeCapabilityPort(
+  self: RoutesHost,
+  port: number,
+  capability: string,
+  request: Request,
+  innerPath: string,
+): Promise<Response> {
+  return routeToSessionPort(self, port, request, normalizeForwardedHttpPath(innerPath), '', capability);
 }
 
 /**
@@ -1058,7 +1110,8 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         try {
           const apiViteStub = makeLongRunningPortStub(self.viteDevServer);
           self.portRegistry.bindFacetStub(apiViteEntry.pid, apiViteStub);
-          self.portRegistry.register(apiVitePort, apiViteEntry.pid);
+          await clearPortCapability(self, apiVitePort);
+        self.portRegistry.register(apiVitePort, apiViteEntry.pid);
           self._viteShimPid = apiViteEntry.pid;
           self._viteShimPort = apiVitePort;
         } catch {}
@@ -1277,7 +1330,17 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
     if (portMatch) {
       const port = parseInt(portMatch[1]);
       const path = normalizeForwardedHttpPath(portMatch[2] || '/');
-      return routeToSessionPort(self, port, request, path, portRouteMountBase(request, port));
+      // An embedder that authenticated a preview capability at its own edge
+      // forwards it here; the guest's Authorization then survives the hop.
+      const capability = request.headers.get(PREVIEW_CAPABILITY_HEADER);
+      return routeToSessionPort(
+        self,
+        port,
+        request,
+        path,
+        portRouteMountBase(request, port),
+        capability ?? undefined,
+      );
     }
 
     // ── /api/_diag/cache — per-tier cache observability ───────────────

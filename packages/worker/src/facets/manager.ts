@@ -30,6 +30,7 @@ import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledge
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { clearPortCapability } from '../session/port-capability.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
@@ -4615,6 +4616,7 @@ export class FacetManager {
             this.releaseProcessRpcResources(pid);
           }),
       );
+      await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
       this.portRegistry.register(port, pid);
       return { pid, exitCode: 0, stdout: '', stderr: '', vfsWrites: {} };
     } catch (e) {
@@ -5174,6 +5176,9 @@ export class FacetManager {
       }
 
       if (opts.port && opts.port > 0 && opts.port < 65536) {
+        // A new process on a port retires the previous occupant's preview
+        // capability, so a URL handed out for that one cannot reach this one.
+        await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port);
         this.portRegistry.register(opts.port, entry.pid);
       }
     } catch (e: unknown) {
@@ -5250,6 +5255,9 @@ export class FacetManager {
       resourcesTracked = true;
       this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
       if (opts.port && opts.port > 0 && opts.port < 65536) {
+        // A new process on a port retires the previous occupant's preview
+        // capability, so a URL handed out for that one cannot reach this one.
+        await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port);
         this.portRegistry.register(opts.port, entry.pid);
       }
       return { pid: entry.pid, boot: await handle.booted() };

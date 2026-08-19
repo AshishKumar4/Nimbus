@@ -76,6 +76,7 @@ import {
   MAX_RPC_SAFE_PAYLOAD_BYTES,
 } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
+import { clearPortCapability } from './port-capability.js';
 import { z } from 'zod/v4';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
@@ -1205,6 +1206,8 @@ export async function _rpcPrefetch(self: RpcHost, cwd: string, entryCode: string
 export async function _rpcRegisterPort(self: RpcHost, pid: number, port: number): Promise<void> {
     // Port registration stores the facet association
     // The actual facet stub is stored by FacetManager separately
+    // A new registration retires the previous occupant's preview capability.
+    await clearPortCapability(self, port);
     self.portRegistry.register(port, pid);
 }
 

@@ -911,6 +911,10 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcListPorts() { return _programmatic.rpcListPorts(this as any); }
   async _rpcExposePort(port: number) { return _programmatic.rpcExposePort(this as any, port); }
   async _rpcUnexposePort(port: number) { return _programmatic.rpcUnexposePort(this as any, port); }
+  /** Capability-authenticated port route, for an embedder holding the token. */
+  async _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string) {
+    return _routes.routeCapabilityPort(this as any, port, capability, request, innerPath);
+  }
   async _rpcDeleteFile(path: string, options?: { recursive?: boolean }) { return _programmatic.rpcDeleteFile(this as any, path, options); }
   async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 

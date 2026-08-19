@@ -40,6 +40,17 @@ export interface PortEntry {
    */
   facetStub: RouteableFacetTarget | null;
   registeredAt: number;
+  /**
+   * Unguessable token for the lifetime of THIS registration, so an embedder
+   * can hand out one port's traffic without handing out the session. A fresh
+   * one per `register`, which is what makes an unexposed port stay unexposed.
+   */
+  capability: string;
+}
+
+function createPortCapability(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export class PortRegistry {
@@ -64,7 +75,13 @@ export class PortRegistry {
    */
   register(port: number, pid: number): void {
     const target = this.facetStubsByPid.get(pid) ?? null;
-    this.ports.set(port, { port, pid, facetStub: target, registeredAt: Date.now() });
+    this.ports.set(port, {
+      port,
+      pid,
+      facetStub: target,
+      registeredAt: Date.now(),
+      capability: createPortCapability(),
+    });
     this.notifyPortWaiters(pid);
   }
 
@@ -126,6 +143,24 @@ export class PortRegistry {
     return [...this.ports.values()];
   }
 
+  /** Answer only whether this capability matches, never what is registered. */
+  hasCapability(port: number, capability: string): boolean {
+    return this.ports.get(port)?.capability === capability;
+  }
+
+  /**
+   * Re-adopt a capability the embedder was already handed, after the supervisor
+   * was rebuilt. A restored dev server is a NEW registration with a new token,
+   * which would silently invalidate every preview URL already in circulation
+   * across an eviction — so the durable value wins over the fresh one.
+   */
+  restoreCapability(port: number, capability: string): boolean {
+    const entry = this.ports.get(port);
+    if (!entry || !/^[a-f0-9]{24}$/.test(capability)) return false;
+    entry.capability = capability;
+    return true;
+  }
+
   /**
    * Forward an HTTP request to the facet owning a port.
    *
@@ -148,6 +183,36 @@ export class PortRegistry {
    * client receives.
    */
   async routeRequest(port: number, request: Request, pathname: string): Promise<Response | null> {
+    return this.routeRequestInternal(port, request, pathname, false);
+  }
+
+  /**
+   * Route a request a trusted embedder has already authenticated against the
+   * port's capability and stripped its own credentials from.
+   *
+   * Unlike the generic route, this one PRESERVES `Authorization`. The generic
+   * route strips it because the header it sees is Nimbus's own, and handing a
+   * session credential to untrusted code is the thing that must never happen.
+   * Here the embedder has removed that credential already and what remains
+   * belongs to the guest application, which needs it to authenticate its own
+   * users.
+   */
+  async routeCapabilityRequest(
+    port: number,
+    capability: string,
+    request: Request,
+    pathname: string,
+  ): Promise<Response | null> {
+    if (!this.hasCapability(port, capability)) return null;
+    return this.routeRequestInternal(port, request, pathname, true);
+  }
+
+  private async routeRequestInternal(
+    port: number,
+    request: Request,
+    pathname: string,
+    preserveAuthorization: boolean,
+  ): Promise<Response | null> {
     const entry = this.ports.get(port);
     // Honour the documented contract: no entry at all → null, so callers
     // report "no process listening". (Pre-fix this fell into the 501 below,
@@ -189,7 +254,12 @@ export class PortRegistry {
       // if a body is supplied on those methods.
       const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
       const headers = new Headers(request.headers);
+      // The strip below removes Nimbus's own credentials. On a capability
+      // route the embedder has already removed those, so what is left belongs
+      // to the guest application and has to survive the hop.
+      const authorization = preserveAuthorization ? headers.get('authorization') : null;
       sanitizeUntrustedHeaders(headers);
+      if (authorization) headers.set('authorization', authorization);
 
       headers.set('X-Nimbus-Port', String(port));
       // `duplex: 'half'` is required by workerd when body is a

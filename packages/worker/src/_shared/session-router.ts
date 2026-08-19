@@ -50,6 +50,15 @@ export const BASE_PATH_HEADER = 'X-Nimbus-Base';
 export const TENANT_HEADER = 'X-Nimbus-Tenant';
 
 /**
+ * Header an embedder sets to present a port's preview capability. The
+ * capability authorises ONE port of ONE session, so an embedder can publish a
+ * guest's dev server without publishing the session. Nimbus's own credentials
+ * are stripped from a request that carries it, and the guest application's
+ * `Authorization` is preserved — the one route on which that is true.
+ */
+export const PREVIEW_CAPABILITY_HEADER = 'x-nimbus-preview-capability';
+
+/**
  * DO-name segment used when tenant scoping is disabled (legacy-public).
  * Picked so it cannot collide with a verified token's
  * `${tn}:${sub || '_'}` (because `legacy` is never a valid `tn` shape

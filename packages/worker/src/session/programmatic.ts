@@ -31,6 +31,11 @@ import {
 } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY } from './keys.js';
+import {
+  clearPortCapability,
+  persistPortCapability,
+  restorePortCapability,
+} from './port-capability.js';
 import { ISOLATE_GEN_KEY } from '@nimbus-sh/fabric/alarms.js';
 
 interface ProgrammaticShell {
@@ -56,6 +61,7 @@ interface ProgrammaticContext {
   /** Holds a background process's work open for the life of the process. */
   waitUntil?(promise: Promise<unknown>): void;
   storage: {
+    get(key: string): Promise<unknown>;
     delete(key: string): Promise<void>;
     deleteAll(): Promise<void>;
     deleteAlarm(): Promise<void>;
@@ -184,7 +190,13 @@ export interface SerializedPort {
   port: number;
   pid: number;
   registeredAt: number;
+  capability: string;
 }
+
+/**
+ * The durable half of the port capability lives in `./port-capability.js`, so
+ * the facet manager can retire a stale one without importing this module.
+ */
 
 const ProcessLogsOptionsSchema = z.object({
   cursor: z.number().int().nonnegative().optional(),
@@ -654,25 +666,63 @@ export async function rpcProcessLogs(
 
 export async function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]> {
   await ensureProgrammaticReady(self);
-  return self.portRegistry.getAll().map(serializePort);
+  const entries = self.portRegistry.getAll();
+  // Persisted at the moment the embedder is told the value, not at
+  // registration: a capability nobody has been handed does not need to
+  // survive anything.
+  await Promise.all(entries.map((entry) => persistPortCapability(self, entry.port, entry.capability)));
+  return entries.map(serializePort);
 }
 
 export async function rpcExposePort(self: ProgrammaticHost, port: number) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
   const entry = self.portRegistry.get(n);
+  if (entry) await persistPortCapability(self, n, entry.capability);
   return {
     port: n,
     listening: !!entry,
     pid: entry?.pid ?? null,
     registeredAt: entry?.registeredAt ?? null,
+    capability: entry?.capability ?? null,
   };
 }
 
 export async function rpcUnexposePort(self: ProgrammaticHost, port: number) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
+  // Before the unregister, so a crash between the two leaves a dead token
+  // rather than a live one.
+  await clearPortCapability(self, n);
   return { port: n, ok: self.portRegistry.unregister(n) };
+}
+
+/**
+ * Route an embedder request that carries a port capability. The embedder has
+ * authenticated the capability at its edge and stripped its own credentials,
+ * so the guest's `Authorization` is preserved through this path and no other.
+ */
+export async function rpcRouteCapabilityPort(
+  self: ProgrammaticHost,
+  port: number,
+  capability: string,
+  request: Request,
+  pathname: string,
+): Promise<Response> {
+  await ensureProgrammaticReady(self);
+  await restorePortCapability(self, port);
+  if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    // A 101 cannot cross the DO RPC boundary this entrypoint is reached
+    // through; the session fetch route is the one that keeps fetch semantics.
+    return new Response('WebSocket upgrades must use the session fetch route', { status: 409 });
+  }
+  const routed = await self.portRegistry.routeCapabilityRequest(
+    Number(port),
+    String(capability),
+    request,
+    pathname,
+  );
+  return routed ?? new Response('Not found', { status: 404 });
 }
 
 export async function rpcDeleteFile(
@@ -906,6 +956,7 @@ function serializePort(p: PortEntry): SerializedPort {
     port: Number(p.port),
     pid: Number(p.pid),
     registeredAt: Number(p.registeredAt),
+    capability: String(p.capability),
   };
 }
 

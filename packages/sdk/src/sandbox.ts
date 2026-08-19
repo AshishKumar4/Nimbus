@@ -190,6 +190,13 @@ export interface NimbusPort {
   port: number;
   pid: number;
   registeredAt: number;
+  /**
+   * Bearer token for THIS port on THIS session. Presenting it on the
+   * preview route authorises that one port and nothing else, which is what
+   * lets an embedder publish a guest's dev server without publishing the
+   * session. A new registration on the port retires it.
+   */
+  capability: string;
 }
 
 export interface NimbusFileStat {
@@ -245,7 +252,7 @@ interface NimbusSessionStub {
   _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
   _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
   _rpcListPorts(): Promise<NimbusPort[]>;
-  _rpcExposePort(port: number): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null }>;
+  _rpcExposePort(port: number): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null }>;
   _rpcUnexposePort(port: number): Promise<{ port: number; ok: boolean }>;
   _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
 }
@@ -337,6 +344,7 @@ const PortSchema = z.object({
   port: z.number(),
   pid: z.number(),
   registeredAt: z.number(),
+  capability: z.string(),
 });
 
 const StartResultSchema = z.object({
@@ -419,6 +427,7 @@ const ExposedPortSchema = z.object({
   listening: z.boolean(),
   pid: z.number().nullable(),
   registeredAt: z.number().nullable(),
+  capability: z.string().nullable(),
 });
 
 const UnexposedPortSchema = z.object({
