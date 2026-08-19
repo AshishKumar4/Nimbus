@@ -56,7 +56,8 @@ async function withShellState(self, options, background, run) {
     if (options.shellId === undefined)
         return run(null);
     const id = ShellIdSchema.parse(options.shellId);
-    const queues = (self._programmaticShellQueues ??= new Map());
+    self._programmaticShellQueues ??= new Map();
+    const queues = self._programmaticShellQueues;
     const previous = queues.get(id) ?? Promise.resolve();
     let release = () => { };
     const gate = new Promise((resolve) => { release = resolve; });

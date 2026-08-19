@@ -2777,7 +2777,10 @@ function mkAwk(vfs) {
  */
 function mkXargs(vfs, registry) {
     return async (ctx) => {
-        const input = (stdinText(ctx) || '').trim();
+        // NOT trimmed: `-0` exists so a name may carry the whitespace a split
+        // would eat, and trimming the stream rewrites its first and last item.
+        // The default split already drops the empties a trim would have removed.
+        const input = stdinText(ctx) || '';
         if (!input)
             return 0;
         // Parse flags first
@@ -3482,11 +3485,12 @@ function mkTouch(vfs) {
                 targetVfs.writeFile(fp, '');
                 continue;
             }
-            // The durable view answers `isDirectory` directly; the kernel's
-            // mount-aware one reports the same thing through `stat`.
-            const isDirectory = 'isDirectory' in targetVfs
-                ? targetVfs.isDirectory(fp)
-                : targetVfs.stat(fp).type === 'directory';
+            // Every view reaching here implements `isDirectory`: the lifo VFS gained
+            // it alongside `isFile`, which is what stopped `touch` failing on an
+            // existing file. The `stat` fallback this replaced narrowed to `never`
+            // once the surface was typed — the type system reporting that the guard
+            // it sat behind can no longer be false.
+            const isDirectory = targetVfs.isDirectory(fp);
             if (!isDirectory) {
                 // Update mtime by re-writing the same content
                 const content = targetVfs.readFile(fp);
