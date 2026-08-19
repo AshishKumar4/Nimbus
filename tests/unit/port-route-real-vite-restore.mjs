@@ -34,7 +34,11 @@ const build = await Bun.build({
           return { contents: 'export class DurableObject {}; export class WorkerEntrypoint {};', loader: 'js' };
         }
         if (args.path === 'heavy') {
-          return { contents: 'export const acquireHeavyAlloc = async () => () => {};', loader: 'js' };
+          return {
+            contents: 'export const acquireHeavyAlloc = async () => () => {};\n'
+              + 'export const acquireSupervisorReadAllocation = async () => () => {};\n',
+            loader: 'js',
+          };
         }
         // A fake real-vite controller: no facet, no ASSETS, just enough shape
         // for start-real-vite.ts to register it and for the port proxy to serve.

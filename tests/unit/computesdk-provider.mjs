@@ -263,7 +263,7 @@ const execResult = (over = {}) => ({
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
     writeFile: 12,
-    exposePort: { port: 3000, listening: true, pid: 7, registeredAt: Date.now() },
+    exposePort: { port: 3000, listening: true, pid: 7, registeredAt: Date.now(), capability: 'a'.repeat(24) },
   });
   const provider = nimbus({
     endpoint: ENDPOINT,
@@ -284,7 +284,7 @@ const execResult = (over = {}) => ({
   const fake = fakeNimbus({
     ready: { ok: true, preinstalled: [] },
     writeFile: 12,
-    exposePort: { port: 8080, listening: true, pid: 7, registeredAt: Date.now() },
+    exposePort: { port: 8080, listening: true, pid: 7, registeredAt: Date.now(), capability: 'b'.repeat(24) },
   });
   const provider = nimbus({ endpoint: ENDPOINT });
 
