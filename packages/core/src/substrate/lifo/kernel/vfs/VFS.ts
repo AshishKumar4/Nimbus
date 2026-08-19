@@ -436,6 +436,40 @@ export class VFS {
     }
   }
 
+  /**
+   * Type probes, mount-aware through {@link stat}.
+   *
+   * `CredentialedVfs` declares these and the durable coreutils call them on
+   * whatever `ctx.vfs` is, so a view that omitted them was not merely missing
+   * a convenience: `touch` on an existing file died with
+   * `targetVfs.isDirectory is not a function`, because `&&` short-circuited
+   * past the call whenever the file was absent — which is why creating a file
+   * worked and touching one did not.
+   *
+   * A structural miss answers false, the way `fs.existsSync` does. A denial
+   * still throws: traverse-x enforcement must not be maskable into a quiet
+   * false, which is the rule `SqliteVFS.probeInode` already follows.
+   */
+  isDirectory(path: string): boolean {
+    return this.probeType(path) === 'directory';
+  }
+
+  isFile(path: string): boolean {
+    return this.probeType(path) === 'file';
+  }
+
+  private probeType(path: string): string | undefined {
+    try {
+      return this.stat(path).type;
+    } catch (error) {
+      if (error !== null && typeof error === 'object' && 'code' in error) {
+        const code = error.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+      }
+      throw error;
+    }
+  }
+
   access(path: string, mode: number): void {
     const vp = this.getProvider(path);
     if (vp) {
