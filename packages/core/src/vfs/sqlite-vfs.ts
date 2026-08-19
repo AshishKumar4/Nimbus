@@ -1500,6 +1500,27 @@ export class SqliteVFS {
   }
 
   /**
+   * POSIX sticky-bit restriction on a shared directory.
+   *
+   * Write permission on a directory is normally enough to remove or rename
+   * anything inside it, which is why `/tmp` is `1777` and not `0777`: the
+   * sticky bit narrows that to the entry's owner, the directory's owner, and
+   * root. Nothing enforced it here, so a world-writable shared directory gave
+   * every principal the ability to delete every other principal's files —
+   * the mode said one thing and the filesystem did another.
+   */
+  private checkStickyParentMutation(path: string, inode: INode, cred: VfsCred): void {
+    if (cred.uid === 0) return;
+    const parent = this.parentPath(normalizeVfsPath(path));
+    if (parent === '') return;
+    const parentInode = this.inodes.get(parent);
+    if (!parentInode || (parentInode.mode & 0o1000) === 0) return;
+    if (cred.uid !== parentInode.uid && cred.uid !== inode.uid) {
+      throw vfsError('EPERM', normalizeVfsPath(path));
+    }
+  }
+
+  /**
    * Shared resolver for the boolean probes (exists/isDirectory/isFile/
    * isSymlink). Resolution-structure failures — a missing or non-directory
    * path component — answer `undefined` (fs.existsSync semantics: module
@@ -2980,6 +3001,7 @@ export class SqliteVFS {
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     this.checkParentAccess(resolved.path, cred);
+    this.checkStickyParentMutation(resolved.path, inode, cred);
     if (inode.isDir) throw vfsError('EISDIR', resolved.path);
     this.writeBatch({ inodes: [], chunks: [], deletePaths: [resolved.path] }, cred);
   }
@@ -2989,13 +3011,14 @@ export class SqliteVFS {
     const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
     const resolved = this.checkAccess(np, 0, cred, { followLeaf: false });
     this.checkParentAccess(resolved.path, cred);
+    const inode = this.inodes.get(np);
+    if (!inode) throw vfsError('ENOENT', path);
+    this.checkStickyParentMutation(resolved.path, inode, cred);
     // Check if empty using children index (O(1) instead of O(N))
     const kids = this.children.get(np);
     if (kids && kids.size > 0) {
       throw vfsError('ENOTEMPTY', path);
     }
-    const inode = this.inodes.get(np);
-    if (!inode) throw vfsError('ENOENT', path);
     if (!inode.isDir) throw vfsError('ENOTDIR', path);
     this.writeBatch({ inodes: [], chunks: [], deletePaths: [np] }, cred);
   }
@@ -3021,6 +3044,7 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
     if (!resolved.inode) throw vfsError('ENOENT', normalizeVfsPath(path));
     this.checkParentAccess(resolved.path, cred);
+    this.checkStickyParentMutation(resolved.path, resolved.inode, cred);
 
     const removable = this.collectSubtreeInodes([resolved.path]);
     // The directories the recursive walk used to enumerate are exactly the
@@ -3070,6 +3094,7 @@ export class SqliteVFS {
     }
     const inode = this.inodes.get(oldPath);
     if (!inode) throw new Error("ENOENT: " + oldPath);
+    this.checkStickyParentMutation(oldPath, inode, cred);
 
     // W-3 (WASI filesystem WASI): if newPath already exists, unlink it first so the
     // SQL UPDATE doesn't conflict on inodes.path uniqueness. POSIX rename(2)
@@ -3080,6 +3105,7 @@ export class SqliteVFS {
     // (the latter is rare but POSIX permits it for empty dirs).
     const destInode = this.inodes.get(newPath);
     if (destInode) {
+      this.checkStickyParentMutation(newPath, destInode, cred);
       if (destInode.isDir) {
         // POSIX semantics: rename onto a non-empty dir is an error
         // (ENOTEMPTY); rename onto an empty dir is allowed. We surface
