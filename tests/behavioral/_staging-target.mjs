@@ -110,7 +110,13 @@ const TARGETS = {
     dir: join(ROOT, 'apps', 'probe'),
     configPath: 'apps/probe/wrangler.jsonc',
     envName: null,
-    deployArgs: ['--name', 'nimbus-probe-staging'],
+    // NIMBUS_DEBUG rides the deploy override for the same reason --name
+    // does: apps/probe has no env blocks, and the var must reach THIS
+    // worker — the one the suite drives — while nimbus-probe keeps its
+    // production gating. It opens the diag write surfaces
+    // (/api/_diag/cache/reset and friends) the cache-observability
+    // probes need.
+    deployArgs: ['--name', 'nimbus-probe-staging', '--var', 'NIMBUS_DEBUG:1'],
   },
 };
 
