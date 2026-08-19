@@ -59,23 +59,17 @@
       }
     }
   },
+  // Per-file rule exemptions. Every `includes` path below must name a file
+  // that exists: biome matches these literally, so a file that moves takes its
+  // exemption with it silently — the rule simply starts firing (or stops) with
+  // nobody deciding that. This list went stale exactly that way when core,
+  // fabric and sdk were split out of worker, which is why 180 diagnostics
+  // appeared in code nobody had touched. When you move a file, re-point its
+  // entry here or delete it; when you fix the code, delete the entry.
   "overrides": [
     {
       "includes": [
-        "packages/worker/src/substrate/lifo/kernel/ServiceManager.ts"
-      ],
-      "linter": {
-        "rules": {
-          "correctness": {
-            "noSelfAssign": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "packages/worker/src/session/nimbus-session.ts",
-        "packages/worker/src/shell/features.ts"
+        "packages/worker/src/session/nimbus-session.ts"
       ],
       "linter": {
         "rules": {
@@ -87,16 +81,11 @@
     },
     {
       "includes": [
-        "packages/worker/src/_shared/w7-frame.ts",
         "packages/worker/src/facets/manager.ts",
         "packages/worker/src/facets/vite-dev-server.ts",
         "packages/worker/src/npm/installer.ts",
         "packages/worker/src/runtime/barrel-synthesizer.ts",
-        "packages/worker/src/runtime/esbuild-service.ts",
-        "packages/worker/src/runtime/require-resolver.ts",
-        "packages/worker/src/runtime/virtual-socket-kernel.ts",
-        "packages/worker/src/session/routes.ts",
-        "packages/worker/src/shell/unix-commands.ts"
+        "packages/worker/src/session/routes.ts"
       ],
       "linter": {
         "rules": {
@@ -107,27 +96,23 @@
       }
     },
     {
+      // stripAnsi and stripVTControlCharacters exist to strip ANSI/VT escape
+      // sequences, so matching ESC (0x1B) and BEL (0x07) is the whole job.
+      // Every literal spelling is flagged — \x1b, \u001b, \u{1b}, [\u001b],
+      // [\x00-\x1f], [^\x07\x1b] — and the one spelling the rule accepts,
+      // \p{Cc}, matches all 33 C0 controls: it turns "foo\n[INFO] bar" into
+      // "fooNFO] bar". Building the pattern through `new RegExp` only hides it
+      // from the analyzer and trips useRegexLiterals instead. So the exemption
+      // is the honest option here, and it is narrow: these two files, this
+      // one rule.
       "includes": [
-        "packages/worker/src/runtime/process-logs.ts",
-        "packages/worker/src/shell/unix-commands.ts",
-        "packages/worker/src/substrate/lifo/node-compat/util.ts"
+        "packages/core/src/runtime/process-logs.ts",
+        "packages/core/src/substrate/lifo/node-compat/util.ts"
       ],
       "linter": {
         "rules": {
           "suspicious": {
             "noControlCharactersInRegex": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "packages/worker/src/substrate/lifo/node-compat/index.ts"
-      ],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noDoubleEquals": "off"
           }
         }
       }
@@ -145,8 +130,6 @@
         "apps/probe/src/index.ts",
         "packages/cli/src/commands/session.ts",
         "packages/worker/scripts/opencode/build-node.ts",
-        "packages/worker/src/_shared/exports-resolver.ts",
-        "packages/worker/src/_shared/retry.ts",
         "packages/worker/src/_shared/session-router.ts",
         "packages/worker/src/auth/token.ts",
         "packages/worker/src/bindings/d1.ts",
@@ -154,7 +137,6 @@
         "packages/worker/src/bindings/r2.ts",
         "packages/worker/src/facets/cirrus-real.ts",
         "packages/worker/src/facets/exec-telemetry.ts",
-        "packages/worker/src/facets/inner-do-registry.ts",
         "packages/worker/src/facets/manager.ts",
         "packages/worker/src/facets/process.ts",
         "packages/worker/src/facets/real-vite-hmr.ts",
@@ -166,8 +148,6 @@
         "packages/worker/src/index.ts",
         "packages/worker/src/loaders/child-process/spawn-facet.ts",
         "packages/worker/src/loaders/child-process/spawn-pool.ts",
-        "packages/worker/src/loaders/fanout-pool.ts",
-        "packages/worker/src/loaders/loader-pool.ts",
         "packages/worker/src/npm/cache.ts",
         "packages/worker/src/npm/install-batch-facet.ts",
         "packages/worker/src/npm/installer.ts",
@@ -180,26 +160,15 @@
         "packages/worker/src/router/index.ts",
         "packages/worker/src/runtime/barrel-synthesizer.ts",
         "packages/worker/src/runtime/bun-repl.ts",
-        "packages/worker/src/runtime/esbuild-service.ts",
         "packages/worker/src/runtime/esbuild-wasm-bytes.ts",
-        "packages/worker/src/runtime/long-running-handle.ts",
         "packages/worker/src/runtime/node-repl.ts",
         "packages/worker/src/runtime/node-runner.ts",
         "packages/worker/src/runtime/package-manager.ts",
-        "packages/worker/src/runtime/process-logs.ts",
-        "packages/worker/src/runtime/project-detect.ts",
         "packages/worker/src/runtime/python-repl.ts",
-        "packages/worker/src/runtime/python-runner.ts",
         "packages/worker/src/runtime/repl-session.ts",
-        "packages/worker/src/runtime/require-resolver.ts",
         "packages/worker/src/runtime/ruby-repl.ts",
         "packages/worker/src/runtime/runtime-catalog.ts",
-        "packages/worker/src/runtime/runtime-registry.ts",
-        "packages/worker/src/runtime/sqlite-runtime-fs-bridge.ts",
-        "packages/worker/src/runtime/wasm-runner.ts",
         "packages/worker/src/session/agent.ts",
-        "packages/worker/src/session/bindings.ts",
-        "packages/worker/src/session/ctx-exports.ts",
         "packages/worker/src/session/diag.ts",
         "packages/worker/src/session/fs-watch.ts",
         "packages/worker/src/session/helpers.ts",
@@ -214,16 +183,7 @@
         "packages/worker/src/session/start-real-vite.ts",
         "packages/worker/src/session/state-store.ts",
         "packages/worker/src/session/supervisor-rpc.ts",
-        "packages/worker/src/session/ws-hibernation-config.ts",
         "packages/worker/src/session/ws.ts",
-        "packages/worker/src/shell/unix-commands.ts",
-        "packages/worker/src/substrate/lifo/commands/net/ip.ts",
-        "packages/worker/src/substrate/lifo/commands/system/ps.ts",
-        "packages/worker/src/substrate/lifo/kernel/network/NetworkStack.ts",
-        "packages/worker/src/substrate/lifo/kernel/network/tunnel/WebSocketTunnel.ts",
-        "packages/worker/src/substrate/lifo/node-compat/esbuild.ts",
-        "packages/worker/src/vfs/seed-project.ts",
-        "packages/worker/src/vfs/sqlite-vfs.ts",
         "packages/worker/src/wrangler/nimbus-wrangler.ts"
       ],
       "linter": {
@@ -239,42 +199,12 @@
         "packages/worker/src/facets/vite-dev-server.ts",
         "packages/worker/src/npm/installer.ts",
         "packages/worker/src/runtime/package-manager.ts",
-        "packages/worker/src/runtime/python-runner.ts",
-        "packages/worker/src/runtime/require-resolver.ts",
-        "packages/worker/src/session/bindings.ts",
-        "packages/worker/src/session/ws.ts",
-        "packages/worker/src/shell/unix-commands.ts"
+        "packages/worker/src/session/ws.ts"
       ],
       "linter": {
         "rules": {
           "suspicious": {
             "noImplicitAnyLet": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "packages/worker/src/shell/unix-commands.ts"
-      ],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noShadowRestrictedNames": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": [
-        "packages/worker/src/loaders/fanout-pool.ts",
-        "packages/worker/src/runtime/virtual-socket-kernel.ts",
-        "packages/worker/src/substrate/lifo/node-compat/process.ts"
-      ],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "useIterableCallbackReturn": "off"
           }
         }
       }
