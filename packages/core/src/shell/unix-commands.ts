@@ -12,12 +12,19 @@
  */
 
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
+import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
 import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
+import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
-import { fileTypeChar, isCharacterDevice } from '../substrate/lifo/kernel/vfs/index.js';
+import {
+  fileTypeChar,
+  isCharacterDevice,
+  type FileType,
+  type VFS,
+} from '../substrate/lifo/kernel/vfs/index.js';
+import type { Command, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import {
@@ -26,6 +33,41 @@ import {
   parseChownOwnership,
 } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
+
+/**
+ * stdin as the shell hands it over: a pipe reader, whose `readAll` resolves
+ * once upstream closes, or the terminal's own stream, which stays open past
+ * the command and so is taken from `buffer` instead of awaited.
+ */
+type ShellStdin = CommandInputStream & {
+  feed?(text: string): void;
+  buffer?: string[];
+};
+
+/**
+ * The VFS the caller supplies. The shell hands the kernel's mount-aware tree,
+ * so `/dev` and the other mounts resolve; an embedder that invokes a command
+ * directly hands a credentialed durable view. `readdirStat` belongs to the
+ * first and `isDirectory` to the second, which is why the paths that want
+ * either one probe for it.
+ */
+type CtxVfs = CredentialedVfs | VFS;
+
+/**
+ * A stat as either layer reports it. The kernel's tree leaves out what a mount
+ * cannot know — ownership, access time — and that is what the fallbacks at the
+ * use sites stand in for.
+ */
+type CtxStat = {
+  type: FileType;
+  size: number;
+  mode: number;
+  mtime: number;
+  ctime: number;
+  atime?: number;
+  uid?: number;
+  gid?: number;
+};
 
 type Ctx = {
   pid: number;
@@ -39,9 +81,13 @@ type Ctx = {
   stderr: { write(s: string): void };
   cwd: string;
   env: Record<string, string>;
-  stdin?: string;
+  /**
+   * The shell's stream until `wrap` drains it to a string in place. Command
+   * bodies read the string; `head`, wrapped for streaming, reads the stream.
+   */
+  stdin?: string | ShellStdin;
   cred: VfsCred;
-  vfs: CredentialedVfs;
+  vfs: CtxVfs;
   signal: AbortSignal;
   setUmask(mask: number): void;
   runAs(cred: VfsCred, argv: string[]): Promise<number>;
@@ -49,9 +95,49 @@ type Ctx = {
 };
 
 type CmdFn = (ctx: Ctx) => number | Promise<number>;
+
 type UnixVfs = CredentialedVfs & {
-  readonly symlinks: ReturnType<typeof getSymlinkRegistry>;
+  readonly symlinks: SymlinkRegistry;
 };
+
+/**
+ * A command the registry resolved. A runtime that is known but not installed
+ * is stored as a stub carrying `__nimbusRuntimeInstallHint` (the worker's
+ * `shell/npm-bin-entrypoints.ts` sets it), which `which` and `type` must not
+ * report as a builtin.
+ */
+type ResolvedCommand = CmdFn & { __nimbusRuntimeInstallHint?: boolean };
+
+/**
+ * The registry these commands dispatch through: registration, and name
+ * resolution for `which`, `type`, `command`, `find -exec` and `xargs`.
+ * `resolve` answers `unknown` because the registry holds whatever any module
+ * registered — and the worker's npm-bin fallback replaces the method outright
+ * — so what comes back is a command only once it has been checked.
+ */
+type UnixCommandRegistry = {
+  register(name: string, handler: Command): void;
+  resolve(name: string): unknown;
+};
+
+/**
+ * A resolved entry as a command this module can run. Every handler in the
+ * registry takes a command context; the ones registered below read the string
+ * `wrap` leaves in `stdin`, and a command dispatched from here is handed that
+ * string rather than a reader.
+ */
+function asResolvedCommand(resolved: unknown): ResolvedCommand | null {
+  return typeof resolved === 'function' ? resolved as ResolvedCommand : null;
+}
+
+/**
+ * stdin as text. `wrap` drains the shell's stream into `ctx.stdin` before a
+ * command body runs, so a command that does not read a stream itself sees the
+ * string it left there, and nothing at all when there was no stdin.
+ */
+function stdinText(ctx: Ctx): string | undefined {
+  return typeof ctx.stdin === 'string' ? ctx.stdin : undefined;
+}
 
 function unixVfsFor(sqliteVfs: SqliteVFS, cred: VfsCred): UnixVfs {
   return {
@@ -114,8 +200,8 @@ function unixGroupLabel(vfs: UnixVfs, gid: number): string {
   }
 }
 
-function isRuntimeInstallHintHandler(handler: unknown): boolean {
-  return !!handler && !!(handler as any).__nimbusRuntimeInstallHint;
+function isRuntimeInstallHintHandler(handler: ResolvedCommand | null): boolean {
+  return !!handler && !!handler.__nimbusRuntimeInstallHint;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -270,13 +356,13 @@ function _pathLookup(
 }
 
 async function _registryResolved(
-  registry: any,
+  registry: UnixCommandRegistry,
   name: string,
   options: { includeInstallHints?: boolean } = {},
-): Promise<CmdFn | null> {
+): Promise<ResolvedCommand | null> {
   try {
     const resolved = typeof registry.resolve === 'function'
-      ? await registry.resolve(name)
+      ? asResolvedCommand(await registry.resolve(name))
       : null;
     if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
       return resolved;
@@ -292,7 +378,7 @@ async function _registryResolved(
  *  caller knows the command is a shell builtin (no fallback). */
 async function _whichLookup(
   vfs: UnixVfs,
-  registry: any,
+  registry: UnixCommandRegistry,
   name: string,
   envPath: string,
 ): Promise<string | null> {
@@ -305,7 +391,7 @@ async function _whichLookup(
     : null;
 }
 
-function mkWhich(vfs: UnixVfs, registry: any): CmdFn {
+function mkWhich(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     // Parse flags. Supports -a (show all matches), -s (silent — no
     // stdout, only exit code). Default behaviour matches GNU which.
@@ -368,7 +454,7 @@ function mkWhich(vfs: UnixVfs, registry: any): CmdFn {
  * binaries on the virtual VFS; print just the binary path. With no
  * match, print just the name (matches `whereis` behavior on missing).
  */
-function mkWhereis(vfs: UnixVfs, registry: any): CmdFn {
+function mkWhereis(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     const names = ctx.args.filter(a => !a.startsWith('-'));
     if (names.length === 0) {
@@ -402,7 +488,7 @@ function mkWhereis(vfs: UnixVfs, registry: any): CmdFn {
  * (because the interpreter only consults aliases
  * for the head word).
  */
-function mkCommand(vfs: UnixVfs, registry: any): CmdFn {
+function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     const args = [...ctx.args];
     let mode: '-v' | '-V' | 'invoke' = 'invoke';
@@ -433,7 +519,7 @@ function mkCommand(vfs: UnixVfs, registry: any): CmdFn {
     // because we're calling the resolved cmd not the alias name.
     const name = args[0];
     try {
-      const resolved = await registry.resolve(name);
+      const resolved = asResolvedCommand(await registry.resolve(name));
       if (!resolved) {
         ctx.stderr.write(`command: ${name}: not found\n`);
         return 127;
@@ -441,8 +527,8 @@ function mkCommand(vfs: UnixVfs, registry: any): CmdFn {
       const subCtx = { ...ctx, args: args.slice(1) };
       const code = await resolved(subCtx);
       return typeof code === 'number' ? code : 0;
-    } catch (e: any) {
-      ctx.stderr.write(`command: ${name}: ${e?.message || e}\n`);
+    } catch (e) {
+      ctx.stderr.write(`command: ${name}: ${errorText(e)}\n`);
       return 1;
     }
   };
@@ -466,13 +552,15 @@ function mkCommand(vfs: UnixVfs, registry: any): CmdFn {
  * commands module already has access to; treat any registry resolve
  * as "shell builtin" classification.
  */
-function mkType(_vfs: UnixVfs, registry: any): CmdFn {
+function mkType(_vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     if (ctx.args.length === 0) return 0;
     let exit = 0;
     for (const name of ctx.args) {
       try {
-        const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
+        const resolved = typeof registry.resolve === 'function'
+          ? asResolvedCommand(await registry.resolve(name))
+          : null;
         if (resolved && !isRuntimeInstallHintHandler(resolved)) {
           ctx.stdout.write(`${name} is a shell builtin\n`);
         } else {
@@ -577,7 +665,7 @@ const _DAYS_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday',
 const _DAYS_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 function strftime(d: Date, fmt: string, utc: boolean): string {
-  const get = (m: string): any => {
+  const get = (m: string): number => {
     switch (m) {
       case 'FullYear': return utc ? d.getUTCFullYear() : d.getFullYear();
       case 'Month': return utc ? d.getUTCMonth() : d.getMonth();
@@ -782,7 +870,7 @@ interface FindExecBatch {
 }
 
 type FindNode = (entry: FindEntry, st: FindState) => Promise<boolean>;
-function mkFind(vfs: UnixVfs, registry: any): CmdFn {
+function mkFind(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     const state: FindState = {
       minDepth: 0,
@@ -803,8 +891,8 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
     const runExec = async (argv: string[]): Promise<boolean> => {
       const [name, ...rest] = argv;
       if (!name) return false;
-      let target;
-      try { target = await registry.resolve(name); } catch { target = null; }
+      let target: ResolvedCommand | null;
+      try { target = asResolvedCommand(await registry.resolve(name)); } catch { target = null; }
       if (!target) {
         ctx.stderr.write(`find: ${name}: No such file or directory\n`);
         return false;
@@ -826,8 +914,8 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
           execInterpreterDepth: ctx.execInterpreterDepth,
         });
         return code === 0;
-      } catch (e: any) {
-        ctx.stderr.write(`find: ${name}: ${e?.message || e}\n`);
+      } catch (e) {
+        ctx.stderr.write(`find: ${name}: ${errorText(e)}\n`);
         return false;
       }
     };
@@ -978,8 +1066,8 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
               if (e.type === 'directory') vfs.rmdir(e.vfsPath);
               else vfs.unlink(e.vfsPath);
               return true;
-            } catch (err: any) {
-              ctx.stderr.write(`find: cannot delete '${e.display}': ${err?.message || err}\n`);
+            } catch (err) {
+              ctx.stderr.write(`find: cannot delete '${e.display}': ${errorText(err)}\n`);
               return false;
             }
           };
@@ -1070,7 +1158,7 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
       if (pos < args.length) {
         throw new FindUsageError(`paths must precede expression: \`${args[pos]}'`);
       }
-    } catch (e: any) {
+    } catch (e) {
       if (e instanceof FindUsageError) {
         ctx.stderr.write(`find: ${e.message}\n`);
         return 1;
@@ -1153,6 +1241,13 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
 }
 
 /**
+ * `grep`'s argv, carrying `-F` alongside it. Both spellings of the flag — its
+ * own word and a letter inside a cluster — land on the parsed argv, which is
+ * what the pattern escape below reads.
+ */
+type GrepArgv = string[] & { __fixedStrings?: boolean };
+
+/**
  * shell compatibility (2026-05-11): grep flag handling.
  *
  * Pre-fix gaps:
@@ -1169,7 +1264,7 @@ function mkFind(vfs: UnixVfs, registry: any): CmdFn {
  */
 function mkGrep(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const args = [...ctx.args];
+    const args: GrepArgv = [...ctx.args];
     // Parse flags. Support combined `-rni` form (single dash + chars).
     let recursive = false, ignoreCase = false, lineNum = false;
     let countOnly = false, invertMatch = false, wordMatch = false;
@@ -1190,7 +1285,7 @@ function mkGrep(vfs: UnixVfs): CmdFn {
       if (a === '-E' || a === '--extended-regexp') { /* JS regex is ERE-ish */ continue; }
       if (a === '-F' || a === '--fixed-strings') {
         // Mark as literal — handled below via escape.
-        (args as any).__fixedStrings = true;
+        args.__fixedStrings = true;
         continue;
       }
       if (a.startsWith('-') && a.length > 1 && !a.startsWith('--')) {
@@ -1205,7 +1300,7 @@ function mkGrep(vfs: UnixVfs): CmdFn {
           else if (ch === 'l') filesOnly = true;
           else if (ch === 'q') quiet = true;
           else if (ch === 'E') { /* ERE noop */ }
-          else if (ch === 'F') (args as any).__fixedStrings = true;
+          else if (ch === 'F') args.__fixedStrings = true;
         }
         continue;
       }
@@ -1214,7 +1309,7 @@ function mkGrep(vfs: UnixVfs): CmdFn {
     if (positional.length < 1) { ctx.stderr.write('Usage: grep [-rnicvlqEFw] PATTERN [FILE...]\n'); return 1; }
     let pattern = positional[0];
     const targets = positional.slice(1);
-    if ((args as any).__fixedStrings) {
+    if (args.__fixedStrings) {
       // -F: escape regex metacharacters for literal match.
       pattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
@@ -1281,8 +1376,9 @@ function mkGrep(vfs: UnixVfs): CmdFn {
       walkDir((ctx.cwd || '/home/user').replace(/^\/+/, ''));
     } else if (targets.length === 0) {
       // Read from stdin (if piped) — single virtual "file" with no label.
-      if (ctx.stdin) {
-        processLines(ctx.stdin.split('\n'), '');
+      const piped = stdinText(ctx);
+      if (piped) {
+        processLines(piped.split('\n'), '');
       }
     } else {
       for (const target of targets) {
@@ -1321,7 +1417,7 @@ function mkGrep(vfs: UnixVfs): CmdFn {
  * (when wrap already coalesced) still work via the same code path.
  */
 function mkHead(_vfs: UnixVfs): CmdFn {
-  return async (ctx: any) => {
+  return async (ctx) => {
     const parsed = parseHeadArgs(ctx.args);
     if (parsed.error) { ctx.stderr.write(`head: ${parsed.error}\n`); return 1; }
     const { lines: n, bytes, files } = parsed;
@@ -1547,7 +1643,8 @@ function mkTail(vfs: UnixVfs): CmdFn {
     };
 
     if (files.length === 0) {
-      if (ctx.stdin) emit(ctx.stdin);
+      const piped = stdinText(ctx);
+      if (piped) emit(piped);
       return 0;
     }
     const label = verbose || files.length > 1;
@@ -1669,7 +1766,7 @@ function mkWc(vfs: UnixVfs): CmdFn {
     };
 
     if (files.length === 0) {
-      const bytes = enc.encode(ctx.stdin ?? '');
+      const bytes = enc.encode(stdinText(ctx) ?? '');
       // Nothing bounds a stream's counts ahead of time, so a multi-column
       // report over standard input uses the fixed width GNU falls back to.
       emit(measure(bytes), columns === 1 ? 0 : 7, '');
@@ -1718,7 +1815,7 @@ function mkSort(vfs: UnixVfs): CmdFn {
       ctx.stderr.write(`sort: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
       return 1;
     }
-    let input = ctx.stdin || '';
+    let input = stdinText(ctx) || '';
     if (positional.length > 0 && !input) {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, positional[0])); }
       catch { ctx.stderr.write(`sort: ${positional[0]}: No such file\n`); return 1; }
@@ -1763,7 +1860,7 @@ function mkUniq(vfs: UnixVfs): CmdFn {
     }
     // File operands were ignored outright, so `uniq file` read stdin and
     // printed nothing at all.
-    let input = ctx.stdin || '';
+    let input = stdinText(ctx) || '';
     if (positional.length > 0 && positional[0] !== '-') {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, positional[0])); }
       catch { ctx.stderr.write(`uniq: ${positional[0]}: No such file\n`); return 1; }
@@ -1806,7 +1903,7 @@ function mkSed(vfs: UnixVfs): CmdFn {
     vfs,
     stdout: ctx.stdout,
     stderr: ctx.stderr,
-    stdin: ctx.stdin === undefined ? undefined : stringInput(ctx.stdin),
+    stdin: typeof ctx.stdin === 'string' ? stringInput(ctx.stdin) : undefined,
   });
 }
 
@@ -1815,6 +1912,13 @@ function stringInput(text: string): { readAll(): Promise<string> } {
     readAll: async () => text,
   };
 }
+
+/**
+ * What an awk expression evaluates to. The subset below has neither arrays nor
+ * a match operator, so every value is one of the two scalars awk itself has,
+ * and `print` decides which spelling to use.
+ */
+type AwkValue = string | number;
 
 /**
  * shell compatibility (2026-05-11): expanded awk subset.
@@ -1878,7 +1982,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       }
     }
     const program = programArgs[0] || '';
-    let input = ctx.stdin || '';
+    let input = stdinText(ctx) || '';
     if (fileArgs.length > 0 && !input) {
       try { input = vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0])); }
       catch { ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`); return 1; }
@@ -1951,7 +2055,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         if (cursor < src.length && src[cursor] === '{') body = parseBraced();
         let re: RegExp;
         try { re = new RegExp(patSrc); }
-        catch (e: any) { ctx.stderr.write(`awk: bad regex /${patSrc}/: ${e?.message || e}\n`); return 1; }
+        catch (e) { ctx.stderr.write(`awk: bad regex /${patSrc}/: ${errorText(e)}\n`); return 1; }
         blocks.push({ kind: 'PATTERN', pattern: re, body });
         continue;
       }
@@ -1973,7 +2077,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
     //   IDENT (+|-|*|/|%)= EXPR
     //   next  (skip rest of body for this line — rare)
     interface State {
-      vars: Record<string, any>;
+      vars: Record<string, AwkValue>;
       fields: string[];  // [$0, $1, $2, ...]
       NR: number;
       NF: number;
@@ -1996,14 +2100,14 @@ function mkAwk(vfs: UnixVfs): CmdFn {
      *   term     := factor (('*'|'/'|'%') factor)*
      *   factor   := number | string | '$' (number | 'NF') | ident | '(' expr ')'
      */
-    function evalExpr(expr: string, st: State): any {
+    function evalExpr(expr: string, st: State): AwkValue {
       const text = expr.trim();
       let pos = 0;
       function skipWs() { while (pos < text.length && /\s/.test(text[pos])) pos++; }
       function peek(): string { return text[pos]; }
       function consume(ch: string): boolean { skipWs(); if (text[pos] === ch) { pos++; return true; } return false; }
       function expect(ch: string): void { if (!consume(ch)) throw new Error(`expected '${ch}' at "${text.slice(pos, pos + 20)}"`); }
-      function parseExpr(): any {
+      function parseExpr(): AwkValue {
         let left = parseTerm();
         for (;;) {
           skipWs();
@@ -2017,7 +2121,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         }
         return left;
       }
-      function parseTerm(): any {
+      function parseTerm(): AwkValue {
         let left = parseFactor();
         for (;;) {
           skipWs();
@@ -2031,7 +2135,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         }
         return left;
       }
-      function parseFactor(): any {
+      function parseFactor(): AwkValue {
         skipWs();
         if (pos >= text.length) throw new Error(`unexpected end of expression`);
         const ch = text[pos];
@@ -2102,7 +2206,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
         }
         throw new Error(`unexpected '${ch}' at "${text.slice(pos, pos + 20)}"`);
       }
-      function toNum(v: any): number {
+      function toNum(v: AwkValue): number {
         if (typeof v === 'number') return v;
         const n = parseFloat(v);
         return Number.isFinite(n) ? n : 0;
@@ -2115,8 +2219,8 @@ function mkAwk(vfs: UnixVfs): CmdFn {
           // separator). Be permissive — return what we have.
         }
         return v;
-      } catch (e: any) {
-        throw new Error(`expr error: ${e?.message || e} in "${expr}"`);
+      } catch (e) {
+        throw new Error(`expr error: ${errorText(e)} in "${expr}"`);
       }
     }
     function stripStringsForScan(s: string): string {
@@ -2328,7 +2432,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       if (cur.trim()) out.push(cur.trim());
       return out;
     }
-    function stringify(v: any): string {
+    function stringify(v: AwkValue | null | undefined): string {
       if (v === undefined || v === null) return '';
       if (typeof v === 'number') {
         if (Number.isInteger(v)) return String(v);
@@ -2337,7 +2441,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       }
       return String(v);
     }
-    function printfFormat(fmt: string, fargs: any[]): string {
+    function printfFormat(fmt: string, fargs: AwkValue[]): string {
       let out = '';
       let i = 0;
       let argIdx = 0;
@@ -2368,7 +2472,7 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       }
       return out;
     }
-    function formatOne(spec: string, arg: any): string {
+    function formatOne(spec: string, arg: AwkValue): string {
       const conv = spec[spec.length - 1];
       const flagsAndWidth = spec.slice(1, -1);
       const dotIdx = flagsAndWidth.indexOf('.');
@@ -2468,8 +2572,8 @@ function mkAwk(vfs: UnixVfs): CmdFn {
       }
       // END blocks last.
       for (const b of blocks) if (b.kind === 'END') runBlock(b);
-    } catch (e: any) {
-      ctx.stderr.write(`awk: ${e?.message || e}\n`);
+    } catch (e) {
+      ctx.stderr.write(`awk: ${errorText(e)}\n`);
       return 1;
     }
 
@@ -2499,12 +2603,12 @@ function mkAwk(vfs: UnixVfs): CmdFn {
  *
  * Unsupported (document as gap): -P (parallel), -L (per-line), -p (prompt).
  */
-function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
+function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   return async (ctx) => {
     // NOT trimmed: `-0` exists so a name may carry the whitespace a split
     // would eat, and trimming the stream rewrites its first and last item.
     // The default split already drops the empties a trim would have removed.
-    const input = ctx.stdin || '';
+    const input = stdinText(ctx) || '';
     if (!input) return 0;
 
     // Parse flags first
@@ -2544,10 +2648,10 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
       : input.split(/\s+/).filter(Boolean);
 
     // Resolve target command from registry (handles both eager + lazy maps).
-    let target;
+    let target: ResolvedCommand | null;
     try {
-      target = await registry.resolve(cmdName);
-    } catch (_e) { target = null; }
+      target = asResolvedCommand(await registry.resolve(cmdName));
+    } catch { target = null; }
     if (!target) {
       // Defer to write-to-stderr; mimic real xargs which would exec(2) and fail.
       ctx.stderr.write(`xargs: ${cmdName}: command not found\n`);
@@ -2579,8 +2683,8 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
         try {
           const code = await target(newCtx(subbed));
           if (typeof code === 'number' && code !== 0) exit = code;
-        } catch (e: any) {
-          ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+        } catch (e) {
+          ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`);
           exit = 1;
         }
       }
@@ -2592,8 +2696,8 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
         try {
           const code = await target(newCtx([...cmdArgsInitial, ...batch]));
           if (typeof code === 'number' && code !== 0) exit = code;
-        } catch (e: any) {
-          ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+        } catch (e) {
+          ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`);
           exit = 1;
         }
         if (!Number.isFinite(batchSize)) break;  // single batch when no -n
@@ -2605,7 +2709,7 @@ function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
 
 function mkTee(vfs: UnixVfs): CmdFn {
   return (ctx) => {
-    const input = ctx.stdin || '';
+    const input = stdinText(ctx) || '';
     const append = ctx.args.includes('-a');
     const files = ctx.args.filter(a => !a.startsWith('-'));
     ctx.stdout.write(input);
@@ -2698,7 +2802,13 @@ function mkDiff(vfs: UnixVfs): CmdFn {
         }
       }
       return hasDiff ? 1 : 0;
-    } catch (e: any) { ctx.stderr.write(`diff: ${e.message}\n`); return 2; }
+    } catch (e) {
+      // `diff` reports the thrown value's `message`, whatever it holds, rather
+      // than the value: a throw carrying none has always printed `undefined`.
+      const message = typeof e === 'object' && e !== null && 'message' in e ? e.message : undefined;
+      ctx.stderr.write(`diff: ${String(message)}\n`);
+      return 2;
+    }
   };
 }
 
@@ -2807,7 +2917,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
     const targets = positionals.length > 0 ? positionals : [ctx.cwd];
 
     const reg = vfs.symlinks;
-    const kvfs: any = (ctx as any).vfs;
+    const kvfs = ctx.vfs;
 
     function fmtTime(mtime: number): string {
       const d = new Date(mtime);
@@ -2829,6 +2939,17 @@ function mkLs(vfs: UnixVfs): CmdFn {
       linkTarget?: string;
     };
 
+    /** An entry as either VFS layer lists it, before the row is rendered. */
+    type ListedEntry = {
+      name: string;
+      type: FileType;
+      size: number;
+      mtime: number;
+      mode: number;
+      uid?: number;
+      gid?: number;
+    };
+
     let exit = 0;
 
     function listDir(dirPath: string): Entry[] {
@@ -2836,9 +2957,9 @@ function mkLs(vfs: UnixVfs): CmdFn {
       const out: Entry[] = [];
       // Real entries via ctx.vfs.readdirStat (Kernel.VFS — handles
       // mounts like /dev) with fallback to closure-captured SqliteVFS.
-      let real: any[] = [];
+      let real: ListedEntry[] = [];
       try {
-        if (kvfs && typeof kvfs.readdirStat === 'function') {
+        if (kvfs && 'readdirStat' in kvfs && typeof kvfs.readdirStat === 'function') {
           real = kvfs.readdirStat(fp);
         } else {
           const names = vfs.readdir(fp);
@@ -2847,16 +2968,16 @@ function mkLs(vfs: UnixVfs): CmdFn {
               + '/' + n.name;
             try {
               const s = vfs.stat(childPath);
-              return { name: n.name, type: n.type, size: (s as any).size ?? 0,
-                       mtime: (s as any).mtime ?? Date.now(), mode: (s as any).mode ?? 0o644,
-                       uid: (s as any).uid ?? ctx.cred.uid, gid: (s as any).gid ?? ctx.cred.gid };
+              return { name: n.name, type: n.type, size: s.size ?? 0,
+                       mtime: s.mtime ?? Date.now(), mode: s.mode ?? 0o644,
+                       uid: s.uid ?? ctx.cred.uid, gid: s.gid ?? ctx.cred.gid };
             } catch {
               return { name: n.name, type: n.type, size: 0, mtime: Date.now(), mode: 0o644,
                        uid: ctx.cred.uid, gid: ctx.cred.gid };
             }
           });
         }
-      } catch (e: any) {
+      } catch (e) {
         ctx.stderr.write(`ls: cannot access '${dirPath}': ${fsErrorMessage(e)}\n`);
         exit = 2;
         return [];
@@ -2946,7 +3067,7 @@ function mkLs(vfs: UnixVfs): CmdFn {
         continue;
       }
       try {
-        const s: any = kvfs && typeof kvfs.stat === 'function' ? kvfs.stat(fp) : vfs.stat(fp);
+        const s: CtxStat = kvfs && typeof kvfs.stat === 'function' ? kvfs.stat(fp) : vfs.stat(fp);
         if (s.type === 'directory' && !flagDirectory) {
           dirArgs.push(arg);
         } else {
@@ -2960,8 +3081,8 @@ function mkLs(vfs: UnixVfs): CmdFn {
             gid: s.gid ?? ctx.cred.gid,
           });
         }
-      } catch (e: any) {
-        ctx.stderr.write(`ls: cannot access '${arg}': ${e?.message || e}\n`);
+      } catch (e) {
+        ctx.stderr.write(`ls: cannot access '${arg}': ${errorText(e)}\n`);
         exit = 1;
       }
     }
@@ -3008,7 +3129,8 @@ function mkCat(vfs: UnixVfs): CmdFn {
   return (ctx) => {
     const files = ctx.args.filter(a => !a.startsWith('-'));
     if (files.length === 0) {
-      if (ctx.stdin) ctx.stdout.write(ctx.stdin);
+      const piped = stdinText(ctx);
+      if (piped) ctx.stdout.write(piped);
       return 0;
     }
     // Resolve both native VFS symlinks and the legacy registry before reads.
@@ -3097,13 +3219,13 @@ function mkRm(vfs: UnixVfs): CmdFn {
         } else {
           vfs.unlink(fp);
         }
-      } catch (e: any) {
+      } catch (e) {
         // -f suppresses ENOENT only (file disappeared mid-loop); other
         // errors (ENOTEMPTY because of a logic bug, ENOTDIR mismatches,
         // permission errors) must still surface. Pre-fix the broad
         // `if (force) continue` masked the readdir-iteration bug that
         // left directories undeleted.
-        const msg = String(e?.message || e);
+        const msg = errorText(e);
         if (force && /ENOENT/.test(msg)) continue;
         ctx.stderr.write(`rm: cannot remove '${t}': ${fsErrorMessage(e)}\n`);
         exit = 1;
@@ -3124,12 +3246,19 @@ function mkTouch(vfs: UnixVfs): CmdFn {
         const dir = parts.slice(0, i).join('/');
         if (dir && !targetVfs.exists(dir)) targetVfs.mkdir(dir, { recursive: true });
       }
-      if (targetVfs.exists(fp) && !targetVfs.isDirectory(fp)) {
+      if (!targetVfs.exists(fp)) {
+        targetVfs.writeFile(fp, '');
+        continue;
+      }
+      // The durable view answers `isDirectory` directly; the kernel's
+      // mount-aware one reports the same thing through `stat`.
+      const isDirectory = 'isDirectory' in targetVfs
+        ? targetVfs.isDirectory(fp)
+        : targetVfs.stat(fp).type === 'directory';
+      if (!isDirectory) {
         // Update mtime by re-writing the same content
         const content = targetVfs.readFile(fp);
         targetVfs.writeFile(fp, content);
-      } else if (!targetVfs.exists(fp)) {
-        targetVfs.writeFile(fp, '');
       }
     }
     return 0;
@@ -3405,9 +3534,9 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
     const activeFormat = format ?? (terse ? STAT_TERSE_FORMAT : null);
     // shell compatibility follow-up: try Kernel.VFS (ctx.vfs) first so /dev
     // mount paths resolve. Same pattern as mkCat.
-    const kvfs: any = (ctx as any).vfs;
+    const kvfs = ctx.vfs;
     for (const f of files) {
-      let st: any = null;
+      let st: CtxStat | null = null;
       let displayPath = f;
       // Try Kernel.VFS first (sees mounts).
       if (kvfs && typeof kvfs.stat === 'function') {
@@ -3497,7 +3626,7 @@ function mkBase64(vfs: UnixVfs): CmdFn {
       try { bytes = vfs.readFile(resolvePath(ctx.cwd, file)); }
       catch (error) { ctx.stderr.write(`base64: ${file}: ${fsErrorMessage(error)}\n`); return 1; }
     } else {
-      bytes = enc.encode(ctx.stdin ?? '');
+      bytes = enc.encode(stdinText(ctx) ?? '');
     }
 
     if (flags.decode) {
@@ -3668,7 +3797,7 @@ function mkPrintf(): CmdFn {
     const vals = ctx.args.slice(1);
     // Process backslash escapes in the format string first.
     const fmt = rawFmt
-      .replace(/\\\\/g, '\u0000')  // protect literal \\\\
+      .replace(/\\\\/g, '\u0000')  // protect literal \\
       .replace(/\\n/g, '\n')
       .replace(/\\t/g, '\t')
       .replace(/\\r/g, '\r')
@@ -3722,7 +3851,7 @@ function mkPrintf(): CmdFn {
   };
 }
 
-function formatOneArg(spec: string, arg: any): string {
+function formatOneArg(spec: string, arg: string | undefined): string {
   const conv = spec[spec.length - 1];
   const flagsAndWidth = spec.slice(1, -1);
   const dotIdx = flagsAndWidth.indexOf('.');
@@ -3941,7 +4070,7 @@ function mkSha256sum(vfs: UnixVfs): CmdFn {
     if (flags.check) return verifySha256Sums(ctx, vfs, positional, digest, flags.status === true);
 
     if (positional.length === 0 || (positional.length === 1 && positional[0] === '-')) {
-      ctx.stdout.write(`${await digest(enc.encode(ctx.stdin ?? ''))}  -\n`);
+      ctx.stdout.write(`${await digest(enc.encode(stdinText(ctx) ?? ''))}  -\n`);
       return 0;
     }
 
@@ -4099,20 +4228,20 @@ function wrapStreaming(fn: CmdFn): (ctx: Ctx) => Promise<number> {
   return async (ctx: Ctx) => {
     try {
       if (ctx.stdin && typeof ctx.stdin !== 'string') {
-        const stdinObj = ctx.stdin as any;
+        const stdinObj = ctx.stdin;
         const isTerminalStdin = typeof stdinObj.feed === 'function';
         if (isTerminalStdin) {
           const buf: string[] = Array.isArray(stdinObj.buffer)
             ? stdinObj.buffer.splice(0)
             : [];
-          (ctx as any).stdin = buf.join('');
+          ctx.stdin = buf.join('');
         }
         // else: leave as pipe reader for the command to handle.
       }
       const result = fn(ctx);
       return await result;
-    } catch (e: any) {
-      ctx.stderr.write(`${e?.message || e}\n`);
+    } catch (e) {
+      ctx.stderr.write(`${errorText(e)}\n`);
       return 1;
     }
   };
@@ -4141,7 +4270,7 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
       // terminal stdin and drain its already-buffered bytes synchronously
       // without awaiting EOF. Pipe readers (no `feed`) await readAll().
       if (ctx.stdin && typeof ctx.stdin !== 'string') {
-        const stdinObj = ctx.stdin as any;
+        const stdinObj = ctx.stdin;
         const isTerminalStdin = typeof stdinObj.feed === 'function';
         if (isTerminalStdin) {
           // Drain any already-queued bytes (typically empty for the
@@ -4151,26 +4280,26 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
           const buf: string[] = Array.isArray(stdinObj.buffer)
             ? stdinObj.buffer.splice(0)
             : [];
-          (ctx as any).stdin = buf.join('');
+          ctx.stdin = buf.join('');
         } else if (typeof stdinObj.readAll === 'function') {
           // Pipe reader — upstream will close() after writing, so
           // readAll() resolves bounded.
-          (ctx as any).stdin = await stdinObj.readAll();
+          ctx.stdin = await stdinObj.readAll();
         } else if (typeof stdinObj.toString === 'function') {
-          (ctx as any).stdin = stdinObj.toString();
+          ctx.stdin = stdinObj.toString();
         }
       }
       const result = fn(ctx);
       return await result;
-    } catch (e: any) {
-      ctx.stderr.write(`${e?.message || e}\n`);
+    } catch (e) {
+      ctx.stderr.write(`${errorText(e)}\n`);
       return 1;
     }
   };
 }
 
 export function registerUnixCommands(
-  registry: any,
+  registry: UnixCommandRegistry,
   sqliteVfs: SqliteVFS,
 ): void {
   registry.register('which', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhich(vfs, registry))));
@@ -4283,8 +4412,8 @@ export function registerUnixCommands(
     try {
       const content = vfs.readFileString(srcFp);
       vfs.writeFile(linkFp, content);
-    } catch (e: any) {
-      ctx.stderr.write(`ln: ${target}: ${e?.message || e}\n`);
+    } catch (e) {
+      ctx.stderr.write(`ln: ${target}: ${errorText(e)}\n`);
       return 1;
     }
     return 0;
