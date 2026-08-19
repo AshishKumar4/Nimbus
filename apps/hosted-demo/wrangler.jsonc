@@ -348,6 +348,10 @@
       "workers_dev": true,
       "vars": {
         "NIMBUS_DIAG_INSTALL_PIPELINE": "",
+        // Staging is the test environment, which is exactly what the debug
+        // gate exists to distinguish: diag write surfaces (cache/telemetry
+        // reset) answer here and stay 404 on production.
+        "NIMBUS_DEBUG": "1",
         "NIMBUS_PROCESS_HOST": "facet",
         "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
         "NIMBUS_AGENT_GATEWAY_ID": "default",

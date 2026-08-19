@@ -14,7 +14,7 @@
  */
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { getCtxExports, supervisorEntrypoint, supervisorEntrypointName, } from './ctx-exports.js';
-import { recordLoaderId, trackLoaderFetch, withDynamicWorkerCapNamed, } from './loader-ledger.js';
+import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed, } from './loader-ledger.js';
 import { RESIDENT_PROCESS_CLASS, requireStagedBootAssembler, residentLoaderConfig, } from './process-fabric.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
@@ -468,8 +468,17 @@ export async function runOneShotWorker(ctx, env, supervisor, params, consume) {
         }
         params.onLoaded?.();
         // The unkeyed worker is a live dynamic worker for exactly this call, so
-        // the run is a Loader fetch on the hosting actor's ledger.
-        const response = await trackLoaderFetch(ctx, () => ep.fetch(params.request));
+        // the run is a Loader fetch on the hosting actor's ledger — bracketed,
+        // never wrapped: see beginLoaderFetch for the measured DO-poisoning
+        // hazard, and the pipelined-`fetch.call` note above for its sibling.
+        const endFetch = beginLoaderFetch(ctx);
+        let response;
+        try {
+            response = await ep.fetch(params.request);
+        }
+        finally {
+            endFetch();
+        }
         try {
             return await consume(response);
         }

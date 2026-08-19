@@ -35,8 +35,13 @@ try {
   );
 
   const installText = stripAnsi(t.buf);
+  // The completion marker's glyph belongs to the installer, not to Nimbus:
+  // upstream renders `ok install complete` on a dumb pipe and `✓ install
+  // complete` on a TTY, and has changed between them. Both spellings are the
+  // same signal, so both pass; the success sentence stays required, and the
+  // OUTCOME (a runnable `pi` on PATH) is asserted independently below.
   a.check('official installer reported install success',
-    /\bok install complete\b/.test(installText) && /Pi was installed successfully/.test(installText),
+    /(?:\bok|✓) install complete\b/.test(installText) && /Pi was installed successfully/.test(installText),
     JSON.stringify(installText.slice(-1600)));
 
   const pathPrompt = installText.lastIndexOf('Add /home/user/.local/bin to your PATH');
