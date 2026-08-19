@@ -175,7 +175,6 @@ export function hasTopLevelAwait(src: string): boolean {
   // inside `(...)`; a `{` only opens a function body when a `function`/
   // `=>` is pending AND we're at parenDepth 0 (past the param list).
   const re = /\b(await|function|class)\b|=>|\{|\}|\(|\)/g;
-  let m: RegExpExecArray | null;
   const fnEntryDepths: number[] = [];
   let depth = 0;
   let parenDepth = 0;
@@ -189,7 +188,7 @@ export function hasTopLevelAwait(src: string): boolean {
   // `x => ({ ... })` (object-returning expression body, `{` at parenDepth
   // 1) does not leak a body slot onto a later top-level block.
   let arrowPending = false;
-  while ((m = re.exec(stripped)) !== null) {
+  for (let m = re.exec(stripped); m !== null; m = re.exec(stripped)) {
     const tok = m[0];
     if (arrowPending && tok !== '{') arrowPending = false;
     if (tok === '(') { parenDepth++; }

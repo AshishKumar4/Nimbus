@@ -191,8 +191,6 @@ export class ServiceManager {
     }
 
     if (svc.exitCode !== null) {
-      // Already stopped
-      svc.exitCode = svc.exitCode;
       return { ok: true, message: '' };
     }
 

@@ -191,7 +191,9 @@ function encodeHttpRequest(request: Request, body: Uint8Array): Uint8Array {
     headers.set('Content-Length', String(body.byteLength));
   }
   const lines = [`${request.method} ${path} HTTP/1.1`];
-  headers.forEach((value, key) => lines.push(`${key}: ${value}`));
+  headers.forEach((value, key) => {
+    lines.push(`${key}: ${value}`);
+  });
   lines.push('', '');
   return concatBytes([new TextEncoder().encode(lines.join('\r\n')), body]);
 }
@@ -213,7 +215,9 @@ function encodeHttpResponseHead(
   chunkedBody: boolean,
 ): Uint8Array {
   const lines = [`HTTP/1.1 ${status} ${statusText}`];
-  headers.forEach((value, key) => lines.push(`${key}: ${value}`));
+  headers.forEach((value, key) => {
+    lines.push(`${key}: ${value}`);
+  });
   if (chunkedBody) lines.push('Transfer-Encoding: chunked');
   lines.push('Connection: close');
   lines.push('', '');
@@ -839,8 +843,8 @@ class LoopbackClientConnection implements VirtualSocketConnection {
             '(loopback sockets carry HTTP requests, not arbitrary byte streams)',
         );
       }
-      const waiter = (this.readable ??= new Deferred<void>());
-      await waiter.promise;
+      this.readable ??= new Deferred<void>();
+      await this.readable.promise;
     }
   }
 
@@ -963,7 +967,8 @@ class LoopbackClientConnection implements VirtualSocketConnection {
   /** Pause the body pump while the guest is behind, so a big stream cannot grow unbounded. */
   private awaitDrain(): Promise<void> {
     if (this.inbound.pendingBytes <= LOOPBACK_READ_HIGH_WATER_BYTES) return Promise.resolve();
-    return (this.drained ??= new Deferred<void>()).promise;
+    this.drained ??= new Deferred<void>();
+    return this.drained.promise;
   }
 
   private withTimeout(promise: Promise<Response>): Promise<Response> {

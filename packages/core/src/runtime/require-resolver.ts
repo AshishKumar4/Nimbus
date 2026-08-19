@@ -618,8 +618,7 @@ export function prefetchForRequire(
     const stripped = stripCommentsForImports(code);
 
     REQUIRE_RE.lastIndex = 0;
-    let match;
-    while ((match = REQUIRE_RE.exec(stripped)) !== null) {
+    for (let match = REQUIRE_RE.exec(stripped); match !== null; match = REQUIRE_RE.exec(stripped)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
@@ -635,7 +634,7 @@ export function prefetchForRequire(
     // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
     // fails because `x` was never added.
     IMPORT_RE.lastIndex = 0;
-    while ((match = IMPORT_RE.exec(stripped)) !== null) {
+    for (let match = IMPORT_RE.exec(stripped); match !== null; match = IMPORT_RE.exec(stripped)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
@@ -647,7 +646,7 @@ export function prefetchForRequire(
     // Follow static-string dynamic imports so a CLI entry that defers to
     // import('./dist/index.js') has that subtree's content prefetched.
     DYNIMPORT_RE.lastIndex = 0;
-    while ((match = DYNIMPORT_RE.exec(stripped)) !== null) {
+    for (let match = DYNIMPORT_RE.exec(stripped); match !== null; match = DYNIMPORT_RE.exec(stripped)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);

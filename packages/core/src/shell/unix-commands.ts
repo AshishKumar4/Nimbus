@@ -1342,8 +1342,9 @@ function mkHead(_vfs: UnixVfs): CmdFn {
           if (chunk === null) break;
           buffered += chunk;
           // Process complete lines while we have them.
-          let nlIdx;
-          while (emitted < n && (nlIdx = buffered.indexOf('\n')) !== -1) {
+          while (emitted < n) {
+            const nlIdx = buffered.indexOf('\n');
+            if (nlIdx === -1) break;
             out.push(buffered.substring(0, nlIdx));
             buffered = buffered.substring(nlIdx + 1);
             emitted++;
@@ -3267,8 +3268,8 @@ function expandStatFormat(
   for (let i = 0; i < format.length; i++) {
     const ch = format[i];
     if (ch === '\\' && i + 1 < format.length) {
-      const escape = format[++i];
-      out += escape === 'n' ? '\n' : escape === 't' ? '\t' : escape === '0' ? '\0' : escape;
+      const esc = format[++i];
+      out += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc === '0' ? '\0' : esc;
       continue;
     }
     if (ch !== '%') {

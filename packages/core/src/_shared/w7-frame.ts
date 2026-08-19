@@ -893,7 +893,8 @@ const CRC_SEED = 0xffff_ffff;
 let crcTable: Uint32Array | null = null;
 
 function crc32Update(check: number, bytes: Uint8Array): number {
-  const table = crcTable ??= createCrcTable();
+  crcTable ??= createCrcTable();
+  const table = crcTable;
   let value = check;
   for (const byte of bytes) value = table[(value ^ byte) & 0xff] ^ (value >>> 8);
   return value >>> 0;

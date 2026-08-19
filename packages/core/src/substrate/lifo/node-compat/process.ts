@@ -148,8 +148,11 @@ export function createProcess(opts: ProcessOptions) {
     },
     removeListener: (event: string, fn: (...args: unknown[]) => void) => proc.off(event, fn),
     removeAllListeners: (event?: string) => {
-      if (event) delete listeners[event];
-      else Object.keys(listeners).forEach((k) => delete listeners[k]);
+      if (event) {
+        delete listeners[event];
+      } else {
+        for (const k of Object.keys(listeners)) delete listeners[k];
+      }
       return proc;
     },
     listeners: (event: string) => listeners[event] ? [...listeners[event]] : [],

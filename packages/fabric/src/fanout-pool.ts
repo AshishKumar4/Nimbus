@@ -341,7 +341,9 @@ export class FanoutPool {
     // task → its place in the original tasks array so we can
     // reassemble results in input order.
     const taskIndex = new Map<FanoutTask<A>, number>();
-    tasks.forEach((t, i) => taskIndex.set(t, i));
+    tasks.forEach((t, i) => {
+      taskIndex.set(t, i);
+    });
     const results: R[] = new Array(tasks.length);
 
     // Build one async dispatcher per shard (closure capturing siblingName,
