@@ -86,6 +86,12 @@ export interface NimbusSandboxOptions {
 }
 
 export interface NimbusExecOptions {
+  /**
+   * Run in a named shell whose cwd and environment persist between calls, the
+   * way a terminal tab does. Omitted, the call runs on the session's one shell
+   * and remembers nothing — the behaviour every programmatic exec has had.
+   */
+  shellId?: string;
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
@@ -910,10 +916,15 @@ export class NimbusSandbox {
   }
 
   private execOptions(options: NimbusExecOptions): Record<string, unknown> {
-    return {
-      ...options,
-      cwd: options.cwd ?? this.root,
-    };
+    const normalized: Record<string, unknown> = { ...options };
+    if (normalized.shellId) {
+      // A named shell owns its cwd, so defaulting one here would reset it on
+      // every call. The sandbox root is only where a NEW shell starts.
+      normalized.shellRoot = this.root;
+    } else {
+      normalized.cwd ??= this.root;
+    }
+    return normalized;
   }
 
   private assertRuntimeAllowed(spec: RuntimeSpec, action: 'preinstall' | 'onDemand' | 'use'): void {

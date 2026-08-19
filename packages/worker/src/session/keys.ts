@@ -62,3 +62,10 @@ export const ATTACH_BOOTSTRAP_JTI_KEY_PREFIX = 'attach-bootstrap-jti:';
  * these rows.
  */
 export const PORT_CAPABILITY_KEY_PREFIX = 'nimbus_preview_capability:';
+
+/**
+ * Prefix for a named programmatic shell's durable cwd+env, keyed by shell id.
+ * One row per id the embedder has actually used; bounded by the embedder's own
+ * naming, the way a terminal tab is.
+ */
+export const SHELL_STATE_KEY_PREFIX = 'nimbus_programmatic_shell:';
