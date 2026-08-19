@@ -254,6 +254,8 @@ const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
 const CONTENT_SCHEMA_MIGRATION = 'content_generations_v1';
+/** Storage key of the shared scratch tree. `normalizeVfsPath` drops the slash. */
+const TMP_ROOT = 'tmp';
 export const VFS_APPEND_RECEIPT_LIMIT = 2048;
 const INODE_KIND_FILE = 0;
 const INODE_KIND_DIRECTORY = 1;
@@ -1341,6 +1343,82 @@ export class SqliteVFS {
     return this.blobToUint8Array(rows[0].data);
   }
 
+  /**
+   * Principals whose `/tmp` is private, keyed by uid, valued by the storage
+   * root their `/tmp` resolves to.
+   *
+   * `/tmp` keeps its path in every view and only the bytes behind it differ,
+   * so nothing has to be told which principal it is. The credential is the
+   * only per-process state visible where paths are RESOLVED — there is no pid
+   * and no cwd down here — so it is what the private view is keyed on.
+   *
+   * Resolution rather than a mount, because a mount diverges the two planes:
+   * the shell writing `/tmp/a` and the file API writing `/tmp/b` landed in
+   * different trees under the same name. `resolvePath` already takes `cred`,
+   * and every plane goes through it.
+   *
+   * Registration is also what makes a principal CONFINED for `chmod`. The two
+   * properties travel together because they answer one question: is this
+   * principal a guest in this filesystem. Nothing here applies to an
+   * unregistered credential, so the ordinary session user is untouched.
+   */
+  private confinedTmpRoots = new Map<number, string>();
+
+  /**
+   * Confine a principal. `tmpRoot` is a storage key, not a logical path — the
+   * caller owns creating and chowning it, because a per-principal `chown` is
+   * uid-0 only and a guest cannot provision its own.
+   */
+  confinePrincipal(uid: number, tmpRoot: string): void {
+    const root = normalizeVfsPath(tmpRoot);
+    if (root === '') throw vfsError('EINVAL', 'a private /tmp root cannot be the filesystem root');
+    this.confinedTmpRoots.set(uid, root);
+  }
+
+  /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
+  releasePrincipal(uid: number): void {
+    this.confinedTmpRoots.delete(uid);
+  }
+
+  /**
+   * Logical path -> storage key, for one credential.
+   *
+   * Everything under `/tmp` belongs to the caller's own private root, which is
+   * what makes the same path mean different bytes per principal. Idempotent: a
+   * key already inside that root is returned untouched, so the several methods
+   * that derive a key before handing it on cannot stack the rewrite.
+   */
+  private storageKey(path: string, cred: VfsCred): string {
+    const key = normalizeVfsPath(path);
+    const root = this.confinedTmpRoots.get(cred.uid);
+    if (root === undefined) return key;
+    if (key === root || key.startsWith(`${root}/`)) return key;
+    if (key === TMP_ROOT) return root;
+    if (!key.startsWith(`${TMP_ROOT}/`)) return key;
+    return `${root}/${key.slice(TMP_ROOT.length + 1)}`;
+  }
+
+  /**
+   * Storage key -> the name this credential knows it by, or `null` when it has
+   * none. The inverse of {@link storageKey}, for the one surface that reports
+   * paths it was not asked about: {@link list}.
+   *
+   * A confined caller has no name for the shared scratch tree — `/tmp` is its
+   * own root — nor for another principal's, so both answer `null` and are
+   * omitted. An unconfined caller sees storage as it is, which is what the
+   * kernel and the session user need.
+   */
+  private logicalPath(key: string, cred: VfsCred): string | null {
+    const root = this.confinedTmpRoots.get(cred.uid);
+    if (root === undefined) return key;
+    if (key === root) return TMP_ROOT;
+    if (key.startsWith(`${root}/`)) return `${TMP_ROOT}/${key.slice(root.length + 1)}`;
+    // The SHARED scratch root has no name here — this caller's `/tmp` is its
+    // own root, which already supplied that entry. Returning it too would
+    // enumerate one name twice, for two different directories.
+    return key === TMP_ROOT || key.startsWith(`${TMP_ROOT}/`) ? null : key;
+  }
+
   // ── Filesystem operations ─────────────────────────────────────────────
 
   as(cred: VfsCred): CredentialedVfs {
@@ -1402,7 +1480,7 @@ export class SqliteVFS {
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream, options, bound),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
-      revision: (path) => this.revision(path),
+      revision: (path) => this.revision(path, bound),
       epoch: this._epoch,
     };
   }
@@ -1433,7 +1511,7 @@ export class SqliteVFS {
     followLeaf: boolean,
     allowMissing: boolean,
   ): { path: string; inode: INode | undefined } {
-    let current = normalizeVfsPath(path);
+    let current = this.storageKey(path, cred);
     const seen = new Set<string>();
     for (let hops = 0; hops <= 40; hops++) {
       const parts = current.split('/').filter(Boolean);
@@ -1452,8 +1530,13 @@ export class SqliteVFS {
           seen.add(prefix);
           const target = dec.decode(this.readInodeBytes(prefix, inode));
           const suffix = parts.slice(index + 1).join('/');
+          // An ABSOLUTE target is a logical path the same way the caller's
+          // was, so it goes through the same rewrite: otherwise a symlink to
+          // /tmp/y stored inside a private tree would read the shared one,
+          // which is the one way out of the confinement. A RELATIVE target
+          // resolves against a key that is already private, so it stays there.
           const resolvedTarget = target.startsWith('/')
-            ? normalizeVfsPath(target)
+            ? this.storageKey(target, cred)
             : normalizeVfsPath(`${this.parentPath(prefix)}/${target}`);
           current = suffix ? normalizeVfsPath(`${resolvedTarget}/${suffix}`) : resolvedTarget;
           restarted = true;
@@ -1560,9 +1643,11 @@ export class SqliteVFS {
    * under it changed in this DO lifetime). `revision('')` equals the
    * global clock by construction (every mutation stamps all ancestors).
    */
-  revision(path?: string): number {
+  revision(path?: string, cred?: VfsCred): number {
     if (path === undefined) return this._revision;
-    const p = normalizeVfsPath(path);
+    // A credentialed caller asks about its own view; a confined one asking
+    // after /tmp/x means its own file, so the counter must be that file's.
+    const p = cred === undefined ? normalizeVfsPath(path) : this.storageKey(path, cred);
     if (p === '') return this._revision;
     return this._pathRevisions.get(p) ?? 0;
   }
@@ -1750,7 +1835,7 @@ export class SqliteVFS {
   }
 
   private mkdir(path: string, options: { recursive?: boolean; mode?: number } | undefined, cred: VfsCred): void {
-    const normalized = normalizeVfsPath(path);
+    const normalized = this.storageKey(path, cred);
     this.assertMutationsAllowed([normalized]);
     if (this.exists(normalized, cred)) return;
 
@@ -1856,7 +1941,7 @@ export class SqliteVFS {
 
   private symlink(target: string, path: string, cred: VfsCred): void {
     this.assertMutationsAllowed([path]);
-    const normalized = normalizeVfsPath(path);
+    const normalized = this.storageKey(path, cred);
     const prior = this.checkAccess(normalized, 0, cred, { followLeaf: false, allowMissingLeaf: true });
     if (prior.inode) throw vfsError('EEXIST', normalized);
     this.checkParentAccess(normalized, cred);
@@ -2840,6 +2925,25 @@ export class SqliteVFS {
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     if (cred.uid !== 0 && cred.uid !== inode.uid) throw vfsError('EPERM', resolved.path);
+    // A confined principal owns its own triad and nothing else. Refusing chmod
+    // outright would be simpler and wrong: execution is gated on the x bit, so
+    // a guest that writes build.sh and cannot chmod it cannot run it. What
+    // must not happen is WIDENING past its own principal, so the group, other
+    // and setuid/setgid/sticky bits keep the value they were provisioned with
+    // while the owner triad moves freely. `u+x` works; `+x` and `777` do not.
+    //
+    // Refused, never clamped. Quietly narrowing a mutation to the part that
+    // was allowed reports success for something other than what was asked, so
+    // the refusal names the spelling that works instead.
+    if (cred.uid !== 0 && this.confinedTmpRoots.has(cred.uid)) {
+      const beyondOwner = (mode & 0o7777) & ~0o700;
+      if (beyondOwner !== ((inode.mode & 0o7777) & ~0o700)) {
+        throw vfsError(
+          'EPERM',
+          `${resolved.path}: mode change would grant permission outside your own principal; use u+x`,
+        );
+      }
+    }
     this.assertMutationsAllowed([inode.path]);
     const full = inodeTypeBits(inode.kind) | (mode & 0o7777);
     inode.mode = full;
@@ -2910,7 +3014,7 @@ export class SqliteVFS {
     // Before the walk, deliberately — see VfsListPage.
     const epoch = this._epoch;
     const rev = this._revision;
-    const from = after === null || after === undefined ? '' : normalizeVfsPath(after);
+    const from = after === null || after === undefined ? '' : this.storageKey(after, cred);
     // this.inodes is insertion-ordered, not path-ordered, so the sort is what
     // makes `after` a resume key at all. Paid once per page against a map the
     // DO already holds whole.
@@ -2932,8 +3036,15 @@ export class SqliteVFS {
       } catch {
         continue;
       }
+      // Reported in the caller's OWN path space. Enumerating raw storage keys
+      // would name a private root the caller cannot address and does not know
+      // it has, and a caller feeding such a path back would be asking about
+      // someone else's tree. `null` means the path has no name for this
+      // caller, which is the same OMIT the access check above performs.
+      const logical = this.logicalPath(path, cred);
+      if (logical === null) continue;
       entries.push({
-        path,
+        path: logical,
         kind: inode.kind,
         size: inode.size,
         rev: this._pathRevisions.get(path) ?? 0,
@@ -2943,7 +3054,7 @@ export class SqliteVFS {
   }
 
   private readdir(path: string, cred: VfsCred): { name: string; type: VfsInodeKind }[] {
-    const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
+    const np = this.storageKey(path, cred);
     const resolved = np ? this.checkAccess(np, 0o4, cred) : { path: '', inode: undefined };
     const inode = resolved.inode;
     if (inode && inode.kind !== 'directory') throw vfsError('ENOTDIR', path);
@@ -3008,7 +3119,7 @@ export class SqliteVFS {
 
   private rmdir(path: string, cred: VfsCred): void {
     this.assertMutationsAllowed([path]);
-    const np = path.replace(/^\/+/, '').replace(/\/+$/, '');
+    const np = this.storageKey(path, cred);
     const resolved = this.checkAccess(np, 0, cred, { followLeaf: false });
     this.checkParentAccess(resolved.path, cred);
     const inode = this.inodes.get(np);
@@ -3312,14 +3423,14 @@ export class SqliteVFS {
   // ── Batch write (npm install fast path) ───────────────────────────────
 
   private normalizeBatchInode(entry: BatchInodeEntry, cred: VfsCred): NormalizedBatchInodeEntry {
-    const path = normalizeVfsPath(entry.path);
+    const path = this.storageKey(entry.path, cred);
     const prior = this.inodes.get(path);
     const newUid = cred.uid === 0 ? (entry.uid ?? 1000) : cred.uid;
     const newGid = cred.uid === 0 ? (entry.gid ?? 1000) : cred.gid;
     return {
       ...entry,
       path,
-      parentPath: normalizeVfsPath(entry.parentPath),
+      parentPath: this.storageKey(entry.parentPath, cred),
       mode: prior
         ? prior.mode
         : inodeKind(entry) === 'symlink'
@@ -3353,7 +3464,7 @@ export class SqliteVFS {
     };
 
     for (const path of payload.deletePaths ?? []) {
-      const normalized = normalizeVfsPath(path);
+      const normalized = this.storageKey(path, cred);
       const existing = this.checkAccess(normalized, 0, cred, {
         followLeaf: false,
         allowMissingLeaf: true,
@@ -3366,13 +3477,13 @@ export class SqliteVFS {
       else checkParent(entry.path);
     }
     for (const chunk of payload.chunks) {
-      const path = normalizeVfsPath(chunk.path);
+      const path = this.storageKey(chunk.path, cred);
       if (!pending.has(path)) this.checkAccess(path, 0o2, cred, { followLeaf: false });
     }
     return {
       ...payload,
       inodes,
-      deletePaths: payload.deletePaths?.map(normalizeVfsPath),
+      deletePaths: payload.deletePaths?.map((path) => this.storageKey(path, cred)),
     };
   }
 
