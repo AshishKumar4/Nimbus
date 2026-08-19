@@ -25,6 +25,7 @@ import type {
 } from './sqlite-vfs.js';
 import { CHUNK_SIZE } from '../constants.js';
 import { enc } from '../_shared/bytes.js';
+import { errorText } from '../_shared/error-text.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
 
 /** Sentinel: if present, seed never runs again (until user deletes it). */
@@ -1085,9 +1086,15 @@ export function seedProject(
       chunks: [{ path: SEED_SENTINEL_PATH, chunkId: 0, data: sentinelData }],
     });
     log?.(`[seed] sentinel written → ${SEED_SENTINEL_PATH}`);
-  } catch (e: any) {
-    log?.(`[seed] failed: ${e?.message || e}`);
-    return { seeded: false, files: fileCount, reason: e?.message || 'write-failed' };
+  } catch (e) {
+    log?.(`[seed] failed: ${errorText(e)}`);
+    // `reason` keeps its own fallback: a caught value carrying no message
+    // must still report 'write-failed', not the value's text.
+    const reason =
+      typeof e === 'object' && e !== null && 'message' in e && e.message
+        ? String(e.message)
+        : 'write-failed';
+    return { seeded: false, files: fileCount, reason };
   }
 
   return { seeded: true, files: fileCount };

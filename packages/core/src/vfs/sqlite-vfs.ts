@@ -83,6 +83,26 @@ const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
 // generateGitNetworkFacetCode (git-network-facet.ts) and the parallel
 // preamble (parallel/generated-workers.ts).
 
+/**
+ * The Node `process` global as far as this file probes it. workerd provides
+ * no `process`, so every member stays optional and every read stays guarded.
+ */
+interface NodeProcessLike {
+  env?: Record<string, string | undefined>;
+  memoryUsage?: () => { heapUsed: number };
+}
+
+/**
+ * Live view of the global object. `process` is not in the Workers lib, so its
+ * shape is declared here rather than assumed present.
+ */
+const nodeHost = globalThis as { process?: NodeProcessLike };
+
+/** Single gate for the W2.5b install-pipeline diagnostics below. */
+function installPipelineDiagEnabled(): boolean {
+  return nodeHost.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1';
+}
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
@@ -1322,7 +1342,7 @@ export class SqliteVFS {
   private blobToUint8Array(blob: unknown): Uint8Array {
     if (blob instanceof Uint8Array) return blob;
     if (blob instanceof ArrayBuffer) return new Uint8Array(blob);
-    if (ArrayBuffer.isView(blob)) return new Uint8Array((blob as any).buffer, (blob as any).byteOffset, (blob as any).byteLength);
+    if (ArrayBuffer.isView(blob)) return new Uint8Array(blob.buffer, blob.byteOffset, blob.byteLength);
     return new Uint8Array(0);
   }
 
@@ -3062,7 +3082,7 @@ export class SqliteVFS {
     if (!kids) {
       // W2.5b diagnostic: empty children-set for a directory we expected
       // to be populated.
-      if ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1') {
+      if (installPipelineDiagEnabled()) {
         // eslint-disable-next-line no-console
         console.warn(
           '[sqlite-vfs/W2.5b] readdir miss path=' + np +
@@ -3084,7 +3104,7 @@ export class SqliteVFS {
     // This distinguishes (a) "children index broken" from (b) "inodes
     // map lost entries".
     if (
-      (globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1' &&
+      installPipelineDiagEnabled() &&
       kids.size !== results.length
     ) {
       // eslint-disable-next-line no-console
@@ -4494,7 +4514,7 @@ export class SqliteVFS {
   /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
   private _safeHeapUsed(): number {
     try {
-      const mu = (globalThis as any).process?.memoryUsage?.();
+      const mu = nodeHost.process?.memoryUsage?.();
       return Number(mu?.heapUsed) || 0;
     } catch {
       return 0;
@@ -4689,7 +4709,7 @@ export class SqliteVFS {
     // `_addToChildrenIndex` uses Set.add so repeated calls are idempotent;
     // gating it on `prior === undefined` was the bug. Counters remain
     // gated correctly so they don't double-count.
-    const __diag = ((globalThis as any).process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
+    const __diag = installPipelineDiagEnabled();
     const replacedPaths = new Set<string>();
     for (const entry of plan.inodes) {
       const prior = this.inodes.get(entry.path);
