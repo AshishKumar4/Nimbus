@@ -22,6 +22,7 @@ import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
+import { assertEqualHolds } from './loose-equality.js';
 
 export interface NodeContext {
   vfs: VFS;
@@ -114,9 +115,9 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         if (!value) throw new Error(message || 'AssertionError');
       };
       assert.ok = assert;
-      assert.equal = (a: unknown, b: unknown, msg?: string) => { if (a != b) throw new Error(msg || `${a} != ${b}`); };
+      assert.equal = (a: unknown, b: unknown, msg?: string) => { if (!assertEqualHolds(a, b)) throw new Error(msg || `${a} != ${b}`); };
       assert.strictEqual = (a: unknown, b: unknown, msg?: string) => { if (a !== b) throw new Error(msg || `${a} !== ${b}`); };
-      assert.notEqual = (a: unknown, b: unknown, msg?: string) => { if (a == b) throw new Error(msg || `${a} == ${b}`); };
+      assert.notEqual = (a: unknown, b: unknown, msg?: string) => { if (assertEqualHolds(a, b)) throw new Error(msg || `${a} == ${b}`); };
       assert.notStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (a === b) throw new Error(msg || `${a} === ${b}`); };
       assert.deepStrictEqual = (a: unknown, b: unknown, msg?: string) => {
         if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(msg || 'deepStrictEqual failed');
