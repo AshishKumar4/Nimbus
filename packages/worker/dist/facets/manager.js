@@ -4763,8 +4763,9 @@ export class FacetManager {
             throw e;
         }
     }
-    registerPort(pid, port) {
+    async registerPort(pid, port) {
         if (port > 0 && port < 65536) {
+            await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
             this.portRegistry.register(port, pid);
         }
     }

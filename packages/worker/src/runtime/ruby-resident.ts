@@ -63,7 +63,7 @@ export function rubyResidentStart(facetMgr: FacetManager): RubyResidentStart {
 
     const boot = parsed.data;
     if (boot.state === 'listening' && typeof boot.port === 'number' && boot.port > 0) {
-      facetMgr.registerPort(spawned.pid, Number(boot.port));
+      await facetMgr.registerPort(spawned.pid, Number(boot.port));
       const routeablePorts = await facetMgr.waitForRouteablePorts(spawned.pid);
       const routeablePort = routeablePorts.includes(Number(boot.port)) ? Number(boot.port) : routeablePorts[0];
       if (!routeablePort) {

@@ -5284,8 +5284,9 @@ export class FacetManager {
     }
   }
 
-  registerPort(pid: number, port: number): void {
+  async registerPort(pid: number, port: number): Promise<void> {
     if (port > 0 && port < 65536) {
+      await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
       this.portRegistry.register(port, pid);
     }
   }

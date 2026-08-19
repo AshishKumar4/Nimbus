@@ -1036,7 +1036,7 @@ export declare class FacetManager {
         pid: number;
         boot: unknown;
     }>;
-    registerPort(pid: number, port: number): void;
+    registerPort(pid: number, port: number): Promise<void>;
     waitForRouteablePorts(pid: number, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
