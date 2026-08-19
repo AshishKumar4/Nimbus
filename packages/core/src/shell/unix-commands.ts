@@ -2829,6 +2829,39 @@ function mkDiff(vfs: UnixVfs): CmdFn {
  * (rmdir recursive when -r). Translate raw errors so the unix-command
  * contract is honoured.
  */
+/** The single-character backslash escapes `echo -e` and `printf` both expand. */
+const BACKSLASH_ESCAPES: Readonly<Record<string, string>> = {
+  '\\': '\\',
+  n: '\n',
+  t: '\t',
+  r: '\r',
+  a: '\x07',
+  b: '\b',
+  f: '\f',
+  v: '\v',
+};
+
+/**
+ * Expand POSIX backslash escapes in one pass.
+ *
+ * A pass per escape needs somewhere to park a literal `\` so the later passes
+ * cannot read it as the start of an escape, and whatever character that is, the
+ * text may hold one already — or an earlier escape may have just produced one.
+ * NUL was the parking spot, so `printf 'a\0b'` and `echo -e 'a\x00b'` both came
+ * back as `a\b`: the NUL they had just produced was restored as a backslash.
+ * One left-to-right pass consumes `\\` as a unit and needs no parking spot.
+ */
+function expandBackslashEscapes(text: string): string {
+  return text.replace(
+    /\\(?:([\\ntrabfv])|0([0-7]{1,3})?|x([0-9a-fA-F]{1,2}))/g,
+    (_match, simple: string | undefined, octal: string | undefined, hex: string | undefined) => {
+      if (simple !== undefined) return BACKSLASH_ESCAPES[simple];
+      if (hex !== undefined) return String.fromCharCode(parseInt(hex, 16));
+      return String.fromCharCode(octal ? parseInt(octal, 8) : 0);
+    },
+  );
+}
+
 /**
  * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
  * resolves. `echo` is a Shell.builtins entry, NOT in the
@@ -2864,18 +2897,7 @@ function mkEcho(): CmdFn {
     }
     let out = args.slice(i).join(' ');
     if (interpretEscapes) {
-      out = out
-        .replace(/\\\\/g, '\u0000')
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '\t')
-        .replace(/\\r/g, '\r')
-        .replace(/\\b/g, '\b')
-        .replace(/\\f/g, '\f')
-        .replace(/\\v/g, '\v')
-        .replace(/\\a/g, '\x07')
-        .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
-        .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
-        .replace(/\u0000/g, '\\');
+      out = expandBackslashEscapes(out);
     }
     ctx.stdout.write(suppressNewline ? out : out + '\n');
     return 0;
@@ -3796,18 +3818,7 @@ function mkPrintf(): CmdFn {
     const rawFmt = ctx.args[0];
     const vals = ctx.args.slice(1);
     // Process backslash escapes in the format string first.
-    const fmt = rawFmt
-      .replace(/\\\\/g, '\u0000')  // protect literal \\
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-      .replace(/\\r/g, '\r')
-      .replace(/\\a/g, '\x07')
-      .replace(/\\b/g, '\b')
-      .replace(/\\f/g, '\f')
-      .replace(/\\v/g, '\v')
-      .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
-      .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
-      .replace(/\u0000/g, '\\');
+    const fmt = expandBackslashEscapes(rawFmt);
 
     let out = '';
     let argIdx = 0;
