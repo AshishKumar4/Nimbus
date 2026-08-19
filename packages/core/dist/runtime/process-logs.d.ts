@@ -57,6 +57,14 @@ export interface LogChunk {
 export interface SequencedLogChunk extends LogChunk {
     seq: number;
 }
+/**
+ * A chunk as a persist adapter hands it back on load. `seq` is the sequence
+ * number the adapter stored alongside it; hydration falls back to array
+ * position for a row that carries none.
+ */
+export interface PersistedLogChunk extends LogChunk {
+    seq?: number;
+}
 export interface ProcessLogReadOptions {
     cursor?: number;
     lines?: number;
@@ -92,7 +100,7 @@ export interface ProcessExitInfo {
  */
 export interface PersistAdapter {
     load(pid: number): {
-        chunks: LogChunk[];
+        chunks: PersistedLogChunk[];
         exit: ProcessExitInfo | null;
     } | null;
     persistChunks(pid: number, rows: {

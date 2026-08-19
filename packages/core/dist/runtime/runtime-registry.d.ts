@@ -40,6 +40,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
+import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -96,7 +97,7 @@ export declare function resolveRuntimeScriptPath(fs: ScriptResolutionFs, cwd: st
  * to the very same execution path `bun <file>` takes, rather than growing
  * a second one.
  */
-export type RuntimeSubcommand = (ctx: any, registry: ShellRegistry, runAsRuntime: (args: string[]) => Promise<number>) => Promise<number>;
+export type RuntimeSubcommand = (ctx: CommandContext, registry: ShellRegistry, runAsRuntime: (args: string[]) => Promise<number>) => Promise<number>;
 export interface RuntimeSpec {
     /** Shell-command name: 'node' / 'bun' / 'wasm-runner' / 'python'. */
     name: string;
@@ -142,7 +143,7 @@ export interface RuntimeSpec {
  * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
-    resolve(name: string): Promise<any> | any;
+    resolve(name: string): Promise<Command | null | undefined> | Command | null | undefined;
 }
 /**
  * Build a shell-handler function for a runtime. The returned function
@@ -158,5 +159,5 @@ export declare function buildRuntimeHandler(spec: RuntimeSpec, ctx0: {
      *  the module is loaded eagerly or on this call. */
     getEsbuild(): EsbuildService | Promise<EsbuildService>;
     registry: ShellRegistry;
-}): (ctx: any) => Promise<number>;
+}): Command;
 //# sourceMappingURL=runtime-registry.d.ts.map

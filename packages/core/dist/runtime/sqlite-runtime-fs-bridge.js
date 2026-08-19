@@ -414,11 +414,7 @@ function normalizeOpenFlags(flags) {
     };
 }
 function fsError(code, syscall, path) {
-    const err = new Error(`${code}: ${syscall} '${path}'`);
-    err.code = code;
-    err.syscall = syscall;
-    err.path = path;
-    return err;
+    return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path });
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;

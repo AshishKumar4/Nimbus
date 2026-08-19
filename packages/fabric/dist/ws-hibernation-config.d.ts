@@ -38,6 +38,15 @@ export declare const NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS = 5000;
 /** Public ping/pong contract — clients send `ping`, receive `pong`. */
 export declare const WS_AUTO_RESPONSE_REQUEST = "ping";
 export declare const WS_AUTO_RESPONSE_RESPONSE = "pong";
+/**
+ * The hibernation controls this module configures. Both are optional because
+ * both are version-dependent: a workerd that predates one may still expose the
+ * other, and neither exists in Node.
+ */
+export interface WsHibernationHost {
+    setWebSocketAutoResponse?(pair: WebSocketRequestResponsePair): void;
+    setHibernatableWebSocketEventTimeout?(timeoutMs: number): void;
+}
 export interface WsHibernationConfigResult {
     /** True iff `setWebSocketAutoResponse` ran without throwing. */
     autoResponseConfigured: boolean;
@@ -60,5 +69,5 @@ export interface WsHibernationConfigResult {
  * methods works) so this module stays Node-testable. In production the
  * caller passes the real `this.ctx` from NimbusSession's constructor.
  */
-export declare function configureWsHibernation(ctx: any): WsHibernationConfigResult;
+export declare function configureWsHibernation(ctx: WsHibernationHost): WsHibernationConfigResult;
 //# sourceMappingURL=ws-hibernation-config.d.ts.map

@@ -16,19 +16,20 @@
  * tree itself gets working commands out of this with nothing else in play.
  */
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { Command } from '../substrate/lifo/commands/types.js';
 import { type RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestEntrypoint, type RuntimeManifest } from './runtime-manifest.js';
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
-    register(name: string, handler: (ctx: any) => Promise<number>): void;
+    register(name: string, handler: Command): void;
     unregister?(name: string): void;
-    resolve?(name: string): any;
+    resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
 }
 /** Runner-factory contract. Each registered runner produces a shell-
  *  command handler given the manifest + the installed root dir. The
  *  package manager invokes the factory at install-time + at boot-time
  *  rehydration. */
-export type RunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => (ctx: any) => Promise<number>;
+export type RunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 /**
  * How a manifest entrypoint's `runner` key is resolved to code.
  *

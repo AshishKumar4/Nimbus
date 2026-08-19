@@ -101,11 +101,14 @@ export class FanoutPool {
     opts;
     coordDoId;
     coordDoIdShort;
-    constructor(env, ctx, opts) {
-        // Hard-fail on missing LOADER. LoaderPool also enforces this,
-        // but we check up front so the diagnostic points at the fanout-pool
-        // construction site rather than the deferred loader-pool one.
-        if (!env?.LOADER || typeof env.LOADER.get !== 'function') {
+    constructor(rawEnv, ctx, opts) {
+        // A host hands its whole env over; the bindings are claimed here and the
+        // LOADER claim is checked immediately. Hard-fail on a missing LOADER —
+        // LoaderPool also enforces this, but checking up front points the
+        // diagnostic at the fanout-pool construction site rather than the
+        // deferred loader-pool one.
+        const env = rawEnv ?? {};
+        if (!env.LOADER || typeof env.LOADER.get !== 'function') {
             throw new BindingError('FanoutPool: env.LOADER binding missing or invalid. ' +
                 'Add a [[worker_loaders]] entry to wrangler.jsonc.');
         }
@@ -230,7 +233,9 @@ export class FanoutPool {
         // task → its place in the original tasks array so we can
         // reassemble results in input order.
         const taskIndex = new Map();
-        tasks.forEach((t, i) => taskIndex.set(t, i));
+        tasks.forEach((t, i) => {
+            taskIndex.set(t, i);
+        });
         const results = new Array(tasks.length);
         // Build one async dispatcher per shard (closure capturing siblingName,
         // bucket). NOT eagerly-started — wrapped in a thunk so we can stagger

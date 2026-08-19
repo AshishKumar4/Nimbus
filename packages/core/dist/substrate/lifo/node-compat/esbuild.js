@@ -9,10 +9,8 @@
 const ESBUILD_WASM_VERSION = '0.24.2';
 const ESBUILD_WASM_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/esbuild.wasm`;
 const ESBUILD_ESM_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/esm/browser.min.js`;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let esbuildModule = null;
 let initPromise = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function ensureInitialized() {
     if (esbuildModule)
         return esbuildModule;
@@ -25,10 +23,10 @@ async function ensureInitialized() {
                 wasmURL: ESBUILD_WASM_URL,
             });
             esbuildModule = mod;
+            return mod;
         })();
     }
-    await initPromise;
-    return esbuildModule;
+    return await initPromise;
 }
 export function createEsbuild() {
     const mod = {

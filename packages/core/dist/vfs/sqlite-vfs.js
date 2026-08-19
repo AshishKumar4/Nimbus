@@ -51,6 +51,15 @@ import { WeightedCreditPool, } from '../_shared/weighted-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;
+/**
+ * Live view of the global object. `process` is not in the Workers lib, so its
+ * shape is declared here rather than assumed present.
+ */
+const nodeHost = globalThis;
+/** Single gate for the W2.5b install-pipeline diagnostics below. */
+function installPipelineDiagEnabled() {
+    return nodeHost.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1';
+}
 const INODE_ROWS_PER_SQL_EXEC = 9;
 const CHUNK_ROWS_PER_SQL_EXEC = 33;
 const CONTENT_IDS_PER_SQL_EXEC = 50;
@@ -2367,7 +2376,7 @@ export class SqliteVFS {
         if (!kids) {
             // W2.5b diagnostic: empty children-set for a directory we expected
             // to be populated.
-            if (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1') {
+            if (installPipelineDiagEnabled()) {
                 // eslint-disable-next-line no-console
                 console.warn('[sqlite-vfs/W2.5b] readdir miss path=' + np +
                     ' kidsUndefined=true inodeExists=' + this.inodes.has(np));
@@ -2386,7 +2395,7 @@ export class SqliteVFS {
         // fewer (some entries' inodes are missing from this.inodes), log it.
         // This distinguishes (a) "children index broken" from (b) "inodes
         // map lost entries".
-        if (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1' &&
+        if (installPipelineDiagEnabled() &&
             kids.size !== results.length) {
             // eslint-disable-next-line no-console
             console.warn('[sqlite-vfs/W2.5b] readdir size mismatch path=' + np +
@@ -3635,7 +3644,7 @@ export class SqliteVFS {
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
     _safeHeapUsed() {
         try {
-            const mu = globalThis.process?.memoryUsage?.();
+            const mu = nodeHost.process?.memoryUsage?.();
             return Number(mu?.heapUsed) || 0;
         }
         catch {
@@ -3813,7 +3822,7 @@ export class SqliteVFS {
         // `_addToChildrenIndex` uses Set.add so repeated calls are idempotent;
         // gating it on `prior === undefined` was the bug. Counters remain
         // gated correctly so they don't double-count.
-        const __diag = (globalThis.process?.env?.NIMBUS_DIAG_INSTALL_PIPELINE === '1');
+        const __diag = installPipelineDiagEnabled();
         const replacedPaths = new Set();
         for (const entry of plan.inodes) {
             const prior = this.inodes.get(entry.path);

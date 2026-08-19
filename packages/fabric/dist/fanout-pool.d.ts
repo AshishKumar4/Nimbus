@@ -13,6 +13,21 @@
  * missing LOADER or NIMBUS_SESSION bindings fail loudly so install and
  * runtime operations do not appear successful after partial dispatch.
  */
+import { type FacetTaskFn } from './loader-pool.js';
+import type { WorkerLoader } from './vendor/types.js';
+/**
+ * The sibling-session namespace the peer-DO topology routes through. Ids are
+ * derived from a name so a task key always lands on the same peer.
+ */
+interface PeerSessionNamespace {
+    idFromName(name: string): DurableObjectId;
+    get(id: DurableObjectId): unknown;
+}
+/** The bindings a fan-out needs off the coordinator DO's env. */
+export interface FanoutPoolEnv {
+    LOADER?: WorkerLoader;
+    NIMBUS_SESSION?: PeerSessionNamespace;
+}
 /**
  * Threshold at which routing switches from coordinator-local loaders to
  * sibling Durable Objects.
@@ -153,7 +168,7 @@ export declare class FanoutPool {
     private readonly opts;
     private readonly coordDoId;
     private readonly coordDoIdShort;
-    constructor(env: any, ctx: DurableObjectState, opts: FanoutPoolOptions);
+    constructor(rawEnv: unknown, ctx: DurableObjectState, opts: FanoutPoolOptions);
     /**
      * Dispatch `tasks` across the appropriate topology and return
      * results in input order.
@@ -175,7 +190,7 @@ export declare class FanoutPool {
      * as LoaderPool.submit. The function is serialized via
      * the vendored serializeFunction (same as LoaderPool#prepare).
      */
-    submitMany<A, R>(tasks: FanoutTask<A>[], fn: (item: A, env: any) => R | Promise<R>): Promise<R[]>;
+    submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskFn<A, R>): Promise<R[]>;
     /** Report which topology a task count uses without dispatching. */
     topologyFor(taskCount: number): 'in-do' | 'peer-do' | 'empty';
     /**
@@ -204,4 +219,5 @@ export declare class FanoutPool {
  * Tests use this to predict placement.
  */
 export declare function hashKeyToShard(key: string, peerCount: number): number;
+export {};
 //# sourceMappingURL=fanout-pool.d.ts.map

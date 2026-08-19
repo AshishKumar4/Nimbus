@@ -17,6 +17,21 @@
  * passed.
  */
 /**
+ * The storage the alarm map lives in. `setAlarm` is optional because
+ * `wrangler dev` serves a storage without it, which is the whole reason
+ * scheduling degrades to a no-op instead of throwing.
+ */
+export interface AlarmStorage {
+    get(key: string): Promise<unknown>;
+    put(key: string, value: unknown): Promise<void>;
+    delete(key: string): Promise<boolean>;
+    setAlarm?(scheduledTime: number): Promise<void>;
+}
+/** The hosting actor's context, as the alarm coordination reads it. */
+export interface AlarmContext {
+    storage: AlarmStorage;
+}
+/**
  * Multi-reason alarm coordination map.
  *
  * JSON-serialised `Record<reason, deadlineMsEpoch>` where keys are the
@@ -82,7 +97,7 @@ export interface IsolateGenHost {
  * wrangler-dev where setAlarm is unavailable, this is a no-op (the
  * subsystem's in-isolate setTimeout fallback continues to work).
  */
-export declare function scheduleAlarm(host: AlarmHost, ctx: any, reason: string, whenMs: number): Promise<boolean>;
+export declare function scheduleAlarm(host: AlarmHost, ctx: AlarmContext, reason: string, whenMs: number): Promise<boolean>;
 /**
  * What one alarm handler may return: nothing, or a deadline this reason
  * re-arms itself at. Re-arming through the return value keeps the map's
@@ -113,7 +128,7 @@ export type AlarmHandlers = Record<string, (now: number) => AlarmHandlerResult |
  * that one-time fire means (one dispatch later the map is populated by the
  * next scheduleAlarm call).
  */
-export declare function dispatchAlarm(host: AlarmHost, ctx: any, handlers: AlarmHandlers, onLegacyAlarm?: () => void): Promise<void>;
+export declare function dispatchAlarm(host: AlarmHost, ctx: AlarmContext, handlers: AlarmHandlers, onLegacyAlarm?: () => void): Promise<void>;
 /** Increment + persist the isolate-gen counter once per fresh isolate. */
-export declare function maybeBumpIsolateGen(host: IsolateGenHost, ctx: any): Promise<void>;
+export declare function maybeBumpIsolateGen(host: IsolateGenHost, ctx: AlarmContext): Promise<void>;
 //# sourceMappingURL=alarms.d.ts.map

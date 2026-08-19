@@ -28,6 +28,7 @@
  * Failure is reported honestly via the return value so /api/_diag/memory
  * can show whether the runtime supported the configuration.
  */
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 /**
  * Recommended hibernation event timeout (ms). 5 s per CF research §C.3
  * — long enough for the heaviest non-facet WS message handler observed
@@ -52,8 +53,11 @@ export function configureWsHibernation(ctx) {
         autoResponseConfigured: false,
         timeoutSetMs: null,
     };
-    // Step 1: auto-response.
-    const Pair = globalThis.WebSocketRequestResponsePair;
+    // Step 1: auto-response. The constructor is a `declare class` in
+    // @cloudflare/workers-types, so it is in scope as a type but not on
+    // `typeof globalThis`, and a bare reference would throw in Node.
+    const workerdGlobals = globalThis;
+    const Pair = workerdGlobals.WebSocketRequestResponsePair;
     if (typeof ctx?.setWebSocketAutoResponse === 'function' && typeof Pair === 'function') {
         try {
             const pair = new Pair(WS_AUTO_RESPONSE_REQUEST, WS_AUTO_RESPONSE_RESPONSE);
@@ -61,7 +65,7 @@ export function configureWsHibernation(ctx) {
             result.autoResponseConfigured = true;
         }
         catch (e) {
-            result.autoResponseError = e?.message || String(e);
+            result.autoResponseError = errorText(e);
         }
     }
     else if (typeof Pair !== 'function') {
@@ -79,7 +83,7 @@ export function configureWsHibernation(ctx) {
             result.timeoutSetMs = NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS;
         }
         catch (e) {
-            result.timeoutError = e?.message || String(e);
+            result.timeoutError = errorText(e);
         }
     }
     else {

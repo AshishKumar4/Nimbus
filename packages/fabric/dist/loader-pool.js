@@ -141,6 +141,8 @@ export class LoaderPool {
      */
     doIdShort;
     constructor(env, ctx, opts) {
+        // A host hands its whole env over; the binding is claimed here and the
+        // claim is checked on the next line.
         const loader = env?.LOADER;
         if (!loader || typeof loader.get !== 'function') {
             throw new BindingError('LoaderPool: env.LOADER binding missing or invalid. ' +
@@ -169,8 +171,11 @@ export class LoaderPool {
         if (opts?.wasmModules) {
             for (const [name, bytes] of Object.entries(opts.wasmModules)) {
                 if (!(bytes instanceof ArrayBuffer)) {
+                    // Reached only when a caller broke the declared option type, so the
+                    // value is whatever it really was rather than the ArrayBuffer here.
+                    const got = bytes?.constructor?.name;
                     throw new BindingError(`LoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
-                        `(got ${bytes?.constructor?.name || typeof bytes}).`);
+                        `(got ${got || typeof bytes}).`);
                 }
                 const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
                 if (seenIds.has(id)) {
@@ -253,8 +258,9 @@ export class LoaderPool {
         const seen = new Set();
         for (const [name, bytes] of Object.entries(perCall)) {
             if (!(bytes instanceof ArrayBuffer)) {
+                const got = bytes?.constructor?.name;
                 throw new BindingError(`LoaderPool: per-call wasmModules['${name}'] must be ` +
-                    `ArrayBuffer (got ${bytes?.constructor?.name || typeof bytes}).`);
+                    `ArrayBuffer (got ${got || typeof bytes}).`);
             }
             const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
             if (ctorIds.has(id)) {

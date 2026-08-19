@@ -202,13 +202,12 @@ export class WebSocketTunnel extends BaseTunnel {
             port = parseInt(match[1], 10);
             path = match[2] || '/';
         }
-        // Check if port exists in registry
-        if (!this.portRegistry || !this.portRegistry.has(port)) {
+        // Check if a server is listening on the port
+        const handler = this.portRegistry?.get(port);
+        if (!handler) {
             this.sendError(requestId, 404, `No server listening on port ${port}`);
             return;
         }
-        // Get handler
-        const handler = this.portRegistry.get(port);
         // Create virtual request/response
         const vReq = {
             method,

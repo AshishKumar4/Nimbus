@@ -19,6 +19,7 @@
 import { CRED_KERNEL } from './os-contracts.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { errorText } from '../_shared/error-text.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -174,7 +175,6 @@ export function hasTopLevelAwait(src) {
     // inside `(...)`; a `{` only opens a function body when a `function`/
     // `=>` is pending AND we're at parenDepth 0 (past the param list).
     const re = /\b(await|function|class)\b|=>|\{|\}|\(|\)/g;
-    let m;
     const fnEntryDepths = [];
     let depth = 0;
     let parenDepth = 0;
@@ -188,7 +188,7 @@ export function hasTopLevelAwait(src) {
     // `x => ({ ... })` (object-returning expression body, `{` at parenDepth
     // 1) does not leak a body slot onto a later top-level block.
     let arrowPending = false;
-    while ((m = re.exec(stripped)) !== null) {
+    for (let m = re.exec(stripped); m !== null; m = re.exec(stripped)) {
         const tok = m[0];
         if (arrowPending && tok !== '{')
             arrowPending = false;
@@ -892,6 +892,10 @@ export class EsbuildService {
                 let initTimeout = null;
                 await Promise.race([
                     esb.initialize({
+                        // wrangler resolves this static `.wasm` import to a compiled
+                        // module at bundle time; the asset stub for a `.wasm` module can
+                        // only declare its default export as a string, and the guard
+                        // above is what checks the resolution actually happened.
                         wasmModule: esbuildWasmUrl,
                         worker: false,
                     }),
@@ -907,13 +911,14 @@ export class EsbuildService {
                 this.initialized = true;
             }
             catch (e) {
+                const message = errorText(e);
                 // "Cannot call initialize more than once" means it's already ready
-                if (e?.message?.includes('more than once')) {
+                if (message.includes('more than once')) {
                     this.initialized = true;
                     return;
                 }
                 this.initPromise = null;
-                throw new Error('esbuild init failed: ' + (e?.message || e));
+                throw new Error('esbuild init failed: ' + message);
             }
         })();
         return this.initPromise;

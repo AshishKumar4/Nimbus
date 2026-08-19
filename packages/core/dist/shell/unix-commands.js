@@ -13,13 +13,31 @@
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { requireVfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
+import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
-import { fileTypeChar, isCharacterDevice } from '../substrate/lifo/kernel/vfs/index.js';
+import { fileTypeChar, isCharacterDevice, } from '../substrate/lifo/kernel/vfs/index.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { findUnixGroupName, findUnixUserName, parseChownOwnership, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
+/**
+ * A resolved entry as a command this module can run. Every handler in the
+ * registry takes a command context; the ones registered below read the string
+ * `wrap` leaves in `stdin`, and a command dispatched from here is handed that
+ * string rather than a reader.
+ */
+function asResolvedCommand(resolved) {
+    return typeof resolved === 'function' ? resolved : null;
+}
+/**
+ * stdin as text. `wrap` drains the shell's stream into `ctx.stdin` before a
+ * command body runs, so a command that does not read a stream itself sees the
+ * string it left there, and nothing at all when there was no stdin.
+ */
+function stdinText(ctx) {
+    return typeof ctx.stdin === 'string' ? ctx.stdin : undefined;
+}
 function unixVfsFor(sqliteVfs, cred) {
     return {
         ...sqliteVfs.as(cred),
@@ -225,7 +243,7 @@ function _pathLookup(vfs, name, envPath) {
 async function _registryResolved(registry, name, options = {}) {
     try {
         const resolved = typeof registry.resolve === 'function'
-            ? await registry.resolve(name)
+            ? asResolvedCommand(await registry.resolve(name))
             : null;
         if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
             return resolved;
@@ -407,7 +425,7 @@ function mkCommand(vfs, registry) {
         // because we're calling the resolved cmd not the alias name.
         const name = args[0];
         try {
-            const resolved = await registry.resolve(name);
+            const resolved = asResolvedCommand(await registry.resolve(name));
             if (!resolved) {
                 ctx.stderr.write(`command: ${name}: not found\n`);
                 return 127;
@@ -417,7 +435,7 @@ function mkCommand(vfs, registry) {
             return typeof code === 'number' ? code : 0;
         }
         catch (e) {
-            ctx.stderr.write(`command: ${name}: ${e?.message || e}\n`);
+            ctx.stderr.write(`command: ${name}: ${errorText(e)}\n`);
             return 1;
         }
     };
@@ -447,7 +465,9 @@ function mkType(_vfs, registry) {
         let exit = 0;
         for (const name of ctx.args) {
             try {
-                const resolved = typeof registry.resolve === 'function' ? await registry.resolve(name) : null;
+                const resolved = typeof registry.resolve === 'function'
+                    ? asResolvedCommand(await registry.resolve(name))
+                    : null;
                 if (resolved && !isRuntimeInstallHintHandler(resolved)) {
                     ctx.stdout.write(`${name} is a shell builtin\n`);
                 }
@@ -824,7 +844,7 @@ function mkFind(vfs, registry) {
                 return false;
             let target;
             try {
-                target = await registry.resolve(name);
+                target = asResolvedCommand(await registry.resolve(name));
             }
             catch {
                 target = null;
@@ -852,7 +872,7 @@ function mkFind(vfs, registry) {
                 return code === 0;
             }
             catch (e) {
-                ctx.stderr.write(`find: ${name}: ${e?.message || e}\n`);
+                ctx.stderr.write(`find: ${name}: ${errorText(e)}\n`);
                 return false;
             }
         };
@@ -1018,7 +1038,7 @@ function mkFind(vfs, registry) {
                             return true;
                         }
                         catch (err) {
-                            ctx.stderr.write(`find: cannot delete '${e.display}': ${err?.message || err}\n`);
+                            ctx.stderr.write(`find: cannot delete '${e.display}': ${errorText(err)}\n`);
                             return false;
                         }
                     };
@@ -1386,8 +1406,9 @@ function mkGrep(vfs) {
         }
         else if (targets.length === 0) {
             // Read from stdin (if piped) — single virtual "file" with no label.
-            if (ctx.stdin) {
-                processLines(ctx.stdin.split('\n'), '');
+            const piped = stdinText(ctx);
+            if (piped) {
+                processLines(piped.split('\n'), '');
             }
         }
         else {
@@ -1454,8 +1475,10 @@ function mkHead(_vfs) {
                         break;
                     buffered += chunk;
                     // Process complete lines while we have them.
-                    let nlIdx;
-                    while (emitted < n && (nlIdx = buffered.indexOf('\n')) !== -1) {
+                    while (emitted < n) {
+                        const nlIdx = buffered.indexOf('\n');
+                        if (nlIdx === -1)
+                            break;
                         out.push(buffered.substring(0, nlIdx));
                         buffered = buffered.substring(nlIdx + 1);
                         emitted++;
@@ -1669,8 +1692,9 @@ function mkTail(vfs) {
                 ctx.stdout.write(selected.join('\n') + '\n');
         };
         if (files.length === 0) {
-            if (ctx.stdin)
-                emit(ctx.stdin);
+            const piped = stdinText(ctx);
+            if (piped)
+                emit(piped);
             return 0;
         }
         const label = verbose || files.length > 1;
@@ -1793,7 +1817,7 @@ function mkWc(vfs) {
             ctx.stdout.write(counts.map((c) => String(c).padStart(width)).join(' ') + (label ? ' ' + label : '') + '\n');
         };
         if (files.length === 0) {
-            const bytes = enc.encode(ctx.stdin ?? '');
+            const bytes = enc.encode(stdinText(ctx) ?? '');
             // Nothing bounds a stream's counts ahead of time, so a multi-column
             // report over standard input uses the fixed width GNU falls back to.
             emit(measure(bytes), columns === 1 ? 0 : 7, '');
@@ -1839,7 +1863,7 @@ function mkSort(vfs) {
             ctx.stderr.write(`sort: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
             return 1;
         }
-        let input = ctx.stdin || '';
+        let input = stdinText(ctx) || '';
         if (positional.length > 0 && !input) {
             try {
                 input = vfs.readFileString(resolvePath(ctx.cwd, positional[0]));
@@ -1890,7 +1914,7 @@ function mkUniq(vfs) {
         }
         // File operands were ignored outright, so `uniq file` read stdin and
         // printed nothing at all.
-        let input = ctx.stdin || '';
+        let input = stdinText(ctx) || '';
         if (positional.length > 0 && positional[0] !== '-') {
             try {
                 input = vfs.readFileString(resolvePath(ctx.cwd, positional[0]));
@@ -1942,7 +1966,7 @@ function mkSed(vfs) {
         vfs,
         stdout: ctx.stdout,
         stderr: ctx.stderr,
-        stdin: ctx.stdin === undefined ? undefined : stringInput(ctx.stdin),
+        stdin: typeof ctx.stdin === 'string' ? stringInput(ctx.stdin) : undefined,
     });
 }
 function stringInput(text) {
@@ -2018,7 +2042,7 @@ function mkAwk(vfs) {
             }
         }
         const program = programArgs[0] || '';
-        let input = ctx.stdin || '';
+        let input = stdinText(ctx) || '';
         if (fileArgs.length > 0 && !input) {
             try {
                 input = vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0]));
@@ -2107,7 +2131,7 @@ function mkAwk(vfs) {
                     re = new RegExp(patSrc);
                 }
                 catch (e) {
-                    ctx.stderr.write(`awk: bad regex /${patSrc}/: ${e?.message || e}\n`);
+                    ctx.stderr.write(`awk: bad regex /${patSrc}/: ${errorText(e)}\n`);
                     return 1;
                 }
                 blocks.push({ kind: 'PATTERN', pattern: re, body });
@@ -2277,7 +2301,7 @@ function mkAwk(vfs) {
                 return v;
             }
             catch (e) {
-                throw new Error(`expr error: ${e?.message || e} in "${expr}"`);
+                throw new Error(`expr error: ${errorText(e)} in "${expr}"`);
             }
         }
         function stripStringsForScan(s) {
@@ -2723,7 +2747,7 @@ function mkAwk(vfs) {
                     runBlock(b);
         }
         catch (e) {
-            ctx.stderr.write(`awk: ${e?.message || e}\n`);
+            ctx.stderr.write(`awk: ${errorText(e)}\n`);
             return 1;
         }
         return 0;
@@ -2753,10 +2777,7 @@ function mkAwk(vfs) {
  */
 function mkXargs(vfs, registry) {
     return async (ctx) => {
-        // NOT trimmed: `-0` exists so a name may carry the whitespace a split
-        // would eat, and trimming the stream rewrites its first and last item.
-        // The default split already drops the empties a trim would have removed.
-        const input = ctx.stdin || '';
+        const input = (stdinText(ctx) || '').trim();
         if (!input)
             return 0;
         // Parse flags first
@@ -2802,9 +2823,9 @@ function mkXargs(vfs, registry) {
         // Resolve target command from registry (handles both eager + lazy maps).
         let target;
         try {
-            target = await registry.resolve(cmdName);
+            target = asResolvedCommand(await registry.resolve(cmdName));
         }
-        catch (_e) {
+        catch {
             target = null;
         }
         if (!target) {
@@ -2839,7 +2860,7 @@ function mkXargs(vfs, registry) {
                         exit = code;
                 }
                 catch (e) {
-                    ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+                    ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`);
                     exit = 1;
                 }
             }
@@ -2855,7 +2876,7 @@ function mkXargs(vfs, registry) {
                         exit = code;
                 }
                 catch (e) {
-                    ctx.stderr.write(`xargs: ${cmdName}: ${e?.message || e}\n`);
+                    ctx.stderr.write(`xargs: ${cmdName}: ${errorText(e)}\n`);
                     exit = 1;
                 }
                 if (!Number.isFinite(batchSize))
@@ -2867,7 +2888,7 @@ function mkXargs(vfs, registry) {
 }
 function mkTee(vfs) {
     return (ctx) => {
-        const input = ctx.stdin || '';
+        const input = stdinText(ctx) || '';
         const append = ctx.args.includes('-a');
         const files = ctx.args.filter(a => !a.startsWith('-'));
         ctx.stdout.write(input);
@@ -2981,7 +3002,10 @@ function mkDiff(vfs) {
             return hasDiff ? 1 : 0;
         }
         catch (e) {
-            ctx.stderr.write(`diff: ${e.message}\n`);
+            // `diff` reports the thrown value's `message`, whatever it holds, rather
+            // than the value: a throw carrying none has always printed `undefined`.
+            const message = typeof e === 'object' && e !== null && 'message' in e ? e.message : undefined;
+            ctx.stderr.write(`diff: ${String(message)}\n`);
             return 2;
         }
     };
@@ -3003,6 +3027,36 @@ function mkDiff(vfs) {
  * (rmdir recursive when -r). Translate raw errors so the unix-command
  * contract is honoured.
  */
+/** The single-character backslash escapes `echo -e` and `printf` both expand. */
+const BACKSLASH_ESCAPES = {
+    '\\': '\\',
+    n: '\n',
+    t: '\t',
+    r: '\r',
+    a: '\x07',
+    b: '\b',
+    f: '\f',
+    v: '\v',
+};
+/**
+ * Expand POSIX backslash escapes in one pass.
+ *
+ * A pass per escape needs somewhere to park a literal `\` so the later passes
+ * cannot read it as the start of an escape, and whatever character that is, the
+ * text may hold one already — or an earlier escape may have just produced one.
+ * NUL was the parking spot, so `printf 'a\0b'` and `echo -e 'a\x00b'` both came
+ * back as `a\b`: the NUL they had just produced was restored as a backslash.
+ * One left-to-right pass consumes `\\` as a unit and needs no parking spot.
+ */
+function expandBackslashEscapes(text) {
+    return text.replace(/\\(?:([\\ntrabfv])|0([0-7]{1,3})?|x([0-9a-fA-F]{1,2}))/g, (_match, simple, octal, hex) => {
+        if (simple !== undefined)
+            return BACKSLASH_ESCAPES[simple];
+        if (hex !== undefined)
+            return String.fromCharCode(parseInt(hex, 16));
+        return String.fromCharCode(octal ? parseInt(octal, 8) : 0);
+    });
+}
 /**
  * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
  * resolves. `echo` is a Shell.builtins entry, NOT in the
@@ -3056,18 +3110,7 @@ function mkEcho() {
         }
         let out = args.slice(i).join(' ');
         if (interpretEscapes) {
-            out = out
-                .replace(/\\\\/g, '\u0000')
-                .replace(/\\n/g, '\n')
-                .replace(/\\t/g, '\t')
-                .replace(/\\r/g, '\r')
-                .replace(/\\b/g, '\b')
-                .replace(/\\f/g, '\f')
-                .replace(/\\v/g, '\v')
-                .replace(/\\a/g, '\x07')
-                .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
-                .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
-                .replace(/\u0000/g, '\\');
+            out = expandBackslashEscapes(out);
         }
         ctx.stdout.write(suppressNewline ? out : out + '\n');
         return 0;
@@ -3124,7 +3167,7 @@ function mkLs(vfs) {
             // mounts like /dev) with fallback to closure-captured SqliteVFS.
             let real = [];
             try {
-                if (kvfs && typeof kvfs.readdirStat === 'function') {
+                if (kvfs && 'readdirStat' in kvfs && typeof kvfs.readdirStat === 'function') {
                     real = kvfs.readdirStat(fp);
                 }
                 else {
@@ -3253,7 +3296,7 @@ function mkLs(vfs) {
                 }
             }
             catch (e) {
-                ctx.stderr.write(`ls: cannot access '${arg}': ${e?.message || e}\n`);
+                ctx.stderr.write(`ls: cannot access '${arg}': ${errorText(e)}\n`);
                 exit = 1;
             }
         }
@@ -3307,8 +3350,9 @@ function mkCat(vfs) {
     return (ctx) => {
         const files = ctx.args.filter(a => !a.startsWith('-'));
         if (files.length === 0) {
-            if (ctx.stdin)
-                ctx.stdout.write(ctx.stdin);
+            const piped = stdinText(ctx);
+            if (piped)
+                ctx.stdout.write(piped);
             return 0;
         }
         // Resolve both native VFS symlinks and the legacy registry before reads.
@@ -3412,7 +3456,7 @@ function mkRm(vfs) {
                 // permission errors) must still surface. Pre-fix the broad
                 // `if (force) continue` masked the readdir-iteration bug that
                 // left directories undeleted.
-                const msg = String(e?.message || e);
+                const msg = errorText(e);
                 if (force && /ENOENT/.test(msg))
                     continue;
                 ctx.stderr.write(`rm: cannot remove '${t}': ${fsErrorMessage(e)}\n`);
@@ -3434,13 +3478,19 @@ function mkTouch(vfs) {
                 if (dir && !targetVfs.exists(dir))
                     targetVfs.mkdir(dir, { recursive: true });
             }
-            if (targetVfs.exists(fp) && !targetVfs.isDirectory(fp)) {
+            if (!targetVfs.exists(fp)) {
+                targetVfs.writeFile(fp, '');
+                continue;
+            }
+            // The durable view answers `isDirectory` directly; the kernel's
+            // mount-aware one reports the same thing through `stat`.
+            const isDirectory = 'isDirectory' in targetVfs
+                ? targetVfs.isDirectory(fp)
+                : targetVfs.stat(fp).type === 'directory';
+            if (!isDirectory) {
                 // Update mtime by re-writing the same content
                 const content = targetVfs.readFile(fp);
                 targetVfs.writeFile(fp, content);
-            }
-            else if (!targetVfs.exists(fp)) {
-                targetVfs.writeFile(fp, '');
             }
         }
         return 0;
@@ -3549,8 +3599,8 @@ function expandStatFormat(format, expand) {
     for (let i = 0; i < format.length; i++) {
         const ch = format[i];
         if (ch === '\\' && i + 1 < format.length) {
-            const escape = format[++i];
-            out += escape === 'n' ? '\n' : escape === 't' ? '\t' : escape === '0' ? '\0' : escape;
+            const esc = format[++i];
+            out += esc === 'n' ? '\n' : esc === 't' ? '\t' : esc === '0' ? '\0' : esc;
             continue;
         }
         if (ch !== '%') {
@@ -3776,7 +3826,7 @@ function mkBase64(vfs) {
             }
         }
         else {
-            bytes = enc.encode(ctx.stdin ?? '');
+            bytes = enc.encode(stdinText(ctx) ?? '');
         }
         if (flags.decode) {
             const source = dec.decode(bytes).replace(/\s+/g, '');
@@ -3971,18 +4021,7 @@ function mkPrintf() {
         const rawFmt = ctx.args[0];
         const vals = ctx.args.slice(1);
         // Process backslash escapes in the format string first.
-        const fmt = rawFmt
-            .replace(/\\\\/g, '\u0000') // protect literal \\\\
-            .replace(/\\n/g, '\n')
-            .replace(/\\t/g, '\t')
-            .replace(/\\r/g, '\r')
-            .replace(/\\a/g, '\x07')
-            .replace(/\\b/g, '\b')
-            .replace(/\\f/g, '\f')
-            .replace(/\\v/g, '\v')
-            .replace(/\\0([0-7]{1,3})?/g, (_m, oct) => String.fromCharCode(oct ? parseInt(oct, 8) : 0))
-            .replace(/\\x([0-9a-fA-F]{1,2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
-            .replace(/\u0000/g, '\\');
+        const fmt = expandBackslashEscapes(rawFmt);
         let out = '';
         let argIdx = 0;
         function applyFormat() {
@@ -4282,7 +4321,7 @@ function mkSha256sum(vfs) {
         if (flags.check)
             return verifySha256Sums(ctx, vfs, positional, digest, flags.status === true);
         if (positional.length === 0 || (positional.length === 1 && positional[0] === '-')) {
-            ctx.stdout.write(`${await digest(enc.encode(ctx.stdin ?? ''))}  -\n`);
+            ctx.stdout.write(`${await digest(enc.encode(stdinText(ctx) ?? ''))}  -\n`);
             return 0;
         }
         let exit = 0;
@@ -4483,7 +4522,7 @@ function wrapStreaming(fn) {
             return await result;
         }
         catch (e) {
-            ctx.stderr.write(`${e?.message || e}\n`);
+            ctx.stderr.write(`${errorText(e)}\n`);
             return 1;
         }
     };
@@ -4536,7 +4575,7 @@ function wrap(fn) {
             return await result;
         }
         catch (e) {
-            ctx.stderr.write(`${e?.message || e}\n`);
+            ctx.stderr.write(`${errorText(e)}\n`);
             return 1;
         }
     };
@@ -4655,7 +4694,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
             vfs.writeFile(linkFp, content);
         }
         catch (e) {
-            ctx.stderr.write(`ln: ${target}: ${e?.message || e}\n`);
+            ctx.stderr.write(`ln: ${target}: ${errorText(e)}\n`);
             return 1;
         }
         return 0;

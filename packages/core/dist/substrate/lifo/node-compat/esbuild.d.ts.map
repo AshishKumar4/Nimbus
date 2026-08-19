@@ -1,1 +1,1 @@
-{"version":3,"file":"esbuild.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/esbuild.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AA8BH,wBAAgB,aAAa,IAAI,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,CA+CvD"}
+{"version":3,"file":"esbuild.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/esbuild.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AAsCH,wBAAgB,aAAa,IAAI,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,CA+CvD"}

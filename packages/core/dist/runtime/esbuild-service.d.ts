@@ -100,12 +100,13 @@ export declare function getSharedRuntimeExternals(specifier: string): string[];
  * Unicode identifier tables.
  */
 export declare function hasTopLevelAwait(src: string): boolean;
+import type * as esbuild from 'esbuild-wasm';
 export interface TransformResult {
     code: string;
     map: string;
     warnings: {
         text: string;
-        location?: any;
+        location?: esbuild.Location | null;
     }[];
 }
 export interface BuildOutputFile {
@@ -116,11 +117,11 @@ export interface BuildResult {
     outputFiles: BuildOutputFile[];
     errors: {
         text: string;
-        location?: any;
+        location?: esbuild.Location | null;
     }[];
     warnings: {
         text: string;
-        location?: any;
+        location?: esbuild.Location | null;
     }[];
 }
 export declare class EsbuildService {

@@ -99,7 +99,9 @@ function encodeHttpRequest(request, body) {
         headers.set('Content-Length', String(body.byteLength));
     }
     const lines = [`${request.method} ${path} HTTP/1.1`];
-    headers.forEach((value, key) => lines.push(`${key}: ${value}`));
+    headers.forEach((value, key) => {
+        lines.push(`${key}: ${value}`);
+    });
     lines.push('', '');
     return concatBytes([new TextEncoder().encode(lines.join('\r\n')), body]);
 }
@@ -115,7 +117,9 @@ function encodeHttpRequest(request, body) {
  */
 function encodeHttpResponseHead(status, statusText, headers, chunkedBody) {
     const lines = [`HTTP/1.1 ${status} ${statusText}`];
-    headers.forEach((value, key) => lines.push(`${key}: ${value}`));
+    headers.forEach((value, key) => {
+        lines.push(`${key}: ${value}`);
+    });
     if (chunkedBody)
         lines.push('Transfer-Encoding: chunked');
     lines.push('Connection: close');
@@ -647,8 +651,8 @@ class LoopbackClientConnection {
                 throw new Error('Nimbus loopback socket: read before a complete HTTP request was written ' +
                     '(loopback sockets carry HTTP requests, not arbitrary byte streams)');
             }
-            const waiter = (this.readable ??= new Deferred());
-            await waiter.promise;
+            this.readable ??= new Deferred();
+            await this.readable.promise;
         }
     }
     close() {
@@ -775,7 +779,8 @@ class LoopbackClientConnection {
     awaitDrain() {
         if (this.inbound.pendingBytes <= LOOPBACK_READ_HIGH_WATER_BYTES)
             return Promise.resolve();
-        return (this.drained ??= new Deferred()).promise;
+        this.drained ??= new Deferred();
+        return this.drained.promise;
     }
     withTimeout(promise) {
         let timer = null;

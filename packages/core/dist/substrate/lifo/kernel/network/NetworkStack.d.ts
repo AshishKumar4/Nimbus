@@ -3,6 +3,16 @@ import { NetworkNamespace } from './NetworkNamespace.js';
 import { DNSResolver } from './DNSResolver.js';
 import { Socket } from './Socket.js';
 import type { IPAddress, SocketType, SocketAddress, Packet, RouteEntry, NetworkTunnel } from './types.js';
+import type { VETHPair } from './tunnel/VETHPair.js';
+import type { Bridge } from './Bridge.js';
+/**
+ * A tunnel as the stack holds it. `NetworkTunnel` declares its interface as the
+ * plain device record; namespaces hold the concrete device, which is what every
+ * tunnel implementation exposes (see `BaseTunnel`).
+ */
+type BoundTunnel = Omit<NetworkTunnel, 'interface'> & {
+    interface: NetworkInterface;
+};
 /**
  * Virtual network stack
  * Provides Linux-like networking with interfaces, routing, sockets, DNS, and tunneling
@@ -117,7 +127,7 @@ export declare class NetworkStack {
     /**
      * Add tunnel to network stack
      */
-    addTunnel(name: string, tunnel: NetworkTunnel): void;
+    addTunnel(name: string, tunnel: BoundTunnel): void;
     /**
      * Remove tunnel from network stack
      */
@@ -125,19 +135,19 @@ export declare class NetworkStack {
     /**
      * Get tunnel by name
      */
-    getTunnel(name: string): NetworkTunnel | undefined;
+    getTunnel(name: string): BoundTunnel | undefined;
     /**
      * Get all tunnels
      */
-    getAllTunnels(): NetworkTunnel[];
+    getAllTunnels(): BoundTunnel[];
     /**
      * Get tunnels by namespace
      */
-    getTunnelsByNamespace(namespace: string): NetworkTunnel[];
+    getTunnelsByNamespace(namespace: string): BoundTunnel[];
     /**
      * Add VETH pair
      */
-    addVETHPair(id: string, vethPair: any): void;
+    addVETHPair(id: string, vethPair: VETHPair): void;
     /**
      * Remove VETH pair
      */
@@ -145,11 +155,11 @@ export declare class NetworkStack {
     /**
      * Get VETH pair by ID or interface name
      */
-    getVETHPair(idOrName: string): any | undefined;
+    getVETHPair(idOrName: string): VETHPair | undefined;
     /**
      * Get all VETH pairs
      */
-    getAllVETHPairs(): any[];
+    getAllVETHPairs(): VETHPair[];
     /**
      * Generate next tunnel ID
      */
@@ -157,7 +167,7 @@ export declare class NetworkStack {
     /**
      * Add bridge to network stack
      */
-    addBridge(name: string, bridge: any): void;
+    addBridge(name: string, bridge: Bridge): void;
     /**
      * Remove bridge from network stack
      */
@@ -165,14 +175,15 @@ export declare class NetworkStack {
     /**
      * Get bridge by name
      */
-    getBridge(name: string): any | undefined;
+    getBridge(name: string): Bridge | undefined;
     /**
      * Get all bridges
      */
-    getAllBridges(): any[];
+    getAllBridges(): Bridge[];
     /**
      * Get bridges by namespace
      */
-    getBridgesByNamespace(namespace: string): any[];
+    getBridgesByNamespace(namespace: string): Bridge[];
 }
+export {};
 //# sourceMappingURL=NetworkStack.d.ts.map

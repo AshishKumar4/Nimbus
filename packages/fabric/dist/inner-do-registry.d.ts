@@ -22,20 +22,20 @@
  *   prevent multiple supervisor DOs in the same isolate from clobbering
  *   each other's registrations.
  *
- * The values are DurableObject class constructors. `any` here is
- * deliberate: the inner DO's class shape is whatever the user defines
- * in their inner Worker, and we only need to invoke it via
- * `ctx.facets.get(name, { class: cls, id })` — workerd does the rest.
+ * The values are the inner worker's own Durable Object classes, as
+ * `worker.getDurableObjectClass(name)` hands them over: opaque tokens whose
+ * only use is `ctx.facets.get(name, { class: cls, id })`, which is exactly what
+ * workerd's `DurableObjectClass` models.
  */
 /** Look up a registered inner-DO class. Returns undefined if not found. */
-export declare function getInnerDoClass(supervisorDoId: string, bindingName: string): any | undefined;
+export declare function getInnerDoClass(supervisorDoId: string, bindingName: string): DurableObjectClass | undefined;
 /**
  * Register an inner DO class for synthesis. Called by nimbus-wrangler.ts
  * after each successful buildAndLoad() with the class extracted from
  * the fresh worker stub. Keys are `<doId>:<bindingName>` so multiple
  * supervisor DOs don't collide.
  */
-export declare function registerInnerDoClass(supervisorDoId: string, bindingName: string, cls: any): void;
+export declare function registerInnerDoClass(supervisorDoId: string, bindingName: string, cls: DurableObjectClass): void;
 /** Clear all registrations belonging to a supervisor DO (called on rebuild). */
 export declare function clearInnerDoClasses(supervisorDoId: string): void;
 //# sourceMappingURL=inner-do-registry.d.ts.map

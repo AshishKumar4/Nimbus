@@ -139,10 +139,13 @@ export function createProcess(opts) {
         },
         removeListener: (event, fn) => proc.off(event, fn),
         removeAllListeners: (event) => {
-            if (event)
+            if (event) {
                 delete listeners[event];
-            else
-                Object.keys(listeners).forEach((k) => delete listeners[k]);
+            }
+            else {
+                for (const k of Object.keys(listeners))
+                    delete listeners[k];
+            }
             return proc;
         },
         listeners: (event) => listeners[event] ? [...listeners[event]] : [],

@@ -23,6 +23,24 @@
  * The vendored directory contains only the upstream serialization, error,
  * and binding types used by this implementation.
  */
+import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { WorkerLoader } from './vendor/types.js';
+/**
+ * A function dispatched into a facet isolate, with the bindings that facet was
+ * minted with as its second argument.
+ *
+ * Declared through a method so the bindings parameter compares BIVARIANTLY: a
+ * task body annotates the exact surface it calls (`env.SUPERVISOR` is the
+ * embedder's RPC class, which the fabric cannot name), and accepting that
+ * narrowing is the whole point of handing the bindings over.
+ */
+export type FacetTaskFn<A, R> = {
+    task(args: A, env: FacetBindings): R | Promise<R>;
+}['task'];
+/** The one binding a pool needs off whichever env its host hands it. */
+export interface LoaderPoolEnv {
+    LOADER?: WorkerLoader;
+}
 /** Options handed to LoaderPool's constructor. */
 export interface LoaderPoolOptions {
     /** Maximum concurrent in-flight facets. Default 4. */
@@ -244,21 +262,21 @@ export declare class LoaderPool {
      * 12 chars is enough entropy for DO ids to collide-free per process.
      */
     private readonly doIdShort;
-    constructor(env: any, ctx: DurableObjectState, opts?: LoaderPoolOptions);
+    constructor(env: unknown, ctx: DurableObjectState, opts?: LoaderPoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
     /**
      * Run `fn` once with `arg` on a slot isolate. Returns the result or
      * throws TimeoutError / RetryExhaustedError / ExecutionError.
      */
-    submit<T, R>(fn: (arg: T, env: any) => R | Promise<R>, arg: T, opts?: LoaderCallOptions): Promise<Awaited<R>>;
+    submit<T, R>(fn: FacetTaskFn<T, R>, arg: T, opts?: LoaderCallOptions): Promise<Awaited<R>>;
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
      * pinned to stable slots so warm isolates are reused.
      *
      * Results are returned in input order. Failure handling per `onError`.
      */
-    map<T, R>(fn: (item: T, env: any) => R | Promise<R>, items: T[], opts?: LoaderMapOptions): Promise<Array<Awaited<R> | null>>;
+    map<T, R>(fn: FacetTaskFn<T, R>, items: T[], opts?: LoaderMapOptions): Promise<Array<Awaited<R> | null>>;
     /**
      * Same shape as `map`, but accepts a pre-serialized function source
      * string instead of a live function reference. Used by

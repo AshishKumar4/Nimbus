@@ -19,6 +19,7 @@ import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
+import { assertEqualHolds } from './loose-equality.js';
 export function createModuleMap(ctx) {
     const map = {
         fs: () => createFs(ctx.vfs, ctx.cwd),
@@ -89,11 +90,11 @@ export function createModuleMap(ctx) {
                     throw new Error(message || 'AssertionError');
             };
             assert.ok = assert;
-            assert.equal = (a, b, msg) => { if (a != b)
+            assert.equal = (a, b, msg) => { if (!assertEqualHolds(a, b))
                 throw new Error(msg || `${a} != ${b}`); };
             assert.strictEqual = (a, b, msg) => { if (a !== b)
                 throw new Error(msg || `${a} !== ${b}`); };
-            assert.notEqual = (a, b, msg) => { if (a == b)
+            assert.notEqual = (a, b, msg) => { if (assertEqualHolds(a, b))
                 throw new Error(msg || `${a} == ${b}`); };
             assert.notStrictEqual = (a, b, msg) => { if (a === b)
                 throw new Error(msg || `${a} === ${b}`); };

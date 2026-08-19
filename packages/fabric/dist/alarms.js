@@ -16,6 +16,7 @@
  * runs the embedder-supplied handler for every reason whose deadline has
  * passed.
  */
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 /**
  * Multi-reason alarm coordination map.
  *
@@ -92,7 +93,7 @@ export function scheduleAlarm(host, ctx, reason, whenMs) {
             return true;
         }
         catch (e) {
-            console.warn('[nimbus/W1] scheduleAlarm threw:', e?.message);
+            console.warn('[nimbus/W1] scheduleAlarm threw:', errorText(e));
             return false;
         }
     };
@@ -157,7 +158,7 @@ async function dispatchAlarmBody(ctx, handlers, onLegacyAlarm) {
                 }
             }
             catch (e) {
-                console.warn(`[nimbus/W1] dispatch ${reason} threw:`, e?.message);
+                console.warn(`[nimbus/W1] dispatch ${reason} threw:`, errorText(e));
             }
         }
         // Re-arm or clear.
@@ -179,7 +180,7 @@ async function dispatchAlarmBody(ctx, handlers, onLegacyAlarm) {
         }
     }
     catch (e) {
-        console.warn('[nimbus/W1] dispatchAlarm threw:', e?.message);
+        console.warn('[nimbus/W1] dispatchAlarm threw:', errorText(e));
     }
 }
 /** Increment + persist the isolate-gen counter once per fresh isolate. */
@@ -208,6 +209,6 @@ export async function maybeBumpIsolateGen(host, ctx) {
         host._isolateGen = next;
     }
     catch (e) {
-        console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);
+        console.warn('[nimbus/W9] isolate-gen bump failed:', errorText(e));
     }
 }

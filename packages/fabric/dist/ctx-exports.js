@@ -35,8 +35,9 @@ export function setSupervisorEntrypointName(name) {
 /**
  * Resolve the registered supervisor entrypoint on an exports object —
  * `exportsObj` when given (a WorkerEntrypoint reads its own ctx.exports),
- * the held ctx.exports otherwise. Null when either half is missing; the
- * caller decides whether that degrades or throws.
+ * the held ctx.exports otherwise. Calling the result with props mints one
+ * supervisor binding (`env.SUPERVISOR`) for one hosted program. Null when
+ * either half is missing; the caller decides whether that degrades or throws.
  */
 export function supervisorEntrypoint(exportsObj) {
     const exports = exportsObj ?? _ctxExports;

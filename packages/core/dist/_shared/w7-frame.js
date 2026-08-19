@@ -724,7 +724,8 @@ function updateRecordCheck(seed, ...parts) {
 const CRC_SEED = 0xffff_ffff;
 let crcTable = null;
 function crc32Update(check, bytes) {
-    const table = crcTable ??= createCrcTable();
+    crcTable ??= createCrcTable();
+    const table = crcTable;
     let value = check;
     for (const byte of bytes)
         value = table[(value ^ byte) & 0xff] ^ (value >>> 8);

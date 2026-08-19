@@ -40,6 +40,7 @@ import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.
 import { CRED_KERNEL } from './os-contracts.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
+import { errorText } from '../_shared/error-text.js';
 /** Extensions probed when a target names no exact file, in Node's order. */
 const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
 /**
@@ -311,7 +312,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 code = bindImportMetaResolve(transformed.code, absUrl);
             }
             catch (e) {
-                ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${e?.message}\n`);
+                ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${errorText(e)}\n`);
                 return 1;
             }
         }

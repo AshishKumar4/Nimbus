@@ -300,8 +300,6 @@ export class NetworkStack {
             throw new Error(`Tunnel ${name} already exists`);
         }
         this.tunnels.set(name, tunnel);
-        // Add tunnel interface to namespace
-        // Cast to NetworkInterface class since tunnel.interface is the concrete class
         const ns = this.namespaces.get(tunnel.interface.namespace);
         if (ns) {
             ns.addInterface(tunnel.interface);

@@ -50,6 +50,7 @@ import { requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
+import { errorText } from '../_shared/error-text.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
     '       wasm-runner --version\n' +
@@ -271,6 +272,12 @@ export function makeWasmRunner(deps) {
         // overly conservative; cast to ArrayBuffer is correct.
         const buf = limited.buffer.slice(limited.byteOffset, limited.byteOffset + limited.byteLength);
         const facetFn = async function wasmFacetCall(args, facetEnv) {
+            // This body is serialized into the facet isolate, where the supervisor's
+            // module graph — and so _shared/error-text.js — does not exist. Same
+            // fallback as errorText, spelled out locally.
+            const errText = (err) => typeof err === 'object' && err !== null && 'message' in err && err.message
+                ? String(err.message)
+                : String(err);
             const wasmTable = globalThis.__NIMBUS_WASM || {};
             const mod = wasmTable['user.wasm'];
             if (!mod) {
@@ -390,7 +397,7 @@ export function makeWasmRunner(deps) {
                             mode: 'wasi',
                             error: `wasi-threads: could not reserve the shared memory the module declares `
                                 + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
-                                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${e?.message || e}. `
+                                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errText(e)}. `
                                 + 'A shared memory reserves its maximum immediately — lower --max-memory.',
                         };
                     }
@@ -414,11 +421,14 @@ export function makeWasmRunner(deps) {
                     return {
                         ok: false,
                         mode: 'wasi',
-                        error: `instantiate failed: ${e?.message || e}`,
+                        error: `instantiate failed: ${errText(e)}`,
                     };
                 }
-                if (!memRef.mem)
-                    memRef.mem = inst.exports.memory;
+                if (!memRef.mem) {
+                    const exported = inst.exports.memory;
+                    if (exported instanceof WebAssembly.Memory)
+                        memRef.mem = exported;
+                }
                 if (!memRef.mem) {
                     return {
                         ok: false,
@@ -464,7 +474,7 @@ export function makeWasmRunner(deps) {
                 return {
                     ok: false,
                     mode: 'direct',
-                    error: `instantiate failed: ${e?.message || e}`,
+                    error: `instantiate failed: ${errText(e)}`,
                 };
             }
             const exportNames = Object.keys(inst.exports);
@@ -487,7 +497,7 @@ export function makeWasmRunner(deps) {
                     ok: false,
                     mode: 'direct',
                     exports: exportNames,
-                    error: `${args.exportName}(${(args.intArgs || []).join(', ')}) threw: ${e?.message || e}`,
+                    error: `${args.exportName}(${(args.intArgs || []).join(', ')}) threw: ${errText(e)}`,
                 };
             }
             // BigInt (i64) → string; everything else → as-is.
@@ -585,7 +595,7 @@ export function makeWasmRunner(deps) {
             }));
         }
         catch (e) {
-            outcome = { ok: false, error: `dispatch failed: ${e?.message || e}` };
+            outcome = { ok: false, error: `dispatch failed: ${errorText(e)}` };
         }
         finally {
             facet?.dispose();
@@ -603,15 +613,13 @@ export function makeWasmRunner(deps) {
             // If runStart reported an `error` (wasm trapped, _start missing,
             // …), append it to stderr but still surface its exitCode (default
             // 1 from runStart on trap) so callers can distinguish.
-            const wasiOut = outcome;
-            // Either branch carries optional stdout/stderr/exitCode/error.
-            stdout = wasiOut.stdout || '';
-            stderr = wasiOut.stderr || '';
-            if (wasiOut.error) {
+            stdout = outcome.stdout || '';
+            stderr = outcome.stderr || '';
+            if (outcome.error) {
                 stderr = (stderr ? stderr : '') +
-                    `wasm-runner: wasi trap: ${wasiOut.error}\n`;
+                    `wasm-runner: wasi trap: ${outcome.error}\n`;
             }
-            exitCode = wasiOut.exitCode ?? (wasiOut.ok ? 0 : 1);
+            exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
         }
         else if (!outcome.ok) {
             // Direct-mode failure or pre-instantiate dispatch failure — shell

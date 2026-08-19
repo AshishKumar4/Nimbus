@@ -79,7 +79,7 @@ export declare function parsePortFromArgv(argv: string[]): number | null;
  */
 export declare function resolveLongRunningPort(opts: {
     argv?: string[];
-    env?: Record<string, any> | undefined;
+    env?: Record<string, string> | undefined;
     configPort?: number | undefined;
     fallback: number;
 }): number;
@@ -109,11 +109,11 @@ export declare function resolveLongRunningPort(opts: {
  * That is intentional — full shell semantics belong in the shell, not
  * the argv expander; this helper covers ~95% of dev-script usage.
  */
-export declare function expandShellDefaults(token: string, env: Record<string, any> | undefined): string;
+export declare function expandShellDefaults(token: string, env: Record<string, string> | undefined): string;
 /**
  * Apply `expandShellDefaults` to every argv token. Used at the top of
  * a long-running handler before argv parsing so flag values are
  * fully resolved.
  */
-export declare function expandArgvShellDefaults(argv: ReadonlyArray<string>, env: Record<string, any> | undefined): string[];
+export declare function expandArgvShellDefaults(argv: ReadonlyArray<string>, env: Record<string, string> | undefined): string[];
 //# sourceMappingURL=long-running-handle.d.ts.map

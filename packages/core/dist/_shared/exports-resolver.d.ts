@@ -35,6 +35,22 @@ export declare const DEFAULT_ESM_CONDITIONS: string[];
 /** Default conditions for CJS runtime resolution (user-shell node). */
 export declare const DEFAULT_CJS_CONDITIONS: string[];
 /**
+ * A `package.json#exports` / `#imports` value: a target path, an ordered list
+ * of fallbacks to try in turn, or a map keyed by subpath (`"./client"`) or by
+ * condition (`"import"`) whose values are the same shape again. `null` is the
+ * spec's "this subpath is not exported" marker, and blocks fallback.
+ */
+export type ExportsField = string | null | ExportsField[] | {
+    [key: string]: ExportsField;
+};
+/** The package.json fields entry-point resolution reads. */
+export interface ResolvablePackageJson {
+    exports?: ExportsField;
+    imports?: ExportsField;
+    main?: string;
+    module?: string;
+}
+/**
  * Resolve `package.json#exports` (or `#imports`) per Node spec.
  *
  * @param exportsField  Raw value from package.json#exports or #imports
@@ -42,18 +58,14 @@ export declare const DEFAULT_CJS_CONDITIONS: string[];
  * @param conditions    Active conditions, in priority order
  * @returns             Relative path target string, or null if not found / forbidden
  */
-export declare function resolveExports(exportsField: any, subpath?: string, conditions?: string[]): string | null;
+export declare function resolveExports(exportsField: ExportsField | undefined, subpath?: string, conditions?: string[]): string | null;
 /**
  * Resolve a package's entry-point file relative to its directory.
  * Priority: exports → module → main → null.
  * For non-root subpaths without an `exports` field, returns the subpath
  * itself (caller probes filesystem with extension-list).
  */
-export declare function resolvePackageEntry(pkg: {
-    exports?: any;
-    module?: string;
-    main?: string;
-}, subpath?: string, conditions?: string[]): string | null;
+export declare function resolvePackageEntry(pkg: ResolvablePackageJson, subpath?: string, conditions?: string[]): string | null;
 /**
  * Returns the resolver source as plain JavaScript (no TypeScript syntax),
  * suitable for embedding into a generated worker preamble or shim string.

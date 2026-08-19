@@ -28,20 +28,29 @@ import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-
 import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
 import { requireStagedBootAssembler } from './process-fabric.js';
 import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
-// ── Inner-Worker loopback bindings ────────────────────────────────────
-//
-// These WorkerEntrypoint classes are top-level exports so that ctx.exports
-// auto-populates Service Bindings for them (enable_ctx_exports compat
-// flag is already enabled via default compatibility_date 2026-04-01).
-//
-// They are re-exported from src/index.ts so wrangler detects them as
-// reachable from the entry file and bundles their classes.
-//
-// Usage pattern (in nimbus-wrangler.ts):
-//   ctx.exports.NimbusAssetsRPC({ props: { vfsRoot, assetsDir } })
-// produces a Service Binding stub that can be placed in the inner
-// Worker's `env` under whatever binding name the user declared in
-// wrangler.jsonc's `assets.binding` (typically "ASSETS").
+/**
+ * `ctx.exports` — workerd's loopback bag, which the installed
+ * @cloudflare/workers-types does not put on `ExecutionContext`. Probed rather
+ * than declared, so a runtime that predates it reads as absent, which is also
+ * what the module-level holder's fallback keys off.
+ */
+function ctxExportsOf(ctx) {
+    if (!ctx || typeof ctx !== 'object' || !('exports' in ctx))
+        return undefined;
+    return ctx.exports;
+}
+/**
+ * The loopback factories a hop may need. An absent bag reads as an empty set,
+ * which each hop reports as the specific class it could not find.
+ */
+function shimCtxExports(ctx) {
+    const exports = ctxExportsOf(ctx);
+    if (!exports || typeof exports !== 'object')
+        return {};
+    // The bag workerd populated. Which names are in it is the hop's question,
+    // and each hop answers it with its own error.
+    return exports;
+}
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`
  * and we serve the file from VFS under `<vfsRoot>/<assetsDir>/<pathname>`.
@@ -71,10 +80,10 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
      */
     async fetch(request) {
         const url = new URL(request.url);
-        const propsAny = this.ctx.props || {};
-        const vfsRoot = String(propsAny.vfsRoot || '');
-        const assetsDir = String(propsAny.assetsDir || '').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
-        const doId = String(propsAny.doId || '');
+        const props = this.ctx.props || {};
+        const vfsRoot = String(props.vfsRoot || '');
+        const assetsDir = String(props.assetsDir || '').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+        const doId = String(props.doId || '');
         // Normalize pathname: no leading /, drop .. segments entirely.
         let clean = url.pathname.replace(/^\/+/, '');
         const parts = clean.split('/').filter((p) => p && p !== '..' && p !== '.');
@@ -297,6 +306,8 @@ function _genStubId() {
  * calls reuse the same dynamic worker rather than spawning new ones.
  */
 function _resolveStubInCurrentContext(outerLoader, key) {
+    if (key === undefined)
+        return null;
     const code = _loadedCodesGet(key);
     if (!code)
         return null;
@@ -338,8 +349,8 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
         outerLoader.load(code);
         const key = _genStubId();
         _loadedCodesPut(key, code);
-        const ctxExports = this.ctx?.exports;
-        if (!ctxExports?.NimbusLoadedWorker) {
+        const ctxExports = shimCtxExports(this.ctx);
+        if (!ctxExports.NimbusLoadedWorker) {
             throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
         }
         return ctxExports.NimbusLoadedWorker({
@@ -361,8 +372,8 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
             const code = await callback();
             _loadedCodesPut(key, code);
         }
-        const ctxExports = this.ctx?.exports;
-        if (!ctxExports?.NimbusLoadedWorker) {
+        const ctxExports = shimCtxExports(this.ctx);
+        if (!ctxExports.NimbusLoadedWorker) {
             throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
         }
         return ctxExports.NimbusLoadedWorker({
@@ -380,13 +391,13 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
      * real — stubs created in one outer request can't be used by another).
      */
     getEntrypoint(name) {
-        const propsAny = this.ctx.props || {};
-        const ctxExports = this.ctx?.exports;
-        if (!ctxExports?.NimbusLoadedEntrypoint) {
+        const props = this.ctx.props || {};
+        const ctxExports = shimCtxExports(this.ctx);
+        if (!ctxExports.NimbusLoadedEntrypoint) {
             throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
         }
         return ctxExports.NimbusLoadedEntrypoint({
-            props: { key: propsAny.key, name: name || null, depth: propsAny.depth },
+            props: { key: props.key, name: name || null, depth: props.depth },
         });
     }
     /**
@@ -399,13 +410,13 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
      * this method.
      */
     getDurableObjectClass(name) {
-        const propsAny = this.ctx.props || {};
+        const props = this.ctx.props || {};
         const outerLoader = this.env?.LOADER;
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
-        const outer = _resolveStubInCurrentContext(outerLoader, propsAny.key);
+        const outer = _resolveStubInCurrentContext(outerLoader, props.key);
         if (!outer)
-            throw new Error('Nimbus: loaded worker code missing (key=' + propsAny.key + ')');
+            throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
         return outer.getDurableObjectClass(name);
     }
 }
@@ -417,7 +428,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     async _supervisorBinding(props) {
         if (!props.supervisor)
             return undefined;
-        const factory = supervisorEntrypoint(this.ctx.exports);
+        const factory = supervisorEntrypoint(ctxExportsOf(this.ctx));
         if (!factory) {
             throw new Error(`Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
         }
@@ -547,24 +558,6 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
         }
     }
 }
-// ── Durable Object binding synthesis ────────────────────────────────────
-//
-// The inner-DO class registry was extracted to ./inner-do-registry.ts in
-// Arc A Phase 3 to break the import cycle:
-//   index.ts -> nimbus-session.ts -> nimbus-wrangler.ts -> nimbus-session.ts
-// nimbus-wrangler.ts now consumes registerInnerDoClass/clearInnerDoClasses
-// directly from the leaf, and this file consumes getInnerDoClass via the
-// imports at the top. The Map identity is preserved across the isolate
-// (still process-scoped module-level state).
-//
-// Inner Worker code:
-//   const stub = env.MY_DO.get(env.MY_DO.idFromName('x'));
-//   await stub.fetch(req);
-// We synthesize env.MY_DO as a NimbusDurableObjectNamespace
-// WorkerEntrypoint stub. Its .get() returns a NimbusDOStub that — on
-// fetch() — resolves the class from the registry and invokes
-// ctx.facets.get(facetName, {class, id}).fetch(req) in the same outer
-// request context.
 /**
  * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.
  *
@@ -617,14 +610,14 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
     }
     /** Return a stub bound to the given id. */
     get(id) {
-        const ctxExports = this.ctx?.exports;
-        if (!ctxExports?.NimbusDOStub)
+        const ctxExports = shimCtxExports(this.ctx);
+        if (!ctxExports.NimbusDOStub)
             throw new Error('Nimbus: ctx.exports.NimbusDOStub unavailable');
-        const propsAny = this.ctx.props || {};
+        const props = this.ctx.props || {};
         return ctxExports.NimbusDOStub({
             props: {
-                bindingName: propsAny.bindingName,
-                supervisorDoId: propsAny.supervisorDoId,
+                bindingName: props.bindingName,
+                supervisorDoId: props.supervisorDoId,
                 id: String(id),
             },
         });
@@ -645,15 +638,15 @@ export class NimbusDOStub extends WorkerEntrypoint {
      * its own context and forwards the request.
      */
     async fetch(request) {
-        const propsAny = this.ctx.props || {};
+        const props = this.ctx.props || {};
         const ns = this.env?.NIMBUS_SESSION;
         if (!ns)
             return new Response('Nimbus: env.NIMBUS_SESSION unavailable', { status: 500 });
-        const supervisorDoId = String(propsAny.supervisorDoId || '');
+        const supervisorDoId = String(props.supervisorDoId || '');
         if (!supervisorDoId)
             return new Response('Nimbus: supervisorDoId missing', { status: 500 });
-        const bindingName = String(propsAny.bindingName || '');
-        const id = String(propsAny.id || '');
+        const bindingName = String(props.bindingName || '');
+        const id = String(props.id || '');
         const stub = ns.get(ns.idFromString(supervisorDoId));
         // Forward the full request (method, body, headers preserved) by
         // serializing what's needed and reconstructing on the other side.

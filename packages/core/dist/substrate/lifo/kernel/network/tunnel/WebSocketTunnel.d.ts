@@ -1,6 +1,7 @@
 import type { Packet } from '../types.js';
 import type { NetworkStack } from '../NetworkStack.js';
 import { BaseTunnel } from './BaseTunnel.js';
+import type { VirtualRequestHandler } from '../../index.js';
 /**
  * WebSocket Tunnel - Bridge virtual network to external WebSocket server
  *
@@ -23,7 +24,7 @@ export declare class WebSocketTunnel extends BaseTunnel {
     private isReconnecting;
     private packetQueue;
     private waitingResolvers;
-    constructor(id: string, wsUrl: string, networkStack: NetworkStack, portRegistry?: Map<number, any>, namespace?: string, defaultPort?: number | null);
+    constructor(id: string, wsUrl: string, networkStack: NetworkStack, portRegistry?: Map<number, VirtualRequestHandler>, namespace?: string, defaultPort?: number | null);
     protected getTunnelPrefix(): string;
     /**
      * Bring tunnel up - connect to WebSocket server

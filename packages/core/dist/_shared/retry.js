@@ -23,6 +23,7 @@
  * equivalent retry loops inside their isolated function bodies.
  */
 import { disposeRpcResource } from './rpc-dispose.js';
+import { errorText } from './error-text.js';
 /** Default retry count AFTER the first attempt (3 = up to 4 total attempts). */
 export const DEFAULT_RETRIES = 3;
 /** Base backoff delays in ms. Index = retry attempt (0-indexed). */
@@ -142,7 +143,8 @@ export async function retryableFetch(url, init, opts) {
                 throw e;
             }
             const delayMs = jittered(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]);
-            const reason = e?.name === 'AbortError' ? 'timeout' : (e?.message || String(e));
+            const isAbort = typeof e === 'object' && e !== null && 'name' in e && e.name === 'AbortError';
+            const reason = isAbort ? 'timeout' : errorText(e);
             opts?.onRetry?.(attempt + 1, totalRetries, delayMs, reason);
             await new Promise((r) => setTimeout(r, delayMs));
         }

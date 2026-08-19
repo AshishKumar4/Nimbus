@@ -121,7 +121,7 @@ export class HeredocHandler {
                 }
                 return;
             }
-            return this._handleOriginalInput(data);
+            this._handleOriginalInput(data);
         };
         this.shell.executeLine = async (line) => {
             if (this.active) {
@@ -144,7 +144,7 @@ export class HeredocHandler {
                 this._accumulateLine('');
                 return;
             }
-            return this._printPrompt();
+            this._printPrompt();
         };
     }
     _printPrompt() {
@@ -353,7 +353,8 @@ export class LineEditorExtender {
             // shell-prompt input. Process-stdin input has its own model
             // (terminalStdin / stdinLineBuffer) handled by the shell.
             if (this.shell.running) {
-                return this.originalHandleInput(data);
+                this.originalHandleInput(data);
+                return;
             }
             // Reverse-i-search sub-mode owns ALL input until exited.
             if (this.rsearchActive) {
@@ -368,7 +369,7 @@ export class LineEditorExtender {
             // Try each binding. First-match wins; on no match fall through.
             if (this._handleBinding(data))
                 return;
-            return this.originalHandleInput(data);
+            this.originalHandleInput(data);
         };
     }
     /**
