@@ -43,6 +43,8 @@ import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-cont
 import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
+import { clearPortCapability } from './port-capability.js';
+import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
@@ -239,6 +241,37 @@ export async function _rpcWriteFile(self, path, content, pid) {
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
     return runtimeFs(self, pid).writeFile(path, content);
+}
+/**
+ * Write one host-governed file at a session root and let ordinary Unix
+ * permissions keep it that way: the root becomes a sticky 1777 directory owned
+ * by the kernel, and the file itself is kernel-owned and read-only.
+ *
+ * The guest keeps normal use of the root — it creates, edits and removes its
+ * own files there, which is what the sticky bit is for — and cannot replace,
+ * rename or remove this one. That is the whole mechanism; there is no special
+ * case anywhere in the filesystem for it.
+ *
+ * Deliberately absent from the remote HTTP RPC dispatcher: the point is a file
+ * the sandboxed program cannot forge, so only an embedder holding the DO stub
+ * may write it.
+ */
+export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) {
+    self.ensureSqliteFs();
+    const root = normalizeVfsPath(rootPath);
+    const protectedPath = normalizeVfsPath(path);
+    if (!root || parentVfsPath(protectedPath) !== root) {
+        throw new Error('protected file must be a direct child of the declared session root');
+    }
+    const fs = self.sqliteFs.as(CRED_KERNEL);
+    if (!fs.exists(root) || !fs.isDirectory(root)) {
+        throw new Error('protected file session root does not exist');
+    }
+    fs.chown(root, CRED_KERNEL.uid, CRED_KERNEL.gid);
+    fs.chmod(root, 0o1777);
+    fs.writeFile(protectedPath, content);
+    fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
+    fs.chmod(protectedPath, 0o444);
 }
 export async function _rpcStat(self, path, pid) {
     return runtimeFs(self, pid).stat(path);
@@ -977,6 +1010,8 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
 export async function _rpcRegisterPort(self, pid, port) {
     // Port registration stores the facet association
     // The actual facet stub is stored by FacetManager separately
+    // A new registration retires the previous occupant's preview capability.
+    await clearPortCapability(self, port);
     self.portRegistry.register(port, pid);
 }
 export async function _rpcUnregisterPort(self, port) {
@@ -1236,6 +1271,8 @@ const HostProcessOptsSchema = z.object({
     writerId: z.string().uuid(),
     /** Keyed dynamic-worker identity on THIS peer's loader. */
     workerKey: z.string().min(1),
+    /** Unforgeable capability for the fetch-semantic WebSocket hop. */
+    webSocketCapability: z.string().uuid(),
     /** Opaque arguments forwarded to the runner's startProcess. */
     startArgs: z.unknown().optional(),
 });
@@ -1392,6 +1429,7 @@ export async function _rpcHostProcess(self, boot, opts) {
     registerHostedRecord(self, workerKey, {
         facet: facetPromise,
         started: startedPromise,
+        webSocketCapability: hostOpts.webSocketCapability,
         cancelled,
         cancel,
     });
@@ -1489,6 +1527,22 @@ export async function _rpcRouteHostedHttp(self, workerKey, wire) {
         headers: headerPairs(response.headers),
         body,
     };
+}
+/**
+ * The peer end of the upgrade hop. Reached by `fetch` rather than RPC, so the
+ * 101 and its live socket travel back as themselves.
+ *
+ * The workerKey names a process and is derivable from a pid, so it does not
+ * authorise on its own; the capability is minted by whoever opened the process
+ * and never leaves the two sessions that hold it. A mismatch is a 404 and not
+ * a 403, so the route reveals nothing about what this peer is hosting.
+ */
+export async function routeHostedWebSocket(self, workerKey, capability, request) {
+    const record = await awaitHostedRecord(self, workerKey);
+    if (record.webSocketCapability !== capability)
+        return new Response('Not found', { status: 404 });
+    const facet = await record.facet;
+    return facet.handleWebSocketRequest(request);
 }
 /**
  * RPC: deterministic kill of a hosted process — the same teardown a

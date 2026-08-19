@@ -22,6 +22,7 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
+import { clearPortCapability } from './port-capability.js';
 /**
  * Boot a cirrus-real dev server on `self`, register its port, and persist the
  * config restore needs. `self` is the session host (RoutesHost/InitHost = any).
@@ -110,6 +111,7 @@ export async function startRealVite(self, opts) {
         // only difference is which handler.handleRequest the stub forwards into.
         const cirrusStub = makeLongRunningPortStub(cirrusReal);
         self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
+        await clearPortCapability(self, opts.port);
         self.portRegistry.register(opts.port, entry.pid);
         self._viteShimPid = entry.pid;
         self._viteShimPort = opts.port;

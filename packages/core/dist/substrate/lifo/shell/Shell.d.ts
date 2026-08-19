@@ -92,6 +92,12 @@ export declare class Shell {
     setCwd(cwd: string): void;
     getEnv(): Record<string, string>;
     getVfs(): VFS;
+    /**
+     * The `runAs` host this shell re-credentials through. A caller building a
+     * second Shell over the same kernel needs it, or its commands lose the
+     * identity-transition path `sudo` and `su` are dispatched on.
+     */
+    getRunAsHost(): CommandRunAsHost | undefined;
     getRegistry(): CommandRegistry;
     /**
      * Programmatic command execution with captured stdout/stderr.

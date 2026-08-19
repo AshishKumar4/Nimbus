@@ -54,12 +54,14 @@
  *              the inbound call and the facet dies with it. Nothing in this
  *              fabric arms an alarm, on either substrate.
  *
- * WebSockets are NOT in that list, because a resident process never receives
- * one. `RouteableFacetTarget` is `handleHttpRequest(Request): Promise<Response>`
- * and nothing else; no runner returns a 101 with a `webSocket` member; every
- * inbound socket Nimbus serves — the shell terminal, `/api/logs/<pid>`, vite
- * HMR — terminates on the session DO and reaches the process, if at all, as
- * events on a supervisor poll. That is substrate-independent by construction.
+ * WebSockets are the one thing on that list the RPC path cannot carry at all.
+ * A 101 Response owns a live socket, and RPC's Request/Response transport
+ * reconstructs a value rather than handing the socket over, so an upgrade
+ * stays on FETCH semantics for every hop: a facet is fetched directly, and a
+ * peer is fetched as a service binding which then fetches its hosted facet.
+ * Two headers carry what the RPC arguments would have — see
+ * {@link HOSTED_WEBSOCKET_KEY_HEADER} — and a per-process capability makes
+ * that pair unforgeable by anything that did not open the process.
  */
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
@@ -159,6 +161,18 @@ const PROCESS_PEER_METHODS = [
     '_rpcRouteHostedHttp',
     '_rpcCancelHostProcess',
 ];
+/**
+ * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
+ * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
+ * as headers on the peer fetch instead.
+ *
+ * The key alone is guessable from a pid, so it is not enough on its own; the
+ * capability is minted per `open()` and known only to the coordinator that
+ * opened the process and the peer that hosts it. The receiving session strips
+ * both before the request reaches the process.
+ */
+export const HOSTED_WEBSOCKET_KEY_HEADER = 'x-nimbus-hosted-websocket';
+export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-capability';
 function peerNamespace(env) {
     const ns = (typeof env === 'object' || typeof env === 'function') && env !== null
         ? Reflect.get(env, 'NIMBUS_SESSION')
@@ -222,6 +236,9 @@ class PeerProcessHost {
     async open(params) {
         const placement = await this._place(params.pid);
         this.tokensInUse.set(params.pid, placement.isolateToken);
+        // Minted per open, held only by this coordinator and the peer that hosts
+        // the process. The workerKey is derivable from a pid; this is not.
+        const webSocketCapability = crypto.randomUUID();
         // Held open for the process's whole life: it is the lifecycle, and it is
         // also what keeps the hosting DO resident. It settles when a `lifetime`
         // runner exits or when a `boot` runner's host is cancelled, and rejects if
@@ -231,6 +248,7 @@ class PeerProcessHost {
             pid: params.pid,
             writerId: params.writerId,
             workerKey: params.workerKey,
+            webSocketCapability,
             startArgs: params.startArgs,
         });
         hostLeg.catch(() => { });
@@ -273,6 +291,7 @@ class PeerProcessHost {
             // process that was up, and the fabric ends the process on it.
             lost: hostLeg.then(() => new Promise(() => { })),
             handleHttpRequest: (request) => routeThroughPeer(placement.stub, params.workerKey, request),
+            handleWebSocketRequest: (request) => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request),
             release: async () => {
                 if (released)
                     return;
@@ -386,6 +405,17 @@ async function routeThroughPeer(stub, workerKey, request) {
         statusText: result.statusText,
         headers: responseHeaders,
     });
+}
+/**
+ * The upgrade hop. `stub.fetch` is a service-binding fetch, so the peer's
+ * `Response` — socket and all — is handed back rather than reconstructed,
+ * which is the whole reason this is not an RPC.
+ */
+function routeWebSocketThroughPeer(stub, workerKey, capability, request) {
+    const headers = new Headers(request.headers);
+    headers.set(HOSTED_WEBSOCKET_KEY_HEADER, workerKey);
+    headers.set(HOSTED_WEBSOCKET_CAPABILITY_HEADER, capability);
+    return stub.fetch(new Request(request.url, { method: request.method, headers }));
 }
 /**
  * Headers as pairs, with every `Set-Cookie` kept separate.

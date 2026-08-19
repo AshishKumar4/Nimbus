@@ -14,8 +14,95 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { SESSION_DESTROYED_KEY, VITE_CONFIG_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
+import { clearPortCapability, persistPortCapability, restorePortCapability, } from './port-capability.js';
 import { ISOLATE_GEN_KEY } from '@nimbus-sh/fabric/alarms.js';
+import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
+const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+const ShellStateSchema = z.object({
+    cwd: z.string().startsWith('/'),
+    env: z.record(z.string(), z.string()),
+}).strict();
+/**
+ * A second Shell over the session's own kernel, filesystem and command
+ * registry — the same objects the interactive shell uses, so a named shell is
+ * not a second filesystem or a second process table. Only cwd and environment
+ * are its own, which is exactly what makes `cd` stick between calls.
+ */
+export function createProgrammaticShell(self, pid, state) {
+    const parent = self.shell;
+    if (!parent)
+        throw new Error('Nimbus shell did not initialize');
+    const shell = new Shell(new HeadlessTerminal(), parent.getVfs(), parent.getRegistry(), { ...parent.getEnv(), ...state.env, $: String(pid) }, parent.getProcessRegistry(), {
+        pid,
+        get cred() { return self.processes.cred(pid); },
+        setUmask: (mask) => self.processes.setUmask(pid, mask),
+        runAs: parent.getRunAsHost(),
+    });
+    shell.setCwd(state.cwd);
+    return shell;
+}
+/**
+ * Run `body` against a named shell's durable state, or against nothing when no
+ * `shellId` was given.
+ *
+ * Serialized per id: two concurrent calls naming one shell would otherwise
+ * read the same cwd and race to write it back, and the loser's `cd` would
+ * vanish. A background job reads the state but does not write it back — its
+ * shell outlives the call, so what it would persist is a snapshot of a moment
+ * nobody asked about.
+ */
+async function withShellState(self, options, background, run) {
+    if (options.shellId === undefined)
+        return run(null);
+    const id = ShellIdSchema.parse(options.shellId);
+    const queues = (self._programmaticShellQueues ??= new Map());
+    const previous = queues.get(id) ?? Promise.resolve();
+    let release = () => { };
+    const gate = new Promise((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => gate);
+    queues.set(id, tail);
+    await previous.catch(() => undefined);
+    try {
+        const key = `${SHELL_STATE_KEY_PREFIX}${id}`;
+        const stored = await self.ctx.storage.get(key);
+        const root = typeof options.shellRoot === 'string' && options.shellRoot.startsWith('/')
+            ? options.shellRoot
+            : getHome(self);
+        const state = stored === undefined
+            ? { cwd: root, env: {} }
+            : ShellStateSchema.parse(stored);
+        let shell = null;
+        try {
+            return await run({
+                cwd: state.cwd,
+                create: (pid) => {
+                    shell = createProgrammaticShell(self, pid, state);
+                    return shell;
+                },
+            });
+        }
+        finally {
+            const captured = background || shell === null ? state : capturedShellState(shell);
+            await self.ctx.storage.put(key, captured);
+        }
+    }
+    finally {
+        release();
+        if (queues.get(id) === tail)
+            queues.delete(id);
+    }
+}
+function capturedShellState(shell) {
+    const env = { ...shell.getEnv() };
+    // `$` is the pid of the call that just ended, not state of the shell.
+    delete env.$;
+    return { cwd: shell.getCwd(), env };
+}
+/**
+ * The durable half of the port capability lives in `./port-capability.js`, so
+ * the facet manager can retire a stale one without importing this module.
+ */
 const ProcessLogsOptionsSchema = z.object({
     cursor: z.number().int().nonnegative().optional(),
     lines: z.number().int().nonnegative().optional(),
@@ -102,13 +189,19 @@ export async function ensureProgrammaticReady(self, options = {}) {
     }
     return { ok: true, preinstalled: preinstall };
 }
-function startShellJob(self, command, options, job) {
-    const shell = self.shell;
-    if (!shell)
+function startShellJob(self, command, options, job, scoped) {
+    const parentShell = self.shell;
+    if (!parentShell)
         throw new Error('Nimbus shell did not initialize');
     const line = String(command);
-    const cwd = options.cwd ?? shell.getCwd?.() ?? '/home/user';
-    const entry = self.processes.spawn(line, [line], cwd, { longRunning: job.background });
+    const cwd = options.cwd ?? scoped?.cwd ?? parentShell.getCwd?.() ?? '/home/user';
+    const entry = self.processes.spawn(line, [line], cwd, {
+        longRunning: job.background,
+        cred: options.cred,
+    });
+    // The scoped shell is built around the pid, so its `$` and its credential
+    // are the ones this command actually runs under.
+    const shell = scoped?.create(entry.pid) ?? parentShell;
     const pid = entry.pid;
     if (job.background)
         self.processes.openInput(pid);
@@ -130,8 +223,11 @@ function startShellJob(self, command, options, job) {
         sink?.(text);
     };
     const run = shell.execute(line, {
-        cwd,
-        env: { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
+        // A named shell already holds its own cwd and env; passing them again
+        // would pin it to the values this call started with and `cd` would not
+        // survive the call, which is the whole point of naming one.
+        cwd: scoped ? options.cwd : cwd,
+        env: scoped ? options.env : { ...(shell.getEnv?.() ?? {}), ...(options.env ?? {}) },
         onStdout: emit('stdout', job.onStdout),
         onStderr: emit('stderr', job.onStderr),
         signal: controller.signal,
@@ -162,6 +258,9 @@ function startShellJob(self, command, options, job) {
 }
 export async function rpcExec(self, command, options = {}) {
     await ensureProgrammaticReady(self, options);
+    return withShellState(self, options, false, (scoped) => execOnShell(self, command, options, scoped));
+}
+async function execOnShell(self, command, options, scoped) {
     const stdout = [];
     const stderr = [];
     const started = Date.now();
@@ -171,7 +270,7 @@ export async function rpcExec(self, command, options = {}) {
         background: false,
         onStdout: (d) => stdout.push(d),
         onStderr: (d) => stderr.push(d),
-    });
+    }, scoped);
     let result;
     try {
         result = options.timeoutMs && options.timeoutMs > 0
@@ -250,7 +349,10 @@ function collectJobOutput(self, pid) {
  */
 export async function rpcStartProcess(self, command, options = {}) {
     await ensureProgrammaticReady(self, options);
-    const job = startShellJob(self, command, options, { background: true });
+    return withShellState(self, options, true, (scoped) => startOnShell(self, command, options, scoped));
+}
+async function startOnShell(self, command, options, scoped) {
+    const job = startShellJob(self, command, options, { background: true }, scoped);
     const line = String(command);
     notifyTerminalEvent(self.terminal ?? null, {
         type: 'spawn', pid: job.pid, command: line, longRunning: true, attachedTty: false,
@@ -412,23 +514,50 @@ export async function rpcProcessLogs(self, pid, options = {}) {
 }
 export async function rpcListPorts(self) {
     await ensureProgrammaticReady(self);
-    return self.portRegistry.getAll().map(serializePort);
+    const entries = self.portRegistry.getAll();
+    // Persisted at the moment the embedder is told the value, not at
+    // registration: a capability nobody has been handed does not need to
+    // survive anything.
+    await Promise.all(entries.map((entry) => persistPortCapability(self, entry.port, entry.capability)));
+    return entries.map(serializePort);
 }
 export async function rpcExposePort(self, port) {
     await ensureProgrammaticReady(self);
     const n = Number(port);
     const entry = self.portRegistry.get(n);
+    if (entry)
+        await persistPortCapability(self, n, entry.capability);
     return {
         port: n,
         listening: !!entry,
         pid: entry?.pid ?? null,
         registeredAt: entry?.registeredAt ?? null,
+        capability: entry?.capability ?? null,
     };
 }
 export async function rpcUnexposePort(self, port) {
     await ensureProgrammaticReady(self);
     const n = Number(port);
+    // Before the unregister, so a crash between the two leaves a dead token
+    // rather than a live one.
+    await clearPortCapability(self, n);
     return { port: n, ok: self.portRegistry.unregister(n) };
+}
+/**
+ * Route an embedder request that carries a port capability. The embedder has
+ * authenticated the capability at its edge and stripped its own credentials,
+ * so the guest's `Authorization` is preserved through this path and no other.
+ */
+export async function rpcRouteCapabilityPort(self, port, capability, request, pathname) {
+    await ensureProgrammaticReady(self);
+    await restorePortCapability(self, port);
+    if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+        // A 101 cannot cross the DO RPC boundary this entrypoint is reached
+        // through; the session fetch route is the one that keeps fetch semantics.
+        return new Response('WebSocket upgrades must use the session fetch route', { status: 409 });
+    }
+    const routed = await self.portRegistry.routeCapabilityRequest(Number(port), String(capability), request, pathname);
+    return routed ?? new Response('Not found', { status: 404 });
 }
 export async function rpcDeleteFile(self, path, options = {}) {
     await ensureProgrammaticReady(self);
@@ -715,6 +844,7 @@ function serializePort(p) {
         port: Number(p.port),
         pid: Number(p.pid),
         registeredAt: Number(p.registeredAt),
+        capability: String(p.capability),
     };
 }
 function shellQuote(s) {

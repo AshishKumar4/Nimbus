@@ -54,12 +54,14 @@
  *              the inbound call and the facet dies with it. Nothing in this
  *              fabric arms an alarm, on either substrate.
  *
- * WebSockets are NOT in that list, because a resident process never receives
- * one. `RouteableFacetTarget` is `handleHttpRequest(Request): Promise<Response>`
- * and nothing else; no runner returns a 101 with a `webSocket` member; every
- * inbound socket Nimbus serves — the shell terminal, `/api/logs/<pid>`, vite
- * HMR — terminates on the session DO and reaches the process, if at all, as
- * events on a supervisor poll. That is substrate-independent by construction.
+ * WebSockets are the one thing on that list the RPC path cannot carry at all.
+ * A 101 Response owns a live socket, and RPC's Request/Response transport
+ * reconstructs a value rather than handing the socket over, so an upgrade
+ * stays on FETCH semantics for every hop: a facet is fetched directly, and a
+ * peer is fetched as a service binding which then fetches its hosted facet.
+ * Two headers carry what the RPC arguments would have — see
+ * {@link HOSTED_WEBSOCKET_KEY_HEADER} — and a per-process capability makes
+ * that pair unforgeable by anything that did not open the process.
  */
 import { type ProcessHost, type ResidentDiskReader } from './process-fabric.js';
 /** The substrates this deployment can be configured for. */
@@ -80,6 +82,8 @@ export interface HostProcessOpts {
     pid: number;
     writerId: string;
     workerKey: string;
+    /** Unforgeable capability for the fetch-semantic WebSocket hop. */
+    webSocketCapability: string;
     startArgs?: unknown;
 }
 /**
@@ -101,6 +105,18 @@ export interface HostedHttpResponse {
     headers: [string, string][];
     body: ReadableStream | null;
 }
+/**
+ * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
+ * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride
+ * as headers on the peer fetch instead.
+ *
+ * The key alone is guessable from a pid, so it is not enough on its own; the
+ * capability is minted per `open()` and known only to the coordinator that
+ * opened the process and the peer that hosts it. The receiving session strips
+ * both before the request reaches the process.
+ */
+export declare const HOSTED_WEBSOCKET_KEY_HEADER = "x-nimbus-hosted-websocket";
+export declare const HOSTED_WEBSOCKET_CAPABILITY_HEADER = "x-nimbus-hosted-websocket-capability";
 /**
  * Headers as pairs, with every `Set-Cookie` kept separate.
  *

@@ -65,6 +65,7 @@ const PortSchema = z.object({
     port: z.number(),
     pid: z.number(),
     registeredAt: z.number(),
+    capability: z.string(),
 });
 const StartResultSchema = z.object({
     command: z.string(),
@@ -136,6 +137,7 @@ const ExposedPortSchema = z.object({
     listening: z.boolean(),
     pid: z.number().nullable(),
     registeredAt: z.number().nullable(),
+    capability: z.string().nullable(),
 });
 const UnexposedPortSchema = z.object({
     port: z.number(),
@@ -577,10 +579,16 @@ export class NimbusSandbox {
         return caps;
     }
     execOptions(options) {
-        return {
-            ...options,
-            cwd: options.cwd ?? this.root,
-        };
+        const normalized = { ...options };
+        if (normalized.shellId) {
+            // A named shell owns its cwd, so defaulting one here would reset it on
+            // every call. The sandbox root is only where a NEW shell starts.
+            normalized.shellRoot = this.root;
+        }
+        else {
+            normalized.cwd ??= this.root;
+        }
+        return normalized;
     }
     assertRuntimeAllowed(spec, action) {
         const policy = this.profile.runtimes;

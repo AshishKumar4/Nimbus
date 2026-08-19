@@ -618,6 +618,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReadFileBytes(path, pid) { return _rpc._rpcReadFileBytes(this, path, pid); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcWriteFile(path, content, pid) { return _rpc._rpcWriteFile(this, path, content, pid); }
+    async _rpcWriteProtectedRootFile(rootPath, path, content) {
+        return _rpc._rpcWriteProtectedRootFile(this, rootPath, path, content);
+    }
     async _rpcStat(path, pid) { return _rpc._rpcStat(this, path, pid); }
     async _rpcLstat(path, pid) { return _rpc._rpcLstat(this, path, pid); }
     async _rpcHasLegacySymlinkUnder(path, pid) {
@@ -775,6 +778,10 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcListPorts() { return _programmatic.rpcListPorts(this); }
     async _rpcExposePort(port) { return _programmatic.rpcExposePort(this, port); }
     async _rpcUnexposePort(port) { return _programmatic.rpcUnexposePort(this, port); }
+    /** Capability-authenticated port route, for an embedder holding the token. */
+    async _rpcRouteCapabilityPort(port, capability, request, innerPath) {
+        return _routes.routeCapabilityPort(this, port, capability, request, innerPath);
+    }
     async _rpcDeleteFile(path, options) { return _programmatic.rpcDeleteFile(this, path, options); }
     async _rpcDestroy(options) { return _programmatic.rpcDestroy(this, options); }
     // Legacy VFS (direct method calls)

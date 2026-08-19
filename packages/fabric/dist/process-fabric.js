@@ -377,7 +377,10 @@ export class ProcessFabric {
         return new ResidentProcessHandle({
             done,
             booted: () => hosted.started,
-            routeTarget: { handleHttpRequest: (request) => hosted.handleHttpRequest(request) },
+            routeTarget: {
+                handleHttpRequest: (request) => hosted.handleHttpRequest(request),
+                handleWebSocketRequest: (request) => hosted.handleWebSocketRequest(request),
+            },
             kill: () => { held.release(); void release(); },
             describe: () => hosted.describe(),
         });

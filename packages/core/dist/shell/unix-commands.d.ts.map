@@ -1,1 +1,1 @@
-{"version":3,"file":"unix-commands.d.ts","sourceRoot":"","sources":["../../src/shell/unix-commands.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;GAWG;AAEH,OAAO,KAAK,EAAmB,SAAS,EAAE,MAAM,sBAAsB,CAAC;AA0jIvE,wBAAgB,oBAAoB,CAClC,QAAQ,EAAE,GAAG,EACb,SAAS,EAAE,SAAS,GACnB,IAAI,CAoKN"}
+{"version":3,"file":"unix-commands.d.ts","sourceRoot":"","sources":["../../src/shell/unix-commands.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;GAWG;AAEH,OAAO,KAAK,EAAmB,SAAS,EAAE,MAAM,sBAAsB,CAAC;AA6jIvE,wBAAgB,oBAAoB,CAClC,QAAQ,EAAE,GAAG,EACb,SAAS,EAAE,SAAS,GACnB,IAAI,CAoKN"}

@@ -46,3 +46,17 @@ export const SESSION_DESTROYED_KEY = 'session_destroyed';
  *  exchange; an existing row means the bootstrap URL was replayed.
  *  Bounded: at most one row per `POST /new` bootstrap actually attached. */
 export const ATTACH_BOOTSTRAP_JTI_KEY_PREFIX = 'attach-bootstrap-jti:';
+/**
+ * Prefix for a port's durable preview capability, keyed by port number. The
+ * registry mints the value in memory per registration; this is what lets a
+ * preview URL the embedder was already handed survive a rebuild. Owned by
+ * `session/port-capability.ts`, which is the only module that reads or writes
+ * these rows.
+ */
+export const PORT_CAPABILITY_KEY_PREFIX = 'nimbus_preview_capability:';
+/**
+ * Prefix for a named programmatic shell's durable cwd+env, keyed by shell id.
+ * One row per id the embedder has actually used; bounded by the embedder's own
+ * naming, the way a terminal tab is.
+ */
+export const SHELL_STATE_KEY_PREFIX = 'nimbus_programmatic_shell:';

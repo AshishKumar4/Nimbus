@@ -59,6 +59,21 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     body: ArrayBuffer | null;
 }>;
 export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<number>;
+/**
+ * Write one host-governed file at a session root and let ordinary Unix
+ * permissions keep it that way: the root becomes a sticky 1777 directory owned
+ * by the kernel, and the file itself is kernel-owned and read-only.
+ *
+ * The guest keeps normal use of the root — it creates, edits and removes its
+ * own files there, which is what the sticky bit is for — and cannot replace,
+ * rename or remove this one. That is the whole mechanism; there is no special
+ * case anywhere in the filesystem for it.
+ *
+ * Deliberately absent from the remote HTTP RPC dispatcher: the point is a file
+ * the sandboxed program cannot forge, so only an embedder holding the DO stub
+ * may write it.
+ */
+export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
 export declare function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any>;
 export declare function _rpcLstat(self: RpcHost, path: string, pid?: number): Promise<any>;
 export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean>;
@@ -408,6 +423,8 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
 export interface HostedProcessRecord {
     facet: Promise<ResidentFacet>;
     started: Promise<unknown>;
+    /** Unforgeable capability for the fetch-semantic WebSocket hop. */
+    webSocketCapability: string;
     /** Settles when the coordinator cancels or the process is torn down. */
     cancelled: Promise<void>;
     cancel(): void;
@@ -478,6 +495,16 @@ export declare function _rpcAwaitHostedBoot(self: RpcHost, workerKey: string): P
  * what leaves here must not be an object the loaded worker owns.
  */
 export declare function _rpcRouteHostedHttp(self: RpcHost, workerKey: string, wire: HostedHttpRequest): Promise<HostedHttpResponse>;
+/**
+ * The peer end of the upgrade hop. Reached by `fetch` rather than RPC, so the
+ * 101 and its live socket travel back as themselves.
+ *
+ * The workerKey names a process and is derivable from a pid, so it does not
+ * authorise on its own; the capability is minted by whoever opened the process
+ * and never leaves the two sessions that hold it. A mismatch is a 404 and not
+ * a 403, so the route reveals nothing about what this peer is hosting.
+ */
+export declare function routeHostedWebSocket(self: RpcHost, workerKey: string, capability: string, request: Request): Promise<Response>;
 /**
  * RPC: deterministic kill of a hosted process — the same teardown a
  * coordinator applies to a facet of its own, and it does not answer until it

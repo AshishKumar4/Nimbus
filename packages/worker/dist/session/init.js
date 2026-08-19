@@ -76,6 +76,7 @@ import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
 import { VITE_CONFIG_KEY } from './keys.js';
+import { clearPortCapability } from './port-capability.js';
 function resolveNpmPrefix(prefix, cwd) {
     return prefix.startsWith('/')
         ? normalizeVfsPath(prefix)
@@ -1243,6 +1244,7 @@ export async function initSession(self, ws) {
             try {
                 const previewStub = makeLongRunningPortStub(self.viteDevServer);
                 self.portRegistry.bindFacetStub(previewProcEntry.pid, previewStub);
+                await clearPortCapability(self, previewPort);
                 self.portRegistry.register(previewPort, previewProcEntry.pid);
                 self._viteShimPid = previewProcEntry.pid;
                 self._viteShimPort = previewPort;
@@ -1457,6 +1459,7 @@ export async function initSession(self, ws) {
         // facet uses (Express, Bun.serve, http.createServer().listen()).
         const viteStub = makeLongRunningPortStub(self.viteDevServer);
         self.portRegistry.bindFacetStub(viteProcEntry.pid, viteStub);
+        await clearPortCapability(self, resolvedPort);
         self.portRegistry.register(resolvedPort, viteProcEntry.pid);
         // Track the wiring so `vite stop` and crash-handlers can tear it
         // down without searching the registry.

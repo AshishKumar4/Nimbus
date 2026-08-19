@@ -24,6 +24,8 @@
  * (~30 sites). RoutesHost = any pragmatic deviation, like InitHost in S6.
  */
 type RoutesHost = any;
+/** Route a capability-authenticated embedder request to a guest HTTP server. */
+export declare function routeCapabilityPort(self: RoutesHost, port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
 export declare function handleFetch(self: RoutesHost, request: Request): Promise<Response>;
 export {};
 //# sourceMappingURL=routes.d.ts.map

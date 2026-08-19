@@ -27,6 +27,10 @@
  *   to the outer fetch as-is; its body is streamed directly.
  */
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+function createPortCapability() {
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 export class PortRegistry {
     ports = new Map();
     facetStubsByPid = new Map();
@@ -48,7 +52,13 @@ export class PortRegistry {
      */
     register(port, pid) {
         const target = this.facetStubsByPid.get(pid) ?? null;
-        this.ports.set(port, { port, pid, facetStub: target, registeredAt: Date.now() });
+        this.ports.set(port, {
+            port,
+            pid,
+            facetStub: target,
+            registeredAt: Date.now(),
+            capability: createPortCapability(),
+        });
         this.notifyPortWaiters(pid);
     }
     /** Unregister a port. */
@@ -104,6 +114,23 @@ export class PortRegistry {
     getAll() {
         return [...this.ports.values()];
     }
+    /** Answer only whether this capability matches, never what is registered. */
+    hasCapability(port, capability) {
+        return this.ports.get(port)?.capability === capability;
+    }
+    /**
+     * Re-adopt a capability the embedder was already handed, after the supervisor
+     * was rebuilt. A restored dev server is a NEW registration with a new token,
+     * which would silently invalidate every preview URL already in circulation
+     * across an eviction — so the durable value wins over the fresh one.
+     */
+    restoreCapability(port, capability) {
+        const entry = this.ports.get(port);
+        if (!entry || !/^[a-f0-9]{24}$/.test(capability))
+            return false;
+        entry.capability = capability;
+        return true;
+    }
     /**
      * Forward an HTTP request to the facet owning a port.
      *
@@ -126,6 +153,25 @@ export class PortRegistry {
      * client receives.
      */
     async routeRequest(port, request, pathname) {
+        return this.routeRequestInternal(port, request, pathname, false);
+    }
+    /**
+     * Route a request a trusted embedder has already authenticated against the
+     * port's capability and stripped its own credentials from.
+     *
+     * Unlike the generic route, this one PRESERVES `Authorization`. The generic
+     * route strips it because the header it sees is Nimbus's own, and handing a
+     * session credential to untrusted code is the thing that must never happen.
+     * Here the embedder has removed that credential already and what remains
+     * belongs to the guest application, which needs it to authenticate its own
+     * users.
+     */
+    async routeCapabilityRequest(port, capability, request, pathname) {
+        if (!this.hasCapability(port, capability))
+            return null;
+        return this.routeRequestInternal(port, request, pathname, true);
+    }
+    async routeRequestInternal(port, request, pathname, preserveAuthorization) {
         const entry = this.ports.get(port);
         // Honour the documented contract: no entry at all → null, so callers
         // report "no process listening". (Pre-fix this fell into the 501 below,
@@ -163,7 +209,13 @@ export class PortRegistry {
             // if a body is supplied on those methods.
             const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
             const headers = new Headers(request.headers);
+            // The strip below removes Nimbus's own credentials. On a capability
+            // route the embedder has already removed those, so what is left belongs
+            // to the guest application and has to survive the hop.
+            const authorization = preserveAuthorization ? headers.get('authorization') : null;
             sanitizeUntrustedHeaders(headers);
+            if (authorization)
+                headers.set('authorization', authorization);
             headers.set('X-Nimbus-Port', String(port));
             // `duplex: 'half'` is required by workerd when body is a
             // ReadableStream — otherwise `new Request(…)` throws. It's not
@@ -178,11 +230,19 @@ export class PortRegistry {
             if (hasBody)
                 init.duplex = 'half';
             const forwarded = new Request(innerUrl.toString(), init);
-            // RPC: the facet receives the Request and returns a Response.
-            // Both cross the isolate boundary via Workers RPC's native
-            // Request/Response transport — bytes are streamed with
-            // flow-control, never materialised.
-            const response = await entry.facetStub.handleHttpRequest(forwarded);
+            // HTTP crosses Workers RPC as Request/Response values, streamed with
+            // flow control and never materialised. A WebSocket upgrade cannot: its
+            // 101 owns a live socket, so it takes the fetch-semantic entrypoint,
+            // which every hop preserves. A target with no such entrypoint serves
+            // HTTP only, and says so rather than dropping the socket.
+            const isWebSocket = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+            const handler = isWebSocket
+                ? entry.facetStub.handleWebSocketRequest
+                : entry.facetStub.handleHttpRequest;
+            if (!handler) {
+                return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
+            }
+            const response = await handler(forwarded);
             if (!(response instanceof Response)) {
                 // Defensive: if a facet ever returns something else (JSON
                 // envelope, string, etc.), treat it as a 502 so the client
@@ -253,11 +313,21 @@ export class PortRegistry {
 function routeableFacetTarget(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null)
         return null;
-    const method = Reflect.get(value, 'fetch') || Reflect.get(value, 'handleHttpRequest');
-    if (typeof method !== 'function')
+    // A `fetch` target already has fetch semantics, so it serves both.
+    const fetchMethod = Reflect.get(value, 'fetch');
+    if (typeof fetchMethod === 'function') {
+        const fetch = fetchMethod.bind(value);
+        return { handleHttpRequest: fetch, handleWebSocketRequest: fetch };
+    }
+    const httpMethod = Reflect.get(value, 'handleHttpRequest');
+    if (typeof httpMethod !== 'function')
         return null;
+    const webSocketMethod = Reflect.get(value, 'handleWebSocketRequest');
     return {
-        handleHttpRequest: method.bind(value),
+        handleHttpRequest: httpMethod.bind(value),
+        ...(typeof webSocketMethod === 'function'
+            ? { handleWebSocketRequest: webSocketMethod.bind(value) }
+            : {}),
     };
 }
 function errorMessage(error) {

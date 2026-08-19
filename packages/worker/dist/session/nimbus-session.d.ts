@@ -264,6 +264,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<number>;
+    _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
     _rpcStat(path: string, pid?: number): Promise<any>;
     _rpcLstat(path: string, pid?: number): Promise<any>;
     _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean>;
@@ -452,11 +453,14 @@ export declare class NimbusSession extends CloudflareDurableObject {
         listening: boolean;
         pid: number | null;
         registeredAt: number | null;
+        capability: string | null;
     }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
         ok: boolean;
     }>;
+    /** Capability-authenticated port route, for an embedder holding the token. */
+    _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
     }): Promise<void>;

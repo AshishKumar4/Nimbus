@@ -37,6 +37,12 @@ export interface PortEntry {
      */
     facetStub: RouteableFacetTarget | null;
     registeredAt: number;
+    /**
+     * Unguessable token for the lifetime of THIS registration, so an embedder
+     * can hand out one port's traffic without handing out the session. A fresh
+     * one per `register`, which is what makes an unexposed port stay unexposed.
+     */
+    capability: string;
 }
 export declare class PortRegistry {
     private ports;
@@ -65,6 +71,15 @@ export declare class PortRegistry {
     has(port: number): boolean;
     /** Get all registered ports. */
     getAll(): PortEntry[];
+    /** Answer only whether this capability matches, never what is registered. */
+    hasCapability(port: number, capability: string): boolean;
+    /**
+     * Re-adopt a capability the embedder was already handed, after the supervisor
+     * was rebuilt. A restored dev server is a NEW registration with a new token,
+     * which would silently invalidate every preview URL already in circulation
+     * across an eviction — so the durable value wins over the fresh one.
+     */
+    restoreCapability(port: number, capability: string): boolean;
     /**
      * Forward an HTTP request to the facet owning a port.
      *
@@ -87,6 +102,19 @@ export declare class PortRegistry {
      * client receives.
      */
     routeRequest(port: number, request: Request, pathname: string): Promise<Response | null>;
+    /**
+     * Route a request a trusted embedder has already authenticated against the
+     * port's capability and stripped its own credentials from.
+     *
+     * Unlike the generic route, this one PRESERVES `Authorization`. The generic
+     * route strips it because the header it sees is Nimbus's own, and handing a
+     * session credential to untrusted code is the thing that must never happen.
+     * Here the embedder has removed that credential already and what remains
+     * belongs to the guest application, which needs it to authenticate its own
+     * users.
+     */
+    routeCapabilityRequest(port: number, capability: string, request: Request, pathname: string): Promise<Response | null>;
+    private routeRequestInternal;
     get stats(): {
         activePorts: number;
         ports: {

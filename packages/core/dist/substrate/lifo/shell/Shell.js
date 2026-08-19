@@ -189,6 +189,14 @@ export class Shell {
     getVfs() {
         return this.vfs;
     }
+    /**
+     * The `runAs` host this shell re-credentials through. A caller building a
+     * second Shell over the same kernel needs it, or its commands lose the
+     * identity-transition path `sudo` and `su` are dispatched on.
+     */
+    getRunAsHost() {
+        return this.commandIdentity.runAs;
+    }
     getRegistry() {
         return this.registry;
     }

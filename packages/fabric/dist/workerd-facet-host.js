@@ -387,6 +387,7 @@ export function openResidentFacet(ctx, env, disk, supervisor, params) {
         // with it, so there is no independent death to report.
         lost: new Promise(() => { }),
         handleHttpRequest: (request) => facet.handleHttpRequest(request),
+        handleWebSocketRequest: (request) => facet.fetch(request),
         release,
         slot,
     };

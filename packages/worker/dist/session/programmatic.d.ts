@@ -12,10 +12,11 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-interface ProgrammaticShell {
+import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+export interface ProgrammaticShell {
     env?: Record<string, string>;
-    getEnv?(): Record<string, string>;
-    getCwd?(): string;
+    getEnv(): Record<string, string>;
+    getCwd(): string;
     execute(command: string, options?: ProgrammaticShellExecuteOptions): Promise<{
         exitCode: number;
     }>;
@@ -35,6 +36,7 @@ interface ProgrammaticContext {
     /** Holds a background process's work open for the life of the process. */
     waitUntil?(promise: Promise<unknown>): void;
     storage: {
+        get(key: string): Promise<unknown>;
         delete(key: string): Promise<void>;
         deleteAll(): Promise<void>;
         deleteAlarm(): Promise<void>;
@@ -66,6 +68,8 @@ export interface ProgrammaticHost {
     viteDevServer: ProgrammaticViteServer | null;
     cirrusReal: ProgrammaticCirrusServer | null;
     _cpRegistry: MinShellRegistry | null;
+    /** One serialization queue per named durable shell. See `withShellState`. */
+    _programmaticShellQueues?: Map<string, Promise<void>>;
     _viteShimPid: number | null;
     _viteShimPort: number | null;
     _cirrusHmrWsClients?: {
@@ -104,7 +108,31 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
     env?: Record<string, string>;
     timeoutMs?: number;
     stdin?: string;
+    /**
+     * Identity the command runs as. Omitted, the spawn inherits the session
+     * user, which is what every programmatic exec has always run as.
+     */
+    cred?: VfsCred;
+    /**
+     * Run in a NAMED shell whose cwd and environment persist between calls, the
+     * way an interactive terminal does. Omitted, the call runs on the session's
+     * one shell and nothing is remembered — the behaviour every programmatic
+     * exec has always had.
+     */
+    shellId?: string;
+    /** @internal Initial cwd for a shellId with no durable state yet. */
+    shellRoot?: string;
 }
+/**
+ * A second Shell over the session's own kernel, filesystem and command
+ * registry — the same objects the interactive shell uses, so a named shell is
+ * not a second filesystem or a second process table. Only cwd and environment
+ * are its own, which is exactly what makes `cd` stick between calls.
+ */
+export declare function createProgrammaticShell(self: ProgrammaticHost, pid: number, state: {
+    cwd: string;
+    env: Record<string, string>;
+}): ProgrammaticShell;
 export interface ProgrammaticDestroyOptions {
     reason?: string;
 }
@@ -151,6 +179,7 @@ export interface SerializedPort {
     port: number;
     pid: number;
     registeredAt: number;
+    capability: string;
 }
 export declare function ensureProgrammaticReady(self: ProgrammaticHost, options?: ProgrammaticReadyOptions): Promise<{
     ok: true;
@@ -227,11 +256,18 @@ export declare function rpcExposePort(self: ProgrammaticHost, port: number): Pro
     listening: boolean;
     pid: number | null;
     registeredAt: number | null;
+    capability: string | null;
 }>;
 export declare function rpcUnexposePort(self: ProgrammaticHost, port: number): Promise<{
     port: number;
     ok: boolean;
 }>;
+/**
+ * Route an embedder request that carries a port capability. The embedder has
+ * authenticated the capability at its edge and stripped its own credentials,
+ * so the guest's `Authorization` is preserved through this path and no other.
+ */
+export declare function rpcRouteCapabilityPort(self: ProgrammaticHost, port: number, capability: string, request: Request, pathname: string): Promise<Response>;
 export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, options?: {
     recursive?: boolean;
 }): Promise<void>;

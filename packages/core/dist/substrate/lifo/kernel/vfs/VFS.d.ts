@@ -77,6 +77,23 @@ export declare class VFS {
     private rewriteFile;
     appendFile(path: string, content: string | Uint8Array): void;
     exists(path: string): boolean;
+    /**
+     * Type probes, mount-aware through {@link stat}.
+     *
+     * `CredentialedVfs` declares these and the durable coreutils call them on
+     * whatever `ctx.vfs` is, so a view that omitted them was not merely missing
+     * a convenience: `touch` on an existing file died with
+     * `targetVfs.isDirectory is not a function`, because `&&` short-circuited
+     * past the call whenever the file was absent — which is why creating a file
+     * worked and touching one did not.
+     *
+     * A structural miss answers false, the way `fs.existsSync` does. A denial
+     * still throws: traverse-x enforcement must not be maskable into a quiet
+     * false, which is the rule `SqliteVFS.probeInode` already follows.
+     */
+    isDirectory(path: string): boolean;
+    isFile(path: string): boolean;
+    private probeType;
     access(path: string, mode: number): void;
     stat(path: string): Stat;
     unlink(path: string): void;

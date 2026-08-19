@@ -295,12 +295,71 @@ export declare class SqliteVFS {
     private blobToUint8Array;
     private copyBytes;
     private readChunkFromSql;
+    /**
+     * Principals whose `/tmp` is private, keyed by uid, valued by the storage
+     * root their `/tmp` resolves to.
+     *
+     * `/tmp` keeps its path in every view and only the bytes behind it differ,
+     * so nothing has to be told which principal it is. The credential is the
+     * only per-process state visible where paths are RESOLVED — there is no pid
+     * and no cwd down here — so it is what the private view is keyed on.
+     *
+     * Resolution rather than a mount, because a mount diverges the two planes:
+     * the shell writing `/tmp/a` and the file API writing `/tmp/b` landed in
+     * different trees under the same name. `resolvePath` already takes `cred`,
+     * and every plane goes through it.
+     *
+     * Registration is also what makes a principal CONFINED for `chmod`. The two
+     * properties travel together because they answer one question: is this
+     * principal a guest in this filesystem. Nothing here applies to an
+     * unregistered credential, so the ordinary session user is untouched.
+     */
+    private confinedTmpRoots;
+    /**
+     * Confine a principal. `tmpRoot` is a storage key, not a logical path — the
+     * caller owns creating and chowning it, because a per-principal `chown` is
+     * uid-0 only and a guest cannot provision its own.
+     */
+    confinePrincipal(uid: number, tmpRoot: string): void;
+    /** Drop a confinement. A principal's `/tmp` dies with it; its home does not. */
+    releasePrincipal(uid: number): void;
+    /**
+     * Logical path -> storage key, for one credential.
+     *
+     * Everything under `/tmp` belongs to the caller's own private root, which is
+     * what makes the same path mean different bytes per principal. Idempotent: a
+     * key already inside that root is returned untouched, so the several methods
+     * that derive a key before handing it on cannot stack the rewrite.
+     */
+    private storageKey;
+    /**
+     * Storage key -> the name this credential knows it by, or `null` when it has
+     * none. The inverse of {@link storageKey}, for the one surface that reports
+     * paths it was not asked about: {@link list}.
+     *
+     * A confined caller has no name for the shared scratch tree — `/tmp` is its
+     * own root — nor for another principal's, so both answer `null` and are
+     * omitted. An unconfined caller sees storage as it is, which is what the
+     * kernel and the session user need.
+     */
+    private logicalPath;
     as(cred: VfsCred): CredentialedVfs;
     private accessInode;
     private accessMode;
     private resolvePath;
     private checkAccess;
     private checkParentAccess;
+    /**
+     * POSIX sticky-bit restriction on a shared directory.
+     *
+     * Write permission on a directory is normally enough to remove or rename
+     * anything inside it, which is why `/tmp` is `1777` and not `0777`: the
+     * sticky bit narrows that to the entry's owner, the directory's owner, and
+     * root. Nothing enforced it here, so a world-writable shared directory gave
+     * every principal the ability to delete every other principal's files —
+     * the mode said one thing and the filesystem did another.
+     */
+    private checkStickyParentMutation;
     /**
      * Shared resolver for the boolean probes (exists/isDirectory/isFile/
      * isSymlink). Resolution-structure failures — a missing or non-directory
@@ -320,7 +379,7 @@ export declare class SqliteVFS {
      * under it changed in this DO lifetime). `revision('')` equals the
      * global clock by construction (every mutation stamps all ancestors).
      */
-    revision(path?: string): number;
+    revision(path?: string, cred?: VfsCred): number;
     /**
      * Advance the clock once, stamp every path + its ancestors, and record
      * the mutation in the invalidation log.

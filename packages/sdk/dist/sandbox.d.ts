@@ -1,6 +1,7 @@
 /**
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export type RuntimeSpec = string;
 export type RuntimeName = 'node' | 'bun' | 'npm' | 'git' | 'python' | 'ruby' | 'clang' | 'shell' | (string & {});
 export interface NimbusRuntimePolicy {
@@ -58,10 +59,21 @@ export interface NimbusSandboxOptions {
     root?: string;
 }
 export interface NimbusExecOptions {
+    /**
+     * Run in a named shell whose cwd and environment persist between calls, the
+     * way a terminal tab does. Omitted, the call runs on the session's one shell
+     * and remembers nothing — the behaviour every programmatic exec has had.
+     */
+    shellId?: string;
     cwd?: string;
     env?: Record<string, string>;
     timeoutMs?: number;
     stdin?: string;
+    /**
+     * Identity the command runs as. Omitted, the spawn inherits the session
+     * user, which is what every programmatic exec has always run as.
+     */
+    cred?: VfsCred;
 }
 export interface NimbusExecResult {
     command: string;
@@ -145,6 +157,13 @@ export interface NimbusPort {
     port: number;
     pid: number;
     registeredAt: number;
+    /**
+     * Bearer token for THIS port on THIS session. Presenting it on the
+     * preview route authorises that one port and nothing else, which is what
+     * lets an embedder publish a guest's dev server without publishing the
+     * session. A new registration on the port retires it.
+     */
+    capability: string;
 }
 export interface NimbusFileStat {
     type: 'file' | 'directory' | string;
@@ -237,6 +256,7 @@ interface NimbusSessionStub {
         listening: boolean;
         pid: number | null;
         registeredAt: number | null;
+        capability: string | null;
     }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
@@ -372,6 +392,7 @@ export declare class NimbusSandbox {
             listening: boolean;
             pid: number | null;
             registeredAt: number | null;
+            capability: string | null;
         }>;
         unexpose: (port: number) => Promise<{
             port: number;
@@ -484,6 +505,7 @@ export declare class NimbusSandbox {
                     listening: boolean;
                     pid: number | null;
                     registeredAt: number | null;
+                    capability: string | null;
                 }>;
             };
             unexposePort: {
