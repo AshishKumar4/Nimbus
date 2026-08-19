@@ -11,6 +11,8 @@ import type {
   RouteEntry,
   NetworkTunnel,
 } from './types.js';
+import type { VETHPair } from './tunnel/VETHPair.js';
+import type { Bridge } from './Bridge.js';
 
 /** Port binding with concrete Socket type */
 interface PortBinding {
@@ -20,6 +22,13 @@ interface PortBinding {
   handler: (socket: Socket) => void | Promise<void>;
   namespace: string;
 }
+
+/**
+ * A tunnel as the stack holds it. `NetworkTunnel` declares its interface as the
+ * plain device record; namespaces hold the concrete device, which is what every
+ * tunnel implementation exposes (see `BaseTunnel`).
+ */
+type BoundTunnel = Omit<NetworkTunnel, 'interface'> & { interface: NetworkInterface };
 
 /**
  * Virtual network stack
@@ -33,9 +42,9 @@ export class NetworkStack {
   private nextNamespaceId = 1;
 
   // Tunnel management
-  private tunnels = new Map<string, NetworkTunnel>(); // tunnel name -> tunnel
-  private vethPairs = new Map<string, any>(); // veth pair id -> VETHPair
-  private bridges = new Map<string, any>(); // bridge name -> Bridge
+  private tunnels = new Map<string, BoundTunnel>(); // tunnel name -> tunnel
+  private vethPairs = new Map<string, VETHPair>(); // veth pair id -> VETHPair
+  private bridges = new Map<string, Bridge>(); // bridge name -> Bridge
   private nextTunnelId = 0;
 
   constructor() {
@@ -396,18 +405,16 @@ export class NetworkStack {
   /**
    * Add tunnel to network stack
    */
-  addTunnel(name: string, tunnel: NetworkTunnel): void {
+  addTunnel(name: string, tunnel: BoundTunnel): void {
     if (this.tunnels.has(name)) {
       throw new Error(`Tunnel ${name} already exists`);
     }
 
     this.tunnels.set(name, tunnel);
 
-    // Add tunnel interface to namespace
-    // Cast to NetworkInterface class since tunnel.interface is the concrete class
     const ns = this.namespaces.get(tunnel.interface.namespace);
     if (ns) {
-      ns.addInterface(tunnel.interface as any as NetworkInterface);
+      ns.addInterface(tunnel.interface);
     }
   }
 
@@ -435,28 +442,28 @@ export class NetworkStack {
   /**
    * Get tunnel by name
    */
-  getTunnel(name: string): NetworkTunnel | undefined {
+  getTunnel(name: string): BoundTunnel | undefined {
     return this.tunnels.get(name);
   }
 
   /**
    * Get all tunnels
    */
-  getAllTunnels(): NetworkTunnel[] {
+  getAllTunnels(): BoundTunnel[] {
     return Array.from(this.tunnels.values());
   }
 
   /**
    * Get tunnels by namespace
    */
-  getTunnelsByNamespace(namespace: string): NetworkTunnel[] {
+  getTunnelsByNamespace(namespace: string): BoundTunnel[] {
     return this.getAllTunnels().filter((t) => t.interface.namespace === namespace);
   }
 
   /**
    * Add VETH pair
    */
-  addVETHPair(id: string, vethPair: any): void {
+  addVETHPair(id: string, vethPair: VETHPair): void {
     if (this.vethPairs.has(id)) {
       throw new Error(`VETH pair ${id} already exists`);
     }
@@ -496,7 +503,7 @@ export class NetworkStack {
   /**
    * Get VETH pair by ID or interface name
    */
-  getVETHPair(idOrName: string): any | undefined {
+  getVETHPair(idOrName: string): VETHPair | undefined {
     // Try by ID first
     const byId = this.vethPairs.get(idOrName);
     if (byId) return byId;
@@ -514,7 +521,7 @@ export class NetworkStack {
   /**
    * Get all VETH pairs
    */
-  getAllVETHPairs(): any[] {
+  getAllVETHPairs(): VETHPair[] {
     return Array.from(this.vethPairs.values());
   }
 
@@ -532,7 +539,7 @@ export class NetworkStack {
   /**
    * Add bridge to network stack
    */
-  addBridge(name: string, bridge: any): void {
+  addBridge(name: string, bridge: Bridge): void {
     if (this.bridges.has(name)) {
       throw new Error(`Bridge ${name} already exists`);
     }
@@ -570,21 +577,21 @@ export class NetworkStack {
   /**
    * Get bridge by name
    */
-  getBridge(name: string): any | undefined {
+  getBridge(name: string): Bridge | undefined {
     return this.bridges.get(name);
   }
 
   /**
    * Get all bridges
    */
-  getAllBridges(): any[] {
+  getAllBridges(): Bridge[] {
     return Array.from(this.bridges.values());
   }
 
   /**
    * Get bridges by namespace
    */
-  getBridgesByNamespace(namespace: string): any[] {
+  getBridgesByNamespace(namespace: string): Bridge[] {
     return this.getAllBridges().filter((b) => b.interface.namespace === namespace);
   }
 }

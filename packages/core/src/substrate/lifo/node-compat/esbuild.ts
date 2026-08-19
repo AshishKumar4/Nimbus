@@ -11,28 +11,36 @@ const ESBUILD_WASM_VERSION = '0.24.2';
 const ESBUILD_WASM_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/esbuild.wasm`;
 const ESBUILD_ESM_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/esm/browser.min.js`;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let esbuildModule: any = null;
-let initPromise: Promise<void> | null = null;
+/** The esbuild-wasm surface this shim forwards to. */
+interface EsbuildWasm {
+  initialize(options: { wasmURL: string }): Promise<void>;
+  transform(code: string, options?: unknown): Promise<unknown>;
+  build(options?: unknown): Promise<unknown>;
+  formatMessages(messages: unknown, options?: unknown): Promise<unknown>;
+  analyzeMetafile(metafile: unknown, options?: unknown): Promise<unknown>;
+  context(options?: unknown): Promise<unknown>;
+}
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function ensureInitialized(): Promise<any> {
+let esbuildModule: EsbuildWasm | null = null;
+let initPromise: Promise<EsbuildWasm> | null = null;
+
+async function ensureInitialized(): Promise<EsbuildWasm> {
   if (esbuildModule) return esbuildModule;
 
   if (!initPromise) {
     initPromise = (async () => {
       // Use dynamic import from CDN
       // This works in browsers natively
-      const mod = await import(/* @vite-ignore */ ESBUILD_ESM_URL);
+      const mod: EsbuildWasm = await import(/* @vite-ignore */ ESBUILD_ESM_URL);
       await mod.initialize({
         wasmURL: ESBUILD_WASM_URL,
       });
       esbuildModule = mod;
+      return mod;
     })();
   }
 
-  await initPromise;
-  return esbuildModule;
+  return await initPromise;
 }
 
 export function createEsbuild(): Record<string, unknown> {

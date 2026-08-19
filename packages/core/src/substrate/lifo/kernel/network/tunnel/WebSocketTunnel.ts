@@ -3,6 +3,33 @@ import type { NetworkStack } from '../NetworkStack.js';
 import { BaseTunnel } from './BaseTunnel.js';
 import { Buffer } from '../../../node-compat/buffer.js';
 import type { VirtualResponseWithDone } from '../../../node-compat/http.js';
+import type { VirtualRequestHandler } from '../../index.js';
+
+/** Payload a WebSocket `message` event can carry. */
+type WebSocketData = string | ArrayBufferLike | ArrayBufferView | Blob;
+
+/** HTTP request forwarded to us by the tunnel server. */
+interface TunnelRequestMessage {
+	type: 'request';
+	requestId: string;
+	method: string;
+	url: string;
+	headers: Record<string, string>;
+	/** base64-encoded */
+	body: string;
+}
+
+/** HTTP response carried over the tunnel, in either direction. */
+interface TunnelResponseMessage {
+	type: 'response';
+	requestId: string;
+	statusCode: number;
+	headers: Record<string, string>;
+	/** base64-encoded */
+	body: string;
+}
+
+type TunnelMessage = TunnelRequestMessage | TunnelResponseMessage;
 
 /**
  * WebSocket Tunnel - Bridge virtual network to external WebSocket server
@@ -21,9 +48,9 @@ export class WebSocketTunnel extends BaseTunnel {
 
 	private wsUrl: string;
 	private ws: WebSocket | null = null;
-	private portRegistry?: Map<number, any>;
+	private portRegistry?: Map<number, VirtualRequestHandler>;
 	private defaultPort: number | null = null;
-	private reconnectTimer?: any;
+	private reconnectTimer?: ReturnType<typeof setTimeout>;
 	private isReconnecting = false;
 
 	// Packet queue
@@ -34,7 +61,7 @@ export class WebSocketTunnel extends BaseTunnel {
 		id: string,
 		wsUrl: string,
 		networkStack: NetworkStack,
-		portRegistry?: Map<number, any>,
+		portRegistry?: Map<number, VirtualRequestHandler>,
 		namespace = 'default',
 		defaultPort: number | null = null
 	) {
@@ -201,9 +228,9 @@ export class WebSocketTunnel extends BaseTunnel {
 	/**
 	 * Handle incoming WebSocket message
 	 */
-	private handleMessage(data: any): void {
+	private handleMessage(data: WebSocketData): void {
 		try {
-			const message = JSON.parse(data.toString());
+			const message = JSON.parse(data.toString()) as TunnelMessage;
 
 			if (message.type === 'request') {
 				// Handle HTTP request from tunnel server
@@ -220,7 +247,7 @@ export class WebSocketTunnel extends BaseTunnel {
 	/**
 	 * Handle HTTP request from tunnel server
 	 */
-	private async handleHttpRequest(message: any): Promise<void> {
+	private async handleHttpRequest(message: TunnelRequestMessage): Promise<void> {
 		const { requestId, method, url, headers, body } = message;
 
 		let port: number;
@@ -243,14 +270,12 @@ export class WebSocketTunnel extends BaseTunnel {
 			path = match[2] || '/';
 		}
 
-		// Check if port exists in registry
-		if (!this.portRegistry || !this.portRegistry.has(port)) {
+		// Check if a server is listening on the port
+		const handler = this.portRegistry?.get(port);
+		if (!handler) {
 			this.sendError(requestId, 404, `No server listening on port ${port}`);
 			return;
 		}
-
-		// Get handler
-		const handler = this.portRegistry.get(port);
 
 		// Create virtual request/response
 		const vReq = {
@@ -298,7 +323,7 @@ export class WebSocketTunnel extends BaseTunnel {
 	/**
 	 * Handle HTTP response (for client-side requests)
 	 */
-	private handleHttpResponse(_message: any): void {
+	private handleHttpResponse(_message: TunnelResponseMessage): void {
 		// For future client-side request support
 		// Not needed for current server-only implementation
 	}

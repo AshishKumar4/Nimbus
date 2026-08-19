@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
 import type { ProcessRegistry } from '../../shell/ProcessRegistry.js';
+import type { JobTable } from '../../shell/jobs.js';
 
 export function createPsCommand(processRegistry: ProcessRegistry): Command {
   return async (ctx) => {
@@ -20,7 +21,7 @@ export function createPsCommand(processRegistry: ProcessRegistry): Command {
 }
 
 // Legacy function for backward compatibility
-export function createPsCommandFromJobTable(jobTable: any): Command {
+export function createPsCommandFromJobTable(jobTable: JobTable): Command {
   return async (ctx) => {
     ctx.stdout.write('  PID TTY          TIME CMD\n');
 

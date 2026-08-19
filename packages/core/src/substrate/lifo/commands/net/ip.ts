@@ -1,4 +1,4 @@
-import type { Command } from '../types.js';
+import type { Command, CommandContext } from '../types.js';
 import type { NetworkStack } from '../../kernel/network/index.js';
 import type { Kernel } from '../../kernel/index.js';
 import { VETHPair } from '../../kernel/network/tunnel/VETHPair.js';
@@ -65,7 +65,7 @@ Examples:
 // ═══════════════════════════════════════════════════════════════
 
 async function handleLink(
-  ctx: any,
+  ctx: CommandContext,
   command: string,
   args: string[],
   networkStack: NetworkStack
@@ -108,7 +108,7 @@ Examples:
   }
 }
 
-async function linkShow(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function linkShow(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   let targetInterface: string | undefined;
 
   // Parse "dev NAME"
@@ -154,7 +154,7 @@ async function linkShow(ctx: any, args: string[], networkStack: NetworkStack): P
   return 0;
 }
 
-async function linkAdd(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function linkAdd(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   if (args.length < 3) {
     ctx.stderr.write('Usage: ip link add NAME type TYPE [ OPTIONS ]\n');
     return 1;
@@ -207,7 +207,7 @@ async function linkAdd(ctx: any, args: string[], networkStack: NetworkStack): Pr
   return 1;
 }
 
-async function linkDelete(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function linkDelete(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   if (args.length < 1) {
     ctx.stderr.write('Usage: ip link del NAME\n');
     return 1;
@@ -243,7 +243,7 @@ async function linkDelete(ctx: any, args: string[], networkStack: NetworkStack):
   return 1;
 }
 
-async function linkSet(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function linkSet(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   if (args.length < 2) {
     ctx.stderr.write('Usage: ip link set NAME { up | down | netns NETNS }\n');
     return 1;
@@ -362,7 +362,7 @@ async function linkSet(ctx: any, args: string[], networkStack: NetworkStack): Pr
 // ═══════════════════════════════════════════════════════════════
 
 async function handleAddr(
-  ctx: any,
+  ctx: CommandContext,
   command: string,
   _args: string[],
   _networkStack: NetworkStack
@@ -393,7 +393,7 @@ Examples:
 // ═══════════════════════════════════════════════════════════════
 
 async function handleRoute(
-  ctx: any,
+  ctx: CommandContext,
   command: string,
   _args: string[],
   _networkStack: NetworkStack
@@ -426,7 +426,7 @@ Examples:
 // ═══════════════════════════════════════════════════════════════
 
 async function handleNetns(
-  ctx: any,
+  ctx: CommandContext,
   command: string,
   args: string[],
   networkStack: NetworkStack
@@ -458,7 +458,7 @@ Examples:
   }
 }
 
-async function netnsShow(ctx: any, _args: string[], networkStack: NetworkStack): Promise<number> {
+async function netnsShow(ctx: CommandContext, _args: string[], networkStack: NetworkStack): Promise<number> {
   const namespaces = networkStack.getAllNamespaces();
 
   for (const ns of namespaces) {
@@ -468,7 +468,7 @@ async function netnsShow(ctx: any, _args: string[], networkStack: NetworkStack):
   return 0;
 }
 
-async function netnsAdd(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function netnsAdd(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   if (args.length < 1) {
     ctx.stderr.write('Usage: ip netns add NAME\n');
     return 1;
@@ -487,7 +487,7 @@ async function netnsAdd(ctx: any, args: string[], networkStack: NetworkStack): P
   }
 }
 
-async function netnsDelete(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function netnsDelete(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   if (args.length < 1) {
     ctx.stderr.write('Usage: ip netns del NAME\n');
     return 1;
@@ -520,7 +520,7 @@ async function netnsDelete(ctx: any, args: string[], networkStack: NetworkStack)
 // ═══════════════════════════════════════════════════════════════
 
 async function handleBridge(
-  ctx: any,
+  ctx: CommandContext,
   command: string,
   args: string[],
   networkStack: NetworkStack
@@ -547,7 +547,7 @@ Examples:
   }
 }
 
-async function bridgeFdb(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function bridgeFdb(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   const command = args[0] || 'show';
 
   if (command !== 'show') {
@@ -585,7 +585,7 @@ async function bridgeFdb(ctx: any, args: string[], networkStack: NetworkStack): 
   return 0;
 }
 
-async function bridgeLink(ctx: any, args: string[], networkStack: NetworkStack): Promise<number> {
+async function bridgeLink(ctx: CommandContext, args: string[], networkStack: NetworkStack): Promise<number> {
   const command = args[0] || 'show';
 
   if (command !== 'show') {
