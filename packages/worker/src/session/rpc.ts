@@ -77,6 +77,7 @@ import {
 } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { clearPortCapability } from './port-capability.js';
+import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
@@ -311,6 +312,43 @@ export async function _rpcWriteFile(self: RpcHost, path: string, content: string
     // a Buffer flows through node-shims.ts:writeFileSync which stores it as
     // a plain Uint8Array on the cell — the shape that arrives here.
     return runtimeFs(self, pid).writeFile(path, content);
+}
+
+/**
+ * Write one host-governed file at a session root and let ordinary Unix
+ * permissions keep it that way: the root becomes a sticky 1777 directory owned
+ * by the kernel, and the file itself is kernel-owned and read-only.
+ *
+ * The guest keeps normal use of the root — it creates, edits and removes its
+ * own files there, which is what the sticky bit is for — and cannot replace,
+ * rename or remove this one. That is the whole mechanism; there is no special
+ * case anywhere in the filesystem for it.
+ *
+ * Deliberately absent from the remote HTTP RPC dispatcher: the point is a file
+ * the sandboxed program cannot forge, so only an embedder holding the DO stub
+ * may write it.
+ */
+export async function _rpcWriteProtectedRootFile(
+  self: RpcHost,
+  rootPath: string,
+  path: string,
+  content: string | Uint8Array,
+): Promise<void> {
+  self.ensureSqliteFs();
+  const root = normalizeVfsPath(rootPath);
+  const protectedPath = normalizeVfsPath(path);
+  if (!root || parentVfsPath(protectedPath) !== root) {
+    throw new Error('protected file must be a direct child of the declared session root');
+  }
+  const fs = self.sqliteFs!.as(CRED_KERNEL);
+  if (!fs.exists(root) || !fs.isDirectory(root)) {
+    throw new Error('protected file session root does not exist');
+  }
+  fs.chown(root, CRED_KERNEL.uid, CRED_KERNEL.gid);
+  fs.chmod(root, 0o1777);
+  fs.writeFile(protectedPath, content);
+  fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
+  fs.chmod(protectedPath, 0o444);
 }
 
 export async function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any> {

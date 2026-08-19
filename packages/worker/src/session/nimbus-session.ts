@@ -719,6 +719,9 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid); }
+  async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
+    return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);
+  }
   async _rpcStat(path: string, pid?: number): Promise<any> { return _rpc._rpcStat(this as any, path, pid); }
   async _rpcLstat(path: string, pid?: number): Promise<any> { return _rpc._rpcLstat(this as any, path, pid); }
   async _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean> {
