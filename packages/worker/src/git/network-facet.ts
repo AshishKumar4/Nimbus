@@ -607,8 +607,13 @@ async function invokeFacet(
   }
 }
 
+/** The supervisor stub surface this module calls: terminal progress, nothing else. */
+interface GitSupervisorStub {
+  stdout(message: string): Promise<unknown>;
+}
+
 async function writeClonePhaseProgress(
-  supervisor: { stdout(message: string): Promise<unknown> },
+  supervisor: GitSupervisorStub,
   diagnostic: GitNetworkPhaseDiagnostic,
 ): Promise<void> {
   try {
@@ -627,7 +632,7 @@ async function writeClonePhaseProgress(
 }
 
 async function writeCloneChunkProgress(
-  supervisor: { stdout(message: string): Promise<unknown> },
+  supervisor: GitSupervisorStub,
   diagnostic: GitNetworkPhaseDiagnostic,
   chunk: number,
   progress: GitCheckoutChunkProgress,
@@ -680,7 +685,7 @@ export async function execGitNetwork(
     const { mutationOwner, ...facetOpts } = opts;
     const ctxExports = getCtxExports();
     const supervisorBinding = ctxExports?.SupervisorRPC
-      ? ctxExports.SupervisorRPC({
+      ? ctxExports.SupervisorRPC<GitSupervisorStub>({
           props: { doId: ctx.id.toString(), pid: opts.pid, mutationOwner },
         })
       : undefined;

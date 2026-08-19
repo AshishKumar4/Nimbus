@@ -38,7 +38,26 @@ import {
   RetryExhaustedError,
   TimeoutError,
 } from './vendor/errors.js';
-import type { WorkerLoader } from './vendor/types.js';
+import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { ModuleContent, WorkerLoader } from './vendor/types.js';
+
+/**
+ * A function dispatched into a facet isolate, with the bindings that facet was
+ * minted with as its second argument.
+ *
+ * Declared through a method so the bindings parameter compares BIVARIANTLY: a
+ * task body annotates the exact surface it calls (`env.SUPERVISOR` is the
+ * embedder's RPC class, which the fabric cannot name), and accepting that
+ * narrowing is the whole point of handing the bindings over.
+ */
+export type FacetTaskFn<A, R> = {
+  task(args: A, env: FacetBindings): R | Promise<R>;
+}['task'];
+
+/** The one binding a pool needs off whichever env its host hands it. */
+export interface LoaderPoolEnv {
+  LOADER?: WorkerLoader;
+}
 
 /** Options handed to LoaderPool's constructor. */
 export interface LoaderPoolOptions {
@@ -363,11 +382,13 @@ export class LoaderPool {
   private readonly doIdShort: string;
 
   constructor(
-    env: any,
+    env: unknown,
     ctx: DurableObjectState,
     opts?: LoaderPoolOptions,
   ) {
-    const loader = env?.LOADER as WorkerLoader | undefined;
+    // A host hands its whole env over; the binding is claimed here and the
+    // claim is checked on the next line.
+    const loader = (env as LoaderPoolEnv | null | undefined)?.LOADER;
     if (!loader || typeof loader.get !== 'function') {
       throw new BindingError(
         'LoaderPool: env.LOADER binding missing or invalid. ' +
@@ -398,9 +419,12 @@ export class LoaderPool {
     if (opts?.wasmModules) {
       for (const [name, bytes] of Object.entries(opts.wasmModules)) {
         if (!(bytes instanceof ArrayBuffer)) {
+          // Reached only when a caller broke the declared option type, so the
+          // value is whatever it really was rather than the ArrayBuffer here.
+          const got = (bytes as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
           throw new BindingError(
             `LoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
-            `(got ${(bytes as any)?.constructor?.name || typeof bytes}).`,
+            `(got ${got || typeof bytes}).`,
           );
         }
         const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
@@ -489,9 +513,10 @@ export class LoaderPool {
     const seen = new Set<string>();
     for (const [name, bytes] of Object.entries(perCall)) {
       if (!(bytes instanceof ArrayBuffer)) {
+        const got = (bytes as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
         throw new BindingError(
           `LoaderPool: per-call wasmModules['${name}'] must be ` +
-            `ArrayBuffer (got ${(bytes as any)?.constructor?.name || typeof bytes}).`,
+            `ArrayBuffer (got ${got || typeof bytes}).`,
         );
       }
       const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
@@ -580,7 +605,7 @@ export class LoaderPool {
       compatibilityDate: CF_COMPAT_DATE,
       compatibilityFlags: ['nodejs_compat'],
       // Inherit parent network so the facet can reach registry.npmjs.org.
-      globalOutbound: undefined as any,
+      globalOutbound: undefined,
       env: this.bindings,
     };
 
@@ -622,7 +647,7 @@ export class LoaderPool {
     // Per-call entries are appended after constructor entries so the
     // map order matches the import order in the generated worker.js
     // (matters only for human-readable diffs; workerd doesn't care).
-    const modules: Record<string, any> = { 'worker.js': moduleSource };
+    const modules: Record<string, ModuleContent> = { 'worker.js': moduleSource };
     for (const w of allWasmEntries) {
       modules[w.name] = { wasm: w.bytes };
     }
@@ -811,7 +836,7 @@ export class LoaderPool {
    * throws TimeoutError / RetryExhaustedError / ExecutionError.
    */
   async submit<T, R>(
-    fn: (arg: T, env: any) => R | Promise<R>,
+    fn: FacetTaskFn<T, R>,
     arg: T,
     opts?: LoaderCallOptions,
   ): Promise<Awaited<R>> {
@@ -834,7 +859,7 @@ export class LoaderPool {
    * Results are returned in input order. Failure handling per `onError`.
    */
   async map<T, R>(
-    fn: (item: T, env: any) => R | Promise<R>,
+    fn: FacetTaskFn<T, R>,
     items: T[],
     opts?: LoaderMapOptions,
   ): Promise<Array<Awaited<R> | null>> {

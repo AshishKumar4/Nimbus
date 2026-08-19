@@ -16,9 +16,25 @@
 
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
-import { LoaderPool } from './loader-pool.js';
+import { LoaderPool, type FacetTaskFn } from './loader-pool.js';
 import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
 import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
+import type { WorkerLoader } from './vendor/types.js';
+
+/**
+ * The sibling-session namespace the peer-DO topology routes through. Ids are
+ * derived from a name so a task key always lands on the same peer.
+ */
+interface PeerSessionNamespace {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): unknown;
+}
+
+/** The bindings a fan-out needs off the coordinator DO's env. */
+export interface FanoutPoolEnv {
+  LOADER?: WorkerLoader;
+  NIMBUS_SESSION?: PeerSessionNamespace;
+}
 
 /**
  * Threshold at which routing switches from coordinator-local loaders to
@@ -188,17 +204,20 @@ function fanoutPeerStub(value: unknown): FanoutPeerStub {
  * lives only inside submitMany's promise.
  */
 export class FanoutPool {
-  private readonly env: any;
+  private readonly env: FanoutPoolEnv;
   private readonly ctx: DurableObjectState;
   private readonly opts: FanoutPoolOptions;
   private readonly coordDoId: string;
   private readonly coordDoIdShort: string;
 
-  constructor(env: any, ctx: DurableObjectState, opts: FanoutPoolOptions) {
-    // Hard-fail on missing LOADER. LoaderPool also enforces this,
-    // but we check up front so the diagnostic points at the fanout-pool
-    // construction site rather than the deferred loader-pool one.
-    if (!env?.LOADER || typeof env.LOADER.get !== 'function') {
+  constructor(rawEnv: unknown, ctx: DurableObjectState, opts: FanoutPoolOptions) {
+    // A host hands its whole env over; the bindings are claimed here and the
+    // LOADER claim is checked immediately. Hard-fail on a missing LOADER —
+    // LoaderPool also enforces this, but checking up front points the
+    // diagnostic at the fanout-pool construction site rather than the
+    // deferred loader-pool one.
+    const env = (rawEnv as FanoutPoolEnv | null | undefined) ?? {};
+    if (!env.LOADER || typeof env.LOADER.get !== 'function') {
       throw new BindingError(
         'FanoutPool: env.LOADER binding missing or invalid. ' +
           'Add a [[worker_loaders]] entry to wrangler.jsonc.',
@@ -234,7 +253,7 @@ export class FanoutPool {
    */
   async submitMany<A, R>(
     tasks: FanoutTask<A>[],
-    fn: (item: A, env: any) => R | Promise<R>,
+    fn: FacetTaskFn<A, R>,
   ): Promise<R[]> {
     if (tasks.length === 0) return [];
 
@@ -266,7 +285,7 @@ export class FanoutPool {
 
   private async _dispatchInDo<A, R>(
     tasks: FanoutTask<A>[],
-    fn: (item: A, env: any) => R | Promise<R>,
+    fn: FacetTaskFn<A, R>,
   ): Promise<R[]> {
     // Use the existing LoaderPool. Concurrency = task count
     // (capped at 4 by constructor — tasks.length is already < 5
@@ -302,7 +321,7 @@ export class FanoutPool {
 
   private async _dispatchPeerDo<A, R>(
     tasks: FanoutTask<A>[],
-    fn: (item: A, env: any) => R | Promise<R>,
+    fn: FacetTaskFn<A, R>,
   ): Promise<R[]> {
     const ns = this.env?.NIMBUS_SESSION;
     if (!ns || typeof ns.idFromName !== 'function' || typeof ns.get !== 'function') {
@@ -317,7 +336,7 @@ export class FanoutPool {
     // Each peer DO receives the same fnSource string; warm peer
     // loader isolates (keyed on fnHash) reuse across calls with
     // identical fns.
-    const fnSource = serializeFunction(fn as any);
+    const fnSource = serializeFunction(fn);
 
     // Cap peer count at MAX_PEER_FANOUT. Tasks beyond N=32 are
     // bucketed into existing shards — each shard's peer DO then

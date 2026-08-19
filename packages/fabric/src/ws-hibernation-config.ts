@@ -29,6 +29,8 @@
  * can show whether the runtime supported the configuration.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+
 /**
  * Recommended hibernation event timeout (ms). 5 s per CF research §C.3
  * — long enough for the heaviest non-facet WS message handler observed
@@ -40,6 +42,16 @@ export const NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS = 5000;
 /** Public ping/pong contract — clients send `ping`, receive `pong`. */
 export const WS_AUTO_RESPONSE_REQUEST = 'ping';
 export const WS_AUTO_RESPONSE_RESPONSE = 'pong';
+
+/**
+ * The hibernation controls this module configures. Both are optional because
+ * both are version-dependent: a workerd that predates one may still expose the
+ * other, and neither exists in Node.
+ */
+export interface WsHibernationHost {
+  setWebSocketAutoResponse?(pair: WebSocketRequestResponsePair): void;
+  setHibernatableWebSocketEventTimeout?(timeoutMs: number): void;
+}
 
 export interface WsHibernationConfigResult {
   /** True iff `setWebSocketAutoResponse` ran without throwing. */
@@ -65,22 +77,27 @@ export interface WsHibernationConfigResult {
  * caller passes the real `this.ctx` from NimbusSession's constructor.
  */
 export function configureWsHibernation(
-  ctx: any,
+  ctx: WsHibernationHost,
 ): WsHibernationConfigResult {
   const result: WsHibernationConfigResult = {
     autoResponseConfigured: false,
     timeoutSetMs: null,
   };
 
-  // Step 1: auto-response.
-  const Pair: any = (globalThis as any).WebSocketRequestResponsePair;
+  // Step 1: auto-response. The constructor is a `declare class` in
+  // @cloudflare/workers-types, so it is in scope as a type but not on
+  // `typeof globalThis`, and a bare reference would throw in Node.
+  const workerdGlobals = globalThis as {
+    WebSocketRequestResponsePair?: typeof WebSocketRequestResponsePair;
+  };
+  const Pair = workerdGlobals.WebSocketRequestResponsePair;
   if (typeof ctx?.setWebSocketAutoResponse === 'function' && typeof Pair === 'function') {
     try {
       const pair = new Pair(WS_AUTO_RESPONSE_REQUEST, WS_AUTO_RESPONSE_RESPONSE);
       ctx.setWebSocketAutoResponse(pair);
       result.autoResponseConfigured = true;
-    } catch (e: any) {
-      result.autoResponseError = e?.message || String(e);
+    } catch (e) {
+      result.autoResponseError = errorText(e);
     }
   } else if (typeof Pair !== 'function') {
     result.autoResponseError = 'WebSocketRequestResponsePair global not available';
@@ -95,8 +112,8 @@ export function configureWsHibernation(
     try {
       ctx.setHibernatableWebSocketEventTimeout(NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS);
       result.timeoutSetMs = NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS;
-    } catch (e: any) {
-      result.timeoutError = e?.message || String(e);
+    } catch (e) {
+      result.timeoutError = errorText(e);
     }
   } else {
     result.timeoutError = 'ctx.setHibernatableWebSocketEventTimeout not available';

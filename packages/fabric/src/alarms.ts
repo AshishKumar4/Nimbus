@@ -17,6 +17,25 @@
  * passed.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+
+/**
+ * The storage the alarm map lives in. `setAlarm` is optional because
+ * `wrangler dev` serves a storage without it, which is the whole reason
+ * scheduling degrades to a no-op instead of throwing.
+ */
+export interface AlarmStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  setAlarm?(scheduledTime: number): Promise<void>;
+}
+
+/** The hosting actor's context, as the alarm coordination reads it. */
+export interface AlarmContext {
+  storage: AlarmStorage;
+}
+
 /**
  * Multi-reason alarm coordination map.
  *
@@ -89,7 +108,7 @@ export interface IsolateGenHost {
  */
 export function scheduleAlarm(
   host: AlarmHost,
-  ctx: any,
+  ctx: AlarmContext,
   reason: string,
   whenMs: number,
 ): Promise<boolean> {
@@ -99,7 +118,7 @@ export function scheduleAlarm(
   // whichever reason wrote first.
   const run = async (): Promise<boolean> => {
     try {
-      const setAlarmFn = (ctx?.storage as any)?.setAlarm;
+      const setAlarmFn = ctx?.storage?.setAlarm;
       if (typeof setAlarmFn !== 'function') return false;
       const existing = (await ctx.storage.get(ALARM_REASONS_KEY)) as
         | Record<string, number>
@@ -114,8 +133,8 @@ export function scheduleAlarm(
       const earliest = Math.min(...Object.values(map));
       setAlarmFn.call(ctx.storage, earliest);
       return true;
-    } catch (e: any) {
-      console.warn('[nimbus/W1] scheduleAlarm threw:', e?.message);
+    } catch (e) {
+      console.warn('[nimbus/W1] scheduleAlarm threw:', errorText(e));
       return false;
     }
   };
@@ -159,7 +178,7 @@ export type AlarmHandlers = Record<
  */
 export function dispatchAlarm(
   host: AlarmHost,
-  ctx: any,
+  ctx: AlarmContext,
   handlers: AlarmHandlers,
   onLegacyAlarm?: () => void,
 ): Promise<void> {
@@ -174,7 +193,7 @@ export function dispatchAlarm(
 }
 
 async function dispatchAlarmBody(
-  ctx: any,
+  ctx: AlarmContext,
   handlers: AlarmHandlers,
   onLegacyAlarm?: () => void,
 ): Promise<void> {
@@ -205,12 +224,12 @@ async function dispatchAlarmBody(
         if (result && typeof result.rearmAt === 'number') {
           map[reason] = result.rearmAt;
         }
-      } catch (e: any) {
-        console.warn(`[nimbus/W1] dispatch ${reason} threw:`, e?.message);
+      } catch (e) {
+        console.warn(`[nimbus/W1] dispatch ${reason} threw:`, errorText(e));
       }
     }
     // Re-arm or clear.
-    const setAlarmFn = (ctx?.storage as any)?.setAlarm;
+    const setAlarmFn = ctx?.storage?.setAlarm;
     if (Object.keys(map).length > 0) {
       await ctx.storage.put(ALARM_REASONS_KEY, map);
       const earliest = Math.min(...Object.values(map));
@@ -222,13 +241,13 @@ async function dispatchAlarmBody(
       // No remaining reasons → no setAlarm call → DO becomes
       // hibernation-eligible after the 10s idle window.
     }
-  } catch (e: any) {
-    console.warn('[nimbus/W1] dispatchAlarm threw:', e?.message);
+  } catch (e) {
+    console.warn('[nimbus/W1] dispatchAlarm threw:', errorText(e));
   }
 }
 
 /** Increment + persist the isolate-gen counter once per fresh isolate. */
-export async function maybeBumpIsolateGen(host: IsolateGenHost, ctx: any): Promise<void> {
+export async function maybeBumpIsolateGen(host: IsolateGenHost, ctx: AlarmContext): Promise<void> {
   if (host._isolateGenPersisted) return;
   host._isolateGenPersisted = true;
   try {
@@ -250,7 +269,7 @@ export async function maybeBumpIsolateGen(host: IsolateGenHost, ctx: any): Promi
     const next = host._isolateGen + 1;
     await ctx.storage.put(ISOLATE_GEN_KEY, next);
     host._isolateGen = next;
-  } catch (e: any) {
-    console.warn('[nimbus/W9] isolate-gen bump failed:', e?.message);
+  } catch (e) {
+    console.warn('[nimbus/W9] isolate-gen bump failed:', errorText(e));
   }
 }

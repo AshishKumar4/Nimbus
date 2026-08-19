@@ -29,6 +29,92 @@ import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-
 import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
 import { requireStagedBootAssembler } from './process-fabric.js';
 import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
+import type { EntrypointLoopbackFactory } from './ctx-exports.js';
+import type { WorkerCode } from './vendor/types.js';
+
+/**
+ * `ctx.exports` for the loopback hops: workerd mints one factory per top-level
+ * entrypoint export, and only the three the hops hand onward are named. An
+ * absent name is how a hop finds out the embedder's entry module does not
+ * re-export the class it needs.
+ */
+interface ShimCtxExports {
+  NimbusLoadedWorker?: EntrypointLoopbackFactory;
+  NimbusLoadedEntrypoint?: EntrypointLoopbackFactory;
+  NimbusDOStub?: EntrypointLoopbackFactory;
+}
+
+/**
+ * The supervisor DO namespace a shim resolves ONE stub from, by the id its
+ * props carry. `Stub` is that DO's RPC surface as the calling shim uses it —
+ * the supervisor class belongs to the embedder, so each shim names the methods
+ * it calls rather than the class.
+ */
+interface SupervisorNamespace<Stub> {
+  idFromString(id: string): DurableObjectId;
+  get(id: DurableObjectId): Stub;
+}
+
+/**
+ * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
+ * entrypoint contract every loaded worker answers; `handleHttpRequest` is the
+ * fabric's own route target, which only a facet that serves ports exposes.
+ */
+interface LoadedEntrypoint {
+  fetch(request: Request): Promise<Response>;
+  handleHttpRequest?(request: Request): Promise<Response>;
+}
+
+/** A stub for one dynamically-loaded worker, as the shims hop across it. */
+interface LoadedWorker {
+  getEntrypoint(name?: string): LoadedEntrypoint;
+  getDurableObjectClass(name: string): DurableObjectClass;
+}
+
+/**
+ * The OUTER `env.LOADER` these shims forward to. `load` is the unkeyed arm the
+ * inner Worker asked for; `get` is the keyed arm every later hop re-enters in
+ * its own request context. `get`'s callback answers with whatever the caller
+ * assembled — a staged artifact's module map is the embedder's, so the fabric
+ * does not name it (see {@link ./process-fabric.js} StagedBootAssembler).
+ */
+interface OuterWorkerLoader {
+  load(code: WorkerCode): LoadedWorker;
+  get(id: string, getCode: () => Promise<object>): LoadedWorker;
+}
+
+/**
+ * `env` for the three Worker-Loader hops. The depth var rides the env rather
+ * than props because it is set on the OUTERMOST session and every nested
+ * Nimbus inherits it.
+ */
+interface NimbusLoaderShimEnv {
+  LOADER?: OuterWorkerLoader;
+  NIMBUS_INNER_LOADER_DEPTH?: string;
+}
+
+/**
+ * `ctx.exports` — workerd's loopback bag, which the installed
+ * @cloudflare/workers-types does not put on `ExecutionContext`. Probed rather
+ * than declared, so a runtime that predates it reads as absent, which is also
+ * what the module-level holder's fallback keys off.
+ */
+function ctxExportsOf(ctx: unknown): unknown {
+  if (!ctx || typeof ctx !== 'object' || !('exports' in ctx)) return undefined;
+  return ctx.exports;
+}
+
+/**
+ * The loopback factories a hop may need. An absent bag reads as an empty set,
+ * which each hop reports as the specific class it could not find.
+ */
+function shimCtxExports(ctx: unknown): ShimCtxExports {
+  const exports = ctxExportsOf(ctx);
+  if (!exports || typeof exports !== 'object') return {};
+  // The bag workerd populated. Which names are in it is the hop's question,
+  // and each hop answers it with its own error.
+  return exports as ShimCtxExports;
+}
 
 // ── Inner-Worker loopback bindings ────────────────────────────────────
 //
@@ -44,6 +130,29 @@ import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
 // produces a Service Binding stub that can be placed in the inner
 // Worker's `env` under whatever binding name the user declared in
 // wrangler.jsonc's `assets.binding` (typically "ASSETS").
+
+/**
+ * What the assets shim reads off the supervisor DO: the VFS bytes of one path,
+ * or null when it holds no such file.
+ */
+interface AssetsSupervisorStub {
+  _rpcReadFileBytes(path: string): Promise<ArrayBuffer | Uint8Array | null>;
+}
+
+/** `env` for the assets shim: the supervisor its VFS reads round-trip through. */
+interface NimbusAssetsEnv {
+  NIMBUS_SESSION?: SupervisorNamespace<AssetsSupervisorStub>;
+}
+
+/** Props the assets shim is minted with. */
+interface NimbusAssetsProps {
+  /** Project root in VFS (e.g. "home/user/myapp"). */
+  vfsRoot?: string;
+  /** Directory declared in wrangler.jsonc.assets.directory. */
+  assetsDir?: string;
+  /** Supervisor DO id whose VFS holds the assets. */
+  doId?: string;
+}
 
 /**
  * Assets binding shim. The inner Worker calls `env.ASSETS.fetch(request)`
@@ -66,7 +175,7 @@ import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
  * For Phase 1, we use a simpler approach: the props carry a supervisor
  * DO id so we can round-trip through an RPC method that reads the file.
  */
-export class NimbusAssetsRPC extends WorkerEntrypoint {
+export class NimbusAssetsRPC extends WorkerEntrypoint<NimbusAssetsEnv, NimbusAssetsProps> {
   /**
    * Fetch a static asset. Called by the inner Worker as
    * `env.ASSETS.fetch(request)`. The request URL's pathname is used to
@@ -74,10 +183,10 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const propsAny = (this.ctx as any).props || {};
-    const vfsRoot = String(propsAny.vfsRoot || '');
-    const assetsDir = String(propsAny.assetsDir || '').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
-    const doId = String(propsAny.doId || '');
+    const props: NimbusAssetsProps = this.ctx.props || {};
+    const vfsRoot = String(props.vfsRoot || '');
+    const assetsDir = String(props.assetsDir || '').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+    const doId = String(props.doId || '');
 
     // Normalize pathname: no leading /, drop .. segments entirely.
     let clean = url.pathname.replace(/^\/+/, '');
@@ -85,7 +194,7 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
     clean = parts.join('/');
 
     // Resolve the supervisor DO stub so we can call its VFS read RPC.
-    const ns = (this.env as any).NIMBUS_SESSION;
+    const ns = this.env.NIMBUS_SESSION;
     if (!ns || !doId) {
       return new Response('ASSETS binding not wired: missing NIMBUS_SESSION or doId', { status: 500 });
     }
@@ -218,7 +327,7 @@ function mimeTypeForPath(path: string): string {
  * the worst case (typical user-worker bundle: 50-300 KiB; 32 × 300 KiB
  * = ~10 MiB ceiling — well under the 64 MiB supervisor budget).
  */
-const _NIMBUS_LOADED_CODES: Map<string, any> = new Map();
+const _NIMBUS_LOADED_CODES: Map<string, WorkerCode> = new Map();
 const _LOADED_CODES_MAX = 32;
 let _loadedCodesEvictions = 0;
 
@@ -259,7 +368,7 @@ async function materializeNestedRpcRequest(request: Request): Promise<Request> {
  * entry if at the cap; existing keys are re-inserted to update their
  * recency.
  */
-function _loadedCodesPut(key: string, code: any): void {
+function _loadedCodesPut(key: string, code: WorkerCode): void {
   // If the key already exists, delete first so re-insertion lands at
   // the MRU end of the iteration order (LRU-style refresh).
   if (_NIMBUS_LOADED_CODES.has(key)) {
@@ -275,7 +384,7 @@ function _loadedCodesPut(key: string, code: any): void {
   _NIMBUS_LOADED_CODES.set(key, code);
 }
 
-function _loadedCodesGet(key: string): any | undefined {
+function _loadedCodesGet(key: string): WorkerCode | undefined {
   const v = _NIMBUS_LOADED_CODES.get(key);
   if (v === undefined) return undefined;
   // LRU-refresh on read so memoization-style usage (LOADER.get(id, cb)
@@ -307,21 +416,30 @@ function _genStubId(): string {
  * in the CURRENT request context. Uses LOADER.get(id, cb) so repeated
  * calls reuse the same dynamic worker rather than spawning new ones.
  */
-function _resolveStubInCurrentContext(outerLoader: any, key: string): any | null {
+function _resolveStubInCurrentContext(
+  outerLoader: OuterWorkerLoader,
+  key: string | undefined,
+): LoadedWorker | null {
+  if (key === undefined) return null;
   const code = _loadedCodesGet(key);
   if (!code) return null;
   return outerLoader.get(key, async () => code);
 }
 
+/** Props every Worker-Loader hop carries: how deep this Nimbus already is. */
+interface NimbusLoaderDepthProps {
+  depth?: number;
+}
+
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
-export class NimbusLoaderRPC extends WorkerEntrypoint {
+export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoaderDepthProps> {
   private _currentDepth(): number {
-    const d = (this.ctx as any).props?.depth;
+    const d = this.ctx.props?.depth;
     return typeof d === 'number' && d >= 0 ? d : 0;
   }
 
   private _maxDepth(): number {
-    const raw = (this.env as any)?.NIMBUS_INNER_LOADER_DEPTH;
+    const raw = this.env?.NIMBUS_INNER_LOADER_DEPTH;
     const parsed = raw ? parseInt(String(raw), 10) : NaN;
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
   }
@@ -343,9 +461,9 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
    * NimbusLoadedWorker RPC stub. Each downstream call re-loads the
    * worker in its own request context via LOADER.get(key, cb).
    */
-  load(code: any): any {
+  load(code: WorkerCode): unknown {
     this._assertDepthOk();
-    const outerLoader = (this.env as any)?.LOADER;
+    const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
     // Validate by loading once in THIS context (fails fast on bad code).
     // The stub is discarded; downstream calls re-load fresh in their
@@ -353,12 +471,12 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
     outerLoader.load(code);
     const key = _genStubId();
     _loadedCodesPut(key, code);
-    const ctxExports = (this.ctx as any)?.exports;
-    if (!ctxExports?.NimbusLoadedWorker) {
+    const ctxExports = shimCtxExports(this.ctx);
+    if (!ctxExports.NimbusLoadedWorker) {
       throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
     }
     return ctxExports.NimbusLoadedWorker({
-      props: { key, depth: (this.ctx as any).props?.depth || 0 },
+      props: { key, depth: this.ctx.props?.depth || 0 },
     });
   }
 
@@ -367,27 +485,32 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
    * a code object; we treat `id` as the outer cache key (prefixed so
    * it doesn't collide with load()-generated keys).
    */
-  async get(id: string, callback: () => any): Promise<any> {
+  async get(id: string, callback: () => WorkerCode | Promise<WorkerCode>): Promise<unknown> {
     this._assertDepthOk();
-    const outerLoader = (this.env as any)?.LOADER;
+    const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
     const key = 'get:' + id;
     if (_loadedCodesGet(key) === undefined) {
       const code = await callback();
       _loadedCodesPut(key, code);
     }
-    const ctxExports = (this.ctx as any)?.exports;
-    if (!ctxExports?.NimbusLoadedWorker) {
+    const ctxExports = shimCtxExports(this.ctx);
+    if (!ctxExports.NimbusLoadedWorker) {
       throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
     }
     return ctxExports.NimbusLoadedWorker({
-      props: { key, depth: (this.ctx as any).props?.depth || 0 },
+      props: { key, depth: this.ctx.props?.depth || 0 },
     });
   }
 }
 
+/** Props hop 2 carries: the stashed code it re-loads, and its inherited depth. */
+interface NimbusLoadedWorkerProps extends NimbusLoaderDepthProps {
+  key?: string;
+}
+
 /** Hop 2: the returned "worker" stub. Exposes .getEntrypoint(). */
-export class NimbusLoadedWorker extends WorkerEntrypoint {
+export class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedWorkerProps> {
   /**
    * Returns a NimbusLoadedEntrypoint stub that carries the code key +
    * entrypoint name forward. The actual outer-side load + fetch happens
@@ -395,14 +518,14 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
    * SINGLE outer request context (the cross-request-I/O limitation is
    * real — stubs created in one outer request can't be used by another).
    */
-  getEntrypoint(name?: string): any {
-    const propsAny = (this.ctx as any).props || {};
-    const ctxExports = (this.ctx as any)?.exports;
-    if (!ctxExports?.NimbusLoadedEntrypoint) {
+  getEntrypoint(name?: string): unknown {
+    const props: NimbusLoadedWorkerProps = this.ctx.props || {};
+    const ctxExports = shimCtxExports(this.ctx);
+    if (!ctxExports.NimbusLoadedEntrypoint) {
       throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
     }
     return ctxExports.NimbusLoadedEntrypoint({
-      props: { key: propsAny.key, name: name || null, depth: propsAny.depth },
+      props: { key: props.key, name: name || null, depth: props.depth },
     });
   }
 
@@ -415,25 +538,25 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
    * request context (which is the build-time context), not through
    * this method.
    */
-  getDurableObjectClass(name: string): any {
-    const propsAny = (this.ctx as any).props || {};
-    const outerLoader = (this.env as any)?.LOADER;
+  getDurableObjectClass(name: string): DurableObjectClass {
+    const props: NimbusLoadedWorkerProps = this.ctx.props || {};
+    const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    const outer = _resolveStubInCurrentContext(outerLoader, propsAny.key);
-    if (!outer) throw new Error('Nimbus: loaded worker code missing (key=' + propsAny.key + ')');
+    const outer = _resolveStubInCurrentContext(outerLoader, props.key);
+    if (!outer) throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
     return outer.getDurableObjectClass(name);
   }
 }
 
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
-export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
+export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
   _props(): NimbusLoadedEntrypointProps {
-    return NimbusLoadedEntrypointPropsSchema.parse((this.ctx as { props?: unknown }).props || {});
+    return NimbusLoadedEntrypointPropsSchema.parse(this.ctx.props || {});
   }
 
   async _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown> {
     if (!props.supervisor) return undefined;
-    const factory = supervisorEntrypoint((this.ctx as { exports?: unknown }).exports);
+    const factory = supervisorEntrypoint(ctxExportsOf(this.ctx));
     if (!factory) {
       throw new Error(
         `Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`,
@@ -442,11 +565,11 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     return await factory({ props: props.supervisor });
   }
 
-  async _resolveEntrypoint(): Promise<any> {
+  async _resolveEntrypoint(): Promise<LoadedEntrypoint> {
     const props = this._props();
-    const outerLoader = (this.env as any)?.LOADER;
+    const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
-    let outerStub;
+    let outerStub: LoadedWorker;
     if (props.stage !== undefined) {
       // Staged artifact: assemble the full module map lazily, ONLY on a
       // loader miss, in THIS stateless isolate. The facet's SUPERVISOR
@@ -530,7 +653,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
    * The facet is never entered, because the failure is in serializing the
    * arguments, before the call is delivered.
    */
-  private _callHttpHandler(ep: any, request: Request): Promise<Response> {
+  private _callHttpHandler(ep: LoadedEntrypoint, request: Request): Promise<Response> {
     return typeof ep.handleHttpRequest === 'function'
       ? ep.handleHttpRequest(request)
       : ep.fetch(request);
@@ -588,6 +711,12 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
 // ctx.facets.get(facetName, {class, id}).fetch(req) in the same outer
 // request context.
 
+/** Props the synthesized namespace carries: which binding, on which supervisor. */
+interface NimbusDoNamespaceProps {
+  bindingName?: string;
+  supervisorDoId?: string;
+}
+
 /**
  * `env.MY_DO` shim — a DurableObjectNamespace-like WorkerEntrypoint.
  *
@@ -612,7 +741,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
  * spaces distinct so a name-derived id can't collide with a random
  * one.
  */
-export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
+export class NimbusDurableObjectNamespace extends WorkerEntrypoint<unknown, NimbusDoNamespaceProps> {
   /** Stable string id derived from a name. Hash is deterministic. */
   idFromName(name: string): string {
     // Simple 64-bit-ish FNV-style hash → hex. Stable across runs;
@@ -642,18 +771,48 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
   }
 
   /** Return a stub bound to the given id. */
-  get(id: string): any {
-    const ctxExports = (this.ctx as any)?.exports;
-    if (!ctxExports?.NimbusDOStub) throw new Error('Nimbus: ctx.exports.NimbusDOStub unavailable');
-    const propsAny = (this.ctx as any).props || {};
+  get(id: string): unknown {
+    const ctxExports = shimCtxExports(this.ctx);
+    if (!ctxExports.NimbusDOStub) throw new Error('Nimbus: ctx.exports.NimbusDOStub unavailable');
+    const props: NimbusDoNamespaceProps = this.ctx.props || {};
     return ctxExports.NimbusDOStub({
       props: {
-        bindingName: propsAny.bindingName,
-        supervisorDoId: propsAny.supervisorDoId,
+        bindingName: props.bindingName,
+        supervisorDoId: props.supervisorDoId,
         id: String(id),
       },
     });
   }
+}
+
+/**
+ * What the DO shim reads off the supervisor: one inner-DO request, answered
+ * from the facet the supervisor resolves in its own request context.
+ */
+interface InnerDoSupervisorStub {
+  _rpcInnerDoFetch(request: {
+    bindingName: string;
+    id: string;
+    method: string;
+    url: string;
+    headers: [string, string][];
+    body: ArrayBuffer | null;
+  }): Promise<{
+    body: ArrayBuffer;
+    status: number;
+    statusText: string;
+    headers: [string, string][];
+  }>;
+}
+
+/** `env` for the DO shim: the supervisor that owns the facet. */
+interface NimbusInnerDoEnv {
+  NIMBUS_SESSION?: SupervisorNamespace<InnerDoSupervisorStub>;
+}
+
+/** Props the DO stub carries: which binding, which supervisor, which id. */
+interface NimbusDoStubProps extends NimbusDoNamespaceProps {
+  id?: string;
 }
 
 /**
@@ -664,20 +823,20 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
  * spins up / attaches to a facet via the supervisor's ctx.facets in
  * the SAME outer request context — never reusing stubs across requests.
  */
-export class NimbusDOStub extends WorkerEntrypoint {
+export class NimbusDOStub extends WorkerEntrypoint<NimbusInnerDoEnv, NimbusDoStubProps> {
   /**
    * Resolve the supervisor DO from env.NIMBUS_SESSION and route through
    * its _rpcInnerDoFetch RPC method, which runs ctx.facets.get(...) in
    * its own context and forwards the request.
    */
   async fetch(request: Request): Promise<Response> {
-    const propsAny = (this.ctx as any).props || {};
-    const ns = (this.env as any)?.NIMBUS_SESSION;
+    const props: NimbusDoStubProps = this.ctx.props || {};
+    const ns = this.env?.NIMBUS_SESSION;
     if (!ns) return new Response('Nimbus: env.NIMBUS_SESSION unavailable', { status: 500 });
-    const supervisorDoId = String(propsAny.supervisorDoId || '');
+    const supervisorDoId = String(props.supervisorDoId || '');
     if (!supervisorDoId) return new Response('Nimbus: supervisorDoId missing', { status: 500 });
-    const bindingName = String(propsAny.bindingName || '');
-    const id = String(propsAny.id || '');
+    const bindingName = String(props.bindingName || '');
+    const id = String(props.id || '');
     const stub = ns.get(ns.idFromString(supervisorDoId));
     // Forward the full request (method, body, headers preserved) by
     // serializing what's needed and reconstructing on the other side.
@@ -698,7 +857,7 @@ export class NimbusDOStub extends WorkerEntrypoint {
           headers: headerList,
           body,
         }),
-        (res: { body: ArrayBuffer; status: number; statusText: string; headers: [string, string][] }) =>
+        (res) =>
           new Response(res.body, {
             status: res.status,
             statusText: res.statusText,
