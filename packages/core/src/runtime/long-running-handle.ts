@@ -107,7 +107,7 @@ export function parsePortFromArgv(argv: string[]): number | null {
  */
 export function resolveLongRunningPort(opts: {
   argv?: string[];
-  env?: Record<string, any> | undefined;
+  env?: Record<string, string> | undefined;
   configPort?: number | undefined;
   fallback: number;
 }): number {
@@ -152,7 +152,7 @@ export function resolveLongRunningPort(opts: {
  */
 export function expandShellDefaults(
   token: string,
-  env: Record<string, any> | undefined,
+  env: Record<string, string> | undefined,
 ): string {
   if (!token || token.indexOf('${') < 0) return token;
   const lookup = (name: string): string | undefined => {
@@ -179,7 +179,7 @@ export function expandShellDefaults(
  */
 export function expandArgvShellDefaults(
   argv: ReadonlyArray<string>,
-  env: Record<string, any> | undefined,
+  env: Record<string, string> | undefined,
 ): string[] {
   return argv.map((t) => expandShellDefaults(t, env));
 }

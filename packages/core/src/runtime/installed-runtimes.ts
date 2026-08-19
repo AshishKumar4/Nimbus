@@ -17,6 +17,7 @@
  */
 
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { Command } from '../substrate/lifo/commands/types.js';
 import {
   CRED_KERNEL,
   NIMBUS_ABI_TARGET,
@@ -32,9 +33,9 @@ import {
 
 /** Minimal shell-registry shape we depend on. */
 export interface MinShellRegistry {
-  register(name: string, handler: (ctx: any) => Promise<number>): void;
+  register(name: string, handler: Command): void;
   unregister?(name: string): void;
-  resolve?(name: string): any;
+  resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
 }
 
 /** Runner-factory contract. Each registered runner produces a shell-
@@ -46,7 +47,7 @@ export type RunnerFactory = (
   installRoot: string,
   binName: string,
   binKind: string | undefined,
-) => (ctx: any) => Promise<number>;
+) => Command;
 
 /**
  * How a manifest entrypoint's `runner` key is resolved to code.

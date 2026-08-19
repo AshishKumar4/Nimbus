@@ -43,6 +43,8 @@ import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
 import { bindImportMetaResolve, importMetaDefines } from './import-meta-transform.js';
+import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
+import { errorText } from '../_shared/error-text.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -130,7 +132,7 @@ export function resolveRuntimeScriptPath(
  * a second one.
  */
 export type RuntimeSubcommand = (
-  ctx: any,
+  ctx: CommandContext,
   registry: ShellRegistry,
   runAsRuntime: (args: string[]) => Promise<number>,
 ) => Promise<number>;
@@ -181,7 +183,7 @@ export interface RuntimeSpec {
  * shell registry type tree when the runtime path only needs resolve().
  */
 export interface ShellRegistry {
-  resolve(name: string): Promise<any> | any;
+  resolve(name: string): Promise<Command | null | undefined> | Command | null | undefined;
 }
 
 /**
@@ -201,7 +203,7 @@ export function buildRuntimeHandler(
     getEsbuild(): EsbuildService | Promise<EsbuildService>;
     registry: ShellRegistry;
   },
-): (ctx: any) => Promise<number> {
+): Command {
   const { vfs, getEsbuild, registry } = ctx0;
   const fs = vfs.as(CRED_KERNEL);
 
@@ -211,7 +213,7 @@ export function buildRuntimeHandler(
    * caller has already consumed them — so a verb handler can delegate
    * back in with a rewritten argv without re-triggering itself.
    */
-  async function runtimeInvocation(ctx: any, args: string[]): Promise<number> {
+  async function runtimeInvocation(ctx: CommandContext, args: string[]): Promise<number> {
     const name = spec.name;
     const nimbusCtx = ctx as {
       __nimbusCaptureOutput?: unknown;
@@ -449,8 +451,8 @@ export function buildRuntimeHandler(
           define: importMetaDefines(absUrl),
         });
         code = bindImportMetaResolve(transformed.code, absUrl);
-      } catch (e: any) {
-        ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${e?.message}\n`);
+      } catch (e) {
+        ctx.stderr.write(`${name}: transform error for ${scriptPath}: ${errorText(e)}\n`);
         return 1;
       }
     }
@@ -488,7 +490,7 @@ export function buildRuntimeHandler(
     return result.exitCode;
   }
 
-  return async function runtimeHandler(ctx: any): Promise<number> {
+  return async function runtimeHandler(ctx: CommandContext): Promise<number> {
     const args: string[] = ctx.args || [];
 
     // ── Subcommand dispatch ──

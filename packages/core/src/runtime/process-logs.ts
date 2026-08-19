@@ -61,6 +61,15 @@ export interface SequencedLogChunk extends LogChunk {
   seq: number;
 }
 
+/**
+ * A chunk as a persist adapter hands it back on load. `seq` is the sequence
+ * number the adapter stored alongside it; hydration falls back to array
+ * position for a row that carries none.
+ */
+export interface PersistedLogChunk extends LogChunk {
+  seq?: number;
+}
+
 export interface ProcessLogReadOptions {
   cursor?: number;
   lines?: number;
@@ -130,7 +139,7 @@ interface PidState {
  *     against the SQLite engine); KV is not used by W9.
  */
 export interface PersistAdapter {
-  load(pid: number): { chunks: LogChunk[]; exit: ProcessExitInfo | null } | null;
+  load(pid: number): { chunks: PersistedLogChunk[]; exit: ProcessExitInfo | null } | null;
   persistChunks(pid: number, rows: { seq: number; chunk: LogChunk }[]): void;
   persistExit(pid: number, info: ProcessExitInfo): void;
   dropPid(pid: number): void;
@@ -710,7 +719,7 @@ export class ProcessLogStore {
     if (state.hydrated) return;
     state.hydrated = true;
     if (!this._persist) return;
-    let loaded: { chunks: LogChunk[]; exit: ProcessExitInfo | null } | null;
+    let loaded: { chunks: PersistedLogChunk[]; exit: ProcessExitInfo | null } | null;
     try {
       loaded = this._persist.load(pid);
     } catch {
@@ -736,7 +745,7 @@ export class ProcessLogStore {
     let highestSeq = -1;
     for (let i = loaded.chunks.length - 1; i >= 0; i--) {
       const c = loaded.chunks[i];
-      const seq = (c as any).seq ?? i;
+      const seq = c.seq ?? i;
       if (seq > highestSeq) highestSeq = seq;
       const size = c.data.length;
       if (bytes + size > this.perPidBytes && newest.length > 0) {

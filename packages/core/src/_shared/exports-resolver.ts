@@ -38,6 +38,26 @@ export const DEFAULT_ESM_CONDITIONS = ['import', 'module', 'browser', 'default']
 export const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'default'];
 
 /**
+ * A `package.json#exports` / `#imports` value: a target path, an ordered list
+ * of fallbacks to try in turn, or a map keyed by subpath (`"./client"`) or by
+ * condition (`"import"`) whose values are the same shape again. `null` is the
+ * spec's "this subpath is not exported" marker, and blocks fallback.
+ */
+export type ExportsField =
+  | string
+  | null
+  | ExportsField[]
+  | { [key: string]: ExportsField };
+
+/** The package.json fields entry-point resolution reads. */
+export interface ResolvablePackageJson {
+  exports?: ExportsField;
+  imports?: ExportsField;
+  main?: string;
+  module?: string;
+}
+
+/**
  * Resolve `package.json#exports` (or `#imports`) per Node spec.
  *
  * @param exportsField  Raw value from package.json#exports or #imports
@@ -46,7 +66,7 @@ export const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'default'];
  * @returns             Relative path target string, or null if not found / forbidden
  */
 export function resolveExports(
-  exportsField: any,
+  exportsField: ExportsField | undefined,
   subpath: string = '.',
   conditions: string[] = DEFAULT_ESM_CONDITIONS,
 ): string | null {
@@ -123,7 +143,7 @@ export function resolveExports(
  * array (Node spec).
  */
 function resolveConditionValue(
-  target: any,
+  target: ExportsField | undefined,
   conditions: string[],
 ): string | null {
   if (target === null || target === undefined) return null;
@@ -162,7 +182,7 @@ function resolveConditionValue(
  * itself (caller probes filesystem with extension-list).
  */
 export function resolvePackageEntry(
-  pkg: { exports?: any; module?: string; main?: string },
+  pkg: ResolvablePackageJson,
   subpath: string = '.',
   conditions: string[] = DEFAULT_ESM_CONDITIONS,
 ): string | null {

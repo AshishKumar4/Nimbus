@@ -33,6 +33,7 @@ import {
   resolveExports as sharedResolveExports,
   DEFAULT_CJS_CONDITIONS,
   DEFAULT_ESM_CONDITIONS,
+  type ResolvablePackageJson,
 } from '../_shared/exports-resolver.js';
 import {
   TYPESCRIPT_INDEX_CANDIDATES,
@@ -146,7 +147,7 @@ function resolveFile(vfs: CredentialedVfs, base: string, sink?: PkgJsonSink): st
   const baseTrim = base.replace(/\/+$/, '');
   const pkgJsonPath = normalizePath(baseTrim + '/package.json');
   if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
-    let pkg: any = null;
+    let pkg: ResolvablePackageJson | null = null;
     try { pkg = JSON.parse(vfs.readFileString(pkgJsonPath)); } catch { /* fall through */ }
     if (pkg && typeof pkg.main === 'string' && pkg.main.length > 0) {
       // Record this package.json so the bundle carries the content the
@@ -257,7 +258,7 @@ function resolvePkgSubpathEx(vfs: CredentialedVfs, pkgDir: string, subpath: stri
     // fallback (consistent behaviour across the no-pkgjson branch).
     return tryLegacyDirectorySubpath(vfs, pkgDir, subpath, sink);
   }
-  let pkg: { exports?: any; module?: string; main?: string };
+  let pkg: ResolvablePackageJson;
   try { pkg = JSON.parse(vfs.readFileString(pkgJsonPath)); }
   catch {
     const r = resolveFile(vfs, pkgDir + '/index', sink);
@@ -477,7 +478,7 @@ function resolveImportsField(
   while (true) {
     const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
     if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
-      let pkg: any = null;
+      let pkg: ResolvablePackageJson | null = null;
       try { pkg = JSON.parse(vfs.readFileString(pkgJsonPath)); } catch { /* malformed */ }
       // First package.json wins (Node spec), even if no imports field.
       if (pkg && pkg.imports) {

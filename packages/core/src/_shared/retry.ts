@@ -24,6 +24,7 @@
  */
 
 import { disposeRpcResource } from './rpc-dispose.js';
+import { errorText } from './error-text.js';
 
 /** Default retry count AFTER the first attempt (3 = up to 4 total attempts). */
 export const DEFAULT_RETRIES = 3;
@@ -179,7 +180,7 @@ export async function retryableFetch(
       const delayMs = jittered(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]);
       opts?.onRetry?.(attempt + 1, totalRetries, delayMs, `HTTP ${resp.status}`);
       await new Promise<void>((r) => setTimeout(r, delayMs));
-    } catch (e: any) {
+    } catch (e) {
       if (timer) clearTimeout(timer);
       // Network-level failure (fetch rejection, timeout via AbortError,
       // DNS, connection reset). Retry the same way as a 5xx.
@@ -189,7 +190,8 @@ export async function retryableFetch(
         throw e;
       }
       const delayMs = jittered(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]);
-      const reason = e?.name === 'AbortError' ? 'timeout' : (e?.message || String(e));
+      const isAbort = typeof e === 'object' && e !== null && 'name' in e && e.name === 'AbortError';
+      const reason = isAbort ? 'timeout' : errorText(e);
       opts?.onRetry?.(attempt + 1, totalRetries, delayMs, reason);
       await new Promise<void>((r) => setTimeout(r, delayMs));
     }

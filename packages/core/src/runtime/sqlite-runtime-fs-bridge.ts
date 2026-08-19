@@ -455,12 +455,15 @@ function normalizeOpenFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags']
   };
 }
 
-function fsError(code: string, syscall: string, path: string): Error {
-  const err: any = new Error(`${code}: ${syscall} '${path}'`);
-  err.code = code;
-  err.syscall = syscall;
-  err.path = path;
-  return err;
+/** An error carrying the fields Node's `fs` puts on a failed syscall. */
+interface FsError extends Error {
+  code: string;
+  syscall: string;
+  path: string;
+}
+
+function fsError(code: string, syscall: string, path: string): FsError {
+  return Object.assign(new Error(`${code}: ${syscall} '${path}'`), { code, syscall, path });
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

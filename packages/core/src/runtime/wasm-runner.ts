@@ -57,6 +57,7 @@ import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from
 import type { WasiAbi } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
+import { errorText } from '../_shared/error-text.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
@@ -365,6 +366,22 @@ export function makeWasmRunner(deps: {
         dirsDeleted: string[];
       };
     };
+    /**
+     * What `WebAssembly.instantiate` resolves to: the instance for a compiled
+     * module, `{ instance, module }` for bytes. The engine's own types describe
+     * only the first, which is what the facet host's table holds — the second
+     * is named because the checks below are what keep a table filled with
+     * anything else from yielding an instance-less object.
+     */
+    type WasmInstantiateResult =
+      | WebAssembly.Instance
+      | { instance: WebAssembly.Instance; module: WebAssembly.Module };
+    /**
+     * A direct-mode export: integer args in, one scalar — or nothing — out.
+     * `WebAssembly.Exports` types every export as a bare `Function`, which
+     * carries no signature of its own.
+     */
+    type WasmDirectExport = (...args: number[]) => number | bigint | undefined;
     const facetFn = async function wasmFacetCall(
       args: {
         mode: 'direct' | 'wasi';
@@ -405,7 +422,14 @@ export function makeWasmRunner(deps: {
       },
       facetEnv?: { SUPERVISOR?: unknown },
     ): Promise<WasmCallResult> {
-      const wasmTable = (globalThis as any).__NIMBUS_WASM || {};
+      // This body is serialized into the facet isolate, where the supervisor's
+      // module graph — and so _shared/error-text.js — does not exist. Same
+      // fallback as errorText, spelled out locally.
+      const errText = (err: unknown): string =>
+        typeof err === 'object' && err !== null && 'message' in err && err.message
+          ? String(err.message)
+          : String(err);
+      const wasmTable = globalThis.__NIMBUS_WASM || {};
       const mod = wasmTable['user.wasm'];
       if (!mod) {
         return {
@@ -516,7 +540,7 @@ export function makeWasmRunner(deps: {
               maximum: args.threads.memory.maximum,
               shared: true,
             });
-          } catch (e: any) {
+          } catch (e) {
             // A shared memory reserves its MAXIMUM up front, so an over-large
             // --max-memory fails here rather than when the program grows into
             // it. Say which number did it; the alternative message is a bare
@@ -527,7 +551,7 @@ export function makeWasmRunner(deps: {
               error:
                 `wasi-threads: could not reserve the shared memory the module declares `
                 + `(${args.threads.memory.initial}–${args.threads.memory.maximum} pages, `
-                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${e?.message || e}. `
+                + `${(args.threads.memory.maximum * 64) / 1024} MiB): ${errText(e)}. `
                 + 'A shared memory reserves its maximum immediately — lower --max-memory.',
             };
           }
@@ -538,22 +562,25 @@ export function makeWasmRunner(deps: {
           };
           sched = __wasiThreadsCreate({
             memory: shared,
-            startThread: __wasiThreadsStarter(mod as WebAssembly.Module, importObject),
+            startThread: __wasiThreadsStarter(mod, importObject),
           });
           Object.assign(importObject, sched.hostImports());
         }
         let inst: WebAssembly.Instance;
         try {
-          const result: any = await WebAssembly.instantiate(mod as any, importObject);
+          const result = await WebAssembly.instantiate(mod, importObject) as WasmInstantiateResult;
           inst = (result instanceof WebAssembly.Instance ? result : result.instance);
-        } catch (e: any) {
+        } catch (e) {
           return {
             ok: false,
             mode: 'wasi',
-            error: `instantiate failed: ${e?.message || e}`,
+            error: `instantiate failed: ${errText(e)}`,
           };
         }
-        if (!memRef.mem) memRef.mem = (inst.exports as any).memory as WebAssembly.Memory;
+        if (!memRef.mem) {
+          const exported = inst.exports.memory;
+          if (exported instanceof WebAssembly.Memory) memRef.mem = exported;
+        }
         if (!memRef.mem) {
           return {
             ok: false,
@@ -593,17 +620,17 @@ export function makeWasmRunner(deps: {
         // Single-arg instantiate against a precompiled Module — this
         // is the form workerd's CSP DOES allow. The dynamic-bytes
         // form (instantiate(ArrayBuffer)) is what's blocked.
-        const result: any = await WebAssembly.instantiate(mod as any, {});
+        const result = await WebAssembly.instantiate(mod, {}) as WasmInstantiateResult;
         inst = (result instanceof WebAssembly.Instance ? result : result.instance);
-      } catch (e: any) {
+      } catch (e) {
         return {
           ok: false,
           mode: 'direct',
-          error: `instantiate failed: ${e?.message || e}`,
+          error: `instantiate failed: ${errText(e)}`,
         };
       }
       const exportNames = Object.keys(inst.exports);
-      const fn = (inst.exports as any)[args.exportName!];
+      const fn = inst.exports[args.exportName!];
       if (typeof fn !== 'function') {
         return {
           ok: false,
@@ -614,16 +641,16 @@ export function makeWasmRunner(deps: {
             `Available exports: ${exportNames.join(', ')}`,
         };
       }
-      let out: any;
+      let out: number | bigint | undefined;
       try {
-        out = fn(...(args.intArgs || []));
-      } catch (e: any) {
+        out = (fn as WasmDirectExport)(...(args.intArgs || []));
+      } catch (e) {
         return {
           ok: false,
           mode: 'direct',
           exports: exportNames,
           error:
-            `${args.exportName}(${(args.intArgs||[]).join(', ')}) threw: ${e?.message || e}`,
+            `${args.exportName}(${(args.intArgs||[]).join(', ')}) threw: ${errText(e)}`,
         };
       }
       // BigInt (i64) → string; everything else → as-is.
@@ -688,10 +715,11 @@ export function makeWasmRunner(deps: {
       wasiFsFiles = seed.files;
     }
 
-    type DispatchOutcome =
-      | { ok: true; mode: 'direct'; result?: number | string; exports?: string[] }
-      | { ok: true; mode: 'wasi'; stdout?: string; stderr?: string; exitCode?: number; exports?: string[]; error?: string }
-      | { ok: false; mode?: 'direct' | 'wasi'; error: string };
+    /**
+     * What the facet call resolved to, or the supervisor-side dispatch failure
+     * that never reached it — and so names no mode.
+     */
+    type DispatchOutcome = WasmCallResult | { ok: false; mode?: undefined; error: string };
 
     let outcome: DispatchOutcome;
     let facet: Facet | null = null;
@@ -737,8 +765,8 @@ export function makeWasmRunner(deps: {
           timeoutMs: 30_000,
         },
       )) as DispatchOutcome;
-    } catch (e: any) {
-      outcome = { ok: false, error: `dispatch failed: ${e?.message || e}` };
+    } catch (e) {
+      outcome = { ok: false, error: `dispatch failed: ${errorText(e)}` };
     } finally {
       facet?.dispose();
     }
@@ -757,15 +785,13 @@ export function makeWasmRunner(deps: {
       // If runStart reported an `error` (wasm trapped, _start missing,
       // …), append it to stderr but still surface its exitCode (default
       // 1 from runStart on trap) so callers can distinguish.
-      const wasiOut = outcome as Extract<DispatchOutcome, { mode: 'wasi' }> | (DispatchOutcome & { mode: 'wasi' });
-      // Either branch carries optional stdout/stderr/exitCode/error.
-      stdout = (wasiOut as any).stdout || '';
-      stderr = (wasiOut as any).stderr || '';
-      if ((wasiOut as any).error) {
+      stdout = outcome.stdout || '';
+      stderr = outcome.stderr || '';
+      if (outcome.error) {
         stderr = (stderr ? stderr : '') +
-          `wasm-runner: wasi trap: ${(wasiOut as any).error}\n`;
+          `wasm-runner: wasi trap: ${outcome.error}\n`;
       }
-      exitCode = (wasiOut as any).exitCode ?? ((wasiOut as any).ok ? 0 : 1);
+      exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
     } else if (!outcome.ok) {
       // Direct-mode failure or pre-instantiate dispatch failure — shell
       // sees rc=1 + stderr.

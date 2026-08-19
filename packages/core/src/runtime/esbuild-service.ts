@@ -19,8 +19,9 @@
 
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from './os-contracts.js';
-import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
+import { resolvePackageEntry, resolveExports, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { errorText } from '../_shared/error-text.js';
 
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -802,7 +803,7 @@ async function loadEsbuild(): Promise<typeof esbuild> {
 export interface TransformResult {
   code: string;
   map: string;
-  warnings: { text: string; location?: any }[];
+  warnings: { text: string; location?: esbuild.Location | null }[];
 }
 
 export interface BuildOutputFile {
@@ -812,8 +813,8 @@ export interface BuildOutputFile {
 
 export interface BuildResult {
   outputFiles: BuildOutputFile[];
-  errors: { text: string; location?: any }[];
-  warnings: { text: string; location?: any }[];
+  errors: { text: string; location?: esbuild.Location | null }[];
+  warnings: { text: string; location?: esbuild.Location | null }[];
 }
 
 // ── EsbuildService ──────────────────────────────────────────────────────
@@ -875,7 +876,11 @@ export class EsbuildService {
         let initTimeout: ReturnType<typeof setTimeout> | null = null;
         await Promise.race([
           esb.initialize({
-            wasmModule: esbuildWasmUrl as any,
+            // wrangler resolves this static `.wasm` import to a compiled
+            // module at bundle time; the asset stub for a `.wasm` module can
+            // only declare its default export as a string, and the guard
+            // above is what checks the resolution actually happened.
+            wasmModule: esbuildWasmUrl as unknown as WebAssembly.Module,
             worker: false,
           }),
           new Promise<never>((_, reject) => {
@@ -889,14 +894,15 @@ export class EsbuildService {
           }),
         ]).finally(() => { if (initTimeout) clearTimeout(initTimeout); });
         this.initialized = true;
-      } catch (e: any) {
+      } catch (e) {
+        const message = errorText(e);
         // "Cannot call initialize more than once" means it's already ready
-        if (e?.message?.includes('more than once')) {
+        if (message.includes('more than once')) {
           this.initialized = true;
           return;
         }
         this.initPromise = null;
-        throw new Error('esbuild init failed: ' + (e?.message || e));
+        throw new Error('esbuild init failed: ' + message);
       }
     })();
 
@@ -1314,7 +1320,7 @@ export class EsbuildService {
         if (vfs.exists(strip(nmDir)) && vfs.isDirectory(strip(nmDir))) {
           // Read package.json so we can consult the exports field.
           const pkgJsonPath = nmDir + '/package.json';
-          let pkgJson: any = null;
+          let pkgJson: ResolvablePackageJson | null = null;
           if (vfs.exists(strip(pkgJsonPath))) {
             try { pkgJson = JSON.parse(vfs.readFileString(strip(pkgJsonPath))); } catch {}
           }
