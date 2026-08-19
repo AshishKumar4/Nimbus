@@ -2500,7 +2500,10 @@ function mkAwk(vfs: UnixVfs): CmdFn {
  */
 function mkXargs(vfs: UnixVfs, registry: any): CmdFn {
   return async (ctx) => {
-    const input = (ctx.stdin || '').trim();
+    // NOT trimmed: `-0` exists so a name may carry the whitespace a split
+    // would eat, and trimming the stream rewrites its first and last item.
+    // The default split already drops the empties a trim would have removed.
+    const input = ctx.stdin || '';
     if (!input) return 0;
 
     // Parse flags first
