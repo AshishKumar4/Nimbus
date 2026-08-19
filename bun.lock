@@ -53,7 +53,7 @@
     },
     "packages/cli": {
       "name": "@nimbus-sh/cli",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "bin": {
         "cli": "dist/bin.js",
         "nimbus": "dist/bin.js",
@@ -89,7 +89,7 @@
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "dependencies": {
         "@renovatebot/pep440": "^5.0.0",
         "acorn": "^8.15.0",
@@ -118,7 +118,7 @@
       "name": "@nimbus-sh/fabric",
       "version": "0.1.0",
       "dependencies": {
-        "@nimbus-sh/core": "^0.4.0",
+        "@nimbus-sh/core": "^0.5.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -128,38 +128,39 @@
     },
     "packages/react": {
       "name": "@nimbus-sh/react",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "devDependencies": {
-        "@nimbus-sh/sdk": "^0.1.4 || ^0.2.0",
+        "@nimbus-sh/sdk": "^0.1.4 || ^0.2.0 || ^0.3.0",
         "@types/react": "^19.0.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/sdk": "^0.1.4 || ^0.2.0",
+        "@nimbus-sh/sdk": "^0.1.4 || ^0.2.0 || ^0.3.0",
         "react": ">=18.0.0",
       },
     },
     "packages/sdk": {
       "name": "@nimbus-sh/sdk",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "zod": "^4.4.3",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
-        "@nimbus-sh/worker": "^0.2.0",
+        "@nimbus-sh/worker": "^0.3.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/worker": "^0.2.0",
+        "@nimbus-sh/core": "^0.5.0",
+        "@nimbus-sh/worker": "^0.3.0",
       },
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.2.4",
+      "version": "0.3.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
-        "@nimbus-sh/core": "^0.4.0",
+        "@nimbus-sh/core": "^0.5.0",
         "@nimbus-sh/fabric": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",

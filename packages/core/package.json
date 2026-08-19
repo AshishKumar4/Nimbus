@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/core",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Backend-agnostic half of Nimbus \u2014 the durable filesystem, the shell, and the OS/process contracts, over a host-supplied SQL port.",
   "keywords": [
     "filesystem",
