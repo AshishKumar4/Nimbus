@@ -22,7 +22,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PortRegistry, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   endProcessInput,
   resizeProcess,
@@ -126,6 +126,11 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
   env?: Record<string, string>;
   timeoutMs?: number;
   stdin?: string;
+  /**
+   * Identity the command runs as. Omitted, the spawn inherits the session
+   * user, which is what every programmatic exec has always run as.
+   */
+  cred?: VfsCred;
 }
 
 export interface ProgrammaticDestroyOptions {
@@ -299,7 +304,10 @@ function startShellJob(
 
   const line = String(command);
   const cwd = options.cwd ?? shell.getCwd?.() ?? '/home/user';
-  const entry = self.processes.spawn(line, [line], cwd, { longRunning: job.background });
+  const entry = self.processes.spawn(line, [line], cwd, {
+    longRunning: job.background,
+    cred: options.cred,
+  });
   const pid = entry.pid;
   if (job.background) self.processes.openInput(pid);
 

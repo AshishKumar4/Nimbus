@@ -400,6 +400,14 @@ function requireAnyScope(ctx: RemoteContext, scopes: readonly string[]): void {
 
 function execOptions(ctx: RemoteContext, value: unknown): Record<string, unknown> {
   const options = objectArg(value);
+  // The remote boundary authenticates a SESSION, not a user inside it, so a
+  // token holder does not get to name the uid its command runs as. Refused
+  // rather than dropped: silently running as somebody other than the caller
+  // asked for is worse than an error. A colocated embedder holds the DO stub
+  // and is trusted with `cred` the same way it is trusted with kernel writes.
+  if (options.cred !== undefined) {
+    throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+  }
   return {
     ...options,
     cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,

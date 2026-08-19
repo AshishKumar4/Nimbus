@@ -7,6 +7,7 @@ import {
   isPreviewHostSafeSid,
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { z } from 'zod/v4';
 
 export type RuntimeSpec = string;
@@ -89,6 +90,11 @@ export interface NimbusExecOptions {
   env?: Record<string, string>;
   timeoutMs?: number;
   stdin?: string;
+  /**
+   * Identity the command runs as. Omitted, the spawn inherits the session
+   * user, which is what every programmatic exec has always run as.
+   */
+  cred?: VfsCred;
 }
 
 export interface NimbusExecResult {
