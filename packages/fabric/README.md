@@ -460,7 +460,7 @@ production workerd, June–August 2026.
 |---|---|
 | Without `setWebSocketAutoResponse(ping/pong)`, every idle-tab ping wakes the actor | ~2,880 wakes/day per idle tab; the config survives hibernation |
 | A hibernatable WS owned by a DO cannot be written from a sibling `WorkerEntrypoint` isolate | sends happen in the DO's own context (relay pattern) |
-| A resident process never receives a WebSocket | route targets are `handleHttpRequest` only; every socket terminates on the session DO |
+| A WebSocket upgrade cannot ride the RPC hop a resident's HTTP takes | a 101 owns a live socket and RPC reconstructs values rather than handing sockets over; an upgrade takes the separate fetch-semantic entrypoint and stays on `fetch` for every hop (a facet is fetched directly; a peer fetches its own facet), and a target without that entrypoint answers 501 |
 
 ### Sharing an isolate
 
