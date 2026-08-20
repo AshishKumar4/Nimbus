@@ -150,6 +150,11 @@ not share a Durable Object.
 
 ## Importing it
 
+Your Worker must set `compatibility_flags: ["nodejs_compat"]`. Loom dispatches
+timers through fabric, and fabric's dispatcher imports `AsyncLocalStorage`
+from `node:async_hooks`. Without the flag the module fails to load at deploy
+time.
+
 The root export pulls `partyserver`, which imports `cloudflare:workers`, so
 `import ... from '@nimbus-sh/loom'` resolves only inside a Worker. Outside
 workerd (unit tests, browsers) import subpaths: `@nimbus-sh/loom/client.js`

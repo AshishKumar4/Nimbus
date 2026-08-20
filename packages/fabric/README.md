@@ -26,6 +26,14 @@ Where a specific date matters it is given.
 
 ## Importing it
 
+Your Worker must set `compatibility_flags: ["nodejs_compat"]`. The timer
+dispatcher imports `AsyncLocalStorage` from `node:async_hooks`, which workerd
+ships only under that flag. Without it the module fails to load, so the
+failure arrives at deploy time, not in production. The dispatcher needs
+async-local state because several Durable Objects from one script can share a
+V8 isolate, and a module-scoped variable would leak the dispatch context
+between them.
+
 The root export pulls `cloudflare:workers`, so `import ... from
 '@nimbus-sh/fabric'` resolves only inside a Worker. Outside workerd (unit
 tests, tooling) import the subpath modules directly —
