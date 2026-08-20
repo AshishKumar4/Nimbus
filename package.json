@@ -43,7 +43,9 @@
   "devDependencies": {
     "@biomejs/biome": "2.3.7",
     "@cloudflare/workers-types": "^4.20250327.0",
+    "agents": "0.20.1",
     "esbuild": "^0.27.0",
+    "partyserver": "^0.5.10",
     "puppeteer": "^24.43.0",
     "puppeteer-core": "^24.42.0",
     "typescript": "^5.7.0",
