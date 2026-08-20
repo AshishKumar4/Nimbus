@@ -191,9 +191,9 @@ export declare class Actor<Env extends Cloudflare.Env = Cloudflare.Env, State = 
     /** The substrate {@link processes} runs on. Override to declare one. */
     protected processHost(): ProcessHost;
     /** A watermark memo: derive a cheap key, compare, rebuild only on change. */
-    derived<T>(watermark: () => string | number, build: () => T): Derived<T>;
+    derived<T, C = void>(watermark: (context: C) => string | number, build: (context: C, key: string | number) => T): Derived<T, C>;
     /** The async memo; a watermark or build failure serves the last good value. */
-    derivedAsync<T>(watermark: () => Promise<string | number>, build: () => Promise<T>): DerivedAsync<T>;
+    derivedAsync<T, C = void>(watermark: (context: C) => Promise<string | number>, build: (context: C, key: string | number) => Promise<T>): DerivedAsync<T, C>;
     /**
      * Typed, validated per-connection state over the WebSocket attachment,
      * hibernation-durable. partyserver owns the accept (tag connections via

@@ -27,11 +27,11 @@ export function derived(watermark, build) {
     let value;
     let has = false;
     return {
-        get() {
-            const next = watermark();
+        get(context) {
+            const next = watermark(context);
             if (has && next === key)
                 return value;
-            value = build();
+            value = build(context, next);
             key = next;
             has = true;
             return value;
@@ -47,10 +47,10 @@ export function derivedAsync(watermark, build) {
     let value;
     let has = false;
     return {
-        async get() {
+        async get(context) {
             let next;
             try {
-                next = await watermark();
+                next = await watermark(context);
             }
             catch (e) {
                 if (has)
@@ -61,7 +61,7 @@ export function derivedAsync(watermark, build) {
                 return value;
             let built;
             try {
-                built = await build();
+                built = await build(context, next);
             }
             catch (e) {
                 if (has)

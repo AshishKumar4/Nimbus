@@ -23,21 +23,30 @@
  * watermark.
  */
 
-export interface Derived<T> {
-  get(): T;
+export interface Derived<T, C = void> {
+  /**
+   * `context` reaches the watermark and the build of THIS call — the seam
+   * for per-call state (a stub, a caller identity, a work mode). The memo
+   * stores one value; the watermark must cover everything the build reads,
+   * context included, or a context change serves another context's value.
+   */
+  get(context: C): T;
   /** Force the next get to rebuild, watermark unchanged. */
   invalidate(): void;
 }
 
-export function derived<T>(watermark: () => string | number, build: () => T): Derived<T> {
+export function derived<T, C = void>(
+  watermark: (context: C) => string | number,
+  build: (context: C, key: string | number) => T,
+): Derived<T, C> {
   let key: string | number | undefined;
   let value: T | undefined;
   let has = false;
   return {
-    get(): T {
-      const next = watermark();
+    get(context: C): T {
+      const next = watermark(context);
       if (has && next === key) return value as T;
-      value = build();
+      value = build(context, next);
       key = next;
       has = true;
       return value;
@@ -49,23 +58,23 @@ export function derived<T>(watermark: () => string | number, build: () => T): De
   };
 }
 
-export interface DerivedAsync<T> {
-  get(): Promise<T>;
+export interface DerivedAsync<T, C = void> {
+  get(context: C): Promise<T>;
   invalidate(): void;
 }
 
-export function derivedAsync<T>(
-  watermark: () => Promise<string | number>,
-  build: () => Promise<T>,
-): DerivedAsync<T> {
+export function derivedAsync<T, C = void>(
+  watermark: (context: C) => Promise<string | number>,
+  build: (context: C, key: string | number) => Promise<T>,
+): DerivedAsync<T, C> {
   let key: string | number | undefined;
   let value: T | undefined;
   let has = false;
   return {
-    async get(): Promise<T> {
+    async get(context: C): Promise<T> {
       let next: string | number;
       try {
-        next = await watermark();
+        next = await watermark(context);
       } catch (e) {
         if (has) return value as T;
         throw e;
@@ -73,7 +82,7 @@ export function derivedAsync<T>(
       if (has && next === key) return value as T;
       let built: T;
       try {
-        built = await build();
+        built = await build(context, next);
       } catch (e) {
         if (has) return value as T;
         throw e;

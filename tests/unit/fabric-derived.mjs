@@ -99,4 +99,49 @@ import { derived, derivedAsync } from '../../packages/fabric/src/derived.ts';
   assert.equal(builds, 2);
 }
 
+// ── 8. get(context) reaches watermark and build; build sees the key ─────────
+// The MCP call site: the watermark is an RPC on a per-call stub with a
+// per-call caller identity, and the build branches on the watermark VALUE
+// (zero means "no MCP mutation ever" and skips the descriptor fetch). The
+// Proteus port recorded three instance-field smuggles where this was missing.
+
+{
+  const memo = derivedAsync(
+    async (ctx) => ctx.stub.updatedAt(ctx.caller),
+    async (ctx, key) => {
+      if (key === 0) return { tools: [], caller: ctx.caller };
+      return { tools: await ctx.stub.descriptors(ctx.caller), caller: ctx.caller };
+    },
+  );
+  let wm = 0;
+  const stub = {
+    async updatedAt(caller) { return caller === 'cap-token' ? wm : -1; },
+    async descriptors() { return ['tool-a']; },
+  };
+  const cold = await memo.get({ stub, caller: 'cap-token' });
+  assert.deepEqual(cold, { tools: [], caller: 'cap-token' },
+    'a zero watermark short-circuits inside build — build sees the key');
+  wm = 7;
+  const warm = await memo.get({ stub, caller: 'cap-token' });
+  assert.deepEqual(warm.tools, ['tool-a']);
+  assert.equal((await memo.get({ stub, caller: 'cap-token' })).tools, warm.tools,
+    'an unchanged watermark returns the memo, context notwithstanding');
+}
+
+// ── 9. The sync variant threads context and key the same way ────────────────
+
+{
+  let builds = 0;
+  const memo = derived(
+    (mode) => `${mode}:v1`,
+    (mode, key) => { builds++; return `${mode}-surface@${key}`; },
+  );
+  assert.equal(memo.get('plan'), 'plan-surface@plan:v1');
+  assert.equal(memo.get('plan'), 'plan-surface@plan:v1');
+  assert.equal(builds, 1);
+  assert.equal(memo.get('build'), 'build-surface@build:v1',
+    'a context that moves the watermark rebuilds for the new context');
+  assert.equal(builds, 2);
+}
+
 console.log('ok - fabric-derived (sync memo, invalidation, async stale-on-error, no-stale surfaces)');

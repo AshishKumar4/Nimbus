@@ -556,12 +556,18 @@ export class Actor<
   }
 
   /** A watermark memo: derive a cheap key, compare, rebuild only on change. */
-  derived<T>(watermark: () => string | number, build: () => T): Derived<T> {
+  derived<T, C = void>(
+    watermark: (context: C) => string | number,
+    build: (context: C, key: string | number) => T,
+  ): Derived<T, C> {
     return fabricDerived(watermark, build);
   }
 
   /** The async memo; a watermark or build failure serves the last good value. */
-  derivedAsync<T>(watermark: () => Promise<string | number>, build: () => Promise<T>): DerivedAsync<T> {
+  derivedAsync<T, C = void>(
+    watermark: (context: C) => Promise<string | number>,
+    build: (context: C, key: string | number) => Promise<T>,
+  ): DerivedAsync<T, C> {
     return fabricDerivedAsync(watermark, build);
   }
 

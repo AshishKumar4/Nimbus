@@ -22,15 +22,21 @@
  * (`setSoul`) clears the memo so the next read rebuilds under an unchanged
  * watermark.
  */
-export interface Derived<T> {
-    get(): T;
+export interface Derived<T, C = void> {
+    /**
+     * `context` reaches the watermark and the build of THIS call — the seam
+     * for per-call state (a stub, a caller identity, a work mode). The memo
+     * stores one value; the watermark must cover everything the build reads,
+     * context included, or a context change serves another context's value.
+     */
+    get(context: C): T;
     /** Force the next get to rebuild, watermark unchanged. */
     invalidate(): void;
 }
-export declare function derived<T>(watermark: () => string | number, build: () => T): Derived<T>;
-export interface DerivedAsync<T> {
-    get(): Promise<T>;
+export declare function derived<T, C = void>(watermark: (context: C) => string | number, build: (context: C, key: string | number) => T): Derived<T, C>;
+export interface DerivedAsync<T, C = void> {
+    get(context: C): Promise<T>;
     invalidate(): void;
 }
-export declare function derivedAsync<T>(watermark: () => Promise<string | number>, build: () => Promise<T>): DerivedAsync<T>;
+export declare function derivedAsync<T, C = void>(watermark: (context: C) => Promise<string | number>, build: (context: C, key: string | number) => Promise<T>): DerivedAsync<T, C>;
 //# sourceMappingURL=derived.d.ts.map
