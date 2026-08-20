@@ -32,6 +32,7 @@
  * `git/network-facet.ts` bounds its checkout chunks by entries and decoded
  * bytes and treats its wall guard as coarse.
  */
+import { runColdStart } from './generation.js';
 /**
  * Bytes of launch work one turn may perform before it must yield.
  *
@@ -115,6 +116,7 @@ function withResolvers() {
  * and resumes every one of them when the host grants a fresh turn.
  */
 export class PacedWork {
+    ctx;
     host;
     /**
      * Launches suspended between chunks, waiting for a turn of their own.
@@ -127,7 +129,12 @@ export class PacedWork {
      * from its inputs is the same idempotent work again.
      */
     waiters = [];
-    constructor(host) {
+    /**
+     * `ctx` keys the cold-start queue the pump drains first on every turn it
+     * grants — see {@link pump}.
+     */
+    constructor(ctx, host) {
+        this.ctx = ctx;
         this.host = host;
     }
     /**
@@ -159,7 +166,11 @@ export class PacedWork {
      * the runtime may tear the context down mid-chunk.
      */
     async pump() {
-        await this.host.recover?.();
+        // Deferred reconciliation runs first, before any waiter resumes. Where
+        // the resident-launch journal's recovery sits (`onColdStart`): the pump
+        // is what an alarm calls, and the first turn after a reset is the
+        // re-delivered alarm of a launch the reset interrupted.
+        await runColdStart(this.ctx);
         const waiting = this.waiters;
         if (waiting.length === 0)
             return;

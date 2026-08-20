@@ -68,6 +68,7 @@ import { listInstalledRuntimes, rehydrateInstalledRuntimes, registerRunnerFactor
 // one-time Worker Startup Time paid on every fresh-isolate cold run.
 import { hasSeededProject, SEED_PROJECT_DIR } from '@nimbus-sh/core/vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_MOUNT_POINTS, NODE_VERSION, } from '@nimbus-sh/core/constants.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
@@ -2705,7 +2706,7 @@ export async function initSession(self, ws) {
                 fromState: fromState,
                 toState: 'hydrated',
                 trigger: 'init-session',
-                isolateGen: self._isolateGen,
+                isolateGen: generation(self.ctx),
                 dataLoss: false,
                 snapshotKeysRehydrated: snapshotKeys,
             });

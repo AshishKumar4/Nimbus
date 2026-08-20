@@ -97,10 +97,8 @@ import {
   dispatchAlarm as _w9DoDispatchAlarm,
   flushOnClose as _w9DoFlushOnClose,
 } from './hibernation.js';
-import {
-  scheduleAlarm as _w9ScheduleAlarm,
-  maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen,
-} from '@nimbus-sh/fabric/alarms.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
+import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -404,17 +402,8 @@ export class NimbusSession extends CloudflareDurableObject {
   // free functions can read/write via the HibHost interface. Per plan
   // §IX.1 (refined option b'). Sigil `_w9*` flags it as internal.
   _w9WsConfig: WsHibernationConfigResult | null = null;
-  /**
-   * Monotonic isolate generation counter. Each fresh isolate (cold start
-   * or post-hibernation wake) increments this and persists to storage.
-   * Lets `/api/_diag/memory` confirm whether a wake actually happened
-   * between two probe calls.
-   */
-  _isolateGen = 0;
-  /** True once we've persisted the bumped gen counter to storage. */
-  _isolateGenPersisted = false;
-  /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
-  _alarmChain?: Promise<unknown>;
+  /** W1: serializes every timer-map read-modify-write (fabric timers.ts). */
+  _timerChain?: Promise<unknown>;
   /** SQL DDL — idempotent; run on first fetch. */
   _w9SchemaInit = false;
   /** Have we wired the persist adapter into ProcessLogStore yet? */
@@ -519,8 +508,8 @@ export class NimbusSession extends CloudflareDurableObject {
     // refused/attributed accordingly (see session/rpc.ts). One storage
     // read+write per instance boot; fail-soft (replicas cannot put).
     ctx.blockConcurrencyWhile(async () => {
-      await this._w9MaybeBumpIsolateGen();
-      this.processes.setPidBase(this._isolateGen * PID_GEN_STRIDE);
+      await adoptGeneration(ctx);
+      this.processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
       try {
         this._w1SessionDestroyed =
           (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
@@ -651,12 +640,7 @@ export class NimbusSession extends CloudflareDurableObject {
    * budget rather than the one the launch has already been spending.
    */
   private _scheduleLaunchTurn(): Promise<boolean> {
-    return _w9ScheduleAlarm(this, this.ctx, 'resident-launch', Date.now());
-  }
-
-  /** W9: increment + persist isolate-gen counter once per fresh isolate. */
-  async _w9MaybeBumpIsolateGen(): Promise<void> {
-    return _w9DoMaybeBumpIsolateGen(this, this.ctx);
+    return timers(this, this.ctx).schedule('resident-launch', Date.now());
   }
 
   /**

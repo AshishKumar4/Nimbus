@@ -34,6 +34,7 @@
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 import { persistShellState } from './state-store.js';
 import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose, } from './fs-watch.js';
 import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
@@ -320,7 +321,7 @@ export async function wsClose(self, ws, _code, _reason, _wasClean) {
             fromState: 'active',
             toState: 'drained',
             trigger: 'ws-close',
-            isolateGen: self._isolateGen,
+            isolateGen: generation(self.ctx),
             dataLoss: false,
             snapshotKeysRehydrated: 0,
         });
@@ -400,7 +401,7 @@ export async function wsError(self, ws, _error) {
             fromState: 'active',
             toState: 'drained',
             trigger: 'ws-error',
-            isolateGen: self._isolateGen,
+            isolateGen: generation(self.ctx),
             dataLoss: false,
             snapshotKeysRehydrated: 0,
         });

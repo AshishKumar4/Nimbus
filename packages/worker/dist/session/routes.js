@@ -41,6 +41,7 @@ import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/p
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { startRealVite } from './start-real-vite.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 import { facetIdBudget } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { loaderLedgerStats } from '@nimbus-sh/fabric/loader-ledger.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
@@ -749,7 +750,7 @@ export async function handleFetch(self, request) {
             // `autoResponseConfigured` reports the runtime's actual
             // capability (older workerd builds report false).
             hib: {
-                isolateGen: self._isolateGen,
+                isolateGen: generation(self.ctx),
                 autoResponseConfigured: self._w9WsConfig?.autoResponseConfigured ?? false,
                 autoResponseError: self._w9WsConfig?.autoResponseError ?? null,
                 hibernationEventTimeoutMs: self._w9WsConfig?.timeoutSetMs ?? null,
@@ -916,7 +917,7 @@ export async function handleFetch(self, request) {
                 fromState: body.fromState,
                 toState: body.toState,
                 trigger: body.trigger,
-                isolateGen: body.isolateGen || self._isolateGen,
+                isolateGen: body.isolateGen || generation(self.ctx),
                 dataLoss: body.dataLoss === true,
                 snapshotKeysRehydrated: body.snapshotKeysRehydrated || 0,
                 notes: body.notes,

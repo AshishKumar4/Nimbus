@@ -44,7 +44,8 @@ import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState
 // references any storage key directly.
 // S4: W9 hibernation surface extracted.
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, } from './hibernation.js';
-import { scheduleAlarm as _w9ScheduleAlarm, maybeBumpIsolateGen as _w9DoMaybeBumpIsolateGen, } from '@nimbus-sh/fabric/alarms.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
+import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
@@ -316,17 +317,8 @@ export class NimbusSession extends CloudflareDurableObject {
     // free functions can read/write via the HibHost interface. Per plan
     // §IX.1 (refined option b'). Sigil `_w9*` flags it as internal.
     _w9WsConfig = null;
-    /**
-     * Monotonic isolate generation counter. Each fresh isolate (cold start
-     * or post-hibernation wake) increments this and persists to storage.
-     * Lets `/api/_diag/memory` confirm whether a wake actually happened
-     * between two probe calls.
-     */
-    _isolateGen = 0;
-    /** True once we've persisted the bumped gen counter to storage. */
-    _isolateGenPersisted = false;
-    /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
-    _alarmChain;
+    /** W1: serializes every timer-map read-modify-write (fabric timers.ts). */
+    _timerChain;
     /** SQL DDL — idempotent; run on first fetch. */
     _w9SchemaInit = false;
     /** Have we wired the persist adapter into ProcessLogStore yet? */
@@ -430,8 +422,8 @@ export class NimbusSession extends CloudflareDurableObject {
         // refused/attributed accordingly (see session/rpc.ts). One storage
         // read+write per instance boot; fail-soft (replicas cannot put).
         ctx.blockConcurrencyWhile(async () => {
-            await this._w9MaybeBumpIsolateGen();
-            this.processes.setPidBase(this._isolateGen * PID_GEN_STRIDE);
+            await adoptGeneration(ctx);
+            this.processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
             try {
                 this._w1SessionDestroyed =
                     (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
@@ -550,11 +542,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * budget rather than the one the launch has already been spending.
      */
     _scheduleLaunchTurn() {
-        return _w9ScheduleAlarm(this, this.ctx, 'resident-launch', Date.now());
-    }
-    /** W9: increment + persist isolate-gen counter once per fresh isolate. */
-    async _w9MaybeBumpIsolateGen() {
-        return _w9DoMaybeBumpIsolateGen(this, this.ctx);
+        return timers(this, this.ctx).schedule('resident-launch', Date.now());
     }
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this

@@ -6,7 +6,8 @@
  * at resolution; non-workerd consumers (tests, tooling) import the subpath
  * modules they need instead.
  */
-export * from './alarms.js';
+export * from './generation.js';
+export * from './timers.js';
 export * from './bindings.js';
 export * from './ctx-exports.js';
 export * from './facet-image-store.js';

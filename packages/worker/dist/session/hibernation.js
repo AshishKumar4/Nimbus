@@ -22,10 +22,10 @@
  *     reason dispatcher with this session's handlers registered.
  *   - flushOnClose(host) — synchronous flush on ws close.
  *
- * The alarm multiplexer itself (reason map, scheduleAlarm, the per-instance
- * chain) and maybeBumpIsolateGen are fabric machinery —
- * `@nimbus-sh/fabric/alarms.js`; this module registers the session's reasons
- * ('w9-flush' | 'log-janitor' | 'resident-launch') on top of it.
+ * The timer multiplexer itself (reason map, schedule, the per-instance
+ * chain) is fabric machinery — `@nimbus-sh/fabric/timers.js`; this module
+ * registers the session's reasons ('w9-flush' | 'log-janitor' |
+ * 'resident-launch') on top of it.
  *
  * **`ctx` taken as a separate arg from `host`** because the parent
  * `CloudflareDurableObject` class declares `ctx` as `protected`, which
@@ -39,7 +39,7 @@
  * wireProcessLogPersist again.
  */
 import { configureWsHibernation } from '@nimbus-sh/fabric/ws-hibernation-config.js';
-import { dispatchAlarm as dispatchAlarmReasons, scheduleAlarm, } from '@nimbus-sh/fabric/alarms.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
 import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 /**
  * Run at DO ctor time. Returns the result for the class to assign to
@@ -216,11 +216,11 @@ export function ensureLogJanitor(host, ctx) {
     if (host._w1SessionDestroyed)
         return;
     // Optimistic flag (dedupes same-tick appends), CONFIRMED by the schedule
-    // outcome: scheduleAlarm swallows storage errors, and a failure with the
+    // outcome: timers.schedule swallows storage errors, and a failure with the
     // flag left set would mean no alarm AND nothing ever re-arming until the
     // instance recycles.
     host._w1JanitorArmed = true;
-    void scheduleAlarm(host, ctx, 'log-janitor', Date.now() + 60_000).then((ok) => {
+    void timers(host, ctx).schedule('log-janitor', Date.now() + 60_000).then((ok) => {
         if (!ok)
             host._w1JanitorArmed = false;
     });
@@ -249,7 +249,7 @@ export function ensureHibSchema(host, ctx) {
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if
- * it isn't already set. The persistent alarm goes through scheduleAlarm
+ * it isn't already set. The persistent alarm goes through timers.schedule
  * so it coordinates with W1's log-janitor sweep.
  */
 export function scheduleHibFlush(host, ctx) {
@@ -271,10 +271,10 @@ export function scheduleHibFlush(host, ctx) {
     }, W9_FLUSH_DEBOUNCE_MS);
     // Persistent alarm: fires post-hibernation if the in-isolate timer
     // didn't get a chance to run (DO evicted under memory pressure
-    // before the 250ms debounce expired). Coordinated via scheduleAlarm
+    // before the 250ms debounce expired). Coordinated via timers.schedule
     // so W1's log-janitor doesn't clobber it (or vice-versa).
-    // Fire-and-forget — scheduleAlarm is fail-soft.
-    void scheduleAlarm(host, ctx, 'w9-flush', Date.now() + W9_FLUSH_DEBOUNCE_MS * 4);
+    // Fire-and-forget — timers.schedule is fail-soft.
+    void timers(host, ctx).schedule('w9-flush', Date.now() + W9_FLUSH_DEBOUNCE_MS * 4);
 }
 /**
  * W1: this session's alarm() handler body — the fabric's multi-reason
@@ -289,7 +289,7 @@ export function scheduleHibFlush(host, ctx) {
  * so HibHost doesn't need to import ProcessTable.
  */
 export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunches) {
-    return dispatchAlarmReasons(host, ctx, {
+    return timers(host, ctx).dispatch({
         'w9-flush': () => {
             host.processes.flushLogs();
         },
@@ -322,7 +322,7 @@ export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunche
         // Legacy path: pre-W1 deploys had no map. dispatchAlarm was called
         // with no map and unconditionally ran the log flush. Preserve
         // that on a missing map (one-time post-deploy, then the map is
-        // populated by the next scheduleHibFlush / scheduleAlarm call).
+        // populated by the next scheduleHibFlush / timers.schedule call).
         try {
             host.processes.flushLogs();
         }

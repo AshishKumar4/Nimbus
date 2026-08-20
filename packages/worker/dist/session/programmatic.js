@@ -16,7 +16,7 @@ import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } fro
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
 import { clearPortCapability, persistPortCapability, restorePortCapability, } from './port-capability.js';
-import { ISOLATE_GEN_KEY } from '@nimbus-sh/fabric/alarms.js';
+import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const ShellStateSchema = z.object({
@@ -677,7 +677,7 @@ export async function rpcDestroy(self, options = {}) {
         // current-generation (pid > pidBase) — landing its output on the
         // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
         try {
-            await self.ctx.storage.put(ISOLATE_GEN_KEY, self._isolateGen ?? 0);
+            await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx));
         }
         catch { /* best-effort */ }
         resetInMemorySessionState(self);
@@ -713,10 +713,10 @@ async function quiesceInMemorySessionState(self) {
  * The generation the NEXT boot of this session will run as.
  *
  * rpcDestroy re-persists the pre-destroy generation after wiping storage,
- * so `maybeBumpIsolateGen` reads it back and bumps once — landing here.
+ * so `adoptGeneration` reads it back and bumps once — landing here.
  */
 function successorGeneration(self) {
-    return (self._isolateGen ?? 0) + 1;
+    return generation(self.ctx) + 1;
 }
 /**
  * Install the empty process/port state a destroyed session leaves behind.
@@ -810,12 +810,11 @@ function resetInMemorySessionState(self) {
     // Adopt the generation the next boot will derive from the counter
     // rpcDestroy just re-persisted, so the in-memory pid floor and the
     // persisted one agree. Deliberately left unpersisted: storage keeps the
-    // pre-destroy value, and maybeBumpIsolateGen re-derives this one from it.
-    const generation = successorGeneration(self);
-    installEmptyProcessState(self, generation);
+    // pre-destroy value, and adoptGeneration re-derives this one from it.
+    const successor = successorGeneration(self);
+    installEmptyProcessState(self, successor);
     self._w9SchemaInit = false;
-    self._isolateGen = generation;
-    self._isolateGenPersisted = false;
+    assumeGeneration(self.ctx, successor);
     try {
         self._w9WireProcessLogPersist?.();
     }

@@ -36,7 +36,7 @@ import {
   persistPortCapability,
   restorePortCapability,
 } from './port-capability.js';
-import { ISOLATE_GEN_KEY } from '@nimbus-sh/fabric/alarms.js';
+import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 
 export interface ProgrammaticShell {
@@ -128,8 +128,6 @@ export interface ProgrammaticHost {
   _w9PersistWired?: boolean;
   _w9FlushTimer?: ReturnType<typeof setTimeout> | null;
   _w9SchemaInit?: boolean;
-  _isolateGen?: number;
-  _isolateGenPersisted?: boolean;
   _w9WireProcessLogPersist?(): void;
   ensureSqliteFs(): void;
   ensureFacetManager(): void;
@@ -966,7 +964,7 @@ export async function rpcDestroy(
     // straggler facet from a HIGHER pre-destroy generation would classify as
     // current-generation (pid > pidBase) — landing its output on the
     // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-    try { await self.ctx.storage.put(ISOLATE_GEN_KEY, self._isolateGen ?? 0); } catch { /* best-effort */ }
+    try { await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx)); } catch { /* best-effort */ }
 
     resetInMemorySessionState(self);
     destroyed = true;
@@ -992,10 +990,10 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
  * The generation the NEXT boot of this session will run as.
  *
  * rpcDestroy re-persists the pre-destroy generation after wiping storage,
- * so `maybeBumpIsolateGen` reads it back and bumps once — landing here.
+ * so `adoptGeneration` reads it back and bumps once — landing here.
  */
 function successorGeneration(self: ProgrammaticHost): number {
-  return (self._isolateGen ?? 0) + 1;
+  return generation(self.ctx) + 1;
 }
 
 /**
@@ -1070,12 +1068,11 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   // Adopt the generation the next boot will derive from the counter
   // rpcDestroy just re-persisted, so the in-memory pid floor and the
   // persisted one agree. Deliberately left unpersisted: storage keeps the
-  // pre-destroy value, and maybeBumpIsolateGen re-derives this one from it.
-  const generation = successorGeneration(self);
-  installEmptyProcessState(self, generation);
+  // pre-destroy value, and adoptGeneration re-derives this one from it.
+  const successor = successorGeneration(self);
+  installEmptyProcessState(self, successor);
   self._w9SchemaInit = false;
-  self._isolateGen = generation;
-  self._isolateGenPersisted = false;
+  assumeGeneration(self.ctx, successor);
   try { self._w9WireProcessLogPersist?.(); } catch {}
 }
 

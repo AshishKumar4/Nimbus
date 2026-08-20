@@ -60,8 +60,6 @@ export interface WsHost {
     _w9PersistWired: boolean;
     _w9FlushTimer: any;
     _w9SchemaInit: boolean;
-    _isolateGen: number;
-    _isolateGenPersisted: boolean;
     _w9WsConfig: any;
     _diagPeakRss: number;
     _diagPeakHeapUsed: number;

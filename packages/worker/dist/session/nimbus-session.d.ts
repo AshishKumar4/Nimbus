@@ -120,17 +120,8 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * catch-all).
      */
     _w9WsConfig: WsHibernationConfigResult | null;
-    /**
-     * Monotonic isolate generation counter. Each fresh isolate (cold start
-     * or post-hibernation wake) increments this and persists to storage.
-     * Lets `/api/_diag/memory` confirm whether a wake actually happened
-     * between two probe calls.
-     */
-    _isolateGen: number;
-    /** True once we've persisted the bumped gen counter to storage. */
-    _isolateGenPersisted: boolean;
-    /** W1: serializes every alarm-map read-modify-write (fabric alarms.ts). */
-    _alarmChain?: Promise<unknown>;
+    /** W1: serializes every timer-map read-modify-write (fabric timers.ts). */
+    _timerChain?: Promise<unknown>;
     /** SQL DDL — idempotent; run on first fetch. */
     _w9SchemaInit: boolean;
     /** Have we wired the persist adapter into ProcessLogStore yet? */
@@ -234,8 +225,6 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * budget rather than the one the launch has already been spending.
      */
     private _scheduleLaunchTurn;
-    /** W9: increment + persist isolate-gen counter once per fresh isolate. */
-    _w9MaybeBumpIsolateGen(): Promise<void>;
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
      * session (e.g. `/s/nimble-otter-4271/preview`). Falls back to the

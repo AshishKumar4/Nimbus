@@ -34,13 +34,14 @@ const CONSUMER = `import assert from 'node:assert/strict';
 // The root export pulls cloudflare:workers and says so; node proves it.
 await assert.rejects(import('@nimbus-sh/fabric'), /cloudflare/);
 
-// ── Alarm multiplexer ──────────────────────────────────────────────────────
-const { ALARM_REASONS_KEY, ISOLATE_GEN_KEY, scheduleAlarm, dispatchAlarm, maybeBumpIsolateGen } =
-  await import('@nimbus-sh/fabric/alarms.js');
+// ── Timer multiplexer ──────────────────────────────────────────────────────
+const { TIMER_REASONS_KEY, timers } = await import('@nimbus-sh/fabric/timers.js');
+const { GENERATION_KEY, adoptGeneration, generation } =
+  await import('@nimbus-sh/fabric/generation.js');
 
 // Live production DO storage keys — the values are a compatibility contract.
-assert.equal(ALARM_REASONS_KEY, 'w1_next_alarm_reasons');
-assert.equal(ISOLATE_GEN_KEY, 'w9_isolate_gen');
+assert.equal(TIMER_REASONS_KEY, 'w1_next_alarm_reasons');
+assert.equal(GENERATION_KEY, 'w9_isolate_gen');
 
 const kv = new Map();
 const alarmsSet = [];
@@ -55,34 +56,35 @@ const ctx = {
 
 const host = {};
 const now = Date.now();
-await scheduleAlarm(host, ctx, 'later', now + 60_000);
-await scheduleAlarm(host, ctx, 'due', now - 10);
+await timers(host, ctx).schedule('later', now + 60_000);
+await timers(host, ctx).schedule('due', now - 10);
 // EDF: the real alarm sits at the earliest deadline across reasons.
 assert.equal(alarmsSet.at(-1), now - 10);
 
 const fired = [];
-await dispatchAlarm(host, ctx, {
+await timers(host, ctx).dispatch({
   due: () => { fired.push('due'); },
   later: () => { fired.push('later'); },
 });
 assert.deepEqual(fired, ['due'], 'only the past-deadline reason fires');
-assert.deepEqual(Object.keys(kv.get(ALARM_REASONS_KEY)), ['later'], 'the future reason survives');
+assert.deepEqual(Object.keys(kv.get(TIMER_REASONS_KEY)), ['later'], 'the future reason survives');
 assert.equal(alarmsSet.at(-1), now + 60_000, 're-armed at the remaining deadline');
 
 // Unknown reasons are dropped and a drained map is deleted, not re-armed.
-kv.set(ALARM_REASONS_KEY, { ghost: now - 5 });
-await dispatchAlarm(host, ctx, {});
-assert.equal(kv.has(ALARM_REASONS_KEY), false, 'drained map deleted (hibernation-eligible)');
+kv.set(TIMER_REASONS_KEY, { ghost: now - 5 });
+await timers(host, ctx).dispatch({});
+assert.equal(kv.has(TIMER_REASONS_KEY), false, 'drained map deleted (hibernation-eligible)');
 
 // ── Generation clock ───────────────────────────────────────────────────────
-const genA = { _isolateGen: 0, _isolateGenPersisted: false };
-await maybeBumpIsolateGen(genA, ctx);
-await maybeBumpIsolateGen(genA, ctx);   // idempotent per instance
-assert.equal(genA._isolateGen, 1);
-const genB = { _isolateGen: 0, _isolateGenPersisted: false };
-await maybeBumpIsolateGen(genB, ctx);   // a fresh isolate bumps
-assert.equal(genB._isolateGen, 2);
-assert.equal(kv.get(ISOLATE_GEN_KEY), 2);
+// Two ctx objects over one storage model two incarnations of one object.
+const incarnationA = { storage: ctx.storage };
+await adoptGeneration(incarnationA);
+await adoptGeneration(incarnationA);   // idempotent per incarnation
+assert.equal(generation(incarnationA), 1);
+const incarnationB = { storage: ctx.storage };
+await adoptGeneration(incarnationB);   // a fresh isolate bumps
+assert.equal(generation(incarnationB), 2);
+assert.equal(kv.get(GENERATION_KEY), 2);
 
 // ── Launch journal ─────────────────────────────────────────────────────────
 const { FencedWork, FENCED_WORK_KEY_PREFIX, FENCED_WORK_MAX_ATTEMPT } =
@@ -154,7 +156,7 @@ const { TurnBudget, PacedWork, TURN_CHUNK_MAX_BYTES } =
 assert.equal(TURN_CHUNK_MAX_BYTES, 2_000_000);
 
 let turnsRequested = 0;
-const pump = new PacedWork({ requestTurn: () => { turnsRequested++; } });
+const pump = new PacedWork(ctx, { requestTurn: () => { turnsRequested++; } });
 const pacer = new TurnBudget(pump, 10);
 let finished = false;
 const launch = (async () => {

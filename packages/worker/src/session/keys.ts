@@ -18,9 +18,10 @@
  *   storage migration — never do it without an explicit migration plan.
  */
 
-// The isolate-generation counter key (ISOLATE_GEN_KEY) and the multi-reason
-// alarm map key (ALARM_REASONS_KEY) live with their machinery in
-// @nimbus-sh/fabric/alarms.js; their persisted VALUES are unchanged.
+// The isolate-generation counter key (GENERATION_KEY) and the multi-reason
+// timer map key (TIMER_REASONS_KEY) live with their machinery in
+// @nimbus-sh/fabric/generation.js and @nimbus-sh/fabric/timers.js; their
+// persisted VALUES are unchanged.
 
 /** W9: debounce window in ms before flushing pending process-log writes
  *  to SQL. Hot path (every append schedules a flush via this debounce). */

@@ -34,6 +34,7 @@
  */
 
 import { recordRecoveryEvent, type SessionState } from '@nimbus-sh/platform/oom-discriminator.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 
 /**
  * Set the current phase + record a transition. Fail-soft on the
@@ -41,7 +42,7 @@ import { recordRecoveryEvent, type SessionState } from '@nimbus-sh/platform/oom-
  * cheap.
  */
 export function setPhase(
-  self: { _b4Phase: SessionState | null; _isolateGen?: number },
+  self: { _b4Phase: SessionState | null; ctx?: unknown },
   toState: SessionState,
   trigger: string,
 ): void {
@@ -53,7 +54,7 @@ export function setPhase(
       fromState,
       toState,
       trigger,
-      isolateGen: self._isolateGen ?? 0,
+      isolateGen: generation(self.ctx as object),
       dataLoss: false,
       snapshotKeysRehydrated: 0,
     });
@@ -134,7 +135,6 @@ export function joinExistingSession(
     ctx: any;
     terminal: { attach(ws: WebSocket, onFlush?: (data: string) => void): void; write(s: string): void };
     _b4Phase: SessionState | null;
-    _isolateGen?: number;
     _b4WarmJoinCount: number;
   },
   ws: WebSocket,

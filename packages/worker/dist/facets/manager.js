@@ -29,6 +29,7 @@ import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtim
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes } from '@nimbus-sh/fabric/turn-budget.js';
+import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { FencedWork, } from '@nimbus-sh/fabric/fenced-work.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
@@ -3278,10 +3279,13 @@ export class FacetManager {
             onRedriveFailed: (record, e) => this.hooks.notify?.(`\x1b[2m[nimbus: "${record.command}" could not be restarted: `
                 + `${errorMessage(e)}]\x1b[0m\r\n`),
         });
-        this.launchPump = new PacedWork({
+        this.launchPump = new PacedWork(ctx, {
             requestTurn: hooks.requestLaunchTurn?.bind(hooks),
-            recover: () => this.launchJournal.recoverInterrupted(),
         });
+        // A reset that killed a resident launch left journal rows behind; the
+        // first pump after the reset drains this reconciliation before any
+        // waiter resumes, OFF the constructor's init gate.
+        onColdStart(ctx, () => this.launchJournal.recoverInterrupted());
         // The journal row of a resident lives for the PROCESS's lifetime, so its
         // release belongs on the one seam every end-of-life passes through —
         // exit, kill, self-reported exit and timeout abort all mark the table.

@@ -22,10 +22,10 @@
  *     reason dispatcher with this session's handlers registered.
  *   - flushOnClose(host) — synchronous flush on ws close.
  *
- * The alarm multiplexer itself (reason map, scheduleAlarm, the per-instance
- * chain) and maybeBumpIsolateGen are fabric machinery —
- * `@nimbus-sh/fabric/alarms.js`; this module registers the session's reasons
- * ('w9-flush' | 'log-janitor' | 'resident-launch') on top of it.
+ * The timer multiplexer itself (reason map, schedule, the per-instance
+ * chain) is fabric machinery — `@nimbus-sh/fabric/timers.js`; this module
+ * registers the session's reasons ('w9-flush' | 'log-janitor' |
+ * 'resident-launch') on top of it.
  *
  * **`ctx` taken as a separate arg from `host`** because the parent
  * `CloudflareDurableObject` class declares `ctx` as `protected`, which
@@ -40,7 +40,7 @@
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
-import { type AlarmHost, type IsolateGenHost } from '@nimbus-sh/fabric/alarms.js';
+import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
 export type { WsHibernationConfigResult };
 /**
  * Minimal host shape. `_w9*` fields drop `private` on the class so
@@ -49,7 +49,7 @@ export type { WsHibernationConfigResult };
  *
  * `ctx` is NOT in this interface — passed as a separate arg.
  */
-export interface HibHost extends AlarmHost, IsolateGenHost {
+export interface HibHost extends TimerHost {
     processes: SessionProcessSupervisor;
     _w9SchemaInit: boolean;
     _w9PersistWired: boolean;
@@ -114,7 +114,7 @@ export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch';
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if
- * it isn't already set. The persistent alarm goes through scheduleAlarm
+ * it isn't already set. The persistent alarm goes through timers.schedule
  * so it coordinates with W1's log-janitor sweep.
  */
 export declare function scheduleHibFlush(host: HibHost, ctx: any): void;

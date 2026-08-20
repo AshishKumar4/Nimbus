@@ -110,19 +110,13 @@ export interface PacedWorkHost {
      * {@link PacedWork.nextTurn}.
      */
     requestTurn?: () => void;
-    /**
-     * Awaited first on every pump, before any waiter resumes. Where the
-     * resident-launch journal's recovery sits: the pump is what an alarm calls,
-     * and the first turn after a reset is the re-delivered alarm of a launch
-     * the reset interrupted.
-     */
-    recover?: () => Promise<void>;
 }
 /**
  * The granting side of {@link TurnScheduler}: parks suspended launches
  * and resumes every one of them when the host grants a fresh turn.
  */
 export declare class PacedWork implements TurnScheduler {
+    private readonly ctx;
     private readonly host;
     /**
      * Launches suspended between chunks, waiting for a turn of their own.
@@ -135,7 +129,11 @@ export declare class PacedWork implements TurnScheduler {
      * from its inputs is the same idempotent work again.
      */
     private waiters;
-    constructor(host: PacedWorkHost);
+    /**
+     * `ctx` keys the cold-start queue the pump drains first on every turn it
+     * grants — see {@link pump}.
+     */
+    constructor(ctx: object, host: PacedWorkHost);
     /**
      * How a paced launch asks for a fresh turn.
      *

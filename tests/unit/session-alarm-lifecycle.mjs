@@ -16,7 +16,8 @@ import {
   dispatchAlarm,
   clearDestroyedTombstone,
 } from '../../packages/worker/src/session/hibernation.ts';
-import { scheduleAlarm, ALARM_REASONS_KEY, ISOLATE_GEN_KEY } from '../../packages/fabric/src/alarms.ts';
+import { timers, TIMER_REASONS_KEY } from '../../packages/fabric/src/timers.ts';
+import { GENERATION_KEY, assumeGeneration } from '../../packages/fabric/src/generation.ts';
 import { SESSION_DESTROYED_KEY } from '../../packages/worker/src/session/keys.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -43,8 +44,6 @@ function makeStorage() {
 function makeHost() {
   return {
     processes: new SessionProcessSupervisor(),
-    _isolateGen: 0,
-    _isolateGenPersisted: false,
     _w9SchemaInit: false,
     _w9PersistWired: false,
     _w9FlushTimer: null,
@@ -59,10 +58,10 @@ function makeHost() {
   const host = makeHost();
   const ctx = { storage };
   await Promise.all([
-    scheduleAlarm(host, ctx, 'w9-flush', Date.now() + 1000),
-    scheduleAlarm(host, ctx, 'log-janitor', Date.now() + 60_000),
+    timers(host, ctx).schedule('w9-flush', Date.now() + 1000),
+    timers(host, ctx).schedule('log-janitor', Date.now() + 60_000),
   ]);
-  const map = storage.map.get(ALARM_REASONS_KEY);
+  const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(map && 'w9-flush' in map && 'log-janitor' in map,
     `both reasons survive concurrent scheduling: ${JSON.stringify(map)}`);
   assert.equal(storage.alarm, map['w9-flush'], 'alarm armed at the earliest deadline');
@@ -75,18 +74,18 @@ function makeHost() {
   const host = makeHost();
   const ctx = { storage };
   ensureLogJanitor(host, ctx);
-  await host._alarmChain;
+  await host._timerChain;
   assert.ok(host._w1JanitorArmed && storage.alarm !== null, 'janitor armed on activity');
 
   // Idle session: fire the pending janitor deadline — the sweep must NOT
   // re-arm. (The dispatcher only fires reasons whose deadline has passed, so
   // pull the scheduled deadline into the past first, as the alarm would.)
   {
-    const m = storage.map.get(ALARM_REASONS_KEY);
+    const m = storage.map.get(TIMER_REASONS_KEY);
     m['log-janitor'] = Date.now() - 1;
   }
   await dispatchAlarm(host, ctx, () => true);
-  const map = storage.map.get(ALARM_REASONS_KEY);
+  const map = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(!map || !('log-janitor' in map), 'idle sweep does not re-arm the janitor');
   assert.equal(host._w1JanitorArmed, false, 'armed flag cleared so the next activity re-arms');
 
@@ -94,13 +93,13 @@ function makeHost() {
   const pid = host.processes.spawn('server', [], '/').pid;
   host.processes.appendOutput(pid, 'stdout', 'alive\n');
   ensureLogJanitor(host, ctx);
-  await host._alarmChain;
+  await host._timerChain;
   {
-    const m = storage.map.get(ALARM_REASONS_KEY);
+    const m = storage.map.get(TIMER_REASONS_KEY);
     m['log-janitor'] = Date.now() - 1;
   }
   await dispatchAlarm(host, ctx, (p) => !host.processes.get(p));
-  const map2 = storage.map.get(ALARM_REASONS_KEY);
+  const map2 = storage.map.get(TIMER_REASONS_KEY);
   assert.ok(map2 && 'log-janitor' in map2, 'busy session keeps the sweep cycle alive');
   console.log('  [2] janitor stops when idle and re-arms on the next log activity');
 }
@@ -111,7 +110,7 @@ function makeHost() {
   storage.put = async () => { throw new Error('storage down'); };
   const host = makeHost();
   ensureLogJanitor(host, { storage });
-  await host._alarmChain;
+  await host._timerChain;
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(host._w1JanitorArmed, false, 'failed schedule must not leave the flag set');
   console.log('  [3] a scheduleAlarm storage failure resets _w1JanitorArmed');
@@ -123,7 +122,7 @@ function makeHost() {
   const host = makeHost();
   host._w1SessionDestroyed = true;
   ensureLogJanitor(host, { storage });
-  await host._alarmChain;
+  await host._timerChain;
   assert.equal(storage.alarm, null, 'destroyed session schedules nothing');
   assert.equal(host._w1JanitorArmed, false);
   console.log('  [4] a destroyed session never re-arms the janitor');
@@ -157,13 +156,13 @@ function makeHost() {
     _cirrusHmrWsClients: null,
     _w9PersistWired: true,
   };
-  host._isolateGen = 3;
+  assumeGeneration(host.ctx, 3);
   const result = await rpcDestroy(host, { reason: 'test' });
   assert.equal(result.ok, true);
   assert.ok(storage.deleteAlarmCalls >= 1, 'destroy deletes the pending alarm');
   assert.ok(storage.map.has(SESSION_DESTROYED_KEY), 'destroy writes the tombstone (survives deleteAll)');
   assert.equal(host._w1SessionDestroyed, true, 'destroy flags the live instance');
-  assert.equal(storage.map.get(ISOLATE_GEN_KEY), 3,
+  assert.equal(storage.map.get(GENERATION_KEY), 3,
     'destroy re-persists the isolate generation (deleteAll wiped it; a gen-1 restart would misclassify pre-destroy stragglers as current-generation)');
   console.log('  [5] rpcDestroy deletes the alarm, re-persists isolateGen, and leaves the tombstone');
 
@@ -175,7 +174,7 @@ function makeHost() {
   assert.ok(!storage.map.has(SESSION_DESTROYED_KEY), 're-init deletes the tombstone key');
   host._w1JanitorArmed = false;
   ensureLogJanitor(host, { storage });
-  await host._alarmChain;
+  await host._timerChain;
   assert.ok(storage.alarm !== null, 'the recreated session arms the janitor again');
   // And a no-op on a live session (no spurious deletes).
   const deletes = [];

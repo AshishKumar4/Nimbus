@@ -36,6 +36,7 @@
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 import { persistShellState } from './state-store.js';
 import {
   handleFsWatchSubscribe,
@@ -75,8 +76,6 @@ export interface WsHost {
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
   _w9SchemaInit: boolean;
-  _isolateGen: number;
-  _isolateGenPersisted: boolean;
   _w9WsConfig: any;
   _diagPeakRss: number;
   _diagPeakHeapUsed: number;
@@ -370,7 +369,7 @@ export async function wsClose(
       fromState: 'active',
       toState: 'drained',
       trigger: 'ws-close',
-      isolateGen: self._isolateGen,
+      isolateGen: generation((self as any).ctx),
       dataLoss: false,
       snapshotKeysRehydrated: 0,
     });
@@ -447,7 +446,7 @@ export async function wsError(self: WsHost, ws: WebSocket, _error?: any): Promis
       fromState: 'active',
       toState: 'drained',
       trigger: 'ws-error',
-      isolateGen: self._isolateGen,
+      isolateGen: generation((self as any).ctx),
       dataLoss: false,
       snapshotKeysRehydrated: 0,
     });

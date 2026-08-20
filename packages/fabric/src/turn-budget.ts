@@ -33,6 +33,8 @@
  * bytes and treats its wall guard as coarse.
  */
 
+import { runColdStart } from './generation.js';
+
 /** How a paced launch gets back onto a fresh Durable Object turn. */
 export interface TurnScheduler {
   /**
@@ -140,13 +142,6 @@ export interface PacedWorkHost {
    * {@link PacedWork.nextTurn}.
    */
   requestTurn?: () => void;
-  /**
-   * Awaited first on every pump, before any waiter resumes. Where the
-   * resident-launch journal's recovery sits: the pump is what an alarm calls,
-   * and the first turn after a reset is the re-delivered alarm of a launch
-   * the reset interrupted.
-   */
-  recover?: () => Promise<void>;
 }
 
 /**
@@ -166,7 +161,14 @@ export class PacedWork implements TurnScheduler {
    */
   private waiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
 
-  constructor(private readonly host: PacedWorkHost) {}
+  /**
+   * `ctx` keys the cold-start queue the pump drains first on every turn it
+   * grants — see {@link pump}.
+   */
+  constructor(
+    private readonly ctx: object,
+    private readonly host: PacedWorkHost,
+  ) {}
 
   /**
    * How a paced launch asks for a fresh turn.
@@ -198,7 +200,11 @@ export class PacedWork implements TurnScheduler {
    * the runtime may tear the context down mid-chunk.
    */
   async pump(): Promise<void> {
-    await this.host.recover?.();
+    // Deferred reconciliation runs first, before any waiter resumes. Where
+    // the resident-launch journal's recovery sits (`onColdStart`): the pump
+    // is what an alarm calls, and the first turn after a reset is the
+    // re-delivered alarm of a launch the reset interrupted.
+    await runColdStart(this.ctx);
     const waiting = this.waiters;
     if (waiting.length === 0) return;
     this.waiters = [];

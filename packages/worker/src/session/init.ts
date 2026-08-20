@@ -93,6 +93,7 @@ import {
 // one-time Worker Startup Time paid on every fresh-isolate cold run.
 import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '@nimbus-sh/core/vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import {
   DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE, NODE_VERSION,
@@ -2863,7 +2864,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
           fromState: fromState as any,
           toState: 'hydrated',
           trigger: 'init-session',
-          isolateGen: self._isolateGen,
+          isolateGen: generation(self.ctx),
           dataLoss: false,
           snapshotKeysRehydrated: snapshotKeys,
         });

@@ -98,8 +98,6 @@ export interface SessionInternal {
 
   // ── W9 hibernation persistence state ────────────────────────────────
   _w9WsConfig: WsHibernationConfigResult | null;
-  _isolateGen: number;
-  _isolateGenPersisted: boolean;
   _w9SchemaInit: boolean;
   _w9PersistWired: boolean;
   _w9FlushTimer: any;
@@ -160,7 +158,6 @@ export interface SessionInternal {
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).
   initSession(ws: WebSocket): Promise<void>;
-  _w9MaybeBumpIsolateGen(): Promise<void>;
   _w9FlushOnClose(): void;
   _w9WireProcessLogPersist(): void;
   _w5PersistRing(): Promise<void> | null;

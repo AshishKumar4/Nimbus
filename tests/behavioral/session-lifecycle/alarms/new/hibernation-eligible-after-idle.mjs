@@ -7,7 +7,7 @@
 // Why isolateGen is the right signal:
 //   - W9 increments + persists isolateGen on every fresh isolate (cold
 //     start OR wake-from-hibernation). See src/session/hibernation.ts:
-//     maybeBumpIsolateGen.
+//     adoptGeneration.
 //   - If G1 == G0 after a 70s idle window with no requests, the DO
 //     never hibernated → never woke → never re-ran the constructor.
 //   - If G1 > G0, exactly one (or more) wake cycle ran in between.

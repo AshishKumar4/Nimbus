@@ -7,7 +7,8 @@
  * modules they need instead.
  */
 
-export * from './alarms.js';
+export * from './generation.js';
+export * from './timers.js';
 export * from './bindings.js';
 export * from './ctx-exports.js';
 export * from './facet-image-store.js';

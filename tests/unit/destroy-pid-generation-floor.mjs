@@ -28,7 +28,8 @@ import { SessionProcessSupervisor }
   from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
-import { ISOLATE_GEN_KEY } from '../../packages/fabric/src/alarms.ts';
+import { GENERATION_KEY, adoptGeneration, assumeGeneration, generation }
+  from '../../packages/fabric/src/generation.ts';
 
 const GEN = 3;
 
@@ -41,6 +42,7 @@ function makeHost() {
     ctx: {
       getWebSockets: () => [],
       storage: {
+        async get(k) { return storage.get(k); },
         async put(k, v) { storage.set(k, v); },
         async delete(k) { storage.delete(k); },
         async deleteAll() { deletedAll = true; storage.clear(); },
@@ -65,15 +67,14 @@ function makeHost() {
     _viteShimPort: null,
     terminal: null,
     runtimeFsBridges: new Map(),
-    _isolateGen: GEN,
-    _isolateGenPersisted: true,
     ensureSqliteFs() {},
     ensureFacetManager() {},
     initSession() {},
   };
   // Mirror what the DO constructor does at boot for generation GEN.
   host.processes.setPidBase(GEN * PID_GEN_STRIDE);
-  storage.set(ISOLATE_GEN_KEY, GEN);
+  assumeGeneration(host.ctx, GEN);
+  storage.set(GENERATION_KEY, GEN);
   return { host, storage, deletedAll: () => deletedAll };
 }
 
@@ -93,7 +94,7 @@ assert.equal(result.ok, true);
 // rpcDestroy re-persists it AFTER deleteAll so the next boot bumps to
 // GEN + 1. This assertion pins that the in-memory fix did not corrupt the
 // persisted value on its way through the destroy path.
-assert.equal(storage.get(ISOLATE_GEN_KEY), GEN,
+assert.equal(storage.get(GENERATION_KEY), GEN,
   're-persisted isolate generation must be the PRE-destroy one');
 
 // ── Memory now agrees with storage ──────────────────────────────────────
@@ -101,10 +102,15 @@ assert.equal(storage.get(ISOLATE_GEN_KEY), GEN,
 // use the same floor for the rest of its life.
 assert.equal(host.processes.pidBase, (GEN + 1) * PID_GEN_STRIDE,
   'post-destroy pid floor must match what the next boot will use');
-assert.equal(host._isolateGen, GEN + 1,
+assert.equal(generation(host.ctx), GEN + 1,
   'in-memory generation must match the pid floor it implies');
-assert.equal(host._isolateGenPersisted, false,
-  'the adopted generation is re-derived from storage on the next init');
+// The adopted guard is cleared: a later adopt re-derives from the persisted
+// pre-destroy counter and bumps to the same successor the memory holds.
+await adoptGeneration(host.ctx);
+assert.equal(generation(host.ctx), GEN + 1,
+  'the next adopt re-derives the successor from storage');
+assert.equal(storage.get(GENERATION_KEY), GEN + 1,
+  'the next adopt persists the successor');
 
 // ── The behaviour that floor exists to produce ──────────────────────────
 // A facet spawned before the destroy is still alive and still calling back.

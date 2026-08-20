@@ -33,6 +33,7 @@
  * additional ring entries, not replacements.
  */
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 /**
  * Set the current phase + record a transition. Fail-soft on the
  * observability call; the phase update on `self` is direct and
@@ -47,7 +48,7 @@ export function setPhase(self, toState, trigger) {
             fromState,
             toState,
             trigger,
-            isolateGen: self._isolateGen ?? 0,
+            isolateGen: generation(self.ctx),
             dataLoss: false,
             snapshotKeysRehydrated: 0,
         });
