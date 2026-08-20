@@ -35,7 +35,7 @@ import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
-import { FacetImageStore, } from '@nimbus-sh/fabric/facet-image-store.js';
+import { ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { ProcessFabric, } from '@nimbus-sh/fabric/process-fabric.js';
 import { createLoadedWorkerEntrypoint, getNimbusCtxExports, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
@@ -3180,11 +3180,11 @@ export class FacetManager {
     debugEnabled = false;
     processRpcResources = new Map();
     /**
-     * The content-addressed boot-image store (fabric's facet-image-store.ts),
+     * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
      * live process table.
      */
-    imageStore = new FacetImageStore(() => this._imageBlobs(), (pid) => this.processes.get(pid)?.state === 'running');
+    imageStore = new ImageStore(() => this._imageBlobs(), (pid) => this.processes.get(pid)?.state === 'running');
     /**
      * The resident-launch journal (fabric's fenced-work.ts): the durable
      * record of every resident this session owes the user, and its recovery

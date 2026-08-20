@@ -6,7 +6,7 @@
  *
  * Self-contained IIFE that installs globalThis.__nimbusVirtualSockets.
  * Consumed by python-runner.ts and ruby-runner.ts: spliced into the
- * socket process worker module source passed to NimbusLoaderPool.
+ * socket process worker module source passed to NimbusIsolatePool.
  *
  * Size: 33.76 KiB
  */

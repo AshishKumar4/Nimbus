@@ -638,7 +638,7 @@ export declare class FacetManager {
     private debugEnabled;
     private processRpcResources;
     /**
-     * The content-addressed boot-image store (fabric's facet-image-store.ts),
+     * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
      * live process table.
      */

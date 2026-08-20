@@ -34,10 +34,8 @@ import {
   facetImageDigest,
   facetImagePath,
 } from '../../packages/fabric/src/process-fabric.ts';
-import {
-  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
-  residentFacetName,
-} from '../../packages/fabric/src/workerd-facet-host.ts';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from '../../packages/fabric/src/budgets.ts';
+import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import {
   PROCESS_HOST_MODES,

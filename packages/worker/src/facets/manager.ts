@@ -47,9 +47,9 @@ import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exe
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
 import {
-  FacetImageStore,
-  type FacetImageBlobStore,
-} from '@nimbus-sh/fabric/facet-image-store.js';
+  ImageStore,
+  type ImageBlobStore,
+} from '@nimbus-sh/fabric/image-store.js';
 import {
   ProcessFabric,
   ResidentProcessHandle,
@@ -3513,11 +3513,11 @@ export class FacetManager {
   private debugEnabled = false;
   private processRpcResources = new Map<number, ProcessRpcResources>();
   /**
-   * The content-addressed boot-image store (fabric's facet-image-store.ts),
+   * The content-addressed boot-image store (fabric's image-store.ts),
    * writing through this session's kernel-credentialed VFS and rooted off the
    * live process table.
    */
-  private readonly imageStore = new FacetImageStore(
+  private readonly imageStore = new ImageStore(
     () => this._imageBlobs(),
     (pid) => this.processes.get(pid)?.state === 'running',
   );
@@ -3673,7 +3673,7 @@ export class FacetManager {
    * it, is what makes the read succeed for any process by construction; the
    * store itself decides nothing about modes.
    */
-  private _imageBlobs(): FacetImageBlobStore {
+  private _imageBlobs(): ImageBlobStore {
     const vfs = this.vfs;
     if (!vfs) {
       throw new Error(

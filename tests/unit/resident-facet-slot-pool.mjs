@@ -12,7 +12,7 @@
 // costs no new ID.
 
 import assert from 'node:assert/strict';
-import { openResidentFacet, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
+import { processes, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 
 // ── The name is a slot, and slots are what get reused ───────────────────────
 assert.equal(residentFacetName(0), 'proc-slot-0');
@@ -57,9 +57,7 @@ const env = { LOADER: { get: () => ({ getDurableObjectClass: () => class {} }) }
 const disk = () => ({});
 
 function open(ctx, pid) {
-  return openResidentFacet(
-    ctx,
-    env,
+  return processes(ctx, env).spawn(
     disk,
     { doId: ctx.id.toString(), pid, writerId: `w${pid}` },
     { pid, writerId: `w${pid}`, startArgs: {}, boot: { kind: 'code', code: {} } },

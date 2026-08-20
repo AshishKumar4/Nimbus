@@ -9,7 +9,7 @@
  *   peer  — the process is a named child actor of a SIBLING session DO, and
  *           the coordinator reaches it over one held-open RPC.
  *
- * Both call the same `openResidentFacet`. The peer leg is not a second process
+ * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
  * the runner, the boot spec, the class name, the writer handshake, the start
  * contract and the lifecycle are shared code rather than parallel paths.

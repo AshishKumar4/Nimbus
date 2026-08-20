@@ -10,7 +10,7 @@ export * from './generation.js';
 export * from './timers.js';
 export * from './bindings.js';
 export * from './ctx-exports.js';
-export * from './facet-image-store.js';
+export * from './image-store.js';
 export * from './fanout.js';
 export * from './inner-do-registry.js';
 export * from './fenced-work.js';

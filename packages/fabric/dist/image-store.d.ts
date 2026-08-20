@@ -1,5 +1,5 @@
 /**
- * facet-image-store.ts — materializing resident-process boot images into the
+ * image-store.ts — materializing resident-process boot images into the
  * content-addressed image store, and sweeping the ones nothing boots from.
  *
  * A resident process's module map is sized by the user's disk, so it does not
@@ -12,7 +12,7 @@
  * table.
  *
  * The filesystem itself stays the embedder's, reached through the
- * {@link FacetImageBlobStore} port — the store decides what is written where
+ * {@link ImageBlobStore} port — the store decides what is written where
  * and when; the port decides how bytes land on a disk and with what modes and
  * credentials.
  */
@@ -34,7 +34,7 @@ export declare const FACET_IMAGE_WRITE_SLICE_BYTES: number;
  * normalization are the implementation's: the store passes the same
  * store-relative paths it later roots and sweeps by.
  */
-export interface FacetImageBlobStore {
+export interface ImageBlobStore {
     /** Create a directory (and its parents) if it does not exist. */
     mkdirp(dir: string): void;
     /** The file's current size in bytes, or null when it does not exist. */
@@ -56,7 +56,7 @@ export interface FacetImageBlobStore {
  * hash's problem; everything else is idempotent — an image already present
  * at its own digest is already the bytes we were about to write.
  */
-export declare class FacetImageStore {
+export declare class ImageStore {
     private readonly blobs;
     private readonly isLive;
     /** pid → the boot images its facet loads from; the image sweep's root set. */
@@ -69,7 +69,7 @@ export declare class FacetImageStore {
      * @param isLive Whether a pid still names a running process. The root set
      *   is the process table, reached through this one predicate.
      */
-    constructor(blobs: () => FacetImageBlobStore, isLive: (pid: number) => boolean);
+    constructor(blobs: () => ImageBlobStore, isLive: (pid: number) => boolean);
     /**
      * The image store's directory, created before the first filesystem view is
      * built rather than on the first image write.
@@ -109,4 +109,4 @@ export declare class FacetImageStore {
      */
     private sweep;
 }
-//# sourceMappingURL=facet-image-store.d.ts.map
+//# sourceMappingURL=image-store.d.ts.map

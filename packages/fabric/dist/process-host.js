@@ -9,7 +9,7 @@
  *   peer  — the process is a named child actor of a SIBLING session DO, and
  *           the coordinator reaches it over one held-open RPC.
  *
- * Both call the same `openResidentFacet`. The peer leg is not a second process
+ * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
  * the runner, the boot spec, the class name, the writer handshake, the start
  * contract and the lifecycle are shared code rather than parallel paths.
@@ -67,7 +67,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
-import { openResidentFacet, residentFacetName, runOneShotWorker, } from './workerd-facet-host.js';
+import { processes, residentFacetName, } from './workerd-facet-host.js';
 import { BindingError } from './vendor/errors.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
@@ -106,7 +106,7 @@ class FacetProcessHost {
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return runOneShotWorker(this.ctx, this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
+        return processes(this.ctx, this.env).run({ doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
         const supervisor = {
@@ -114,7 +114,7 @@ class FacetProcessHost {
             pid: params.pid,
             writerId: params.writerId,
         };
-        const { slot, ...facet } = openResidentFacet(this.ctx, this.env, this.disk, supervisor, params);
+        const { slot, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
         return {
             ...facet,
             describe: () => `facet '${residentFacetName(slot)}' (pid ${params.pid})`
@@ -232,7 +232,7 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return runOneShotWorker(this.ctx, this.env, { doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
+        return processes(this.ctx, this.env).run({ doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
         const placement = await this._place(params.pid);
@@ -274,7 +274,7 @@ class PeerProcessHost {
         catch (error) {
             this.tokensInUse.delete(params.pid);
             // Awaited, not fired off: a spawn that rejects must mean nothing was
-            // left running, which is what a throw from `openResidentFacet` means on
+            // left running, which is what a throw from `processes().spawn` means on
             // the other substrate.
             try {
                 await this._cancel(params.workerKey, placement.peerName);

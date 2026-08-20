@@ -79,7 +79,7 @@ function facetContainer(ctx) {
  * storage budget grants no copy-on-write credit — crossing it resets the
  * object rather than raising an error.
  */
-export async function cloneFacetStorage(ctx, clone) {
+export async function cloneStorage(ctx, clone) {
     const facets = facetContainer(ctx);
     if (typeof facets.clone !== 'function') {
         throw new Error('Nimbus: ctx.facets.clone is unavailable in this runtime; the reflink image '
@@ -164,17 +164,48 @@ function releaseSlot(ctx, pid) {
     book.free.sort((a, b) => a - b);
 }
 /**
- * Open a resident process as a facet of the actor whose `ctx` and `env` are
- * given, and start its runner.
+ * The process surface of one hosting actor: how a resident process comes
+ * into existence on workerd, and how a one-shot program runs to completion.
  *
- * This is the ONE way a resident process comes into existence, and every
+ * `spawn` is the ONE way a resident process comes into existence, and every
  * substrate goes through it: the facet host calls it with the coordinator's
  * own `ctx`, the peer host calls it — over one RPC — with a sibling session
  * DO's. Everything a substrate could plausibly want to special-case is a
  * PARAMETER here rather than a branch: which actor hosts the child, and how
  * the boot spec's by-path members are read.
  */
-export function openResidentFacet(ctx, env, disk, supervisor, params) {
+export function processes(ctx, env) {
+    return new Processes(ctx, env);
+}
+export class Processes {
+    ctx;
+    env;
+    constructor(ctx, env) {
+        this.ctx = ctx;
+        this.env = env;
+    }
+    /** Open a resident process as a facet of this actor, and start its runner. */
+    spawn(disk, supervisor, params) {
+        return spawnResident(this.ctx, this.env, disk, supervisor, params);
+    }
+    /**
+     * Run one program to completion as an UNKEYED dynamic worker.
+     *
+     * Unkeyed is the whole difference from `spawn`: nothing can re-resolve this
+     * worker into a later request's context, so it can never be a routeable
+     * target and never has to be released by name. It exists for the duration
+     * of one call and its stubs are dropped as that call unwinds.
+     *
+     * Shared by both substrates on purpose. `peer` places processes that have a
+     * residency to place; a one-shot has none, and shipping its fully-inline
+     * map across a sibling hop would meet the 32 MiB RPC ceiling that by-path
+     * boot specs exist to avoid — for a run that gains nothing by moving.
+     */
+    run(supervisor, params, consume) {
+        return runOneShot(this.ctx, this.env, supervisor, params, consume);
+    }
+}
+function spawnResident(ctx, env, disk, supervisor, params) {
     const facets = facetContainer(ctx);
     const slot = acquireSlot(ctx, params.pid);
     const name = residentFacetName(slot);
@@ -275,20 +306,7 @@ function residentProcessClass(ctx, env, disk, supervisor, params) {
         throw withDynamicWorkerCapNamed(ctx, error);
     }
 }
-/**
- * Run one program to completion as an UNKEYED dynamic worker.
- *
- * Unkeyed is the whole difference from `openResidentFacet`: nothing can
- * re-resolve this worker into a later request's context, so it can never be a
- * routeable target and never has to be released by name. It exists for the
- * duration of one call and its stubs are dropped as that call unwinds.
- *
- * Shared by both substrates on purpose. `peer` places processes that have a
- * residency to place; a one-shot has none, and shipping its fully-inline map
- * across a sibling hop would meet the 32 MiB RPC ceiling that by-path boot
- * specs exist to avoid — for a run that gains nothing by moving.
- */
-export async function runOneShotWorker(ctx, env, supervisor, params, consume) {
+async function runOneShot(ctx, env, supervisor, params, consume) {
     const loader = env.LOADER;
     if (!loader || typeof loader.load !== 'function') {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Running a program requires '

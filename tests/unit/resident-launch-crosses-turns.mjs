@@ -174,10 +174,10 @@ async function settle(world) {
 // through the public interface, so it cannot be what pins this.
 {
   const source = readFileSync(
-    new URL('../../packages/fabric/src/facet-image-store.ts', import.meta.url), 'utf8',
+    new URL('../../packages/fabric/src/image-store.ts', import.meta.url), 'utf8',
   );
   const start = source.indexOf('  async materialize(');
-  assert.ok(start > 0, 'the image store is written by FacetImageStore.materialize');
+  assert.ok(start > 0, 'the image store is written by ImageStore.materialize');
   const body = source.slice(start, source.indexOf('\n  /**', start + 10));
 
   const rooted = body.indexOf('this.residentImages.set(');

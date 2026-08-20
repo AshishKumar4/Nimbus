@@ -5,7 +5,7 @@
  * Every long-lived process Nimbus runs — node servers, python/ruby socket
  * servers, an agent TUI and its headless server — runs as a **DO Facet**:
  * a named child actor whose class comes from a dynamic worker, opened by
- * `openResidentFacet` in `workerd-facet-host.ts`.
+ * `processes(ctx, env).spawn` in `workerd-facet-host.ts`.
  *
  *   ctx.facets.get(`proc-${pid}`, () => ({
  *     class: env.LOADER.get(workerKey, buildConfig)

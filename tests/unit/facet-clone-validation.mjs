@@ -17,7 +17,7 @@
 //   (4) a runtime without `clone` fails loud, not silently-absent.
 
 import assert from 'node:assert/strict';
-import { cloneFacetStorage } from '../../packages/fabric/src/workerd-facet-host.ts';
+import { cloneStorage } from '../../packages/fabric/src/workerd-facet-host.ts';
 
 /**
  * The platform binding with its measured semantics: clone(src, dst) copies a
@@ -44,7 +44,7 @@ function createCloneWorld(seed = {}) {
 // ── (1) a populated source clones, byte-for-byte ────────────────────────────
 {
   const { ctx, stores, populated } = createCloneWorld({ fsnap: [['/etc/hosts', 'bytes']] });
-  await cloneFacetStorage(ctx, { src: 'fsnap', dst: 'proc-fork', populated });
+  await cloneStorage(ctx, { src: 'fsnap', dst: 'proc-fork', populated });
   assert.deepEqual(
     [...stores.get('proc-fork')],
     [['/etc/hosts', 'bytes']],
@@ -59,7 +59,7 @@ function createCloneWorld(seed = {}) {
     'proc-fork': [['/precious', 'survives']],
   });
   await assert.rejects(
-    cloneFacetStorage(ctx, { src: 'fsnpa', dst: 'proc-fork', populated }),
+    cloneStorage(ctx, { src: 'fsnpa', dst: 'proc-fork', populated }),
     (error) => {
       assert.match(error.message, /'fsnpa'/);
       assert.match(error.message, /EMPTIES the destination/i);
@@ -82,7 +82,7 @@ function createCloneWorld(seed = {}) {
   // close from outside). The post-check is what refuses to report success.
   ctx.facets.clone = (_src, dst) => { void dst; };
   await assert.rejects(
-    cloneFacetStorage(ctx, { src: 'fsnap', dst: 'proc-fork', populated }),
+    cloneStorage(ctx, { src: 'fsnap', dst: 'proc-fork', populated }),
     (error) => {
       assert.match(error.message, /'proc-fork'/);
       return true;
@@ -96,7 +96,7 @@ function createCloneWorld(seed = {}) {
   const { ctx, populated } = createCloneWorld({ fsnap: [['/etc/hosts', 'bytes']] });
   delete ctx.facets.clone;
   await assert.rejects(
-    cloneFacetStorage(ctx, { src: 'fsnap', dst: 'proc-fork', populated }),
+    cloneStorage(ctx, { src: 'fsnap', dst: 'proc-fork', populated }),
     /clone is unavailable/,
     'absence of the capability is an error, not a silent no-op',
   );

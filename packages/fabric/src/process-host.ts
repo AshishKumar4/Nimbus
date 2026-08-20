@@ -9,7 +9,7 @@
  *   peer  — the process is a named child actor of a SIBLING session DO, and
  *           the coordinator reaches it over one held-open RPC.
  *
- * Both call the same `openResidentFacet`. The peer leg is not a second process
+ * Both call the same `processes(ctx, env).spawn`. The peer leg is not a second process
  * implementation; it is the same call made on a different actor, which is why
  * the runner, the boot spec, the class name, the writer handshake, the start
  * contract and the lifecycle are shared code rather than parallel paths.
@@ -79,9 +79,8 @@ import {
 } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import {
-  openResidentFacet,
+  processes,
   residentFacetName,
-  runOneShotWorker,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
 import { BindingError } from './vendor/errors.js';
@@ -136,9 +135,7 @@ class FacetProcessHost implements ProcessHost {
   }
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
-    return runOneShotWorker(
-      this.ctx,
-      this.env,
+    return processes(this.ctx, this.env).run(
       { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
       params,
       consume,
@@ -151,7 +148,7 @@ class FacetProcessHost implements ProcessHost {
       pid: params.pid,
       writerId: params.writerId,
     };
-    const { slot, ...facet } = openResidentFacet(this.ctx, this.env, this.disk, supervisor, params);
+    const { slot, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
     return {
       ...facet,
       describe: () =>
@@ -337,9 +334,7 @@ class PeerProcessHost implements ProcessHost {
    * worker of the coordinator here exactly as it does on `facet`.
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
-    return runOneShotWorker(
-      this.ctx,
-      this.env,
+    return processes(this.ctx, this.env).run(
       { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
       params,
       consume,
@@ -386,7 +381,7 @@ class PeerProcessHost implements ProcessHost {
     } catch (error) {
       this.tokensInUse.delete(params.pid);
       // Awaited, not fired off: a spawn that rejects must mean nothing was
-      // left running, which is what a throw from `openResidentFacet` means on
+      // left running, which is what a throw from `processes().spawn` means on
       // the other substrate.
       try { await this._cancel(params.workerKey, placement.peerName); }
       finally { disposeRpcResource(placement.stub); }

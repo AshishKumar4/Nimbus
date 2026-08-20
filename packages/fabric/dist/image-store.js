@@ -1,5 +1,5 @@
 /**
- * facet-image-store.ts — materializing resident-process boot images into the
+ * image-store.ts — materializing resident-process boot images into the
  * content-addressed image store, and sweeping the ones nothing boots from.
  *
  * A resident process's module map is sized by the user's disk, so it does not
@@ -12,7 +12,7 @@
  * table.
  *
  * The filesystem itself stays the embedder's, reached through the
- * {@link FacetImageBlobStore} port — the store decides what is written where
+ * {@link ImageBlobStore} port — the store decides what is written where
  * and when; the port decides how bytes land on a disk and with what modes and
  * credentials.
  */
@@ -37,7 +37,7 @@ export const FACET_IMAGE_WRITE_SLICE_BYTES = Math.floor(MAX_TX_BLOB_BYTES / CHUN
  * hash's problem; everything else is idempotent — an image already present
  * at its own digest is already the bytes we were about to write.
  */
-export class FacetImageStore {
+export class ImageStore {
     blobs;
     isLive;
     /** pid → the boot images its facet loads from; the image sweep's root set. */

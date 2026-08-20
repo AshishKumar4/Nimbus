@@ -31,7 +31,7 @@ import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
-import { openResidentFacet, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/ctx-exports.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
@@ -1250,7 +1250,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
 // ── Process fabric: the peer host leg ───────────────────────────────────────
 //
 // THIS DO instance acts as a process host for a sibling coordinator session:
-// it opens the process as a facet of ITSELF — the same `openResidentFacet`
+// it opens the process as a facet of ITSELF — the same `processes().spawn`
 // call the coordinator makes when it hosts one directly — so the facet lands
 // in THIS DO's workerd process, with its own memory AND its own CPU. The
 // facet's SUPERVISOR binding is minted for the COORDINATOR's doId, so every
@@ -1287,7 +1287,7 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
 /**
  * Whole-file reads for a boot spec's by-path members, in ranges. This is the
  * one thing a peer does differently from a coordinator, and it is a PARAMETER
- * of `openResidentFacet` rather than a branch inside it: the coordinator reads
+ * of `processes().spawn` rather than a branch inside it: the coordinator reads
  * its own disk synchronously, a peer reads the same disk over the supervisor.
  *
  * Ranged because these are the session's largest files — a ruby
@@ -1436,7 +1436,7 @@ export async function _rpcHostProcess(self, boot, opts) {
     });
     let facet;
     try {
-        facet = openResidentFacet(self.ctx, self.env, () => peerDiskReader(supervisor), supervisor, {
+        facet = processes(self.ctx, self.env).spawn(() => peerDiskReader(supervisor), supervisor, {
             pid: hostOpts.pid,
             workerKey,
             boot: spec,

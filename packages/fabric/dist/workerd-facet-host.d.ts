@@ -65,7 +65,7 @@ interface WorkerLoaderBinding {
     load(code: unknown): LoadedWorkerStub;
 }
 /**
- * The bindings `openResidentFacet` needs off whichever DO is hosting. A
+ * The bindings `processes` needs off whichever DO is hosting. A
  * staged boot's assembler may read more off the same env (Nimbus's reads
  * ASSETS); the env travels to it whole, so nothing further is named here.
  */
@@ -100,7 +100,7 @@ export interface ResidentFacetEnv {
  * storage budget grants no copy-on-write credit — crossing it resets the
  * object rather than raising an error.
  */
-export declare function cloneFacetStorage(ctx: DurableObjectState, clone: {
+export declare function cloneStorage(ctx: DurableObjectState, clone: {
     src: string;
     dst: string;
     populated(name: string): boolean | Promise<boolean>;
@@ -121,7 +121,7 @@ export declare function cloneFacetStorage(ctx: DurableObjectState, clone: {
  */
 export declare function residentFacetName(slot: number): string;
 /**
- * What `openResidentFacet` hands back: a running process, minus its placement.
+ * What `processes(ctx, env).spawn` hands back: a running process, minus its placement.
  *
  * `slot` rides along because the caller's `describe` needs the facet's real
  * name and the slot is not derivable from the pid — that indirection is the
@@ -132,30 +132,37 @@ export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
     slot: number;
 };
 /**
- * Open a resident process as a facet of the actor whose `ctx` and `env` are
- * given, and start its runner.
+ * The process surface of one hosting actor: how a resident process comes
+ * into existence on workerd, and how a one-shot program runs to completion.
  *
- * This is the ONE way a resident process comes into existence, and every
+ * `spawn` is the ONE way a resident process comes into existence, and every
  * substrate goes through it: the facet host calls it with the coordinator's
  * own `ctx`, the peer host calls it — over one RPC — with a sibling session
  * DO's. Everything a substrate could plausibly want to special-case is a
  * PARAMETER here rather than a branch: which actor hosts the child, and how
  * the boot spec's by-path members are read.
  */
-export declare function openResidentFacet(ctx: DurableObjectState, env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, params: ProcessHostParams): ResidentFacet;
-/**
- * Run one program to completion as an UNKEYED dynamic worker.
- *
- * Unkeyed is the whole difference from `openResidentFacet`: nothing can
- * re-resolve this worker into a later request's context, so it can never be a
- * routeable target and never has to be released by name. It exists for the
- * duration of one call and its stubs are dropped as that call unwinds.
- *
- * Shared by both substrates on purpose. `peer` places processes that have a
- * residency to place; a one-shot has none, and shipping its fully-inline map
- * across a sibling hop would meet the 32 MiB RPC ceiling that by-path boot
- * specs exist to avoid — for a run that gains nothing by moving.
- */
-export declare function runOneShotWorker<T>(ctx: DurableObjectState, env: ResidentFacetEnv, supervisor: ResidentSupervisorProps, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+export declare function processes(ctx: DurableObjectState, env: ResidentFacetEnv): Processes;
+export declare class Processes {
+    private readonly ctx;
+    private readonly env;
+    constructor(ctx: DurableObjectState, env: ResidentFacetEnv);
+    /** Open a resident process as a facet of this actor, and start its runner. */
+    spawn(disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, params: ProcessHostParams): ResidentFacet;
+    /**
+     * Run one program to completion as an UNKEYED dynamic worker.
+     *
+     * Unkeyed is the whole difference from `spawn`: nothing can re-resolve this
+     * worker into a later request's context, so it can never be a routeable
+     * target and never has to be released by name. It exists for the duration
+     * of one call and its stubs are dropped as that call unwinds.
+     *
+     * Shared by both substrates on purpose. `peer` places processes that have a
+     * residency to place; a one-shot has none, and shipping its fully-inline
+     * map across a sibling hop would meet the 32 MiB RPC ceiling that by-path
+     * boot specs exist to avoid — for a run that gains nothing by moving.
+     */
+    run<T>(supervisor: ResidentSupervisorProps, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+}
 export {};
 //# sourceMappingURL=workerd-facet-host.d.ts.map

@@ -1,5 +1,5 @@
 /**
- * facet-image-store.ts — materializing resident-process boot images into the
+ * image-store.ts — materializing resident-process boot images into the
  * content-addressed image store, and sweeping the ones nothing boots from.
  *
  * A resident process's module map is sized by the user's disk, so it does not
@@ -12,7 +12,7 @@
  * table.
  *
  * The filesystem itself stays the embedder's, reached through the
- * {@link FacetImageBlobStore} port — the store decides what is written where
+ * {@link ImageBlobStore} port — the store decides what is written where
  * and when; the port decides how bytes land on a disk and with what modes and
  * credentials.
  */
@@ -39,7 +39,7 @@ export const FACET_IMAGE_WRITE_SLICE_BYTES = Math.floor(MAX_TX_BLOB_BYTES / CHUN
  * normalization are the implementation's: the store passes the same
  * store-relative paths it later roots and sweeps by.
  */
-export interface FacetImageBlobStore {
+export interface ImageBlobStore {
   /** Create a directory (and its parents) if it does not exist. */
   mkdirp(dir: string): void;
   /** The file's current size in bytes, or null when it does not exist. */
@@ -62,7 +62,7 @@ export interface FacetImageBlobStore {
  * hash's problem; everything else is idempotent — an image already present
  * at its own digest is already the bytes we were about to write.
  */
-export class FacetImageStore {
+export class ImageStore {
   /** pid → the boot images its facet loads from; the image sweep's root set. */
   private residentImages = new Map<number, string[]>();
   private dirReady = false;
@@ -75,7 +75,7 @@ export class FacetImageStore {
    *   is the process table, reached through this one predicate.
    */
   constructor(
-    private readonly blobs: () => FacetImageBlobStore,
+    private readonly blobs: () => ImageBlobStore,
     private readonly isLive: (pid: number) => boolean,
   ) {}
 
@@ -177,7 +177,7 @@ export class FacetImageStore {
    * Nothing is left for a TTL or an eviction heuristic to guess at, and after
    * a DO reset the table is empty so every orphan goes.
    */
-  private sweep(fs: FacetImageBlobStore): void {
+  private sweep(fs: ImageBlobStore): void {
     const live = new Set<string>();
     for (const [pid, paths] of this.residentImages) {
       if (this.isLive(pid)) {
