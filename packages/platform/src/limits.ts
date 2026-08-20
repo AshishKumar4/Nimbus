@@ -28,6 +28,20 @@ export const MAX_TX_BLOB_BYTES = 1 * 1024 * 1024;
 export const MAX_TX_LOGICAL_ROWS = 256;
 export const MAX_TX_SQL_EXECS = 64;
 
+// ── WebSocket attachment bound ──────────────────────────────────────────
+
+/**
+ * Bytes one hibernatable WebSocket attachment may serialize to. Verified in
+ * workerd source at the pinned version (v1.20260603.1,
+ * src/workerd/api/web-socket.h: `MAX_ATTACHMENT_SIZE = 1024 * 16`). The
+ * bound is on the SERIALIZED bytes — workerd re-serializes on every
+ * `serializeAttachment` call to check it — not on UTF-8 JSON text, so a
+ * JSON-length measurement is an approximation and only the platform's own
+ * refusal ("A WebSocket 'attachment' cannot be larger than 16384 bytes.")
+ * is the ceiling.
+ */
+export const WS_ATTACHMENT_LIMIT_BYTES = 16_384;
+
 // ── RPC payload envelope ────────────────────────────────────────────────
 
 // Largest byte payload Nimbus sends through an ordinary Workers RPC value.

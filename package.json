@@ -48,6 +48,7 @@
     "puppeteer-core": "^24.42.0",
     "typescript": "^5.7.0",
     "wabt": "^1.0.39",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.0.0",
+    "zod": "^4.4.3"
   }
 }
