@@ -104,7 +104,7 @@ import {
   appendScrollback, loadScrollback,
   type ShellStateSnapshot,
 } from './state-store.js';
-import { recordRecoveryEvent } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';

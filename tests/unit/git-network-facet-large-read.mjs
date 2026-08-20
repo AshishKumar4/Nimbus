@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/core/src/constants.ts';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/platform/src/limits.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 
 const LARGE_FILE_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES + 1;

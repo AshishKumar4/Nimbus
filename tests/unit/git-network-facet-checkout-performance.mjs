@@ -17,7 +17,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { GIT_BUNDLE_CODE } from '../../packages/worker/src/git-bundle.generated.ts';
-import { decodeWriteBatchStream } from '../../packages/core/src/_shared/w7-frame.ts';
+import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
 

@@ -42,11 +42,11 @@ import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
-  MAX_RPC_SAFE_PAYLOAD_BYTES,
   NIMBUS_AI_GATEWAY_PORT,
   NODE_VERSION,
   NODE_VERSIONS,

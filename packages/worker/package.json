@@ -86,6 +86,7 @@
     "@ai-sdk/openai-compatible": "^2.0.41",
     "@nimbus-sh/core": "^0.5.0",
     "@nimbus-sh/fabric": "^0.1.0",
+    "@nimbus-sh/platform": "^0.1.0",
     "@renovatebot/pep440": "^5.0.0",
     "ai": "^6.0.182",
     "clean-git-ref": "^2.0.1",

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { WeightedCreditPool } from '../../packages/core/src/_shared/weighted-credit-pool.ts';
+import { WeightedCreditPool } from '../../packages/platform/src/weighted-credit-pool.ts';
 
 const deferred = () => {
   let resolve;

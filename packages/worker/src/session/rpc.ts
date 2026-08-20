@@ -24,7 +24,7 @@
 
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -50,15 +50,15 @@ import {
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
-} from '@nimbus-sh/core/observability/oom-discriminator.js';
-import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
+} from '@nimbus-sh/platform/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import {
   acquireSupervisorReadAllocation,
-} from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+} from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import {
   rpcPayloadEnd,
   rpcPayloadStart,
-} from '@nimbus-sh/core/observability/diag-counters.js';
+} from '@nimbus-sh/platform/diag-counters.js';
 import {
   CRED_KERNEL,
   CRED_SESSION_USER,
@@ -67,13 +67,14 @@ import {
   type VfsCred,
   type VfsListPage,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { BatchInodeEntry, CredentialedVfs, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
 import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
-  MAX_RPC_SAFE_PAYLOAD_BYTES,
 } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
 import { clearPortCapability } from './port-capability.js';

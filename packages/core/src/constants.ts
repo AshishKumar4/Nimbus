@@ -1,6 +1,12 @@
 /**
  * constants.ts — Single source of truth for all Nimbus configuration.
+ *
+ * Nimbus POLICY only. The measured platform limits these policies are
+ * derived from (tx bounds, the RPC envelope, supervisor budgets) live in
+ * `@nimbus-sh/platform/limits.js`.
  */
+
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 
 // ── Versions ────────────────────────────────────────────────────────────
 export const NIMBUS_VERSION = '2.0.0';
@@ -55,19 +61,11 @@ export const SQLJS_VERSION = '1.14.1';
 export const OPENCODE_VERSION = '1.16.2';
 
 // ── VFS Constants ───────────────────────────────────────────────────────
-export const CHUNK_SIZE = 65_536;        // 64KB per content chunk
+// The chunk size itself (CHUNK_SIZE) and the transaction bounds are
+// platform limits — see @nimbus-sh/platform/limits.js.
 export const LRU_MAX_ENTRIES = 512;      // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64;            // rows per batch INSERT
 export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
-export const MAX_TX_BLOB_BYTES = 1 * 1024 * 1024;
-export const MAX_TX_LOGICAL_ROWS = 256;
-export const MAX_TX_SQL_EXECS = 64;
-export const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
-
-// Largest byte payload Nimbus sends through an ordinary Workers RPC value.
-// The platform limit is 32 MiB; 28 MiB leaves room for structured-clone
-// metadata and matches the proven on-demand facet transfer envelope.
-export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 
 // ── Batched filesystem reads ────────────────────────────────────────────
 // A round trip costs an order of magnitude more than the SQLite lookup
@@ -201,11 +199,12 @@ export const PREFETCH_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 
 // ── npm Constants ───────────────────────────────────────────────────────
+// The pre-bundle admission envelope (PRE_BUNDLE_SLICE_CAP_BYTES,
+// PRE_BUNDLE_CONCURRENCY) is a measured platform envelope — see
+// @nimbus-sh/platform/limits.js.
 export const NPM_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_CONCURRENCY = 12;
 export const NPM_DECOMPRESS_TIMEOUT = 15_000;
-export const PRE_BUNDLE_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
-export const PRE_BUNDLE_CONCURRENCY = 1;
 
 // ── Dev Server Constants ────────────────────────────────────────────────
 export const DEFAULT_VITE_PORT = 5173;
@@ -224,54 +223,6 @@ export const NIMBUS_AI_GATEWAY_PORT = 8790;
 
 // ── Compatibility ───────────────────────────────────────────────────────
 export const CF_COMPAT_DATE = '2026-04-01';
-
-// ── Supervisor heap budget [C'.1] ───────────────────────────────────────
-//
-// Three distinct memory regimes, not one shared pool:
-//
-//   - Supervisor DO isolate: 128 MiB HARD platform ceiling ("Each isolate
-//     can consume up to 128 MB of memory" —
-//     https://developers.cloudflare.com/workers/platform/limits/).
-//   - Facets: ~208-256 MiB EACH, measured — memory independent of the
-//     supervisor and of each other (1,664 MiB live across 8 facets +
-//     parent) but CPU SHARED across the actor thread. See
-//     packages/worker/src/loaders/process-fabric.ts.
-//   - Peer DOs: independent memory AND CPU budgets, measured 1.2 GiB
-//     live across 8 peers.
-//
-// Nimbus targets HALF of the supervisor's 128 MiB as a self-imposed soft
-// ceiling so the supervisor always has runway when workerd LRU-evicts
-// neighbours or AIR (Asynchronous Isolate Recreation) folds growing
-// isolates.
-//
-// 64 MiB is a soft admission budget, not a measurement — the right value
-// is unmeasured — and nothing enforces it directly.
-// src/observability/heap-estimate.ts sums the INSTRUMENTED contributors —
-// the supervisor baseline, VFS LRU and in-flight writes, pre-bundle
-// slices, streaming RPC buffers, and the prefetch-bundle build lease and
-// cache gauge — which is a lower bound, not full coverage; allocation
-// sites known to be missing are listed in HEAP_BLIND_SPOTS. Read a low
-// percentOfCeiling accordingly.
-export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
-
-// Shared allowance for transient allocations in the supervisor DO. With the
-// VFS LRU shrunk to 8 MiB during an active reservation, 40 MiB of admitted
-// payload plus the 9 MiB bundle baseline stays below the 64 MiB soft ceiling
-// with 7 MiB left for metadata, structured-clone overhead, and runtime state.
-// This is 31.25% of the platform's 128 MiB hard isolate ceiling.
-export const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES = 40 * 1024 * 1024;
-
-// Reserved slice of that allowance for chunk-sized filesystem reads, so a
-// read is never queued behind a multi-megabyte owner for a wait that has
-// nothing to do with its own cost. A read only draws on this when the shared
-// budget is already contended — which is exactly when the VFS LRU is shrunk
-// to 8 MiB — so peak accounting is 40 + 1 admitted, 8 LRU, 9 bundle baseline:
-// 58 MiB, still under the 64 MiB soft ceiling.
-//
-// 1 MiB is 16 concurrent READ_STREAM_CHUNK_BYTES reads. The point is not
-// depth, it is that a read loop keeps moving while a heavy owner works
-// instead of stopping dead for the duration.
-export const SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
 
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';

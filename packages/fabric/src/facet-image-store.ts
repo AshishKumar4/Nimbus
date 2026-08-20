@@ -17,7 +17,7 @@
  * credentials.
  */
 
-import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/core/constants.js';
+import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
 import type { LaunchPacer } from './launch-pacer.js';
 

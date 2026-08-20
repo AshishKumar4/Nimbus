@@ -18,12 +18,12 @@
  *   - Basename injection (commit 2) handles the /preview/ basepath wiring.
  */
 
+import type { SqliteVFS } from './sqlite-vfs.js';
 import type {
-  SqliteVFS,
   BatchInodeEntry,
   BatchChunkEntry,
-} from './sqlite-vfs.js';
-import { CHUNK_SIZE } from '../constants.js';
+} from '@nimbus-sh/platform/w7-frame.js';
+import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';

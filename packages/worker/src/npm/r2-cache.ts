@@ -352,7 +352,7 @@ export function packumentKey(name: string): string {
  * proving the L2 layer is functional even when local-dev wall-clock
  * latency is too noisy to demonstrate 5×.
  *
- * Diag counters (src/observability/diag-counters.ts) bump for the
+ * Diag counters (@nimbus-sh/platform/diag-counters.js) bump for the
  * SupervisorRPC layer (RPC-perspective hit/miss). These per-instance
  * counters bump for the R2CacheClient call surface itself (L2 vs L3
  * vs miss), independent of who's calling.

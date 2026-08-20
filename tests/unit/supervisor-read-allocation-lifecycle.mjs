@@ -14,7 +14,7 @@
 // unchanged: the credit still serialises a large read against a large write.
 
 import assert from 'node:assert/strict';
-import { SupervisorAllocationBudget } from '../../packages/core/src/observability/heavy-alloc-coord.ts';
+import { SupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 
 const MiB = 1024 * 1024;
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES — one ranged read

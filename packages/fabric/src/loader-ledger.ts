@@ -23,7 +23,7 @@
  * that still exists.
  */
 
-import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
+import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 
 interface LoaderLedger {
   /** Distinct loader ids ever gotten — each one a permanently consumed slot. */

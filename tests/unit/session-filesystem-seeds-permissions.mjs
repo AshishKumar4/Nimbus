@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { encodeWriteBatchStream } from '../../packages/core/src/_shared/w7-frame.ts';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 

@@ -39,7 +39,9 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { CWD_SNAPSHOT_MAX_FILE_BYTES } from '../../packages/core/src/constants.ts';
+import {
+  CWD_SNAPSHOT_MAX_FILE_BYTES,
+} from '../../packages/core/src/constants.ts';
 
 // ── Part 1: admission is a budget, not a policy ─────────────────────────────
 //

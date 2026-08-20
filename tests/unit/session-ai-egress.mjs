@@ -18,7 +18,9 @@ import {
   mintSessionAiToken,
   requestCarriesSessionAiToken,
 } from '../../packages/core/src/_shared/ai-egress.ts';
-import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/core/src/constants.ts';
+import {
+  NIMBUS_AI_GATEWAY_PORT,
+} from '../../packages/core/src/constants.ts';
 
 const TOKEN = mintSessionAiToken();
 const FOREIGN_KEY = 'sk-proj-Aa0000000000000000000000000000000000000000000000';

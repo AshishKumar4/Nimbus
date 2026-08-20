@@ -5,9 +5,9 @@ import {
   acquireSupervisorAllocation,
   registerAllocObserver,
   SupervisorAllocationBudget,
-} from '../../packages/core/src/observability/heavy-alloc-coord.ts';
-import { readDiagCounters } from '../../packages/core/src/observability/diag-counters.ts';
-import { estimateSupervisorHeap } from '../../packages/core/src/observability/heap-estimate.ts';
+} from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
+import { estimateSupervisorHeap } from '../../packages/platform/src/heap-estimate.ts';
 
 const deferred = () => {
   let resolve;

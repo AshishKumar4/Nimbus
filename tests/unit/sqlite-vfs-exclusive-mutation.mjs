@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { encodeWriteBatchStream } from '../../packages/core/src/_shared/w7-frame.ts';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';

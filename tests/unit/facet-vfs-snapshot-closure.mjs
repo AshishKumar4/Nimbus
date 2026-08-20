@@ -10,10 +10,12 @@ import {
 } from '../../packages/worker/src/facets/manager.ts';
 import {
   CWD_SNAPSHOT_MAX_FILE_BYTES,
-  MAX_RPC_SAFE_PAYLOAD_BYTES,
   VFS_BUNDLE_MAX_BYTES,
   VFS_BUNDLE_MAX_FILES,
 } from '../../packages/core/src/constants.ts';
+import {
+  MAX_RPC_SAFE_PAYLOAD_BYTES,
+} from '../../packages/platform/src/limits.ts';
 
 class FakeVfs {
   // The bundle is stamped with the cursor it was read at, so a stand-in

@@ -17,7 +17,9 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { BUNDLE_BUILD_DEADLINE_MS } from '../../packages/core/src/constants.ts';
+import {
+  BUNDLE_BUILD_DEADLINE_MS,
+} from '../../packages/core/src/constants.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();

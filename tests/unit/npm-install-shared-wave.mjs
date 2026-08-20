@@ -10,7 +10,7 @@ import {
 import {
   decodeWriteBatchStream,
   encodeWriteBatchStream,
-} from '../../packages/core/src/_shared/w7-frame.ts';
+} from '../../packages/platform/src/w7-frame.ts';
 
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;

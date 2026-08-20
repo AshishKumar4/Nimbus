@@ -34,7 +34,7 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
-import { registerAllocObserver } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
@@ -1032,7 +1032,7 @@ export class NimbusSession extends CloudflareDurableObject {
 
   /** B'.4 — live initSession phase. Surfaced via
    *  /api/_diag/session.phase. null pre-first-init. */
-  _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null = null;
+  _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null = null;
 
   /** B'.5 — count of warm-rejoin /ws upgrades. Increments each
    *  time the join path is taken (Phase B skipped). 0 means no

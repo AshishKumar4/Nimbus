@@ -35,7 +35,7 @@
  * same content.
  */
 
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 
 /**
  * Per-isolate cache. Keys are asset paths (e.g. `/_assets/foo.js`).

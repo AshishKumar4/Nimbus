@@ -21,7 +21,7 @@
 // from both paths.
 
 import assert from 'node:assert/strict';
-import { MAX_TX_LOGICAL_ROWS } from '../../packages/core/src/constants.ts';
+import { MAX_TX_LOGICAL_ROWS } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';

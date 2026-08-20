@@ -43,27 +43,33 @@
 import { VfsEventEmitter, type VfsEventType } from './events.js';
 import { normalizeVfsPath } from './path.js';
 import {
-  CHUNK_SIZE,
   LRU_MAX_ENTRIES,
   BATCH_SIZE,
+  FS_LIST_PAGE_LIMIT,
+} from '../constants.js';
+import {
+  CHUNK_SIZE,
   MAX_TX_BLOB_BYTES,
   MAX_TX_LOGICAL_ROWS,
   MAX_TX_SQL_EXECS,
   MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
-  FS_LIST_PAGE_LIMIT,
-} from '../constants.js';
-import { recordFailure } from '../observability/oom-discriminator.js';
-import { classifyError } from '../observability/oom-classify.js';
-import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
+} from '@nimbus-sh/platform/limits.js';
+import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
 import {
   decodeWriteBatchStream,
+  type BatchChunkEntry,
+  type BatchInodeEntry,
+  type BatchWritePayload,
+  type VfsInodeKind,
   type W7DecodedRecord,
-} from '../_shared/w7-frame.js';
+} from '@nimbus-sh/platform/w7-frame.js';
 import {
   WeightedCreditPool,
   type CreditLease,
-} from '../_shared/weighted-credit-pool.js';
+} from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import {
   CRED_KERNEL,
@@ -104,8 +110,9 @@ function installPipelineDiagEnabled(): boolean {
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
-
-export type VfsInodeKind = 'file' | 'directory' | 'symlink';
+// VfsInodeKind and the writeBatch payload types (BatchInodeEntry,
+// BatchChunkEntry, BatchWritePayload) live with the wire format that encodes
+// them: @nimbus-sh/platform/w7-frame.js.
 
 export interface ExclusiveMutationLease {
   readonly root: string;
@@ -131,22 +138,6 @@ interface INode {
   chunkCount: number;
   /** Cached immutable content key. Null means the deterministic legacy key. */
   contentId: string | null;
-}
-
-/** Entry for bulk inode creation via writeBatch(). */
-export interface BatchInodeEntry {
-  path: string;
-  parentPath: string;
-  /** Defaults to isDir ? directory : file for legacy/non-symlink producers. */
-  kind?: VfsInodeKind;
-  isDir: boolean;
-  size: number;
-  atime?: number;
-  mtime: number;
-  mode: number;
-  uid?: number;
-  gid?: number;
-  chunkCount: number;
 }
 
 export interface VfsStat {
@@ -231,21 +222,6 @@ export interface CredentialedVfs {
    * revision clock is in memory and restarts at zero.
    */
   readonly epoch: string;
-}
-
-/** Entry for bulk chunk creation via writeBatch(). */
-export interface BatchChunkEntry {
-  path: string;
-  chunkId: number;
-  data: Uint8Array;
-}
-
-/** Payload for writeBatch() — all inodes + chunks written in ONE transactionSync(). */
-export interface BatchWritePayload {
-  inodes: BatchInodeEntry[];
-  chunks: BatchChunkEntry[];
-  /** Paths to delete before writing (for clean reinstall). */
-  deletePaths?: string[];
 }
 
 export interface WriteBatchStreamProgress {

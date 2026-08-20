@@ -62,7 +62,7 @@ import {
   PRE_BUNDLE_CONCURRENCY,
   PRE_BUNDLE_SLICE_CAP_BYTES,
   SUPERVISOR_HEAP_CEILING_BYTES,
-} from '../constants.js';
+} from './limits.js';
 import type { DiagCounters } from './diag-counters.js';
 import {
   readSupervisorAllocationBudget,

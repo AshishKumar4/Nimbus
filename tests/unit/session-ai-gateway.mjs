@@ -37,7 +37,9 @@ import {
   SESSION_AI_CREDENTIAL_KEY,
 } from '../../packages/worker/src/session/ai.ts';
 import { createNimbusAgentOAuthCookie } from '../../packages/worker/src/session/agent-oauth.ts';
-import { NIMBUS_AI_GATEWAY_PORT } from '../../packages/core/src/constants.ts';
+import {
+  NIMBUS_AI_GATEWAY_PORT,
+} from '../../packages/core/src/constants.ts';
 import {
   NIMBUS_AI_TOKEN_ENV,
   requestCarriesSessionAiToken,

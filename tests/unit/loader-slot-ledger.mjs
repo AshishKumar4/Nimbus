@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
 import { beginLoaderFetch, loaderLedgerStats } from '../../packages/fabric/src/loader-ledger.ts';
-import { classifyMessage } from '../../packages/core/src/observability/oom-classify.ts';
+import { classifyMessage } from '../../packages/platform/src/oom-classify.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';

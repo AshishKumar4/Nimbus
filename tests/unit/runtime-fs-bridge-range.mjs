@@ -15,7 +15,7 @@ import {
   CHUNK_SIZE,
   MAX_TX_BLOB_BYTES,
   MAX_TX_LOGICAL_ROWS,
-} from '../../packages/core/src/constants.ts';
+} from '../../packages/platform/src/limits.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 

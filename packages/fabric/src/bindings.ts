@@ -25,7 +25,7 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
-import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
 import { requireStagedBootAssembler } from './process-fabric.js';
 import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';

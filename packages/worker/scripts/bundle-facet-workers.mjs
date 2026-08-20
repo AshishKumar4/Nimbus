@@ -51,6 +51,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const coreRoot = join(root, '..', 'core');
+const platformRoot = join(root, '..', 'platform');
 
 /**
  * Bundle one TS source into a self-contained ESM string suitable for
@@ -273,11 +274,8 @@ async function main() {
   //    facet has no access to the encoder symbol (cloudflare-parallel
   //    serialises via fn.toString() — no runtime imports).
   //
-  //    The W7-frame module imports a TypeScript type from sqlite-vfs,
-  //    which esbuild's type-stripping handles transparently. The
-  //    runtime output has no imports.
   const w7Stripped = await bundleAsPreamble(
-    join(coreRoot, 'src', '_shared', 'w7-frame.ts'),
+    join(platformRoot, 'src', 'w7-frame.ts'),
     'w7-frame',
   );
 
@@ -291,7 +289,7 @@ async function main() {
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
-    ' *   - @nimbus-sh/core src/_shared/w7-frame.ts (W7 streaming bulk-write encoder)',
+    ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *',
     ' * Consumed by src/loaders/loader-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',

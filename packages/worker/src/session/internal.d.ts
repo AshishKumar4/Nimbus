@@ -132,7 +132,7 @@ export interface SessionInternal {
   // boundary; reset to 'drained' in wsClose. Pre-first-init the field
   // is null so the diag endpoint can distinguish "never inited" from
   // "init returned but didn't set a phase".
-  _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null;
+  _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null;
 
   // ── B'.5 warm-join counter ─────────────────────────────────────────
   // Increments each time /ws takes the warm-rejoin path (skipping

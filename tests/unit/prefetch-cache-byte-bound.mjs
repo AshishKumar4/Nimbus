@@ -22,8 +22,10 @@ import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { readDiagCounters } from '../../packages/core/src/observability/diag-counters.ts';
-import { PREFETCH_CACHE_MAX_BYTES } from '../../packages/core/src/constants.ts';
+import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
+import {
+  PREFETCH_CACHE_MAX_BYTES,
+} from '../../packages/core/src/constants.ts';
 
 setCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),

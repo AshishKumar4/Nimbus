@@ -14,7 +14,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ESBUILD_VERSION, SQLJS_VERSION } from '../../packages/core/src/constants.ts';
+import {
+  ESBUILD_VERSION,
+  SQLJS_VERSION,
+} from '../../packages/core/src/constants.ts';
 import {
   OPENCODE_ARTIFACT_BUILD_ID,
   OPENCODE_ARTIFACT_DIGESTS,

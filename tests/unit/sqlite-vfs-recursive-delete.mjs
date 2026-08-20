@@ -15,7 +15,7 @@ import {
   MAX_TX_BLOB_BYTES,
   MAX_TX_LOGICAL_ROWS,
   MAX_TX_SQL_EXECS,
-} from '../../packages/core/src/constants.ts';
+} from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';

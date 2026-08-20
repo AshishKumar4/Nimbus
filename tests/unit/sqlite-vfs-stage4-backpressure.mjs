@@ -5,8 +5,8 @@ import {
   CHUNK_SIZE,
   MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
   MAX_TX_BLOB_BYTES,
-} from '../../packages/core/src/constants.ts';
-import { encodeWriteBatchStream } from '../../packages/core/src/_shared/w7-frame.ts';
+} from '../../packages/platform/src/limits.ts';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';

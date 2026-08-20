@@ -33,7 +33,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { readSupervisorAllocationBudget } from '../../packages/core/src/observability/heavy-alloc-coord.ts';
+import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 
 setCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),

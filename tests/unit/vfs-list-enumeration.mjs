@@ -11,7 +11,9 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { FS_LIST_PAGE_LIMIT } from '../../packages/core/src/constants.ts';
+import {
+  FS_LIST_PAGE_LIMIT,
+} from '../../packages/core/src/constants.ts';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);

@@ -24,7 +24,7 @@ import {
 import {
   acquireSupervisorAllocation,
   readSupervisorAllocationBudget,
-} from '../../packages/core/src/observability/heavy-alloc-coord.ts';
+} from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';

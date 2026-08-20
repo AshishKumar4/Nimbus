@@ -14,6 +14,7 @@
     "customConditions": ["workspace"]
   },
   "include": [
+    "packages/platform/src/**/*.ts",
     "packages/core/src/**/*.ts",
     "packages/fabric/src/**/*.ts",
     "packages/worker/src/**/*.ts",

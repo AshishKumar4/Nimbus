@@ -16,7 +16,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { generateSqliteShimCode, generateSqliteFacetPreamble } from '../../packages/worker/src/runtime/sqlite-shim.ts';
-import { SQLJS_VERSION } from '../../packages/core/src/constants.ts';
+import {
+  SQLJS_VERSION,
+} from '../../packages/core/src/constants.ts';
 
 const require = createRequire(import.meta.url);
 

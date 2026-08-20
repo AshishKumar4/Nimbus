@@ -17,14 +17,14 @@ import assert from 'node:assert/strict';
 import {
   estimateSupervisorHeap,
   HEAP_BLIND_SPOTS,
-} from '../../packages/core/src/observability/heap-estimate.ts';
+} from '../../packages/platform/src/heap-estimate.ts';
 import {
   readDiagCounters,
   prefetchBundleStart,
   prefetchBundleEnd,
   setPrefetchCacheBytes,
-} from '../../packages/core/src/observability/diag-counters.ts';
-import { SUPERVISOR_HEAP_CEILING_BYTES } from '../../packages/core/src/constants.ts';
+} from '../../packages/platform/src/diag-counters.ts';
+import { SUPERVISOR_HEAP_CEILING_BYTES } from '../../packages/platform/src/limits.ts';
 
 const vfsInputs = { cacheHotBytes: 35 * 1024, inFlightWriteBytes: 0 };
 const estimate = estimateSupervisorHeap(readDiagCounters(), vfsInputs);

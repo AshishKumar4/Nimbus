@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { CHUNK_SIZE } from '../../packages/core/src/constants.ts';
+import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';

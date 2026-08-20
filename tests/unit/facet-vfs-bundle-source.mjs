@@ -2,7 +2,9 @@
 
 import assert from 'node:assert/strict';
 
-import { BUNDLE_MAX_ENCODED_BYTES } from '../../packages/core/src/constants.ts';
+import {
+  BUNDLE_MAX_ENCODED_BYTES,
+} from '../../packages/core/src/constants.ts';
 import { buildFacetVfsBundleSource } from '../../packages/worker/src/facets/manager.ts';
 
 function evaluateModule(source) {

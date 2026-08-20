@@ -26,12 +26,12 @@
 
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint } from './ctx-exports.js';
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './loader-ledger.js';
 import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
-import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
-import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
+import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import {
   BindingError,
   ExecutionError,

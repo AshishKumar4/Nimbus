@@ -32,7 +32,7 @@
 // merged union includes both 'idle' (resting state) and 'lock-check'
 // (parsing package-lock.json). See _shared/install-phase.ts for full
 // semantics documentation.
-import type { InstallPhase } from '../_shared/install-phase.js';
+import type { InstallPhase } from './install-phase.js';
 
 export interface DiagCounters {
   /** Top-level install phase. */
@@ -306,38 +306,5 @@ export function recordR2RaceCounters(c: {
   _counters.r2.pipelinedPackumentRaceLosses += c.pipelinedPackumentRaceLosses;
 }
 
-/**
- * cache-obs-2: fold facet-collected per-tier cache events into the
- * DO-side cache-stats singleton. Called from installer.ts after a
- * batch-facet / resolve-facet returns — mirrors recordR2RaceCounters
- * (the facet collects metrics in its result and the supervisor folds
- * them into the DO isolate).
- *
- * Each event has shape:
- *   { kind: 'hit', tier: 'L2'|'L3'|'L4', cacheKind: 'tarball'|'packument'|'asset', bytes: number }
- *   { kind: 'miss', tier: ..., cacheKind: ... }
- *
- * The recordHit/recordMiss surface is defined in
- * src/_shared/cache-stats.ts.
- */
-import {
-  recordHit as _cacheRecordHit,
-  recordMiss as _cacheRecordMiss,
-  type CacheTier,
-  type CacheKind,
-} from '../_shared/cache-stats.js';
-
-export type CacheStatEvent =
-  | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
-  | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
-
-export function recordCacheStatEvents(events: readonly CacheStatEvent[] | undefined): void {
-  if (!events || events.length === 0) return;
-  for (const e of events) {
-    if (e.kind === 'hit') {
-      _cacheRecordHit(e.tier, e.cacheKind, e.bytes);
-    } else {
-      _cacheRecordMiss(e.tier, e.cacheKind);
-    }
-  }
-}
+// cache-obs-2: the facet-event fold (`recordCacheStatEvents`) lives with the
+// cache-stats singleton it writes — @nimbus-sh/core/_shared/cache-stats.js.

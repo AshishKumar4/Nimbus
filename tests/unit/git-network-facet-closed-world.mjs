@@ -8,8 +8,8 @@ import {
   decodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
-} from '../../packages/core/src/_shared/w7-frame.ts';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/core/src/constants.ts';
+} from '../../packages/platform/src/w7-frame.ts';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/platform/src/limits.ts';
 import {
   assembleGitNetworkFacetSource,
   execGitNetwork,

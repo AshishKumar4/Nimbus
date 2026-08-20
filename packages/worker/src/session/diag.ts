@@ -19,7 +19,7 @@
 
 import {
   rehydrateFromStorage, snapshotForStorage, getFailures,
-} from '@nimbus-sh/core/observability/oom-discriminator.js';
+} from '@nimbus-sh/platform/oom-discriminator.js';
 import { W5_RING_STORAGE_KEY } from './keys.js';
 
 /**

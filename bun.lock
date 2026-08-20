@@ -91,6 +91,7 @@
       "name": "@nimbus-sh/core",
       "version": "0.5.0",
       "dependencies": {
+        "@nimbus-sh/platform": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
         "acorn": "^8.15.0",
         "acorn-walk": "^8.3.5",
@@ -119,8 +120,17 @@
       "version": "0.1.0",
       "dependencies": {
         "@nimbus-sh/core": "^0.5.0",
+        "@nimbus-sh/platform": "^0.1.0",
         "zod": "^4.4.3",
       },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250327.0",
+        "typescript": "^5.7.0",
+      },
+    },
+    "packages/platform": {
+      "name": "@nimbus-sh/platform",
+      "version": "0.1.0",
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
         "typescript": "^5.7.0",
@@ -162,6 +172,7 @@
         "@ai-sdk/openai-compatible": "^2.0.41",
         "@nimbus-sh/core": "^0.5.0",
         "@nimbus-sh/fabric": "^0.1.0",
+        "@nimbus-sh/platform": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",
         "clean-git-ref": "^2.0.1",
@@ -459,6 +470,8 @@
     "@nimbus-sh/fabric": ["@nimbus-sh/fabric@workspace:packages/fabric"],
 
     "@nimbus-sh/hosted-demo": ["@nimbus-sh/hosted-demo@workspace:apps/hosted-demo"],
+
+    "@nimbus-sh/platform": ["@nimbus-sh/platform@workspace:packages/platform"],
 
     "@nimbus-sh/probe": ["@nimbus-sh/probe@workspace:apps/probe"],
 

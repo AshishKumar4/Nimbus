@@ -1,20 +1,19 @@
 {
-  "name": "@nimbus-sh/fabric",
+  "name": "@nimbus-sh/platform",
   "version": "0.1.0",
-  "description": "The Cloudflare half of Nimbus — Durable Object facet hosting, dynamic-worker loader pools, the resident-process fabric, and DO alarm/hibernation machinery.",
+  "description": "The measured Cloudflare platform truths Nimbus is built on — error taxonomy, limits tables, budget coordination, and wire-format primitives, with zero runtime dependencies.",
   "keywords": [
     "cloudflare",
     "workers",
     "durable-objects",
-    "facets",
-    "worker-loader",
-    "sandbox"
+    "limits",
+    "observability"
   ],
   "homepage": "https://github.com/AshishKumar4/Nimbus",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AshishKumar4/Nimbus.git",
-    "directory": "packages/fabric"
+    "directory": "packages/platform"
   },
   "bugs": "https://github.com/AshishKumar4/Nimbus/issues",
   "license": "MIT",
@@ -47,11 +46,6 @@
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@nimbus-sh/core": "^0.5.0",
-    "@nimbus-sh/platform": "^0.1.0",
-    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250327.0",

@@ -152,7 +152,7 @@ try {
   // not this test's, and a test that silently rewrites the tree it is testing
   // is how a stale dist gets papered over.
   const tarballs = [];
-  for (const dir of [join(REPO, 'packages', 'core'), ...staged]) {
+  for (const dir of [join(REPO, 'packages', 'core'), join(REPO, 'packages', 'platform'), ...staged]) {
     const packed = JSON.parse(
       run('npm', ['pack', dir, '--json', '--ignore-scripts', '--pack-destination', work], work),
     );

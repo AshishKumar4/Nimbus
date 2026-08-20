@@ -12,12 +12,12 @@ import {
   CHUNK_SIZE,
   SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
   SUPERVISOR_READ_RESERVE_BYTES,
-} from '../constants.js';
+} from './limits.js';
 import {
   WeightedCreditPool,
   type ResizableCreditLease,
   type WeightedCreditPoolOptions,
-} from '../_shared/weighted-credit-pool.js';
+} from './weighted-credit-pool.js';
 
 export interface SupervisorAllocationBudgetStats {
   readonly capacity: number;

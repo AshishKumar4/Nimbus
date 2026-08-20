@@ -191,7 +191,7 @@ const run = (cmd, args, cwd) =>
 try {
   // ── 1. Pack what a consumer installs ─────────────────────────────────────
   const tarballs = [];
-  for (const pkg of ['fabric', 'core']) {
+  for (const pkg of ['fabric', 'core', 'platform']) {
     const packed = JSON.parse(run(
       'npm',
       ['pack', join(REPO, 'packages', pkg), '--json', '--ignore-scripts', '--pack-destination', work],

@@ -3,13 +3,44 @@
  * The format is internal: every producer and consumer deploys together.
  */
 
-import { CHUNK_SIZE } from '../constants.js';
-import type {
-  BatchChunkEntry,
-  BatchInodeEntry,
-  BatchWritePayload,
-  VfsInodeKind,
-} from '../vfs/sqlite-vfs.js';
+import { CHUNK_SIZE } from './limits.js';
+
+// The batch payload types live WITH the wire format that encodes them: every
+// producer and consumer of a W7 stream speaks exactly these records, and the
+// SQLite VFS implements against them rather than the other way around.
+
+export type VfsInodeKind = 'file' | 'directory' | 'symlink';
+
+/** Entry for bulk inode creation via writeBatch(). */
+export interface BatchInodeEntry {
+  path: string;
+  parentPath: string;
+  /** Defaults to isDir ? directory : file for legacy/non-symlink producers. */
+  kind?: VfsInodeKind;
+  isDir: boolean;
+  size: number;
+  atime?: number;
+  mtime: number;
+  mode: number;
+  uid?: number;
+  gid?: number;
+  chunkCount: number;
+}
+
+/** Entry for bulk chunk creation via writeBatch(). */
+export interface BatchChunkEntry {
+  path: string;
+  chunkId: number;
+  data: Uint8Array;
+}
+
+/** Payload for writeBatch() — all inodes + chunks written in ONE transactionSync(). */
+export interface BatchWritePayload {
+  inodes: BatchInodeEntry[];
+  chunks: BatchChunkEntry[];
+  /** Paths to delete before writing (for clean reinstall). */
+  deletePaths?: string[];
+}
 
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 
@@ -922,7 +953,9 @@ function noopRetention(bytes: number): W7ChunkRetention {
 
 function decodeText(bytes: Uint8Array, label: string): string {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // Both options stated: workers-types declares TextDecoderConstructorOptions
+    // with every property required, and ignoreBOM's default is false anyway.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch (error) {
     throw new Error(`w7-frame: invalid UTF-8 in ${label}: ${errorMessage(error)}`);
   }
