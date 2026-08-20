@@ -184,12 +184,20 @@ export declare class Outbox<M, C = void> {
      * existing id when the dedupe key is already queued, sent, or dead-lettered
      * — a sent key never reaches send again (the email outbox's short-circuit).
      *
-     * Arms the shared timer at `now`, so delivery is owed by the alarm even
+     * `onDuplicate: 'retry-now'` treats a re-ask for an UNSENT key as new
+     * intent: the row's retry instant is clamped to `now` and a dead letter
+     * returns to 'pending', its attempt count kept — so every re-ask buys one
+     * more delivery attempt, past the attempt budget. The monitor's alert-once
+     * contract needs exactly this: a failed alert is retried by each sweep
+     * until it lands. A sent key stays final either way.
+     *
+     * Arms the scheduler at `now`, so delivery is owed by the alarm even
      * when the caller never drains inline.
      */
     queue(message: M, opts?: {
         dedupeKey?: string;
         now?: number;
+        onDuplicate?: 'refuse' | 'retry-now';
     }): Promise<{
         id: string;
         admitted: boolean;

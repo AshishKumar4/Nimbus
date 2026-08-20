@@ -435,4 +435,53 @@ const T0 = 1_000_000;
     'there is no timer dispatcher to hand a handler to');
 }
 
+// ── 14. onDuplicate: 'retry-now' — the caller-driven re-ask ─────────────────
+// The monitor's alert-once contract: a re-ask for an unsent key is new
+// intent. It must deliver now (not at the backed-off instant) and resurrect
+// a dead letter, so a failed alert is retried by every sweep until it lands,
+// past any attempt budget. The port restored this with a raw UPDATE on
+// fabric's table; a monitor test caught the lost behavior.
+
+{
+  const ctx = createCtx();
+  let fail = true;
+  let attempts = 0;
+  const box = outbox({}, ctx, 'mail', {
+    maxAttempts: 2,
+    baseMs: 30_000,
+    async send() {
+      attempts++;
+      if (fail) throw new Error('provider down');
+      return { status: 'sent' };
+    },
+  });
+
+  // Backed-off pending key: the re-ask clamps it due NOW.
+  await box.queue({ n: 1 }, { dedupeKey: 'alert', now: T0 });
+  await box.drain(T0);
+  assert.equal(box.nextRetryAt(), T0 + 30_000);
+  const reAsk = await box.queue({ n: 1 }, { dedupeKey: 'alert', now: T0 + 5, onDuplicate: 'retry-now' });
+  assert.equal(reAsk.admitted, false, 'the row is the existing one, not a duplicate');
+  assert.equal(box.nextRetryAt(), T0 + 5, 'the re-ask clamps the retry instant to now');
+  // The reason map may hold an EARLIER already-due deadline (EDF fold keeps
+  // the sooner of the two); what matters is that delivery stays owed by now.
+  assert.ok(ctx.kv.get(TIMER_REASONS_KEY)['outbox:mail'] <= T0 + 5, 'delivery stays armed');
+  await box.drain(T0 + 5);
+  assert.equal(attempts, 2);
+
+  // Dead-lettered key: the re-ask resurrects it past the attempt budget.
+  assert.equal(box.find('alert').state, 'dlq');
+  await box.queue({ n: 1 }, { dedupeKey: 'alert', now: T0 + 10, onDuplicate: 'retry-now' });
+  assert.equal(box.find('alert').state, 'pending', 'a re-asked dead letter is pending again');
+  fail = false;
+  await box.drain(T0 + 10);
+  assert.equal(box.find('alert').state, 'sent', 'the resurrected row delivers');
+  assert.equal(attempts, 3);
+
+  // Sent key: final. A re-ask never re-sends.
+  await box.queue({ n: 1 }, { dedupeKey: 'alert', now: T0 + 20, onDuplicate: 'retry-now' });
+  await box.drain(T0 + 20);
+  assert.equal(attempts, 3, 'a sent dedupe key never reaches send again, re-ask or not');
+}
+
 console.log('ok - fabric-outbox (write-ahead, dedupe, disposition, backoff, ordering, timers, pacing, recovery)');

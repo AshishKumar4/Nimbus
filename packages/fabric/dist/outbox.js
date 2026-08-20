@@ -138,7 +138,14 @@ export class Outbox {
      * existing id when the dedupe key is already queued, sent, or dead-lettered
      * — a sent key never reaches send again (the email outbox's short-circuit).
      *
-     * Arms the shared timer at `now`, so delivery is owed by the alarm even
+     * `onDuplicate: 'retry-now'` treats a re-ask for an UNSENT key as new
+     * intent: the row's retry instant is clamped to `now` and a dead letter
+     * returns to 'pending', its attempt count kept — so every re-ask buys one
+     * more delivery attempt, past the attempt budget. The monitor's alert-once
+     * contract needs exactly this: a failed alert is retried by each sweep
+     * until it lands. A sent key stays final either way.
+     *
+     * Arms the scheduler at `now`, so delivery is owed by the alarm even
      * when the caller never drains inline.
      */
     async queue(message, opts = {}) {
@@ -146,9 +153,14 @@ export class Outbox {
         const now = opts.now ?? Date.now();
         const sql = this.ctx.storage.sql;
         if (opts.dedupeKey !== undefined) {
-            const existing = [...sql.exec(`SELECT id FROM ${this.table} WHERE dedupe_key = ?`, opts.dedupeKey)];
-            if (existing.length > 0)
+            const existing = [...sql.exec(`SELECT id, state FROM ${this.table} WHERE dedupe_key = ?`, opts.dedupeKey)];
+            if (existing.length > 0) {
+                if (opts.onDuplicate === 'retry-now' && existing[0].state !== 'sent') {
+                    sql.exec(`UPDATE ${this.table} SET state = 'pending', next_attempt_at = ? WHERE id = ?`, now, existing[0].id);
+                    await this.arm(now);
+                }
                 return { id: existing[0].id, admitted: false };
+            }
         }
         const id = this.mintId(now);
         sql.exec(`INSERT INTO ${this.table} (id, dedupe_key, order_key, message, next_attempt_at, created_at)
