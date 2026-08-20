@@ -94,8 +94,13 @@ export interface FencedWorkHost<R extends FencedWorkRecord> {
    */
   generationBase(): number;
   /**
-   * Root a recovery re-drive on the instance (`ctx.waitUntil`) so it is not
-   * an abandoned promise between turns.
+   * Where an un-awaited re-drive goes so it is not a floating rejection —
+   * `ctx.waitUntil` in practice. Hygiene, not retention: a Durable Object
+   * cancels an in-flight promise on reset with no signal, and workerd's
+   * `waitUntil` is a no-op there (PLATFORM.md, probe 2026-08-17 — awaiting
+   * inside the invocation is the only retention an actor has). The recovery
+   * guarantee comes from the journal row and the platform's alarm
+   * re-delivery, never from this hook.
    */
   waitUntil(promise: Promise<unknown>): void;
   /**
@@ -198,17 +203,32 @@ export class FencedWork<R extends FencedWorkRecord> {
     this.recovered = true;
     const journal = await this.storage.list<R>({ prefix: FENCED_WORK_KEY_PREFIX });
     const base = this.host.generationBase();
+    const abandoned: Array<[string, R]> = [];
+    const redriven: Array<[string, R]> = [];
     for (const [key, record] of journal) {
       // A pid at or below this instance's base was allocated by a PREVIOUS one
       // (process-table.ts, PID_GEN_STRIDE), so its launch never finished; above
       // the base is this instance's own, still running. Same predicate as
       // `session/rpc.ts` uses to attribute a prior generation's pid.
       if (!(record.pid > 0 && record.pid <= base)) continue;
-      await this.storage.delete(key);
-      if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
-        this.host.onAbandoned?.(record);
-        continue;
-      }
+      (record.attempt >= FENCED_WORK_MAX_ATTEMPT ? abandoned : redriven).push([key, record]);
+    }
+    // The attempt is SPENT in storage, synced, before any re-drive starts.
+    // Deleting the row here instead would open a loss window: writes flush in
+    // order, so a reset between the delete's flush and the re-driven launch's
+    // own journal write leaves a durable state with no row for an owed
+    // launch — and the un-awaited re-drive dies with the instance (waitUntil
+    // retains nothing). With the rewrite, every durable cut is either the
+    // untouched row (recovery re-runs) or a spent attempt (the recurrence
+    // abandons loudly). The superseded row is deleted only when its re-drive
+    // settles, after the launch's own row exists.
+    for (const [key] of abandoned) await this.storage.delete(key);
+    for (const [key, record] of redriven) {
+      await this.storage.put(key, { ...record, attempt: record.attempt + 1 });
+    }
+    if (abandoned.length > 0 || redriven.length > 0) await this.storage.sync();
+    for (const [, record] of abandoned) this.host.onAbandoned?.(record);
+    for (const [key, record] of redriven) {
       this.host.onRedrive?.(record);
       // Not awaited: this call is running inside the alarm that granted the
       // turn, and the launch it starts asks for turns of its own through that
@@ -218,8 +238,24 @@ export class FencedWork<R extends FencedWorkRecord> {
         this.host.redrive(record, record.attempt + 1)
           .catch((e: unknown) => {
             this.host.onRedriveFailed?.(record, e);
-          }),
+          })
+          .then(() => this.supersede(key)),
       );
+    }
+  }
+
+  /**
+   * Delete a row whose re-drive has settled — succeeded, failed and been
+   * reported, or handed off to its own journal row. Not `release()`: that
+   * path is for pids THIS instance journalled, and this row's pid belongs to
+   * a previous generation the terminal hook will never fire for.
+   */
+  private async supersede(key: string): Promise<void> {
+    try {
+      await this.storage.delete(key);
+      await this.storage.sync();
+    } catch (e: unknown) {
+      console.warn('[nimbus] resident launch journal supersede failed:', errorMessage(e));
     }
   }
 }

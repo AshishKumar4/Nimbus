@@ -91,8 +91,13 @@ export interface FencedWorkHost<R extends FencedWorkRecord> {
      */
     generationBase(): number;
     /**
-     * Root a recovery re-drive on the instance (`ctx.waitUntil`) so it is not
-     * an abandoned promise between turns.
+     * Where an un-awaited re-drive goes so it is not a floating rejection —
+     * `ctx.waitUntil` in practice. Hygiene, not retention: a Durable Object
+     * cancels an in-flight promise on reset with no signal, and workerd's
+     * `waitUntil` is a no-op there (PLATFORM.md, probe 2026-08-17 — awaiting
+     * inside the invocation is the only retention an actor has). The recovery
+     * guarantee comes from the journal row and the platform's alarm
+     * re-delivery, never from this hook.
      */
     waitUntil(promise: Promise<unknown>): void;
     /**
@@ -166,5 +171,12 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      * instance starts or settles, and those are rows this instance wrote.
      */
     recoverInterrupted(): Promise<void>;
+    /**
+     * Delete a row whose re-drive has settled — succeeded, failed and been
+     * reported, or handed off to its own journal row. Not `release()`: that
+     * path is for pids THIS instance journalled, and this row's pid belongs to
+     * a previous generation the terminal hook will never fire for.
+     */
+    private supersede;
 }
 //# sourceMappingURL=fenced-work.d.ts.map
