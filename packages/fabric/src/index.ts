@@ -9,6 +9,7 @@
 
 export * from './generation.js';
 export * from './timers.js';
+export * from './outbox.js';
 export * from './bindings.js';
 export * from './composition.js';
 export * from './image-store.js';
