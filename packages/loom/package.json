@@ -51,7 +51,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nimbus-sh/fabric": "^0.1.0",
+    "@nimbus-sh/fabric": "^0.2.0",
     "cron-schedule": "^6.0.0",
     "partyserver": "0.5.10",
     "zod": "^4.4.3"

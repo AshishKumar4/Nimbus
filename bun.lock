@@ -63,8 +63,8 @@
         "create-nimbus-app": "dist/scaffold-bin.js",
       },
       "dependencies": {
-        "@nimbus-sh/sdk": "^0.1.4",
-        "@nimbus-sh/worker": "^0.1.4",
+        "@nimbus-sh/sdk": "^0.3.0",
+        "@nimbus-sh/worker": "^0.4.0",
       },
       "devDependencies": {
         "@types/node": "^22.0.0",
@@ -120,7 +120,7 @@
     },
     "packages/fabric": {
       "name": "@nimbus-sh/fabric",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@nimbus-sh/core": "^0.5.0",
         "@nimbus-sh/platform": "^0.1.0",
@@ -135,7 +135,7 @@
       "name": "@nimbus-sh/loom",
       "version": "0.1.0",
       "dependencies": {
-        "@nimbus-sh/fabric": "^0.1.0",
+        "@nimbus-sh/fabric": "^0.2.0",
         "cron-schedule": "^6.0.0",
         "partyserver": "0.5.10",
         "zod": "^4.4.3",
@@ -174,21 +174,21 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
-        "@nimbus-sh/worker": "^0.3.0",
+        "@nimbus-sh/worker": "^0.4.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
         "@nimbus-sh/core": "^0.5.0",
-        "@nimbus-sh/worker": "^0.3.0",
+        "@nimbus-sh/worker": "^0.4.0",
       },
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
         "@nimbus-sh/core": "^0.5.0",
-        "@nimbus-sh/fabric": "^0.1.0",
+        "@nimbus-sh/fabric": "^0.2.0",
         "@nimbus-sh/platform": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",
