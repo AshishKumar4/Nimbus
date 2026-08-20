@@ -63,6 +63,7 @@
 
 const OOM_CAUSES = [
   'sqlite_nomem',
+  'sqlite_full',
   'oom',
   'cpu_exceeded',
   'clone_refused',
@@ -102,10 +103,18 @@ export function classifyMessage(msg: string): OomCause {
   // upper but stderr can be either.
   const m = msg.toLowerCase();
 
+  // SQLITE_FULL: the 10 GB storage wall (platform catalog do.storage.bytes,
+  // DO_STORAGE_LIMIT_BYTES). A DIFFERENT condition from NOMEM with the
+  // opposite remedy: reads and DELETEs keep working, so the recovery is to
+  // drain data — where NOMEM asks for a smaller transaction. agent-core maps
+  // this to the same generic code as a malformed statement, which is the
+  // defect this split exists to avoid.
+  if (m.includes('sqlite_full')) return 'sqlite_full';
+  if (m.includes('database or disk is full')) return 'sqlite_full';
+
   // SQLITE_NOMEM signals
   if (m.includes('sqlite_nomem')) return 'sqlite_nomem';
   if (m.includes('out of memory')) return 'sqlite_nomem';
-  if (m.includes('database or disk is full')) return 'sqlite_nomem';
 
   // Structured-clone refusal — a 32 MiB-cap cousin
   if (m.includes('deserialize cloned data')) return 'clone_refused';

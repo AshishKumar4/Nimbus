@@ -69,10 +69,24 @@ export interface TimerHost {
  */
 export type TimerHandlerResult = void | { rearmAt: number };
 
+/**
+ * The platform's alarm-invocation report, forwarded to every handler: the
+ * platform retries a failed alarm() with backoff and abandons it after its
+ * retry budget, and `isRetry`/`retryCount` are the only way a handler can
+ * tell how close it is to that abandonment. Structurally identical to
+ * workers-types' AlarmInvocationInfo; declared here so the module stays
+ * usable without the ambient types.
+ */
+export interface TimerAlarmInfo {
+  readonly isRetry: boolean;
+  readonly retryCount: number;
+  readonly scheduledTime: number;
+}
+
 /** The embedder's reasons, each with the handler that answers it. */
 export type TimerHandlers = Record<
   string,
-  (now: number) => TimerHandlerResult | Promise<TimerHandlerResult>
+  (now: number, info?: TimerAlarmInfo) => TimerHandlerResult | Promise<TimerHandlerResult>
 >;
 
 /**
@@ -167,13 +181,17 @@ export class Timers {
    * that one-time fire means (one dispatch later the map is populated by the
    * next schedule call).
    */
-  dispatch(handlers: TimerHandlers, onLegacyAlarm?: () => void): Promise<void> {
+  dispatch(
+    handlers: TimerHandlers,
+    onLegacyAlarm?: () => void,
+    alarmInfo?: TimerAlarmInfo,
+  ): Promise<void> {
     const { host, ctx } = this;
     // Same serialization as schedule: the dispatcher's read→handlers→write
     // cycle must not interleave with an activity-hook schedule.
     const chained = (host._timerChain ?? Promise.resolve()).then(
-      () => dispatchBody(ctx, handlers, onLegacyAlarm),
-      () => dispatchBody(ctx, handlers, onLegacyAlarm),
+      () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo),
+      () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo),
     );
     host._timerChain = chained;
     return chained;
@@ -184,6 +202,7 @@ async function dispatchBody(
   ctx: TimerContext,
   handlers: TimerHandlers,
   onLegacyAlarm?: () => void,
+  alarmInfo?: TimerAlarmInfo,
 ): Promise<void> {
   try {
     const now = Date.now();
@@ -208,7 +227,7 @@ async function dispatchBody(
       // Unknown reasons silently dropped (forward-compat).
       if (!handler) continue;
       try {
-        const result = await handler(now);
+        const result = await handler(now, alarmInfo);
         if (result && typeof result.rearmAt === 'number') {
           map[reason] = result.rearmAt;
         }

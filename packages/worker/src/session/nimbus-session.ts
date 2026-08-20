@@ -592,12 +592,13 @@ export class NimbusSession extends CloudflareDurableObject {
    * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
    * orphan-pid predicate so we close over the process supervisor here.
    */
-  async alarm(): Promise<void> {
+  async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
     return _w9DoDispatchAlarm(
       this,
       this.ctx,
       _rpc._logJanitorOrphanCheck(this as any),
       () => this._pumpResidentLaunches(),
+      alarmInfo,
     );
   }
 

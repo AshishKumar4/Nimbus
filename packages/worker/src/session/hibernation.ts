@@ -331,6 +331,7 @@ export function dispatchAlarm(
   ctx: any,
   janitorOrphanCheck?: (pid: number) => boolean,
   pumpResidentLaunches?: () => Promise<void>,
+  alarmInfo?: AlarmInvocationInfo,
 ): Promise<void> {
   return timers(host, ctx).dispatch({
     'w9-flush': () => {
@@ -369,7 +370,7 @@ export function dispatchAlarm(
     try { host.processes.flushLogs(); } catch (e: any) {
       console.warn('[nimbus/W9] legacy flush threw:', e?.message);
     }
-  });
+  }, alarmInfo);
 }
 
 /**
