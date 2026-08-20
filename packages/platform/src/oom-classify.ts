@@ -214,6 +214,87 @@ export function isDoOverloaded(input: unknown): boolean {
 }
 
 /**
+ * How one failed Durable Object call relates to a retry. The taxonomy
+ * Proteus hand-wrote in `cf-backend/src/lib/do-rpc.ts:71-79` because the
+ * Agents SDK does not export its own, plus the `overloaded` class both
+ * consumers need: Cloudflare documents that errors carry `.retryable` and
+ * `.overloaded`, that a retryable error should be retried with backoff on a
+ * FRESH stub, and that an overloaded one must not be retried at all
+ * (developers.cloudflare.com/durable-objects/best-practices/error-handling).
+ */
+export type DoCallClass =
+  /** A deploy replaced the isolate mid-call. */
+  | 'superseded_isolate'
+  /** The stub or storage connection dropped. */
+  | 'connection_lost'
+  /** Storage reset the object — cold start, live write, or a timeout. */
+  | 'storage_reset'
+  /** The runtime flagged the error `retryable` itself. */
+  | 'retryable_flag'
+  /** The object shed the call under queue pressure. NEVER retried: retrying
+   *  an overloaded object is what overloaded it. */
+  | 'overloaded'
+  /** Everything else — the call ran and the answer is the error. */
+  | 'permanent';
+
+/** The classes a fresh-stub retry may act on. `overloaded` is deliberately
+ *  outside: the platform's own docs forbid retrying it. */
+export function isRetryableDoCall(input: DoCallClass): boolean {
+  return input === 'superseded_isolate'
+    || input === 'connection_lost'
+    || input === 'storage_reset'
+    || input === 'retryable_flag';
+}
+
+/**
+ * Prose signatures of the transient classes, matched against the rendered
+ * cause chain — a wrapper error (Proteus measured its SqlError doing this)
+ * drops the `.retryable` property, so only the joined prose survives it.
+ *
+ * `storage_reset` carries the live-write wording on purpose. Proteus's
+ * mirror of the SDK matcher excludes it because a storage-budget breach is
+ * reported the same way; Nimbus measured the reset-mid-write case succeed
+ * 12/12 on retry ({@link isTransientDoReset}), and a bounded retry lets the
+ * budget-wall case recur and surface.
+ */
+const DO_CALL_TRANSIENT: ReadonlyArray<readonly [DoCallClass, RegExp]> = [
+  ['superseded_isolate', /reset because its code was updated|this script has been upgraded/i],
+  ['connection_lost', /network connection lost/i],
+  ['storage_reset', /durable object storage caused object to be reset|storage operation exceeded timeout which caused the object to be reset/i],
+];
+
+/**
+ * Classify one failed Durable Object call. Overloaded is checked first, per
+ * link, because it vetoes everything: an overloaded-and-retryable error is
+ * overloaded. The `.retryable` flag is also read per link — it is a
+ * property, not prose, so the rendered chain cannot carry it. The walk is
+ * cycle-guarded.
+ */
+export function classifyDoCall(input: unknown): DoCallClass {
+  if (!(input instanceof Error)) return 'permanent';
+  const seen = new Set<Error>();
+  const messages: string[] = [];
+  let flagged = false;
+  let link: Error | null = input;
+  while (link !== null && !seen.has(link)) {
+    seen.add(link);
+    const overloaded = ('overloaded' in link && link.overloaded === true)
+      || isDoOverloaded(link.message);
+    if (overloaded) return 'overloaded';
+    if ('retryable' in link && link.retryable === true) flagged = true;
+    messages.push(link.message ?? '');
+    const cause: unknown = link.cause;
+    link = cause instanceof Error ? cause : null;
+  }
+  const chain = messages.join('; ');
+  for (const [transient, pattern] of DO_CALL_TRANSIENT) {
+    if (pattern.test(chain)) return transient;
+  }
+  if (flagged) return 'retryable_flag';
+  return 'permanent';
+}
+
+/**
  * One line about a failure, in terms someone can act on.
  *
  * npm install's catch sites each wrote `e?.remoteMessage || e?.message ||
