@@ -346,4 +346,45 @@ const T0 = 1_000_000;
   ], 'each drain hands its own context to send');
 }
 
+// ── 12. status(id) / find(dedupeKey): the per-key read model ─────────────────
+// Both ported consumers reached into fabric's table with raw SQL to answer
+// "what happened to this message" — the email outbox to report sent/deduped/
+// failed per key, the peer transport to correlate a reply with the stored
+// ask. The record returns the stored message, not just the state.
+
+{
+  const ctx = createCtx();
+  let fail = true;
+  const box = outbox({}, ctx, 'mail', {
+    maxAttempts: 8,
+    baseMs: 30_000,
+    async send(message) {
+      if (message.fail && fail) throw new Error('provider 5xx');
+      return { status: 'sent' };
+    },
+  });
+
+  assert.equal(box.find('nothing'), null);
+  assert.equal(box.status('nothing'), null);
+
+  const ok = await box.queue({ n: 1 }, { now: T0 });
+  const flaky = await box.queue({ n: 2, fail: true }, { dedupeKey: 'alert-1', now: T0 + 1 });
+  await box.drain(T0 + 1);
+
+  assert.deepEqual(box.status(ok.id), {
+    id: ok.id, state: 'sent', message: { n: 1 }, dedupeKey: null, attemptCount: 1, lastError: null,
+  });
+  const pending = box.find('alert-1');
+  assert.deepEqual(pending, {
+    id: flaky.id, state: 'pending', message: { n: 2, fail: true },
+    dedupeKey: 'alert-1', attemptCount: 1, lastError: 'provider 5xx',
+  });
+  assert.deepEqual(box.status(flaky.id), pending, 'both reads name the same row');
+
+  fail = false;
+  await box.drain(T0 + 30_001);
+  assert.equal(box.find('alert-1').state, 'sent');
+  assert.equal(box.find('alert-1').lastError, null, 'delivery clears the error');
+}
+
 console.log('ok - fabric-outbox (write-ahead, dedupe, disposition, backoff, ordering, timers, pacing, recovery)');

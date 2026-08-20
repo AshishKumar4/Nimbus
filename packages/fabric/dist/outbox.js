@@ -51,6 +51,14 @@ const DlqRowSchema = z.object({
     attempt_count: z.number(),
     last_error: z.string().nullable(),
 });
+const RecordRowSchema = z.object({
+    id: z.string(),
+    state: z.enum(['pending', 'sent', 'dlq']),
+    message: z.string(),
+    dedupe_key: z.string().nullable(),
+    attempt_count: z.number(),
+    last_error: z.string().nullable(),
+});
 const NAME_PATTERN = /^[a-z][a-z0-9_]{0,40}$/;
 /** One named outbox on one hosting actor. Cheap accessor, like `timers()`. */
 export function outbox(host, ctx, name, policy) {
@@ -146,6 +154,35 @@ export class Outbox {
         this.ensureSchema();
         const rows = [...this.ctx.storage.sql.exec(`SELECT MIN(next_attempt_at) AS next FROM ${this.table} WHERE state = 'pending'`)];
         return rows[0]?.next ?? null;
+    }
+    /** The row queue() named, by its id. Null when no such row exists. */
+    status(id) {
+        return this.record('id', id);
+    }
+    /** The row a dedupe key admitted, whatever its state. Null when none. */
+    find(dedupeKey) {
+        return this.record('dedupe_key', dedupeKey);
+    }
+    record(column, value) {
+        this.ensureSchema();
+        const rows = [...this.ctx.storage.sql.exec(`SELECT id, state, message, dedupe_key, attempt_count, last_error
+       FROM ${this.table} WHERE ${column} = ?`, value)];
+        if (rows.length === 0)
+            return null;
+        const row = RecordRowSchema.parse(rows[0]);
+        let message = null;
+        try {
+            message = JSON.parse(row.message);
+        }
+        catch { /* poison-parse row */ }
+        return {
+            id: row.id,
+            state: row.state,
+            message,
+            dedupeKey: row.dedupe_key,
+            attemptCount: row.attempt_count,
+            lastError: row.last_error,
+        };
     }
     /** Dead-lettered rows, for inspection. Terminal: nothing retries out. */
     dlq() {

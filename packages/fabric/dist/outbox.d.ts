@@ -101,6 +101,22 @@ export interface OutboxDrainResult {
     retried: number;
     deadLettered: number;
 }
+/**
+ * One row, as {@link Outbox.status} and {@link Outbox.find} report it. Both
+ * ported consumers read fabric's table with raw SQL for exactly this: the
+ * email outbox to answer sent/deduped/failed per key, the peer transport to
+ * correlate a reply with its stored ask — which is why the record carries
+ * the stored message, not just the state.
+ */
+export interface OutboxRecord<M> {
+    id: string;
+    state: 'pending' | 'sent' | 'dlq';
+    /** Null when the stored payload no longer parses (a poison-parse row). */
+    message: M | null;
+    dedupeKey: string | null;
+    attemptCount: number;
+    lastError: string | null;
+}
 export interface OutboxDeadLetter<M> {
     id: string;
     /** Null when the stored payload no longer parses (a poison-parse row). */
@@ -148,6 +164,11 @@ export declare class Outbox<M, C = void> {
     }>;
     /** The single-alarm fold: the earliest pending deadline, or null. */
     nextRetryAt(): number | null;
+    /** The row queue() named, by its id. Null when no such row exists. */
+    status(id: string): OutboxRecord<M> | null;
+    /** The row a dedupe key admitted, whatever its state. Null when none. */
+    find(dedupeKey: string): OutboxRecord<M> | null;
+    private record;
     /** Dead-lettered rows, for inspection. Terminal: nothing retries out. */
     dlq(): Array<OutboxDeadLetter<M>>;
     /**
