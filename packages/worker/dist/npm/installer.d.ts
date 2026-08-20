@@ -91,7 +91,7 @@ export declare class NpmInstaller {
     /**
      * F-2 frontier-coordinator path. Replaces the single-resolve-facet
      * dispatch with a per-package fanout: each BFS layer becomes ONE
-     * `FanoutPool.submitMany` call, layer N+1 builds from the
+     * `Fanout.submitMany` call, layer N+1 builds from the
      * resolved metadata of layer N.
      *
      * Topology auto-routes per layer:
@@ -115,12 +115,12 @@ export declare class NpmInstaller {
      */
     private resolveTreeViaFanout;
     /**
-     * Batch install via two-tier fan-out (FanoutPool).
+     * Batch install via two-tier fan-out (Fanout).
      *
      * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
      * follows from it:
      *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-     *     1 LoaderPool with concurrency = shardCount, capped at
+     *     1 IsolatePool with concurrency = shardCount, capped at
      *     4 by V8 invariant. Each shard is one facet running its own
      *     installPackagesInFacet.
      *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
@@ -132,7 +132,7 @@ export declare class NpmInstaller {
      *   `shard-${i}` task key deterministically (tests can predict
      *   placement).
      *
-     * Pre-fix lineage: this site previously ran ONE LoaderPool
+     * Pre-fix lineage: this site previously ran ONE IsolatePool
      *   with concurrency=1, internal pLimit(3) — the explicit "collapses
      *   what was 4 concurrent dynamic workers (pool.map slots) into 1"
      *   Two-tier topology re-expands the fan-out without re-introducing

@@ -5,7 +5,7 @@
  *
  * Why this exists
  * ───────────────
- * `import { DatabaseSync } from "node:sqlite"` runs inside NimbusLoaderPool
+ * `import { DatabaseSync } from "node:sqlite"` runs inside NimbusIsolatePool
  * facet isolates. sql.js (Emscripten SQLite) needs two pieces at facet
  * runtime:
  *

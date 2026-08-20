@@ -19,8 +19,8 @@
 //       same per-DO ledger.
 
 import assert from 'node:assert/strict';
-import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
-import { beginLoaderFetch, loaderLedgerStats } from '../../packages/fabric/src/loader-ledger.ts';
+import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
+import { beginLoaderFetch, loaderLedgerStats } from '../../packages/fabric/src/budgets.ts';
 import { classifyMessage } from '../../packages/platform/src/oom-classify.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
@@ -56,7 +56,7 @@ assert.equal(
       };
     },
   };
-  const pool = new LoaderPool({ LOADER: loader }, ctx, { omitSupervisor: true, concurrency: 2 });
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, concurrency: 2 });
   await pool.map((value) => value, ['a', 'b', 'c', 'd']);
 
   const afterMap = loaderLedgerStats(ctx);
@@ -95,7 +95,7 @@ assert.equal(
       return { getEntrypoint: () => ({ async execute() { throw new Error(CAP_MESSAGE); } }) };
     },
   };
-  const pool = new LoaderPool({ LOADER: loader }, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, timeoutMs: 0 });
   await assert.rejects(
     pool.submit((value) => value, 'payload'),
     (error) => {

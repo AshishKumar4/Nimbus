@@ -1,7 +1,7 @@
 /**
  * The workerd {@link FacetHost}: a facet is a dynamic worker.
  *
- * The whole adapter is the option renames below, because `LoaderPool`
+ * The whole adapter is the option renames below, because `IsolatePool`
  * already IS the port's shape — `submit` and `dispose`, with the same meanings.
  * The one thing it spells differently is the supervisor capability, which it
  * takes as a pid plus a separate flag saying whether to bind one at all; the
@@ -19,7 +19,7 @@ import type {
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
 import type { FacetManager } from '../facets/manager.js';
-import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 
 export function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHost {
   return {
@@ -39,7 +39,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHos
       return manifestVfs(vfs, root, options);
     },
     open(spec: FacetSpec): Facet {
-      return new LoaderPool(env, ctx, {
+      return new IsolatePool(env, ctx, {
         tag: spec.tag,
         concurrency: spec.concurrency,
         preamble: spec.preamble,
@@ -53,7 +53,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState): FacetHos
 }
 
 /**
- * The two objects a LoaderPool needs from a FacetManager, via the manager's
+ * The two objects a IsolatePool needs from a FacetManager, via the manager's
  * own `loaderHost()` accessor. The runtime guard stays: harnesses build
  * FacetManagers on mock contexts, and one built on something other than a
  * DurableObjectState should fail with a sentence instead of at the first RPC.

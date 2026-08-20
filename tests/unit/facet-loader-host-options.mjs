@@ -2,7 +2,7 @@
 // facet-loader-host-options — the port's spec, as the loader pool reads it.
 //
 // `loaderFacetHost` is a rename and nothing else, which is exactly why it needs
-// a test: every runtime that used to construct a NimbusLoaderPool by hand now
+// a test: every runtime that used to construct a NimbusIsolatePool by hand now
 // states a FacetSpec instead, and a rename that lands one option in the wrong
 // place is invisible until production behaves differently.
 //

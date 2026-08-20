@@ -1,5 +1,5 @@
 /**
- * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
+ * isolate-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
  * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
@@ -28,8 +28,8 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './loader-ledger.js';
-import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
+import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
+import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import {
@@ -55,12 +55,12 @@ export type FacetTaskFn<A, R> = {
 }['task'];
 
 /** The one binding a pool needs off whichever env its host hands it. */
-export interface LoaderPoolEnv {
+export interface IsolatePoolEnv {
   LOADER?: WorkerLoader;
 }
 
-/** Options handed to LoaderPool's constructor. */
-export interface LoaderPoolOptions {
+/** Options handed to IsolatePool's constructor. */
+export interface IsolatePoolOptions {
   /** Maximum concurrent in-flight facets. Default 4. */
   concurrency?: number;
   /** Per-task timeout in ms. Default 60_000. */
@@ -97,8 +97,8 @@ export interface LoaderPoolOptions {
    * Override the `doId` baked into the auto-injected SUPERVISOR binding.
    * Default: `ctx.id.toString()` (the DO that constructs the pool).
    *
-   * Used by FanoutPool's peer-DO branch (peer-DO fanout): peer DOs
-   * construct their per-task LoaderPool from inside
+   * Used by Fanout's peer-DO branch (peer-DO fanout): peer DOs
+   * construct their per-task IsolatePool from inside
    * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
    * override the peer's auto-injected SUPERVISOR routes back to the
    * peer DO itself — so writes (e.g. install-batch-facet's
@@ -170,7 +170,7 @@ export interface LoaderPoolOptions {
 }
 
 /** Per-call override (merged with pool defaults). */
-export interface LoaderCallOptions {
+export interface IsolateCallOptions {
   timeoutMs?: number;
   retries?: number;
   /**
@@ -206,7 +206,7 @@ export interface LoaderCallOptions {
 }
 
 /** Per-map override. Adds onError strategy for partial failures. */
-export interface LoaderMapOptions extends LoaderCallOptions {
+export interface IsolateMapOptions extends IsolateCallOptions {
   /** Concurrency override for this call. Defaults to pool's concurrency. */
   concurrency?: number;
   /**
@@ -327,7 +327,7 @@ export function assembleLoaderWorkerModuleSource(
  *
  * Typical use:
  *
- *   const pool = new LoaderPool(env, ctx, {
+ *   const pool = new IsolatePool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -336,9 +336,9 @@ export function assembleLoaderWorkerModuleSource(
  *     toFetch,
  *   );
  */
-export class LoaderPool {
+export class IsolatePool {
   private readonly loader: WorkerLoader;
-  /** The hosting actor, as the loader-ledger's per-DO key. */
+  /** The hosting actor, as the loader budget ledger's per-DO key. */
   private readonly ctx: DurableObjectState;
   private readonly concurrency: number;
   private readonly defaultTimeoutMs: number;
@@ -351,7 +351,7 @@ export class LoaderPool {
   private readonly preambleHash: string;
   /**
    * WASM modules to ship in the LOADER `modules` map. See
-   * LoaderPoolOptions.wasmModules for the rationale. Stored in
+   * IsolatePoolOptions.wasmModules for the rationale. Stored in
    * insertion order so the per-import preamble we generate matches
    * across pool dispatches (cache-key stability).
    */
@@ -384,14 +384,14 @@ export class LoaderPool {
   constructor(
     env: unknown,
     ctx: DurableObjectState,
-    opts?: LoaderPoolOptions,
+    opts?: IsolatePoolOptions,
   ) {
     // A host hands its whole env over; the binding is claimed here and the
     // claim is checked on the next line.
-    const loader = (env as LoaderPoolEnv | null | undefined)?.LOADER;
+    const loader = (env as IsolatePoolEnv | null | undefined)?.LOADER;
     if (!loader || typeof loader.get !== 'function') {
       throw new BindingError(
-        'LoaderPool: env.LOADER binding missing or invalid. ' +
+        'IsolatePool: env.LOADER binding missing or invalid. ' +
           'Add a [[worker_loaders]] entry to wrangler.jsonc.',
       );
     }
@@ -423,14 +423,14 @@ export class LoaderPool {
           // value is whatever it really was rather than the ArrayBuffer here.
           const got = (bytes as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
           throw new BindingError(
-            `LoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
+            `IsolatePool: wasmModules['${name}'] must be ArrayBuffer ` +
             `(got ${got || typeof bytes}).`,
           );
         }
         const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
         if (seenIds.has(id)) {
           throw new BindingError(
-            `LoaderPool: wasmModules key '${name}' collides with another after ` +
+            `IsolatePool: wasmModules key '${name}' collides with another after ` +
             `identifier-sanitisation (id='${id}'). Pick distinct module names.`,
           );
         }
@@ -488,7 +488,7 @@ export class LoaderPool {
     return this.concurrency;
   }
 
-  #resolve(opts?: LoaderCallOptions): ResolvedResilience {
+  #resolve(opts?: IsolateCallOptions): ResolvedResilience {
     return {
       timeoutMs: Math.max(0, opts?.timeoutMs ?? this.defaultTimeoutMs),
       retries: Math.max(0, opts?.retries ?? this.defaultRetries),
@@ -515,21 +515,21 @@ export class LoaderPool {
       if (!(bytes instanceof ArrayBuffer)) {
         const got = (bytes as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
         throw new BindingError(
-          `LoaderPool: per-call wasmModules['${name}'] must be ` +
+          `IsolatePool: per-call wasmModules['${name}'] must be ` +
             `ArrayBuffer (got ${got || typeof bytes}).`,
         );
       }
       const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
       if (ctorIds.has(id)) {
         throw new BindingError(
-          `LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+          `IsolatePool: per-call wasmModules key '${name}' (sanitised ` +
             `id='${id}') collides with a constructor-time wasm module. ` +
             `Per-call modules cannot shadow pool-defaults. Pick a distinct name.`,
         );
       }
       if (seen.has(id)) {
         throw new BindingError(
-          `LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+          `IsolatePool: per-call wasmModules key '${name}' (sanitised ` +
             `id='${id}') collides with another per-call key. Pick distinct names.`,
         );
       }
@@ -620,7 +620,7 @@ export class LoaderPool {
     // re-import (the user fn is serialized via fn.toString and doesn't
     // carry import statements).
     //
-    // Per-call entries (passed via LoaderCallOptions.wasmModules
+    // Per-call entries (passed via IsolateCallOptions.wasmModules
     // — used by the wasm-runner shell command) are appended to the same
     // table. Naming collision with constructor entries is rejected
     // upstream in #materialisePerCallWasm so the import block here
@@ -843,7 +843,7 @@ export class LoaderPool {
   async submit<T, R>(
     fn: FacetTaskFn<T, R>,
     arg: T,
-    opts?: LoaderCallOptions,
+    opts?: IsolateCallOptions,
   ): Promise<Awaited<R>> {
     const { fnSource, fnHash } = this.#prepare(fn);
     const resilience = this.#resolve(opts);
@@ -866,7 +866,7 @@ export class LoaderPool {
   async map<T, R>(
     fn: FacetTaskFn<T, R>,
     items: T[],
-    opts?: LoaderMapOptions,
+    opts?: IsolateMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     if (items.length === 0) return [];
 
@@ -877,7 +877,7 @@ export class LoaderPool {
   /**
    * Same shape as `map`, but accepts a pre-serialized function source
    * string instead of a live function reference. Used by
-   * `FanoutPool`'s peer-DO leg, where the function was already
+   * `Fanout`'s peer-DO leg, where the function was already
    * serialized on the coordinator side and forwarded over RPC.
    *
    * The fnSource MUST be the output of `serializeFunction(fn)`
@@ -894,7 +894,7 @@ export class LoaderPool {
   async mapSource<T, R>(
     fnSource: string,
     items: T[],
-    opts?: LoaderMapOptions,
+    opts?: IsolateMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     if (items.length === 0) return [];
     const fnHash = hashSource(fnSource);
@@ -905,7 +905,7 @@ export class LoaderPool {
     fnSource: string,
     fnHash: string,
     items: T[],
-    opts?: LoaderMapOptions,
+    opts?: IsolateMapOptions,
   ): Promise<Array<Awaited<R> | null>> {
     const resilience = this.#resolve(opts);
     const concurrency = Math.max(

@@ -8,7 +8,7 @@
 //   f08e3bd REPL-R7:          re-introduced `this` (in two new comments)
 //   <next>   REPL-R7-scrub:    this commit — third scrub.
 //
-// Root cause pattern: packages/fabric/src/loader-pool.ts serializes a worker
+// Root cause pattern: packages/fabric/src/isolate-pool.ts serializes a worker
 // function via fn.toString() and the workerd runtime rejects any
 // resulting source containing the bare word \bthis\b (no late `this`
 // binding in remote isolates).

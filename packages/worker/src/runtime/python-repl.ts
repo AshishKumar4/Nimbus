@@ -258,7 +258,7 @@ class PythonReplAdapter implements ReplAdapter {
     this.fsSnapshot = snapshot;
     this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 
-    const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
+    const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
     const host = getFacetManagerLoaderHost(facetMgr);
     // A prompt where `open(path, "w")` silently does nothing is worse than one
     // that refuses to start, so the pid decides which pool this is. Written as
@@ -276,11 +276,11 @@ class PythonReplAdapter implements ReplAdapter {
     };
     const pid = this.deps.pid;
     this.pool = (typeof pid === 'number' && pid > 0
-      ? new LoaderPool(host.env, host.ctx, { ...base, supervisorPid: pid })
+      ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid })
       // The install-time warm-up has no invoking process. It boots the
       // interpreter and never touches a file, so it asks for no supervisor
       // rather than binding one it cannot authenticate to.
-      : new LoaderPool(host.env, host.ctx, { ...base, omitSupervisor: true })) as never;
+      : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true })) as never;
   }
 
   private async submit(userCode: string): Promise<PythonReplFacetResult> {

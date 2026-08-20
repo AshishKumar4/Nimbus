@@ -1,5 +1,5 @@
 /**
- * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
+ * isolate-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
  * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
@@ -27,8 +27,8 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint } from './ctx-exports.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
-import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './loader-ledger.js';
-import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
+import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
+import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
@@ -95,7 +95,7 @@ export function assembleLoaderWorkerModuleSource(options) {
  *
  * Typical use:
  *
- *   const pool = new LoaderPool(env, ctx, {
+ *   const pool = new IsolatePool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -104,9 +104,9 @@ export function assembleLoaderWorkerModuleSource(options) {
  *     toFetch,
  *   );
  */
-export class LoaderPool {
+export class IsolatePool {
     loader;
-    /** The hosting actor, as the loader-ledger's per-DO key. */
+    /** The hosting actor, as the loader budget ledger's per-DO key. */
     ctx;
     concurrency;
     defaultTimeoutMs;
@@ -118,7 +118,7 @@ export class LoaderPool {
     preambleHash;
     /**
      * WASM modules to ship in the LOADER `modules` map. See
-     * LoaderPoolOptions.wasmModules for the rationale. Stored in
+     * IsolatePoolOptions.wasmModules for the rationale. Stored in
      * insertion order so the per-import preamble we generate matches
      * across pool dispatches (cache-key stability).
      */
@@ -145,7 +145,7 @@ export class LoaderPool {
         // claim is checked on the next line.
         const loader = env?.LOADER;
         if (!loader || typeof loader.get !== 'function') {
-            throw new BindingError('LoaderPool: env.LOADER binding missing or invalid. ' +
+            throw new BindingError('IsolatePool: env.LOADER binding missing or invalid. ' +
                 'Add a [[worker_loaders]] entry to wrangler.jsonc.');
         }
         this.loader = loader;
@@ -174,12 +174,12 @@ export class LoaderPool {
                     // Reached only when a caller broke the declared option type, so the
                     // value is whatever it really was rather than the ArrayBuffer here.
                     const got = bytes?.constructor?.name;
-                    throw new BindingError(`LoaderPool: wasmModules['${name}'] must be ArrayBuffer ` +
+                    throw new BindingError(`IsolatePool: wasmModules['${name}'] must be ArrayBuffer ` +
                         `(got ${got || typeof bytes}).`);
                 }
                 const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
                 if (seenIds.has(id)) {
-                    throw new BindingError(`LoaderPool: wasmModules key '${name}' collides with another after ` +
+                    throw new BindingError(`IsolatePool: wasmModules key '${name}' collides with another after ` +
                         `identifier-sanitisation (id='${id}'). Pick distinct module names.`);
                 }
                 seenIds.add(id);
@@ -259,17 +259,17 @@ export class LoaderPool {
         for (const [name, bytes] of Object.entries(perCall)) {
             if (!(bytes instanceof ArrayBuffer)) {
                 const got = bytes?.constructor?.name;
-                throw new BindingError(`LoaderPool: per-call wasmModules['${name}'] must be ` +
+                throw new BindingError(`IsolatePool: per-call wasmModules['${name}'] must be ` +
                     `ArrayBuffer (got ${got || typeof bytes}).`);
             }
             const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
             if (ctorIds.has(id)) {
-                throw new BindingError(`LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+                throw new BindingError(`IsolatePool: per-call wasmModules key '${name}' (sanitised ` +
                     `id='${id}') collides with a constructor-time wasm module. ` +
                     `Per-call modules cannot shadow pool-defaults. Pick a distinct name.`);
             }
             if (seen.has(id)) {
-                throw new BindingError(`LoaderPool: per-call wasmModules key '${name}' (sanitised ` +
+                throw new BindingError(`IsolatePool: per-call wasmModules key '${name}' (sanitised ` +
                     `id='${id}') collides with another per-call key. Pick distinct names.`);
             }
             seen.add(id);
@@ -352,7 +352,7 @@ export class LoaderPool {
         // re-import (the user fn is serialized via fn.toString and doesn't
         // carry import statements).
         //
-        // Per-call entries (passed via LoaderCallOptions.wasmModules
+        // Per-call entries (passed via IsolateCallOptions.wasmModules
         // — used by the wasm-runner shell command) are appended to the same
         // table. Naming collision with constructor entries is rejected
         // upstream in #materialisePerCallWasm so the import block here
@@ -584,7 +584,7 @@ export class LoaderPool {
     /**
      * Same shape as `map`, but accepts a pre-serialized function source
      * string instead of a live function reference. Used by
-     * `FanoutPool`'s peer-DO leg, where the function was already
+     * `Fanout`'s peer-DO leg, where the function was already
      * serialized on the coordinator side and forwarded over RPC.
      *
      * The fnSource MUST be the output of `serializeFunction(fn)`

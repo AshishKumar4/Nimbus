@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
+import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { classifyError } from '../../packages/platform/src/oom-classify.ts';
 
 const cloneVersionError =
@@ -28,7 +28,7 @@ const loader = {
   },
 };
 
-const pool = new LoaderPool(
+const pool = new IsolatePool(
   { LOADER: loader },
   { id: { toString: () => 'test-session-id' } },
   { omitSupervisor: true, timeoutMs: 0, retries: 0, tag: 'clone-retry-test' },

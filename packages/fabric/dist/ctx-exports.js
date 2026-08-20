@@ -2,7 +2,7 @@
  * ctx-exports.ts — leaf module holding the ctx.exports reference.
  *
  * Isolated from the embedder's entry module so helpers (notably
- * loader-pool.ts) can read `ctx.exports` without transitively importing the
+ * isolate-pool.ts) can read `ctx.exports` without transitively importing the
  * Durable Object classes. Keeping this a leaf (no imports) lets the pool be
  * unit-tested in a plain Node/Bun process.
  *

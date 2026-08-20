@@ -20,10 +20,15 @@ import {
   supervisorEntrypointName,
 } from './ctx-exports.js';
 import {
+  assertModuleMapWithinCodeLimit,
   beginLoaderFetch,
+  facetNameCount,
+  facetNameCountDurable,
+  recordFacetNameMinted,
   recordLoaderId,
   withDynamicWorkerCapNamed,
-} from './loader-ledger.js';
+  withFacetBudgetNamed,
+} from './budgets.js';
 import {
   RESIDENT_PROCESS_CLASS,
   requireStagedBootAssembler,
@@ -89,71 +94,6 @@ export async function createLoadedWorkerEntrypoint(
       stage,
     },
   });
-}
-
-/**
- * Total bytes a dynamic Worker's module map may carry, across every member of
- * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
- * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
- * size of 67108864 bytes", confirmed at five sizes with two trials each. The
- * budget is shared, so a ruby process is already 34.3 MiB down before its disk
- * is counted.
- */
-export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
-
-/**
- * Refuse a module map over {@link DYNAMIC_WORKER_CODE_LIMIT_BYTES}, naming
- * the largest members. The platform's own refusal reports one number for a
- * budget shared across every member of the map, which tells the operator
- * nothing about WHAT to shrink — so every fabric seam that assembles a map
- * runs this before the loader sees it.
- *
- * Costed to its two paths. Under the ceiling: one length read per member —
- * UTF-16 code units for text, which equal UTF-8 bytes for the ASCII module
- * text the generators emit and undercount otherwise; the platform's own
- * refusal still backstops the exotic case, because this check exists to name
- * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
- * then, sorted so the biggest lever is first.
- */
-export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void {
-  let estimate = 0;
-  for (const content of Object.values(modules)) {
-    estimate += memberBytes(content, null);
-  }
-  if (estimate <= DYNAMIC_WORKER_CODE_LIMIT_BYTES) return;
-
-  const encoder = new TextEncoder();
-  const sized = Object.entries(modules)
-    .map(([name, content]) => ({ name, bytes: memberBytes(content, encoder) }))
-    .sort((a, b) => b.bytes - a.bytes);
-  const total = sized.reduce((sum, member) => sum + member.bytes, 0);
-  const top = sized.slice(0, 5)
-    .map(({ name, bytes }) => `'${name}' (${bytes.toLocaleString('en-US')} bytes)`)
-    .join(', ');
-  throw new Error(
-    `Nimbus: dynamic-worker module map is ${total.toLocaleString('en-US')} bytes, over the `
-      + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte platform ceiling shared by `
-      + `every member. Largest members: ${top}`,
-  );
-}
-
-/**
- * Bytes one module-map member carries, across the loader's content kinds
- * (plain string, `{ js | cjs | py | text }`, `{ wasm | data }`). With an
- * encoder, text is measured exactly; without one, by code-unit length.
- */
-function memberBytes(content: unknown, encoder: TextEncoder | null): number {
-  const textBytes = (text: string): number =>
-    encoder ? encoder.encode(text).byteLength : text.length;
-  if (typeof content === 'string') return textBytes(content);
-  if (content !== null && typeof content === 'object') {
-    for (const value of Object.values(content)) {
-      if (typeof value === 'string') return textBytes(value);
-      if (value instanceof ArrayBuffer) return value.byteLength;
-      if (ArrayBuffer.isView(value)) return value.byteLength;
-    }
-  }
-  return 0;
 }
 
 // ── Facet plumbing ──────────────────────────────────────────────────────────
@@ -300,17 +240,6 @@ export function residentFacetName(slot: number): string {
   return `proc-slot-${slot}`;
 }
 
-/**
- * Facet IDs a Durable Object is granted over its LIFETIME. Append-only and
- * never reclaimed, so crossing it is unrecoverable for the object — which is
- * why the ledger below counts consumption durably instead of leaving the
- * bound as prose the slot book merely respects.
- */
-export const FACET_ID_LIFETIME_BUDGET = 65_536;
-
-/** Where the ledger persists the count of facet names ever minted. */
-export const FACET_NAME_HIGH_WATER_KEY = 'fabric_facet_name_high_water';
-
 /** One hosting actor's slot book. */
 interface SlotBook {
   /** Returned slots, lowest reused first so the high-water mark stays low. */
@@ -319,16 +248,6 @@ interface SlotBook {
   next: number;
   /** Slot held by each live pid, so release can find it. */
   held: Map<number, number>;
-  /**
-   * The durable high-water of names ever minted, as an adopt-then-advance
-   * chain. It starts as the read of {@link FACET_NAME_HIGH_WATER_KEY} and
-   * every later link writes only a LARGER count — a fresh incarnation restarts
-   * `next` at zero, and a write that had not adopted first would clobber the
-   * lifetime count down to this incarnation's. The chain never rejects.
-   */
-  ledger: Promise<number>;
-  /** The largest count the chain has adopted or written, for sync reads. */
-  ledgerKnown: number;
 }
 
 /**
@@ -351,44 +270,10 @@ const slotBooks = new WeakMap<DurableObjectState, SlotBook>();
 function slotBook(ctx: DurableObjectState): SlotBook {
   let book = slotBooks.get(ctx);
   if (!book) {
-    const created: SlotBook = {
-      free: [],
-      next: 0,
-      held: new Map(),
-      ledger: Promise.resolve(0),
-      ledgerKnown: 0,
-    };
-    created.ledger = Promise.resolve(ctx.storage.get(FACET_NAME_HIGH_WATER_KEY))
-      .then((value) => (typeof value === 'number' ? value : 0))
-      .catch(() => 0)
-      .then((adopted) => {
-        created.ledgerKnown = Math.max(created.ledgerKnown, adopted);
-        return adopted;
-      });
-    book = created;
+    book = { free: [], next: 0, held: new Map() };
     slotBooks.set(ctx, book);
   }
   return book;
-}
-
-/**
- * The lifetime facet-ID ledger: how many facet names this fabric has ever
- * minted on the Durable Object, against the 65,536 the platform will ever
- * grant it. `consumed` only ever counts FIRST uses — a reused name, in this
- * incarnation or any earlier one, cost no new ID, which is the slot book's
- * whole reason to exist. Surfaced so an operator can see proximity to a wall
- * whose crossing is unrecoverable, instead of discovering it from the
- * platform's opaque failure.
- */
-export async function facetIdBudget(
-  ctx: DurableObjectState,
-): Promise<{ consumed: number; budget: number }> {
-  const book = slotBook(ctx);
-  const durable = await book.ledger;
-  return {
-    consumed: Math.max(durable, book.next),
-    budget: FACET_ID_LIFETIME_BUDGET,
-  };
 }
 
 /** Take a slot for `pid`, reusing a returned one before minting a new name. */
@@ -399,47 +284,10 @@ function acquireSlot(ctx: DurableObjectState, pid: number): number {
   const reused = book.free.length > 0;
   const slot = reused ? book.free.shift()! : book.next++;
   book.held.set(pid, slot);
-  if (!reused) recordNameMinted(ctx, book);
+  // A fresh name is a permanently consumed facet ID; the durable count lives
+  // in the budgets ledger (see budgets.ts).
+  if (!reused) recordFacetNameMinted(ctx, book.next);
   return slot;
-}
-
-/**
- * Advance the durable ledger to this incarnation's name count, if it is a new
- * lifetime high. Chained behind adoption so the comparison is always against
- * the real persisted value; a failed write leaves the old link's count and the
- * next mint tries again — the ledger may transiently undercount, never over.
- */
-function recordNameMinted(ctx: DurableObjectState, book: SlotBook): void {
-  const count = book.next;
-  book.ledger = book.ledger.then(async (durable) => {
-    if (count <= durable) return durable;
-    try {
-      await ctx.storage.put(FACET_NAME_HIGH_WATER_KEY, count);
-    } catch {
-      return durable;
-    }
-    book.ledgerKnown = Math.max(book.ledgerKnown, count);
-    return count;
-  });
-}
-
-/**
- * Name the facet-ID budget on a creation failure at the wall; below it, hand
- * the error back untouched. Exhaustion is the one failure here the platform
- * reports opaquely AND that no teardown, retry or reset can undo, so the
- * ledger — the only witness to the real cause — does the naming. Not a
- * threshold: the comparison is against the budget itself.
- */
-function withFacetBudgetNamed(consumed: number, error: unknown): unknown {
-  if (consumed < FACET_ID_LIFETIME_BUDGET) return error;
-  const platform = error instanceof Error ? error.message : String(error);
-  return new Error(
-    `Nimbus: facet creation failed with this Durable Object's `
-      + `${FACET_ID_LIFETIME_BUDGET.toLocaleString('en-US')} facet-ID lifetime budget consumed `
-      + `(${consumed} facet names ever created). Facet IDs are append-only and never reclaimed, `
-      + `so this failure is permanent for the object: ${platform}`,
-    { cause: error },
-  );
 }
 
 /** Return `pid`'s slot to the free list. */
@@ -482,7 +330,6 @@ export function openResidentFacet(
   params: ProcessHostParams,
 ): ResidentFacet {
   const facets = facetContainer(ctx);
-  const book = slotBook(ctx);
   const slot = acquireSlot(ctx, params.pid);
   const name = residentFacetName(slot);
   // The start callback is the ONLY way this facet is ever created, and it
@@ -511,7 +358,7 @@ export function openResidentFacet(
     facet = facets.get(name, start);
   } catch (error) {
     releaseSlot(ctx, params.pid);
-    throw withFacetBudgetNamed(Math.max(book.ledgerKnown, book.next), error);
+    throw withFacetBudgetNamed(facetNameCount(ctx), error);
   }
 
   let disposed = false;
@@ -531,15 +378,14 @@ export function openResidentFacet(
     started = facet.startProcess(params.startArgs);
   } catch (error) {
     void release();
-    throw withFacetBudgetNamed(Math.max(book.ledgerKnown, book.next), error);
+    throw withFacetBudgetNamed(facetNameCount(ctx), error);
   }
   // The rejection that carries the platform's failure at ID exhaustion is
   // this one, and it is annotated AFTER awaiting the ledger — the first
   // failure of a fresh incarnation must compare against the persisted count,
   // not the zero its adoption read has not yet replaced.
   started = started.catch(async (error) => {
-    const durable = await book.ledger;
-    throw withFacetBudgetNamed(Math.max(durable, book.next), error);
+    throw withFacetBudgetNamed(await facetNameCountDurable(ctx), error);
   });
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.

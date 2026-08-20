@@ -4,7 +4,7 @@
  *
  * A single Durable Object method can drive at most four concurrent
  * Worker Loader fetches before extra dispatches serialize or fail. Small
- * batches therefore run in the coordinator DO through LoaderPool.
+ * batches therefore run in the coordinator DO through IsolatePool.
  * Wider batches are sharded across sibling NimbusSession DOs, each of
  * which owns its own four-loader budget.
  *
@@ -15,7 +15,7 @@
  */
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
-import { LoaderPool } from './loader-pool.js';
+import { IsolatePool } from './isolate-pool.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
@@ -79,10 +79,10 @@ function isFanoutPeerStub(value) {
 }
 function fanoutPeerStub(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-        throw new BindingError('FanoutPool: NIMBUS_SESSION.get() did not return a peer stub.');
+        throw new BindingError('Fanout: NIMBUS_SESSION.get() did not return a peer stub.');
     }
     if (!isFanoutPeerStub(value)) {
-        throw new BindingError('FanoutPool: peer stub does not expose _rpcFanoutExecute().');
+        throw new BindingError('Fanout: peer stub does not expose _rpcFanoutExecute().');
     }
     return value;
 }
@@ -95,7 +95,7 @@ function fanoutPeerStub(value) {
  * exists primarily as a clean API surface; per-call dispatch state
  * lives only inside submitMany's promise.
  */
-export class FanoutPool {
+export class Fanout {
     env;
     ctx;
     opts;
@@ -104,12 +104,12 @@ export class FanoutPool {
     constructor(rawEnv, ctx, opts) {
         // A host hands its whole env over; the bindings are claimed here and the
         // LOADER claim is checked immediately. Hard-fail on a missing LOADER —
-        // LoaderPool also enforces this, but checking up front points the
-        // diagnostic at the fanout-pool construction site rather than the
-        // deferred loader-pool one.
+        // IsolatePool also enforces this, but checking up front points the
+        // diagnostic at the fanout construction site rather than the
+        // deferred isolate-pool one.
         const env = rawEnv ?? {};
         if (!env.LOADER || typeof env.LOADER.get !== 'function') {
-            throw new BindingError('FanoutPool: env.LOADER binding missing or invalid. ' +
+            throw new BindingError('Fanout: env.LOADER binding missing or invalid. ' +
                 'Add a [[worker_loaders]] entry to wrangler.jsonc.');
         }
         this.env = env;
@@ -123,21 +123,21 @@ export class FanoutPool {
      * results in input order.
      *
      * Routing:
-     *   tasks.length < 5   -> coordinator-local LoaderPool
+     *   tasks.length < 5   -> coordinator-local IsolatePool
      *   tasks.length >= 5  -> sibling NimbusSession DOs
      *
      * Backpressure: if `tasks.length > MAX_PEER_FANOUT (32)`, tasks
      * are sharded modulo `MAX_PEER_FANOUT` and each shard's bucket
      * runs serially inside its assigned peer DO via the in-peer
-     * LoaderPool's concurrency (capped at 4 there too). A
+     * IsolatePool's concurrency (capped at 4 there too). A
      * single submitMany call returns when ALL tasks complete (or any
      * throws).
      *
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as LoaderPool.submit. The function is serialized via
-     * the vendored serializeFunction (same as LoaderPool#prepare).
+     * as IsolatePool.submit. The function is serialized via
+     * the vendored serializeFunction (same as IsolatePool#prepare).
      */
     async submitMany(tasks, fn) {
         if (tasks.length === 0)
@@ -166,12 +166,12 @@ export class FanoutPool {
     }
     // ── Private: in-DO dispatch (in-DO fanout) ──────────────────────────────
     async _dispatchInDo(tasks, fn) {
-        // Use the existing LoaderPool. Concurrency = task count
+        // Use the existing IsolatePool. Concurrency = task count
         // (capped at 4 by constructor — tasks.length is already < 5
         // here, so the cap won't bite). Each task = one pool.submit;
         // pool.map runs them with stable-slot reuse.
         const concurrency = Math.min(tasks.length, IN_DO_THRESHOLD - 1);
-        const pool = new LoaderPool(this.env, this.ctx, {
+        const pool = new IsolatePool(this.env, this.ctx, {
             concurrency,
             timeoutMs: this.opts.timeoutMs,
             tag: this.opts.tag,
@@ -203,7 +203,7 @@ export class FanoutPool {
     async _dispatchPeerDo(tasks, fn) {
         const ns = this.env?.NIMBUS_SESSION;
         if (!ns || typeof ns.idFromName !== 'function' || typeof ns.get !== 'function') {
-            throw new BindingError('FanoutPool: env.NIMBUS_SESSION binding missing or invalid. ' +
+            throw new BindingError('Fanout: env.NIMBUS_SESSION binding missing or invalid. ' +
                 'The peer-DO topology requires it. ' +
                 'Add the binding via durable_objects.bindings in wrangler.jsonc.');
         }
@@ -214,7 +214,7 @@ export class FanoutPool {
         const fnSource = serializeFunction(fn);
         // Cap peer count at MAX_PEER_FANOUT. Tasks beyond N=32 are
         // bucketed into existing shards — each shard's peer DO then
-        // runs its bucket through its in-DO LoaderPool.map
+        // runs its bucket through its in-DO IsolatePool.map
         // (concurrency capped at 4 there).
         const peerCount = Math.min(tasks.length, this.opts.maxPeers ?? MAX_PEER_FANOUT);
         // Group tasks by deterministic shard. Same key → same shard, so
@@ -266,7 +266,7 @@ export class FanoutPool {
                             extraBindings: this.opts.extraBindings,
                             omitSupervisor: this.opts.omitSupervisor,
                             // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-                            // the peer's LoaderPool can mint a SUPERVISOR
+                            // the peer's IsolatePool can mint a SUPERVISOR
                             // binding that routes back HERE (the user's session DO),
                             // not to the peer DO itself. Without this, peer DOs'
                             // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /

@@ -9,7 +9,7 @@
 // content), but executing it serves the FIRST binary's WebAssembly
 // .Module because the loader-pool warm-isolate cache key collided.
 //
-// Root cause: packages/fabric/src/loader-pool.ts:#fingerprintWasm used
+// Root cause: packages/fabric/src/isolate-pool.ts:#fingerprintWasm used
 // `name + len + first + last` to fingerprint per-call wasm modules.
 // Two distinct-but-similar binaries (same length, same magic-byte
 // start, same trailer end) collided. Cache returned the FIRST

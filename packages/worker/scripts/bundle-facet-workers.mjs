@@ -4,7 +4,7 @@
  * injects into dynamic workers.
  *
  * WHY this exists:
- *   Dynamic workers (NimbusFacetPool / NimbusLoaderPool) receive their
+ *   Dynamic workers (NimbusFacetPool / NimbusIsolatePool) receive their
  *   module source as strings — they cannot import supervisor modules,
  *   and user functions cannot capture supervisor closure variables. Any
  *   TypeScript the injected code needs must therefore be esbuild-bundled
@@ -325,7 +325,7 @@ async function main() {
     ' *',
     ' * Self-contained IIFE that installs globalThis.__nimbusVirtualSockets.',
     ' * Consumed by python-runner.ts and ruby-runner.ts: spliced into the',
-    ' * socket process worker module source passed to NimbusLoaderPool.',
+    ' * socket process worker module source passed to NimbusIsolatePool.',
     ' *',
     ` * Size: ${(kernelSrc.length / 1024).toFixed(2)} KiB`,
     ' */',

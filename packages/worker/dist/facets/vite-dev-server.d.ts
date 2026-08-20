@@ -50,7 +50,7 @@ export interface ViteDevServerOptions {
     /**
      * Worker bindings env. Required for the on-demand-bundle facet path
      * (LOADER + ctx-exports). When provided, /preview/@modules/<spec>
-     * misses bundle in a LoaderPool isolate instead of the
+     * misses bundle in a IsolatePool isolate instead of the
      * supervisor's EsbuildService — same architecture as the
      * pre-bundle path. Without this option, the supervisor falls back
      * to in-process esbuild (legacy behaviour).
@@ -180,7 +180,7 @@ export declare class ViteDevServer {
     private logSink;
     constructor(opts: ViteDevServerOptions);
     /**
-     * Lazily construct the LoaderPool used for on-demand bundling
+     * Lazily construct the IsolatePool used for on-demand bundling
      * of /preview/@modules/<spec> requests that miss both the in-memory
      * and pkg_esm_bundles caches. Mirrors the pre-bundle pool's
      * configuration: 1 worker, internal pLimit not needed (one bundle

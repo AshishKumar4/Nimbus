@@ -28,7 +28,7 @@ import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
 import { requireStagedBootAssembler } from './process-fabric.js';
-import { assertModuleMapWithinCodeLimit } from './workerd-facet-host.js';
+import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import type { EntrypointLoopbackFactory } from './ctx-exports.js';
 import type { WorkerCode } from './vendor/types.js';
 

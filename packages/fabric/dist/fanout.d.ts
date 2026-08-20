@@ -4,7 +4,7 @@
  *
  * A single Durable Object method can drive at most four concurrent
  * Worker Loader fetches before extra dispatches serialize or fail. Small
- * batches therefore run in the coordinator DO through LoaderPool.
+ * batches therefore run in the coordinator DO through IsolatePool.
  * Wider batches are sharded across sibling NimbusSession DOs, each of
  * which owns its own four-loader budget.
  *
@@ -13,7 +13,7 @@
  * missing LOADER or NIMBUS_SESSION bindings fail loudly so install and
  * runtime operations do not appear successful after partial dispatch.
  */
-import { type FacetTaskFn } from './loader-pool.js';
+import { type FacetTaskFn } from './isolate-pool.js';
 import type { WorkerLoader } from './vendor/types.js';
 /**
  * The sibling-session namespace the peer-DO topology routes through. Ids are
@@ -24,7 +24,7 @@ interface PeerSessionNamespace {
     get(id: DurableObjectId): unknown;
 }
 /** The bindings a fan-out needs off the coordinator DO's env. */
-export interface FanoutPoolEnv {
+export interface FanoutEnv {
     LOADER?: WorkerLoader;
     NIMBUS_SESSION?: PeerSessionNamespace;
 }
@@ -90,45 +90,45 @@ export interface FanoutTask<A> {
     /** Argument passed to the user fn. */
     args: A;
 }
-/** Options handed to FanoutPool's constructor. */
-export interface FanoutPoolOptions {
+/** Options handed to Fanout's constructor. */
+export interface FanoutOptions {
     /**
      * Tag prepended to peer-DO ids and in-DO loader ids for debugging
      * (e.g. "npm-install-batch"). Affects neither isolate identity (in-DO
-     * path uses the existing LoaderPool's tag-fold) nor peer-DO
+     * path uses the existing IsolatePool's tag-fold) nor peer-DO
      * deterministic placement (peer ids fold tag + key).
      */
     tag: string;
     /**
      * Per-task timeout in ms. Default 60_000. Forwarded to the in-DO
-     * LoaderPool's submit calls and to the peer-DO RPC's own
-     * LoaderPool.
+     * IsolatePool's submit calls and to the peer-DO RPC's own
+     * IsolatePool.
      */
     timeoutMs?: number;
     /**
      * Preamble bundled into every facet (in-DO and inside each peer
-     * DO). Same semantics as LoaderPool's preamble option.
+     * DO). Same semantics as IsolatePool's preamble option.
      */
     preamble?: string;
     /**
      * Wasm modules forwarded to every facet. Same semantics as
-     * LoaderPool's wasmModules option.
+     * IsolatePool's wasmModules option.
      */
     wasmModules?: Record<string, ArrayBuffer>;
     /**
      * Extra bindings forwarded to every facet. Same semantics as
-     * LoaderPool's extraBindings option.
+     * IsolatePool's extraBindings option.
      */
     extraBindings?: Record<string, unknown>;
     /**
      * If set, skip the supervisor-RPC binding injection (mirrors
-     * LoaderPool's omitSupervisor flag).
+     * IsolatePool's omitSupervisor flag).
      */
     omitSupervisor?: boolean;
     /**
      * Invoking process pid, baked into each facet's SUPERVISOR binding so
      * filesystem RPCs (writeBatchStream) are authorized under the caller's
-     * credential (mirrors LoaderPool's supervisorPid). Threaded to both
+     * credential (mirrors IsolatePool's supervisorPid). Threaded to both
      * the in-DO loader pool and, via `_rpcFanoutExecute`, the peer-DO pools.
      * npm install passes the shell command's `ctx.pid`; resolve leaves it 0.
      */
@@ -162,33 +162,33 @@ export interface FanoutPoolOptions {
  * exists primarily as a clean API surface; per-call dispatch state
  * lives only inside submitMany's promise.
  */
-export declare class FanoutPool {
+export declare class Fanout {
     private readonly env;
     private readonly ctx;
     private readonly opts;
     private readonly coordDoId;
     private readonly coordDoIdShort;
-    constructor(rawEnv: unknown, ctx: DurableObjectState, opts: FanoutPoolOptions);
+    constructor(rawEnv: unknown, ctx: DurableObjectState, opts: FanoutOptions);
     /**
      * Dispatch `tasks` across the appropriate topology and return
      * results in input order.
      *
      * Routing:
-     *   tasks.length < 5   -> coordinator-local LoaderPool
+     *   tasks.length < 5   -> coordinator-local IsolatePool
      *   tasks.length >= 5  -> sibling NimbusSession DOs
      *
      * Backpressure: if `tasks.length > MAX_PEER_FANOUT (32)`, tasks
      * are sharded modulo `MAX_PEER_FANOUT` and each shard's bucket
      * runs serially inside its assigned peer DO via the in-peer
-     * LoaderPool's concurrency (capped at 4 there too). A
+     * IsolatePool's concurrency (capped at 4 there too). A
      * single submitMany call returns when ALL tasks complete (or any
      * throws).
      *
      * `fn` is the user function executed per task. It runs INSIDE a
      * Worker Loader isolate (in the in-DO path) or inside a peer DO's
      * Worker Loader isolate (in the peer-DO path); same trust posture
-     * as LoaderPool.submit. The function is serialized via
-     * the vendored serializeFunction (same as LoaderPool#prepare).
+     * as IsolatePool.submit. The function is serialized via
+     * the vendored serializeFunction (same as IsolatePool#prepare).
      */
     submitMany<A, R>(tasks: FanoutTask<A>[], fn: FacetTaskFn<A, R>): Promise<R[]>;
     /** Report which topology a task count uses without dispatching. */
@@ -220,4 +220,4 @@ export declare class FanoutPool {
  */
 export declare function hashKeyToShard(key: string, peerCount: number): number;
 export {};
-//# sourceMappingURL=fanout-pool.d.ts.map
+//# sourceMappingURL=fanout.d.ts.map

@@ -7,10 +7,10 @@
  * independent fanout tasks. This file is the per-task body: one packument
  * fetch, one version pick, and edge extraction.
  *
- * Each task runs inside a Worker Loader isolate (FanoutPool routes
+ * Each task runs inside a Worker Loader isolate (Fanout routes
  * automatically: <5 = in-DO, ≥5 = peer-DO). The isolate is short-lived;
  * task body has its own ~128 MiB envelope. Parallelism = layer width
- * (capped at 32 by FanoutPool's MAX_PEER_FANOUT).
+ * (capped at 32 by Fanout's MAX_PEER_FANOUT).
  *
  * Stability invariants (cloudflare-parallel serialises via fn.toString)
  * ───────────────────────────────────────────────────────────────────
@@ -180,13 +180,13 @@ export interface ResolveOneResult {
 }
 /**
  * Per-package fanout task body. Serialised via fn.toString() and
- * dispatched by FanoutPool.submitMany — see installer.ts
+ * dispatched by Fanout.submitMany — see installer.ts
  * resolveTreeViaFanout.
  *
- * Function signature MUST be `(spec, env)` so FanoutPool's
+ * Function signature MUST be `(spec, env)` so Fanout's
  * submitMany invocation `fn(item, env)` lines up.
  *
- * `env` is the loader-isolate env supplied by FanoutPool.
+ * `env` is the loader-isolate env supplied by Fanout.
  * `env.SUPERVISOR` is the supervisor-rpc binding (putRegistryEntries,
  * getPackument).
  */

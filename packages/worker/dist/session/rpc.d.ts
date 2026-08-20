@@ -357,11 +357,11 @@ export declare function vfsReaddir(self: RpcHost, path: string): {
 /** RPC: Write a file to the VFS. */
 export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): void;
 /**
- * RPC: peer-DO execute leg of FanoutPool's peer-DO fanout topology.
+ * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
  *
  * Called by a coordinator NimbusSession DO via
  * `env.NIMBUS_SESSION.idFromName(siblingName).get()._rpcFanoutExecute(...)`.
- * THIS DO instance acts as a peer worker: it runs ONE LoaderPool
+ * THIS DO instance acts as a peer worker: it runs ONE IsolatePool
  * over its assigned shard and returns the per-task results.
  *
  * Cap-sidestep mechanic
@@ -370,7 +370,7 @@ export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuf
  * Each RPC is a stub.fetch / RPC method invocation, NOT an
  * `env.LOADER.get()` from the supervisor's own method context — so
  * those N calls don't count against the V8 4-loaders-per-method cap.
- * Inside this RPC handler, we run a SINGLE LoaderPool with concurrency
+ * Inside this RPC handler, we run a SINGLE IsolatePool with concurrency
  * matching the shard size — and since the shard arrived via the peer
  * router (capped at MAX_PEER_FANOUT = 32 peers, so each shard is
  * ⌈totalTasks / 32⌉ wide), the in-DO pool stays well under 4.
@@ -385,9 +385,9 @@ export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuf
  * Bytes-isolation
  * ───────────────
  * The fnSource string is forwarded verbatim into a fresh
- * LoaderPool, which serializes it into the loader's worker
+ * IsolatePool, which serializes it into the loader's worker
  * code. No supervisor-side eval. Same trust posture as every other
- * LoaderPool dispatch.
+ * IsolatePool dispatch.
  */
 export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args: unknown[], poolOpts?: {
     tag?: string;
@@ -398,7 +398,7 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     omitSupervisor?: boolean;
     /**
      * INSTALL-HONESTY: full doId of the COORDINATOR (the DO that
-     * called FanoutPool.submitMany). The peer's LoaderPool
+     * called Fanout.submitMany). The peer's IsolatePool
      * uses this to mint a SUPERVISOR binding that routes back to the
      * coordinator instead of the peer (default behavior pre-fix).
      * Without this, install-batch's writeBatchStream calls from inside
@@ -408,7 +408,7 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     /**
      * Invoking process pid, forwarded into the peer-side SUPERVISOR
      * binding so writeBatchStream is authorized under the caller's
-     * credential (see LoaderPoolOptions.supervisorPid).
+     * credential (see IsolatePoolOptions.supervisorPid).
      */
     supervisorPid?: number;
 }): Promise<{

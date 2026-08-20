@@ -45,30 +45,6 @@ export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExport
     pid: number;
     writerId: string;
 }, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
-/**
- * Total bytes a dynamic Worker's module map may carry, across every member of
- * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is
- * refused with "Dynamic Worker code size (N bytes) exceeds the maximum allowed
- * size of 67108864 bytes", confirmed at five sizes with two trials each. The
- * budget is shared, so a ruby process is already 34.3 MiB down before its disk
- * is counted.
- */
-export declare const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67108864;
-/**
- * Refuse a module map over {@link DYNAMIC_WORKER_CODE_LIMIT_BYTES}, naming
- * the largest members. The platform's own refusal reports one number for a
- * budget shared across every member of the map, which tells the operator
- * nothing about WHAT to shrink — so every fabric seam that assembles a map
- * runs this before the loader sees it.
- *
- * Costed to its two paths. Under the ceiling: one length read per member —
- * UTF-16 code units for text, which equal UTF-8 bytes for the ASCII module
- * text the generators emit and undercount otherwise; the platform's own
- * refusal still backstops the exotic case, because this check exists to name
- * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
- * then, sorted so the biggest lever is first.
- */
-export declare function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void;
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
     getEntrypoint(): LoadedWorkerEntrypointStub;
@@ -144,28 +120,6 @@ export declare function cloneFacetStorage(ctx: DurableObjectState, clone: {
  * two were only ever conflated because one of them happened to be handy.
  */
 export declare function residentFacetName(slot: number): string;
-/**
- * Facet IDs a Durable Object is granted over its LIFETIME. Append-only and
- * never reclaimed, so crossing it is unrecoverable for the object — which is
- * why the ledger below counts consumption durably instead of leaving the
- * bound as prose the slot book merely respects.
- */
-export declare const FACET_ID_LIFETIME_BUDGET = 65536;
-/** Where the ledger persists the count of facet names ever minted. */
-export declare const FACET_NAME_HIGH_WATER_KEY = "fabric_facet_name_high_water";
-/**
- * The lifetime facet-ID ledger: how many facet names this fabric has ever
- * minted on the Durable Object, against the 65,536 the platform will ever
- * grant it. `consumed` only ever counts FIRST uses — a reused name, in this
- * incarnation or any earlier one, cost no new ID, which is the slot book's
- * whole reason to exist. Surfaced so an operator can see proximity to a wall
- * whose crossing is unrecoverable, instead of discovering it from the
- * platform's opaque failure.
- */
-export declare function facetIdBudget(ctx: DurableObjectState): Promise<{
-    consumed: number;
-    budget: number;
-}>;
 /**
  * What `openResidentFacet` hands back: a running process, minus its placement.
  *

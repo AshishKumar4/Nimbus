@@ -52,7 +52,7 @@ export const runSpawnInIsolate = async function runSpawnInIsolate(
     return { exitCode: 1, stdout: '', stderr: 'spawn-facet: missing spec.req\n' };
   }
 
-  // env.SUPERVISOR is auto-injected by LoaderPool and pinned to
+  // env.SUPERVISOR is auto-injected by IsolatePool and pinned to
   // THIS DO's id (props.doId = ctx.id.toString()). With the in-DO
   // in-DO fanout route, "this DO" IS the user-session DO whose _cpRegistry
   // is populated; cpDispatchInline therefore reaches the right

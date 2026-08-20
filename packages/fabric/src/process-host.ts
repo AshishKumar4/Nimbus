@@ -66,7 +66,7 @@
 
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
-import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
+import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
 import {
   type HostedProcess,
   type OneShotParams,
@@ -77,8 +77,8 @@ import {
   type ResidentDiskReader,
   type ResidentSupervisorProps,
 } from './process-fabric.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import {
-  DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   openResidentFacet,
   residentFacetName,
   runOneShotWorker,

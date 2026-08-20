@@ -28,8 +28,8 @@ import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from 
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
-import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
-import { FanoutPool, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout-pool.js';
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { Fanout, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, readDiagCounters, } from '@nimbus-sh/platform/diag-counters.js';
@@ -147,7 +147,7 @@ export class NpmInstaller {
             phases['lock-check'] = Date.now() - phaseStart;
             // ── Phase 1: Resolve ──────────────────────────────────────────
             // Frontier-coordinator path. Each BFS layer dispatches to
-            // FanoutPool.submitMany — width <5 in-DO (in-DO fanout),
+            // Fanout.submitMany — width <5 in-DO (in-DO fanout),
             // width ≥5 peer-DO (peer-DO fanout). Per-package task body is
             // self-contained (resolveOnePackumentInFacet), supervisor builds
             // layer N+1 from layer N's edges. Missing env.LOADER throws at
@@ -223,7 +223,7 @@ export class NpmInstaller {
         setInstallPhase('fetch');
         // Fetch + extract + write new packages.
         //
-        // Single fetch path: one LoaderPool isolate (the batch facet)
+        // Single fetch path: one IsolatePool isolate (the batch facet)
         // runs the entire install. The facet streams tarballs through gunzip+tar
         // and coalesces package-owned paths into shared writeBatchStream waves;
         // every owner awaits each wave it contributed to.
@@ -420,7 +420,7 @@ export class NpmInstaller {
     /**
      * F-2 frontier-coordinator path. Replaces the single-resolve-facet
      * dispatch with a per-package fanout: each BFS layer becomes ONE
-     * `FanoutPool.submitMany` call, layer N+1 builds from the
+     * `Fanout.submitMany` call, layer N+1 builds from the
      * resolved metadata of layer N.
      *
      * Topology auto-routes per layer:
@@ -487,7 +487,7 @@ export class NpmInstaller {
         const RESOLVE_PEER_CAP = 8;
         // F-2 fanout pool. One construction reused across every layer; the
         // pool is stateless across submitMany calls.
-        const fanoutPool = new FanoutPool(this.env, this.ctx, {
+        const fanoutPool = new Fanout(this.env, this.ctx, {
             tag: 'npm-resolve-fanout',
             // 5 minutes per layer is generous; typical layers complete in
             // 1-3 s. Per-task this gates each packument fetch + R2 race.
@@ -562,8 +562,8 @@ export class NpmInstaller {
                 };
                 return { key: name, args: taskSpec };
             });
-            // Dispatch the layer. FanoutPool routes:
-            //   <5 → in-DO fanout in-DO (LoaderPool), concurrency = layer.length (capped at 4)
+            // Dispatch the layer. Fanout routes:
+            //   <5 → in-DO fanout in-DO (IsolatePool), concurrency = layer.length (capped at 4)
             //   ≥5 → peer-DO fanout peer-DO, N peers = min(layer.length, 32)
             let results;
             const layerT0 = Date.now();
@@ -770,12 +770,12 @@ export class NpmInstaller {
         return { resolved, unresolved };
     }
     /**
-     * Batch install via two-tier fan-out (FanoutPool).
+     * Batch install via two-tier fan-out (Fanout).
      *
      * Shard count is `min(specs.length, INSTALL_PEER_CAP)`, and the topology
      * follows from it:
      *   shardCount <  IN_DO_THRESHOLD (5)  → in-DO fanout in-DO
-     *     1 LoaderPool with concurrency = shardCount, capped at
+     *     1 IsolatePool with concurrency = shardCount, capped at
      *     4 by V8 invariant. Each shard is one facet running its own
      *     installPackagesInFacet.
      *   shardCount >= IN_DO_THRESHOLD       → peer-DO fanout peer-DO
@@ -787,7 +787,7 @@ export class NpmInstaller {
      *   `shard-${i}` task key deterministically (tests can predict
      *   placement).
      *
-     * Pre-fix lineage: this site previously ran ONE LoaderPool
+     * Pre-fix lineage: this site previously ran ONE IsolatePool
      *   with concurrency=1, internal pLimit(3) — the explicit "collapses
      *   what was 4 concurrent dynamic workers (pool.map slots) into 1"
      *   Two-tier topology re-expands the fan-out without re-introducing
@@ -852,7 +852,7 @@ export class NpmInstaller {
         // Peer shards dispatch in bounded phases and each phase is a barrier, so
         // the phase profile is what distinguishes shard work from barrier count.
         const phaseProfile = [];
-        const fanoutPool = new FanoutPool(this.env, this.ctx, {
+        const fanoutPool = new Fanout(this.env, this.ctx, {
             tag: 'npm-install-batch',
             // Whole-batch timeout. With per-shard parallelism of N=8 peer
             // DOs each running pLimit(3), Mossaic-class 456 packages
@@ -870,7 +870,7 @@ export class NpmInstaller {
         });
         const tasks = nonEmptyShards.map((shardSpecs, shardIdx) => ({
             // Stable-id router key. Same shardIdx → same peer DO across
-            // runs. Tests can predict placement via FanoutPool's
+            // runs. Tests can predict placement via Fanout's
             // `peerSiblingId(key, peerCount)` helper.
             key: `shard-${shardIdx}`,
             args: { packages: shardSpecs, concurrency: 3 },
@@ -975,7 +975,7 @@ export class NpmInstaller {
         }
         catch (e) {
             // Final catch — preserved from the pre-fix shape so the error
-            // log line shape stays consistent. FanoutPool's internal
+            // log line shape stays consistent. Fanout's internal
             // pools dispose themselves at the end of each submitMany call,
             // so no explicit dispose() is needed here.
             // The earlier inner-catch already logged + threw; if we reach
@@ -1305,7 +1305,7 @@ export class NpmInstaller {
      * JSX elements get rejected as "alien" — silent render failure.
      */
     async prebundleUsedModules(projDir, installed) {
-        // Pre-bundle now runs in LoaderPool isolates (src/pre-bundle-facet.ts);
+        // Pre-bundle now runs in IsolatePool isolates (src/pre-bundle-facet.ts);
         // each facet ships its own bundled esbuild-wasm via the preamble. The
         // supervisor's EsbuildService is no longer on the bundle path — it
         // still serves the transform path (TS/JSX → JS) which is small and
@@ -1516,7 +1516,7 @@ export class NpmInstaller {
         // (where it should live). No supervisor-side caching — see
         // src/esbuild-wasm-bytes.ts for the full architectural rationale.
         //
-        // Bytes are shipped into each facet via LoaderPool's
+        // Bytes are shipped into each facet via IsolatePool's
         // `wasmModules` option which workerd registers in the LOADER
         // `modules` map as `{ wasm: ArrayBuffer }`. Workerd compiles at
         // module-load (startup phase, where wasm code generation is
@@ -1563,12 +1563,12 @@ export class NpmInstaller {
             if (wasmBytes.byteLength > maxRetainedWasmBytes) {
                 throw new RangeError(`pre-bundle wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`);
             }
-            // LoaderPool keeps the constructor-time module bytes until
+            // IsolatePool keeps the constructor-time module bytes until
             // dispose(), so retain their exact credit rather than treating
             // construction as a handoff that immediately frees the ArrayBuffer.
             setupAllocation.shrinkTo(wasmBytes.byteLength);
             try {
-                pool = new LoaderPool(this.env, this.ctx, {
+                pool = new IsolatePool(this.env, this.ctx, {
                     concurrency: PRE_BUNDLE_CONCURRENCY,
                     timeoutMs: 60_000,
                     retries: 0,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 //
-// Regression: npm install dispatches its write facets through LoaderPool,
+// Regression: npm install dispatches its write facets through IsolatePool,
 // which mints the SUPERVISOR binding the facet uses for writeBatchStream. S2a's
 // SupervisorRPC._pid() now rejects pid <= 0, so the pool's historical hardcoded
 // `pid: 0` broke every install ("missing or invalid process pid in props").
@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 
-import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
+import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { setCtxExports, setSupervisorEntrypointName } from '../../packages/fabric/src/ctx-exports.ts';
 
 const boundProps = [];
@@ -28,19 +28,19 @@ const ctx = { id: { toString: () => 'loader-pid-test' } };
 
 // A positive supervisorPid must reach the SUPERVISOR binding props.
 boundProps.length = 0;
-new LoaderPool(env, ctx, { supervisorPid: 42 });
+new IsolatePool(env, ctx, { supervisorPid: 42 });
 assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42 }],
   'supervisorPid must be minted into the SUPERVISOR binding props');
 
 // Default (unset) stays 0 — resolve/pre-bundle pools never call _pid().
 boundProps.length = 0;
-new LoaderPool(env, ctx, {});
+new IsolatePool(env, ctx, {});
 assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0 }],
   'absent supervisorPid defaults to 0');
 
 // supervisorDoIdOverride and supervisorPid compose (peer-DO install path).
 boundProps.length = 0;
-new LoaderPool(env, ctx, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
+new IsolatePool(env, ctx, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
 assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7 }],
   'supervisorPid composes with supervisorDoIdOverride');
 

@@ -1,5 +1,5 @@
 /**
- * pre-bundle-facet.ts — LoaderPool entry for esbuild pre-bundling.
+ * pre-bundle-facet.ts — IsolatePool entry for esbuild pre-bundling.
  *
  * Why this exists
  * ───────────────
@@ -14,7 +14,7 @@
  * the previous isolate.
  *
  * The fix is to dispatch each per-specifier `esbuild.build` to a
- * LoaderPool isolate. Each facet has its own 128 MB budget and
+ * IsolatePool isolate. Each facet has its own 128 MB budget and
  * stable-slot reuse keeps the warm-up cost amortized across the 8
  * concurrent specs of a typical install. The install-batch facet uses
  * the same isolate boundary for tarball extraction.

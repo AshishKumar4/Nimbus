@@ -543,7 +543,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
       (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: any): Promise<number> {
         const argv: string[] = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
-        // which builds its own LoaderPool (separate from the
+        // which builds its own IsolatePool (separate from the
         // one-shot dispatch's pool) and drives a ReplSession.
         if (argv.length === 0 && self.terminal) {
           const { runPythonRepl } = await import('../runtime/python-repl.js');

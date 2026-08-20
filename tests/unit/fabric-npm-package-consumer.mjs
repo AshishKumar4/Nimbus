@@ -3,7 +3,7 @@
 //
 // The live half of this proof ran once against production workerd (a
 // throwaway worker exercised the alarm mux, the generation clock, the launch
-// journal across a real ctx.abort(), and a LoaderPool facet — see
+// journal across a real ctx.abort(), and a IsolatePool facet — see
 // scratchpad/fabric-extraction/consumer-proof-outputs.md for the transcript).
 // This test keeps the consumer SHAPE proven on every sweep: out of tarballs,
 // from a directory that is not this repo, through the `import` condition —

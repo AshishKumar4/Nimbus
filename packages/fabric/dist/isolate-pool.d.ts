@@ -1,5 +1,5 @@
 /**
- * loader-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
+ * isolate-pool.ts — Nimbus loader-isolate pool based on cloudflare-parallel.
  *
  * Adds Nimbus-specific behavior to the upstream pool design:
  *   1. **Stable-slot isolate reuse**. Upstream's #counter++ gives every
@@ -38,11 +38,11 @@ export type FacetTaskFn<A, R> = {
     task(args: A, env: FacetBindings): R | Promise<R>;
 }['task'];
 /** The one binding a pool needs off whichever env its host hands it. */
-export interface LoaderPoolEnv {
+export interface IsolatePoolEnv {
     LOADER?: WorkerLoader;
 }
-/** Options handed to LoaderPool's constructor. */
-export interface LoaderPoolOptions {
+/** Options handed to IsolatePool's constructor. */
+export interface IsolatePoolOptions {
     /** Maximum concurrent in-flight facets. Default 4. */
     concurrency?: number;
     /** Per-task timeout in ms. Default 60_000. */
@@ -79,8 +79,8 @@ export interface LoaderPoolOptions {
      * Override the `doId` baked into the auto-injected SUPERVISOR binding.
      * Default: `ctx.id.toString()` (the DO that constructs the pool).
      *
-     * Used by FanoutPool's peer-DO branch (peer-DO fanout): peer DOs
-     * construct their per-task LoaderPool from inside
+     * Used by Fanout's peer-DO branch (peer-DO fanout): peer DOs
+     * construct their per-task IsolatePool from inside
      * `_rpcFanoutExecute`, where `ctx` is the PEER DO's ctx. Without this
      * override the peer's auto-injected SUPERVISOR routes back to the
      * peer DO itself — so writes (e.g. install-batch-facet's
@@ -151,7 +151,7 @@ export interface LoaderPoolOptions {
     wasmModules?: Record<string, ArrayBuffer>;
 }
 /** Per-call override (merged with pool defaults). */
-export interface LoaderCallOptions {
+export interface IsolateCallOptions {
     timeoutMs?: number;
     retries?: number;
     /**
@@ -186,7 +186,7 @@ export interface LoaderCallOptions {
     wasmModules?: Record<string, ArrayBuffer>;
 }
 /** Per-map override. Adds onError strategy for partial failures. */
-export interface LoaderMapOptions extends LoaderCallOptions {
+export interface IsolateMapOptions extends IsolateCallOptions {
     /** Concurrency override for this call. Defaults to pool's concurrency. */
     concurrency?: number;
     /**
@@ -216,7 +216,7 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  *
  * Typical use:
  *
- *   const pool = new LoaderPool(env, ctx, {
+ *   const pool = new IsolatePool(env, ctx, {
  *     concurrency: 4,
  *     tag: 'npm-install',
  *   });
@@ -225,10 +225,10 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  *     toFetch,
  *   );
  */
-export declare class LoaderPool {
+export declare class IsolatePool {
     #private;
     private readonly loader;
-    /** The hosting actor, as the loader-ledger's per-DO key. */
+    /** The hosting actor, as the loader budget ledger's per-DO key. */
     private readonly ctx;
     private readonly concurrency;
     private readonly defaultTimeoutMs;
@@ -240,7 +240,7 @@ export declare class LoaderPool {
     private readonly preambleHash;
     /**
      * WASM modules to ship in the LOADER `modules` map. See
-     * LoaderPoolOptions.wasmModules for the rationale. Stored in
+     * IsolatePoolOptions.wasmModules for the rationale. Stored in
      * insertion order so the per-import preamble we generate matches
      * across pool dispatches (cache-key stability).
      */
@@ -262,25 +262,25 @@ export declare class LoaderPool {
      * 12 chars is enough entropy for DO ids to collide-free per process.
      */
     private readonly doIdShort;
-    constructor(env: unknown, ctx: DurableObjectState, opts?: LoaderPoolOptions);
+    constructor(env: unknown, ctx: DurableObjectState, opts?: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
     /**
      * Run `fn` once with `arg` on a slot isolate. Returns the result or
      * throws TimeoutError / RetryExhaustedError / ExecutionError.
      */
-    submit<T, R>(fn: FacetTaskFn<T, R>, arg: T, opts?: LoaderCallOptions): Promise<Awaited<R>>;
+    submit<T, R>(fn: FacetTaskFn<T, R>, arg: T, opts?: IsolateCallOptions): Promise<Awaited<R>>;
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
      * pinned to stable slots so warm isolates are reused.
      *
      * Results are returned in input order. Failure handling per `onError`.
      */
-    map<T, R>(fn: FacetTaskFn<T, R>, items: T[], opts?: LoaderMapOptions): Promise<Array<Awaited<R> | null>>;
+    map<T, R>(fn: FacetTaskFn<T, R>, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R> | null>>;
     /**
      * Same shape as `map`, but accepts a pre-serialized function source
      * string instead of a live function reference. Used by
-     * `FanoutPool`'s peer-DO leg, where the function was already
+     * `Fanout`'s peer-DO leg, where the function was already
      * serialized on the coordinator side and forwarded over RPC.
      *
      * The fnSource MUST be the output of `serializeFunction(fn)`
@@ -294,7 +294,7 @@ export declare class LoaderPool {
      * No fn-validation runs here (it already ran on the coordinator);
      * the peer trusts the caller to forward a valid serialization.
      */
-    mapSource<T, R>(fnSource: string, items: T[], opts?: LoaderMapOptions): Promise<Array<Awaited<R> | null>>;
+    mapSource<T, R>(fnSource: string, items: T[], opts?: IsolateMapOptions): Promise<Array<Awaited<R> | null>>;
     /**
      * Release any RPC stubs held by the pool. Call this once the caller
      * is done with the pool (post-`map`/`submit`) so the underlying
@@ -312,4 +312,4 @@ export declare class LoaderPool {
      */
     dispose(): void;
 }
-//# sourceMappingURL=loader-pool.d.ts.map
+//# sourceMappingURL=isolate-pool.d.ts.map

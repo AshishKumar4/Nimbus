@@ -1,8 +1,8 @@
 /**
- * pre-bundle-preamble.ts — preamble injected into LoaderPool isolates
+ * pre-bundle-preamble.ts — preamble injected into IsolatePool isolates
  * that run src/pre-bundle-facet.ts.
  *
- * LoaderPool serialises the user function via fn.toString() and runs
+ * IsolatePool serialises the user function via fn.toString() and runs
  * it inside a dynamic worker built from inline modules. Names referenced
  * by the function at the module-top-level scope are NOT in that worker's
  * lexical scope at runtime — they must be re-declared in the preamble.
@@ -16,7 +16,7 @@
  *
  * NOT in the preamble:
  *   - ESBUILD_WASM_BASE64 / wasm BYTES — the wasm Module is shipped via
- *     LoaderPool's `wasmModules` option (LOADER `modules` map
+ *     IsolatePool's `wasmModules` option (LOADER `modules` map
  *     entry shape `{ wasm: ArrayBuffer }`). Workerd compiles it at
  *     module-load (startup phase) and the pool's generated worker.js
  *     exposes the resulting WebAssembly.Module on
@@ -27,7 +27,7 @@
  * we inline its source here so the facet doesn't need to fault back
  * to the supervisor for it.
  *
- * Preamble bytes are part of the loader-cache key for LoaderPool.
+ * Preamble bytes are part of the loader-cache key for IsolatePool.
  * Changing this file invalidates all warm slots in the pre-bundle pool;
  * fine — esbuild boot is the dominant cost and re-paying it once on a
  * deploy is acceptable.
@@ -41,7 +41,7 @@ import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.j
 // NOTE: wasm BYTES deliberately NOT in this preamble. They live in
 // env.ASSETS at /_assets/esbuild-<version>.wasm and are fetched by
 // the supervisor at pool-construction time
-// (src/esbuild-wasm-bytes.ts), then handed to LoaderPool's
+// (src/esbuild-wasm-bytes.ts), then handed to IsolatePool's
 // `wasmModules` option which registers them in the LOADER `modules`
 // map as `{ wasm: ArrayBuffer }`. workerd compiles during the
 // worker's module-load phase (where wasm code generation is
@@ -74,7 +74,7 @@ const RESOLVER_HELPERS_SRC = getExportsResolverJS();
 
 /**
  * Preamble string injected ahead of the prebundleOne function in every
- * pre-bundle facet isolate. Must be passed via LoaderPool's
+ * pre-bundle facet isolate. Must be passed via IsolatePool's
  * `preamble` option.
  */
 export const PRE_BUNDLE_PREAMBLE: string = `

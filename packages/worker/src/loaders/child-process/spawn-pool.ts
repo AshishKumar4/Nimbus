@@ -7,7 +7,7 @@
  * continue to flow through the existing supervisor RPC.
  */
 
-import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { runSpawnInIsolate, type SpawnInIsolateSpec, type SpawnInIsolateResult } from './spawn-facet.js';
 
 export interface SpawnPoolHooks {
@@ -33,7 +33,7 @@ export class ChildProcessSpawnPool {
    * allocation in flight while moving child execution out of the
    * supervisor isolate.
    */
-  private readonly pool: LoaderPool;
+  private readonly pool: IsolatePool;
   /**
    * Promise chain for serializing submits. Each new submit awaits
    * the previous one's completion BEFORE invoking pool.submit.
@@ -43,7 +43,7 @@ export class ChildProcessSpawnPool {
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(env: any, ctx: DurableObjectState) {
-    this.pool = new LoaderPool(env, ctx, {
+    this.pool = new IsolatePool(env, ctx, {
       tag: 'cp-spawn',
       concurrency: 1,
       timeoutMs: 2 * 60_000,

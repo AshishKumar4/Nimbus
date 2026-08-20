@@ -22,7 +22,7 @@ import {
   FACET_ID_LIFETIME_BUDGET,
   FACET_NAME_HIGH_WATER_KEY,
   facetIdBudget,
-} from '../../packages/fabric/src/workerd-facet-host.ts';
+} from '../../packages/fabric/src/budgets.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import {

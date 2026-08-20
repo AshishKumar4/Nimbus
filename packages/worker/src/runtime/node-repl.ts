@@ -137,8 +137,8 @@ class NodeReplAdapter implements ReplAdapter {
     const { facetMgr } = this.deps;
     const env = (facetMgr as any).env;
     const ctx = (facetMgr as any).ctx;
-    const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
-    this.pool = new LoaderPool(env, ctx, {
+    const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
+    this.pool = new IsolatePool(env, ctx, {
       tag: 'node-repl',
       concurrency: 1,
       omitSupervisor: true,

@@ -1,5 +1,5 @@
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
-import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 export function loaderFacetHost(env, ctx) {
     return {
         // workerd suspends a guest through JSPI, which is what lets a syscall reach
@@ -14,7 +14,7 @@ export function loaderFacetHost(env, ctx) {
             return manifestVfs(vfs, root, options);
         },
         open(spec) {
-            return new LoaderPool(env, ctx, {
+            return new IsolatePool(env, ctx, {
                 tag: spec.tag,
                 concurrency: spec.concurrency,
                 preamble: spec.preamble,
@@ -27,7 +27,7 @@ export function loaderFacetHost(env, ctx) {
     };
 }
 /**
- * The two objects a LoaderPool needs from a FacetManager, via the manager's
+ * The two objects a IsolatePool needs from a FacetManager, via the manager's
  * own `loaderHost()` accessor. The runtime guard stays: harnesses build
  * FacetManagers on mock contexts, and one built on something other than a
  * DurableObjectState should fail with a sentence instead of at the first RPC.

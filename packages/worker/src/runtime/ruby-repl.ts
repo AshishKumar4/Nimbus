@@ -186,10 +186,10 @@ class RubyReplAdapter implements ReplAdapter {
     // every REPL eval died on boot) — compose it in exactly one place.
     const preamble = buildRubyPreamble();
 
-    const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
+    const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
     const env = (facetMgr as any).env;
     const ctx = (facetMgr as any).ctx;
-    this.pool = new LoaderPool(env, ctx, {
+    this.pool = new IsolatePool(env, ctx, {
       tag: 'ruby-repl',
       concurrency: 1,
       omitSupervisor: true,

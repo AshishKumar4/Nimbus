@@ -7,7 +7,7 @@
  * functions / imports persist.
  *
  * Design:
- *   - One child-facet per REPL session (LoaderPool with
+ *   - One child-facet per REPL session (IsolatePool with
  *     concurrency=1, omitSupervisor=true).
  *   - Facet-side: globalThis.__nimbus_bun_ctx caches a vm.createContext()
  *     dict; each push() runs vm.runInContext(line, ctx) and returns
@@ -148,8 +148,8 @@ class BunReplAdapter implements ReplAdapter {
     // Preamble: install the Bun shim global at facet startup so the
     // REPL context has Bun.* available like real Bun does.
     const preamble = BUN_SHIM_PREAMBLE;
-    const { LoaderPool } = await import('@nimbus-sh/fabric/loader-pool.js');
-    this.pool = new LoaderPool(env, ctx, {
+    const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
+    this.pool = new IsolatePool(env, ctx, {
       tag: 'bun-repl',
       concurrency: 1,
       omitSupervisor: true,

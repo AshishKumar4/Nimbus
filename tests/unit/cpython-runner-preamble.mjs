@@ -87,7 +87,7 @@ assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   //    SUPERVISOR binding at construction, so a held pool hands every later
   //    caller the first caller's write credential.
   const runnerSrc = readFileSync(path.join(RUNTIME_DIR, '../../../core/src/runtime/cpython-runner.ts'), 'utf8');
-  assert.ok(!/let\s+pool\s*:\s*(?:Nimbus)?LoaderPool\s*\|\s*null/.test(runnerSrc),
+  assert.ok(!/let\s+pool\s*:\s*(?:Nimbus)?IsolatePool\s*\|\s*null/.test(runnerSrc),
     'the loader pool must not be cached across invocations');
   console.log('  ok  the preamble-text invariants ruby already knew are asserted, not documented');
 }

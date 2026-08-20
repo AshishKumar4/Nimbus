@@ -13,8 +13,8 @@ import assert from 'node:assert/strict';
 import {
   DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   assertModuleMapWithinCodeLimit,
-} from '../../packages/fabric/src/workerd-facet-host.ts';
-import { LoaderPool } from '../../packages/fabric/src/loader-pool.ts';
+} from '../../packages/fabric/src/budgets.ts';
+import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
 import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -120,7 +120,7 @@ setCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
 
 // ── the pool seam: an over-ceiling wasm payload fails naming the module ─────
 {
-  const pool = new LoaderPool(
+  const pool = new IsolatePool(
     { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute() { return 'ran'; } }) }) } },
     { id: { toString: () => 'pool-ceiling-id' } },
     { omitSupervisor: true, wasmModules: { 'giant.wasm': new ArrayBuffer(DYNAMIC_WORKER_CODE_LIMIT_BYTES) } },
