@@ -387,4 +387,52 @@ const T0 = 1_000_000;
   assert.equal(box.find('alert-1').lastError, null, 'delivery clears the error');
 }
 
+// ── 13. The scheduler seam: the consumer owns the alarm ──────────────────────
+// Proteus's DO alarm belongs to the Agents SDK and agent-core's to its own
+// reconciler; neither can give fabric the alarm slot. The ported EmailOutbox
+// faked a timer storage whose get/put/delete throw and re-armed by hand after
+// every drain. With the seam, fabric hands every next due time to the
+// consumer's schedule and touches no timer storage at all.
+
+{
+  const db = new Database(':memory:');
+  const sqlOnlyCtx = {
+    storage: {
+      sql: {
+        exec(query, ...params) {
+          if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) {
+            db.query(query).run(...params);
+            return [];
+          }
+          return db.query(query).all(...params);
+        },
+      },
+    },
+  };
+  const armed = [];
+  let fail = true;
+  const box = outbox(sqlOnlyCtx, 'email', {
+    maxAttempts: 8,
+    baseMs: 30_000,
+    async schedule(at) { armed.push(at); },
+    async send() {
+      if (fail) throw new Error('provider down');
+      return { status: 'sent' };
+    },
+  });
+
+  await box.queue({ n: 1 }, { now: T0 });
+  assert.deepEqual(armed, [T0], 'queue hands the due time to the consumer, not to timer storage');
+
+  await box.drain(T0);
+  assert.deepEqual(armed, [T0, T0 + 30_000], 'a drain that leaves rows pending re-arms itself');
+
+  fail = false;
+  await box.drain(T0 + 30_000);
+  assert.deepEqual(armed, [T0, T0 + 30_000], 'a drained-empty outbox arms nothing');
+
+  assert.throws(() => box.handler(), /scheduler seam/,
+    'there is no timer dispatcher to hand a handler to');
+}
+
 console.log('ok - fabric-outbox (write-ahead, dedupe, disposition, backoff, ordering, timers, pacing, recovery)');

@@ -30,7 +30,10 @@
  *   - The drain registers with `timers` (one reason in the shared map) instead
  *     of owning an alarm, and the dispatch-side handler re-arms through its
  *     RETURN value — calling schedule() from inside the dispatcher's chain
- *     would deadlock on the chain that serializes the reason map.
+ *     would deadlock on the chain that serializes the reason map. A host
+ *     whose alarm belongs to another framework (the Agents SDK, agent-core's
+ *     reconciler) uses the scheduler-seam form instead: fabric hands every
+ *     next due time to the policy's `schedule` and touches no timer storage.
  *   - The drain is turn-bounded through a {@link TurnBudget}: both consumer
  *     drains iterate every due row in one turn, which is the same
  *     thread-holding shape the pacer exists to end.
@@ -47,6 +50,15 @@ export interface OutboxStorage extends TimerStorage {
 }
 export interface OutboxContext extends TimerContext {
     storage: OutboxStorage;
+}
+/**
+ * All a scheduler-seam outbox needs from its host: the SQLite the rows live
+ * in. The timer map's keys belong to the {@link TimerHost} path only.
+ */
+export interface OutboxSqlContext {
+    storage: {
+        sql: OutboxSqlExec;
+    };
 }
 /**
  * What one send attempt concluded. A resolved `retry` and a thrown send are
@@ -96,6 +108,24 @@ export type OutboxDrainOptions<C> = {
 });
 type OutboxDrainArgs<C> = [C] extends [void] ? [opts?: OutboxDrainOptions<C>] : [opts: OutboxDrainOptions<C>];
 type OutboxHandlerArgs<C> = [C] extends [void] ? [] : [context: C];
+/**
+ * The policy of an outbox whose host owns the alarm. Proteus's Durable
+ * Object alarm belongs to the Agents SDK and agent-core's to its own
+ * reconciler; neither can give fabric the alarm slot. `schedule` receives
+ * every next due time — queue's admission instant, and the earliest pending
+ * deadline after each drain — and the consumer folds it into its own alarm.
+ */
+export interface ScheduledOutboxPolicy<M, C = void> extends OutboxPolicy<M, C> {
+    schedule(at: number): Promise<void>;
+}
+type OutboxScheduling = {
+    kind: 'timers';
+    host: TimerHost;
+    ctx: OutboxContext;
+} | {
+    kind: 'schedule';
+    schedule: (at: number) => Promise<void>;
+};
 export interface OutboxDrainResult {
     sent: number;
     retried: number;
@@ -127,10 +157,12 @@ export interface OutboxDeadLetter<M> {
 }
 /** One named outbox on one hosting actor. Cheap accessor, like `timers()`. */
 export declare function outbox<M, C = void>(host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M, C>): Outbox<M, C>;
+/** The scheduler-seam form: the host owns the alarm, fabric owns the rows. */
+export declare function outbox<M, C = void>(ctx: OutboxSqlContext, name: string, policy: ScheduledOutboxPolicy<M, C>): Outbox<M, C>;
 export declare class Outbox<M, C = void> {
-    private readonly host;
     private readonly ctx;
     private readonly policy;
+    private readonly scheduling;
     /** The timer reason this outbox arms in the shared map. */
     readonly reason: string;
     private readonly table;
@@ -139,7 +171,7 @@ export declare class Outbox<M, C = void> {
     /** Largest id ever seen, so a replacement instance mints above it. */
     private lastId;
     private seq;
-    constructor(host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M, C>);
+    constructor(ctx: OutboxSqlContext, name: string, policy: OutboxPolicy<M, C>, scheduling: OutboxScheduling);
     private ensureSchema;
     /**
      * Ids order the drain, so they must grow: time-prefixed, tie-broken by a
@@ -162,6 +194,8 @@ export declare class Outbox<M, C = void> {
         id: string;
         admitted: boolean;
     }>;
+    /** Hand a due time to whichever scheduler this outbox was built on. */
+    private arm;
     /** The single-alarm fold: the earliest pending deadline, or null. */
     nextRetryAt(): number | null;
     /** The row queue() named, by its id. Null when no such row exists. */

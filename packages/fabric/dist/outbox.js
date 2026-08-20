@@ -30,7 +30,10 @@
  *   - The drain registers with `timers` (one reason in the shared map) instead
  *     of owning an alarm, and the dispatch-side handler re-arms through its
  *     RETURN value — calling schedule() from inside the dispatcher's chain
- *     would deadlock on the chain that serializes the reason map.
+ *     would deadlock on the chain that serializes the reason map. A host
+ *     whose alarm belongs to another framework (the Agents SDK, agent-core's
+ *     reconciler) uses the scheduler-seam form instead: fabric hands every
+ *     next due time to the policy's `schedule` and touches no timer storage.
  *   - The drain is turn-bounded through a {@link TurnBudget}: both consumer
  *     drains iterate every due row in one turn, which is the same
  *     thread-holding shape the pacer exists to end.
@@ -60,14 +63,18 @@ const RecordRowSchema = z.object({
     last_error: z.string().nullable(),
 });
 const NAME_PATTERN = /^[a-z][a-z0-9_]{0,40}$/;
-/** One named outbox on one hosting actor. Cheap accessor, like `timers()`. */
-export function outbox(host, ctx, name, policy) {
-    return new Outbox(host, ctx, name, policy);
+export function outbox(...args) {
+    if (args.length === 4) {
+        const [host, ctx, name, policy] = args;
+        return new Outbox(ctx, name, policy, { kind: 'timers', host, ctx });
+    }
+    const [ctx, name, policy] = args;
+    return new Outbox(ctx, name, policy, { kind: 'schedule', schedule: (at) => policy.schedule(at) });
 }
 export class Outbox {
-    host;
     ctx;
     policy;
+    scheduling;
     /** The timer reason this outbox arms in the shared map. */
     reason;
     table;
@@ -76,10 +83,10 @@ export class Outbox {
     /** Largest id ever seen, so a replacement instance mints above it. */
     lastId = '';
     seq = 0;
-    constructor(host, ctx, name, policy) {
-        this.host = host;
+    constructor(ctx, name, policy, scheduling) {
         this.ctx = ctx;
         this.policy = policy;
+        this.scheduling = scheduling;
         if (!NAME_PATTERN.test(name)) {
             throw new Error(`fabric: outbox name '${name}' must match ${NAME_PATTERN}`);
         }
@@ -146,8 +153,17 @@ export class Outbox {
         const id = this.mintId(now);
         sql.exec(`INSERT INTO ${this.table} (id, dedupe_key, order_key, message, next_attempt_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`, id, opts.dedupeKey ?? null, this.policy.orderBy?.(message) ?? null, JSON.stringify(message), now, now);
-        await timers(this.host, this.ctx).schedule(this.reason, now);
+        await this.arm(now);
         return { id, admitted: true };
+    }
+    /** Hand a due time to whichever scheduler this outbox was built on. */
+    async arm(at) {
+        if (this.scheduling.kind === 'timers') {
+            await timers(this.scheduling.host, this.scheduling.ctx).schedule(this.reason, at);
+        }
+        else {
+            await this.scheduling.schedule(at);
+        }
     }
     /** The single-alarm fold: the earliest pending deadline, or null. */
     nextRetryAt() {
@@ -278,6 +294,14 @@ export class Outbox {
                 // it is not an admission ceiling (same reading as budgets.ts).
                 await opts.budget?.spend(row.message.length);
             }
+            // A seam-scheduled outbox re-arms itself: there is no dispatcher whose
+            // return value could, and the ported consumer re-armed by hand after
+            // every drain — delivery stays owed either way.
+            if (this.scheduling.kind === 'schedule') {
+                const next = this.nextRetryAt();
+                if (next !== null)
+                    await this.scheduling.schedule(next);
+            }
             return result;
         }
         finally {
@@ -297,6 +321,9 @@ export class Outbox {
      * receives it here once, closed over every alarm-driven drain.
      */
     handler(...context) {
+        if (this.scheduling.kind === 'schedule') {
+            throw new Error(`fabric: outbox '${this.reason}' uses a scheduler seam — there is no timer dispatcher to hand this handler to`);
+        }
         return async (now) => {
             await this.drain(now, ...[{ context: context[0] }]);
             const next = this.nextRetryAt();

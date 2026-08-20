@@ -30,7 +30,10 @@
  *   - The drain registers with `timers` (one reason in the shared map) instead
  *     of owning an alarm, and the dispatch-side handler re-arms through its
  *     RETURN value — calling schedule() from inside the dispatcher's chain
- *     would deadlock on the chain that serializes the reason map.
+ *     would deadlock on the chain that serializes the reason map. A host
+ *     whose alarm belongs to another framework (the Agents SDK, agent-core's
+ *     reconciler) uses the scheduler-seam form instead: fabric hands every
+ *     next due time to the policy's `schedule` and touches no timer storage.
  *   - The drain is turn-bounded through a {@link TurnBudget}: both consumer
  *     drains iterate every due row in one turn, which is the same
  *     thread-holding shape the pacer exists to end.
@@ -52,6 +55,14 @@ export interface OutboxStorage extends TimerStorage {
 
 export interface OutboxContext extends TimerContext {
   storage: OutboxStorage;
+}
+
+/**
+ * All a scheduler-seam outbox needs from its host: the SQLite the rows live
+ * in. The timer map's keys belong to the {@link TimerHost} path only.
+ */
+export interface OutboxSqlContext {
+  storage: { sql: OutboxSqlExec };
 }
 
 /**
@@ -96,6 +107,21 @@ type OutboxDrainArgs<C> = [C] extends [void]
   : [opts: OutboxDrainOptions<C>];
 
 type OutboxHandlerArgs<C> = [C] extends [void] ? [] : [context: C];
+
+/**
+ * The policy of an outbox whose host owns the alarm. Proteus's Durable
+ * Object alarm belongs to the Agents SDK and agent-core's to its own
+ * reconciler; neither can give fabric the alarm slot. `schedule` receives
+ * every next due time — queue's admission instant, and the earliest pending
+ * deadline after each drain — and the consumer folds it into its own alarm.
+ */
+export interface ScheduledOutboxPolicy<M, C = void> extends OutboxPolicy<M, C> {
+  schedule(at: number): Promise<void>;
+}
+
+type OutboxScheduling =
+  | { kind: 'timers'; host: TimerHost; ctx: OutboxContext }
+  | { kind: 'schedule'; schedule: (at: number) => Promise<void> };
 
 export interface OutboxDrainResult {
   sent: number;
@@ -162,8 +188,24 @@ export function outbox<M, C = void>(
   ctx: OutboxContext,
   name: string,
   policy: OutboxPolicy<M, C>,
+): Outbox<M, C>;
+/** The scheduler-seam form: the host owns the alarm, fabric owns the rows. */
+export function outbox<M, C = void>(
+  ctx: OutboxSqlContext,
+  name: string,
+  policy: ScheduledOutboxPolicy<M, C>,
+): Outbox<M, C>;
+export function outbox<M, C = void>(
+  ...args:
+    | [host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M, C>]
+    | [ctx: OutboxSqlContext, name: string, policy: ScheduledOutboxPolicy<M, C>]
 ): Outbox<M, C> {
-  return new Outbox(host, ctx, name, policy);
+  if (args.length === 4) {
+    const [host, ctx, name, policy] = args;
+    return new Outbox(ctx, name, policy, { kind: 'timers', host, ctx });
+  }
+  const [ctx, name, policy] = args;
+  return new Outbox(ctx, name, policy, { kind: 'schedule', schedule: (at) => policy.schedule(at) });
 }
 
 export class Outbox<M, C = void> {
@@ -178,10 +220,10 @@ export class Outbox<M, C = void> {
   private seq = 0;
 
   constructor(
-    private readonly host: TimerHost,
-    private readonly ctx: OutboxContext,
+    private readonly ctx: OutboxSqlContext,
     name: string,
     private readonly policy: OutboxPolicy<M, C>,
+    private readonly scheduling: OutboxScheduling,
   ) {
     if (!NAME_PATTERN.test(name)) {
       throw new Error(`fabric: outbox name '${name}' must match ${NAME_PATTERN}`);
@@ -259,8 +301,17 @@ export class Outbox<M, C = void> {
       now,
       now,
     );
-    await timers(this.host, this.ctx).schedule(this.reason, now);
+    await this.arm(now);
     return { id, admitted: true };
+  }
+
+  /** Hand a due time to whichever scheduler this outbox was built on. */
+  private async arm(at: number): Promise<void> {
+    if (this.scheduling.kind === 'timers') {
+      await timers(this.scheduling.host, this.scheduling.ctx).schedule(this.reason, at);
+    } else {
+      await this.scheduling.schedule(at);
+    }
   }
 
   /** The single-alarm fold: the earliest pending deadline, or null. */
@@ -395,6 +446,13 @@ export class Outbox<M, C = void> {
         // it is not an admission ceiling (same reading as budgets.ts).
         await opts.budget?.spend(row.message.length);
       }
+      // A seam-scheduled outbox re-arms itself: there is no dispatcher whose
+      // return value could, and the ported consumer re-armed by hand after
+      // every drain — delivery stays owed either way.
+      if (this.scheduling.kind === 'schedule') {
+        const next = this.nextRetryAt();
+        if (next !== null) await this.scheduling.schedule(next);
+      }
       return result;
     } finally {
       this.draining = false;
@@ -418,6 +476,11 @@ export class Outbox<M, C = void> {
    * receives it here once, closed over every alarm-driven drain.
    */
   handler(...context: OutboxHandlerArgs<C>): (now: number) => Promise<TimerHandlerResult> {
+    if (this.scheduling.kind === 'schedule') {
+      throw new Error(
+        `fabric: outbox '${this.reason}' uses a scheduler seam — there is no timer dispatcher to hand this handler to`,
+      );
+    }
     return async (now: number) => {
       await this.drain(now, ...([{ context: context[0] }] as OutboxDrainArgs<C>));
       const next = this.nextRetryAt();
