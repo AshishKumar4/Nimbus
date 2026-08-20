@@ -92,7 +92,7 @@
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@nimbus-sh/platform": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",
@@ -122,7 +122,7 @@
       "name": "@nimbus-sh/fabric",
       "version": "0.2.0",
       "dependencies": {
-        "@nimbus-sh/core": "^0.5.0",
+        "@nimbus-sh/core": "^0.6.0",
         "@nimbus-sh/platform": "^0.1.0",
         "zod": "^4.4.3",
       },
@@ -168,8 +168,9 @@
     },
     "packages/sdk": {
       "name": "@nimbus-sh/sdk",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "dependencies": {
+        "@nimbus-sh/core": "^0.6.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -187,7 +188,7 @@
       "version": "0.4.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
-        "@nimbus-sh/core": "^0.5.0",
+        "@nimbus-sh/core": "^0.6.0",
         "@nimbus-sh/fabric": "^0.2.0",
         "@nimbus-sh/platform": "^0.1.0",
         "@renovatebot/pep440": "^5.0.0",

@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Nimbus SDK — Worker embedder, programmatic sandboxes, token mint, and client helpers.",
   "keywords": [
     "cloudflare",
@@ -84,6 +84,7 @@
     "access": "public"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@nimbus-sh/core": "^0.6.0"
   }
 }
