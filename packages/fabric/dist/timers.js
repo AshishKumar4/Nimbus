@@ -74,6 +74,14 @@ export class Timers {
      */
     schedule(reason, whenMs) {
         const { host, ctx } = this;
+        // While this host's dispatch runs, hand the arm to the dispatcher
+        // instead of the chain (see TimerHost._timerDispatchArms): the fold
+        // keeps EDF semantics, and the dispatch's own write and re-arm carry it.
+        const dispatchArms = host._timerDispatchArms;
+        if (dispatchArms) {
+            dispatchArms.push({ reason, whenMs });
+            return Promise.resolve(true);
+        }
         // Serialize every read-modify-write of the reasons map through one
         // per-instance chain: two schedulers firing back-to-back from one activity
         // hook would otherwise interleave their get→put cycles and silently drop
@@ -128,42 +136,55 @@ export class Timers {
         const { host, ctx } = this;
         // Same serialization as schedule: the dispatcher's read→handlers→write
         // cycle must not interleave with an activity-hook schedule.
-        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo));
+        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo));
         host._timerChain = chained;
         return chained;
     }
 }
-async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
+async function dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo) {
+    // Collect schedule requests made while handlers run (see
+    // TimerHost._timerDispatchArms) and fold them into the map below, so an
+    // in-dispatch arm neither deadlocks on the chain nor races the write.
+    const arms = [];
+    host._timerDispatchArms = arms;
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY));
-        if (!existing || Object.keys(existing).length === 0) {
+        const map = { ...(existing || {}) };
+        const hadMap = Object.keys(map).length > 0;
+        if (!hadMap) {
             onLegacyAlarm?.();
-            return;
         }
-        const map = { ...existing };
-        // Snapshot fireable reasons BEFORE running any of them, so a
-        // handler that schedules itself for the next cycle doesn't get
-        // immediately re-fired in the same dispatch.
-        const fired = [];
-        for (const [reason, when] of Object.entries(map)) {
-            if (when <= now)
-                fired.push(reason);
-        }
-        for (const reason of fired) {
-            delete map[reason];
-            const handler = handlers[reason];
-            // Unknown reasons silently dropped (forward-compat).
-            if (!handler)
-                continue;
-            try {
-                const result = await handler(now, alarmInfo);
-                if (result && typeof result.rearmAt === 'number') {
-                    map[reason] = result.rearmAt;
+        else {
+            // Snapshot fireable reasons BEFORE running any of them, so a
+            // handler that schedules itself for the next cycle doesn't get
+            // immediately re-fired in the same dispatch.
+            const fired = [];
+            for (const [reason, when] of Object.entries(map)) {
+                if (when <= now)
+                    fired.push(reason);
+            }
+            for (const reason of fired) {
+                delete map[reason];
+                const handler = handlers[reason];
+                // Unknown reasons silently dropped (forward-compat).
+                if (!handler)
+                    continue;
+                try {
+                    const result = await handler(now, alarmInfo);
+                    if (result && typeof result.rearmAt === 'number') {
+                        map[reason] = result.rearmAt;
+                    }
+                }
+                catch (e) {
+                    console.warn(`[nimbus/W1] dispatch ${reason} threw:`, errorText(e));
                 }
             }
-            catch (e) {
-                console.warn(`[nimbus/W1] dispatch ${reason} threw:`, errorText(e));
+        }
+        // Fold the in-dispatch arms, earliest-deadline-first per reason.
+        for (const arm of arms) {
+            if (!(arm.reason in map) || arm.whenMs < map[arm.reason]) {
+                map[arm.reason] = arm.whenMs;
             }
         }
         // Re-arm or clear.
@@ -175,7 +196,7 @@ async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
                 setAlarmFn.call(ctx.storage, earliest);
             }
         }
-        else {
+        else if (hadMap) {
             try {
                 await ctx.storage.delete(TIMER_REASONS_KEY);
             }
@@ -186,5 +207,8 @@ async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
     }
     catch (e) {
         console.warn('[nimbus/W1] timers.dispatch threw:', errorText(e));
+    }
+    finally {
+        host._timerDispatchArms = null;
     }
 }

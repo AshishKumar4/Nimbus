@@ -173,7 +173,6 @@ export class Actor<
   readonly #journals = new Map<string, Journal<never>>();
   #processes: ProcessFabric | null = null;
   #facets: FacetPool | null = null;
-  #dispatching = false;
   #state: State | undefined;
   #stateLoaded = false;
   #stateSchemaReady = false;
@@ -269,12 +268,7 @@ export class Actor<
   override async alarm(alarmInfo?: TimerAlarmInfo): Promise<void> {
     await super.alarm();
     await this.#enterTurn();
-    this.#dispatching = true;
-    try {
-      await this.timers.dispatch(this.#timerHandlers, undefined, alarmInfo);
-    } finally {
-      this.#dispatching = false;
-    }
+    await this.timers.dispatch(this.#timerHandlers, undefined, alarmInfo);
   }
 
   /** partyserver logs "implement onAlarm" per fire; an empty hook is the default here. */
@@ -314,7 +308,7 @@ export class Actor<
   ): Promise<Schedule<T>> {
     this.#assertScheduleCallback(callback);
     const schedule = this.#schedules.create(when, callback, payload, options);
-    await this.#armScheduleAlarm(schedule.time);
+    await this.timers.schedule(SCHEDULE_TIMER_REASON, schedule.time);
     return schedule;
   }
 
@@ -327,7 +321,7 @@ export class Actor<
   ): Promise<Schedule<T>> {
     this.#assertScheduleCallback(callback);
     const schedule = this.#schedules.every(intervalSeconds, callback, payload, options);
-    await this.#armScheduleAlarm(schedule.time);
+    await this.timers.schedule(SCHEDULE_TIMER_REASON, schedule.time);
     return schedule;
   }
 
@@ -359,16 +353,6 @@ export class Actor<
     if (typeof (this as unknown as Record<string, unknown>)[callback] !== 'function') {
       throw new Error(`loom: this.${callback} is not a function`);
     }
-  }
-
-  /**
-   * Arm the schedule reason — except from inside a dispatch, where the
-   * handler's `rearmAt` return already covers it and a `timers.schedule`
-   * call would deadlock on the chain the dispatcher holds.
-   */
-  async #armScheduleAlarm(at: number): Promise<void> {
-    if (this.#dispatching) return;
-    await this.timers.schedule(SCHEDULE_TIMER_REASON, at);
   }
 
   async #dispatchSchedules(now: number, info?: TimerAlarmInfo): Promise<TimerHandlerResult> {

@@ -78,7 +78,6 @@ export class Actor extends Server {
     #journals = new Map();
     #processes = null;
     #facets = null;
-    #dispatching = false;
     #state;
     #stateLoaded = false;
     #stateSchemaReady = false;
@@ -171,13 +170,7 @@ export class Actor extends Server {
     async alarm(alarmInfo) {
         await super.alarm();
         await this.#enterTurn();
-        this.#dispatching = true;
-        try {
-            await this.timers.dispatch(this.#timerHandlers, undefined, alarmInfo);
-        }
-        finally {
-            this.#dispatching = false;
-        }
+        await this.timers.dispatch(this.#timerHandlers, undefined, alarmInfo);
     }
     /** partyserver logs "implement onAlarm" per fire; an empty hook is the default here. */
     onAlarm() { }
@@ -205,14 +198,14 @@ export class Actor extends Server {
     async schedule(when, callback, payload, options) {
         this.#assertScheduleCallback(callback);
         const schedule = this.#schedules.create(when, callback, payload, options);
-        await this.#armScheduleAlarm(schedule.time);
+        await this.timers.schedule(SCHEDULE_TIMER_REASON, schedule.time);
         return schedule;
     }
     /** Schedule a method call every `intervalSeconds`, first fire one interval from now. */
     async scheduleEvery(intervalSeconds, callback, payload, options) {
         this.#assertScheduleCallback(callback);
         const schedule = this.#schedules.every(intervalSeconds, callback, payload, options);
-        await this.#armScheduleAlarm(schedule.time);
+        await this.timers.schedule(SCHEDULE_TIMER_REASON, schedule.time);
         return schedule;
     }
     async getScheduleById(id) {
@@ -236,16 +229,6 @@ export class Actor extends Server {
         if (typeof this[callback] !== 'function') {
             throw new Error(`loom: this.${callback} is not a function`);
         }
-    }
-    /**
-     * Arm the schedule reason — except from inside a dispatch, where the
-     * handler's `rearmAt` return already covers it and a `timers.schedule`
-     * call would deadlock on the chain the dispatcher holds.
-     */
-    async #armScheduleAlarm(at) {
-        if (this.#dispatching)
-            return;
-        await this.timers.schedule(SCHEDULE_TIMER_REASON, at);
     }
     async #dispatchSchedules(now, info) {
         const result = await this.#schedules.dispatchDue(this, now, info, (schedule, error) => {
