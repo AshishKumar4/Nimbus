@@ -17,11 +17,11 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
-setCtxExports({ SupervisorRPC: (_opts) => ({ __supervisor: true }) });
+adoptCtxExports({ SupervisorRPC: (_opts) => ({ __supervisor: true }) });
 
 // One serve facet per pid, each with its own poll behaviour. The module map is
 // not built here: the subject is the readiness gate, not what the map contains.

@@ -23,7 +23,7 @@ import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { beginLoaderFetch, loaderLedgerStats } from '../../packages/fabric/src/budgets.ts';
 import { classifyMessage } from '../../packages/platform/src/oom-classify.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import {
   createCtxExports,
@@ -111,7 +111,7 @@ assert.equal(
 }
 
 // ── (4) resident and one-shot workers land on the same ledger ───────────────
-setCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
+adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
 {
   const world = createFacetWorld(() => ({
     startProcess: () => Promise.resolve({ ok: true }),

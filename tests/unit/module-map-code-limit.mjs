@@ -16,7 +16,7 @@ import {
 } from '../../packages/fabric/src/budgets.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import {
   createCtxExports,
@@ -55,7 +55,7 @@ assertModuleMapWithinCodeLimit({
 });
 
 // ── the resident seam: an over-ceiling boot spec fails at assembly ──────────
-setCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
+adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
 {
   const world = createFacetWorld(() => ({
     startProcess: () => Promise.resolve({ ok: true }),

@@ -17,7 +17,7 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -31,7 +31,7 @@ import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 
 // ── writer: the store the coordinator materializes ─────────────────────────
 
-setCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
+adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 
 // The module map each spawn assembles, in the order the facets loaded.
 const world = createFacetWorld(() => ({

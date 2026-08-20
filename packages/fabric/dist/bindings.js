@@ -25,8 +25,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { supervisorEntrypoint, supervisorEntrypointName } from './ctx-exports.js';
-import { requireStagedBootAssembler } from './process-fabric.js';
+import { supervisorEntrypoint, supervisorEntrypointName } from './composition.js';
+import { stagedBootAssembler } from './composition.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 /**
  * `ctx.exports` — workerd's loopback bag, which the installed
@@ -448,7 +448,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
             // alive.
             const stage = props.stage;
             outerStub = outerLoader.get(props.key, async () => {
-                const assembled = await requireStagedBootAssembler()(this.env, stage);
+                const assembled = await stagedBootAssembler()(this.env, stage);
                 assertModuleMapWithinCodeLimit(assembled.modules ?? {});
                 const supervisorBinding = await this._supervisorBinding(props);
                 if (!supervisorBinding)

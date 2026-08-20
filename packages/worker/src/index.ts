@@ -34,8 +34,9 @@ import {
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
-import { getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+import { composeFabric, getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
+import { assembleOpencodeFacetConfig, type OpencodeAssetsEnv } from './facets/opencode-staging.js';
 
 // Re-export the composable factory + companion types. The SDK worker
 // subpath re-exports these for application embedders:
@@ -127,6 +128,15 @@ export type {
   NimbusTokenClaims,
   VerifiedNimbusToken,
 } from './auth/index.js';
+
+// The worker's composition root: the fabric mints `env.SUPERVISOR` bindings
+// against the SupervisorRPC export below, and assembles 'staged' boot specs
+// through the opencode assembler. One call, module scope, before any request.
+composeFabric({
+  supervisorEntrypoint: 'SupervisorRPC',
+  stagedBootAssembler: (env, stage) =>
+    assembleOpencodeFacetConfig(env as Partial<OpencodeAssetsEnv>, stage),
+});
 
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)

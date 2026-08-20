@@ -38,7 +38,7 @@ import {
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
@@ -103,7 +103,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 }
 
 // ── 3. a real launch reaches its facet by path ────────────────────────────
-setCtxExports({
+adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
   NimbusLoadedEntrypoint: () => ({
     async startProcess() { return { ok: true }; },

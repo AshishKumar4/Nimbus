@@ -131,20 +131,11 @@ export function residentBootSpecSchema(stageSchema) {
         z.object({ kind: z.literal('code'), code: ResidentCodeSpecSchema }),
     ]);
 }
-let _stagedBootAssembler = null;
-/** Registered once at composition time, first-write-wins. */
-export function setStagedBootAssembler(assembler) {
-    if (_stagedBootAssembler)
-        return;
-    _stagedBootAssembler = assembler;
-}
-export function requireStagedBootAssembler() {
-    if (!_stagedBootAssembler) {
-        throw new Error('fabric: no staged-boot assembler registered; a \'staged\' boot spec '
-            + 'cannot be assembled without one (setStagedBootAssembler)');
-    }
-    return _stagedBootAssembler;
-}
+// ── Staged boots ────────────────────────────────────────────────────────────
+//
+// A 'staged' boot spec assembles through the embedder's composed
+// StagedBootAssembler — see composition.ts. What a stage IS belongs to
+// whoever composed the assembler.
 // ── Boot-image store ────────────────────────────────────────────────────────
 /**
  * Where a generated module source is materialized so a boot spec can name it.

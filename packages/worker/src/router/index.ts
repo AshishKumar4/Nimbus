@@ -66,7 +66,7 @@ import {
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
 } from '../auth/index.js';
-import { setCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import {
   handleNimbusRemoteApi,
   type NimbusSdkRouterConfig,
@@ -228,7 +228,7 @@ export function createNimbusHandler(
 
   async function route(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     // Capture ctx.exports on first call (loopback bindings for facets).
-    if ((ctx as any)?.exports) setCtxExports((ctx as any).exports);
+    if ((ctx as any)?.exports) adoptCtxExports((ctx as any).exports);
 
     const url = new URL(request.url);
     const previewSuffix = readPreviewHostSuffix(env);

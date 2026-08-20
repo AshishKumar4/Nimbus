@@ -11,7 +11,7 @@ import { NODE_SHIMS_ENTRY } from '../../packages/worker/src/node-shims-artifact.
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -58,7 +58,7 @@ const env = {
     async fetch() { return new Response(shims); },
   },
 };
-setCtxExports({ SupervisorRPC: () => ({ [Symbol.dispose]() {} }) });
+adoptCtxExports({ SupervisorRPC: () => ({ [Symbol.dispose]() {} }) });
 
 const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(

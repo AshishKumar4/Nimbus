@@ -24,7 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';

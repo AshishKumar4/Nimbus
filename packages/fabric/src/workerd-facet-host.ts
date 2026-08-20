@@ -16,9 +16,10 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import {
   getCtxExports,
+  stagedBootAssembler,
   supervisorEntrypoint,
   supervisorEntrypointName,
-} from './ctx-exports.js';
+} from './composition.js';
 import {
   assertModuleMapWithinCodeLimit,
   beginLoaderFetch,
@@ -31,7 +32,6 @@ import {
 } from './budgets.js';
 import {
   RESIDENT_PROCESS_CLASS,
-  requireStagedBootAssembler,
   residentLoaderConfig,
   type HostedProcess,
   type OneShotCodeSpec,
@@ -553,7 +553,7 @@ async function residentWorkerConfig(
   boot: ResidentBootSpec,
 ): Promise<Record<string, unknown>> {
   const config = boot.kind === 'staged'
-    ? await requireStagedBootAssembler()(env, boot.stage)
+    ? await stagedBootAssembler()(env, boot.stage)
     : await residentLoaderConfig(boot.code, disk());
   assertModuleMapWithinCodeLimit(
     (config as { modules?: Record<string, unknown> }).modules ?? {},

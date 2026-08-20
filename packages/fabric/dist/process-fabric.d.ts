@@ -142,18 +142,6 @@ export type ResidentBootSpec = {
     code: ResidentCodeSpec;
 };
 /**
- * Assemble a complete Worker Loader config from a staged-artifact spec. The
- * embedder supplies this: a stage names artifact sources only the embedder
- * knows how to fetch (Nimbus's largest staged artifact is a ~23 MB module map from
- * ASSETS), and the assembler runs inside the loader's cache-miss callback so
- * those sources are materialized only while the facet actually loads.
- * `env` is whichever hosting actor's env the facet is opened with.
- */
-export type StagedBootAssembler = (env: unknown, stage: unknown) => Promise<object>;
-/** Registered once at composition time, first-write-wins. */
-export declare function setStagedBootAssembler(assembler: StagedBootAssembler): void;
-export declare function requireStagedBootAssembler(): StagedBootAssembler;
-/**
  * Where a generated module source is materialized so a boot spec can name it.
  *
  * Outside any user working tree on purpose. The passes that build a node

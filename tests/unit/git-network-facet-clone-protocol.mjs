@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
 const calls = [];
 let supervisorDisposeCount = 0;
@@ -25,7 +25,7 @@ const supervisor = {
   [Symbol.dispose]() { supervisorDisposeCount++; },
 };
 
-setCtxExports({
+adoptCtxExports({
   SupervisorRPC() {
     return supervisor;
   },

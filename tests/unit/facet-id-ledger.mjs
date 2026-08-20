@@ -23,7 +23,7 @@ import {
   FACET_NAME_HIGH_WATER_KEY,
   facetIdBudget,
 } from '../../packages/fabric/src/budgets.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import {
   createCtxExports,
@@ -31,7 +31,7 @@ import {
   createFacetWorld,
 } from './facet-host-harness.mjs';
 
-setCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
+adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
 
 const BOOT = {
   kind: 'code',

@@ -1168,7 +1168,7 @@ export class ViteDevServer {
     npmCache = null;
     /** Inject React Router basename into entry files? Default: true. */
     injectBasename;
-    /** Worker env (LOADER, ctx-exports) for the on-demand-bundle facet path.
+    /** Worker env (LOADER, ctx.exports) for the on-demand-bundle facet path.
      *  Null = legacy in-supervisor esbuild fallback. */
     env;
     ctx = null;

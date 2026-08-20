@@ -30,7 +30,6 @@ import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import { OPENCODE_CHUNKS_PACK, OPENCODE_TREE_SITTER_WASMS, OPENCODE_TUI_WORKERS, OPENCODE_YOGA_WASM, } from '../opencode-artifact.generated.js';
 import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, YOGA_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
-import { setStagedBootAssembler } from '@nimbus-sh/fabric/process-fabric.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 /**
  * Everything a facet spawn needs beyond the artifact sources themselves.
@@ -146,9 +145,9 @@ function chunkModuleEntries(env) {
     }
     return chunkEntriesInflight;
 }
-// A 'staged' boot spec reaching the fabric assembles through this. Module
-// scope so every isolate that can host a staged facet has it before first use.
-setStagedBootAssembler((env, stage) => assembleOpencodeFacetConfig(env, stage));
+// A 'staged' boot spec reaching the fabric assembles through
+// assembleOpencodeFacetConfig below; the worker's composition root
+// (src/index.ts) hands it to the fabric with composeFabric.
 /**
  * Assemble the full Worker Loader config for an opencode facet from a stage
  * spec. Returns the config WITHOUT the SUPERVISOR env binding — the caller

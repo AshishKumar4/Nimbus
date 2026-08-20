@@ -13,9 +13,9 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { getCtxExports, supervisorEntrypoint, supervisorEntrypointName, } from './ctx-exports.js';
+import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, facetNameCount, facetNameCountDurable, recordFacetNameMinted, recordLoaderId, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
-import { RESIDENT_PROCESS_CLASS, requireStagedBootAssembler, residentLoaderConfig, } from './process-fabric.js';
+import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -375,7 +375,7 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
 }
 async function residentWorkerConfig(env, disk, supervisor, boot) {
     const config = boot.kind === 'staged'
-        ? await requireStagedBootAssembler()(env, boot.stage)
+        ? await stagedBootAssembler()(env, boot.stage)
         : await residentLoaderConfig(boot.code, disk());
     assertModuleMapWithinCodeLimit(config.modules ?? {});
     const supervisorRpc = supervisorEntrypoint();

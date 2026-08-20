@@ -14,7 +14,7 @@
  *      reach https://registry.npmjs.org without a proxy binding).
  *   3. **Supervisor autoinjection**. The pool grabs the embedder's
  *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
- *      ctx-exports.ts) and forwards it as `env.SUPERVISOR` to every facet,
+ *      composition.ts) and forwards it as `env.SUPERVISOR` to every facet,
  *      same pattern as git-network-facet.ts. Callers can add more bindings
  *      via `extraBindings`.
  *   4. **Fail-loud defaults**: timeout 60s, retries 0, onError 'throw'.
@@ -25,7 +25,7 @@
  */
 
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { supervisorEntrypoint } from './ctx-exports.js';
+import { supervisorEntrypoint } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';

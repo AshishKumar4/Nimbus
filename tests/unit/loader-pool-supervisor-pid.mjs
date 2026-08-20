@@ -12,11 +12,11 @@
 import assert from 'node:assert/strict';
 
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
-import { setCtxExports, setSupervisorEntrypointName } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
 
 const boundProps = [];
-setSupervisorEntrypointName('SupervisorRPC');
-setCtxExports({
+composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+adoptCtxExports({
   SupervisorRPC(options) {
     boundProps.push(options.props);
     return { [Symbol.dispose]() {} };

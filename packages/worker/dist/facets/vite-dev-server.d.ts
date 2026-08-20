@@ -49,7 +49,7 @@ export interface ViteDevServerOptions {
     injectBasename?: boolean;
     /**
      * Worker bindings env. Required for the on-demand-bundle facet path
-     * (LOADER + ctx-exports). When provided, /preview/@modules/<spec>
+     * (LOADER + ctx.exports). When provided, /preview/@modules/<spec>
      * misses bundle in a IsolatePool isolate instead of the
      * supervisor's EsbuildService — same architecture as the
      * pre-bundle path. Without this option, the supervisor falls back
@@ -128,7 +128,7 @@ export declare class ViteDevServer {
     private npmCache;
     /** Inject React Router basename into entry files? Default: true. */
     private injectBasename;
-    /** Worker env (LOADER, ctx-exports) for the on-demand-bundle facet path.
+    /** Worker env (LOADER, ctx.exports) for the on-demand-bundle facet path.
      *  Null = legacy in-supervisor esbuild fallback. */
     private env;
     private ctx;

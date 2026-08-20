@@ -25,8 +25,9 @@ import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, Ni
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
-import { getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+import { composeFabric, getCtxExports as _getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { setRegistryEventSink } from './facets/wasm-swap-registry.js';
+import { assembleOpencodeFacetConfig } from './facets/opencode-staging.js';
 // Re-export the composable factory + companion types. The SDK worker
 // subpath re-exports these for application embedders:
 //   import { createNimbusHandler, NimbusSession } from '@nimbus-sh/sdk/worker';
@@ -46,6 +47,13 @@ export { isPreviewHostRequest } from './_shared/preview-host.js';
 export { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 export { base64Utf8, base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, sha256Base64Url, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
 export { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, nimbusAgentAuthCookiePath, nimbusAgentRouteContext, NIMBUS_AGENT_AUTH_COOKIE, NIMBUS_AGENT_AUTH_COOKIE_PURPOSE, NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CF_OAUTH_TOKEN_URL, NIMBUS_CF_OAUTH_USERINFO_URL, NIMBUS_CLOUDFLARE_API, readNimbusAgentCookieSecret, readNimbusCookie, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './session/agent-oauth.js';
+// The worker's composition root: the fabric mints `env.SUPERVISOR` bindings
+// against the SupervisorRPC export below, and assembles 'staged' boot specs
+// through the opencode assembler. One call, module scope, before any request.
+composeFabric({
+    supervisorEntrypoint: 'SupervisorRPC',
+    stagedBootAssembler: (env, stage) => assembleOpencodeFacetConfig(env, stage),
+});
 // W6.5: install the default registry-event sink at module top so events
 // emitted from any code path (supervisor BFS, facet drain, applyW6Registry)
 // land in `wrangler tail` as one JSON line per event. When F-observability

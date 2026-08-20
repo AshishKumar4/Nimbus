@@ -20,7 +20,7 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -28,7 +28,7 @@ import { readExecTelemetry, resetExecTelemetry } from '../../packages/worker/src
 
 process.env.NIMBUS_DIAG_EXEC = '1';
 
-setCtxExports({
+adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
   NimbusLoadedEntrypoint: () => ({
     async startProcess() { return { ok: true }; },

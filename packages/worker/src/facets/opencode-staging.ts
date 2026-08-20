@@ -48,7 +48,6 @@ import {
   YOGA_WASM_MODULE_NAME,
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
-import { setStagedBootAssembler } from '@nimbus-sh/fabric/process-fabric.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 
 export interface OpencodeAssetsEnv {
@@ -214,10 +213,9 @@ function chunkModuleEntries(env: OpencodeAssetsEnv): Promise<Record<string, stri
   return chunkEntriesInflight;
 }
 
-// A 'staged' boot spec reaching the fabric assembles through this. Module
-// scope so every isolate that can host a staged facet has it before first use.
-setStagedBootAssembler((env, stage) =>
-  assembleOpencodeFacetConfig(env as Partial<OpencodeAssetsEnv>, stage));
+// A 'staged' boot spec reaching the fabric assembles through
+// assembleOpencodeFacetConfig below; the worker's composition root
+// (src/index.ts) hands it to the fabric with composeFabric.
 
 /**
  * Assemble the full Worker Loader config for an opencode facet from a stage

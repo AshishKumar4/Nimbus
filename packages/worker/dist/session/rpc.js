@@ -32,7 +32,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { supervisorEntrypoint } from '@nimbus-sh/fabric/ctx-exports.js';
+import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';

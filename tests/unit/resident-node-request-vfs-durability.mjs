@@ -11,7 +11,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -21,7 +21,7 @@ import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet
 let facetSeq = 0;
 
 let supervisorFactory = () => ({});
-setCtxExports({ SupervisorRPC: (...args) => supervisorFactory(...args) });
+adoptCtxExports({ SupervisorRPC: (...args) => supervisorFactory(...args) });
 
 // The spawn goes through the real fabric: the facet's module map is assembled
 // in the loader's cache-miss callback, which is where the generated worker's

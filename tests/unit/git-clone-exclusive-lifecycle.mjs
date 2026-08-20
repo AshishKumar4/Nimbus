@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { registerGitCommands } from '../../packages/worker/src/git/commands.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
 function registerCloneHarness() {
   let gitCommand;
@@ -95,7 +95,7 @@ function commandContext(args) {
 
 {
   // --branch reaches the facet as the clone ref; the URL stays the URL.
-  setCtxExports({
+  adoptCtxExports({
     SupervisorRPC() {
       return { async stdout() {}, [Symbol.dispose]() {} };
     },
@@ -141,7 +141,7 @@ function commandContext(args) {
   assert.equal(facetBodies[0].url, 'https://example.invalid/repo.git');
   assert.equal(facetBodies[0].ref, 'dev', '--branch value did not reach the facet as ref');
   assert.equal(facetBodies[0].dir, '/home/user/branched');
-  setCtxExports(undefined);
+  adoptCtxExports(undefined);
 }
 
 {

@@ -25,7 +25,7 @@ import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -129,7 +129,7 @@ function makeSupervisor(props) {
   };
 }
 
-setCtxExports({ SupervisorRPC: ({ props }) => makeSupervisor(props) });
+adoptCtxExports({ SupervisorRPC: ({ props }) => makeSupervisor(props) });
 
 let facetSeq = 0;
 const world = createFacetWorld(async (config, info) => {

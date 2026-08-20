@@ -36,7 +36,7 @@ import {
 } from '../../packages/fabric/src/process-fabric.ts';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from '../../packages/fabric/src/budgets.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import {
   PROCESS_HOST_MODES,
   createCtxExports,
@@ -71,7 +71,7 @@ const CODE_BOOT = {
 // ctx.exports is first-write-wins, so it is installed once and reads through a
 // pointer each case re-aims at its own disk.
 let currentRead = () => { throw new Error('no disk'); };
-setCtxExports(createCtxExports((path) => currentRead(path)));
+adoptCtxExports(createCtxExports((path) => currentRead(path)));
 
 /** A running process, standing in for the generated runner's class. */
 function makeProgram(onStart) {

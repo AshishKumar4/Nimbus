@@ -40,7 +40,7 @@ import {
   processes,
   type ResidentFacet,
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { supervisorEntrypoint } from '@nimbus-sh/fabric/ctx-exports.js';
+import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import {
   headerPairs,
   isolateToken,

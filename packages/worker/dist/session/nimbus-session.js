@@ -29,7 +29,7 @@ import { NpmInstaller } from '../npm/installer.js';
 // longer references them directly. Phase 2 A'.5 renamed the function
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
-import { setCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
+import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
 import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
@@ -398,10 +398,10 @@ export class NimbusSession extends CloudflareDurableObject {
     constructor(ctx, env) {
         super(ctx, env); // enables RPC on the DO
         // In `wrangler dev`, the outer Worker and this DO share a single
-        // workerd process, so the `setCtxExports(ctx.exports)` call in the
+        // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
         // outer fetch handler (src/index.ts) is visible here via the
-        // module-level singleton in ctx-exports.ts. In PROD they run in
-        // separate isolates — that outer setter never reaches us, so
+        // module-level holder in composition.ts. In PROD they run in
+        // separate isolates — that outer capture never reaches us, so
         // getCtxExports() returns null, the facet pool falls back silently,
         // and facets get `env.SUPERVISOR === undefined` → writeBatch throws.
         //
@@ -411,7 +411,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // and facet-manager in prod as well as dev.
         const ctxExports = ctx?.exports;
         if (ctxExports)
-            setCtxExports(ctxExports);
+            adoptCtxExports(ctxExports);
         this.portRegistry = new PortRegistry();
         // Generation-unique pids + destroyed tombstone, BEFORE any event runs.
         // Pid-keyed state outlives instance resets (hibernatable process-log WS

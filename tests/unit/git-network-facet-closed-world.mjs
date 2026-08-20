@@ -16,7 +16,7 @@ import {
 } from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { setCtxExports } from '../../packages/fabric/src/ctx-exports.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -894,7 +894,7 @@ export const git = {
   assert.equal(vfs.stat('mode/executable.sh').mode, 0o755);
 
   const runChunkedClone = async (dir, chunkSupervisor) => {
-    setCtxExports({ SupervisorRPC: () => chunkSupervisor });
+    adoptCtxExports({ SupervisorRPC: () => chunkSupervisor });
     return execGitNetwork(
       { id: { toString: () => 'closed-world-chunk-do' } },
       {
@@ -1334,7 +1334,7 @@ export const git = {
   const existingBytes = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
   await bridge.writeFile('/existing-repo/.git/sentinel', existingBytes);
   const existingPhases = [];
-  setCtxExports({ SupervisorRPC: () => supervisor });
+  adoptCtxExports({ SupervisorRPC: () => supervisor });
   const existingResult = await execGitNetwork(
     { id: { toString: () => 'closed-world-do' } },
     {

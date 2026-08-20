@@ -156,37 +156,10 @@ export type ResidentBootSpec =
   | { kind: 'code'; code: ResidentCodeSpec };
 
 // ── Staged boots ────────────────────────────────────────────────────────────
-
-/**
- * Assemble a complete Worker Loader config from a staged-artifact spec. The
- * embedder supplies this: a stage names artifact sources only the embedder
- * knows how to fetch (Nimbus's largest staged artifact is a ~23 MB module map from
- * ASSETS), and the assembler runs inside the loader's cache-miss callback so
- * those sources are materialized only while the facet actually loads.
- * `env` is whichever hosting actor's env the facet is opened with.
- */
-export type StagedBootAssembler = (
-  env: unknown,
-  stage: unknown,
-) => Promise<object>;
-
-let _stagedBootAssembler: StagedBootAssembler | null = null;
-
-/** Registered once at composition time, first-write-wins. */
-export function setStagedBootAssembler(assembler: StagedBootAssembler): void {
-  if (_stagedBootAssembler) return;
-  _stagedBootAssembler = assembler;
-}
-
-export function requireStagedBootAssembler(): StagedBootAssembler {
-  if (!_stagedBootAssembler) {
-    throw new Error(
-      'fabric: no staged-boot assembler registered; a \'staged\' boot spec '
-        + 'cannot be assembled without one (setStagedBootAssembler)',
-    );
-  }
-  return _stagedBootAssembler;
-}
+//
+// A 'staged' boot spec assembles through the embedder's composed
+// StagedBootAssembler — see composition.ts. What a stage IS belongs to
+// whoever composed the assembler.
 
 // ── Boot-image store ────────────────────────────────────────────────────────
 
