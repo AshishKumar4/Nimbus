@@ -17,6 +17,7 @@
     "packages/platform/src/**/*.ts",
     "packages/core/src/**/*.ts",
     "packages/fabric/src/**/*.ts",
+    "packages/fabric/examples/**/*.ts",
     "packages/worker/src/**/*.ts",
     "packages/sdk/src/**/*.ts",
     "packages/config/src/**/*.ts",
