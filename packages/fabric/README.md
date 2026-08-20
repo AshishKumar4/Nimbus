@@ -416,6 +416,12 @@ enforced by the code above where code can enforce them; the rest is here so
 the next person does not have to measure them again. All figures are from
 production workerd, June–August 2026.
 
+The tables are the short form. [PLATFORM.md](PLATFORM.md) is the full
+catalog: the same invariants merged with a sibling project's independent
+measurements, every entry graded by evidence (probe / source / production /
+documented), dated, and marked for whether this library enforces it or you
+handle it yourself.
+
 ### Durable Object storage
 
 | Invariant | Evidence |

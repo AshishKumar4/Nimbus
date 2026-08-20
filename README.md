@@ -221,7 +221,8 @@ multi-reason alarm multiplexer, the generation counter that detects instance
 resets, the durable launch journal, and byte-accounted turn pacing. Its README
 carries the platform-invariant tables — the measured DO storage, CPU, facet,
 and RPC ceilings this machinery was built against — which may be worth reading
-even if you never install the package.
+even if you never install the package. The full evidence-graded catalog is
+[`packages/fabric/PLATFORM.md`](packages/fabric/PLATFORM.md).
 
 ## Embed Nimbus in your Workers project
 
