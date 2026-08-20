@@ -28,8 +28,8 @@ import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
-import { LaunchPacer, LaunchTurnPump, launchChunkMaxBytes } from '@nimbus-sh/fabric/launch-pacer.js';
-import { ResidentLaunchJournal, } from '@nimbus-sh/fabric/launch-journal.js';
+import { TurnBudget, PacedWork, turnChunkMaxBytes } from '@nimbus-sh/fabric/turn-budget.js';
+import { FencedWork, } from '@nimbus-sh/fabric/fenced-work.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -3185,14 +3185,14 @@ export class FacetManager {
      */
     imageStore = new FacetImageStore(() => this._imageBlobs(), (pid) => this.processes.get(pid)?.state === 'running');
     /**
-     * The resident-launch journal (fabric's launch-journal.ts): the durable
+     * The resident-launch journal (fabric's fenced-work.ts): the durable
      * record of every resident this session owes the user, and its recovery
      * after an instance reset. This manager supplies what a launch IS — the
      * inputs `_spawnResident` re-drives from — and how its loss is reported.
      */
     launchJournal;
     /**
-     * The granting side of the launch pacer (fabric's launch-pacer.ts). The
+     * The granting side of the launch budget (fabric's turn-budget.ts). The
      * session's alarm re-enters the object through `pumpResidentLaunches`;
      * journal recovery rides the first pump.
      */
@@ -3267,7 +3267,7 @@ export class FacetManager {
             ? Reflect.get(env, 'NIMBUS_DEBUG')
             : undefined;
         this.debugEnabled = debugVar === '1' || debugVar === 'true';
-        this.launchJournal = new ResidentLaunchJournal(ctx.storage, {
+        this.launchJournal = new FencedWork(ctx.storage, {
             generationBase: () => this.processes.pidBase,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
             redrive: (record, attempt) => this._spawnResident(record.code, record.opts, attempt),
@@ -3278,7 +3278,7 @@ export class FacetManager {
             onRedriveFailed: (record, e) => this.hooks.notify?.(`\x1b[2m[nimbus: "${record.command}" could not be restarted: `
                 + `${errorMessage(e)}]\x1b[0m\r\n`),
         });
-        this.launchPump = new LaunchTurnPump({
+        this.launchPump = new PacedWork({
             requestTurn: hooks.requestLaunchTurn?.bind(hooks),
             recover: () => this.launchJournal.recoverInterrupted(),
         });
@@ -4245,7 +4245,7 @@ export class FacetManager {
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm
      * calls this, and journal recovery rides the first pump. See fabric's
-     * `LaunchTurnPump.pump` for the ownership argument.
+     * `PacedWork.pump` for the ownership argument.
      */
     pumpResidentLaunches() {
         return this.launchPump.pump();
@@ -4489,7 +4489,7 @@ export class FacetManager {
      */
     async _runResidentLaunch(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
-        const pacer = new LaunchPacer(this.launchPump, launchChunkMaxBytes(this.env), () => this._assertLaunchStillOwned(entry.pid));
+        const pacer = new TurnBudget(this.launchPump, turnChunkMaxBytes(this.env), () => this._assertLaunchStillOwned(entry.pid));
         // Journalled before the first byte of work. A launch that FAILS deletes
         // its row on the way out — its process has already been exited and the
         // user notified, so there is nothing left to owe. A launch that SETTLES

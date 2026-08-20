@@ -19,7 +19,7 @@ import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { LaunchPacer } from '@nimbus-sh/fabric/launch-pacer.js';
+import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ProcessHostFactory } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
@@ -170,7 +170,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
-}, usesSqlite: boolean, shims: string, pacer?: LaunchPacer): Promise<GeneratedNodeFacetCode>;
+}, usesSqlite: boolean, shims: string, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
 /**
  * Result of preparing facet VFS state.
  *   - bundle:   path → content for the complete static require closure
@@ -326,7 +326,7 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle, manifest: Reco
  * the merge expression concatenates those fragments back to the original
  * string or Uint8Array before module precompilation begins.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: LaunchPacer): Promise<FacetVfsBundleSource>;
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget): Promise<FacetVfsBundleSource>;
 /**
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
@@ -550,7 +550,7 @@ export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | nul
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: LaunchPacer): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -644,14 +644,14 @@ export declare class FacetManager {
      */
     private readonly imageStore;
     /**
-     * The resident-launch journal (fabric's launch-journal.ts): the durable
+     * The resident-launch journal (fabric's fenced-work.ts): the durable
      * record of every resident this session owes the user, and its recovery
      * after an instance reset. This manager supplies what a launch IS — the
      * inputs `_spawnResident` re-drives from — and how its loss is reported.
      */
     private readonly launchJournal;
     /**
-     * The granting side of the launch pacer (fabric's launch-pacer.ts). The
+     * The granting side of the launch budget (fabric's turn-budget.ts). The
      * session's alarm re-enters the object through `pumpResidentLaunches`;
      * journal recovery rides the first pump.
      */
@@ -953,7 +953,7 @@ export declare class FacetManager {
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm
      * calls this, and journal recovery rides the first pump. See fabric's
-     * `LaunchTurnPump.pump` for the ownership argument.
+     * `PacedWork.pump` for the ownership argument.
      */
     pumpResidentLaunches(): Promise<void>;
     /** Whether any launch is suspended waiting for a turn. */

@@ -1,5 +1,5 @@
 /**
- * launch-journal.ts — durable record of the resident launches a Durable Object
+ * fenced-work.ts — durable record of the resident launches a Durable Object
  * owes, and their recovery after an instance reset.
  *
  * The platform resets a session Durable Object over what one turn has
@@ -14,7 +14,7 @@
  *
  * What a launch IS stays the embedder's: the journal stores the record it is
  * given and hands it back on recovery. The mechanism reads only the fields in
- * {@link ResidentLaunchRecord}; everything else in the record rides through
+ * {@link FencedWorkRecord}; everything else in the record rides through
  * opaquely.
  */
 /**
@@ -36,9 +36,9 @@
  * storage key is a migration, and orphaned rows are the least of what it
  * breaks.
  */
-export const RESIDENT_LAUNCH_KEY_PREFIX = 'resident-launch:';
+export const FENCED_WORK_KEY_PREFIX = 'resident-launch:';
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
-export const RESIDENT_LAUNCH_MAX_ATTEMPT = 1;
+export const FENCED_WORK_MAX_ATTEMPT = 1;
 /**
  * The resident-launch journal of one Durable Object instance.
  *
@@ -47,7 +47,7 @@ export const RESIDENT_LAUNCH_MAX_ATTEMPT = 1;
  * read the journal a reset leaves behind. Rows from a previous instance are
  * recovery's to consume, never the release path's.
  */
-export class ResidentLaunchJournal {
+export class FencedWork {
     storage;
     host;
     /**
@@ -80,7 +80,7 @@ export class ResidentLaunchJournal {
     async journal(record) {
         try {
             this.journalledPids.add(record.pid);
-            await this.storage.put(`${RESIDENT_LAUNCH_KEY_PREFIX}${record.pid}`, record);
+            await this.storage.put(`${FENCED_WORK_KEY_PREFIX}${record.pid}`, record);
             await this.storage.sync();
         }
         catch (e) {
@@ -100,7 +100,7 @@ export class ResidentLaunchJournal {
         if (!this.journalledPids.delete(pid))
             return;
         try {
-            await this.storage.delete(`${RESIDENT_LAUNCH_KEY_PREFIX}${pid}`);
+            await this.storage.delete(`${FENCED_WORK_KEY_PREFIX}${pid}`);
             await this.storage.sync();
         }
         catch (e) {
@@ -123,7 +123,7 @@ export class ResidentLaunchJournal {
         if (this.recovered)
             return;
         this.recovered = true;
-        const journal = await this.storage.list({ prefix: RESIDENT_LAUNCH_KEY_PREFIX });
+        const journal = await this.storage.list({ prefix: FENCED_WORK_KEY_PREFIX });
         const base = this.host.generationBase();
         for (const [key, record] of journal) {
             // A pid at or below this instance's base was allocated by a PREVIOUS one
@@ -133,7 +133,7 @@ export class ResidentLaunchJournal {
             if (!(record.pid > 0 && record.pid <= base))
                 continue;
             await this.storage.delete(key);
-            if (record.attempt >= RESIDENT_LAUNCH_MAX_ATTEMPT) {
+            if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
                 this.host.onAbandoned?.(record);
                 continue;
             }

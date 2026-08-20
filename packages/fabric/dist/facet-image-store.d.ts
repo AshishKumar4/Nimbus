@@ -16,7 +16,7 @@
  * and when; the port decides how bytes land on a disk and with what modes and
  * credentials.
  */
-import type { LaunchPacer } from './launch-pacer.js';
+import type { TurnBudget } from './turn-budget.js';
 /**
  * Bytes of an image written in one storage transaction.
  *
@@ -95,7 +95,7 @@ export declare class FacetImageStore {
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
      */
-    materialize(pid: number, modules: Record<string, string>, pacer: LaunchPacer): Promise<Record<string, string>>;
+    materialize(pid: number, modules: Record<string, string>, pacer: TurnBudget): Promise<Record<string, string>>;
     /**
      * Drop every image no running process boots from.
      *

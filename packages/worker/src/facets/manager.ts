@@ -36,11 +36,11 @@ import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
-import { LaunchPacer, LaunchTurnPump, launchChunkMaxBytes } from '@nimbus-sh/fabric/launch-pacer.js';
+import { TurnBudget, PacedWork, turnChunkMaxBytes } from '@nimbus-sh/fabric/turn-budget.js';
 import {
-  ResidentLaunchJournal,
-  type ResidentLaunchRecord,
-} from '@nimbus-sh/fabric/launch-journal.js';
+  FencedWork,
+  type FencedWorkRecord,
+} from '@nimbus-sh/fabric/fenced-work.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -203,7 +203,7 @@ interface FacetManagerEnv {
   /**
    * Verification knob: force a small resident-launch chunk bound so an
    * ordinary program crosses several turns. Unset in production, where the
-   * default in `launch-pacer.ts` applies.
+   * default in `turn-budget.ts` applies.
    */
   NIMBUS_LAUNCH_CHUNK_BYTES?: string;
 }
@@ -827,7 +827,7 @@ export async function generateLongRunningNodeCode(
   },
   usesSqlite: boolean,
   shims: string,
-  pacer?: LaunchPacer,
+  pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(userCode);
   const safeArgs = JSON.stringify({
@@ -1399,7 +1399,7 @@ function releaseGeneratedSources(vfsState: FacetVfsState): void {
  */
 async function facetVfsBundleSourceFor(
   vfsState: FacetVfsState,
-  pacer?: LaunchPacer,
+  pacer?: TurnBudget,
 ): Promise<FacetVfsBundleSource> {
   if (vfsState.generatedSourcesReleased) {
     throw new Error(
@@ -1742,7 +1742,7 @@ function _inlineBundleSourceBytes(bundle: FacetVfsBundle): number {
 export async function buildFacetVfsBundleSource(
   bundle: FacetVfsBundle,
   forceSideModules = false,
-  pacer?: LaunchPacer,
+  pacer?: TurnBudget,
 ): Promise<FacetVfsBundleSource> {
   // Size the inline form before building it. A bundle that will be split has
   // no use for the whole-bundle expression, and building one to read its
@@ -3052,7 +3052,7 @@ export function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null {
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
   esbuild: EsbuildService,
-  pacer?: LaunchPacer,
+  pacer?: TurnBudget,
 ): Promise<{ transformed: number; failed: number }> {
   let transformed = 0;
   let failed = 0;
@@ -3168,7 +3168,7 @@ export async function buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
   observedReads?: ReadonlySet<string>,
-  pacer?: LaunchPacer,
+  pacer?: TurnBudget,
 ): Promise<FacetVfsState> {
   // This build accumulates raw VFS contents in the supervisor heap, and did it
   // with nothing watching: the estimator read 9.4 MiB while these bytes were
@@ -3196,7 +3196,7 @@ async function _buildPrefetchBundle(
   esbuild?: EsbuildService,
   bundleProfile: FacetBundleProfile = DEFAULT_FACET_BUNDLE_PROFILE,
   observedReads?: ReadonlySet<string>,
-  pacer?: LaunchPacer,
+  pacer?: TurnBudget,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -3477,14 +3477,14 @@ export interface ResidentSpawnOptions {
  * inputs — the entry code and the spawn options `_spawnResident` re-drives
  * from. The journal never reads them; they ride through it opaquely.
  */
-interface NodeResidentLaunchRecord extends ResidentLaunchRecord {
+interface NodeResidentLaunchRecord extends FencedWorkRecord {
   code: string;
   opts: ResidentSpawnOptions;
 }
 
 /** 'running' is the measured common case: the platform's reset strikes
  *  seconds after a launch settles, while the resident runs. */
-function residentLaunchDoing(record: ResidentLaunchRecord): string {
+function residentLaunchDoing(record: FencedWorkRecord): string {
   return record.phase === 'running' ? 'running' : 'starting';
 }
 
@@ -3521,18 +3521,18 @@ export class FacetManager {
     (pid) => this.processes.get(pid)?.state === 'running',
   );
   /**
-   * The resident-launch journal (fabric's launch-journal.ts): the durable
+   * The resident-launch journal (fabric's fenced-work.ts): the durable
    * record of every resident this session owes the user, and its recovery
    * after an instance reset. This manager supplies what a launch IS — the
    * inputs `_spawnResident` re-drives from — and how its loss is reported.
    */
-  private readonly launchJournal: ResidentLaunchJournal<NodeResidentLaunchRecord>;
+  private readonly launchJournal: FencedWork<NodeResidentLaunchRecord>;
   /**
-   * The granting side of the launch pacer (fabric's launch-pacer.ts). The
+   * The granting side of the launch budget (fabric's turn-budget.ts). The
    * session's alarm re-enters the object through `pumpResidentLaunches`;
    * journal recovery rides the first pump.
    */
-  private readonly launchPump: LaunchTurnPump;
+  private readonly launchPump: PacedWork;
   private timedOutProcessIds = new Set<number>();
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
@@ -3619,7 +3619,7 @@ export class FacetManager {
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
     this.debugEnabled = debugVar === '1' || debugVar === 'true';
-    this.launchJournal = new ResidentLaunchJournal<NodeResidentLaunchRecord>(ctx.storage, {
+    this.launchJournal = new FencedWork<NodeResidentLaunchRecord>(ctx.storage, {
       generationBase: () => this.processes.pidBase,
       waitUntil: (promise) => this.ctx.waitUntil(promise),
       redrive: (record, attempt) => this._spawnResident(record.code, record.opts, attempt),
@@ -3636,7 +3636,7 @@ export class FacetManager {
         + `${errorMessage(e)}]\x1b[0m\r\n`,
       ),
     });
-    this.launchPump = new LaunchTurnPump({
+    this.launchPump = new PacedWork({
       requestTurn: hooks.requestLaunchTurn?.bind(hooks),
       recover: () => this.launchJournal.recoverInterrupted(),
     });
@@ -4717,7 +4717,7 @@ export class FacetManager {
   /**
    * Grant every suspended launch a chunk of this turn — the session's alarm
    * calls this, and journal recovery rides the first pump. See fabric's
-   * `LaunchTurnPump.pump` for the ownership argument.
+   * `PacedWork.pump` for the ownership argument.
    */
   pumpResidentLaunches(): Promise<void> {
     return this.launchPump.pump();
@@ -4980,9 +4980,9 @@ export class FacetManager {
     attempt: number,
   ): Promise<void> {
     const cwd = opts.cwd || '/home/user';
-    const pacer = new LaunchPacer(
+    const pacer = new TurnBudget(
       this.launchPump,
-      launchChunkMaxBytes(this.env),
+      turnChunkMaxBytes(this.env),
       () => this._assertLaunchStillOwned(entry.pid),
     );
     // Journalled before the first byte of work. A launch that FAILS deletes
@@ -5026,7 +5026,7 @@ export class FacetManager {
     command: string,
     cwd: string,
     opts: ResidentSpawnOptions,
-    pacer: LaunchPacer,
+    pacer: TurnBudget,
   ): Promise<void> {
     if (this.vfs && !this.esbuild) {
       try { this.esbuild = new EsbuildService(this.vfs); } catch { this.esbuild = null; }

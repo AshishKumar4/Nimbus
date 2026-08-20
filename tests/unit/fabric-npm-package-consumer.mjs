@@ -85,10 +85,10 @@ assert.equal(genB._isolateGen, 2);
 assert.equal(kv.get(ISOLATE_GEN_KEY), 2);
 
 // ── Launch journal ─────────────────────────────────────────────────────────
-const { ResidentLaunchJournal, RESIDENT_LAUNCH_KEY_PREFIX, RESIDENT_LAUNCH_MAX_ATTEMPT } =
-  await import('@nimbus-sh/fabric/launch-journal.js');
-assert.equal(RESIDENT_LAUNCH_KEY_PREFIX, 'resident-launch:');
-assert.equal(RESIDENT_LAUNCH_MAX_ATTEMPT, 1);
+const { FencedWork, FENCED_WORK_KEY_PREFIX, FENCED_WORK_MAX_ATTEMPT } =
+  await import('@nimbus-sh/fabric/fenced-work.js');
+assert.equal(FENCED_WORK_KEY_PREFIX, 'resident-launch:');
+assert.equal(FENCED_WORK_MAX_ATTEMPT, 1);
 
 const rows = new Map();
 let syncs = 0;
@@ -107,7 +107,7 @@ const journalHost = (base, redriven) => ({
 
 // Instance A (gen 1) journals a launch; the put is followed by the barrier.
 const redroveA = [];
-const instanceA = new ResidentLaunchJournal(storage, journalHost(1_000_000, redroveA));
+const instanceA = new FencedWork(storage, journalHost(1_000_000, redroveA));
 await instanceA.journal({ pid: 1_000_001, command: 'probe', attempt: 0, phase: 'starting', note: 'x' });
 assert.ok(syncs >= 1, 'journal() syncs past the put/durability gap');
 assert.ok(instanceA.has(1_000_001));
@@ -118,7 +118,7 @@ assert.deepEqual(redroveA, []);
 
 // Instance B (gen 2) replaces it: pid 1,000,001 <= base 2,000,000 → redrive.
 const redroveB = [];
-const instanceB = new ResidentLaunchJournal(storage, journalHost(2_000_000, redroveB));
+const instanceB = new FencedWork(storage, journalHost(2_000_000, redroveB));
 await instanceB.recoverInterrupted();
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.deepEqual(redroveB, [{ pid: 1_000_001, attempt: 1, note: 'x' }]);
@@ -126,14 +126,14 @@ assert.equal(rows.size, 0, 'recovery consumed the row');
 
 // Instance C finds nothing — a redrive is not itself journalled here.
 const redroveC = [];
-const instanceC = new ResidentLaunchJournal(storage, journalHost(3_000_000, redroveC));
+const instanceC = new FencedWork(storage, journalHost(3_000_000, redroveC));
 await instanceC.recoverInterrupted();
 assert.deepEqual(redroveC, []);
 
 // A record whose budget is spent is abandoned, not looped.
-rows.set(RESIDENT_LAUNCH_KEY_PREFIX + '42', { pid: 42, command: 'x', attempt: 1, phase: 'starting' });
+rows.set(FENCED_WORK_KEY_PREFIX + '42', { pid: 42, command: 'x', attempt: 1, phase: 'starting' });
 const abandoned = [];
-const instanceD = new ResidentLaunchJournal(storage, {
+const instanceD = new FencedWork(storage, {
   ...journalHost(1_000_000, []),
   redrive: async () => { throw new Error('must not redrive'); },
   onAbandoned: (record) => abandoned.push(record.pid),
@@ -149,13 +149,13 @@ await instanceA.release(7);
 assert.equal(syncs, syncsBefore + 1, 'release of an unjournalled pid performs no storage work');
 
 // ── Launch pacer ───────────────────────────────────────────────────────────
-const { LaunchPacer, LaunchTurnPump, LAUNCH_CHUNK_MAX_BYTES } =
-  await import('@nimbus-sh/fabric/launch-pacer.js');
-assert.equal(LAUNCH_CHUNK_MAX_BYTES, 2_000_000);
+const { TurnBudget, PacedWork, TURN_CHUNK_MAX_BYTES } =
+  await import('@nimbus-sh/fabric/turn-budget.js');
+assert.equal(TURN_CHUNK_MAX_BYTES, 2_000_000);
 
 let turnsRequested = 0;
-const pump = new LaunchTurnPump({ requestTurn: () => { turnsRequested++; } });
-const pacer = new LaunchPacer(pump, 10);
+const pump = new PacedWork({ requestTurn: () => { turnsRequested++; } });
+const pacer = new TurnBudget(pump, 10);
 let finished = false;
 const launch = (async () => {
   await pacer.spend(6);
@@ -210,7 +210,7 @@ try {
 
   const installed = join(consumer, 'node_modules', '@nimbus-sh', 'fabric');
   assert.ok(existsSync(join(installed, 'dist', 'index.js')), 'fabric installed without a dist');
-  assert.ok(existsSync(join(installed, 'dist', 'launch-journal.js')), 'fabric dist is missing modules');
+  assert.ok(existsSync(join(installed, 'dist', 'fenced-work.js')), 'fabric dist is missing modules');
   assert.ok(
     !readFileSync(join(installed, 'package.json'), 'utf8').includes(REPO),
     'the installed fabric points back into the repo',

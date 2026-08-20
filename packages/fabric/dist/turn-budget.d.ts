@@ -1,5 +1,5 @@
 /**
- * launch-pacer.ts — spreading a resident launch across Durable Object turns.
+ * turn-budget.ts — spreading a resident launch across Durable Object turns.
  *
  * Building a resident process is the largest single span of computation this
  * session performs: for pi it walks a 17 MB source tree through eight
@@ -33,7 +33,7 @@
  * bytes and treats its wall guard as coarse.
  */
 /** How a paced launch gets back onto a fresh Durable Object turn. */
-export interface LaunchTurnScheduler {
+export interface TurnScheduler {
     /**
      * Suspend until a fresh turn is running this launch again.
      *
@@ -52,7 +52,7 @@ export interface LaunchTurnScheduler {
  * each an alarm round trip — small enough not to dominate a launch. pi's
  * 22.9 MB map crosses this about a dozen times per phase that handles it.
  */
-export declare const LAUNCH_CHUNK_MAX_BYTES = 2000000;
+export declare const TURN_CHUNK_MAX_BYTES = 2000000;
 /**
  * Accounts launch progress and ends the turn when a chunk's worth has been
  * spent.
@@ -63,7 +63,7 @@ export declare const LAUNCH_CHUNK_MAX_BYTES = 2000000;
  * behaviour and cost. Nothing here decides WHAT the launch does, only where it
  * is allowed to stop.
  */
-export declare class LaunchPacer {
+export declare class TurnBudget {
     private readonly scheduler;
     private readonly maxChunkBytes;
     private readonly stillWanted?;
@@ -81,7 +81,7 @@ export declare class LaunchPacer {
      *   place a launch can be interrupted, rather than at whichever phases
      *   remembered to ask.
      */
-    constructor(scheduler: LaunchTurnScheduler, maxChunkBytes?: number, stillWanted?: (() => void) | undefined);
+    constructor(scheduler: TurnScheduler, maxChunkBytes?: number, stillWanted?: (() => void) | undefined);
     /**
      * Account `bytes` of completed work, ending the turn if a chunk is full.
      *
@@ -97,17 +97,17 @@ export declare class LaunchPacer {
      */
     settle(): void;
 }
-/** What {@link LaunchTurnPump} needs from the Durable Object hosting it. */
-export interface LaunchTurnPumpHost {
+/** What {@link PacedWork} needs from the Durable Object hosting it. */
+export interface PacedWorkHost {
     /**
-     * Arrange for {@link LaunchTurnPump.pump} to run on a fresh Durable Object
+     * Arrange for {@link PacedWork.pump} to run on a fresh Durable Object
      * turn.
      *
      * The embedder satisfies this with an alarm, which is the only primitive
      * that genuinely re-enters the object: a fresh turn is both a released
      * thread and a fresh CPU budget, and a launch needs each for a different
      * reason. Without it the pump degrades to a same-context timer — see
-     * {@link LaunchTurnPump.nextTurn}.
+     * {@link PacedWork.nextTurn}.
      */
     requestTurn?: () => void;
     /**
@@ -119,10 +119,10 @@ export interface LaunchTurnPumpHost {
     recover?: () => Promise<void>;
 }
 /**
- * The granting side of {@link LaunchTurnScheduler}: parks suspended launches
+ * The granting side of {@link TurnScheduler}: parks suspended launches
  * and resumes every one of them when the host grants a fresh turn.
  */
-export declare class LaunchTurnPump implements LaunchTurnScheduler {
+export declare class PacedWork implements TurnScheduler {
     private readonly host;
     /**
      * Launches suspended between chunks, waiting for a turn of their own.
@@ -135,7 +135,7 @@ export declare class LaunchTurnPump implements LaunchTurnScheduler {
      * from its inputs is the same idempotent work again.
      */
     private waiters;
-    constructor(host: LaunchTurnPumpHost);
+    constructor(host: PacedWorkHost);
     /**
      * How a paced launch asks for a fresh turn.
      *
@@ -169,5 +169,5 @@ export declare class LaunchTurnPump implements LaunchTurnScheduler {
  * `git/commands.ts` carries `NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES`. Unset in
  * production, where the default applies.
  */
-export declare function launchChunkMaxBytes(env: unknown): number;
-//# sourceMappingURL=launch-pacer.d.ts.map
+export declare function turnChunkMaxBytes(env: unknown): number;
+//# sourceMappingURL=turn-budget.d.ts.map

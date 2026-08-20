@@ -211,7 +211,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
     }
 
     // A reset that killed a resident launch left its journal row behind
-    // (fabric's ResidentLaunchJournal.recoverInterrupted). The alarm the dying
+    // (fabric's FencedWork.recoverInterrupted). The alarm the dying
     // instance was using for launch turns is NOT a trigger recovery can rely
     // on — measured live, a launch killed early in its first chunks rolls the
     // alarm-map put back with the rest of the dying turn, so the replacement

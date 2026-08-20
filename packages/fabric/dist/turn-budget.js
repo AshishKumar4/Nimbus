@@ -1,5 +1,5 @@
 /**
- * launch-pacer.ts — spreading a resident launch across Durable Object turns.
+ * turn-budget.ts — spreading a resident launch across Durable Object turns.
  *
  * Building a resident process is the largest single span of computation this
  * session performs: for pi it walks a 17 MB source tree through eight
@@ -40,7 +40,7 @@
  * each an alarm round trip — small enough not to dominate a launch. pi's
  * 22.9 MB map crosses this about a dozen times per phase that handles it.
  */
-export const LAUNCH_CHUNK_MAX_BYTES = 2_000_000;
+export const TURN_CHUNK_MAX_BYTES = 2_000_000;
 /**
  * Accounts launch progress and ends the turn when a chunk's worth has been
  * spent.
@@ -51,7 +51,7 @@ export const LAUNCH_CHUNK_MAX_BYTES = 2_000_000;
  * behaviour and cost. Nothing here decides WHAT the launch does, only where it
  * is allowed to stop.
  */
-export class LaunchPacer {
+export class TurnBudget {
     scheduler;
     maxChunkBytes;
     stillWanted;
@@ -69,7 +69,7 @@ export class LaunchPacer {
      *   place a launch can be interrupted, rather than at whichever phases
      *   remembered to ask.
      */
-    constructor(scheduler, maxChunkBytes = LAUNCH_CHUNK_MAX_BYTES, stillWanted) {
+    constructor(scheduler, maxChunkBytes = TURN_CHUNK_MAX_BYTES, stillWanted) {
         this.scheduler = scheduler;
         this.maxChunkBytes = maxChunkBytes;
         this.stillWanted = stillWanted;
@@ -111,10 +111,10 @@ function withResolvers() {
     return { promise, resolve };
 }
 /**
- * The granting side of {@link LaunchTurnScheduler}: parks suspended launches
+ * The granting side of {@link TurnScheduler}: parks suspended launches
  * and resumes every one of them when the host grants a fresh turn.
  */
-export class LaunchTurnPump {
+export class PacedWork {
     host;
     /**
      * Launches suspended between chunks, waiting for a turn of their own.
@@ -183,11 +183,11 @@ export class LaunchTurnPump {
  * `git/commands.ts` carries `NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES`. Unset in
  * production, where the default applies.
  */
-export function launchChunkMaxBytes(env) {
+export function turnChunkMaxBytes(env) {
     const raw = env
         ?.NIMBUS_LAUNCH_CHUNK_BYTES;
     if (!raw)
-        return LAUNCH_CHUNK_MAX_BYTES;
+        return TURN_CHUNK_MAX_BYTES;
     const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : LAUNCH_CHUNK_MAX_BYTES;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : TURN_CHUNK_MAX_BYTES;
 }

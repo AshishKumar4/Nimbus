@@ -1,5 +1,5 @@
 /**
- * launch-pacer.ts — spreading a resident launch across Durable Object turns.
+ * turn-budget.ts — spreading a resident launch across Durable Object turns.
  *
  * Building a resident process is the largest single span of computation this
  * session performs: for pi it walks a 17 MB source tree through eight
@@ -34,7 +34,7 @@
  */
 
 /** How a paced launch gets back onto a fresh Durable Object turn. */
-export interface LaunchTurnScheduler {
+export interface TurnScheduler {
   /**
    * Suspend until a fresh turn is running this launch again.
    *
@@ -54,7 +54,7 @@ export interface LaunchTurnScheduler {
  * each an alarm round trip — small enough not to dominate a launch. pi's
  * 22.9 MB map crosses this about a dozen times per phase that handles it.
  */
-export const LAUNCH_CHUNK_MAX_BYTES = 2_000_000;
+export const TURN_CHUNK_MAX_BYTES = 2_000_000;
 
 /**
  * Accounts launch progress and ends the turn when a chunk's worth has been
@@ -66,7 +66,7 @@ export const LAUNCH_CHUNK_MAX_BYTES = 2_000_000;
  * behaviour and cost. Nothing here decides WHAT the launch does, only where it
  * is allowed to stop.
  */
-export class LaunchPacer {
+export class TurnBudget {
   /** Turn handoffs this launch has taken. Reported with the launch. */
   chunks = 0;
   /** Total work accounted, for the same report. */
@@ -84,8 +84,8 @@ export class LaunchPacer {
    *   remembered to ask.
    */
   constructor(
-    private readonly scheduler: LaunchTurnScheduler,
-    private readonly maxChunkBytes: number = LAUNCH_CHUNK_MAX_BYTES,
+    private readonly scheduler: TurnScheduler,
+    private readonly maxChunkBytes: number = TURN_CHUNK_MAX_BYTES,
     private readonly stillWanted?: () => void,
   ) {}
 
@@ -127,17 +127,17 @@ function withResolvers(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** What {@link LaunchTurnPump} needs from the Durable Object hosting it. */
-export interface LaunchTurnPumpHost {
+/** What {@link PacedWork} needs from the Durable Object hosting it. */
+export interface PacedWorkHost {
   /**
-   * Arrange for {@link LaunchTurnPump.pump} to run on a fresh Durable Object
+   * Arrange for {@link PacedWork.pump} to run on a fresh Durable Object
    * turn.
    *
    * The embedder satisfies this with an alarm, which is the only primitive
    * that genuinely re-enters the object: a fresh turn is both a released
    * thread and a fresh CPU budget, and a launch needs each for a different
    * reason. Without it the pump degrades to a same-context timer — see
-   * {@link LaunchTurnPump.nextTurn}.
+   * {@link PacedWork.nextTurn}.
    */
   requestTurn?: () => void;
   /**
@@ -150,10 +150,10 @@ export interface LaunchTurnPumpHost {
 }
 
 /**
- * The granting side of {@link LaunchTurnScheduler}: parks suspended launches
+ * The granting side of {@link TurnScheduler}: parks suspended launches
  * and resumes every one of them when the host grants a fresh turn.
  */
-export class LaunchTurnPump implements LaunchTurnScheduler {
+export class PacedWork implements TurnScheduler {
   /**
    * Launches suspended between chunks, waiting for a turn of their own.
    *
@@ -166,7 +166,7 @@ export class LaunchTurnPump implements LaunchTurnScheduler {
    */
   private waiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
 
-  constructor(private readonly host: LaunchTurnPumpHost) {}
+  constructor(private readonly host: PacedWorkHost) {}
 
   /**
    * How a paced launch asks for a fresh turn.
@@ -222,10 +222,10 @@ export class LaunchTurnPump implements LaunchTurnScheduler {
  * `git/commands.ts` carries `NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES`. Unset in
  * production, where the default applies.
  */
-export function launchChunkMaxBytes(env: unknown): number {
+export function turnChunkMaxBytes(env: unknown): number {
   const raw = (env as { NIMBUS_LAUNCH_CHUNK_BYTES?: string } | null | undefined)
     ?.NIMBUS_LAUNCH_CHUNK_BYTES;
-  if (!raw) return LAUNCH_CHUNK_MAX_BYTES;
+  if (!raw) return TURN_CHUNK_MAX_BYTES;
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : LAUNCH_CHUNK_MAX_BYTES;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : TURN_CHUNK_MAX_BYTES;
 }

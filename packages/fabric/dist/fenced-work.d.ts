@@ -1,5 +1,5 @@
 /**
- * launch-journal.ts — durable record of the resident launches a Durable Object
+ * fenced-work.ts — durable record of the resident launches a Durable Object
  * owes, and their recovery after an instance reset.
  *
  * The platform resets a session Durable Object over what one turn has
@@ -14,7 +14,7 @@
  *
  * What a launch IS stays the embedder's: the journal stores the record it is
  * given and hands it back on recovery. The mechanism reads only the fields in
- * {@link ResidentLaunchRecord}; everything else in the record rides through
+ * {@link FencedWorkRecord}; everything else in the record rides through
  * opaquely.
  */
 /**
@@ -36,9 +36,9 @@
  * storage key is a migration, and orphaned rows are the least of what it
  * breaks.
  */
-export declare const RESIDENT_LAUNCH_KEY_PREFIX = "resident-launch:";
+export declare const FENCED_WORK_KEY_PREFIX = "resident-launch:";
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
-export declare const RESIDENT_LAUNCH_MAX_ATTEMPT = 1;
+export declare const FENCED_WORK_MAX_ATTEMPT = 1;
 /**
  * A resident process this session owes the user, as a later instance would
  * have to re-drive it.
@@ -57,7 +57,7 @@ export declare const RESIDENT_LAUNCH_MAX_ATTEMPT = 1;
  * process host's held-open leg dies with it), so a row from a previous
  * generation always names a process that is genuinely gone.
  */
-export interface ResidentLaunchRecord {
+export interface FencedWorkRecord {
     pid: number;
     command: string;
     /** 0 for a launch the user asked for; 1 for the one re-drive it may get. */
@@ -70,9 +70,9 @@ export interface ResidentLaunchRecord {
 /**
  * The slice of Durable Object storage the journal writes through. Exactly a
  * `DurableObjectStorage`, narrowed to what the mechanism performs — `sync()`
- * is load-bearing, see {@link ResidentLaunchJournal.journal}.
+ * is load-bearing, see {@link FencedWork.journal}.
  */
-export interface LaunchJournalStorage {
+export interface FencedWorkStorage {
     put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<boolean>;
     list<T = unknown>(options: {
@@ -81,7 +81,7 @@ export interface LaunchJournalStorage {
     sync(): Promise<void>;
 }
 /** What the journal's recovery needs from its embedder. */
-export interface LaunchJournalHost<R extends ResidentLaunchRecord> {
+export interface FencedWorkHost<R extends FencedWorkRecord> {
     /**
      * The current instance generation's pid floor. A pid at or below it was
      * allocated by a PREVIOUS instance (core's process-table, PID_GEN_STRIDE),
@@ -117,7 +117,7 @@ export interface LaunchJournalHost<R extends ResidentLaunchRecord> {
  * read the journal a reset leaves behind. Rows from a previous instance are
  * recovery's to consume, never the release path's.
  */
-export declare class ResidentLaunchJournal<R extends ResidentLaunchRecord> {
+export declare class FencedWork<R extends FencedWorkRecord> {
     private readonly storage;
     private readonly host;
     /**
@@ -128,7 +128,7 @@ export declare class ResidentLaunchJournal<R extends ResidentLaunchRecord> {
     private journalledPids;
     /** Whether this instance has already read the journal a reset leaves behind. */
     private recovered;
-    constructor(storage: LaunchJournalStorage, host: LaunchJournalHost<R>);
+    constructor(storage: FencedWorkStorage, host: FencedWorkHost<R>);
     /**
      * Record a launch as in flight, so an instance that replaces this one knows
      * it never finished. Best-effort: a launch that cannot be journalled still
@@ -167,4 +167,4 @@ export declare class ResidentLaunchJournal<R extends ResidentLaunchRecord> {
      */
     recoverInterrupted(): Promise<void>;
 }
-//# sourceMappingURL=launch-journal.d.ts.map
+//# sourceMappingURL=fenced-work.d.ts.map

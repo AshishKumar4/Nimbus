@@ -19,7 +19,7 @@
 
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
-import type { LaunchPacer } from './launch-pacer.js';
+import type { TurnBudget } from './turn-budget.js';
 
 /**
  * Bytes of an image written in one storage transaction.
@@ -113,7 +113,7 @@ export class FacetImageStore {
   async materialize(
     pid: number,
     modules: Record<string, string>,
-    pacer: LaunchPacer,
+    pacer: TurnBudget,
   ): Promise<Record<string, string>> {
     const fs = this.blobs();
     const images: Record<string, string> = {};
