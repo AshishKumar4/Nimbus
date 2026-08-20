@@ -29,23 +29,30 @@ Where a specific date matters it is given.
 The root export pulls `cloudflare:workers`, so `import ... from
 '@nimbus-sh/fabric'` resolves only inside a Worker. Outside workerd (unit
 tests, tooling) import the subpath modules directly —
-`@nimbus-sh/fabric/alarms.js`, `@nimbus-sh/fabric/launch-journal.js`, and so
+`@nimbus-sh/fabric/timers.js`, `@nimbus-sh/fabric/fenced-work.js`, and so
 on. Most of the package is structurally typed against plain objects precisely
 so it can be tested in bun or node.
 
-An embedder wires three seams at composition time, each first-write-wins:
+An embedder states its composition once, in its composition root:
 
 ```ts
-import { setCtxExports, setSupervisorEntrypointName, setStagedBootAssembler } from '@nimbus-sh/fabric';
+import { composeFabric, adoptCtxExports } from '@nimbus-sh/fabric';
 
-// In the Worker's fetch handler, once:
-setCtxExports(ctx.exports);
-// The name of your supervisor WorkerEntrypoint export. The fabric mints one
-// binding per hosted program from it (env.SUPERVISOR inside the facet).
-setSupervisorEntrypointName('MySupervisorRPC');
-// Only if you use 'staged' boot specs; 'code' boots need no assembler.
-setStagedBootAssembler(async (env, stage) => assembleLoaderConfig(env, stage));
+// Module scope of the Worker entry, once per isolate:
+composeFabric({
+  // The name of your supervisor WorkerEntrypoint export. The fabric mints one
+  // binding per hosted program from it (env.SUPERVISOR inside the facet).
+  supervisorEntrypoint: 'MySupervisorRPC',
+  // Only if you use 'staged' boot specs; 'code' boots need no assembler.
+  stagedBootAssembler: async (env, stage) => assembleLoaderConfig(env, stage),
+});
+
+// ctx.exports is runtime state, not composition. Capture it where the
+// platform hands it over — the first fetch, or the DO constructor:
+adoptCtxExports(ctx.exports);
 ```
+
+Both calls are first-write-wins.
 
 ## One alarm, many reasons
 
@@ -55,18 +62,18 @@ reason→deadline map in storage, with one dispatcher:
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
-import { scheduleAlarm, dispatchAlarm } from '@nimbus-sh/fabric';
+import { timers } from '@nimbus-sh/fabric';
 
 export class MySession extends DurableObject {
-  _alarmChain?: Promise<unknown>;   // serializes the map's read-modify-write
+  _timerChain?: Promise<unknown>;   // serializes the map's read-modify-write
 
   async fetch(request: Request): Promise<Response> {
-    await scheduleAlarm(this, this.ctx, 'janitor', Date.now() + 60_000);
+    await timers(this, this.ctx).schedule('janitor', Date.now() + 60_000);
     return new Response('ok');
   }
 
   async alarm(): Promise<void> {
-    await dispatchAlarm(this, this.ctx, {
+    await timers(this, this.ctx).dispatch({
       janitor: async (now) => {
         await this.cleanUp();
         return { rearmAt: now + 60_000 };   // re-arm through the return value
@@ -76,8 +83,8 @@ export class MySession extends DurableObject {
 }
 ```
 
-`scheduleAlarm` keeps the earliest deadline per reason and arms the real alarm
-at the minimum across all of them. `dispatchAlarm` snapshots the fireable set
+`schedule` keeps the earliest deadline per reason and arms the real alarm
+at the minimum across all of them. `dispatch` snapshots the fireable set
 before running any handler (so a handler that re-schedules itself is not
 re-fired in the same dispatch), silently drops unknown reasons (a rollback
 from a deploy that added reasons must not wedge the alarm), and when no
@@ -95,15 +102,12 @@ pid at or below the current generation's base was allocated by a previous
 incarnation.**
 
 ```ts
-import { maybeBumpIsolateGen } from '@nimbus-sh/fabric';
+import { adoptGeneration, generation } from '@nimbus-sh/fabric';
 
 export class MySession extends DurableObject {
-  _isolateGen = 0;
-  _isolateGenPersisted = false;
-
   async fetch(request: Request): Promise<Response> {
-    await maybeBumpIsolateGen(this, this.ctx);   // idempotent per instance
-    // this._isolateGen is now this incarnation's generation
+    await adoptGeneration(this.ctx);   // idempotent per instance
+    // generation(this.ctx) is now this incarnation's generation
   }
 }
 ```
@@ -124,13 +128,13 @@ dies silently with the instance. The journal is what a later instance reads to
 know that happened:
 
 ```ts
-import { ResidentLaunchJournal, type ResidentLaunchRecord } from '@nimbus-sh/fabric';
+import { FencedWork, type FencedWorkRecord } from '@nimbus-sh/fabric';
 
-interface MyLaunch extends ResidentLaunchRecord {
+interface MyLaunch extends FencedWorkRecord {
   argv: string[];   // whatever your redrive needs; the journal never reads it
 }
 
-const journal = new ResidentLaunchJournal<MyLaunch>(this.ctx.storage, {
+const journal = new FencedWork<MyLaunch>(this.ctx.storage, {
   generationBase: () => this.pidBase,
   waitUntil: (p) => this.ctx.waitUntil(p),
   redrive: (record, attempt) => this.launch(record.argv, attempt),
@@ -159,7 +163,7 @@ Two details here cost us real incidents before they were mechanisms:
   went looking.
 
 Recovery applies the generation predicate (`pid <= generationBase()`), deletes
-each stale row, and re-drives once per record (`RESIDENT_LAUNCH_MAX_ATTEMPT` =
+each stale row, and re-drives once per record (`FENCED_WORK_MAX_ATTEMPT` =
 1) — a reset that recurs is not the transient kind.
 
 ## Pacing big work across turns
@@ -173,16 +177,17 @@ milliseconds, because the in-DO clock does not advance without I/O (0 ms
 across 200,000 consecutive reads). So the pacer accounts **bytes**:
 
 ```ts
-import { LaunchPacer, LaunchTurnPump, scheduleAlarm } from '@nimbus-sh/fabric';
+import { TurnBudget, PacedWork, onColdStart, timers } from '@nimbus-sh/fabric';
 
-const pump = new LaunchTurnPump({
-  requestTurn: () => { void scheduleAlarm(this, this.ctx, 'launch-turn', Date.now()); },
-  recover: () => journal.recoverInterrupted(),
+const pump = new PacedWork(this.ctx, {
+  requestTurn: () => { void timers(this, this.ctx).schedule('launch-turn', Date.now()); },
 });
-const pacer = new LaunchPacer(pump);
+// Deferred reconciliation rides the first pump, off the init gate:
+onColdStart(this.ctx, () => journal.recoverInterrupted());
+const budget = new TurnBudget(pump);
 
 // Inside the launch, after each unit of work:
-await pacer.spend(bytesJustProcessed);   // suspends every LAUNCH_CHUNK_MAX_BYTES (2 MB)
+await budget.spend(bytesJustProcessed);   // suspends every TURN_CHUNK_MAX_BYTES (2 MB)
 // In alarm(), as one of the dispatcher's reasons:
 'launch-turn': () => pump.pump(),
 ```
@@ -190,22 +195,22 @@ await pacer.spend(bytesJustProcessed);   // suspends every LAUNCH_CHUNK_MAX_BYTE
 The pump awaits each resumed chunk, so the invocation that granted the turn is
 the invocation that pays for the work — nothing runs detached in a handler's
 microtask drain. A past-deadline alarm is delivered as soon as the object is
-free, which makes `scheduleAlarm(..., Date.now())` a genuine "re-enter now"
+free, which makes `schedule(..., Date.now())` a genuine "re-enter now"
 primitive. Without an alarm-capable host the pump degrades to a same-context
 timer: the single-turn behaviour this path always had, minus the
 responsiveness.
 
-## Running programs: the loader pool
+## Running programs: the isolate pool
 
-`LoaderPool` runs plain functions in warm dynamic-worker isolates over
+`IsolatePool` runs plain functions in warm dynamic-worker isolates over
 `env.LOADER`. Functions are serialized with `fn.toString()`, so they must be
 self-contained: no captured variables, no `this` (rejected at dispatch), and
 their last parameter receives the forwarded bindings.
 
 ```ts
-import { LoaderPool } from '@nimbus-sh/fabric';
+import { IsolatePool } from '@nimbus-sh/fabric';
 
-const pool = new LoaderPool(env, this.ctx, {
+const pool = new IsolatePool(env, this.ctx, {
   concurrency: 4,
   tag: 'checksum',
   omitSupervisor: true,   // this pool needs no callback into the DO
@@ -236,14 +241,15 @@ success. Warm isolates are scoped to one session unless a pool explicitly opts
 into `cacheScope: 'global'`, which is reserved for stateless compute pools
 that take no supervisor binding and retain no user state.
 
-`FanoutPool` is the tier above: a single DO method can drive at most 4
+`Fanout` is the tier above: a single DO method can drive at most 4
 concurrent Worker Loader fetches, so batches of fewer than 5 tasks run in the
-coordinator through a `LoaderPool` and wider batches shard deterministically
+coordinator through an `IsolatePool` and wider batches shard deterministically
 across sibling DOs (up to 32, dispatched in phases of 4 to bound simultaneous
 cold starts). Transient peer resets retry on a 250/750/1500 ms schedule; an
 overloaded peer gets the 1/3/6 s one.
 
-Every fabric call into the loader lands on a per-DO ledger: distinct ids ever
+Every fabric call into the loader lands on a per-DO ledger (`budgets.js`,
+which also owns the module-map ceiling and the facet-ID count): distinct ids ever
 gotten — each permanently holds one of the ~5–6 dynamic-worker slots, because
 a keyed `loader.get(id)` is never released — plus live and peak concurrent
 Loader fetches, read via `loaderLedgerStats(ctx)`. A "Too many concurrent
@@ -256,9 +262,9 @@ platform would have run.
 ## Running processes: the resident fabric
 
 A resident process — a dev server, a socket runner, an attached TUI — is a DO
-facet whose class comes from a dynamic worker. `openResidentFacet` is the one
-way such a process comes into existence; `ProcessFabric` is the lifecycle
-around it:
+facet whose class comes from a dynamic worker. `processes(ctx, env).spawn` is
+the one way such a process comes into existence; `ProcessFabric` is the
+lifecycle around it:
 
 ```ts
 import { ProcessFabric, createProcessHost } from '@nimbus-sh/fabric';
@@ -341,7 +347,7 @@ for 1 GB — flat, because nothing is copied) but also shares the session's
 same-object-only and workerd exposes no `VACUUM INTO`, `ATTACH`, or
 `sqlite3_backup` across objects. And a clone hazard we measured rather than
 assumed: ANY unresolvable `src` — a typo, a name not created yet — silently
-EMPTIES the destination and reports success. `cloneFacetStorage` is the one
+EMPTIES the destination and reports success. `cloneStorage` is the one
 way the fabric calls clone: it takes the caller's `populated(name)` probe and
 asserts it positively on the source before the clone and on the destination
 after, so a typo is refused before the platform call and a wiped destination
@@ -351,9 +357,9 @@ not a non-zero size.
 
 ## The image store
 
-`FacetImageStore` materializes generated boot images into a content-addressed
+`ImageStore` materializes generated boot images into a content-addressed
 store (`var/lib/nimbus/facet-images/<sha256>.js`) through a small
-`FacetImageBlobStore` port — the embedder owns the disk, the store owns the
+`ImageBlobStore` port — the embedder owns the disk, the store owns the
 protocol:
 
 - **Root before the first byte.** The whole root set is registered
@@ -409,7 +415,7 @@ production workerd, June–August 2026.
 | `await put()` resolves BEFORE durability; `ctx.storage.sync()` is the barrier; the output gate holds the guarantee | a launch killed in its first chunks left NO journal row (staging, 2026-08-13) |
 | A reset destroys every write its turn had outstanding; an alarm write rolls back with it and the platform re-delivers the alarm to the replacement instance | the first turn after a reset is a recovery turn, for free |
 | SQLite value cap is 2 MB per ROW, key length included | single-value ceiling 2,199,981 B with a 12-char key; overflow throws clean, catchable `SQLITE_TOOBIG` |
-| One alarm per object; a second `setAlarm()` silently overwrites | why `ALARM_REASONS_KEY` is a map |
+| One alarm per object; a second `setAlarm()` silently overwrites | why `TIMER_REASONS_KEY` is a map |
 | Input gates stay closed across `get`/`put` | set-if-absent is atomic per DO with no CAS loop |
 | A facet's own SQLite survives a fresh module scope | 7,141 rows / 45.7 MB intact across recycling — keep provenance in rows, never heap |
 | ~10 GiB storage budget shared by the DO root and every facet and clone under it, with no copy-on-write credit | N clones of X bytes cost X·(N+1); crossing RESETS the object rather than raising an error |
@@ -418,11 +424,11 @@ production workerd, June–August 2026.
 
 | Invariant | Evidence |
 |---|---|
-| No pending alarm ⇒ hibernation-eligible after ~10 s idle | why `dispatchAlarm` deletes the map when nothing remains |
+| No pending alarm ⇒ hibernation-eligible after ~10 s idle | why `timers.dispatch` deletes the map when nothing remains |
 | One-turn CPU budget ~30 s; yielding inside an invocation buys nothing; only genuine re-entry (an alarm) resets it | killed with `exceededCpu` at 31.8 s and 32.5 s |
 | A long turn drops the object's WebSockets even when the work succeeds | the launch turn finished `outcome=ok` and the terminal died anyway |
 | The in-DO clock does not advance without I/O | 0 ms across 200,000 consecutive `Time.now` reads — pace in bytes, hand deadlines to the host |
-| Isolate generation increments on EVERY fresh isolate: cold start and hibernation wake, not only resets | `maybeBumpIsolateGen` adopts persisted truth first |
+| Isolate generation increments on EVERY fresh isolate: cold start and hibernation wake, not only resets | `adoptGeneration` adopts persisted truth first |
 | `pid <= generation base` ⇒ previous generation | THE reset predicate; `PID_GEN_STRIDE` = 1,000,000 |
 | `setTimeout`/`setInterval` prevent hibernation | one-shot self-nulling timers only |
 
@@ -437,7 +443,7 @@ production workerd, June–August 2026.
 | Module scope bans I/O; `new Function` succeeds at module scope and throws at request time | code reaches a facet through the module map or not at all |
 | The facet start callback fires at most once | re-running it would re-execute the user's program |
 | ~5–6 concurrent dynamic workers per DO; at most 4 concurrent Loader fetches per DO method; loader-cache entries are never released | `IN_DO_THRESHOLD` = 5 sits under the fetch cap; every `loader.get(id)` permanently consumes a slot — counted per DO by the loader ledger, and a cap refusal names the ids holding them |
-| `ctx.facets.clone` is same-object only, absent from `@cloudflare/workers-types` and the pinned workerd, present in production | 18–31 ms / 45.7 MB, 34–54 ms / 1 GB; an unresolvable `src` silently EMPTIES the destination and reports success — `cloneFacetStorage` enforces the both-ends validation |
+| `ctx.facets.clone` is same-object only, absent from `@cloudflare/workers-types` and the pinned workerd, present in production | 18–31 ms / 45.7 MB, 34–54 ms / 1 GB; an unresolvable `src` silently EMPTIES the destination and reports success — `cloneStorage` enforces the both-ends validation |
 | A DO dies at ~200 MiB of live wasm linear memory; reserved and written pages die at the same ceiling | lazy growth buys nothing; bound guest memory by rewriting the memory section |
 | A wasm stack suspended (JSPI) in one request cannot resume in another | 3 in-context resumes took 6 ms; the first cross-context one hit a 30 s timeout |
 
@@ -472,9 +478,10 @@ production workerd, June–August 2026.
 
 ## Relation to the other packages
 
-`@nimbus-sh/core` is the OS this machinery hosts — fabric depends on it for
-shared primitives (constants, RPC disposal, error classification) and core
-never imports fabric.
+`@nimbus-sh/core` is the OS this machinery hosts; core never imports fabric.
+[`@nimbus-sh/platform`](https://www.npmjs.com/package/@nimbus-sh/platform) is
+the zero-dependency leaf under both: the measured limits tables, the error
+taxonomy, RPC disposal, and the supervisor budget machinery.
 [`@nimbus-sh/worker`](https://www.npmjs.com/package/@nimbus-sh/worker) is the
 canonical embedder: it supplies the seams above, the supervisor entrypoint,
 the session protocol, and everything user-facing. If you want the full hosted
