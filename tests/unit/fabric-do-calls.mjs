@@ -150,7 +150,54 @@ const FAST = { baseDelayMs: 1 };
   assert.equal(kit.stubs[0].disposed, true);
 }
 
-// ── 10. An async resolver composes (a placement pin resolves remotely) ──────
+// ── 10. A retry is observable through onRetry — never silently absorbed ─────
+// Proteus's consumer proof: its hand-rolled seam logged every retry so a
+// flaky object shows in Workers Logs, and `operation` exists to name it.
+// Without the hook the parameter is dead weight on the retrying verb.
+
+{
+  const seen = [];
+  const kit = mintKit(async (n) => {
+    if (n === 1) throw new Error('Network connection lost.');
+    return 'ok';
+  });
+  const policy = {
+    baseDelayMs: 1,
+    onRetry: (info) => seen.push(info),
+  };
+  assert.equal(await idempotent('flakyRead', kit.resolve, (s) => s.ping(), policy), 'ok');
+  assert.equal(seen.length, 1, 'one retry, one report');
+  assert.equal(seen[0].operation, 'flakyRead');
+  assert.equal(seen[0].classification, 'connection_lost');
+  assert.equal(seen[0].attempt, 1);
+  assert.equal(seen[0].maxAttempts, 3);
+  assert.match(seen[0].error.message, /Network connection lost/);
+}
+
+// ── 11. onRetry stays silent on success and on permanent failure ────────────
+
+{
+  const seen = [];
+  const policy = { baseDelayMs: 1, onRetry: (info) => seen.push(info) };
+  const clean = mintKit(async () => 'ok');
+  assert.equal(await idempotent('clean', clean.resolve, (s) => s.ping(), policy), 'ok');
+  const broken = mintKit(async () => { throw new Error('no such row'); });
+  await assert.rejects(idempotent('perm', broken.resolve, (s) => s.ping(), policy));
+  assert.equal(seen.length, 0, 'no retry happened, so nothing to report');
+}
+
+// ── 12. Exhaustion reports every retry it performed ─────────────────────────
+
+{
+  const seen = [];
+  const kit = mintKit(async () => { throw new Error('Network connection lost.'); });
+  await assert.rejects(
+    idempotent('gone', kit.resolve, (s) => s.ping(), { baseDelayMs: 1, onRetry: (i) => seen.push(i) }),
+  );
+  assert.deepEqual(seen.map((i) => i.attempt), [1, 2], 'two retries before the third attempt threw');
+}
+
+// ── 13. An async resolver composes (a placement pin resolves remotely) ──────
 
 {
   const kit = mintKit(async () => 'pinned');

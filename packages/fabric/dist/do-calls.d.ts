@@ -36,6 +36,23 @@ import { type DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
 export interface DoCallRetryPolicy {
     maxAttempts?: number;
     baseDelayMs?: number;
+    /**
+     * Called once per retry, before its backoff delay, with the failure the
+     * retry is answering. The consumer's logging seam: Proteus's hand-rolled
+     * predecessor logged every retry so a flaky object is visible in Workers
+     * Logs rather than silently absorbed, and `operation` names it there.
+     */
+    onRetry?(info: DoCallRetryInfo): void;
+}
+/** What one retry is answering: which call, which platform class, which
+ *  attempt just failed out of how many. */
+export interface DoCallRetryInfo {
+    operation: string;
+    classification: DoCallClass;
+    /** The 1-based attempt that failed; the retry about to run is attempt+1. */
+    attempt: number;
+    maxAttempts: number;
+    error: unknown;
 }
 /** Mints one stub per call. `idempotent` calls it once per attempt. */
 export type DoStubResolver<S> = () => S | Promise<S>;

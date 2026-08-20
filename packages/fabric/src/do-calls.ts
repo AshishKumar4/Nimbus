@@ -46,6 +46,24 @@ const BASE_DELAY_MS = 60;
 export interface DoCallRetryPolicy {
   maxAttempts?: number;
   baseDelayMs?: number;
+  /**
+   * Called once per retry, before its backoff delay, with the failure the
+   * retry is answering. The consumer's logging seam: Proteus's hand-rolled
+   * predecessor logged every retry so a flaky object is visible in Workers
+   * Logs rather than silently absorbed, and `operation` names it there.
+   */
+  onRetry?(info: DoCallRetryInfo): void;
+}
+
+/** What one retry is answering: which call, which platform class, which
+ *  attempt just failed out of how many. */
+export interface DoCallRetryInfo {
+  operation: string;
+  classification: DoCallClass;
+  /** The 1-based attempt that failed; the retry about to run is attempt+1. */
+  attempt: number;
+  maxAttempts: number;
+  error: unknown;
 }
 
 /** Mints one stub per call. `idempotent` calls it once per attempt. */
@@ -96,7 +114,9 @@ export async function idempotent<S, T>(
     } catch (error) {
       // A stub that threw may be permanently broken; it is never reused.
       disposeRpcResource(minted);
-      if (!isRetryableDoCall(classifyDoCall(error)) || attempt >= maxAttempts) throw error;
+      const classification = classifyDoCall(error);
+      if (!isRetryableDoCall(classification) || attempt >= maxAttempts) throw error;
+      policy.onRetry?.({ operation, classification, attempt, maxAttempts, error });
       await new Promise<void>((resolve) => {
         setTimeout(resolve, Math.floor(Math.random() * 2 ** attempt * baseDelayMs));
       });

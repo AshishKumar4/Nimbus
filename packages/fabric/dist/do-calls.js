@@ -81,8 +81,10 @@ export async function idempotent(operation, stub, call, policy = {}) {
         catch (error) {
             // A stub that threw may be permanently broken; it is never reused.
             disposeRpcResource(minted);
-            if (!isRetryableDoCall(classifyDoCall(error)) || attempt >= maxAttempts)
+            const classification = classifyDoCall(error);
+            if (!isRetryableDoCall(classification) || attempt >= maxAttempts)
                 throw error;
+            policy.onRetry?.({ operation, classification, attempt, maxAttempts, error });
             await new Promise((resolve) => {
                 setTimeout(resolve, Math.floor(Math.random() * 2 ** attempt * baseDelayMs));
             });
