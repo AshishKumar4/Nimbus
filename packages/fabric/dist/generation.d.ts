@@ -52,7 +52,11 @@ export declare function assumeGeneration(ctx: object, value: number): void;
  * the embedder already owns, NEVER the constructor's init gate. Awaiting
  * recovery on the gate path is the trap this helper exists to avoid: the gate
  * blocks every request to the object, and reconciliation wants a filesystem
- * and a terminal that only a later turn has.
+ * and a terminal that only a later turn has. The gate is also a wall, not
+ * just a stall: a `blockConcurrencyWhile` callback still pending at ~30 s
+ * (BLOCK_CONCURRENCY_CANCEL_MS, proven by probe) is cancelled and RESETS the
+ * object with every queued event — so never call {@link runColdStart} from
+ * inside one; the pump and the embedder's own turns are the places it runs.
  */
 export declare function onColdStart(ctx: object, task: () => Promise<unknown>): void;
 /**

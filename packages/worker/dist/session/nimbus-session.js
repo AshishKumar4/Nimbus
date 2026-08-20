@@ -498,8 +498,8 @@ export class NimbusSession extends CloudflareDurableObject {
      * 'log-janitor' (dropOlderThan sweep). The janitor body needs an
      * orphan-pid predicate so we close over the process supervisor here.
      */
-    async alarm() {
-        return _w9DoDispatchAlarm(this, this.ctx, _rpc._logJanitorOrphanCheck(this), () => this._pumpResidentLaunches());
+    async alarm(alarmInfo) {
+        return _w9DoDispatchAlarm(this, this.ctx, _rpc._logJanitorOrphanCheck(this), () => this._pumpResidentLaunches(), alarmInfo);
     }
     /**
      * Grant the fresh turn a suspended launch asked for.

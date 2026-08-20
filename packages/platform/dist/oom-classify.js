@@ -62,6 +62,7 @@
  */
 const OOM_CAUSES = [
     'sqlite_nomem',
+    'sqlite_full',
     'oom',
     'cpu_exceeded',
     'clone_refused',
@@ -96,12 +97,20 @@ export function classifyMessage(msg) {
     // Use lower-case match for forgiveness; SQLITE_NOMEM is canonically
     // upper but stderr can be either.
     const m = msg.toLowerCase();
+    // SQLITE_FULL: the 10 GB storage wall (platform catalog do.storage.bytes,
+    // DO_STORAGE_LIMIT_BYTES). A DIFFERENT condition from NOMEM with the
+    // opposite remedy: reads and DELETEs keep working, so the recovery is to
+    // drain data — where NOMEM asks for a smaller transaction. agent-core maps
+    // this to the same generic code as a malformed statement, which is the
+    // defect this split exists to avoid.
+    if (m.includes('sqlite_full'))
+        return 'sqlite_full';
+    if (m.includes('database or disk is full'))
+        return 'sqlite_full';
     // SQLITE_NOMEM signals
     if (m.includes('sqlite_nomem'))
         return 'sqlite_nomem';
     if (m.includes('out of memory'))
-        return 'sqlite_nomem';
-    if (m.includes('database or disk is full'))
         return 'sqlite_nomem';
     // Structured-clone refusal — a 32 MiB-cap cousin
     if (m.includes('deserialize cloned data'))
@@ -216,6 +225,65 @@ export function isTransientDoReset(input) {
  */
 export function isDoOverloaded(input) {
     return readMessage(input).toLowerCase().includes('durable object is overloaded');
+}
+/** The classes a fresh-stub retry may act on. `overloaded` is deliberately
+ *  outside: the platform's own docs forbid retrying it. */
+export function isRetryableDoCall(input) {
+    return input === 'superseded_isolate'
+        || input === 'connection_lost'
+        || input === 'storage_reset'
+        || input === 'retryable_flag';
+}
+/**
+ * Prose signatures of the transient classes, matched against the rendered
+ * cause chain — a wrapper error (Proteus measured its SqlError doing this)
+ * drops the `.retryable` property, so only the joined prose survives it.
+ *
+ * `storage_reset` carries the live-write wording on purpose. Proteus's
+ * mirror of the SDK matcher excludes it because a storage-budget breach is
+ * reported the same way; Nimbus measured the reset-mid-write case succeed
+ * 12/12 on retry ({@link isTransientDoReset}), and a bounded retry lets the
+ * budget-wall case recur and surface.
+ */
+const DO_CALL_TRANSIENT = [
+    ['superseded_isolate', /reset because its code was updated|this script has been upgraded/i],
+    ['connection_lost', /network connection lost/i],
+    ['storage_reset', /durable object storage caused object to be reset|storage operation exceeded timeout which caused the object to be reset/i],
+];
+/**
+ * Classify one failed Durable Object call. Overloaded is checked first, per
+ * link, because it vetoes everything: an overloaded-and-retryable error is
+ * overloaded. The `.retryable` flag is also read per link — it is a
+ * property, not prose, so the rendered chain cannot carry it. The walk is
+ * cycle-guarded.
+ */
+export function classifyDoCall(input) {
+    if (!(input instanceof Error))
+        return 'permanent';
+    const seen = new Set();
+    const messages = [];
+    let flagged = false;
+    let link = input;
+    while (link !== null && !seen.has(link)) {
+        seen.add(link);
+        const overloaded = ('overloaded' in link && link.overloaded === true)
+            || isDoOverloaded(link.message);
+        if (overloaded)
+            return 'overloaded';
+        if ('retryable' in link && link.retryable === true)
+            flagged = true;
+        messages.push(link.message ?? '');
+        const cause = link.cause;
+        link = cause instanceof Error ? cause : null;
+    }
+    const chain = messages.join('; ');
+    for (const [transient, pattern] of DO_CALL_TRANSIENT) {
+        if (pattern.test(chain))
+            return transient;
+    }
+    if (flagged)
+        return 'retryable_flag';
+    return 'permanent';
 }
 /**
  * One line about a failure, in terms someone can act on.

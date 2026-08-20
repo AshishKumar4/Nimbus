@@ -60,7 +60,7 @@
  * the union narrow and additive — adding a new value is fine, but
  * never re-purpose an existing one.
  */
-declare const OOM_CAUSES: readonly ["sqlite_nomem", "oom", "cpu_exceeded", "clone_refused", "rpc_timeout", "subrequest_cap", "dynamic_worker_cap", "condemnation", "hard_evict", "unknown"];
+declare const OOM_CAUSES: readonly ["sqlite_nomem", "sqlite_full", "oom", "cpu_exceeded", "clone_refused", "rpc_timeout", "subrequest_cap", "dynamic_worker_cap", "condemnation", "hard_evict", "unknown"];
 export type OomCause = typeof OOM_CAUSES[number];
 export declare function isOomCause(input: unknown): input is OomCause;
 /**
@@ -121,6 +121,40 @@ export declare function isTransientDoReset(input: unknown): boolean;
  * backoff than a reset retry uses.
  */
 export declare function isDoOverloaded(input: unknown): boolean;
+/**
+ * How one failed Durable Object call relates to a retry. The taxonomy
+ * Proteus hand-wrote in `cf-backend/src/lib/do-rpc.ts:71-79` because the
+ * Agents SDK does not export its own, plus the `overloaded` class both
+ * consumers need: Cloudflare documents that errors carry `.retryable` and
+ * `.overloaded`, that a retryable error should be retried with backoff on a
+ * FRESH stub, and that an overloaded one must not be retried at all
+ * (developers.cloudflare.com/durable-objects/best-practices/error-handling).
+ */
+export type DoCallClass = 
+/** A deploy replaced the isolate mid-call. */
+'superseded_isolate'
+/** The stub or storage connection dropped. */
+ | 'connection_lost'
+/** Storage reset the object — cold start, live write, or a timeout. */
+ | 'storage_reset'
+/** The runtime flagged the error `retryable` itself. */
+ | 'retryable_flag'
+/** The object shed the call under queue pressure. NEVER retried: retrying
+ *  an overloaded object is what overloaded it. */
+ | 'overloaded'
+/** Everything else — the call ran and the answer is the error. */
+ | 'permanent';
+/** The classes a fresh-stub retry may act on. `overloaded` is deliberately
+ *  outside: the platform's own docs forbid retrying it. */
+export declare function isRetryableDoCall(input: DoCallClass): boolean;
+/**
+ * Classify one failed Durable Object call. Overloaded is checked first, per
+ * link, because it vetoes everything: an overloaded-and-retryable error is
+ * overloaded. The `.retryable` flag is also read per link — it is a
+ * property, not prose, so the rendered chain cannot carry it. The walk is
+ * cycle-guarded.
+ */
+export declare function classifyDoCall(input: unknown): DoCallClass;
 /**
  * One line about a failure, in terms someone can act on.
  *

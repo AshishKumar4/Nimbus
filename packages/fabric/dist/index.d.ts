@@ -8,6 +8,13 @@
  */
 export * from './generation.js';
 export * from './timers.js';
+export * from './outbox.js';
+export * from './journal.js';
+export * from './do-calls.js';
+export * from './facet-pool.js';
+export * from './derived.js';
+export * from './connections.js';
+export * from './sealed.js';
 export * from './bindings.js';
 export * from './composition.js';
 export * from './image-store.js';

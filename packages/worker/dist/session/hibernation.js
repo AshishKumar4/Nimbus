@@ -288,7 +288,7 @@ export function scheduleHibFlush(host, ctx) {
  * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
  * so HibHost doesn't need to import ProcessTable.
  */
-export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunches) {
+export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunches, alarmInfo) {
     return timers(host, ctx).dispatch({
         'w9-flush': () => {
             host.processes.flushLogs();
@@ -329,7 +329,7 @@ export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunche
         catch (e) {
             console.warn('[nimbus/W9] legacy flush threw:', e?.message);
         }
-    });
+    }, alarmInfo);
 }
 /**
  * W9: synchronous flush of the process-log ring on session close.

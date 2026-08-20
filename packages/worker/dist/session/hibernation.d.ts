@@ -130,7 +130,7 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
  * so HibHost doesn't need to import ProcessTable.
  */
-export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanCheck?: (pid: number) => boolean, pumpResidentLaunches?: () => Promise<void>): Promise<void>;
+export declare function dispatchAlarm(host: HibHost, ctx: any, janitorOrphanCheck?: (pid: number) => boolean, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo): Promise<void>;
 /**
  * W9: synchronous flush of the process-log ring on session close.
  * Wraps `processes.flushLogs()` in a try/catch so a flush failure

@@ -124,16 +124,16 @@ export class Timers {
      * that one-time fire means (one dispatch later the map is populated by the
      * next schedule call).
      */
-    dispatch(handlers, onLegacyAlarm) {
+    dispatch(handlers, onLegacyAlarm, alarmInfo) {
         const { host, ctx } = this;
         // Same serialization as schedule: the dispatcher's read→handlers→write
         // cycle must not interleave with an activity-hook schedule.
-        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, handlers, onLegacyAlarm), () => dispatchBody(ctx, handlers, onLegacyAlarm));
+        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo));
         host._timerChain = chained;
         return chained;
     }
 }
-async function dispatchBody(ctx, handlers, onLegacyAlarm) {
+async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY));
@@ -157,7 +157,7 @@ async function dispatchBody(ctx, handlers, onLegacyAlarm) {
             if (!handler)
                 continue;
             try {
-                const result = await handler(now);
+                const result = await handler(now, alarmInfo);
                 if (result && typeof result.rearmAt === 'number') {
                     map[reason] = result.rearmAt;
                 }
