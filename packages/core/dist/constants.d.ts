@@ -5,6 +5,7 @@
  * derived from (tx bounds, the RPC envelope, supervisor budgets) live in
  * `@nimbus-sh/platform/limits.js`.
  */
+export { CHUNK_SIZE, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_HEAP_CEILING_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, SUPERVISOR_READ_RESERVE_BYTES, } from '@nimbus-sh/platform/limits.js';
 export declare const NIMBUS_VERSION = "2.0.0";
 export declare const NODE_VERSION = "v22.19.0";
 export declare const NODE_VERSIONS: {

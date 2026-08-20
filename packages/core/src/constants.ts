@@ -8,6 +8,25 @@
 
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 
+// Published-surface forwarding: @nimbus-sh/core@0.5.0 exports these from
+// this module and real consumers import them here (Proteus merge-back.ts
+// pulls CHUNK_SIZE and the MAX_TX_* set). The platform split moved the
+// definitions to @nimbus-sh/platform/limits.js, which stays the single
+// source of truth; core's own modules import platform directly.
+export {
+  CHUNK_SIZE,
+  MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
+  MAX_RPC_SAFE_PAYLOAD_BYTES,
+  MAX_TX_BLOB_BYTES,
+  MAX_TX_LOGICAL_ROWS,
+  MAX_TX_SQL_EXECS,
+  PRE_BUNDLE_CONCURRENCY,
+  PRE_BUNDLE_SLICE_CAP_BYTES,
+  SUPERVISOR_HEAP_CEILING_BYTES,
+  SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
+  SUPERVISOR_READ_RESERVE_BYTES,
+} from '@nimbus-sh/platform/limits.js';
+
 // ── Versions ────────────────────────────────────────────────────────────
 export const NIMBUS_VERSION = '2.0.0';
 //

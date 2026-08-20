@@ -112,7 +112,14 @@ function installPipelineDiagEnabled(): boolean {
 // ── Types ───────────────────────────────────────────────────────────────────
 // VfsInodeKind and the writeBatch payload types (BatchInodeEntry,
 // BatchChunkEntry, BatchWritePayload) live with the wire format that encodes
-// them: @nimbus-sh/platform/w7-frame.js.
+// them: @nimbus-sh/platform/w7-frame.js. Forwarded here because core@0.5.0
+// published them from this module; platform stays the definition.
+export type {
+  BatchChunkEntry,
+  BatchInodeEntry,
+  BatchWritePayload,
+  VfsInodeKind,
+} from '@nimbus-sh/platform/w7-frame.js';
 
 export interface ExclusiveMutationLease {
   readonly root: string;

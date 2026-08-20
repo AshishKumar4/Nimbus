@@ -42,6 +42,7 @@
 import { VfsEventEmitter } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsCred, type VfsInvalidatedPath, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind, } from '@nimbus-sh/platform/w7-frame.js';
 export interface ExclusiveMutationLease {
     readonly root: string;
     readonly owner: string;
@@ -849,5 +850,4 @@ export declare class SqliteVFSProvider {
     chmod(sub: string, mode: number): void;
     chown(sub: string, uid: number | null, gid: number | null): void;
 }
-export {};
 //# sourceMappingURL=sqlite-vfs.d.ts.map
