@@ -89,7 +89,7 @@ export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * so a worker bundled before core has compiled resolves against a dist that
  * does not exist yet — or worse, an old one.
  */
-export const BUILT_PACKAGES = ['config', 'platform', 'core', 'fabric', 'sdk', 'worker'];
+export const BUILT_PACKAGES = ['config', 'platform', 'core', 'fabric', 'loom', 'sdk', 'worker'];
 
 /**
  * The build, in the only order that reaches a fixpoint.
