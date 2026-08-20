@@ -19,7 +19,9 @@
  *     Everything the floor defers — generation adoption, cold-start
  *     reconciliation, fenced-work recovery — runs on the first turn the
  *     actor already owns: every entry point passes {@link Actor.#enterTurn}
- *     after initialization and before embedder code.
+ *     after initialization and before embedder code. One platform
+ *     exception: partyserver's fetch asks `getConnectionTags` during the
+ *     accept, before the connect turn's floor entry — keep that hook pure.
  *   - HIBERNATION CONFIGURED, NOT JUST ENABLED. With
  *     `static options = { hibernate: true }`, the constructor also applies
  *     fabric's ws-hibernation config: ping/pong auto-response (a matched
@@ -173,6 +175,7 @@ export class Actor<
   readonly #journals = new Map<string, Journal<never>>();
   #processes: ProcessFabric | null = null;
   #facets: FacetPool | null = null;
+  readonly #hibernate: boolean;
   #state: State | undefined;
   #stateLoaded = false;
   #stateSchemaReady = false;
@@ -184,7 +187,8 @@ export class Actor<
     if (fabric) composeFabric(fabric);
     const ctxExports = (ctx as { exports?: CtxExports }).exports;
     if (ctxExports) adoptCtxExports(ctxExports);
-    if (resolveOption(cls, 'hibernate') === true) {
+    this.#hibernate = resolveOption(cls, 'hibernate') === true;
+    if (this.#hibernate) {
       this.hibernation = configureWsHibernation(ctx);
     }
     this.#schedules = new ScheduleStore(ctx as unknown as ScheduleContext);
@@ -260,14 +264,18 @@ export class Actor<
   // ── One alarm, many reasons ────────────────────────────────────────────
 
   /**
-   * partyserver initialization and `onAlarm` first, then fabric's
-   * dispatcher runs every due reason with the platform's `alarmInfo`.
-   * Handlers re-arm through their return value; the map's earliest
-   * remaining deadline re-arms the platform alarm.
+   * partyserver initialization, then the floor, then `onAlarm`, then
+   * fabric's dispatcher runs every due reason with the platform's
+   * `alarmInfo`. Handlers re-arm through their return value; the map's
+   * earliest remaining deadline re-arms the platform alarm.
+   * `__unsafe_ensureInitialized` is partyserver's documented escape hatch
+   * for frameworks; calling it here (instead of `super.alarm()`) is what
+   * lets `onAlarm` run AFTER the floor, like every other embedder hook.
    */
   override async alarm(alarmInfo?: TimerAlarmInfo): Promise<void> {
-    await super.alarm();
+    await this.__unsafe_ensureInitialized();
     await this.#enterTurn();
+    await this.onAlarm();
     await this.timers.dispatch(this.#timerHandlers, undefined, alarmInfo);
   }
 
@@ -400,10 +408,14 @@ export class Actor<
 
   #setStateInternal(state: State, source: Connection | 'server'): void {
     this.validateStateChange(state, source);
+    const json = JSON.stringify(state);
+    if (json === undefined) {
+      throw new Error('loom: state must be JSON-serializable, and undefined is not a state');
+    }
     this.#ensureStateSchema();
     this.#sql.exec(
       `INSERT OR REPLACE INTO loom_state (id, state, updated_at) VALUES (1, ?, ?)`,
-      JSON.stringify(state),
+      json,
       Date.now(),
     );
     this.#state = state;
@@ -412,13 +424,19 @@ export class Actor<
       JSON.stringify({ type: STATE_FRAME_TYPE, state }),
       source === 'server' ? [] : [source.id],
     );
-    const hook = this.onStateChanged(state, source);
-    if (hook && typeof (hook as Promise<void>).then === 'function') {
-      this.ctx.waitUntil(
-        (hook as Promise<void>).catch((e) => {
-          console.error(`[loom] ${this.#className()} onStateChanged failed:`, e);
-        }),
-      );
+    // The change already persisted and broadcast, so an onStateChanged
+    // failure — sync or async — is the hook's problem, never a refusal.
+    try {
+      const hook = this.onStateChanged(state, source);
+      if (hook && typeof (hook as Promise<void>).then === 'function') {
+        this.ctx.waitUntil(
+          (hook as Promise<void>).catch((e) => {
+            console.error(`[loom] ${this.#className()} onStateChanged failed:`, e);
+          }),
+        );
+      }
+    } catch (e) {
+      console.error(`[loom] ${this.#className()} onStateChanged failed:`, e);
     }
   }
 
@@ -491,6 +509,12 @@ export class Actor<
    * The named durable retry outbox, its drain registered as a timer reason
    * on first call. One instance per name; later calls return the first and
    * ignore their policy argument.
+   *
+   * Create outboxes in the CONSTRUCTOR. A queued row survives an instance
+   * reset, but the dispatcher drops a fired reason no handler answers
+   * (rollback forward-compat) — an outbox first created inside a request
+   * path is not registered when the next incarnation's alarm fires, and
+   * its queued rows sit until some later `queue()` happens to re-arm.
    */
   outbox<M>(name: string, policy: OutboxPolicy<M>): Outbox<M> {
     const existing = this.#outboxes.get(name);
@@ -547,8 +571,18 @@ export class Actor<
    * `getConnectionTags`); this reads, writes, and addresses by tag. To
    * replace-on-reconnect, close the other holders of the identity tag in
    * `onConnect`.
+   *
+   * Hibernation-only: the state rides the hibernatable socket attachment,
+   * and partyserver's non-hibernating connections neither wrap nor persist
+   * it — so a non-hibernating actor is refused here, not corrupted later.
    */
   connections<T>(schema: z.ZodType<T>): TypedConnections<T> {
+    if (!this.#hibernate) {
+      throw new Error(
+        `loom: ${this.#className()}.connections() needs hibernation — the typed state rides the `
+          + `hibernatable socket attachment; set static options = { hibernate: true }`,
+      );
+    }
     const adapter: ConnectionsContext = {
       acceptWebSocket: () => {
         throw new Error(

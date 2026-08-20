@@ -110,12 +110,18 @@ validated, hibernation-durable attachment state over partyserver's
 `Connection` surface: `read` validates instead of casting (an attachment
 written by a previous deploy is untrusted input), `write` validates on the
 way in, tags address connections. partyserver owns the accept; tag
-connections in `getConnectionTags`.
+connections in `getConnectionTags`. Hibernating actors only — the state
+rides the hibernatable socket attachment, and a non-hibernating actor is
+refused with an error rather than corrupted later.
 
 **Durable messaging.** `this.outbox(name, policy)` is a write-ahead retry
 outbox (dispositions, per-key ordering, dead letters), its drain registered
-as a timer reason the moment you create it. `this.journal(name)` is an
-append-only event log with dedupe and self-expiring delivery leases.
+as a timer reason the moment you create it. Create outboxes in the
+constructor: a queued row survives an instance reset, but the alarm
+dispatcher drops a fired reason no handler answers, so an outbox first
+created inside a request path is unregistered until that path runs again.
+`this.journal(name)` is an append-only event log with dedupe and
+self-expiring delivery leases.
 
 **Processes and facets.** `this.facets` leases DO facets so reclaiming
 storage is the default and leaking it takes an explicit `detach()`.

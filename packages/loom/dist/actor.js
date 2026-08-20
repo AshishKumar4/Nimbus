@@ -19,7 +19,9 @@
  *     Everything the floor defers — generation adoption, cold-start
  *     reconciliation, fenced-work recovery — runs on the first turn the
  *     actor already owns: every entry point passes {@link Actor.#enterTurn}
- *     after initialization and before embedder code.
+ *     after initialization and before embedder code. One platform
+ *     exception: partyserver's fetch asks `getConnectionTags` during the
+ *     accept, before the connect turn's floor entry — keep that hook pure.
  *   - HIBERNATION CONFIGURED, NOT JUST ENABLED. With
  *     `static options = { hibernate: true }`, the constructor also applies
  *     fabric's ws-hibernation config: ping/pong auto-response (a matched
@@ -78,6 +80,7 @@ export class Actor extends Server {
     #journals = new Map();
     #processes = null;
     #facets = null;
+    #hibernate;
     #state;
     #stateLoaded = false;
     #stateSchemaReady = false;
@@ -90,7 +93,8 @@ export class Actor extends Server {
         const ctxExports = ctx.exports;
         if (ctxExports)
             adoptCtxExports(ctxExports);
-        if (resolveOption(cls, 'hibernate') === true) {
+        this.#hibernate = resolveOption(cls, 'hibernate') === true;
+        if (this.#hibernate) {
             this.hibernation = configureWsHibernation(ctx);
         }
         this.#schedules = new ScheduleStore(ctx);
@@ -162,14 +166,18 @@ export class Actor extends Server {
     }
     // ── One alarm, many reasons ────────────────────────────────────────────
     /**
-     * partyserver initialization and `onAlarm` first, then fabric's
-     * dispatcher runs every due reason with the platform's `alarmInfo`.
-     * Handlers re-arm through their return value; the map's earliest
-     * remaining deadline re-arms the platform alarm.
+     * partyserver initialization, then the floor, then `onAlarm`, then
+     * fabric's dispatcher runs every due reason with the platform's
+     * `alarmInfo`. Handlers re-arm through their return value; the map's
+     * earliest remaining deadline re-arms the platform alarm.
+     * `__unsafe_ensureInitialized` is partyserver's documented escape hatch
+     * for frameworks; calling it here (instead of `super.alarm()`) is what
+     * lets `onAlarm` run AFTER the floor, like every other embedder hook.
      */
     async alarm(alarmInfo) {
-        await super.alarm();
+        await this.__unsafe_ensureInitialized();
         await this.#enterTurn();
+        await this.onAlarm();
         await this.timers.dispatch(this.#timerHandlers, undefined, alarmInfo);
     }
     /** partyserver logs "implement onAlarm" per fire; an empty hook is the default here. */
@@ -270,16 +278,27 @@ export class Actor extends Server {
     onStateChanged(_state, _source) { }
     #setStateInternal(state, source) {
         this.validateStateChange(state, source);
+        const json = JSON.stringify(state);
+        if (json === undefined) {
+            throw new Error('loom: state must be JSON-serializable, and undefined is not a state');
+        }
         this.#ensureStateSchema();
-        this.#sql.exec(`INSERT OR REPLACE INTO loom_state (id, state, updated_at) VALUES (1, ?, ?)`, JSON.stringify(state), Date.now());
+        this.#sql.exec(`INSERT OR REPLACE INTO loom_state (id, state, updated_at) VALUES (1, ?, ?)`, json, Date.now());
         this.#state = state;
         this.#stateLoaded = true;
         this.broadcast(JSON.stringify({ type: STATE_FRAME_TYPE, state }), source === 'server' ? [] : [source.id]);
-        const hook = this.onStateChanged(state, source);
-        if (hook && typeof hook.then === 'function') {
-            this.ctx.waitUntil(hook.catch((e) => {
-                console.error(`[loom] ${this.#className()} onStateChanged failed:`, e);
-            }));
+        // The change already persisted and broadcast, so an onStateChanged
+        // failure — sync or async — is the hook's problem, never a refusal.
+        try {
+            const hook = this.onStateChanged(state, source);
+            if (hook && typeof hook.then === 'function') {
+                this.ctx.waitUntil(hook.catch((e) => {
+                    console.error(`[loom] ${this.#className()} onStateChanged failed:`, e);
+                }));
+            }
+        }
+        catch (e) {
+            console.error(`[loom] ${this.#className()} onStateChanged failed:`, e);
         }
     }
     #sendStateOnConnect(connection) {
@@ -350,6 +369,12 @@ export class Actor extends Server {
      * The named durable retry outbox, its drain registered as a timer reason
      * on first call. One instance per name; later calls return the first and
      * ignore their policy argument.
+     *
+     * Create outboxes in the CONSTRUCTOR. A queued row survives an instance
+     * reset, but the dispatcher drops a fired reason no handler answers
+     * (rollback forward-compat) — an outbox first created inside a request
+     * path is not registered when the next incarnation's alarm fires, and
+     * its queued rows sit until some later `queue()` happens to re-arm.
      */
     outbox(name, policy) {
         const existing = this.#outboxes.get(name);
@@ -399,8 +424,16 @@ export class Actor extends Server {
      * `getConnectionTags`); this reads, writes, and addresses by tag. To
      * replace-on-reconnect, close the other holders of the identity tag in
      * `onConnect`.
+     *
+     * Hibernation-only: the state rides the hibernatable socket attachment,
+     * and partyserver's non-hibernating connections neither wrap nor persist
+     * it — so a non-hibernating actor is refused here, not corrupted later.
      */
     connections(schema) {
+        if (!this.#hibernate) {
+            throw new Error(`loom: ${this.#className()}.connections() needs hibernation — the typed state rides the `
+                + `hibernatable socket attachment; set static options = { hibernate: true }`);
+        }
         const adapter = {
             acceptWebSocket: () => {
                 throw new Error('loom: partyserver owns the accept — tag connections via getConnectionTags() and write state with write()');

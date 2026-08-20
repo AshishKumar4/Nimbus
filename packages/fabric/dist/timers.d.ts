@@ -54,19 +54,6 @@ export declare const TIMER_REASONS_KEY = "w1_next_alarm_reasons";
  */
 export interface TimerHost {
     _timerChain?: Promise<unknown>;
-    /**
-     * Set by the dispatcher while it runs this host's handlers. A schedule
-     * request made during that window lands here instead of the chain — a
-     * handler that AWAITED a chained schedule would be waiting on an entry
-     * queued behind the dispatch it is running inside, which is a deadlock.
-     * `Outbox.queue` awaits `timers.schedule`, so any handler that queues
-     * into an outbox reaches this. The dispatcher folds the collected arms
-     * into the reason map before its own re-arm.
-     */
-    _timerDispatchArms?: Array<{
-        reason: string;
-        whenMs: number;
-    }> | null;
 }
 /**
  * What one timer handler may return: nothing, or a deadline this reason

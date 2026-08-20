@@ -131,13 +131,17 @@ export declare class ScheduleStore {
      * Fire every due schedule against the target, in deadline order.
      *
      * Each callback is `target[callback](payload, invocation)`, awaited in
-     * place. Success advances the row: a cron recomputes from its expression,
-     * an interval re-arms `intervalSeconds` from this dispatch, a one-shot
-     * row is deleted. Failure spends one attempt of the row's retry policy:
-     * with budget left, the row's deadline moves to the backed-off time and
-     * the row survives; with the budget spent — or when the callback is not a
-     * method on the target, which no retry can fix — `onError` hears about it
-     * and the row advances as if it had run.
+     * place. The due set is snapshotted up front, and every row is re-read
+     * before it fires — a callback that cancels or reschedules a SIBLING due
+     * row must win over the snapshot, or `cancel()`'s true would be a lie.
+     * Success advances the row: a cron recomputes from its expression, an
+     * interval re-arms `intervalSeconds` from this dispatch, a one-shot row
+     * is deleted. Failure spends one attempt of the row's retry policy: with
+     * budget left, the row's deadline moves to the backed-off time and the
+     * row survives; with the budget spent — or on a failure no retry can fix
+     * (the callback is not a method on the target; the stored payload does
+     * not parse) — `onError` hears about it and the row advances as if it
+     * had run.
      */
     dispatchDue(target: object, now: number, alarmInfo?: TimerAlarmInfo, onError?: (schedule: Schedule, error: unknown) => void): Promise<ScheduleDispatchResult>;
     /** Move a row past a completed (or abandoned) fire. */

@@ -19,7 +19,9 @@
  *     Everything the floor defers — generation adoption, cold-start
  *     reconciliation, fenced-work recovery — runs on the first turn the
  *     actor already owns: every entry point passes {@link Actor.#enterTurn}
- *     after initialization and before embedder code.
+ *     after initialization and before embedder code. One platform
+ *     exception: partyserver's fetch asks `getConnectionTags` during the
+ *     accept, before the connect turn's floor entry — keep that hook pure.
  *   - HIBERNATION CONFIGURED, NOT JUST ENABLED. With
  *     `static options = { hibernate: true }`, the constructor also applies
  *     fabric's ws-hibernation config: ping/pong auto-response (a matched
@@ -106,10 +108,13 @@ export declare class Actor<Env extends Cloudflare.Env = Cloudflare.Env, State = 
      */
     setName(name: string, props?: Props): Promise<void>;
     /**
-     * partyserver initialization and `onAlarm` first, then fabric's
-     * dispatcher runs every due reason with the platform's `alarmInfo`.
-     * Handlers re-arm through their return value; the map's earliest
-     * remaining deadline re-arms the platform alarm.
+     * partyserver initialization, then the floor, then `onAlarm`, then
+     * fabric's dispatcher runs every due reason with the platform's
+     * `alarmInfo`. Handlers re-arm through their return value; the map's
+     * earliest remaining deadline re-arms the platform alarm.
+     * `__unsafe_ensureInitialized` is partyserver's documented escape hatch
+     * for frameworks; calling it here (instead of `super.alarm()`) is what
+     * lets `onAlarm` run AFTER the floor, like every other embedder hook.
      */
     alarm(alarmInfo?: TimerAlarmInfo): Promise<void>;
     /** partyserver logs "implement onAlarm" per fire; an empty hook is the default here. */
@@ -165,6 +170,12 @@ export declare class Actor<Env extends Cloudflare.Env = Cloudflare.Env, State = 
      * The named durable retry outbox, its drain registered as a timer reason
      * on first call. One instance per name; later calls return the first and
      * ignore their policy argument.
+     *
+     * Create outboxes in the CONSTRUCTOR. A queued row survives an instance
+     * reset, but the dispatcher drops a fired reason no handler answers
+     * (rollback forward-compat) — an outbox first created inside a request
+     * path is not registered when the next incarnation's alarm fires, and
+     * its queued rows sit until some later `queue()` happens to re-arm.
      */
     outbox<M>(name: string, policy: OutboxPolicy<M>): Outbox<M>;
     /** The named append-only event journal. One instance per name. */
@@ -189,6 +200,10 @@ export declare class Actor<Env extends Cloudflare.Env = Cloudflare.Env, State = 
      * `getConnectionTags`); this reads, writes, and addresses by tag. To
      * replace-on-reconnect, close the other holders of the identity tag in
      * `onConnect`.
+     *
+     * Hibernation-only: the state rides the hibernatable socket attachment,
+     * and partyserver's non-hibernating connections neither wrap nor persist
+     * it — so a non-hibernating actor is refused here, not corrupted later.
      */
     connections<T>(schema: z.ZodType<T>): TypedConnections<T>;
     /**

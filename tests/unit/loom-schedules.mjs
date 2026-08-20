@@ -217,7 +217,57 @@ const T0 = 1_700_000_000_000; // a fixed epoch-ms origin so cron math is exact
   assert.equal(second.byId(s.id), undefined);
 }
 
-// ── 9. An undefined payload arrives as undefined ────────────────────────────
+// ── 9. A callback cancelling or rescheduling a SIBLING due row wins ─────────
+
+{
+  const store = new ScheduleStore(createCtx());
+  const fired = [];
+  let victimId;
+  let movedId;
+  const target = {
+    first() {
+      fired.push('first');
+      assert.equal(store.cancel(victimId), true);
+      // Move the third sibling out of this dispatch entirely.
+      const moved = store.byId(movedId);
+      store.cancel(movedId);
+      movedId = store.create(3600, moved.callback, moved.payload, { now: T0 }).id;
+    },
+    victim() { fired.push('victim'); },
+    moved() { fired.push('moved'); },
+  };
+  store.create(0, 'first', undefined, { now: T0 });
+  victimId = store.create(1, 'victim', undefined, { now: T0 }).id;
+  movedId = store.create(2, 'moved', undefined, { now: T0 }).id;
+
+  const result = await store.dispatchDue(target, T0 + 5_000);
+  // Neither the cancelled nor the rescheduled sibling fired, and `ran`
+  // counts what actually ran.
+  assert.deepEqual(fired, ['first']);
+  assert.equal(result.ran, 1);
+  assert.equal(store.byId(victimId), undefined);
+  assert.equal(store.byId(movedId).time, T0 + 3_600_000);
+}
+
+// ── 10. A payload that no longer parses is poison, not a retry burn ────────
+
+{
+  const ctx = createCtx();
+  const store = new ScheduleStore(ctx);
+  const s = store.create(0, 'job', { fine: true }, { now: T0 });
+  ctx.storage.sql.exec(`UPDATE loom_schedules SET payload = ? WHERE id = ?`, '{corrupt', s.id);
+
+  const failures = [];
+  let invoked = 0;
+  await store.dispatchDue({ job() { invoked++; } }, T0, undefined, (_sched, e) => failures.push(String(e)));
+  // Never invoked, never retried: the row is gone after ONE dispatch.
+  assert.equal(invoked, 0);
+  assert.equal(failures.length, 1);
+  assert.equal(store.byId(s.id), undefined);
+  assert.equal(store.nextDue(), null);
+}
+
+// ── 11. An undefined payload arrives as undefined ───────────────────────────
 
 {
   const store = new ScheduleStore(createCtx());

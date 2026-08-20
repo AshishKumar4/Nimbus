@@ -12,6 +12,7 @@
  */
 
 import { isRpcResponseFrame, RPC_FRAME_TYPE } from './protocol.js';
+import type { StreamingResponse } from './rpc.js';
 
 /** The connection as the client drives it. A browser WebSocket satisfies it. */
 export interface ActorSocket {
@@ -34,13 +35,22 @@ export interface ActorCallOptions {
  * The target's async methods, callable as promises. Which of them the actor
  * actually answers is decided server-side by the `callable()` mark; an
  * unmarked method rejects with "is not callable".
+ *
+ * A streaming callable's `StreamingResponse` parameter is server-side —
+ * the caller passes the remaining arguments and the promise resolves with
+ * the final chunk, so the stub type strips that first parameter. The
+ * detection is structural: a method whose first parameter merely ACCEPTS a
+ * StreamingResponse (`unknown`, a broad object) is typed as streaming too.
  */
 export type ActorStub<T> = {
   [K in keyof T as T[K] extends (...args: never[]) => unknown ? K : never]: T[K] extends (
-    ...args: infer Args
-  ) => infer Return
-    ? (...args: Args) => Promise<Awaited<Return>>
-    : never;
+    stream: StreamingResponse,
+    ...args: infer StreamArgs
+  ) => unknown
+    ? (...args: StreamArgs) => Promise<unknown>
+    : T[K] extends (...args: infer Args) => infer Return
+      ? (...args: Args) => Promise<Awaited<Return>>
+      : never;
 };
 
 export interface ActorClient {
@@ -125,6 +135,10 @@ export function actorClient(socket: ActorSocket, defaults: ActorCallOptions = {}
       return new Proxy({} as ActorStub<T>, {
         get(_target, name) {
           if (typeof name !== 'string') return undefined;
+          // `await stub` (or any promise resolution of the stub itself)
+          // probes `.then`; answering with a caller would fire an RPC
+          // literally named "then".
+          if (name === 'then') return undefined;
           return (...args: unknown[]) => call(name, args, options);
         },
       });

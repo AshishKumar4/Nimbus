@@ -9,6 +9,7 @@
  * `timers(host, ctx).dispatch` runs the embedder-supplied handler for every
  * reason whose deadline has passed.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 /**
  * Multi-reason timer coordination map.
@@ -33,6 +34,22 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
  * key is a migration, and orphaned rows are the least of what it breaks.
  */
 export const TIMER_REASONS_KEY = 'w1_next_alarm_reasons';
+/**
+ * The async context of a running dispatch's handlers. A schedule request
+ * made inside it lands in the dispatch's arm collection instead of the
+ * chain — a handler that AWAITED a chained schedule would be waiting on an
+ * entry queued behind the dispatch it is running inside, which is a
+ * deadlock. `Outbox.queue` awaits `timers.schedule`, so any handler that
+ * queues into an outbox reaches this. The dispatcher folds the collected
+ * arms into the reason map before its own re-arm.
+ *
+ * AsyncLocalStorage, not a host field, so the redirect is scoped to the
+ * dispatch's OWN async context: a concurrent turn that schedules while a
+ * handler awaits external IO takes the normal chain path and keeps its own
+ * turn-gated persistence. Requires the `nodejs_compat` (or `nodejs_als`)
+ * compatibility flag on workerd.
+ */
+const dispatchArms = new AsyncLocalStorage();
 /**
  * One actor's timers: the reason map over its ONE platform alarm.
  *
@@ -74,12 +91,16 @@ export class Timers {
      */
     schedule(reason, whenMs) {
         const { host, ctx } = this;
-        // While this host's dispatch runs, hand the arm to the dispatcher
-        // instead of the chain (see TimerHost._timerDispatchArms): the fold
-        // keeps EDF semantics, and the dispatch's own write and re-arm carry it.
-        const dispatchArms = host._timerDispatchArms;
-        if (dispatchArms) {
-            dispatchArms.push({ reason, whenMs });
+        // From inside a dispatch handler, hand the arm to the dispatcher
+        // instead of the chain (see dispatchArms): the fold keeps EDF
+        // semantics, and the dispatch's own write and re-arm carry it. The
+        // setAlarm gate matches the chain path's, so both paths refuse alike
+        // on a runtime without alarms.
+        const arms = dispatchArms.getStore();
+        if (arms) {
+            if (typeof ctx?.storage?.setAlarm !== 'function')
+                return Promise.resolve(false);
+            arms.push({ reason, whenMs });
             return Promise.resolve(true);
         }
         // Serialize every read-modify-write of the reasons map through one
@@ -136,24 +157,23 @@ export class Timers {
         const { host, ctx } = this;
         // Same serialization as schedule: the dispatcher's read→handlers→write
         // cycle must not interleave with an activity-hook schedule.
-        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo));
+        const chained = (host._timerChain ?? Promise.resolve()).then(() => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo), () => dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo));
         host._timerChain = chained;
         return chained;
     }
 }
-async function dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo) {
-    // Collect schedule requests made while handlers run (see
-    // TimerHost._timerDispatchArms) and fold them into the map below, so an
-    // in-dispatch arm neither deadlocks on the chain nor races the write.
+async function dispatchBody(ctx, handlers, onLegacyAlarm, alarmInfo) {
+    // Collect schedule requests made inside handler context (see
+    // dispatchArms) and fold them into the map below, so an in-dispatch arm
+    // neither deadlocks on the chain nor races the write.
     const arms = [];
-    host._timerDispatchArms = arms;
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY));
         const map = { ...(existing || {}) };
         const hadMap = Object.keys(map).length > 0;
         if (!hadMap) {
-            onLegacyAlarm?.();
+            dispatchArms.run(arms, () => onLegacyAlarm?.());
         }
         else {
             // Snapshot fireable reasons BEFORE running any of them, so a
@@ -171,7 +191,7 @@ async function dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo) {
                 if (!handler)
                     continue;
                 try {
-                    const result = await handler(now, alarmInfo);
+                    const result = await dispatchArms.run(arms, () => handler(now, alarmInfo));
                     if (result && typeof result.rearmAt === 'number') {
                         map[reason] = result.rearmAt;
                     }
@@ -207,8 +227,5 @@ async function dispatchBody(host, ctx, handlers, onLegacyAlarm, alarmInfo) {
     }
     catch (e) {
         console.warn('[nimbus/W1] timers.dispatch threw:', errorText(e));
-    }
-    finally {
-        host._timerDispatchArms = null;
     }
 }

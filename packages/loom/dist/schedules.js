@@ -173,35 +173,52 @@ export class ScheduleStore {
      * Fire every due schedule against the target, in deadline order.
      *
      * Each callback is `target[callback](payload, invocation)`, awaited in
-     * place. Success advances the row: a cron recomputes from its expression,
-     * an interval re-arms `intervalSeconds` from this dispatch, a one-shot
-     * row is deleted. Failure spends one attempt of the row's retry policy:
-     * with budget left, the row's deadline moves to the backed-off time and
-     * the row survives; with the budget spent — or when the callback is not a
-     * method on the target, which no retry can fix — `onError` hears about it
-     * and the row advances as if it had run.
+     * place. The due set is snapshotted up front, and every row is re-read
+     * before it fires — a callback that cancels or reschedules a SIBLING due
+     * row must win over the snapshot, or `cancel()`'s true would be a lie.
+     * Success advances the row: a cron recomputes from its expression, an
+     * interval re-arms `intervalSeconds` from this dispatch, a one-shot row
+     * is deleted. Failure spends one attempt of the row's retry policy: with
+     * budget left, the row's deadline moves to the backed-off time and the
+     * row survives; with the budget spent — or on a failure no retry can fix
+     * (the callback is not a method on the target; the stored payload does
+     * not parse) — `onError` hears about it and the row advances as if it
+     * had run.
      */
     async dispatchDue(target, now, alarmInfo, onError) {
         this.ensureSchema();
-        const due = [...this.ctx.storage.sql.exec(`SELECT * FROM loom_schedules WHERE time <= ? ORDER BY time, id`, now)].map((row) => RowSchema.parse(row));
-        for (const row of due) {
+        const sql = this.ctx.storage.sql;
+        const due = [...sql.exec(`SELECT id FROM loom_schedules WHERE time <= ? ORDER BY time, id`, now)];
+        let ran = 0;
+        for (const { id } of due) {
+            // Re-read: an earlier callback in this dispatch may have cancelled
+            // this row (gone) or rescheduled it (deadline moved past `now`).
+            const current = [...sql.exec(`SELECT * FROM loom_schedules WHERE id = ?`, id)];
+            if (current.length === 0)
+                continue;
+            const row = RowSchema.parse(current[0]);
+            if (row.time > now)
+                continue;
+            ran++;
             const schedule = toSchedule(row);
             const attempt = row.attempt + 1;
             const method = target[row.callback];
             const callable = typeof method === 'function';
+            let retryable = false;
             try {
                 if (!callable)
                     throw new Error(`loom: schedule callback 'this.${row.callback}' is not a method on this actor`);
-                const payload = row.payload === null ? undefined : JSON.parse(row.payload);
+                const payload = parsePayload(row);
+                retryable = true;
                 const invocation = { schedule, attempt, alarmInfo };
                 await method.call(target, payload, invocation);
                 this.advance(row, now);
             }
             catch (error) {
                 const policy = { ...SCHEDULE_RETRY_DEFAULTS, ...(schedule.retry ?? {}) };
-                if (callable && attempt < policy.maxAttempts) {
+                if (retryable && attempt < policy.maxAttempts) {
                     const delay = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1));
-                    this.ctx.storage.sql.exec(`UPDATE loom_schedules SET attempt = ?, time = ? WHERE id = ?`, attempt, now + delay, row.id);
+                    sql.exec(`UPDATE loom_schedules SET attempt = ?, time = ? WHERE id = ?`, attempt, now + delay, row.id);
                 }
                 else {
                     onError?.(schedule, error);
@@ -209,7 +226,7 @@ export class ScheduleStore {
                 }
             }
         }
-        return { ran: due.length, rearmAt: this.nextDue() };
+        return { ran, rearmAt: this.nextDue() };
     }
     /** Move a row past a completed (or abandoned) fire. */
     advance(row, now) {
@@ -226,8 +243,24 @@ export class ScheduleStore {
         }
     }
 }
+/**
+ * The stored payload. Throws for a row whose payload no longer parses —
+ * that row is poison (only a corrupt write can produce it), and dispatch
+ * refuses it as non-retryable instead of burning the retry budget on
+ * identical failures.
+ */
+function parsePayload(row) {
+    return row.payload === null ? undefined : JSON.parse(row.payload);
+}
 function toSchedule(row) {
-    const payload = (row.payload === null ? undefined : JSON.parse(row.payload));
+    let payload;
+    try {
+        payload = parsePayload(row);
+    }
+    catch {
+        // Poison-parse row: reads stay usable; dispatch names the failure.
+        payload = undefined;
+    }
     const retry = row.retry === null ? undefined : JSON.parse(row.retry);
     const base = { id: row.id, callback: row.callback, payload, ...(retry !== undefined ? { retry } : {}) };
     switch (row.type) {

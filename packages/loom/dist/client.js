@@ -79,6 +79,11 @@ export function actorClient(socket, defaults = {}) {
                 get(_target, name) {
                     if (typeof name !== 'string')
                         return undefined;
+                    // `await stub` (or any promise resolution of the stub itself)
+                    // probes `.then`; answering with a caller would fire an RPC
+                    // literally named "then".
+                    if (name === 'then')
+                        return undefined;
                     return (...args) => call(name, args, options);
                 },
             });

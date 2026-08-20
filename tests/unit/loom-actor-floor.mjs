@@ -313,13 +313,32 @@ const ALARM_INFO = { isRetry: false, retryCount: 0, scheduledTime: 0 };
   delete globalThis.WebSocketRequestResponsePair;
 }
 
-// ── 10. processes demands a declared substrate; facets lease ────────────────
+// ── 10. onAlarm is embedder code: it runs AFTER the floor ───────────────────
+
+{
+  const order = [];
+  class Alarmed extends Actor {
+    constructor(ctx, env) {
+      super(ctx, env);
+      this.deferToColdStart(async () => { order.push('cold-start'); });
+    }
+    onAlarm() { order.push(`onAlarm:gen${this.generation}`); }
+  }
+  const ctx = createActorCtx();
+  const actor = new Alarmed(ctx, {});
+  await actor.alarm(ALARM_INFO);
+  assert.deepEqual(order, ['cold-start', 'onAlarm:gen1']);
+}
+
+// ── 11. processes demands a declared substrate; facets lease ────────────────
 
 {
   const ctx = createActorCtx();
   class Bare extends Actor {}
   const actor = new Bare(ctx, {});
   assert.throws(() => actor.processes, /override processHost\(\)/);
+  // Typed connections need the hibernatable attachment; refuse, not corrupt.
+  assert.throws(() => actor.connections(z.object({})), /needs hibernation/);
 
   // A leased facet retires on dispose: evicted, storage wiped.
   const calls = [];

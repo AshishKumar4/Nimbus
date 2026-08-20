@@ -151,7 +151,7 @@ class Counter extends Actor {
   assert.deepEqual(actor.passedThrough, ['plain text', '{"type":"custom","state":1}', '{not json', binary]);
 }
 
-// ── 8. An async onStateChanged failure is contained, not a turn failure ────
+// ── 8. An onStateChanged failure is contained, sync or async ────────────────
 
 {
   const ctx = createActorCtx();
@@ -163,6 +163,34 @@ class Counter extends Actor {
   actor.setState({ ok: false });
   await ctx.drainWaits();
   assert.deepEqual(actor.state, { ok: false });
+}
+
+{
+  // A SYNC hook throw after a client update: the change persisted and
+  // broadcast, so the sender must NOT be told the update was rejected.
+  const ctx = createActorCtx();
+  class SyncGrumpy extends Actor {
+    static options = { hibernate: true };
+    initialState = { n: 0 };
+    onStateChanged() { throw new Error('sync hook exploded'); }
+  }
+  const actor = new SyncGrumpy(ctx, {});
+  const sender = attachSocket(ctx, fakeSocket('sender'));
+  const other = attachSocket(ctx, fakeSocket('other'));
+  await actor.webSocketMessage(sender, JSON.stringify({ type: 'cf_agent_state', state: { n: 5 } }));
+  assert.deepEqual(actor.state, { n: 5 });
+  assert.deepEqual(lastFrame(other), { type: 'cf_agent_state', state: { n: 5 } });
+  assert.equal(sender.sent.length, 0);
+}
+
+// ── 9. Undefined is refused as a state by name, not by an SQL error ─────────
+
+{
+  const ctx = createActorCtx();
+  class Plain extends Actor { initialState = { ok: true }; }
+  const actor = new Plain(ctx, {});
+  assert.throws(() => actor.setState(undefined), /state must be JSON-serializable/);
+  assert.deepEqual(actor.state, { ok: true });
 }
 
 console.log('loom-state: all assertions passed');

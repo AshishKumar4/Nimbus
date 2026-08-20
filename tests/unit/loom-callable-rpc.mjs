@@ -101,6 +101,9 @@ callable({ streaming: true })(Greeter.prototype.leak);
   const stub = client.stub();
   assert.equal(await stub.greet('stub'), 'hello stub');
   await assert.rejects(stub.hidden(), /is not callable/);
+  // The stub is not thenable: resolving it must not fire an RPC named "then".
+  assert.equal(stub.then, undefined);
+  assert.equal(await Promise.resolve(stub), stub);
   client.close();
 }
 

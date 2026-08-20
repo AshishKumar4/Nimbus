@@ -157,4 +157,58 @@ async function mustComplete(promise, label) {
   assert.equal(ctx.alarms.at(-1), now + 5_000);
 }
 
+// ── 5. A CONCURRENT turn's schedule is NOT captured by the dispatch ────────
+//
+// The redirect is scoped to the dispatch's own async context. A turn that
+// schedules while a handler awaits external IO takes the chain path: it
+// serializes behind the dispatch, performs its own read-modify-write, and
+// keeps its own turn-gated persistence.
+
+{
+  const ctx = createCtx();
+  const host = {};
+  const now = Date.now();
+  await timers(host, ctx).schedule('slow', now - 10);
+
+  let releaseHandler;
+  const gate = new Promise((resolve) => { releaseHandler = resolve; });
+  const dispatchDone = timers(host, ctx).dispatch({
+    slow: async () => { await gate; },
+  });
+
+  // Give the dispatch time to enter the handler, then schedule from an
+  // unrelated async context (this test turn).
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const concurrent = timers(host, ctx).schedule('from-outside', now + 40_000);
+
+  releaseHandler();
+  await mustComplete(dispatchDone, 'dispatch with a slow handler');
+  assert.equal(await mustComplete(concurrent, 'concurrent schedule behind a dispatch'), true);
+  // The concurrent arm landed through its own chained write.
+  assert.equal(ctx.kv.get(TIMER_REASONS_KEY)['from-outside'], now + 40_000);
+}
+
+// ── 6. Without setAlarm, both arm paths refuse alike ────────────────────────
+
+{
+  const ctx = createCtx();
+  delete ctx.storage.setAlarm;
+  const host = {};
+  const now = Date.now();
+  // Chain path refuses on a runtime without alarms.
+  assert.equal(await timers(host, ctx).schedule('nope', now), false);
+  // In-dispatch path refuses the same way. Seed the map directly, since
+  // schedule() cannot arm without setAlarm.
+  ctx.kv.set(TIMER_REASONS_KEY, { seeded: now - 10 });
+  let armed = null;
+  await mustComplete(
+    timers(host, ctx).dispatch({
+      seeded: async () => { armed = await timers(host, ctx).schedule('inside', now + 1000); },
+    }),
+    'in-dispatch arm without setAlarm',
+  );
+  assert.equal(armed, false);
+  assert.equal(ctx.kv.get(TIMER_REASONS_KEY), undefined);
+}
+
 console.log('fabric-timers-arm-during-dispatch: all assertions passed');
