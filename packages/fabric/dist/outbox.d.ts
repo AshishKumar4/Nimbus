@@ -62,7 +62,7 @@ export type OutboxDisposition = {
     status: 'poison';
     reason: string;
 };
-export interface OutboxPolicy<M> {
+export interface OutboxPolicy<M, C = void> {
     /** Attempts before a row dead-letters. Email uses 8; peer uses 8. */
     maxAttempts: number;
     /** Backoff base: `next = now + baseMs * 2**(attempts-1)`. */
@@ -72,12 +72,30 @@ export interface OutboxPolicy<M> {
      * without a key deliver independently, as the email outbox's do.
      */
     orderBy?(message: M): string;
-    /** Deliver one message. Throwing is transient, same as `retry`. */
+    /**
+     * Deliver one message. Throwing is transient, same as `retry`. `context`
+     * is the caller's per-drain state — Proteus's email outbox resolves its
+     * transport binding per call, and a policy closed at construction cannot
+     * hold it (the ported consumer smuggled it through an instance field).
+     */
     send(message: M, info: {
         id: string;
         attempt: number;
-    }): Promise<OutboxDisposition>;
+    }, context: C): Promise<OutboxDisposition>;
 }
+/**
+ * `context` carries the caller's per-drain state into `send`. Required when
+ * the policy declares one; absent (and unpayable) when it does not.
+ */
+export type OutboxDrainOptions<C> = {
+    budget?: TurnBudget;
+} & ([C] extends [void] ? {
+    context?: C;
+} : {
+    context: C;
+});
+type OutboxDrainArgs<C> = [C] extends [void] ? [opts?: OutboxDrainOptions<C>] : [opts: OutboxDrainOptions<C>];
+type OutboxHandlerArgs<C> = [C] extends [void] ? [] : [context: C];
 export interface OutboxDrainResult {
     sent: number;
     retried: number;
@@ -92,8 +110,8 @@ export interface OutboxDeadLetter<M> {
     lastError: string;
 }
 /** One named outbox on one hosting actor. Cheap accessor, like `timers()`. */
-export declare function outbox<M>(host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M>): Outbox<M>;
-export declare class Outbox<M> {
+export declare function outbox<M, C = void>(host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M, C>): Outbox<M, C>;
+export declare class Outbox<M, C = void> {
     private readonly host;
     private readonly ctx;
     private readonly policy;
@@ -105,7 +123,7 @@ export declare class Outbox<M> {
     /** Largest id ever seen, so a replacement instance mints above it. */
     private lastId;
     private seq;
-    constructor(host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M>);
+    constructor(host: TimerHost, ctx: OutboxContext, name: string, policy: OutboxPolicy<M, C>);
     private ensureSchema;
     /**
      * Ids order the drain, so they must grow: time-prefixed, tie-broken by a
@@ -140,17 +158,22 @@ export declare class Outbox<M> {
      * `budget` bounds the turn: the drain spends each processed row's payload
      * size and suspends when a chunk is full, so a large backlog crosses turns
      * instead of holding the actor's only thread.
+     *
+     * `context` is handed to every `send` this drain makes — the seam for
+     * per-call state such as a transport binding resolved by the caller.
      */
-    drain(now?: number, opts?: {
-        budget?: TurnBudget;
-    }): Promise<OutboxDrainResult>;
+    drain(now?: number, ...rest: OutboxDrainArgs<C>): Promise<OutboxDrainResult>;
     private deadLetter;
     /**
      * The dispatch-side entry for the embedder's timer handler map. Re-arms
      * through the RETURN value: the dispatcher runs handlers inside the chain
      * that serializes the reason map, so a schedule() call from here would
      * deadlock on its own chain.
+     *
+     * An alarm fires with no caller, so a policy that declares a drain context
+     * receives it here once, closed over every alarm-driven drain.
      */
-    handler(): (now: number) => Promise<TimerHandlerResult>;
+    handler(...context: OutboxHandlerArgs<C>): (now: number) => Promise<TimerHandlerResult>;
 }
+export {};
 //# sourceMappingURL=outbox.d.ts.map

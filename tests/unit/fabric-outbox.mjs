@@ -320,4 +320,30 @@ const T0 = 1_000_000;
   assert.equal(a.sent + b.sent, 2);
 }
 
+// ── 11. drain({ context }) reaches send — the per-call transport binding ────
+// Proteus's ported EmailOutbox resolves its send_email binding per call and
+// had to smuggle it through an instance field (`this.binding`), nulled in a
+// finally. The policy closure is fixed at construction; the binding is not.
+
+{
+  const ctx = createCtx();
+  const seen = [];
+  const box = outbox({}, ctx, 'mail', {
+    maxAttempts: 8,
+    baseMs: 30_000,
+    async send(message, info, context) {
+      seen.push({ n: message.n, attempt: info.attempt, transport: context.transport });
+      return { status: 'sent' };
+    },
+  });
+  await box.queue({ n: 1 }, { now: T0 });
+  await box.drain(T0, { context: { transport: 'binding-A' } });
+  await box.queue({ n: 2 }, { now: T0 + 1 });
+  await box.drain(T0 + 1, { context: { transport: 'binding-B' } });
+  assert.deepEqual(seen, [
+    { n: 1, attempt: 1, transport: 'binding-A' },
+    { n: 2, attempt: 1, transport: 'binding-B' },
+  ], 'each drain hands its own context to send');
+}
+
 console.log('ok - fabric-outbox (write-ahead, dedupe, disposition, backoff, ordering, timers, pacing, recovery)');

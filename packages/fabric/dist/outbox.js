@@ -174,8 +174,12 @@ export class Outbox {
      * `budget` bounds the turn: the drain spends each processed row's payload
      * size and suspends when a chunk is full, so a large backlog crosses turns
      * instead of holding the actor's only thread.
+     *
+     * `context` is handed to every `send` this drain makes — the seam for
+     * per-call state such as a transport binding resolved by the caller.
      */
-    async drain(now = Date.now(), opts = {}) {
+    async drain(now = Date.now(), ...rest) {
+        const opts = rest[0] ?? {};
         const result = { sent: 0, retried: 0, deadLettered: 0 };
         if (this.draining)
             return result;
@@ -208,7 +212,7 @@ export class Outbox {
                 const attempt = row.attempt_count + 1;
                 let disposition;
                 try {
-                    disposition = await this.policy.send(message, { id: row.id, attempt });
+                    disposition = await this.policy.send(message, { id: row.id, attempt }, opts.context);
                 }
                 catch (e) {
                     disposition = { status: 'retry', reason: errorText(e) };
@@ -251,10 +255,13 @@ export class Outbox {
      * through the RETURN value: the dispatcher runs handlers inside the chain
      * that serializes the reason map, so a schedule() call from here would
      * deadlock on its own chain.
+     *
+     * An alarm fires with no caller, so a policy that declares a drain context
+     * receives it here once, closed over every alarm-driven drain.
      */
-    handler() {
+    handler(...context) {
         return async (now) => {
-            await this.drain(now);
+            await this.drain(now, ...[{ context: context[0] }]);
             const next = this.nextRetryAt();
             return next === null ? undefined : { rearmAt: next };
         };
