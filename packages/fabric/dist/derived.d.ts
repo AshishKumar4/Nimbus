@@ -2,13 +2,21 @@
  * derived.ts — a watermark memo: derive a cheap key, compare, rebuild only
  * on change.
  *
- * Proteus's ActorAgent hand-rolls this pair five times — cached value plus
+ * Proteus's ActorAgent hand-rolls this pair four times — cached value plus
  * cached key, compared and rebuilt inline: the system prompt (key composed
  * from soul text, executors, model, tools, stance), the tool set (keyed
  * partly on `_craftCacheKey()`, two synchronous SQLite aggregates), the MCP
  * tool surface (keyed on UserDO's `mcp_updated_at`), and the SOUL text
- * (no key at all — push-invalidated by `setSoul`). One mechanism, five
- * copies, each with its own field pair to keep coherent.
+ * (no key at all — push-invalidated by `setSoul`). The consumer port moved
+ * the prompt and tool-set pairs onto `derived` cleanly; the MCP pair needs
+ * the per-call context and the hooks; the SOUL pair cannot move at all.
+ *
+ * The SOUL pair names this module's limit: a value LOADED asynchronously
+ * (an awaited file read at turn start) but READ synchronously (the prompt
+ * builder consults what is already in memory). Neither variant expresses
+ * that split — `derived` cannot await the load, `derivedAsync` cannot serve
+ * a synchronous read — so an async-load/sync-read snapshot stays a
+ * hand-rolled field with a push invalidation.
  *
  * `derived` is synchronous end to end, because its consumers are: Think
  * calls `getSystemPrompt(): string` synchronously, and nothing synchronous

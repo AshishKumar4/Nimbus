@@ -37,6 +37,13 @@
  *   - The drain is turn-bounded through a {@link TurnBudget}: both consumer
  *     drains iterate every due row in one turn, which is the same
  *     thread-holding shape the pacer exists to end.
+ *
+ * ADOPTION IS A DATA MIGRATION for a live consumer. The rows live in
+ * fabric's own table (`outbox_<name>`), and nothing moves itself: a consumer
+ * with pending intents or a sent-key dedupe history in its old table keeps
+ * them there. The ported EmailOutbox went from `email_outbox` to
+ * `outbox_email` — deployed live without a migration, its pending mail would
+ * never send and every sent key would deliver a second time.
  */
 
 import { z } from 'zod/v4';

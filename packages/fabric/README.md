@@ -62,6 +62,14 @@ adoptCtxExports(ctx.exports);
 
 Both calls are first-write-wins.
 
+Before a release reaches the registry, consumers link it by packed tarball:
+`npm pack` here, a `file:` path there. One bun behavior to know when you do:
+bun pins a `file:` tarball by the integrity hash in its lockfile and keeps
+serving the extraction it already has, so repacking the tarball at the same
+path changes nothing at the consumer. After a repack, bump the version you
+pack or delete the tarball's lockfile entry; a plain `bun install` is not
+enough.
+
 ## One alarm, many reasons
 
 A Durable Object has ONE alarm, and a second `setAlarm()` silently overwrites

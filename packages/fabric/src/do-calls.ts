@@ -66,7 +66,16 @@ export interface DoCallRetryInfo {
   error: unknown;
 }
 
-/** Mints one stub per call. `idempotent` calls it once per attempt. */
+/**
+ * Mints one stub per call. `idempotent` calls it once per attempt.
+ *
+ * MINT means mint. Both verbs dispose the stub they were handed when the
+ * call settles — on success as much as on failure (`disposeRpcResource`).
+ * A resolver that returns a shared, long-lived stub hands its other users
+ * a disposed stub, and only in production: a test double is a plain object
+ * with nothing to dispose, so the test stays green while the deployed
+ * Worker breaks on the second call.
+ */
 export type DoStubResolver<S> = () => S | Promise<S>;
 
 /**

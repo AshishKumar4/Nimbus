@@ -33,6 +33,13 @@
  * A failed reclaim stays loud (facet-spawn's `runOnceAndReclaim`): storage
  * that was not given back is a permanent charge against the root's quota,
  * and swallowing that is how the original leak stayed invisible.
+ *
+ * The pool drives the RAW `ctx.facets` container and assumes it is the only
+ * thing naming facets on this actor. The Agents SDK's sub-agent layer makes
+ * the same assumption from the other side — it owns facet naming and runs
+ * its own cleanup — so the two are mutually exclusive on one actor:
+ * whichever acts second aborts or retires facets the other still tracks,
+ * and the facet-id ledger here counts only the names this pool minted.
  */
 
 import {
