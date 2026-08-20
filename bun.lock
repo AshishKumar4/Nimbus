@@ -131,6 +131,20 @@
         "typescript": "^5.7.0",
       },
     },
+    "packages/loom": {
+      "name": "@nimbus-sh/loom",
+      "version": "0.1.0",
+      "dependencies": {
+        "@nimbus-sh/fabric": "^0.1.0",
+        "cron-schedule": "^6.0.0",
+        "partyserver": "0.5.10",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20260424.1",
+        "typescript": "^5.7.0",
+      },
+    },
     "packages/platform": {
       "name": "@nimbus-sh/platform",
       "version": "0.1.0",
@@ -527,6 +541,8 @@
     "@nimbus-sh/fabric": ["@nimbus-sh/fabric@workspace:packages/fabric"],
 
     "@nimbus-sh/hosted-demo": ["@nimbus-sh/hosted-demo@workspace:apps/hosted-demo"],
+
+    "@nimbus-sh/loom": ["@nimbus-sh/loom@workspace:packages/loom"],
 
     "@nimbus-sh/platform": ["@nimbus-sh/platform@workspace:packages/platform"],
 
