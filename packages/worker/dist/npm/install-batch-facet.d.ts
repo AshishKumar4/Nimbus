@@ -67,7 +67,7 @@ export interface InstallBatchResult {
     perPackage: InstallBatchPerPackage[];
     /** Wall-clock ms inside the facet (whole batch). */
     elapsed: number;
-    /** Counter snapshot at end of batch. Mirrors src/observability/diag-counters.ts shape
+    /** Counter snapshot at end of batch. Mirrors @nimbus-sh/platform/diag-counters.js shape
      *  for the install-facet subset (commit 3 surfaces these in /api/_diag/memory). */
     facetCounters: {
         tarballsCompleted: number;

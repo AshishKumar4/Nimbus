@@ -17,7 +17,7 @@
  */
 import { SQLJS_VERSION } from '@nimbus-sh/core/constants.js';
 import { SQLITE_WASM_SHA256 } from '../sqlite-wasm-bundle.generated.js';
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
  * Path inside env.ASSETS where the sql.js wasm binary lives. Versioned so

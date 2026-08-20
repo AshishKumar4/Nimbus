@@ -17,7 +17,7 @@
  *   - No auto-start of vite (surprising; README says `npm run dev`)
  *   - Basename injection (commit 2) handles the /preview/ basepath wiring.
  */
-import { CHUNK_SIZE } from '../constants.js';
+import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';

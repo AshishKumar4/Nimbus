@@ -27,12 +27,12 @@ import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica
 import { replicasSuspended as _w12ReplicasSuspended } from '../replica/suspension.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
-import { readDiagCounters } from '@nimbus-sh/core/observability/diag-counters.js';
-import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
+import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/core/observability/heap-estimate.js';
+import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
 import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -640,7 +640,7 @@ export async function handleFetch(self, request) {
     // process.memoryUsage() and they were always zero — useless.
     //
     // C'.1 replaces the zero-everywhere readout with a deterministic
-    // estimator (src/observability/heap-estimate.ts) that sums known
+    // estimator (src/@nimbus-sh/platform/heap-estimate.js) that sums known
     // supervisor allocations from runtime counters. Every byte has a
     // named contributor.
     //

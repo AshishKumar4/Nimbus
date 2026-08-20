@@ -15,7 +15,7 @@ import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { registerAllocObserver } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NpmInstaller } from '../npm/installer.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)

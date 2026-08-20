@@ -41,7 +41,7 @@
 //   3. Facet-side: ESM source strings for the ws shim + chokidar shim.
 // All are emitted by the generators below.
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { disposeRpcResource, useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
 // `false` (default), the hot-path console.log calls in `HmrBridge`

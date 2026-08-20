@@ -11,7 +11,7 @@
  *   L4 — registry.npmjs.org origin                   ~100-300 ms cross-region
  *
  * Pre-cache metrics support: hit/miss counters lived in
- * src/observability/diag-counters.ts but only tracked the RPC-call
+ * @nimbus-sh/platform/diag-counters.js but only tracked the RPC-call
  * boundary, not per-tier. Those flat counters have since been removed.
  *
  * This module adds per-tier × per-kind counters. SAME singleton-per-
@@ -158,4 +158,16 @@ export function reset() {
         }
     }
     _lastResetAt = Date.now();
+}
+export function recordCacheStatEvents(events) {
+    if (!events || events.length === 0)
+        return;
+    for (const e of events) {
+        if (e.kind === 'hit') {
+            recordHit(e.tier, e.cacheKind, e.bytes);
+        }
+        else {
+            recordMiss(e.tier, e.cacheKind);
+        }
+    }
 }

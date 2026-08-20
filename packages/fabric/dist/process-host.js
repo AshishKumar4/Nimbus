@@ -63,8 +63,8 @@
  * {@link HOSTED_WEBSOCKET_KEY_HEADER} — and a per-process capability makes
  * that pair unforgeable by anything that did not open the process.
  */
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout-pool.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, openResidentFacet, residentFacetName, runOneShotWorker, } from './workerd-facet-host.js';
 import { BindingError } from './vendor/errors.js';

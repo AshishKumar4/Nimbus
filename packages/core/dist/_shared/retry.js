@@ -22,7 +22,7 @@
  * helper. resolve-one-facet.ts and install-batch-facet.ts therefore keep
  * equivalent retry loops inside their isolated function bodies.
  */
-import { disposeRpcResource } from './rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { errorText } from './error-text.js';
 /** Default retry count AFTER the first attempt (3 = up to 4 total attempts). */
 export const DEFAULT_RETRIES = 3;

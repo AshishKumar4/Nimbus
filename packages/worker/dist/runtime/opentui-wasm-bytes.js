@@ -16,7 +16,7 @@
  * the backend.
  */
 import { OPENTUI_WASM_BUILD_ID, OPENTUI_WASM_ENTRY, OPENTUI_WASM_SHA256, } from '../opentui-wasm-artifact.generated.js';
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
  * Synthetic L2 cache key for the OpenTUI wasm asset. Build-id-pinned so a

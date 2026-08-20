@@ -27,21 +27,22 @@ import { packumentUrl } from './r2-cache.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from './npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { encodeWriteBatchStream } from '@nimbus-sh/core/_shared/w7-frame.js';
+import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { LoaderPool } from '@nimbus-sh/fabric/loader-pool.js';
 import { FanoutPool, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout-pool.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
-import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, recordCacheStatEvents, readDiagCounters, } from '@nimbus-sh/core/observability/diag-counters.js';
-import { estimateSupervisorHeap } from '@nimbus-sh/core/observability/heap-estimate.js';
-import { describeError } from '@nimbus-sh/core/observability/oom-classify.js';
+import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, readDiagCounters, } from '@nimbus-sh/platform/diag-counters.js';
+import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
+import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
+import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { resolveOnePackumentInFacet, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { prebundleOne, buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
 import { PRE_BUNDLE_PREAMBLE } from '../loaders/pre-bundle-preamble.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
-import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, } from '@nimbus-sh/core/constants.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/core/observability/heavy-alloc-coord.js';
+import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, } from '@nimbus-sh/platform/limits.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -1444,7 +1445,7 @@ export class NpmInstaller {
         // C'.1 deterministic estimator. process.memoryUsage() returns 0
         // for every field inside a Durable Object class context (only
         // dynamic-worker isolates under nodejs_compat get the real
-        // implementation — see src/observability/diag-counters.ts:4 and
+        // implementation — see @nimbus-sh/platform/diag-counters.js:4 and
         // heap-estimate.ts:6). The previous "supervisor heap 0.0 MiB"
         // line was actively misleading: it printed every time, regardless
         // of what was actually in the heap, and could not be used to
@@ -1994,7 +1995,7 @@ export class NpmInstaller {
     /**
      * P5 (production reliability) — deterministic supervisor-heap estimate in MiB.
      *
-     * Routes through observability/heap-estimate.ts which sums KNOWN
+     * Routes through @nimbus-sh/platform/heap-estimate.js which sums KNOWN
      * supervisor heap allocation sources from runtime counters that
      * ARE accurate inside a DO context (DiagCounters singleton +
      * SqliteVFS.getStats()). This replaces a previous use of
@@ -2035,7 +2036,7 @@ export class NpmInstaller {
 // process.memoryUsage() which returns 0 for every field inside a
 // Durable Object class context (only dynamic-worker isolates under
 // nodejs_compat get the real implementation — see
-// src/observability/diag-counters.ts:4). The deterministic
+// @nimbus-sh/platform/diag-counters.js:4). The deterministic
 // supervisor-heap estimator is the C'.1 replacement; see
 // NpmInstaller._estimateSupervisorHeapMiB.
 function parentOf(path) {

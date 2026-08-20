@@ -12,7 +12,7 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getCtxExports, supervisorEntrypoint, supervisorEntrypointName, } from './ctx-exports.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed, } from './loader-ledger.js';
 import { RESIDENT_PROCESS_CLASS, requireStagedBootAssembler, residentLoaderConfig, } from './process-fabric.js';

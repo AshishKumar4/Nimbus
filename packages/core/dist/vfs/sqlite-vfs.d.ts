@@ -40,29 +40,14 @@
  * - File content demand-paged through LRU cache
  */
 import { VfsEventEmitter } from './events.js';
+import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsCred, type VfsInvalidatedPath, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
-export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 export interface ExclusiveMutationLease {
     readonly root: string;
     readonly owner: string;
 }
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
-}
-/** Entry for bulk inode creation via writeBatch(). */
-export interface BatchInodeEntry {
-    path: string;
-    parentPath: string;
-    /** Defaults to isDir ? directory : file for legacy/non-symlink producers. */
-    kind?: VfsInodeKind;
-    isDir: boolean;
-    size: number;
-    atime?: number;
-    mtime: number;
-    mode: number;
-    uid?: number;
-    gid?: number;
-    chunkCount: number;
 }
 export interface VfsStat {
     type: VfsInodeKind;
@@ -146,19 +131,6 @@ export interface CredentialedVfs {
      * revision clock is in memory and restarts at zero.
      */
     readonly epoch: string;
-}
-/** Entry for bulk chunk creation via writeBatch(). */
-export interface BatchChunkEntry {
-    path: string;
-    chunkId: number;
-    data: Uint8Array;
-}
-/** Payload for writeBatch() — all inodes + chunks written in ONE transactionSync(). */
-export interface BatchWritePayload {
-    inodes: BatchInodeEntry[];
-    chunks: BatchChunkEntry[];
-    /** Paths to delete before writing (for clean reinstall). */
-    deletePaths?: string[];
 }
 export interface WriteBatchStreamProgress {
     /** 1-based sequence of the last durable publish group; zero means none. */

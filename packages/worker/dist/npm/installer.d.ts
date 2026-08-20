@@ -24,7 +24,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
 import { type NpmLogEmitter } from './npm-log.js';
-import type { InstallPhase } from '@nimbus-sh/core/_shared/install-phase.js';
+import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
 export interface InstallProgress {
     phase: InstallPhase;
     resolved: number;
@@ -225,7 +225,7 @@ export declare class NpmInstaller {
     /**
      * P5 (production reliability) — deterministic supervisor-heap estimate in MiB.
      *
-     * Routes through observability/heap-estimate.ts which sums KNOWN
+     * Routes through @nimbus-sh/platform/heap-estimate.js which sums KNOWN
      * supervisor heap allocation sources from runtime counters that
      * ARE accurate inside a DO context (DiagCounters singleton +
      * SqliteVFS.getStats()). This replaces a previous use of

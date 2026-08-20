@@ -517,7 +517,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _w5LastPersistRingSize: number;
     /** B'.4 — live initSession phase. Surfaced via
      *  /api/_diag/session.phase. null pre-first-init. */
-    _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null;
+    _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null;
     /** B'.5 — count of warm-rejoin /ws upgrades. Increments each
      *  time the join path is taken (Phase B skipped). 0 means no
      *  warm rejoins yet. Surfaced via /api/_diag/session.warmJoinCount. */

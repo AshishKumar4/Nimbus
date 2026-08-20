@@ -22,7 +22,7 @@
  * loaded them, so a ledger that goes away with its host describes nothing
  * that still exists.
  */
-import { classifyError } from '@nimbus-sh/core/observability/oom-classify.js';
+import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 const ledgers = new WeakMap();
 function ledger(ctx) {
     let entry = ledgers.get(ctx);

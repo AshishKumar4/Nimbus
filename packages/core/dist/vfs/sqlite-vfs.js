@@ -41,13 +41,14 @@
  */
 import { VfsEventEmitter } from './events.js';
 import { normalizeVfsPath } from './path.js';
-import { CHUNK_SIZE, LRU_MAX_ENTRIES, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, FS_LIST_PAGE_LIMIT, } from '../constants.js';
-import { recordFailure } from '../observability/oom-discriminator.js';
-import { classifyError } from '../observability/oom-classify.js';
-import { acquireSupervisorAllocation } from '../observability/heavy-alloc-coord.js';
+import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, } from '../constants.js';
+import { CHUNK_SIZE, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, } from '@nimbus-sh/platform/limits.js';
+import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
+import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
-import { decodeWriteBatchStream, } from '../_shared/w7-frame.js';
-import { WeightedCreditPool, } from '../_shared/weighted-credit-pool.js';
+import { decodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
+import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { CRED_KERNEL, } from '../runtime/os-contracts.js';
 const CONTENT_ID_ALLOCATION_ATTEMPTS = 8;

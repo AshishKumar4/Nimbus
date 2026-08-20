@@ -34,7 +34,7 @@
  * Within a single isolate's lifetime, the same path always returns the
  * same content.
  */
-import { disposeRpcResource } from '../_shared/rpc-dispose.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 /**
  * Per-isolate cache. Keys are asset paths (e.g. `/_assets/foo.js`).
  * Values are settled promises so concurrent callers share the same

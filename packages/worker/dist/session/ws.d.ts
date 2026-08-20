@@ -68,7 +68,7 @@ export interface WsHost {
     _w5LastPersistAt: number;
     _w5LastPersistRingSize: number;
     /** [B'.4] live phase indicator — see nimbus-session-internal.d.ts */
-    _b4Phase: import('@nimbus-sh/core/observability/oom-discriminator.js').SessionState | null;
+    _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null;
     _w5PersistRing(): Promise<void> | null;
     _w9FlushOnClose(): void;
 }

@@ -33,7 +33,7 @@
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
-import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { persistShellState } from './state-store.js';
 import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose, } from './fs-watch.js';
 import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';

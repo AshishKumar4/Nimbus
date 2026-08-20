@@ -16,8 +16,8 @@
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { LoaderPool } from './loader-pool.js';
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/core/observability/oom-classify.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * Threshold at which routing switches from coordinator-local loaders to
  * sibling Durable Objects.

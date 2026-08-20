@@ -25,12 +25,13 @@
  * in the PR that introduced this file.
  */
 import { getCtxExports } from '@nimbus-sh/fabric/ctx-exports.js';
-import { CF_COMPAT_DATE, MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { GIT_BUNDLE_CODE } from '../git-bundle.generated.js';
 import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
-import { disposeRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '@nimbus-sh/core/_shared/w7-frame.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '@nimbus-sh/platform/w7-frame.js';
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const CLONE_ABORT_TIMEOUT_MS = 30_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;

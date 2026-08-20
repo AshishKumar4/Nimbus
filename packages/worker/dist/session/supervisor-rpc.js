@@ -31,13 +31,13 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { setSupervisorEntrypointName } from '@nimbus-sh/fabric/ctx-exports.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
-import { setLastRpcFrame } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
-import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/core/observability/diag-counters.js';
+import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
-import { useRpcResource } from '@nimbus-sh/core/_shared/rpc-dispose.js';
-import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/core/_shared/w7-frame.js';
+import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 /**
  * Drain the per-call event list captured by R2CacheClient during this
  * SupervisorRPC call.

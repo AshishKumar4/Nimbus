@@ -71,7 +71,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_MOUNT_POINTS, NODE_VERSION, } from '@nimbus-sh/core/constants.js';
 import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
-import { recordRecoveryEvent } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';

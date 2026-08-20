@@ -16,7 +16,7 @@
  * and when; the port decides how bytes land on a disk and with what modes and
  * credentials.
  */
-import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/core/constants.js';
+import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
 /**
  * Bytes of an image written in one storage transaction.

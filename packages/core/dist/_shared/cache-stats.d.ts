@@ -11,7 +11,7 @@
  *   L4 — registry.npmjs.org origin                   ~100-300 ms cross-region
  *
  * Pre-cache metrics support: hit/miss counters lived in
- * src/observability/diag-counters.ts but only tracked the RPC-call
+ * @nimbus-sh/platform/diag-counters.js but only tracked the RPC-call
  * boundary, not per-tier. Those flat counters have since been removed.
  *
  * This module adds per-tier × per-kind counters. SAME singleton-per-
@@ -142,4 +142,26 @@ export declare function snapshot(): CacheStatsSnapshot;
  * were reset at Y" (the gap is intentional vs an isolate reboot).
  */
 export declare function reset(): void;
+/**
+ * cache-obs-2: fold facet-collected per-tier cache events into the
+ * DO-side cache-stats singleton. Called from installer.ts after a
+ * batch-facet / resolve-facet returns — mirrors recordR2RaceCounters
+ * (the facet collects metrics in its result and the supervisor folds
+ * them into the DO isolate).
+ *
+ * Each event has shape:
+ *   { kind: 'hit', tier: 'L2'|'L3'|'L4', cacheKind: 'tarball'|'packument'|'asset', bytes: number }
+ *   { kind: 'miss', tier: ..., cacheKind: ... }
+ */
+export type CacheStatEvent = {
+    kind: 'hit';
+    tier: CacheTier;
+    cacheKind: CacheKind;
+    bytes: number;
+} | {
+    kind: 'miss';
+    tier: CacheTier;
+    cacheKind: CacheKind;
+};
+export declare function recordCacheStatEvents(events: readonly CacheStatEvent[] | undefined): void;
 //# sourceMappingURL=cache-stats.d.ts.map

@@ -16,7 +16,7 @@
  *
  * Per DEFECT-D1: ctx is taken as a separate explicit arg.
  */
-import { rehydrateFromStorage, snapshotForStorage, getFailures, } from '@nimbus-sh/core/observability/oom-discriminator.js';
+import { rehydrateFromStorage, snapshotForStorage, getFailures, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { W5_RING_STORAGE_KEY } from './keys.js';
 export function readNodeMem() {
     try {
