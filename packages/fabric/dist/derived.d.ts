@@ -33,10 +33,25 @@ export interface Derived<T, C = void> {
     /** Force the next get to rebuild, watermark unchanged. */
     invalidate(): void;
 }
-export declare function derived<T, C = void>(watermark: (context: C) => string | number, build: (context: C, key: string | number) => T): Derived<T, C>;
+/**
+ * The consumer's logging seams. Both MCP logs the port could not express:
+ * `onRebuild` fires after a build stores (the "rebuilt @ wm=N" line), and
+ * `onStale` — async only — fires when a failure serves the stale value,
+ * the one path where the error is otherwise absorbed. A surfaced error
+ * (nothing stale to serve) reports itself.
+ */
+export interface DerivedHooks {
+    /** After a build stores. `previousKey` is undefined on the first build. */
+    onRebuild?(previousKey: string | number | undefined, nextKey: string | number): void;
+}
+export interface DerivedAsyncHooks extends DerivedHooks {
+    /** A watermark or build failure just served the stale value. */
+    onStale?(error: unknown): void;
+}
+export declare function derived<T, C = void>(watermark: (context: C) => string | number, build: (context: C, key: string | number) => T, hooks?: DerivedHooks): Derived<T, C>;
 export interface DerivedAsync<T, C = void> {
     get(context: C): Promise<T>;
     invalidate(): void;
 }
-export declare function derivedAsync<T, C = void>(watermark: (context: C) => Promise<string | number>, build: (context: C, key: string | number) => Promise<T>): DerivedAsync<T, C>;
+export declare function derivedAsync<T, C = void>(watermark: (context: C) => Promise<string | number>, build: (context: C, key: string | number) => Promise<T>, hooks?: DerivedAsyncHooks): DerivedAsync<T, C>;
 //# sourceMappingURL=derived.d.ts.map

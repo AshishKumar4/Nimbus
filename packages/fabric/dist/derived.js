@@ -22,7 +22,7 @@
  * (`setSoul`) clears the memo so the next read rebuilds under an unchanged
  * watermark.
  */
-export function derived(watermark, build) {
+export function derived(watermark, build, hooks = {}) {
     let key;
     let value;
     let has = false;
@@ -32,6 +32,7 @@ export function derived(watermark, build) {
             if (has && next === key)
                 return value;
             value = build(context, next);
+            hooks.onRebuild?.(key, next);
             key = next;
             has = true;
             return value;
@@ -42,7 +43,7 @@ export function derived(watermark, build) {
         },
     };
 }
-export function derivedAsync(watermark, build) {
+export function derivedAsync(watermark, build, hooks = {}) {
     let key;
     let value;
     let has = false;
@@ -53,8 +54,10 @@ export function derivedAsync(watermark, build) {
                 next = await watermark(context);
             }
             catch (e) {
-                if (has)
+                if (has) {
+                    hooks.onStale?.(e);
                     return value;
+                }
                 throw e;
             }
             if (has && next === key)
@@ -64,11 +67,14 @@ export function derivedAsync(watermark, build) {
                 built = await build(context, next);
             }
             catch (e) {
-                if (has)
+                if (has) {
+                    hooks.onStale?.(e);
                     return value;
+                }
                 throw e;
             }
             value = built;
+            hooks.onRebuild?.(key, next);
             key = next;
             has = true;
             return built;

@@ -65,6 +65,8 @@ import {
   derivedAsync as fabricDerivedAsync,
   type Derived,
   type DerivedAsync,
+  type DerivedAsyncHooks,
+  type DerivedHooks,
 } from '@nimbus-sh/fabric/derived.js';
 import {
   connections as fabricConnections,
@@ -559,16 +561,18 @@ export class Actor<
   derived<T, C = void>(
     watermark: (context: C) => string | number,
     build: (context: C, key: string | number) => T,
+    hooks?: DerivedHooks,
   ): Derived<T, C> {
-    return fabricDerived(watermark, build);
+    return fabricDerived(watermark, build, hooks);
   }
 
   /** The async memo; a watermark or build failure serves the last good value. */
   derivedAsync<T, C = void>(
     watermark: (context: C) => Promise<string | number>,
     build: (context: C, key: string | number) => Promise<T>,
+    hooks?: DerivedAsyncHooks,
   ): DerivedAsync<T, C> {
-    return fabricDerivedAsync(watermark, build);
+    return fabricDerivedAsync(watermark, build, hooks);
   }
 
   /**

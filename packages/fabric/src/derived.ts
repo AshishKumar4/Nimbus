@@ -35,9 +35,27 @@ export interface Derived<T, C = void> {
   invalidate(): void;
 }
 
+/**
+ * The consumer's logging seams. Both MCP logs the port could not express:
+ * `onRebuild` fires after a build stores (the "rebuilt @ wm=N" line), and
+ * `onStale` — async only — fires when a failure serves the stale value,
+ * the one path where the error is otherwise absorbed. A surfaced error
+ * (nothing stale to serve) reports itself.
+ */
+export interface DerivedHooks {
+  /** After a build stores. `previousKey` is undefined on the first build. */
+  onRebuild?(previousKey: string | number | undefined, nextKey: string | number): void;
+}
+
+export interface DerivedAsyncHooks extends DerivedHooks {
+  /** A watermark or build failure just served the stale value. */
+  onStale?(error: unknown): void;
+}
+
 export function derived<T, C = void>(
   watermark: (context: C) => string | number,
   build: (context: C, key: string | number) => T,
+  hooks: DerivedHooks = {},
 ): Derived<T, C> {
   let key: string | number | undefined;
   let value: T | undefined;
@@ -47,6 +65,7 @@ export function derived<T, C = void>(
       const next = watermark(context);
       if (has && next === key) return value as T;
       value = build(context, next);
+      hooks.onRebuild?.(key, next);
       key = next;
       has = true;
       return value;
@@ -66,6 +85,7 @@ export interface DerivedAsync<T, C = void> {
 export function derivedAsync<T, C = void>(
   watermark: (context: C) => Promise<string | number>,
   build: (context: C, key: string | number) => Promise<T>,
+  hooks: DerivedAsyncHooks = {},
 ): DerivedAsync<T, C> {
   let key: string | number | undefined;
   let value: T | undefined;
@@ -76,7 +96,10 @@ export function derivedAsync<T, C = void>(
       try {
         next = await watermark(context);
       } catch (e) {
-        if (has) return value as T;
+        if (has) {
+          hooks.onStale?.(e);
+          return value as T;
+        }
         throw e;
       }
       if (has && next === key) return value as T;
@@ -84,10 +107,14 @@ export function derivedAsync<T, C = void>(
       try {
         built = await build(context, next);
       } catch (e) {
-        if (has) return value as T;
+        if (has) {
+          hooks.onStale?.(e);
+          return value as T;
+        }
         throw e;
       }
       value = built;
+      hooks.onRebuild?.(key, next);
       key = next;
       has = true;
       return built;

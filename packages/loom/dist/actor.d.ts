@@ -45,7 +45,7 @@ import { type TimerAlarmInfo, type TimerHandlerResult, type Timers } from '@nimb
 import { type Outbox, type OutboxPolicy } from '@nimbus-sh/fabric/outbox.js';
 import { type Journal } from '@nimbus-sh/fabric/journal.js';
 import { type FacetPool } from '@nimbus-sh/fabric/facet-pool.js';
-import { type Derived, type DerivedAsync } from '@nimbus-sh/fabric/derived.js';
+import { type Derived, type DerivedAsync, type DerivedAsyncHooks, type DerivedHooks } from '@nimbus-sh/fabric/derived.js';
 import { FencedWork, type FencedWorkHost, type FencedWorkRecord } from '@nimbus-sh/fabric/fenced-work.js';
 import { type FabricComposition } from '@nimbus-sh/fabric/composition.js';
 import { type WsHibernationConfigResult } from '@nimbus-sh/fabric/ws-hibernation-config.js';
@@ -191,9 +191,9 @@ export declare class Actor<Env extends Cloudflare.Env = Cloudflare.Env, State = 
     /** The substrate {@link processes} runs on. Override to declare one. */
     protected processHost(): ProcessHost;
     /** A watermark memo: derive a cheap key, compare, rebuild only on change. */
-    derived<T, C = void>(watermark: (context: C) => string | number, build: (context: C, key: string | number) => T): Derived<T, C>;
+    derived<T, C = void>(watermark: (context: C) => string | number, build: (context: C, key: string | number) => T, hooks?: DerivedHooks): Derived<T, C>;
     /** The async memo; a watermark or build failure serves the last good value. */
-    derivedAsync<T, C = void>(watermark: (context: C) => Promise<string | number>, build: (context: C, key: string | number) => Promise<T>): DerivedAsync<T, C>;
+    derivedAsync<T, C = void>(watermark: (context: C) => Promise<string | number>, build: (context: C, key: string | number) => Promise<T>, hooks?: DerivedAsyncHooks): DerivedAsync<T, C>;
     /**
      * Typed, validated per-connection state over the WebSocket attachment,
      * hibernation-durable. partyserver owns the accept (tag connections via

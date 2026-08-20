@@ -144,4 +144,63 @@ import { derived, derivedAsync } from '../../packages/fabric/src/derived.ts';
   assert.equal(builds, 2);
 }
 
+// ── 10. onStale: serving stale is visible, not silent ───────────────────────
+// The MCP consumer logs a diagnostics failure every time a watermark or
+// descriptor fetch fails and the stale surface is served; derivedAsync
+// absorbed exactly that event. Same defect class as do-calls' onRetry.
+
+{
+  const stale = [];
+  let wmFails = false;
+  let buildFails = false;
+  const memo = derivedAsync(
+    async () => { if (wmFails) throw new Error('watermark rpc failed'); return 1; },
+    async () => { if (buildFails) throw new Error('descriptor fetch failed'); return 'tools'; },
+    { onStale: (error) => stale.push(error.message) },
+  );
+  await memo.get();
+  assert.deepEqual(stale, [], 'a clean build reports nothing');
+  wmFails = true;
+  await memo.get();
+  wmFails = false;
+  memo.invalidate();
+  buildFails = true;
+  await memo.get().catch(() => {});
+  assert.deepEqual(stale, ['watermark rpc failed'],
+    'onStale fires only when a stale value is served; a surfaced error is already visible');
+}
+
+// ── 11. onRebuild: the key transition consumers used to log ─────────────────
+// The MCP consumer logs 'mcp_tools_rebuilt … @ wm=N' after every rebuild;
+// the tool cache logs the rebuild with its watermark. derived absorbed the
+// transition.
+
+{
+  const transitions = [];
+  let wm = 'a';
+  const memo = derived(
+    () => wm,
+    () => `built:${wm}`,
+    { onRebuild: (previousKey, nextKey) => transitions.push([previousKey, nextKey]) },
+  );
+  memo.get();
+  memo.get();
+  wm = 'b';
+  memo.get();
+  assert.deepEqual(transitions, [[undefined, 'a'], ['a', 'b']],
+    'one report per rebuild: first build from nothing, then the key transition');
+
+  const asyncTransitions = [];
+  let awm = 1;
+  const amemo = derivedAsync(
+    async () => awm,
+    async () => `tools@${awm}`,
+    { onRebuild: (previousKey, nextKey) => asyncTransitions.push([previousKey, nextKey]) },
+  );
+  await amemo.get();
+  awm = 2;
+  await amemo.get();
+  assert.deepEqual(asyncTransitions, [[undefined, 1], [1, 2]]);
+}
+
 console.log('ok - fabric-derived (sync memo, invalidation, async stale-on-error, no-stale surfaces)');

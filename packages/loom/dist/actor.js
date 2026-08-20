@@ -411,12 +411,12 @@ export class Actor extends Server {
         throw new Error(`loom: ${this.#className()} used this.processes without a substrate — override processHost()`);
     }
     /** A watermark memo: derive a cheap key, compare, rebuild only on change. */
-    derived(watermark, build) {
-        return fabricDerived(watermark, build);
+    derived(watermark, build, hooks) {
+        return fabricDerived(watermark, build, hooks);
     }
     /** The async memo; a watermark or build failure serves the last good value. */
-    derivedAsync(watermark, build) {
-        return fabricDerivedAsync(watermark, build);
+    derivedAsync(watermark, build, hooks) {
+        return fabricDerivedAsync(watermark, build, hooks);
     }
     /**
      * Typed, validated per-connection state over the WebSocket attachment,
