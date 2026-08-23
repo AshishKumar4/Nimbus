@@ -5,38 +5,34 @@
 > presented as-is.
 
 This is a catalog of Cloudflare's Durable Object platform, for anyone
-building on it. It merges two records made independently on the same
-account: the evidence-graded platform catalog of Proteus (a sibling agent
-platform) and the measured invariants in this package's source. The two
-projects hit the same walls, measured them separately, and cite each other.
-Where they agree, this catalog states the fact once. Where they disagree,
-the entry says so.
+building on it. It merges the measured invariants in this package's source
+with the platform catalog of Proteus, a sibling agent platform on the same
+account. Where the two disagree, the entry says so.
 
 Every measured number comes from deployed production workerd between June
 and August 2026, unless the entry says otherwise. `wrangler dev` does not
 enforce the isolate memory cap (a probe isolate reached 822 MiB unkilled),
 and its clock, storage, and trace behavior differ. A local run measures
-bytes and API surface, not enforcement points.
+bytes and API surface. Enforcement shows up only in production.
 
 ## How to read an entry
 
-Each entry carries an evidence label, so you can tell "Cloudflare documents
-128 MB" from "we measured 128 MB".
+Each entry carries an evidence label.
 
 - **probe** — a designed experiment against deployed production workerd,
   config pinned to what we ship.
 - **source** — read in workerd's (or a dependency's) own source code.
 - **production** — incident or log evidence, not a designed experiment.
 - **documented** — Cloudflare publishes it. I re-read the documented entries
-  from the live docs on 2026-08-17. I re-checked the memory, startup,
+  from the live docs on 2026-08-17, and re-checked the memory, startup,
   subrequest, connection, size, and WebSocket figures on 2026-08-20.
 
 Each entry also says who acts on it:
 
 - **Enforced:** this library prevents or handles it in code; the named
   export does it.
-- **Named:** this library detects the failure and names it honestly, but
-  does not prevent it.
+- **Named:** this library detects the failure and names it, but does not
+  prevent it.
 - **Yours:** advice. You follow it yourself.
 
 Units are exact: MB and GB are decimal (10^6, 10^9 bytes), MiB and GiB are
@@ -47,7 +43,7 @@ number is Nimbus's own budget rather than the platform's, the entry says
 ## Storage and durability
 
 **`await put()` resolves before durability.** The output gate holds the
-guarantee: a response cannot leave the object before the turn's writes
+guarantee. A response cannot leave the object before the turn's writes
 commit. `ctx.storage.sync()` is the explicit barrier. Measured live
 (production, staging 2026-08-13): a launch killed in its first chunks left NO
 journal row for the replacement instance to find. A confirmed `put` resolved
@@ -71,8 +67,7 @@ transient.
 **`ctx.waitUntil()` is a no-op inside a Durable Object** (documented, and
 proven by the probe above). workerd treats every task in an actor as a
 wait-until task, so `ctx.waitUntil(p)` and a bare floating `p` are the same
-code path. It exists for API compatibility with `ExecutionContext`. The name
-suggests a durability decision, which is the hazard. The 30 s `waitUntil`
+code path. It exists for API compatibility with `ExecutionContext`. The 30 s `waitUntil`
 grace period is Worker scope only.
 Yours: the only retention a Durable Object has is an await inside the
 invocation. Journal work you cannot afford to lose. This library's own
@@ -91,7 +86,7 @@ chunk row approaches it.
 table** (documented). The catalog reads 100 KB as binary KiB, because the
 value is SQLite's compile-time `SQLITE_MAX_SQL_LENGTH` rather than a billing
 quantity. That reading is unverified. The parameter cap is the easiest to hit
-by accident: a batched insert of more than 100/columns rows in one statement
+by accident. A batched insert of more than 100/columns rows in one statement
 breaches it. Yours: bound generated statements; hand-written SQL never gets
 there. `SQLITE_MAX_STATEMENT_BYTES` and `SQLITE_MAX_BOUND_PARAMETERS` carry
 the numbers.
@@ -106,8 +101,7 @@ the quota does NOT fail catchably: the object is reset and the destination is
 left empty ("Internal error in Durable Object storage caused object to be
 reset"). A deployed bisect put the real wall between 10,580,000,000 bytes
 (fit) and 11,600,000,000 bytes (failed). 10 GiB (10,737,418,240) sits inside
-that window, so it describes where the wall is and is not a number to design
-to. Yours: budget against the published 10^10. Decide clone admission BEFORE
+that window, so it describes where the wall is. Do not design to it. Yours: budget against the published 10^10. Decide clone admission BEFORE
 the clone, with reserve, on the arithmetic X·(N+1) ≤ quota. An alert at 99%
 comes too late on a limit whose breach destroys the destination.
 `DO_STORAGE_LIMIT_BYTES` carries the figure.
@@ -285,9 +279,9 @@ names the budget on a creation failure at the wall, and `facetPool` refuses
 a NEW name once the ledger reads 65,536.
 
 **`ctx.facets.clone` is O(1) copy-on-write in time and full price in quota**
-(probe). Measured flat across scale. One project: 18 ms for a 4 MB facet
-and 54 ms for 1.05 GB. The other: 18-31 ms for a 45.73 MB corpus and
-34-54 ms for 1 GB. It is same-object only, still absent from the public docs
+(probe). Measured flat across scale: 18 ms for a 4 MB facet, 54 ms for
+1.05 GB, 18-31 ms for a 45.73 MB corpus, and 34-54 ms for 1 GB. It is
+same-object only, still absent from the public docs
 and from `@cloudflare/workers-types`, and carries no compatibility promise.
 ANY unresolvable source name (`''`, `'.'`, `'..'`, `'/'`, `'root'`, `'0'`, or
 a typo) SUCCEEDS, silently EMPTIES the destination, and reports nothing
@@ -354,8 +348,8 @@ library assembles, and names the largest members. The platform's refusal
 names none. `DYNAMIC_WORKER_CODE_LIMIT_BYTES` carries the number.
 
 **One module's text has its own ceiling: 8 MiB raw was observed to fail
-boot** (probe, 2026-07-24). The measurement is one-sided: the boots half of
-the original boots/fails bracket was lost. The gate is on
+boot** (probe, 2026-07-24). The measurement is one-sided, because the boots
+half of the original boots/fails bracket was lost. The gate is on
 JSON-encoded UTF-8 bytes, not raw content (escaping adds bytes; measure with
 `TextEncoder`, since `String.length` undercounts non-ASCII). Nimbus's own
 ceiling of 22 MiB encoded is self-imposed. Yours: name big members by path
@@ -373,8 +367,8 @@ Transient-reset retries run at 250/750/1500 ms, and overload retries at
 1/3/6 s. Named: the loader ledger (`recordLoaderId`, `beginLoaderFetch`,
 `loaderLedgerStats`) counts ids and live fetches per object, and
 `withDynamicWorkerCapNamed` annotates a cap refusal with the ids that hold
-slots. There is no admission control, on purpose: a gate on an approximate
-platform number would refuse work the platform would have run.
+slots. There is no admission control, on purpose. A gate on an approximate platform
+number would refuse work the platform would have run.
 
 **A warm loader isolate is a security boundary** (production incident).
 Without a session term in the cache key, session B's pool reused session A's
@@ -388,20 +382,18 @@ supervisor binding.
 
 **Serialized RPC arguments and return values cap at 32 MiB** (probe: the
 runtime's own words, "Serialized RPC arguments or return values are limited
-to 32MiB", on the facet path). This retires an older unsourced 32 MiB claim
-for ordinary Workers RPC. That claim had the right number and no citation.
-Nimbus ships at most 28 MiB per value (`MAX_RPC_SAFE_PAYLOAD_BYTES`,
+to 32MiB", on the facet path). Nimbus ships at most 28 MiB per value (`MAX_RPC_SAFE_PAYLOAD_BYTES`,
 self-imposed: about 6% structured-clone headroom). Real payloads cross the
-cap fast: one node disk snapshot serialized to 44,252,709 bytes. Enforced:
+cap fast. One node disk snapshot serialized to 44,252,709 bytes. Enforced:
 boot specs name large members by VFS path, and the host reads bytes in 4 MiB
 ranges. Nothing large is ever an RPC argument.
 
 **Some values refuse to cross any boundary at any size** (probe): a compiled
 `WebAssembly.Module` ("Unable to deserialize cloned data.", including a
 same-isolate `structuredClone`), a WorkerLoader binding ("Could not serialize
-object of type \"WorkerLoader\"."), and a WebSocket. Proteus paid for the
-last one in production: an upgrade path passed a WebSocket as a DO-RPC
-argument and 500'd every daemon connect. Named: `classifyError` maps clone
+object of type \"WorkerLoader\"."), and a WebSocket. In production, an
+upgrade path that passed a WebSocket as a DO-RPC argument 500'd every daemon
+connect. Named: `classifyError` maps clone
 refusals to their own class (`clone_refused`), distinct from OOM.
 
 **RPC resolves a method on the receiver's PROTOTYPE CHAIN** (probe, verified
@@ -422,9 +414,8 @@ packages so SDK drift fails the build instead of leaking a method).
 "Cannot perform I/O on behalf of a different request"). Store CODE, never
 stubs, and re-resolve through `LOADER.get(id, cb)` in the current context.
 Repeated loads are close to free, because workerd caches by id. The code map
-must be bounded: an unbounded one grew under `wrangler dev`'s rebuild loop
-to a
-128 MiB isolate crash. Enforced: the binding shims (`NimbusLoaderRPC` and
+must be bounded. An unbounded one grew under `wrangler dev`'s rebuild loop
+to a 128 MiB isolate crash. Enforced: the binding shims (`NimbusLoaderRPC` and
 friends) store code behind a hard-capped LRU of 32 entries.
 
 **`WorkerStub` does not serialize, and entrypoints to dynamically loaded
@@ -493,8 +484,7 @@ different walls, each answering a different question:
   at 130-150 MB on a worker whose deliberate allocation ladder reached
   200-250 MB. The kill is burst- and pressure-sensitive, not a static
   capacity line (probe, 2026-07-24). A budget derived from a ladder
-  overstates what real work gets. Read this bullet before you trust any
-  other memory number here.
+  overstates what real work gets.
 
 Facets get their own independent envelope (~208 MiB each, previous section),
 and peer Durable Objects measured 1.2 GiB live across 8 peers. Yours: budget
@@ -504,12 +494,8 @@ Prefer reducing allocation rate over shaving static bytes.
 **Peer Durable Objects normally get their own isolates, and memory pressure
 between them is real but conditional** (probe, 2026-07-23: eight peers on
 eight distinct isolates; four peers held 100 MB each without incident; at
-120 MB each, one of four silently lost its retained bytes). Nimbus earlier
-read its resets-below-apparent-usage as peers sharing one 128 MiB isolate.
-The probe found peers of one class on distinct isolates, so conditional
-pressure fits the evidence better. Both projects agree that a peer's budget
-is real but not guaranteed: one peer can silently lose its retained bytes
-while its siblings continue.
+120 MB each, one of four silently lost its retained bytes). A peer's budget
+is real but not guaranteed.
 
 **`process.memoryUsage()` returns 0 for every field inside a Durable Object**
 (source). Any containment check built on it is vacuous. Enforced:
@@ -527,8 +513,8 @@ pins the message families (memory: "Worker exceeded memory limit.",
 "Durable Object's isolate exceeded its memory limit and was reset",
 "Memory limit exceeded"; CPU: "Worker exceeded CPU time limit.",
 "Durable Object exceeded its CPU time limit and was reset."). Never fold the
-two: a CPU kill recurs on the same input, a memory kill on the same working
-set, and they need different remedies.
+two. A CPU kill recurs on the same input and a memory kill on the same
+working set, so they need different remedies.
 
 **`SQLITE_NOMEM` and `SQLITE_FULL` are storage-layer refusals, distinct from
 isolate OOM and from each other** (production). NOMEM wants a smaller
@@ -564,7 +550,7 @@ figure is now documented). Older references say 2,048 bytes. That limit has
 moved, so do not design to the stale figure. The bound is on the serialized
 form (workerd re-serializes on every `serializeAttachment` call to check
 it), so a JSON length is only an approximation. Attachments are
-structured-cloned, not JSON-encoded: a `Set` survives as a `Set` and
+structured-cloned, not JSON-encoded. A `Set` survives as a `Set` and
 silently fails an array schema on read (probe). Enforced: `connections`
 validates on WRITE, turning the silent read-side null into a loud
 write-side error, and names the platform's refusal ("A WebSocket
@@ -586,8 +572,7 @@ budget. A handler blocked on I/O trips it without burning CPU, so
 `classifyError` does not bucket it as `cpu_exceeded`.
 
 **Whether Cloudflare's edge reaps an idle WebSocket at about 100 s is
-UNVERIFIED.** The claim traces to a deleted audit document that said
-"documented" and cited nothing. Cloudflare's limits and best-practices pages
+UNVERIFIED.** The claim traces to a deleted audit document that cited nothing. Cloudflare's limits and best-practices pages
 publish no such figure (read 2026-08-17). The mitigation is verified: a 25 s
 application heartbeat kept a connection alive through 110 s of idleness
 (probe). That heartbeat is the expensive wake the auto-response entry above
@@ -604,8 +589,7 @@ The upgrade takes the fetch-semantic path on every hop. A facet is fetched
 directly, and a peer is fetched as a service binding, which then fetches its
 hosted facet. A per-process capability pair rides in headers, so nothing
 that did not open the process can forge the route. A target without that
-entrypoint answers 501. Earlier versions of this library could not serve a
-WebSocket from a resident process; that limitation is gone. Enforced: the
+entrypoint answers 501. Enforced: the
 hosts behind `createProcessHost` keep upgrades on `fetch` for every hop.
 
 ## Subrequests and external I/O
@@ -614,7 +598,7 @@ hosts behind `createProcessHost` keep upgrades on `fetch` for every hop.
 (documented). Every `fetch()` plus every KV, R2, D1, or binding call counts,
 and each hop of a redirect chain counts separately. A refused subrequest is
 catchable: "Too many subrequests." One conflict between the two projects
-stands unresolved: Nimbus also lists the subrequest cap among terminations
+stands unresolved. Nimbus also lists the subrequest cap among terminations
 it has NO first-party signal for. Two distinct situations probably explain
 it: a refusal your code can catch, and a platform-side termination it
 cannot. Nobody has probed the second. Named:
@@ -624,7 +608,7 @@ cannot. Nobody has probed the second. Named:
 the seventh call QUEUES rather than fails** (documented). Workers reached
 through a service binding share the budget of the top-level request. Once
 headers arrive a connection stops counting. The breach presents as latency,
-never as an error: N parallel outbound calls inside one invocation serialize
+never as an error. N parallel outbound calls inside one invocation serialize
 past six. Yours: spread wide fan-out across objects, and suspect this before
 you blame the upstream.
 
@@ -669,8 +653,8 @@ Yours: never await a cross-object call on the gate path.
 **`ctx.storage.kv` on a SQLite-backed object is synchronous, with
 a per-value cap of about 2.2 MB** (behavior probe 2026-07-24; the cap read
 in workerd util/sqlite.c++:1362-1380, source). A local storage read is a
-blocking pread on a local file; it cannot stall the init gate. This sharpens
-the gate rule: local reads are free, and the cross-object AWAIT is the risk.
+blocking pread on a local file; it cannot stall the init gate. Local reads are
+free. The cross-object AWAIT is the risk.
 
 **`Date.now()` does not advance between I/O operations** (source; 0 ms
 across 200,000 consecutive reads). It is a timing side-channel mitigation,
@@ -690,12 +674,3 @@ frozen clock the loop cannot observe.
 (probe: three same-context resumes took 6 ms; the first cross-context resume
 hung to a 30 s timeout). A suspended computation is request-scoped. Yours:
 complete or checkpoint wasm work within the invocation that started it.
-
-## What this catalog covers
-
-It lists Nimbus's own policy numbers only where they are routinely mistaken
-for platform facts, and each of those says self-imposed. Where a measurement
-survived only in part (the per-module boot bracket), or a claim traces to
-nothing (the 100 s edge reap), the entry says so. Every entry carries its
-date. If you re-measure an entry and get a different number, the platform
-may have moved.
