@@ -6,16 +6,22 @@
 
 The backend-agnostic half of Nimbus: a durable POSIX-like filesystem, a shell
 with 60+ Unix commands, and the WASI runtime layer. It has no Cloudflare
-dependency. You hand it a SQLite and get back `.fs` and `.exec`. On
-Cloudflare that SQLite is `ctx.storage.sql` inside your Durable Object; in bun
-or node it is `bun:sqlite` or `node:sqlite`.
+dependency.
 
-I extracted this package because I kept wanting Nimbus *inside* other
-projects. Sometimes that is a Durable Object which already does something
-else and needs a real workspace. Sometimes it is a local script that needs
-the same filesystem semantics the hosted product has. The whole of it runs on
-two narrow ports (`SqlDatabase`
-and `SqlTransactions`), so the same code serves both hosts.
+You hand it a SQLite and get back `.fs` and `.exec`. On Cloudflare that
+SQLite is `ctx.storage.sql` inside your Durable Object; in bun or node it is
+`bun:sqlite` or `node:sqlite`. The whole package rests on two narrow ports
+(`SqlDatabase` and `SqlTransactions`), so the same code serves both hosts.
+
+Use it when something you already run needs a real workspace. A Durable
+Object that does something else and needs somewhere to work. A local script
+that needs the filesystem semantics the hosted product has.
+
+## Install
+
+```bash
+npm install @nimbus-sh/core
+```
 
 ## Quick start
 
@@ -80,7 +86,7 @@ it.
 
 ## Real runtimes, off Cloudflare
 
-The wasm runtimes are separate npm packages so nobody downloads a Python
+The wasm runtimes are separate npm packages, so nobody downloads a Python
 interpreter to get a filesystem. Install the ones you want and pass them in:
 
 ```bash
@@ -105,15 +111,15 @@ await ws.exec(`python -c "import sqlite3; print('live')"`);  // CPython 3.13, re
 `@nimbus-sh/runtime-ruby` (Ruby 3.3) and `@nimbus-sh/runtime-clang` (clang →
 `wasm32-wasi`, compile and run C in the workspace) work the same way. Every
 package carries the same manifest and the same sha256-verified blobs the
-hosted product serves from R2, published once and shipped over two
-transports.
+hosted product serves from R2.
 
 Without `facets` and `runtimes` you still get the full shell and coreutils.
-The wasm runtimes are a dependency you add. One caveat: `localFacetHost()`
-covers bun and node only. On workerd the CSP forbids request-time
-`WebAssembly.instantiate`, so wasm has to ride the Worker Loader module map.
-That machinery lives in `@nimbus-sh/worker` and `@nimbus-sh/fabric`. The
-shell, coreutils, and filesystem need none of it.
+The wasm runtimes are a dependency you add.
+
+`localFacetHost()` covers bun and node only. On workerd the CSP forbids
+request-time `WebAssembly.instantiate`, so wasm has to ride the Worker Loader
+module map. That machinery lives in `@nimbus-sh/worker` and
+`@nimbus-sh/fabric`. The shell, coreutils, and filesystem need none of it.
 
 ## Sharing a database with your own app
 
@@ -128,7 +134,7 @@ The workspace is a tenant in a database you own:
   from it, and a repeated generation would hand a dead process live write
   authority.
 
-## What needs the Worker package instead
+## What the worker package adds
 
 Resident processes (long-running servers, attached TUIs), the session
 protocol, port routing to the public internet, and the hosted terminal all

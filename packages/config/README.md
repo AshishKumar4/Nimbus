@@ -1,6 +1,9 @@
 # @nimbus-sh/config
 
-Typed, zero-dependency Wrangler config helper for Nimbus.
+Generate the `wrangler.jsonc` a Nimbus Worker needs.
+
+The helper writes the bindings, the R2 buckets, the alias map, and the
+non-secret agent vars. It is typed and has no dependencies.
 
 ## Install
 
@@ -64,21 +67,21 @@ writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
 | `extraAliases` | `Record<string, string>` | `{}` | Extra entries merged into the alias map. |
 | `agent` | `object` | unset | Emits non-secret Agent vars for Cloudflare OAuth, Workers AI model, AI Gateway, and owner-account fallback. |
 
-This package never writes Agent secrets. Store them with Wrangler:
+The helper never writes agent secrets. Store those with Wrangler:
 
 ```bash
 npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 ```
 
-## Why use this over hand-written wrangler.jsonc?
+## Why generate the config
 
-1. **Forwards-compat**: if Nimbus adds a required binding in v0.2,
-   this package updates and your `wrangler.jsonc` regenerates cleanly.
-2. **Alias map**: 12 alias entries are required for `isomorphic-git`
-   and the npm installer to work. Copying them by hand drifts. This
-   helper exports them as `NIMBUS_REQUIRED_ALIASES`.
-3. **Programmatic**: usable from Pulumi/Terraform/CDK or any custom CI.
+1. **Forwards-compat**: if Nimbus adds a required binding in v0.2, this
+   package updates and your `wrangler.jsonc` regenerates cleanly.
+2. **Alias map**: `isomorphic-git` and the npm installer need 12 alias
+   entries. Copied by hand they drift. The helper exports them as
+   `NIMBUS_REQUIRED_ALIASES`.
+3. **Programmatic**: it runs from Pulumi, Terraform, CDK, or any custom CI.
 
 ```ts
 import { NIMBUS_REQUIRED_ALIASES } from '@nimbus-sh/config';

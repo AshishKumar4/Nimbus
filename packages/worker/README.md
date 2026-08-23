@@ -1,14 +1,18 @@
 # @nimbus-sh/worker
 
-The Cloudflare half of Nimbus: the `NimbusSession` Durable Object, router,
-static assets, facet machinery, and auth internals. The filesystem, shell,
-and WASI runtime layer live in
+Run a Linux-like sandbox on Cloudflare Workers. A session gets a filesystem,
+a shell, real processes, and ports you can reach from a browser, all inside
+one Durable Object.
+
+This package is the Cloudflare half: the `NimbusSession` Durable Object, the
+router, the static assets, the facet machinery, and the auth internals. The
+filesystem, shell, and WASI runtime layer live in
 [`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core), which
 this package composes on. Core also runs standalone in bun or node.
 
-Application code should import the deploy-time API through
-`@nimbus-sh/sdk/worker`. This package is still installed because it carries
-the runtime implementation and static assets used by the SDK entrypoint.
+Import the deploy-time API from `@nimbus-sh/sdk/worker`. Install this package
+as well, because it carries the runtime implementation and the static assets
+that entrypoint serves.
 
 ## Install
 
@@ -123,9 +127,9 @@ Cloudflare Dashboard once for the account, then rerun the setup command.
 single-tenant demos can set `NIMBUS_LEGACY_PUBLIC=1` and rely on URL
 possession instead.
 
-## Composable API
+## createNimbusHandler
 
-`createNimbusHandler(options)` accepts:
+The handler owns the router, auth, and the session protocol. Its options:
 
 ```ts
 {
@@ -144,8 +148,8 @@ possession instead.
 
 ### Custom routes
 
-Routes that return non-`null` short-circuit Nimbus's router. Use them
-for a token-mint endpoint, `/healthz`, SDK smoke tests, or backend
+A route that returns anything but `null` short-circuits Nimbus's router. Use
+one for a token-mint endpoint, `/healthz`, SDK smoke tests, or backend
 sandbox jobs.
 
 ```ts
@@ -209,8 +213,7 @@ Applications normally call it through `Nimbus.connect({ endpoint, token,
 config })`. The route requires a valid Nimbus JWT and `sandbox:use` scope.
 `box.destroy()` additionally requires `session:destroy` or `session:admin`.
 
-For long-running app servers, start an explicit long-running process and
-expose the virtual port:
+For an app server, start the process and expose its virtual port:
 
 ```ts
 await box.files.write('/home/user/app/server.js', serverSource);
@@ -220,16 +223,36 @@ const port = await box.ports.expose(3000);
 // box.processes.kill(proc.pid) stops it
 ```
 
+### Hooks
+
+```ts
+export default createNimbusHandler({
+  hooks: {
+    onSessionStart: ({ sessionId, tenantSegment, request }) => {
+      console.log(`[${tenantSegment}] session ${sessionId} attached from ${request.headers.get('cf-connecting-ip')}`);
+    },
+  },
+});
+```
+
+### Auth modes
+
+| Mode | Meaning |
+|---|---|
+| `'auto'` (default) | Verify token when `JWT_SECRET` is set AND `NIMBUS_LEGACY_PUBLIC` is unset. Otherwise legacy-public. |
+| `'enforce'` | Always verify token; fail closed if `JWT_SECRET` is missing. |
+| `'legacy'` | Never verify; all requests route to the single `legacy:public:_` tenant. Use only for single-tenant demos. |
+
 ## Session Agent
 
-The bundled session shell includes an Agent surface inside the editor
-workspace. The route lives inside the session Durable Object under
-`/api/agent/*`; the stable Cloudflare OAuth callback is
+The bundled session shell carries an agent surface inside the editor
+workspace. Its route lives in the session Durable Object under
+`/api/agent/*`. The stable Cloudflare OAuth callback is
 `/api/nimbus/oauth/callback`.
 
-The agent can use the same session tools as the SDK: shell exec, files,
-runtime installs, long-running processes, logs, and preview ports. Model calls
-use the AI SDK with Cloudflare Workers AI's OpenAI-compatible endpoint and an
+The agent uses the same session tools as the SDK: shell exec, files, runtime
+installs, long-running processes, logs, and preview ports. Model calls use
+the AI SDK with Cloudflare Workers AI's OpenAI-compatible endpoint and an
 optional AI Gateway name.
 
 For user-owned quota, create a Cloudflare OAuth client. Use response type
@@ -257,26 +280,6 @@ npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
 npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 ```
 
-### Hooks
-
-```ts
-export default createNimbusHandler({
-  hooks: {
-    onSessionStart: ({ sessionId, tenantSegment, request }) => {
-      console.log(`[${tenantSegment}] session ${sessionId} attached from ${request.headers.get('cf-connecting-ip')}`);
-    },
-  },
-});
-```
-
-### Auth modes
-
-| Mode | Meaning |
-|---|---|
-| `'auto'` (default) | Verify token when `JWT_SECRET` is set AND `NIMBUS_LEGACY_PUBLIC` is unset. Otherwise legacy-public. |
-| `'enforce'` | Always verify token; fail closed if `JWT_SECRET` is missing. |
-| `'legacy'` | Never verify; all requests route to the single `legacy:public:_` tenant. Use only for single-tenant demos. |
-
 ## Subpath exports
 
 | Subpath | What |
@@ -288,7 +291,7 @@ export default createNimbusHandler({
 
 ## Required bindings
 
-Every binding is load-bearing. See `apps/hosted-demo/wrangler.jsonc` or
+None of these is optional. See `apps/hosted-demo/wrangler.jsonc` or
 `@nimbus-sh/config` for the canonical set:
 
 - `NIMBUS_SESSION` (Durable Object) — per-session SQLite state
