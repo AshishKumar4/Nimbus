@@ -40,7 +40,7 @@ import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose
 import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { noteShellSocketActivity } from './shell-socket.js';
+import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 /**
  * Snapshot the live Shell state and write it through to DO SQLite
@@ -156,7 +156,8 @@ export async function wsMessage(self, ws, message) {
         // The stamp goes in the attachment because isolate memory does not
         // survive hibernation and the /ws upgrade has to read it afterwards.
         // Rate-limited inside; see src/session/shell-socket.ts.
-        noteShellSocketActivity(ws);
+        if (attach?.kind === 'shell')
+            noteShellSocketActivity(ws);
         const data = typeof message === 'string' ? message : dec.decode(message);
         const value = JSON.parse(data);
         // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE
@@ -310,6 +311,11 @@ export async function wsClose(self, ws, _code, _reason, _wasClean) {
     // wrangler dev) + long-running facets must still survive the
     // terminal reconnect (see 607e472 — do NOT kill running processes
     // here). Only reap per-tab state.
+    // The runtime says this socket is finished, so it no longer holds the
+    // terminal. Drop its liveness stamp before anything else: the frame
+    // that triggered this close stamped it moments ago, and leaving that
+    // behind would make the reconnect look like a second tab.
+    clearShellSocketStamp(ws);
     // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
     // The Track B' state-machine transition. Persist final shell
     // state + record a recovery_event BEFORE we null the in-memory
@@ -392,6 +398,10 @@ export async function wsError(self, ws, _error) {
         catch { /* best-effort */ }
         return;
     }
+    // Same reasoning as wsClose: this socket stops holding the terminal
+    // here. It matters more on this path, because the handler that just
+    // blew the 5-s cap is the one that stamped the socket.
+    clearShellSocketStamp(ws);
     // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
     // Same architectural step as wsClose: persist shell state + record
     // a drained event before nulling. wsError is a different physical

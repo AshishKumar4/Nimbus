@@ -19,9 +19,15 @@
  *      write per STAMP_INTERVAL_MS, so a fast typist costs one attachment
  *      write per 15 s.
  *   2. `ctx.getWebSocketAutoResponseTimestamp(ws)`. The runtime answers
- *      the configured `ping` itself without waking the object, so a tab
- *      that only pings never reaches case 1. That timestamp is the only
- *      trace those pings leave.
+ *      the configured `ping` itself without waking the object, so a ping
+ *      never reaches case 1 and leaves no other trace. The browser
+ *      terminal does not ping — it probes with an ordinary frame, for
+ *      the reasons public/s/index.html gives — so this covers the other
+ *      clients rather than that one.
+ *
+ * A close or an error is better than either: the runtime is telling the
+ * object outright that this socket is finished, so `clearShellSocketStamp`
+ * drops the evidence there and the next upgrade needs no inference at all.
  *
  * A socket owns the terminal while the later of the two falls inside
  * SHELL_OWNER_LIVENESS_MS. The window has to cover the longest silence a
@@ -39,6 +45,16 @@ export interface AutoResponseHost {
 }
 /** Tag a freshly accepted terminal socket as this session's shell owner. */
 export declare function tagShellSocket(ws: WebSocket, now?: number): void;
+/**
+ * Drop the evidence that a peer was on this socket.
+ *
+ * Called when the runtime reports the socket closed or errored. Both say
+ * this socket is finished, so the next upgrade must not read a stamp the
+ * dying handler wrote moments earlier and refuse the reconnect. Keeps the
+ * kind, so the socket still classifies as the terminal's while it drains.
+ * A peer that turns out to be alive re-stamps on its next frame.
+ */
+export declare function clearShellSocketStamp(ws: WebSocket): void;
 /**
  * Record that the peer on this socket is still there.
  *
