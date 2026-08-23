@@ -41,7 +41,7 @@ container sandbox ([where Nimbus fits](/docs/start/where-it-fits/)).
 | git transport | HTTPS only, no SSH |
 | A native wasm binary's linear memory | 128 MiB. Past it `malloc` returns NULL and the program reports its own allocation failure, instead of the session dying without one |
 | opencode TUI | serve half boots and streams SSE; attach half renders frames from a facet with its own memory envelope, still hardening |
-| Hosted demo | evaluation only — no SLA, may be reset, not for secrets |
+| Hosted demo | evaluation only; no SLA, may be reset, not for secrets |
 
 Verified live: Vite + React, the Cloudflare Vite Plugin, single-file
 Workers, Workers with Static Assets, npm and git workflows, Python and Ruby
