@@ -89,9 +89,9 @@ in the DO, so a replayed bootstrap gets a 401. Secrets rotate with a
 previous-secret grace window.
 
 The hosted demo's anonymous sandboxes use the same machinery with tighter
-limits: a sid-pinned attach token that expires in two minutes, a global
-cap on concurrent anonymous sessions, a per-address rate limit, and a
-fixed ten-minute session lifetime.
+limits. The attach token is sid-pinned and expires in two minutes. A
+global cap bounds concurrent anonymous sessions, a per-address rate limit
+applies, and every session ends after ten minutes.
 
 ## The preview origin
 
@@ -144,8 +144,7 @@ The isolate is also the fault boundary. A process that exhausts its
 128 MiB heap produces a catchable RPC error: the shell reports it, the
 session keeps running, and the disk is untouched because facets never own
 files. The supervisor holds a self-imposed 64 MiB heap ceiling, half the
-platform cap, because a supervisor OOM resets the session while a facet
-OOM does not.
+platform cap. A supervisor OOM resets the session; a facet OOM does not.
 
 ## Limits
 
@@ -159,7 +158,7 @@ OOM does not.
   from that, not from a leak.
 - **Outbound network is open by default.** npm and git need it.
   Per-session egress policy is designed as an embedder option but not
-  shipped, so do not put a sandbox in front of secrets it should not be
+  shipped. Do not put a sandbox in front of secrets it should not be
   able to exfiltrate.
 - **A known upstream availability issue.** Certain user-space activity
   can crash the shared workerd process, which resets the

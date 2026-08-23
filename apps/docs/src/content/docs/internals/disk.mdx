@@ -1,6 +1,6 @@
 ---
 title: Inside the disk
-description: The SQLite VFS — inodes, 64 KiB chunks, revision watermarks, and the credit-backpressured write path.
+description: The SQLite VFS. Inodes, 64 KiB chunks, revision watermarks, and the credit-backpressured write path.
 ---
 
 import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
@@ -28,9 +28,9 @@ pool governs the stream: 8 MiB of retained payload bytes, shared across
 every writer in the session. A sender acquires credit sized to each
 64 KiB chunk before the supervisor reads its payload. With no credit, the
 RPC body itself stops being read, so backpressure reaches the sender
-through the stream. Waiters are served in FIFO order,
-so a 52,500-file `npm install` and an 84,000-file checkout can run in
-parallel inside 128 MiB isolates without either starving the other.
+through the stream. Waiters are served in FIFO order. A 52,500-file
+`npm install` and an 84,000-file checkout can run in parallel inside
+128 MiB isolates without either starving the other.
 
 Publication is path-atomic. A bulk write stages its chunks into a fresh
 content generation under bounded transactions, at most 1 MiB of blob

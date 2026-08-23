@@ -50,7 +50,7 @@ isolate; `sort file | grep -v x` never crosses an RPC. A spawned child
 (`child_process`, npm bins) gets its own facet, with stdio flowing over
 supervisor RPC and its pid registered in the DO before the facet boots.
 Inside the bash runner, the scheduler connects WASM instances with real
-byte-buffer pipes and blocking reads, so `echo a | tr a b` produces `b`
+byte-buffer pipes and blocking reads. `echo a | tr a b` produces `b`
 through a `pipe(2)`.
 
 ## fork(), setjmp, and real bash
@@ -64,8 +64,8 @@ holding the child pid, and the child resumes holding 0. The same machinery
 provides asyncify-native `setjmp`/`longjmp`, which bash requires.
 
 GNU bash 5.2.37, compiled to `wasm32-wasi` and asyncified, runs in a
-dedicated facet with a scheduler that services fork, exec, `waitpid`,
-blocking pipe reads, and setjmp across multiple live WASM instances in one
+dedicated facet. Its scheduler services fork, exec, `waitpid`, blocking
+pipe reads, and setjmp across multiple live WASM instances in one
 isolate. Its coreutils are BusyBox 1.37.0, one multicall binary mapped to
 every applet name, exec'd as plain WASI programs and pumped by the same
 scheduler. Copying a 16 MiB image on the reuse path costs ~0.5 ms, and

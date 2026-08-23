@@ -20,9 +20,10 @@ that can reach the session filesystem are wrapped in
 `WebAssembly.Suspending`, and every entry into such a guest runs under
 `WebAssembly.promising`. V8 requires the suspender at call time even for
 an import that returns a plain errno, so there is no partial adoption and
-no fallback. A guest whose entries are synchronous by contract (the
-terminal render backend, driven per frame from a sync caller) asks for
-unwrapped imports instead, and then cannot be given anything that blocks.
+no fallback. A guest whose entries are synchronous by contract asks for
+unwrapped imports instead. The terminal render backend is one, driven per
+frame from a sync caller. Such a guest cannot be given anything that
+blocks.
 Outbound TCP uses `path_open('/dev/tcp/<host>/<port>')` to open a real
 `cloudflare:sockets` connection. `poll_oneoff` can mix fd, clock, and
 socket subscriptions.
@@ -30,7 +31,7 @@ socket subscriptions.
 A suspension lasts only as long as the request that started it. A workerd
 request context resumes only the wasm stacks it suspended itself, so a
 program parked in `accept` stays parked when the next request arrives.
-Servers on the virtual-socket kernel run the other way round: the kernel
+Servers on the virtual-socket kernel run the other way round. The kernel
 queues the connection and asks the runtime to service it on one dedicated
 cooperative pump, the only place a JSPI suspension is legal. Pyodide and
 ruby.wasm serve loopback ports this way.
@@ -57,7 +58,7 @@ therefore be declared startup modules, while arbitrary dynamic loading
 fails with a clear diagnostic.
 
 WASI files are a cache over the session filesystem. The spawn seed is a
-manifest of sizes, content is fetched on first read, and writes go back
+manifest of sizes. Content is fetched on first read, and writes go back
 as they happen, so a process that never exits still persists. bash and
 python are the two runtimes not yet on it. Each still carries a private
 filesystem that copies the subtree in and reports a diff on exit.
