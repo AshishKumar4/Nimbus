@@ -37,8 +37,9 @@ so exiting one reaps the other.
 
 Both halves run the same way every resident process does: as a [facet of the
 session](/docs/internals/fabric/), each with a memory envelope of its own. The
-serve half binds a port and answers over it; the attach half sends frames over
-the terminal RPC and takes keystrokes over the stdin pump. The serve half is
+serve half binds a port and answers over it. The attach half sends frames
+over the terminal RPC and takes keystrokes over the stdin pump.
+The serve half is
 stable; the attach half is [still being
 hardened](/docs/fine-print/capabilities/).
 
@@ -47,8 +48,8 @@ hardened](/docs/fine-print/capabilities/).
 There are three kinds of process boundary, each with a different pipe.
 Shell pipelines wire commands with in-memory pipe channels inside one
 isolate; `sort file | grep -v x` never crosses an RPC. A spawned child
-(`child_process`, npm bins) gets its own facet, with stdio flowing over
-supervisor RPC and its pid registered in the DO before the facet boots.
+(`child_process`, npm bins) gets its own facet. Stdio flows over
+supervisor RPC, and the pid is registered in the DO before the facet boots.
 Inside the bash runner, the scheduler connects WASM instances with real
 byte-buffer pipes and blocking reads. `echo a | tr a b` produces `b`
 through a `pipe(2)`.
@@ -57,7 +58,7 @@ through a `pipe(2)`.
 
 V8 isolates have no `fork(2)`, so Nimbus implements one. Asyncify, the
 instrumentation that lets WASM unwind and rewind its call stack,
-snapshots a running program. The parent's linear memory is copied, every
+snapshots a running program. The parent's linear memory is copied. Every
 exported global including the stack pointer is restored into a sibling
 instance of the same module, and both sides rewind. The parent resumes
 holding the child pid, and the child resumes holding 0. The same machinery

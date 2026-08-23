@@ -50,7 +50,7 @@ one process. Nimbus therefore pushes heavy work out to facets.
 
 Facets are dynamically loaded Workers created through the platform's
 Worker Loader binding. Each gets the standard `nodejs_compat` runtime, a
-128 MiB heap of its own, and one injected capability: a
+128 MiB heap of its own, and one injected capability. That capability is a
 `SUPERVISOR` RPC stub pointing back at its own session. Generated facet
 code cannot import supervisor modules, so the RPC surface is the whole
 contract.
@@ -75,9 +75,9 @@ DO ([inside the disk](/docs/internals/disk/) has the numbers).
 
 ## One process, one facet
 
-Every resident process runs as a DO Facet of its own session: a named
-child actor whose class comes from a dynamic worker the session loads
-itself. A `node` server, a Python or Ruby socket server, and opencode's
+Every resident process runs as a DO Facet of its own session. A facet is a
+named child actor whose class comes from a dynamic worker the session
+loads itself. A `node` server, a Python or Ruby socket server, and opencode's
 TUI and headless server all run this way. There is one placement, and
 nothing above the fabric can branch on it.
 
@@ -85,8 +85,7 @@ A facet gets its own memory envelope, measured at ~208 MiB each. The
 figure is the same whether the session holds 0 or 128 MiB, and eight
 facets plus the parent hold 1,664 MiB live. Containment runs both ways. A
 facet that runs out of memory takes down its own process and leaves the
-session running, and a session that resets leaves the facet's memory
-intact.
+session running. A session that resets leaves the facet's memory intact.
 
 <ProcessFacet caption="A process facet is a child actor of the session. It gets its own memory envelope, and the SUPERVISOR binding it receives carries the session's doId, so its filesystem, terminal, and port calls land on the session." />
 

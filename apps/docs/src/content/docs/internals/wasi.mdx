@@ -17,7 +17,7 @@ server takes `/port` traffic the same way a Node one does.
 
 Blocking I/O uses JSPI. Socket calls, `poll_oneoff` and the file reads
 that can reach the session filesystem are wrapped in
-`WebAssembly.Suspending`, and every entry into such a guest runs under
+`WebAssembly.Suspending`. Every entry into such a guest runs under
 `WebAssembly.promising`. V8 requires the suspender at call time even for
 an import that returns a plain errno, so there is no partial adoption and
 no fallback. A guest whose entries are synchronous by contract asks for
@@ -38,7 +38,7 @@ ruby.wasm serve loopback ports this way.
 
 JSPI suspends a call, but it cannot snapshot a stack. Programs that need
 `fork` or `setjmp`, bash among them, are additionally instrumented with
-Asyncify, which can unwind a running program's call stack to memory and
+Asyncify. Asyncify can unwind a running program's call stack to memory and
 rewind it in another instance. [The process
 fabric](/docs/internals/processes/) covers what that unlocked.
 
@@ -75,11 +75,11 @@ module against the same shared linear memory and start
 `Atomics.wait` on isolate-local memory has nothing to wait on. A thread
 is defined by the memory it shares, so an isolate backs a process.
 
-`thread_spawn` is therefore left out of the import table, and a program
+`thread_spawn` is therefore left out of the import table. A program
 that links pthreads stops at wasm-ld with `undefined symbol:
 thread_spawn` rather than running with wrong memory semantics.
 Parallelism lives one level up, at the process boundary: a facet per
-process, with its own memory budget when that facet runs on a [peer
+process. That facet gets its own memory budget when it runs on a [peer
 DO](/docs/internals/fabric/).
 [The design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md)
 lists what the Workers runtime would have to expose for in-language

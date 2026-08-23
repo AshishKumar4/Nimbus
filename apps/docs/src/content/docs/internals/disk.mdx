@@ -12,7 +12,7 @@ inode row carries the POSIX surface (kind, size, mtime, `mode`, `uid`,
 `gid`) and a content id. Chunks are stored against the content id rather
 than the path, which is what makes atomic replacement possible. An LRU
 keeps up to 512 hot chunks (32 MiB) in memory without making memory the
-source of truth, and it shrinks itself under memory pressure.
+source of truth. It shrinks itself under memory pressure.
 
 Every path also carries a revision watermark for its subtree. One global
 mutation clock ticks per write, and the written path plus all of its
@@ -53,8 +53,8 @@ appending a byte to a large file never rewrites the file.
 
 Not every read goes to the live bridge yet. Node's synchronous `fs` runs
 against a bounded snapshot of the working tree, capped at 24 MiB and
-4,000 files with `node_modules` excluded, plus a local write cache.
-Synchronous calls cannot await an RPC. Node's async `fs` uses the live
+4,000 files with `node_modules` excluded. It also keeps a local write
+cache, because synchronous calls cannot await an RPC. Node's async `fs` uses the live
 bridge. Fresh git clones carry a metadata-only closed-world overlay
 across invocation boundaries so checkout phases can resume without
 re-reading the world. Python, Ruby, bash, and WASI one-shots still use a

@@ -63,14 +63,14 @@ against a history file owned by root:
 ## Sessions don't share
 
 Loopback never leaves the session. The DNS shim resolves `localhost` and
-nothing else, and `127.0.0.1:<port>` is a lookup in the session's own
-port registry, a map inside the supervisor DO, not a network hop. Two
+nothing else. `127.0.0.1:<port>` is a lookup in the session's own port
+registry, a map inside the supervisor DO. It is not a network hop. Two
 sessions both listening on port 3000 are isolated. Neither can reach the
 other's port.
 
-The only thing sessions share is a read-only, content-addressed cache:
-npm tarballs keyed by `name@version` (immutable on the registry since
-2018) and runtime blobs, stored in R2. Sessions reach that cache through
+The only thing sessions share is a read-only, content-addressed cache. It
+holds npm tarballs keyed by `name@version` (immutable on the registry
+since 2018) and runtime blobs, stored in R2. Sessions reach that cache through
 narrow supervisor RPC methods, and the R2 bindings live on the Worker
 rather than in any session or facet. So no session can write another
 session's view of a package. There is no cross-session filesystem, no
@@ -103,7 +103,7 @@ Everything served there is untrusted user code.
 
 The router matches the preview hostname before anything else. Embedder
 routes, `/new`, `/s/<id>/`, the agent OAuth callback, the SDK's remote API,
-and the static-asset fallthrough all run after it, so
+and the static-asset fallthrough all run after it. So
 `https://3000--<id>.<suffix>/login` reaches the app's own `/login`. No
 Nimbus endpoint is same-origin with code the app served.
 
@@ -111,19 +111,21 @@ Nimbus strips its own credentials before the request crosses into the app.
 The port proxy removes `Authorization`, `Proxy-Authorization`, every
 `X-Nimbus-*` header, and every cookie in the platform namespace: names
 starting with `nimbus_`, `__Host-nimbus`, or `__Secure-nimbus`. Matching
-the namespace rather than an enumerated list also covers the agent OAuth cookie in the
-session layer and an embedder's own cookies, which this layer never imports.
+the namespace rather than an enumerated list also covers the agent OAuth
+cookie in the session layer. It covers an embedder's own cookies too,
+which this layer never imports.
 Cookies the app itself set are preserved. A token arriving as
 `?nimbus_token=` is deleted from the query at the same edge, so it reaches
 neither the app nor the session's logs. The session cookie is
 `__Host-nimbus_token`. Browsers reject that prefix on any cookie carrying
-a `Domain` attribute or a `Path` other than `/`, so preview code cannot set a
+a `Domain` attribute or a `Path` other than `/`. Preview code cannot set a
 shadowing cookie for the parent domain.
 
 A preview URL is a link: it lands in history, referrers, and chat logs.
-Under enforced auth, `GET /s/<id>/api/preview-url?port=<n>` mints it a token
-scoped `session:preview`, pinned to that session, good for 90 seconds, and
-carrying a `jti` the session DO consumes set-if-absent. The preview host
+Under enforced auth, `GET /s/<id>/api/preview-url?port=<n>` mints it a
+token scoped `session:preview`. The token is pinned to that session, good
+for 90 seconds, and carries a `jti` the session DO consumes set-if-absent.
+The preview host
 trades that token once for the sid-pinned `session:attach` cookie and
 redirects to the requested path. A replayed link gets `401`. The same token
 sent as a bearer to `/s/<id>/` gets `403`, because `session:preview` grants
@@ -141,7 +143,7 @@ origin with the session shell.
 ## Fault isolation
 
 The isolate is also the fault boundary. A process that exhausts its
-128 MiB heap produces a catchable RPC error: the shell reports it, the
+128 MiB heap produces a catchable RPC error. The shell reports it, the
 session keeps running, and the disk is untouched because facets never own
 files. The supervisor holds a self-imposed 64 MiB heap ceiling, half the
 platform cap. A supervisor OOM resets the session; a facet OOM does not.
