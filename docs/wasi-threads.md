@@ -76,9 +76,10 @@ error.
 
 ## Limits
 
-- **No parallelism.** Every resident Nimbus process is a Durable Object Facet,
-  and facet siblings serialise on CPU. There is no independent-CPU substrate
-  to offload to, so do not expect this to change.
+- **No parallelism.** The threads of one process share one
+  `WebAssembly.Memory`, so they must run in one isolate. Peer Durable Objects
+  do get independent CPU, but a process cannot spread its own threads across
+  them. Resident processes also default to facets, whose siblings share CPU.
 - **No preemption yet.** A thread that never reaches a blocking operation (a
   bare spin loop, a tight compute loop) holds the process until it does. A
   spinlock that calls `sched_yield()` is fine; one that does not will hang.
