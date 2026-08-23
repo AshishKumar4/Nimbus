@@ -28,7 +28,7 @@ storage attached. One session is one DO instance, addressed by
 `tenant:sessionId`. There are no replicas, so there is no cache-coherence
 protocol to run.
 
-The supervisor holds, in one actor:
+The supervisor owns, in one actor:
 
 - **The disk**: the SQLite-backed VFS, 10 GB, the single source of
   truth for every byte ([inside the disk](/docs/internals/disk/)).
@@ -105,8 +105,8 @@ facet starts in 8–16 ms.
 Facets are separate isolates inside the session's single actor thread, and
 that has a cost. A facet awaiting I/O yields the thread. While one parks
 on a socket, on stdin, or on an outbound call, a sibling runs at idle
-latency. A facet spending sustained CPU stalls every sibling, and their
-syscalls, for that whole duration. So this fabric hosts I/O-bound resident
+latency. A facet spending sustained CPU stalls every sibling and its
+syscalls for that whole duration. So this fabric hosts I/O-bound resident
 processes. CPU-heavy work such as clang, esbuild, and npm install runs
 one-shot or fans out across sibling DOs instead.
 
