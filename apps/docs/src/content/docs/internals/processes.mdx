@@ -20,9 +20,9 @@ enforceable at one seam.
 
 A keyed resident keeps `vite` or `opencode serve` warm across requests. Its
 route stub resolves the worker from the loader cache and never boots one,
-because a re-loaded isolate is an empty worker with nothing listening. If the
-facet is gone, the stub fails loudly. An OOM in a facet returns a catchable
-RPC error, so the session survives.
+because a re-loaded isolate is an empty worker with nothing listening. A stub
+whose facet is gone fails loudly. An OOM in a facet returns a catchable RPC
+error, so the session survives.
 
 The supervisor stages a big app with a small spec: argv, env, and a VFS
 snapshot. The Worker-Loader cache-miss path assembles the full module map
@@ -35,12 +35,11 @@ and an overall budget. The opencode pair starts the server, checks it over
 loopback, then attaches the TUI at `127.0.0.1:4096`. Their lifecycles are tied,
 so exiting one reaps the other.
 
-Both halves run the same way every resident process does: as a [facet of the
-session](/docs/internals/fabric/), each with a memory envelope of its own. The
+Both halves run the way every resident process does, as a [facet of the
+session](/docs/internals/fabric/) with a memory envelope of its own. The
 serve half binds a port and answers over it. The attach half sends frames
-over the terminal RPC and takes keystrokes over the stdin pump.
-The serve half is
-stable; the attach half is [still being
+over the terminal RPC and takes keystrokes over the stdin pump. The serve
+half is stable. The attach half is [still being
 hardened](/docs/fine-print/capabilities/).
 
 ## Pipes and process boundaries

@@ -39,7 +39,7 @@ inode's content id to the staged generation and marks the old one for
 collection. A crash mid-stream leaves a committed prefix of whole files,
 not a partially-written file or a partially-published tree.
 
-Durability boundaries are `fsync` and process exit: every write returns
+`fsync` and process exit are the durability boundaries. Every write returns
 only after its SQLite transaction commits, and hibernation cannot lose a
 committed write.
 

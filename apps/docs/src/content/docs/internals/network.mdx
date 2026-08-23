@@ -26,10 +26,10 @@ bound reach the registry at `/s/<id>/port/<n>/` instead. The preview host is
 also a trust boundary ([security](/docs/internals/security/) covers what is
 stripped at it).
 
-No registry entry returns `502`: no process is listening. A registered port
-whose stub isn't attached returns `501`. That state exists during the boot
-window between registration and a serving isolate. No retry masks either
-code.
+A port with no registry entry returns `502`, because no process is listening.
+A registered port whose stub is not attached returns `501`. That state exists
+during the boot window between registration and a serving isolate. No retry
+masks either code.
 
 A routed request crosses the isolate boundary as a native Request over
 Workers RPC, not a structured-clone copy. Binary bodies pass
@@ -39,9 +39,9 @@ into the facet.
 Responses stream end to end. The relay pipes the facet's body through an
 identity stream and keeps the routing call open until the body finishes.
 Closing it early kills the stream, and materializing the body first
-collapses an SSE feed into one batch at stream-close. Live probes check
-each SSE tick in the session shell and through the preview path at
-~300 ms intervals. In-session
+collapses an SSE feed into one batch at stream-close. SSE ticks arrive one
+by one in the session shell and through the preview path, at ~300 ms
+intervals. In-session
 `curl` writes each chunk as it arrives, and <kbd>Ctrl</kbd>+<kbd>C</kbd>
 cancels the read. Abandoned readers also cancel their relay pipes.
 

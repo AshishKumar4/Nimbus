@@ -9,11 +9,10 @@ import ProcessFacet from '../../../components/diagrams/ProcessFacet.astro';
 
 <SessionAnatomy caption="The supervisor holds the state that must survive a crash. Everything else runs in facets and can be evicted." />
 
-Every process runs in its own isolate. The 128 MiB per-isolate limit and
-per-invocation CPU budgets are Cloudflare's published figures. Durable
-Objects are the only durable, strongly consistent primitive on the
-platform, so the supervisor owns the disk, shell, process table, and port
-registry. Facets do the work and can be evicted.
+A session is one supervisor Durable Object and a fabric of facets. The
+supervisor owns the disk, shell, process table, and port registry. Facets do
+the work. Each process runs in its own isolate with a 128 MiB heap, and any
+facet can be evicted.
 
 An app can span several isolates. That's how opencode runs as a server and
 TUI joined by loopback, with a separate budget for each half.
@@ -56,10 +55,9 @@ code cannot import supervisor modules, so the RPC surface is the whole
 contract.
 
 The loader keys isolates by content hash and slot, so repeated runs of
-the same program reuse a warm isolate instead of re-instantiating. Warm
-reuse also fixes what happens on failure. A route stub for an evicted
-facet fails loudly rather than re-loading the code, because a re-loaded
-isolate is an empty worker with nothing listening.
+the same program reuse a warm isolate instead of re-instantiating. A route
+stub for an evicted facet fails loudly rather than re-loading the code,
+because a re-loaded isolate is an empty worker with nothing listening.
 
 The supervisor describes a big app with a small spec: argv, env, and a
 bounded VFS snapshot. The loader assembles the full module map lazily,
@@ -78,8 +76,7 @@ DO ([inside the disk](/docs/internals/disk/) has the numbers).
 Every resident process runs as a DO Facet of its own session. A facet is a
 named child actor whose class comes from a dynamic worker the session
 loads itself. A `node` server, a Python or Ruby socket server, and opencode's
-TUI and headless server all run this way. There is one placement, and
-nothing above the fabric can branch on it.
+TUI and headless server all run this way.
 
 A facet gets its own memory envelope, measured at ~208 MiB each. The
 figure is the same whether the session holds 0 or 128 MiB, and eight
@@ -96,10 +93,10 @@ and the RPC layer resolves that doId to a stub on every call. So
 The disk, the terminal, and the ports stay where they are.
 
 Because a facet is addressed by name rather than by a transferred
-entrypoint, the session re-resolves it in any later request context. That
-is what lets a resident process serve a port: inbound HTTP, SSE, and
-WebSockets stream straight through the session to the process. A warm
-facet starts in 8–16 ms.
+entrypoint, the session re-resolves it in any later request context. A
+resident process can therefore serve a port. Inbound HTTP, SSE, and
+WebSockets stream straight through the session to the process. A warm facet
+starts in 8–16 ms.
 
 Facets are separate isolates inside the session's single actor thread, and
 that has a cost. A facet awaiting I/O yields the thread. While one parks

@@ -6,6 +6,10 @@ description: The isolate boundary, enforced Unix permissions, session isolation,
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro';
 
+The isolate is the security boundary. Around it Nimbus adds Unix permissions
+enforced at one filesystem seam, per-session isolation, and bearer-token
+access.
+
 ## The isolation boundary
 
 Each process runs in its own V8 isolate, spawned by Cloudflare's Worker
@@ -110,10 +114,9 @@ Nimbus endpoint is same-origin with code the app served.
 Nimbus strips its own credentials before the request crosses into the app.
 The port proxy removes `Authorization`, `Proxy-Authorization`, every
 `X-Nimbus-*` header, and every cookie in the platform namespace: names
-starting with `nimbus_`, `__Host-nimbus`, or `__Secure-nimbus`. Matching
-the namespace rather than an enumerated list also covers the agent OAuth
-cookie in the session layer. It covers an embedder's own cookies too,
-which this layer never imports.
+starting with `nimbus_`, `__Host-nimbus`, or `__Secure-nimbus`. Matching the
+namespace rather than a list also covers the agent OAuth cookie and an
+embedder's own cookies.
 Cookies the app itself set are preserved. A token arriving as
 `?nimbus_token=` is deleted from the query at the same edge, so it reaches
 neither the app nor the session's logs. The session cookie is
