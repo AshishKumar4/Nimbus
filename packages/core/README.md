@@ -5,15 +5,16 @@
 > presented as-is.
 
 The backend-agnostic half of Nimbus: a durable POSIX-like filesystem, a shell
-with 60+ Unix commands, and the WASI runtime layer — with no Cloudflare
+with 60+ Unix commands, and the WASI runtime layer. It has no Cloudflare
 dependency. You hand it a SQLite and get back `.fs` and `.exec`. On
 Cloudflare that SQLite is `ctx.storage.sql` inside your Durable Object; in bun
 or node it is `bun:sqlite` or `node:sqlite`.
 
 I extracted this package because I kept wanting Nimbus *inside* other
-projects — a Durable Object that already does something else but needs a real
-workspace, or a local script that needs the same filesystem semantics the
-hosted product has. The whole of it runs on two narrow ports (`SqlDatabase`
+projects. Sometimes that is a Durable Object which already does something
+else and needs a real workspace. Sometimes it is a local script that needs
+the same filesystem semantics the hosted product has. The whole of it runs on
+two narrow ports (`SqlDatabase`
 and `SqlTransactions`), so the same code serves both hosts.
 
 ## Quick start
@@ -73,9 +74,9 @@ export class Workspace extends DurableObject {
 ```
 
 Files written through `.fs` are owned by the session user (uid 1000), not
-root, and the shell enforces the same permission model either way: a
-root-owned `/etc/passwd` refuses a write from `.fs`, and `id` resolves names
-through it.
+root. The shell enforces the same permission model either way: a root-owned
+`/etc/passwd` refuses a write from `.fs`, and `id` resolves names through
+it.
 
 ## Real runtimes, off Cloudflare
 
@@ -104,26 +105,26 @@ await ws.exec(`python -c "import sqlite3; print('live')"`);  // CPython 3.13, re
 `@nimbus-sh/runtime-ruby` (Ruby 3.3) and `@nimbus-sh/runtime-clang` (clang →
 `wasm32-wasi`, compile and run C in the workspace) work the same way. Every
 package carries the same manifest and the same sha256-verified blobs the
-hosted product serves from R2 — one publisher, two transports.
+hosted product serves from R2, published once and shipped over two
+transports.
 
-Without `facets` and `runtimes` you still get the full shell and coreutils;
-the wasm runtimes are a dependency you add, not a mode you enable. One caveat:
-`localFacetHost()` covers bun and node only — on workerd the CSP forbids
-request-time `WebAssembly.instantiate`, so wasm has to ride the Worker Loader
-module map, which is the machinery in `@nimbus-sh/worker` and
-`@nimbus-sh/fabric`; the shell, coreutils, and filesystem need none of it.
+Without `facets` and `runtimes` you still get the full shell and coreutils.
+The wasm runtimes are a dependency you add. One caveat: `localFacetHost()`
+covers bun and node only. On workerd the CSP forbids request-time
+`WebAssembly.instantiate`, so wasm has to ride the Worker Loader module map.
+That machinery lives in `@nimbus-sh/worker` and `@nimbus-sh/fabric`. The
+shell, coreutils, and filesystem need none of it.
 
 ## Sharing a database with your own app
 
-The workspace is designed to be a tenant in a database you own, not the owner
-of it:
+The workspace is a tenant in a database you own:
 
 - It creates and touches only its own tables (`inodes`, `file_chunks`,
   `content_lifecycle`, `vfs_*`).
-- `destroy()` drops exactly those tables. It never calls `deleteAll()`.
+- `destroy()` drops those tables and does not call `deleteAll()`.
 - `transactionSync` must be a real transaction. An implementation that only
   calls the callback turns every atomic write into a torn one.
-- `generation` must never repeat across restarts of your host — pids derive
+- `generation` must never repeat across restarts of your host. Pids derive
   from it, and a repeated generation would hand a dead process live write
   authority.
 
@@ -131,8 +132,8 @@ of it:
 
 Resident processes (long-running servers, attached TUIs), the session
 protocol, port routing to the public internet, and the hosted terminal all
-live in [`@nimbus-sh/worker`](https://www.npmjs.com/package/@nimbus-sh/worker),
-which composes on this package. If you want the full hosted product shape,
+live in [`@nimbus-sh/worker`](https://www.npmjs.com/package/@nimbus-sh/worker).
+That package composes on this one. If you want the full hosted product shape,
 start from `npx create-nimbus-app`.
 
 ## License

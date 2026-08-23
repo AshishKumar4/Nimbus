@@ -6,9 +6,9 @@
 
 The zero-dependency leaf under
 [`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core) and
-[`@nimbus-sh/fabric`](https://www.npmjs.com/package/@nimbus-sh/fabric): the
-measured Cloudflare platform truths both are built on, separated from the
-policy Nimbus layers on top of them.
+[`@nimbus-sh/fabric`](https://www.npmjs.com/package/@nimbus-sh/fabric). It
+holds the measured Cloudflare behaviors both are built on, kept apart from
+the policy Nimbus layers on top of them.
 
 - `limits.js` — the measured limits tables: storage-transaction bounds, the
   RPC payload envelope, and the supervisor memory budgets. Each constant's doc
@@ -27,9 +27,9 @@ policy Nimbus layers on top of them.
 - `w7-frame.js` — the incremental typed record format for streamed bulk
   filesystem writes, and the batch payload types it encodes.
 
-No runtime dependencies, no imports from any other Nimbus package. Everything
-above it — core's filesystem and shell, fabric's Durable Object machinery, the
-worker — consumes this package; nothing here knows about them.
+This package has no runtime dependencies and imports no other Nimbus package.
+The layers above it (core's filesystem and shell, fabric's Durable Object
+machinery, the worker) consume it, and nothing here knows about them.
 
 ## License
 
