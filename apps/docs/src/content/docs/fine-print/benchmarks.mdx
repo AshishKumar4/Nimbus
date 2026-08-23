@@ -3,14 +3,16 @@ title: Benchmarks
 description: Session-create time by the ComputeSDK method, everyday operations measured separately. Every result is dated and reproducible.
 ---
 
-Every number here is measured and dated.
+Nimbus creates a session and runs the first command in 0.74 s median. The
+tables below give the method, the date, and the spread.
 
 ## Session create → first command
 
-The ComputeSDK method, run on 2026-08-08: wall-clock `sandbox.create()`
-plus the first successful `runCommand('node -v')`, 5% trimmed. The
-composite weighs normalized scores of the median (0.60), P95 (0.25), and
-P99 (0.15) on a 10-second scale, times the success rate.
+This table uses the ComputeSDK method, run on 2026-08-08. Each result is
+wall-clock `sandbox.create()` plus the first successful
+`runCommand('node -v')`, 5% trimmed. The composite weighs normalized scores
+of the median (0.60), P95 (0.25), and P99 (0.15) on a 10-second scale, times
+the success rate.
 
 | Mode | N | Success | Median | P95 | P99 | Composite |
 |---|---|---|---|---|---|---|
@@ -19,13 +21,13 @@ P99 (0.15) on a 10-second scale, times the success rate.
 | Burst (simultaneous) | 200 | 200/200 | **1.02 s** | 1.41 s | 1.49 s | 88.1 |
 
 These are per-request Durable Object boots with no warm pool. Each mode is
-two runs of 100, pooled: 600 sandboxes, no failures. `create()` took a
-701 ms median and the first command 35 ms, so session boot is ~95% of TTI.
-After that a command round-trip takes ~31 ms.
+two runs of 100, pooled, so the table covers 600 sandboxes with no failures.
+`create()` took a 701 ms median and the first command 35 ms, so session boot
+is ~95% of TTI. After that a command round-trip takes ~31 ms.
 
 The client was a residential Linux machine and the target a `workers.dev`
-deployment of this repo's probe embedder. Network RTT to the edge is in
-these numbers: a no-op RPC to an already-booted session costs 31 ms of
+deployment of this repo's probe embedder. Network RTT to the edge is inside
+these numbers. A no-op RPC to an already-booted session costs 31 ms of
 them. The 2026-07-16 run of this table reported 0.61 s sequential. That
 same build, re-measured alongside this one on 2026-08-08, gives 0.74 s
 from this client. The two dates are separate measurements rather than a
@@ -54,7 +56,7 @@ Cross-session caching gives 9–16× warm-vs-cold speedups on package
 installs.
 
 `tests/behavioral/perf-regression/` checks these thresholds on every
-deploy. Anyone can run it:
+deploy. Run it against any deployment:
 
 ```bash
 BASE=https://nimbus-os.dev bun test:behavioral
