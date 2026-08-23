@@ -134,9 +134,9 @@ callbacks before delegating to the provider. The seed launcher is a
 returns Node's stdout. It currently does not (see below).
 
 **Known gap: Node stdout is lost on the programmatic exec path.** Any
-command that runs the Node runtime (`node -e`, `node script.js`, and
-therefore `runCode`) exits 0 with empty stdout when driven through the SDK's
-remote RPC. `node -v` appears to work only because Nimbus answers `-v` from an
+command that runs the Node runtime exits 0 with empty stdout when driven
+through the SDK's remote RPC. That covers `node -e`, `node script.js`, and
+therefore `runCode`. `node -v` appears to work only because Nimbus answers `-v` from an
 argv fast path without booting Node. The same defect is what makes
 streaming callbacks fail, since the daemon seed is a `node -e` program.
 Shell and coreutils commands are unaffected.

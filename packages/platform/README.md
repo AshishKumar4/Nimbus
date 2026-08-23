@@ -15,7 +15,8 @@ the policy Nimbus layers on top of them.
   comment carries the measurement that set it.
 - `oom-classify.js` / `oom-discriminator.js` — the error taxonomy for isolates
   that die without throwing: OOM vs CPU reset vs transient DO reset vs
-  overload, and the failure ring that attributes them after the fact.
+  overload. They also hold the failure ring that attributes them after the
+  fact.
 - `heap-estimate.js` / `heavy-alloc-coord.js` / `weighted-credit-pool.js` —
   the instrumented supervisor heap model and the weighted admission budget
   behind it.

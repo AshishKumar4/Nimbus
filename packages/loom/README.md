@@ -130,7 +130,7 @@ substrate you declare by overriding `processHost()`. `this.derived` /
 `this.derivedAsync` are the watermark memos.
 
 **Hibernation, configured.** `static options = { hibernate: true }` opts
-into partyserver's hibernation and also applies fabric's config: `ping`/
+into partyserver's hibernation. It also applies fabric's config: `ping`/
 `pong` auto-response (a matched frame no longer wakes the actor) and the 5 s
 hibernatable-event timeout. `this.hibernation` reports what the runtime
 supported. State your fabric composition once, on the class:
