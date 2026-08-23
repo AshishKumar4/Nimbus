@@ -95,7 +95,7 @@ different tenants are different sandboxes.
 | `list` | **Throws.** Nimbus has no sandbox enumeration |
 | Templates, snapshots | **Throws.** Nimbus has no template or snapshot concept |
 
-## Behaviour worth knowing
+## Provider behaviour
 
 **`list` throws rather than returning `[]`.** A Nimbus sandbox is a Durable
 Object addressed by name, and Cloudflare exposes no way to enumerate the
@@ -113,9 +113,9 @@ This also means `getInfo().createdAt` is the sandbox's real creation time,
 read from the marker, rather than the moment `getInfo` was called.
 
 **Paths resolve against the sandbox root.** Nimbus filesystem calls take
-VFS-absolute paths and do no root resolution of their own, so the provider
-resolves relative paths against `root` (default `/home/user`). Absolute paths
-are passed through untouched.
+VFS-absolute paths and do no root resolution of their own. The provider
+resolves a relative path against `root` (default `/home/user`), and passes an
+absolute path through untouched.
 
 **`readdir` does not populate `size` or `modified`.** Nimbus returns name and
 type from a directory listing. Size and modification time would each cost an
@@ -130,16 +130,16 @@ is still running when the call returns.
 When `onStdout`/`onStderr` are passed, `@computesdk/provider` seeds a
 `daemond` daemon into the sandbox and reads its SSE feed. It strips the
 callbacks before delegating to the provider. The seed launcher is a
-`node -e` program, so streaming works only when Nimbus's programmatic `exec`
-returns Node's stdout. It currently does not (see below).
+`node -e` program, so streaming needs Nimbus's programmatic `exec` to return
+Node's stdout. It currently does not, as the next entry describes.
 
 **Known gap: Node stdout is lost on the programmatic exec path.** Any
 command that runs the Node runtime exits 0 with empty stdout when driven
 through the SDK's remote RPC. That covers `node -e`, `node script.js`, and
-therefore `runCode`. `node -v` appears to work only because Nimbus answers `-v` from an
-argv fast path without booting Node. The same defect is what makes
-streaming callbacks fail, since the daemon seed is a `node -e` program.
-Shell and coreutils commands are unaffected.
+therefore `runCode`. `node -v` appears to work only because Nimbus answers
+`-v` from an argv fast path without booting Node. The same defect breaks the
+streaming callbacks, because the daemon seed is a `node -e` program. Shell
+and coreutils commands are unaffected.
 
 **Environment from `create({ envs })` is re-applied per command.** Nimbus has no
 persistent per-sandbox environment, so the provider stores the environment in
@@ -171,22 +171,21 @@ Against ComputeSDK's published leaderboard this is mid-pack, roughly 21st of
 Sandbox SDK on every shape: 780 vs 2000 ms sequential, 1278 vs 4417 burst,
 751 vs 3764 staggered. E2B is faster sequentially at 576 ms.
 
-Two caveats. I took these numbers from a different network vantage point than
-the published leaderboard, so this is not a strict head-to-head. A strict
-comparison needs both on one runner. The providers at the top of that
-leaderboard report 13-17 ms, which is below the time any VM or container takes
-to boot. Whatever those numbers measure, it is not a cold start. Every trial
-here is one.
+These numbers come from a different network vantage point than the published
+leaderboard, so they are not a strict head-to-head. A strict comparison needs
+both on one runner. The top of that leaderboard reports 13-17 ms, faster than
+any VM or container boots, so those runs are not cold starts.
 
-### `node -v` does not prove Node runs
+### `node -v` answers from an argv fast path
 
-ComputeSDK's benchmark uses `node -v` as its readiness command and documents it
-as confirming "the Node.js runtime is available and functional". On Nimbus it
-does not: `runtime-registry.ts` answers `-v` from an argv fast path that writes
-a version constant and returns, without booting Node. That is a hollow signal
-in the benchmark itself, not only here. The `shell` workload above exists for
-that reason. The caller cannot predict its output, so a pass proves a real
-process ran. It lands at the same speed, so the headline is unaffected.
+ComputeSDK's benchmark uses `node -v` as its readiness command, and documents
+it as confirming "the Node.js runtime is available and functional". On Nimbus
+it confirms less. `runtime-registry.ts` answers `-v` by writing a version
+constant and returning, without booting Node.
+
+The `shell` workload above exists for that reason. The caller cannot predict
+its output, so a pass proves a real process ran. It lands at the same speed,
+so the headline is unaffected.
 
 ## License
 
