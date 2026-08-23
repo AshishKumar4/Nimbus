@@ -107,14 +107,18 @@ try {
   const installRoot = `${customPrefix}/lib/node_modules`;
   const packageDir = `${installRoot}/fixture`;
   const packageJsonPath = `${packageDir}/package.json`;
-  const packageJson = new TextEncoder().encode('{"name":"fixture","version":"1.0.0"}\n');
+  const packageJsonText = '{"name":"fixture","version":"1.0.0"}\n';
+  const packageJson = new TextEncoder().encode(packageJsonText);
+  // The W7 encoder takes ownership of every chunk buffer: it enqueues them into
+  // a type:'bytes' stream, which transfers them. Each batch encodes its own
+  // copy, the discipline the shared-wave installer follows to stay retryable.
   const runInstallBatch = () => userVfs.writeStream(encodeWriteBatchStream({
     inodes: [
       { path: installRoot, parentPath: `${customPrefix}/lib`, isDir: true, size: 0, mtime: Date.now(), mode: 0o755, chunkCount: 0 },
       { path: packageDir, parentPath: installRoot, isDir: true, size: 0, mtime: Date.now(), mode: 0o755, chunkCount: 0 },
       { path: packageJsonPath, parentPath: packageDir, isDir: false, size: packageJson.length, mtime: Date.now(), mode: 0o644, chunkCount: 1 },
     ],
-    chunks: [{ path: packageJsonPath, chunkId: 0, data: packageJson }],
+    chunks: [{ path: packageJsonPath, chunkId: 0, data: packageJson.slice() }],
   }));
 
   assert.equal(rootVfs.exists(customPrefix), false, 'non-default npm prefixes are created on demand');
@@ -156,7 +160,7 @@ try {
     true,
     installResult.ok ? undefined : `custom-prefix install batch failed: ${installResult.error.message}`,
   );
-  assert.equal(userVfs.readFileString(packageJsonPath), new TextDecoder().decode(packageJson));
+  assert.equal(userVfs.readFileString(packageJsonPath), packageJsonText);
   assert.deepEqual(
     { uid: rootVfs.stat(packageDir).uid, gid: rootVfs.stat(packageDir).gid },
     { uid: 1000, gid: 1000 },
