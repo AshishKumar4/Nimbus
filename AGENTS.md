@@ -111,10 +111,10 @@ that support matrix unless a behavioral probe proves a larger capability.
 
 Nimbus is intended to push what a Workers + Durable Objects runtime can do. The
 shell substrate is imported as Nimbus-owned source under
-`packages/worker/src/substrate/lifo`; when it lacks a shell, parser, process,
+`packages/worker/src/substrate/lifo`. When it lacks a shell, parser, process,
 PTY, filesystem, networking, package, or runtime primitive that Nimbus needs,
-implement the missing capability cleanly in that substrate or another proper
-Nimbus runtime boundary instead of adding script-specific patches.
+implement the missing capability cleanly. Put it in that substrate or another
+proper Nimbus runtime boundary, not in a script-specific patch.
 
 For parser and language work, prefer existing libraries and structured
 representations:
@@ -314,9 +314,9 @@ it. `nimbus` is production and is never a target here.
 **Running alongside other agents.** `run-all.mjs` takes a machine-wide lock
 and refuses to start while another suite holds it, naming the holder;
 `--allow-concurrent` is the deliberate override. A redeploy of either kind
-of target keeps the `JWT_SECRET` already on it, so tokens minted earlier
-stay valid and a target can be redeployed under a suite already running
-against it. Replacing that secret takes `--rotate-secrets`, and it 401s
+of target keeps the `JWT_SECRET` already on it. Tokens minted earlier stay
+valid, and a target can be redeployed under a suite already running against
+it. Replacing that secret takes `--rotate-secrets`, and it 401s
 every token in flight. Deploying over a target this checkout holds no secret
 for (somebody else's throwaway, or staging after losing
 `~/.local/state/nimbus`) stops before the build instead of taking it over.
@@ -373,13 +373,13 @@ database, rate-limit namespace and Worker:
 
 That split is load-bearing: `wrangler deploy --name foo` overrides ONLY the
 name, and every binding still comes from the block being deployed. Two
-throwaway probes wrote rows into the live demo D1 that way — one deployed from
+throwaway probes wrote rows into the live demo D1 that way: one deployed from
 `apps/hosted-demo` by hand, one from a copy of the config with `env` stripped
 out. Both looked isolated; neither was.
 
 So **verify a deploy's bindings before sending it a request, rather than
 trusting the directory it came from.** `bun scripts/deploy-isolation.mjs`
-answers it for every target the repo can name — each config's default block
+answers it for every target the repo can name: each config's default block
 and each non-production env block, enumerated from the files. The staging and
 throwaway scripts run the same check before they invoke wrangler, and
 `tests/unit/deploy-isolation.mjs` holds the line in CI.
