@@ -1,7 +1,12 @@
 # @nimbus-sh/sdk
 
-SDK for Nimbus: the Worker embedder, programmatic sandbox handles, token
-mint/verify, typed errors, and session URL helpers.
+Run code in a Nimbus sandbox from your own backend, and deploy the Worker
+that hosts it.
+
+A sandbox has a filesystem, a shell, real processes, and ports you can reach
+from a browser. This package carries the Worker embedder, the programmatic
+sandbox handles, token mint and verify, typed errors, and session URL
+helpers.
 
 ## Install
 
@@ -9,10 +14,9 @@ mint/verify, typed errors, and session URL helpers.
 npm install @nimbus-sh/sdk @nimbus-sh/worker @nimbus-sh/config
 ```
 
-Use `@nimbus-sh/sdk/worker` as the public Worker embedder entrypoint.
-`@nimbus-sh/worker` is still installed because it carries the runtime assets
-and the Durable Object implementation. Application code imports the
-deploy-time API through the SDK.
+Import the deploy-time API from `@nimbus-sh/sdk/worker`. Install
+`@nimbus-sh/worker` as well, because it carries the runtime assets and the
+Durable Object implementation that entrypoint serves.
 
 Create a deployable Nimbus Worker:
 
@@ -72,16 +76,17 @@ export default createNimbusHandler({
 });
 ```
 
-The bundled session UI includes an Agent surface in the editor workspace.
+The bundled session UI carries an agent surface in the editor workspace.
 Configure it with the Worker vars `NIMBUS_CF_OAUTH_CLIENT_ID`,
 `NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`, and
-`NIMBUS_AGENT_GATEWAY_ID`. Add the secret `NIMBUS_AGENT_COOKIE_SECRET` or
-`NIMBUS_CLOUDFLARE_API_TOKEN` when you want Cloudflare OAuth or owner-token
-Workers AI access. User OAuth uses Authorization Code + PKCE and encrypted
-browser cookies. Nimbus does not store user OAuth tokens in Durable Object
-storage.
+`NIMBUS_AGENT_GATEWAY_ID`. For Cloudflare OAuth or owner-token Workers AI
+access, add the secret `NIMBUS_AGENT_COOKIE_SECRET` or
+`NIMBUS_CLOUDFLARE_API_TOKEN`.
 
-## Programmatic sandbox quickstart
+User OAuth uses Authorization Code with PKCE and encrypted browser cookies.
+Nimbus keeps no user OAuth token in Durable Object storage.
+
+## Sandboxes from your own code
 
 The same sandbox handle API works in two modes:
 
@@ -159,7 +164,7 @@ export default createNimbusHandler({
 `Nimbus.connect()` calls the versioned `/api/nimbus/v1` API internally. The
 Worker verifies the JWT, enforces `sid` pins and `sandbox:use` scope, and
 applies the configured runtime policy. It then delegates to the same
-`NimbusSession` RPC methods that `Nimbus.fromEnv()` uses.
+`NimbusSession` RPC methods `Nimbus.fromEnv()` uses.
 
 Sandbox destruction is a separate lifecycle operation. Tokens that call
 `box.destroy()` must include `session:destroy` or `session:admin` in addition
@@ -244,10 +249,11 @@ Runtime policy comes from the sandbox profile:
 - `runtimes.onDemand: false` blocks installing runtimes that are not listed
   in `preinstall`.
 
-## Proteus-style tools
+## Agent tool provider
 
 `box.tools({ namespace: 'sandbox', kind: 'sandbox' })` returns a provider-like
-object with `tools.exec.execute`, `runCode`, `readFile`, `writeFile`,
+object, in the shape Proteus's tool provider takes. It carries
+`tools.exec.execute`, `runCode`, `readFile`, `writeFile`,
 `listFiles`/`readdir`, `deleteFile`, `exists`, `startProcess`, `killProcess`,
 `logs`, `exposePort`, `unexposePort`, `listPorts`, `installRuntime`, and
 `listRuntimes`.
@@ -259,7 +265,7 @@ when allowed, and clang-backed WASI/WebAssembly execution. It does not claim
 Docker, apt, GPU, custom Linux images, native Linux ELF execution, or raw TCP
 listeners.
 
-## Quickstart — mint a session token
+## Mint a session token
 
 ```ts
 import { issueNimbusToken } from '@nimbus-sh/sdk/token';
@@ -272,7 +278,7 @@ const token = await issueNimbusToken(
 // → 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6Im5pbWJ1cyIsInRu...'
 ```
 
-## Verify a token (typically in a Worker)
+## Verify a token
 
 ```ts
 import { verifyNimbusToken } from '@nimbus-sh/sdk/token';
@@ -365,9 +371,8 @@ JWT (HS256) with these claims:
 Both `tn` and `sub` must match `[A-Za-z0-9._-]{1,128}`. The pattern is
 exported as `ID_COMPONENT_RE` if you need to validate user input.
 
-The `scope` discriminator means a token minted for another product
-(e.g. Mossaic VFS, `scope: "vfs"`) is rejected even when signed with
-the same secret.
+The `scope` discriminator rejects a token minted for another product
+(e.g. Mossaic VFS, `scope: "vfs"`) even when the same secret signed it.
 
 ## Secret rotation
 
