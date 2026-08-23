@@ -5,6 +5,7 @@
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
+import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { FacetManager } from '../facets/manager.js';
@@ -999,10 +1000,7 @@ export class NimbusSession extends CloudflareDurableObject {
                     stderr: stderrStream,
                     signal: ac.signal,
                     // For commands that need stdin we pass a tiny adapter.
-                    stdin: {
-                        read: async () => null,
-                        readAll: async () => payload.stdin || '',
-                    },
+                    stdin: staticStdinReader(payload.stdin || ''),
                     setUmask: (mask) => { this.processes.setUmask(payload.processPid, mask); },
                     runAs: async (targetCred, argv) => {
                         if (argv.length === 0)
@@ -1080,7 +1078,7 @@ export class NimbusSession extends CloudflareDurableObject {
                     stdout: { write: (d) => hooks.onStdout(String(d)) },
                     stderr: { write: (d) => hooks.onStderr(String(d)) },
                     signal: ac.signal,
-                    stdin: { read: async () => null, readAll: async () => stdin },
+                    stdin: staticStdinReader(stdin),
                     setUmask: (mask) => { this.processes.setUmask(pid, mask); },
                     runAs: async (targetCred, argv) => {
                         if (argv.length === 0)

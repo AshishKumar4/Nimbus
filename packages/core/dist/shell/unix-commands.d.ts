@@ -8,7 +8,8 @@
  * uptime, tree, find, grep -r, head, tail, wc, diff, sort, uniq,
  * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
  * du, man/help, basename, dirname, printf, true, false, seq, sleep,
- * touch, stat, file, xxd, base64, sha256sum, id, hostname, realpath
+ * touch, stat, file, xxd, od, hexdump, base64, sha256sum, id, hostname,
+ * realpath
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';

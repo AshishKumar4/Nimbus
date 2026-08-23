@@ -3,9 +3,8 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 export interface CommandOutputStream {
     write(text: string): void;
     /**
-     * Present on sinks that store bytes verbatim (files, `/dev/null`). Textual
-     * sinks — the terminal, shell pipes — omit it and take decoded text, since
-     * they have no way to carry a byte that is not text.
+     * Present on sinks that store bytes verbatim — files, `/dev/null`, and
+     * byte-capable shell pipes. Sinks without it take decoded text instead.
      */
     writeBytes?(bytes: Uint8Array): void;
     /**
@@ -20,7 +19,12 @@ export interface CommandInputStream {
     read(): Promise<string | null>;
     readAll(): Promise<string>;
     readLine?(): Promise<string | null>;
-    readBytes?(maxLength: number): Promise<string | null>;
+    /**
+     * Bounded raw-byte read. Byte-capable sources (shell pipes, dumps) return
+     * the original bytes; text-only sources encode what they hold. Null means
+     * EOF with nothing returned.
+     */
+    readBytes?(maxLength: number): Promise<Uint8Array | null>;
 }
 export interface TerminalInputStream extends CommandInputStream {
     rawMode: boolean;

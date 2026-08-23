@@ -1,13 +1,16 @@
 import type { TerminalInputStream } from '../commands/types.js';
 /**
- * A bridge between terminal keyboard input and command stdin.
- * The Shell feeds lines in via feed(), commands consume via read()/readAll().
+ * A bridge between terminal keyboard input and command stdin. The Shell
+ * feeds lines in via feed(); commands consume bytes or text. Bytes are the
+ * storage format, so a byte read always makes progress even when maxLength
+ * splits a multi-byte code point — `dd bs=1` over `é` yields c3, then a9.
  */
 export declare class TerminalStdin implements TerminalInputStream {
     private buffer;
     private closed;
     private resolvers;
     private _rawMode;
+    private decoder;
     /** True when a command has called read() and is waiting for input. */
     get isWaiting(): boolean;
     /** When true, the shell should bypass line editing and feed raw keypresses. */
@@ -20,9 +23,20 @@ export declare class TerminalStdin implements TerminalInputStream {
     /** Commands consume input. Returns null on EOF. */
     read(): Promise<string | null>;
     readLine(): Promise<string | null>;
-    readBytes(maxLength: number): Promise<string | null>;
+    /**
+     * Bounded byte read; always makes progress while data remains, splitting
+     * encoded code points across successive calls when maxLength demands it.
+     */
+    readBytes(maxLength: number): Promise<Uint8Array | null>;
     /** Read all remaining input until EOF, joined together. */
     readAll(): Promise<string>;
+    /**
+     * Text snapshot of everything queued but not yet consumed. The shell's
+     * wrap layer uses this for commands that want drained terminal input.
+     */
+    drainBuffered(): string;
+    private pull;
     private deliver;
+    private deliverBackText;
 }
 //# sourceMappingURL=terminal-stdin.d.ts.map

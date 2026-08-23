@@ -91,7 +91,7 @@ async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<n
       skipRemaining -= chunk.length;
       continue;
     }
-    const bytes = encode(chunk);
+    const bytes = typeof chunk === 'string' ? encode(chunk) : chunk;
     sink.write(bytes);
     copied += bytes.length;
   }
@@ -99,7 +99,7 @@ async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<n
   return copied;
 }
 
-async function readStdinChunk(stdin: CommandInputStream, want: number): Promise<string | null> {
+async function readStdinChunk(stdin: CommandInputStream, want: number): Promise<Uint8Array | string | null> {
   if (stdin.readBytes) return stdin.readBytes(want);
   return stdin.read();
 }

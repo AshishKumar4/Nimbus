@@ -1347,37 +1347,139 @@ export class Interpreter {
         for (const stream of fds.outputFds.values())
             stream.flush?.();
     }
+    /**
+     * Byte-faithful redirected input: bounded range reads keep >64 KiB
+     * redirections intact and preserve bytes that are not valid UTF-8, while
+     * the text view still decodes progressively across chunk boundaries.
+     */
     createFileReader(vfs, path) {
-        const content = vfs.readFileString(path);
-        return this.createStringReader(content);
-    }
-    createStringReader(content) {
+        const decoder = new TextDecoder('utf-8');
         let offset = 0;
+        let eof = false;
+        const pull = (max) => {
+            if (eof)
+                return null;
+            const chunk = vfs.readRange(path, offset, max);
+            if (chunk.length === 0) {
+                eof = true;
+                return null;
+            }
+            offset += chunk.length;
+            if (chunk.length < max)
+                eof = true;
+            return chunk;
+        };
+        const pushBack = (text) => {
+            const bytes = encode(text);
+            offset -= bytes.length;
+            eof = false;
+        };
         return {
+            readBytes: async (maxLength) => {
+                if (maxLength <= 0)
+                    return new Uint8Array(0);
+                return pull(maxLength);
+            },
             read: async () => {
-                if (offset >= content.length)
-                    return null;
-                const chunk = content.slice(offset);
-                offset = content.length;
-                return chunk;
+                while (true) {
+                    const bytes = pull(65536);
+                    if (bytes === null) {
+                        const tail = decoder.decode();
+                        return tail.length > 0 ? tail : null;
+                    }
+                    const text = decoder.decode(bytes, { stream: true });
+                    if (text.length > 0)
+                        return text;
+                }
             },
             readAll: async () => {
-                if (offset >= content.length)
-                    return '';
-                const chunk = content.slice(offset);
-                offset = content.length;
-                return chunk;
+                let out = '';
+                while (true) {
+                    const bytes = pull(65536);
+                    if (bytes === null)
+                        break;
+                    out += decoder.decode(bytes, { stream: true });
+                }
+                out += decoder.decode();
+                return out;
             },
             readLine: async () => {
-                if (offset >= content.length)
+                let line = '';
+                let sawAny = false;
+                while (true) {
+                    const bytes = pull(65536);
+                    if (bytes === null)
+                        break;
+                    sawAny = true;
+                    // Split on the raw 0x0A byte so pushback returns ORIGINAL bytes;
+                    // decoded-text pushback would corrupt multibyte sequences that
+                    // straddle the chunk boundary or mis-measure invalid UTF-8.
+                    const newline = bytes.indexOf(0x0a);
+                    if (newline >= 0) {
+                        offset -= bytes.length - (newline + 1);
+                        eof = false;
+                        line += decoder.decode(bytes.subarray(0, newline), { stream: true });
+                        const flushed = decoder.decode();
+                        return line + flushed;
+                    }
+                    line += decoder.decode(bytes, { stream: true });
+                }
+                line += decoder.decode();
+                return sawAny || line.length > 0 ? line : null;
+            },
+        };
+    }
+    /**
+     * Heredoc input behind the full reader contract, byte-offset based so
+     * bounded byte reads split exactly where the consumer asks and nothing
+     * is discarded between windows.
+     */
+    createStringReader(content) {
+        const bytes = encode(content);
+        const decoder = new TextDecoder('utf-8');
+        let offset = 0;
+        const pull = (max) => {
+            if (offset >= bytes.length)
+                return null;
+            const end = Math.min(offset + max, bytes.length);
+            const chunk = bytes.subarray(offset, end);
+            offset = end;
+            return chunk;
+        };
+        return {
+            readBytes: async (maxLength) => {
+                if (maxLength <= 0)
+                    return new Uint8Array(0);
+                return pull(maxLength);
+            },
+            read: async () => {
+                while (offset < bytes.length) {
+                    const end = Math.min(offset + 65536, bytes.length);
+                    const text = decoder.decode(bytes.subarray(offset, end), { stream: true });
+                    offset = end;
+                    if (text.length > 0)
+                        return text;
+                }
+                const tail = decoder.decode();
+                return tail.length > 0 ? tail : null;
+            },
+            readAll: async () => {
+                if (offset >= bytes.length)
+                    return '';
+                const out = decoder.decode(bytes.subarray(offset));
+                offset = bytes.length;
+                return out;
+            },
+            readLine: async () => {
+                if (offset >= bytes.length)
                     return null;
-                const newline = content.indexOf('\n', offset);
-                if (newline < 0) {
-                    const line = content.slice(offset);
-                    offset = content.length;
+                const newline = bytes.indexOf(0x0a, offset);
+                if (newline === -1) {
+                    const line = decoder.decode(bytes.subarray(offset));
+                    offset = bytes.length;
                     return line;
                 }
-                const line = content.slice(offset, newline);
+                const line = decoder.decode(bytes.subarray(offset, newline));
                 offset = newline + 1;
                 return line;
             },

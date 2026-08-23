@@ -241,7 +241,17 @@ export declare class Interpreter {
      */
     private withFdFlush;
     private flushFds;
+    /**
+     * Byte-faithful redirected input: bounded range reads keep >64 KiB
+     * redirections intact and preserve bytes that are not valid UTF-8, while
+     * the text view still decodes progressively across chunk boundaries.
+     */
     private createFileReader;
+    /**
+     * Heredoc input behind the full reader contract, byte-offset based so
+     * bounded byte reads split exactly where the consumer asks and nothing
+     * is discarded between windows.
+     */
     private createStringReader;
     private resolveOutputFd;
     private resolveInputFd;

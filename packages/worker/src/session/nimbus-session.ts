@@ -10,6 +10,7 @@ import {
   Kernel,
   Shell,
 } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -1158,10 +1159,7 @@ export class NimbusSession extends CloudflareDurableObject {
           stderr: stderrStream,
           signal: ac.signal,
           // For commands that need stdin we pass a tiny adapter.
-          stdin: {
-            read: async () => null,
-            readAll: async () => payload.stdin || '',
-          },
+          stdin: staticStdinReader(payload.stdin || ''),
           setUmask: (mask: number) => { this.processes.setUmask(payload.processPid, mask); },
           runAs: async (targetCred: VfsCred, argv: string[]) => {
             if (argv.length === 0) return 0;
@@ -1248,7 +1246,7 @@ export class NimbusSession extends CloudflareDurableObject {
           stdout: { write: (d: string) => hooks.onStdout(String(d)) },
           stderr: { write: (d: string) => hooks.onStderr(String(d)) },
           signal: ac.signal,
-          stdin: { read: async () => null, readAll: async () => stdin },
+          stdin: staticStdinReader(stdin),
           setUmask: (mask: number) => { this.processes.setUmask(pid, mask); },
           runAs: async (targetCred: VfsCred, argv: string[]) => {
             if (argv.length === 0) return 0;

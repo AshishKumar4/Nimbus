@@ -66,7 +66,7 @@ async function copyFromStdin(ctx, options) {
             skipRemaining -= chunk.length;
             continue;
         }
-        const bytes = encode(chunk);
+        const bytes = typeof chunk === 'string' ? encode(chunk) : chunk;
         sink.write(bytes);
         copied += bytes.length;
     }

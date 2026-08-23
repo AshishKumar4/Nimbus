@@ -40,7 +40,8 @@ const command: Command = async (ctx) => {
       const want = bytes - copied;
       const chunk = ctx.stdin.readBytes ? await ctx.stdin.readBytes(want) : await ctx.stdin.read();
       if (chunk === null) break;
-      const encoded = encode(chunk).subarray(0, want);
+      const raw = typeof chunk === 'string' ? encode(chunk) : chunk;
+      const encoded = raw.subarray(0, want);
       writer.write(encoded);
       copied += encoded.length;
     }

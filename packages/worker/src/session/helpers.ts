@@ -353,7 +353,7 @@ export const _CP_PURE_BUILTIN = new Set([
   'sleep', 'date', 'whoami', 'id', 'hostname', 'uname', 'clear',
   'tree', 'find', 'grep', 'head', 'tail', 'wc', 'sort', 'uniq', 'sed',
   'awk', 'xargs', 'tee', 'du', 'diff', 'base64', 'seq', 'realpath',
-  'basename', 'dirname', 'printf', 'sha256sum', 'file', 'xxd',
+  'basename', 'dirname', 'printf', 'sha256sum', 'file', 'xxd', 'od', 'hexdump',
   'chmod', 'chown', 'ln', 'test', '[', 'read', 'exit', 'set', 'shopt',
   'trap', 'umask', 'ulimit', 'which', 'uptime',
 ]);

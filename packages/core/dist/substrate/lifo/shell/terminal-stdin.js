@@ -1,12 +1,16 @@
+import { encode } from '../utils/encoding.js';
 /**
- * A bridge between terminal keyboard input and command stdin.
- * The Shell feeds lines in via feed(), commands consume via read()/readAll().
+ * A bridge between terminal keyboard input and command stdin. The Shell
+ * feeds lines in via feed(); commands consume bytes or text. Bytes are the
+ * storage format, so a byte read always makes progress even when maxLength
+ * splits a multi-byte code point — `dd bs=1` over `é` yields c3, then a9.
  */
 export class TerminalStdin {
     buffer = [];
     closed = false;
     resolvers = [];
     _rawMode = false;
+    decoder = new TextDecoder('utf-8');
     /** True when a command has called read() and is waiting for input. */
     get isWaiting() {
         return this.resolvers.length > 0;
@@ -20,14 +24,12 @@ export class TerminalStdin {
     }
     /** Shell calls this on Enter (with line + '\n'). */
     feed(text) {
-        if (this.closed)
+        if (this.closed || text === '')
             return;
-        this.deliver(text, 'back');
+        this.deliver(encode(text), 'back');
     }
     /** Shell calls this on Ctrl+D to signal EOF. */
     close() {
-        if (this.closed)
-            return;
         this.closed = true;
         while (this.resolvers.length > 0) {
             const resolve = this.resolvers.shift();
@@ -36,15 +38,16 @@ export class TerminalStdin {
     }
     /** Commands consume input. Returns null on EOF. */
     async read() {
-        if (this.buffer.length > 0) {
-            return this.buffer.shift();
+        while (true) {
+            const bytes = await this.pull();
+            if (bytes === null) {
+                const tail = this.decoder.decode();
+                return tail.length > 0 ? tail : null;
+            }
+            const text = this.decoder.decode(bytes, { stream: true });
+            if (text.length > 0)
+                return text;
         }
-        if (this.closed) {
-            return null;
-        }
-        return new Promise((resolve) => {
-            this.resolvers.push(resolve);
-        });
     }
     async readLine() {
         let line = '';
@@ -56,22 +59,43 @@ export class TerminalStdin {
             if (newline >= 0) {
                 const rest = chunk.slice(newline + 1);
                 if (rest.length > 0)
-                    this.deliver(rest, 'front');
+                    this.deliverBackText(rest);
                 return line + chunk.slice(0, newline);
             }
             line += chunk;
         }
     }
+    /**
+     * Bounded byte read; always makes progress while data remains, splitting
+     * encoded code points across successive calls when maxLength demands it.
+     */
     async readBytes(maxLength) {
         if (maxLength <= 0)
-            return '';
-        const chunk = await this.read();
-        if (chunk === null)
+            return new Uint8Array(0);
+        const parts = [];
+        let got = 0;
+        while (got < maxLength) {
+            const chunk = await this.pull();
+            if (chunk === null)
+                break;
+            const take = chunk.length <= maxLength - got ? chunk : chunk.subarray(0, maxLength - got);
+            parts.push(take);
+            got += take.length;
+            if (take.length < chunk.length)
+                this.buffer.unshift(chunk.subarray(take.length));
+        }
+        if (parts.length === 0)
             return null;
-        if (chunk.length <= maxLength)
-            return chunk;
-        this.deliver(chunk.slice(maxLength), 'front');
-        return chunk.slice(0, maxLength);
+        if (parts.length === 1)
+            return parts[0];
+        const total = parts.reduce((sum, part) => sum + part.length, 0);
+        const out = new Uint8Array(total);
+        let at = 0;
+        for (const part of parts) {
+            out.set(part, at);
+            at += part.length;
+        }
+        return out;
     }
     /** Read all remaining input until EOF, joined together. */
     async readAll() {
@@ -84,17 +108,43 @@ export class TerminalStdin {
         }
         return parts.join('');
     }
-    deliver(text, position) {
-        if (text.length === 0)
+    /**
+     * Text snapshot of everything queued but not yet consumed. The shell's
+     * wrap layer uses this for commands that want drained terminal input.
+     */
+    drainBuffered() {
+        let text = '';
+        while (this.buffer.length > 0) {
+            text += this.decoder.decode(this.buffer.shift(), { stream: true });
+        }
+        text += this.decoder.decode();
+        return text;
+    }
+    pull() {
+        if (this.buffer.length > 0) {
+            return Promise.resolve(this.buffer.shift() ?? null);
+        }
+        if (this.closed) {
+            return Promise.resolve(null);
+        }
+        return new Promise((resolve) => {
+            this.resolvers.push(resolve);
+        });
+    }
+    deliver(bytes, position) {
+        if (bytes.length === 0)
             return;
         if (this.resolvers.length > 0) {
             const resolve = this.resolvers.shift();
-            resolve(text);
+            resolve(bytes);
             return;
         }
         if (position === 'front')
-            this.buffer.unshift(text);
+            this.buffer.unshift(bytes);
         else
-            this.buffer.push(text);
+            this.buffer.push(bytes);
+    }
+    deliverBackText(text) {
+        this.deliver(encode(text), 'front');
     }
 }
