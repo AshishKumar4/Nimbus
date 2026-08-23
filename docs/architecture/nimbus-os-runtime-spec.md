@@ -90,8 +90,8 @@ Nimbus already has a real base:
 - Node async filesystem calls (`fs.readFile`, `fs.stat`, `fs.readdir`,
   `fs.access`, `fs.promises.*`, and `FileHandle` reads/stats) can fall back
   to the session supervisor for live SQLite VFS data through the shared
-  runtime filesystem bridge, including files created by child processes after
-  the dynamic Worker starts.
+  runtime filesystem bridge. That includes files created by child processes
+  after the dynamic Worker starts.
 - Shared runtime contracts exist for filesystem, process, port, package ABI,
   command provider, TTY options, and diagnostics. `SqliteRuntimeFsBridge`
   implements the filesystem contract on top of `SqliteVFS`, revision checks,
@@ -431,7 +431,7 @@ Required behavior:
   requests through the attach exchange: a `?nimbus_token=` in the URL is
   exchanged for a freshly minted sid-pinned `session:attach` cookie
   (`__Host-nimbus_token`; `HttpOnly`, `SameSite=None`, `Secure` +
-  `Partitioned`) and the browser is redirected to the same URL without the
+  `Partitioned`). The browser is then redirected to the same URL without the
   token. Two entry points accept it: the session shell `/s/<id>/`, and a port
   preview `<port>--<sid>.<suffix>` at whatever path was requested (the
   previewed app owns its path space). `POST /new` and
@@ -448,7 +448,7 @@ Required behavior:
   `tests/unit/preview-host-router.mjs`.
   Known limit: the exchange stores one sid-pinned cookie per browser
   partition, so two concurrently embedded sessions on one page evict each
-  other's cookie; concurrent multi-session embeds in enforce mode need a
+  other's cookie. Concurrent multi-session embeds in enforce mode need a
   per-session cookie design (follow-up).
 - The public shell emits `nimbus:ready` and `nimbus:error` messages, and the
   React package receives them.
@@ -497,7 +497,7 @@ retired only after the replacement path is routed and probed.
 | `substrate/lifo/node-compat/child_process.ts` throwing stubs | It conflicts with the real `node-shims.ts` child-process path if treated as product surface | Keep only if shell-internal and clearly isolated; otherwise remove or redirect to the real broker |
 | `substrate/lifo/kernel/network/*` | It is a separate virtual network concept from `PortRegistry` and `VirtualSocketKernel` | Quarantine as internal/experimental or retire after shared virtual socket kernel covers runtime networking |
 | `runtime/static-server.ts` | Appears to be an unused legacy helper; hidden static fallbacks would fake language server support if wired later | Delete if unneeded, or keep only for explicit static-serving commands, not as fallback for Flask/Rack/Node/WASI servers |
-| Duplicated npm native policy in loader preamble | Resolved: one `PackageAbiPolicy` is serialized into the preamble and fully parity-checked against the supervisor policy | Done — keep the parity gate green when the policy changes |
+| Duplicated npm native policy in loader preamble | Resolved: one `PackageAbiPolicy` is serialized into the preamble and fully parity-checked against the supervisor policy | Done. Keep the parity gate green when the policy changes |
 | Hardcoded runtime aliases/defaults | Resolved in `package-manager.ts` (aliases derive from catalog manifests); the CLI `DEFAULT_RUNTIME_VERSIONS` table is still hand-maintained | Make the CLI runtime list catalog-driven or parity-checked |
 | Stale comments describing real implementations as stubs, old runtime sizes, old WebSocket hibernation posture, or old concurrency | They mislead future implementation and docs | Clean comments when touching affected modules; do not change behavior only for comment cleanup unless in-scope |
 
