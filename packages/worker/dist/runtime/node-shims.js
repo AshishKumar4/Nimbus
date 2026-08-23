@@ -9,7 +9,10 @@
  *   - events: full EventEmitter
  *   - stream: real Readable/Writable/Transform/Duplex with backpressure
  *   - crypto: createHash (FNV-1a sync, SubtleCrypto async), randomBytes/UUID
- *   - zlib: real gzip/gunzip/deflate via CompressionStream/DecompressionStream
+ *   - zlib: forward to workerd's native node:zlib when the facet real-import
+ *     block materialised (full sync/brotli/stream surface; results are the
+ *     host realm's own Buffers, recognized by the widened isBuffer);
+ *     CompressionStream fallback with honest sync refusal
  *   - dns: real DNS resolution via Cloudflare DNS-over-HTTPS
  *   - http: virtual server with port registry for supervisor routing
  *   - https: fetch()-backed request/get
@@ -386,7 +389,19 @@ const __BufferMod = (() => {
 
   function alloc(n, fill) { const a = new Uint8Array(n); if (fill !== undefined) a.fill(typeof fill === "number" ? fill : 0); return _wrap(a); }
   function allocUnsafe(n) { return _wrap(new Uint8Array(Number(n) || 0)); }
-  function isBuffer(o) { return o instanceof Uint8Array && typeof o.toString === "function" && o.__isBuffer; }
+  // Marker check plus native-brand recognition: forwarded node:* builtins
+  // (zlib streams and results, crypto) hand back the host realm's own Buffer
+  // instances, which carry no __isBuffer marker. Their constructor brand is
+  // the closest cross-realm equivalent of Node's instanceof check, so
+  // Buffer.isBuffer stays truthful across the shim/native boundary instead
+  // of rejecting genuine host Buffers. Always returns a boolean (the old
+  // single-expression form leaked an undefined when the marker was absent).
+  function isBuffer(o) {
+    if (!(o instanceof Uint8Array)) return false;
+    if (o.__isBuffer) return true;
+    const ctor = o.constructor;
+    return typeof ctor === "function" && ctor.name === "Buffer";
+  }
   function concat(bufs, len) {
     const total = len ?? bufs.reduce((s, b) => s + b.length, 0);
     const r = new Uint8Array(total); let off = 0;
@@ -6152,10 +6167,205 @@ const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL}
 // timers.setInterval(...)), which clack's spinner — used by
 // create-cloudflare — triggers.
 builtins.timers = { setTimeout: globalThis.setTimeout.bind(globalThis), setInterval: globalThis.setInterval.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis), clearInterval: globalThis.clearInterval.bind(globalThis), setImmediate: (fn,...a) => globalThis.setTimeout(fn,0,...a), clearImmediate: globalThis.clearTimeout.bind(globalThis) };
+// ──  zlib ───────────────────────────────────────────────────────────
+//
+// Two runtimes, one surface:
+//   1. Facet templates prepend the static import block
+//      (_shared/real-node-imports.ts), which carries workerd's native
+//      node:zlib — complete at the production compat date: every *Sync
+//      variant, brotli/zstd, crc32, constants, and real streaming create*
+//      factories. Forward verbatim: results are the host realm's own Buffer
+//      instances, and __BufferMod.isBuffer recognizes that brand (see the
+//      Buffer shim), so Buffer checks stay truthful without copying every
+//      result or intercepting stream chunks.
+//   2. Scopes without the import block keep the CompressionStream fallback.
+//      It is async-only by nature; the sync names refuse with an honest,
+//      actionable error instead of pretending.
 builtins.zlib = (() => {
+  const __real = (typeof __real_zlib !== "undefined") ? (__real_zlib.default ?? __real_zlib) : null;
+  if (__real && typeof __real.gzipSync === "function") {
+    const mod = {};
+    // Constants, lookup tables, crc32, and the stream factories/classes pass
+    // through bound to the native module (capitalized names are classes —
+    // binding would strip their prototype and break \`new\`).
+    for (const k of Object.keys(__real)) {
+      const v = __real[k];
+      mod[k] = (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v;
+    }
+    if (__real.promises) mod.promises = __real.promises;
+    mod.default = mod;
+    return mod;
+  }
   function _c(d,a) { const i=typeof d==="string"?new TextEncoder().encode(d):d; return new Response(new Blob([i]).stream().pipeThrough(new CompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
   function _d(d,a) { const i=d instanceof Uint8Array?d:new Uint8Array(d); return new Response(new Blob([i]).stream().pipeThrough(new DecompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
-  return { gzip:(d,o,cb)=>{if(typeof o==="function")cb=o;_c(d,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}, gunzip:(d,o,cb)=>{if(typeof o==="function")cb=o;_d(d,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}, deflate:(d,o,cb)=>{if(typeof o==="function")cb=o;_c(d,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}, inflate:(d,o,cb)=>{if(typeof o==="function")cb=o;_d(d,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}, gzipSync:()=>{throw new Error("use async gzip()");}, gunzipSync:()=>{throw new Error("use async gunzip()");}, createGzip:()=>new __streamMod.Transform({transform(c,e,cb){_c(c,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}}), createGunzip:()=>new __streamMod.Transform({transform(c,e,cb){_d(c,"gzip").then(r=>cb(null,r)).catch(e=>cb(e));}}), createDeflate:()=>new __streamMod.Transform({transform(c,e,cb){_c(c,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}}), createInflate:()=>new __streamMod.Transform({transform(c,e,cb){_d(c,"deflate").then(r=>cb(null,r)).catch(e=>cb(e));}}), constants:{Z_NO_FLUSH:0,Z_PARTIAL_FLUSH:1,Z_SYNC_FLUSH:2,Z_FULL_FLUSH:3,Z_FINISH:4,Z_BEST_COMPRESSION:9,Z_DEFAULT_COMPRESSION:-1} };
+  function _syncRefusal(name, asyncName) {
+    const e = new Error("zlib." + name + ": synchronous compression is not available on this runtime (no native node:zlib in scope). Use the async zlib." + asyncName + "(data, callback) form.");
+    e.code = "ERR_ZLIB_SYNC_UNAVAILABLE";
+    throw e;
+  }
+  // Node accepts strings, Buffers, and ArrayBuffers; every entry point
+  // funnels through one Uint8Array view so sniffing and buffering see
+  // identical bytes.
+  function _u8(d) {
+    if (d instanceof Uint8Array) return d;
+    if (typeof d === "string") return new TextEncoder().encode(d);
+    return new Uint8Array(d);
+  }
+  // Node's Unzip contract sniffs the wrapper itself: gzip magic or zlib.
+  function _isGzip(u8) { return u8.length >= 2 && u8[0] === 0x1f && u8[1] === 0x8b; }
+  function _concat(chunks) {
+    let n = 0;
+    for (const c of chunks) n += c.length;
+    const out = new Uint8Array(n);
+    let o = 0;
+    for (const c of chunks) { out.set(c, o); o += c.length; }
+    return out;
+  }
+  function _process(mode, fmt, input) {
+    const algo = mode === "compress" ? fmt : (fmt || (_isGzip(input) ? "gzip" : "deflate"));
+    return mode === "compress" ? _c(input, algo) : _d(input, algo);
+  }
+  function _async(mode, fmt) {
+    return (d, o, cb) => {
+      if (typeof o === "function") cb = o;
+      const input = _u8(d);
+      _process(mode, fmt, input).then((r) => cb(null, r)).catch((e) => cb(e));
+    };
+  }
+  // Live codec per Transform lifetime: every write feeds one real
+  // CompressionStream/DecompressionStream writer (its queue serializes
+  // ordering; the write promise settles before the callback), a reader pump
+  // relays output as it is produced instead of accumulating the payload,
+  // and flush closes the writer then awaits full drain before completing.
+  // Chunks are copied so later caller mutations cannot reach the codec, and
+  // createUnzip holds copies only until two bytes decide the wrapper.
+  function _openCodec(openMode, openAlgo) {
+    const cs = openMode === "compress" ? new CompressionStream(openAlgo) : new DecompressionStream(openAlgo);
+    return { writer: cs.writable.getWriter(), reader: cs.readable.getReader() };
+  }
+  // The legacy Readable has no resume notification, so room below the
+  // high-water mark is observed by yielding to the task queue until the
+  // consumer drains or the stream is destroyed.
+  async function _drainRoom(stream) {
+    while (
+      stream._readableState &&
+      !stream._readableState.destroyed &&
+      stream.readableLength >= stream._readableState.highWaterMark
+    ) {
+      await new Promise((tick) => setTimeout(tick, 0));
+    }
+    // True when the wait ended because the stream went away, not because
+    // the consumer made room.
+    return !!(stream._readableState && stream._readableState.destroyed);
+  }
+  function _streamFactory(factoryMode, fmt) {
+    return () => {
+      let writer = null;
+      let reader = null;
+      let drained = Promise.resolve();
+      let pumpFailure = null;
+      let algo = fmt;
+      let held = [];
+      let heldLen = 0;
+      const t = new __streamMod.Transform({
+        transform: async (chunk, _enc, cb) => {
+          try {
+            const bytes = _u8(chunk).slice();
+            if (t._readableState.destroyed) return cb();
+            let feed = bytes;
+            if (!writer) {
+              if (fmt === null && heldLen + bytes.length < 2) {
+                held.push(bytes);
+                heldLen += bytes.length;
+                return cb();
+              }
+              if (heldLen > 0) feed = _concat([...held, bytes]);
+              held = [];
+              heldLen = 0;
+              if (fmt === null) algo = _isGzip(feed) ? "gzip" : "deflate";
+              start();
+            }
+            await writer.write(feed);
+            cb();
+          } catch (e) { cb(e); }
+        },
+        flush: async (cb) => {
+          try {
+            if (!writer) {
+              if (factoryMode !== "compress") {
+                // Empty decompress input fails deterministically here — no
+                // codec is invented, matching Node's unexpected-end error.
+                return cb(Object.assign(new Error("unexpected end of file"), { code: "Z_DATA_ERROR", errno: -3 }));
+              }
+              start();
+            }
+            await writer.close();
+            await drained;
+            cb(pumpFailure);
+          } catch (e) { cb(pumpFailure || e); }
+        },
+      });
+      // One cleanup path for every destroy exit: cancel the readable side,
+      // abort the writable side, and stop the pump.
+      function _releaseCodec() {
+        reader.cancel().catch(() => {});
+        writer.abort().catch(() => {});
+      }
+      function start() {
+        const opened = _openCodec(factoryMode, algo);
+        writer = opened.writer;
+        reader = opened.reader;
+        drained = (async () => {
+          try {
+            for (;;) {
+              // A destroy can land while a read is in flight; check on both
+              // sides so nothing buffers after the stream went away.
+              if (t._readableState.destroyed) return _releaseCodec();
+              const next = await reader.read();
+              if (t._readableState.destroyed) return _releaseCodec();
+              if (next.done) {
+                return;
+              }
+              // Backpressure: once push reports pressure, park the pump and
+              // do not read again until the consumer drains below the
+              // high-water mark. The pending writer.write promise then holds
+              // the transform callback, so producer writes stop resolving
+              // instead of accumulating. A destroy while parked releases the
+              // codec through the same cleanup path.
+              if (!t.push(__BufferMod.from(next.value))) {
+                if (await _drainRoom(t)) return _releaseCodec();
+              }
+            }
+          } catch (e) { pumpFailure = e instanceof Error ? e : new Error(String(e)); }
+        })();
+      }
+      return t;
+    };
+  }
+  return {
+    gzip: _async("compress", "gzip"),
+    gunzip: _async("decompress", "gzip"),
+    deflate: _async("compress", "deflate"),
+    inflate: _async("decompress", "deflate"),
+    deflateRaw: _async("compress", "deflate-raw"),
+    inflateRaw: _async("decompress", "deflate-raw"),
+    unzip: _async("decompress", null),
+    gzipSync: () => _syncRefusal("gzipSync", "gzip"),
+    gunzipSync: () => _syncRefusal("gunzipSync", "gunzip"),
+    deflateSync: () => _syncRefusal("deflateSync", "deflate"),
+    inflateSync: () => _syncRefusal("inflateSync", "inflate"),
+    deflateRawSync: () => _syncRefusal("deflateRawSync", "deflateRaw"),
+    inflateRawSync: () => _syncRefusal("inflateRawSync", "inflateRaw"),
+    unzipSync: () => _syncRefusal("unzipSync", "unzip"),
+    createGzip: _streamFactory("compress", "gzip"),
+    createGunzip: _streamFactory("decompress", "gzip"),
+    createDeflate: _streamFactory("compress", "deflate"),
+    createInflate: _streamFactory("decompress", "deflate"),
+    createDeflateRaw: _streamFactory("compress", "deflate-raw"),
+    createInflateRaw: _streamFactory("decompress", "deflate-raw"),
+    createUnzip: _streamFactory("decompress", null),
+    constants: { Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1 },
+  };
 })();
 builtins.readline = (() => {
   function emitKeypressEvents(stream) {

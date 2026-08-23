@@ -11,6 +11,9 @@ export declare function gzipSync(): never;
 export declare function gunzipSync(): never;
 export declare function deflateSync(): never;
 export declare function inflateSync(): never;
+export declare function deflateRawSync(): never;
+export declare function inflateRawSync(): never;
+export declare function unzipSync(): never;
 export declare const constants: {
     Z_NO_FLUSH: number;
     Z_PARTIAL_FLUSH: number;
@@ -42,6 +45,9 @@ declare const _default: {
     gunzipSync: typeof gunzipSync;
     deflateSync: typeof deflateSync;
     inflateSync: typeof inflateSync;
+    deflateRawSync: typeof deflateRawSync;
+    inflateRawSync: typeof inflateRawSync;
+    unzipSync: typeof unzipSync;
     constants: {
         Z_NO_FLUSH: number;
         Z_PARTIAL_FLUSH: number;

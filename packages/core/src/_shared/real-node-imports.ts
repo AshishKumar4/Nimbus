@@ -38,6 +38,13 @@
  *                         constructed Session's connect/post are inert.
  *                         Tools (e.g. nuxi) that open a Session purely
  *                         for optional profiling degrade cleanly.
+ *   - node:zlib         — full surface: every *Sync variant, brotli/zstd,
+ *                         crc32, constants, and streaming create* factories
+ *                         (probe-verified 2026-08-23 at compat date
+ *                         2026-04-01). Forwarded verbatim by the zlib
+ *                         block in node-shims.ts; results are the host
+ *                         realm's own Buffers, which the widened
+ *                         __BufferMod.isBuffer recognizes.
  */
 
 export function getRealNodeImportsCode(): string {
@@ -49,5 +56,6 @@ import * as __real_diagnostics_channel from 'node:diagnostics_channel';
 import * as __real_repl from 'node:repl';
 import * as __real_vm from 'node:vm';
 import * as __real_inspector from 'node:inspector';
+import * as __real_zlib from 'node:zlib';
 `.trim();
 }

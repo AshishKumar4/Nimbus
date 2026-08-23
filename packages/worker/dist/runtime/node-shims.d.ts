@@ -9,7 +9,10 @@
  *   - events: full EventEmitter
  *   - stream: real Readable/Writable/Transform/Duplex with backpressure
  *   - crypto: createHash (FNV-1a sync, SubtleCrypto async), randomBytes/UUID
- *   - zlib: real gzip/gunzip/deflate via CompressionStream/DecompressionStream
+ *   - zlib: forward to workerd's native node:zlib when the facet real-import
+ *     block materialised (full sync/brotli/stream surface; results are the
+ *     host realm's own Buffers, recognized by the widened isBuffer);
+ *     CompressionStream fallback with honest sync refusal
  *   - dns: real DNS resolution via Cloudflare DNS-over-HTTPS
  *   - http: virtual server with port registry for supervisor routing
  *   - https: fetch()-backed request/get

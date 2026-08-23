@@ -35,12 +35,23 @@ async function processStream(
   return result;
 }
 
-function wrapAsync(format: CompressionFormat, type: 'compress' | 'decompress') {
+/**
+ * Node's Unzip sniffs the wrapper itself: the gzip magic bytes mean gunzip,
+ * anything else is treated as zlib-wrapped deflate.
+ */
+function looksLikeGzip(data: Uint8Array): boolean {
+  return data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b;
+}
+
+function wrapAsync(
+  format: CompressionFormat | ((data: Uint8Array) => CompressionFormat),
+  type: 'compress' | 'decompress',
+) {
   return function (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback): void {
     const callback = typeof optionsOrCb === 'function' ? (optionsOrCb as ZlibCallback) : cb!;
     const input = typeof data === 'string' ? new TextEncoder().encode(data) : data;
     const raw = input instanceof Buffer ? new Uint8Array(input) : input;
-    processStream(raw, format, type)
+    processStream(raw, typeof format === 'function' ? format(raw) : format, type)
       .then((result) => callback(null, result))
       .catch((err) => callback(err instanceof Error ? err : new Error(String(err))));
   };
@@ -52,20 +63,40 @@ export const deflate = wrapAsync('deflate', 'compress');
 export const inflate = wrapAsync('deflate', 'decompress');
 export const deflateRaw = wrapAsync('deflate-raw', 'compress');
 export const inflateRaw = wrapAsync('deflate-raw', 'decompress');
-export const unzip = wrapAsync('gzip', 'decompress');
+export const unzip = wrapAsync((data) => (looksLikeGzip(data) ? 'gzip' : 'deflate'), 'decompress');
 
-// Sync variants are not supported in the browser
+/**
+ * The Sync surface needs a synchronous compress primitive; browser-class
+ * runtimes only offer the async CompressionStream. Each Sync name refuses
+ * with the working async replacement spelled out instead of failing as a
+ * missing export or a vague "not supported".
+ */
+function syncUnavailable(name: string, asyncName: string): never {
+  throw Object.assign(new Error(
+    `zlib.${name}: synchronous compression is not available on this runtime. Use the async zlib.${asyncName}(data, callback) form instead.`,
+  ), { code: 'ERR_ZLIB_SYNC_UNAVAILABLE' });
+}
+
 export function gzipSync(): never {
-  throw new Error('zlib sync operations are not supported in Lifo');
+  syncUnavailable('gzipSync', 'gzip');
 }
 export function gunzipSync(): never {
-  throw new Error('zlib sync operations are not supported in Lifo');
+  syncUnavailable('gunzipSync', 'gunzip');
 }
 export function deflateSync(): never {
-  throw new Error('zlib sync operations are not supported in Lifo');
+  syncUnavailable('deflateSync', 'deflate');
 }
 export function inflateSync(): never {
-  throw new Error('zlib sync operations are not supported in Lifo');
+  syncUnavailable('inflateSync', 'inflate');
+}
+export function deflateRawSync(): never {
+  syncUnavailable('deflateRawSync', 'deflateRaw');
+}
+export function inflateRawSync(): never {
+  syncUnavailable('inflateRawSync', 'inflateRaw');
+}
+export function unzipSync(): never {
+  syncUnavailable('unzipSync', 'unzip');
 }
 
 export const constants = {
@@ -90,5 +121,7 @@ export const constants = {
 
 export default {
   gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw, unzip,
-  gzipSync, gunzipSync, deflateSync, inflateSync, constants,
+  gzipSync, gunzipSync, deflateSync, inflateSync,
+  deflateRawSync, inflateRawSync, unzipSync,
+  constants,
 };
