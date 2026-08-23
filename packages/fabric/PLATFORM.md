@@ -154,8 +154,9 @@ The reset predicate is `pid <= generation base` with `PID_GEN_STRIDE` =
 1,000,000.
 
 **Eviction delivers nothing the object can catch** (production; eviction
-cannot be forced, so no designed probe exists). workerd labels five reasons — `lru` (memory pressure),
-`condemned` (operator or abuse kill), `inactive` (roughly 70-140 s without
+cannot be forced, so no designed probe exists). workerd labels five reasons —
+`lru` (memory pressure), `condemned` (operator or abuse kill), `inactive`
+(roughly 70-140 s without
 traffic), `dynamic_worker` (per-owner LRU cap, default 50),
 `dynamic_worker_banned` — and delivers none of them. The object stops, and
 in-memory state and any promise driving work are gone. Yours: recover
@@ -286,11 +287,10 @@ a NEW name once the ledger reads 65,536.
 **`ctx.facets.clone` is O(1) copy-on-write in time and full price in quota**
 (probe). Measured flat across scale. One project: 18 ms for a 4 MB facet
 and 54 ms for 1.05 GB. The other: 18-31 ms for a 45.73 MB corpus and
-34-54 ms for 1 GB. It is same-object only, still absent from the public
-docs and from `@cloudflare/workers-types`, and carries no compatibility
-promise. ANY
-unresolvable source name (`''`, `'.'`, `'..'`, `'/'`, `'root'`, `'0'`, or a
-typo) SUCCEEDS, silently EMPTIES the destination, and reports nothing
+34-54 ms for 1 GB. It is same-object only, still absent from the public docs
+and from `@cloudflare/workers-types`, and carries no compatibility promise.
+ANY unresolvable source name (`''`, `'.'`, `'..'`, `'/'`, `'root'`, `'0'`, or
+a typo) SUCCEEDS, silently EMPTIES the destination, and reports nothing
 (probe, 2026-08-17). An emptied facet still shows a 4,096-byte database, so
 a size check proves nothing. Enforced:
 `cloneStorage` is the one way this library calls clone. It takes the
@@ -323,8 +323,8 @@ synchronously ("Code generation from strings disallowed for this context";
 "Wasm code generation disallowed by embedder"). That holds in a DO
 constructor, at request time, in an alarm handler, inside a dynamically
 imported module, and at loader-child request time. Allowed only at module
-top level, and that
-window is a compat flag (`allow_eval_during_startup`, default on for compat
+top level, and that window is a compat flag (`allow_eval_during_startup`,
+default on for compat
 dates ≥ 2025-06-01). Two carve-outs: `new Function()` with no arguments
 succeeds everywhere, and `WebAssembly.validate` is allowed everywhere.
 `WebAssembly.compileStreaming` does not exist in workerd. Enforced:
@@ -526,10 +526,9 @@ error message is not evidence that no kill happened. Named: `classifyError`
 pins the message families (memory: "Worker exceeded memory limit.",
 "Durable Object's isolate exceeded its memory limit and was reset",
 "Memory limit exceeded"; CPU: "Worker exceeded CPU time limit.",
-"Durable Object exceeded its CPU
-time limit and was reset."). Never fold the two: a CPU kill recurs on the
-same input, a memory kill on the same working set, and they need different
-remedies.
+"Durable Object exceeded its CPU time limit and was reset."). Never fold the
+two: a CPU kill recurs on the same input, a memory kill on the same working
+set, and they need different remedies.
 
 **`SQLITE_NOMEM` and `SQLITE_FULL` are storage-layer refusals, distinct from
 isolate OOM and from each other** (production). NOMEM wants a smaller
