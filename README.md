@@ -31,7 +31,7 @@ Cloud dev environments today are either heavy VMs (slow to start, expensive to i
 - **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on: the workerd-compatibility surface, not a JS interpreter stub and not the upstream Node/Bun binaries). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
 - **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.7 s median (measured with the ComputeSDK TTI methodology, N=200, 100% success). There is no VM boot and no image pull.
 - **Built for agents.** Every agent can mint its own sandbox through the SDK. Sandboxes are cheap enough to create per-task, and 100 simultaneous creates succeed without a warm pool.
-- **One process, one isolate, 128 MiB each.** Every isolate on Workers is capped at 128 MiB, so Nimbus treats processes the way an OS treats them: heavy apps span *multiple* isolates. Each process gets its own isolate (its own memory and CPU budget), wired together over the session's loopback network. opencode runs this way: its server and TUI are two cooperating processes in two isolates.
+- **One process, one isolate, 128 MiB each.** Every isolate on Workers is capped at 128 MiB. Nimbus treats processes the way an OS treats them, so heavy apps span *multiple* isolates. Each process gets its own isolate (its own memory and CPU budget), wired together over the session's loopback network. opencode runs this way: its server and TUI are two cooperating processes in two isolates.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
 - **The URL is the session.** Bookmark it, share it, hand it to a teammate. They join the same filesystem.
 - **10 GB of persistent storage per session**, SQLite-backed, durable across reconnects and DO eviction.
@@ -172,8 +172,8 @@ Open http://localhost:8787 and click **Launch**.
 ## Use Nimbus as a library
 
 [`@nimbus-sh/core`](packages/core) is the OS without the Worker: the durable
-filesystem, the shell with 60+ Unix commands, and the WASI runtime layer,
-over two narrow SQL ports instead of any Cloudflare API. The same class runs
+filesystem, the shell with 60+ Unix commands, and the WASI runtime layer. It
+runs over two narrow SQL ports instead of any Cloudflare API. The same class runs
 inside a Durable Object (`ctx.storage.sql`) and in a plain bun or node
 process (`bun:sqlite`, `node:sqlite`).
 

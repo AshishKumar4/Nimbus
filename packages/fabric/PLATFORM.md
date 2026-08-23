@@ -192,8 +192,8 @@ released.
 **A long turn drops the object's WebSockets even when the work succeeds**
 (production: a launch turn finished `outcome=ok` and the terminal died
 anyway). A Durable Object is single-threaded; a pinned thread cannot service
-its sockets. A success response is not evidence the object survived the work:
-a 128 MiB allocate-and-free returned 200 and the object died about 1.7 s
+its sockets. A success response is not evidence the object survived the work.
+A 128 MiB allocate-and-free returned 200, and the object died about 1.7 s
 later (probe, 2026-07-24). Enforced: the same turn pacing as above.
 
 **One alarm per object; a second `setAlarm()` silently overwrites the
@@ -245,8 +245,8 @@ during a neighbour's burn. Against a neighbour running to the CPU cap it
 took 33,833 ms. Two PEER Durable Objects under the same load measured 4 ms.
 Yours: fan out across peer objects when you need CPU parallelism. More
 facets parallelize memory, never CPU. A facet call can also exceed your own
-RPC deadline because a sibling was busy, so read such a timeout as a
-measurement of the neighbour.
+RPC deadline because a sibling was busy. Read such a timeout as a measurement
+of the neighbour.
 
 **A facet cannot set an alarm** (probe: `setAlarm` from a facet throws
 "Error: Facets currently cannot set alarms."). Everything time-driven routes
@@ -300,7 +300,7 @@ platform call, and a wiped destination is never reported as success.
 
 **A parent and its facets evict together after 2-5 minutes idle** (probe:
 observed window 120,000-300,000 ms). Facet SQLite persists; in-memory state
-does not. An OOM is contained in BOTH directions: a facet OOM leaves the
+does not. An OOM is contained in BOTH directions. A facet OOM leaves the
 parent running, and a parent OOM leaves the facet alive, same boot id, still
 holding its memory. Yours: never assume in-memory facet state
 between two RPCs.
@@ -320,16 +320,17 @@ programs. The loader has its own walls.
 (probe matrix plus workerd source jsg/setup.c++, 2026-07-24). `eval`,
 `new Function(src)`, and WebAssembly compilation from bytes throw
 synchronously ("Code generation from strings disallowed for this context";
-"Wasm code generation disallowed by embedder") in a DO constructor, at
-request time, in an alarm handler, inside a dynamically imported module, and
-at loader-child request time. Allowed only at module top level, and that
+"Wasm code generation disallowed by embedder"). That holds in a DO
+constructor, at request time, in an alarm handler, inside a dynamically
+imported module, and at loader-child request time. Allowed only at module
+top level, and that
 window is a compat flag (`allow_eval_during_startup`, default on for compat
 dates ≥ 2025-06-01). Two carve-outs: `new Function()` with no arguments
 succeeds everywhere, and `WebAssembly.validate` is allowed everywhere.
 `WebAssembly.compileStreaming` does not exist in workerd. Enforced:
 `IsolatePool` ships wasm through the loader's modules map as
 `{ wasm: ArrayBuffer }`, compiled at module load. That is the only path
-that works: RPC of a compiled `Module` is refused by structured clone, and
+that works. RPC of a compiled `Module` is refused by structured clone, and
 inlining bytes into module source OOMs the parent.
 
 **`env.LOADER.get(name, cb)` never re-runs the callback for a name already
@@ -379,7 +380,7 @@ platform number would refuse work the platform would have run.
 Without a session term in the cache key, session B's pool reused session A's
 warm isolate, which still carried A's supervisor binding. B's writes landed
 silently in A's filesystem while B reported success. Enforced: `IsolatePool`
-folds the owning object's id into every loader key; `cacheScope: 'global'`
+folds the owning object's id into every loader key. `cacheScope: 'global'`
 is an explicit opt-in reserved for stateless compute that takes no
 supervisor binding.
 
@@ -392,8 +393,8 @@ for ordinary Workers RPC. That claim had the right number and no citation.
 Nimbus ships at most 28 MiB per value (`MAX_RPC_SAFE_PAYLOAD_BYTES`,
 self-imposed: about 6% structured-clone headroom). Real payloads cross the
 cap fast: one node disk snapshot serialized to 44,252,709 bytes. Enforced:
-boot specs name large members by VFS path and the host reads bytes in 4 MiB
-ranges, so nothing large is ever an RPC argument.
+boot specs name large members by VFS path, and the host reads bytes in 4 MiB
+ranges. Nothing large is ever an RPC argument.
 
 **Some values refuse to cross any boundary at any size** (probe): a compiled
 `WebAssembly.Module` ("Unable to deserialize cloned data.", including a
@@ -429,7 +430,7 @@ friends) store code behind a hard-capped LRU of 32 entries.
 **`WorkerStub` does not serialize, and entrypoints to dynamically loaded
 workers cannot transfer across Workers** (production: "Entrypoints to
 dynamically-loaded workers cannot be transferred"). Each hop is its own
-`WorkerEntrypoint` class; HTTP crosses a hop as parts with plain
+`WorkerEntrypoint` class. HTTP crosses a hop as parts with plain
 `ReadableStream` bodies, re-piped through an identity stream the receiving
 isolate owns. An RPC method is also a wildcard property:
 `method.call(ep, request)` builds the pipelined path `method.call` and
@@ -554,9 +555,9 @@ everything in isolate memory is gone on wake** (source, 2026-08-16). An
 in-memory per-connection allowlist silently widens to full access on wake,
 so authorization state belongs in a tag. Enforced: `connections(ctx, schema)`
 keeps NO in-memory mirror and re-derives `ctx.getWebSockets` on every read.
-It validates every attachment read and write against the caller's schema,
-because an attachment outlives the deploy that wrote it and is untrusted
-input on the way back.
+It validates every attachment read and write against the caller's schema.
+An attachment outlives the deploy that wrote it, and is untrusted input on
+the way back.
 
 **The attachment caps at 16,384 serialized bytes** (source: workerd
 v1.20260603.1, web-socket.h, `MAX_ATTACHMENT_SIZE = 1024 * 16`; the same
@@ -582,7 +583,7 @@ once a minute costs about 2,880 wakes per day (production). Enforced:
 (matched text frames stop waking the actor; the config survives
 hibernation) and bounds each hibernatable event handler at 5,000 ms
 (`NIMBUS_HIBERNATION_EVENT_TIMEOUT_MS`). The wall-time bound is not the CPU
-budget: a handler blocked on I/O trips it without burning CPU, so
+budget. A handler blocked on I/O trips it without burning CPU, so
 `classifyError` does not bucket it as `cpu_exceeded`.
 
 **Whether Cloudflare's edge reaps an idle WebSocket at about 100 s is
@@ -600,7 +601,7 @@ the object's own context; relay into it.
 **A WebSocket upgrade cannot ride an RPC hop** (production). A 101 response
 owns a live socket, and RPC's Request/Response transport reconstructs values
 rather than handing sockets over. A hosted process CAN serve WebSockets.
-The upgrade takes the fetch-semantic path on every hop: a facet is fetched
+The upgrade takes the fetch-semantic path on every hop. A facet is fetched
 directly, and a peer is fetched as a service binding, which then fetches its
 hosted facet. A per-process capability pair rides in headers, so nothing
 that did not open the process can forge the route. A target without that
@@ -647,9 +648,9 @@ the network." Input gates do close across `get`/`put`, so set-if-absent is
 atomic per object with no CAS loop.
 
 **The output gate holds a response until the turn's storage writes commit**
-(source: workerd io-gate.h). It makes `await put()` look synchronous, makes
-sync KV writes safe, and leaves an await inside the invocation as the only
-durability an object has (see Storage).
+(source: workerd io-gate.h). It makes `await put()` look synchronous, and it
+makes sync KV writes safe. An await inside the invocation is therefore the
+only durability an object has (see Storage).
 
 **A `blockConcurrencyWhile` callback still pending at about 30 s is
 cancelled and the object is RESET** (probe, 2026-08-16: reset observed at

@@ -458,7 +458,7 @@ Required behavior:
 - Browser session-id parsing accepts the same IDs the server accepts.
 - CLI session commands support `NIMBUS_TOKEN` and `--token` for enforced
   deployments: the token travels only as `Authorization: Bearer` to
-  `POST /new`, and the CLI prints the server-returned bootstrap attach URL
+  `POST /new`. The CLI prints the server-returned bootstrap attach URL
   verbatim. The no-token path is unchanged for unauthenticated/self-host
   deployments.
 - `ports.expose()` has an explicit auth model: authenticated URL, signed

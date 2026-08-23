@@ -24,8 +24,9 @@ they need no cross-isolate primitive:
   one thread executing at a time. Memory is shared, and access to it is
   serialised, so results stay correct.
 - One software futex. `Atomics.wait` throws on Workers and the
-  `memory.atomic.wait32` instruction traps for the same reason, so blocking is a
-  host park: the waiter registers a predicate (`*addr != val`) and yields.
+  `memory.atomic.wait32` instruction traps for the same reason. Blocking is
+  therefore a host park: the waiter registers a predicate (`*addr != val`) and
+  yields.
   There is no wake call. Every scheduling pass re-tests every waiter, so the
   futex is level-triggered and a lost wakeup is not expressible.
 
@@ -72,8 +73,8 @@ Three requirements, each checked before the program runs:
   correctly built and is refused at load. Measured: wasi-sdk 25 ships no hook,
   wasi-sdk 27 does.
 
-A build missing any of these is rejected at load with the build line in the
-error, rather than run in a way that could corrupt.
+A build missing any of these is rejected at load, with the build line in the
+error. It is never run in a way that could corrupt.
 
 ## Limits
 

@@ -149,7 +149,7 @@ published to npm: `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
 `NimbusWorkspace.create({ runtimes })` installs them into the workspace
 filesystem at the path `nimbus install` uses. One script builds them all:
 `bundle-runtime.mjs <name> <version> --npm-package <dir>` stages what the R2
-path stages, and lays the blobs out under the keys its own manifest names. A runtime joins the npm set by gaining an `npm` entry in its spec;
+path stages, and lays the blobs out under the keys its own manifest names. A runtime joins the npm set by gaining an `npm` entry in its spec.
 `node` and `bun` have none, because they are workerd's `nodejs_compat` rather
 than an artifact to ship.
 
@@ -408,7 +408,7 @@ production is two surfaces and verifying one does not verify the other:
 - **`nimbus-probe-staging`** — `apps/probe` under a `--name` override. The
   bearer-token embedder the behavioral suite can drive. It binds no
   account-level state of its own, so a name override is complete isolation
-  and the preflight proves it; an env block would only copy an identical
+  and the preflight proves it. An env block would only copy an identical
   binding list.
 
 Two known divergences from production, both structural: staging has no zone
