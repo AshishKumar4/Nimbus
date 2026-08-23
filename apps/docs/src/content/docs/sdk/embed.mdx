@@ -12,9 +12,9 @@ npx wrangler deploy
 
 `setup cloudflare` creates the R2 buckets and seeds the Python, Ruby, and
 clang runtimes. If Wrangler reports R2 error `10042`, enable R2 once in
-that account's dashboard and rerun. The Worker wraps `createNimbusHandler` from
-`@nimbus-sh/sdk/worker`; [configure the handler](/docs/sdk/handler/)
-lists its options.
+that account's dashboard and rerun. The Worker wraps `createNimbusHandler`
+from `@nimbus-sh/sdk/worker`, and [configure the
+handler](/docs/sdk/handler/) lists its options.
 
 Use the SDK through a colocated DO binding, or connect to an authenticated
 deployment.
@@ -39,7 +39,7 @@ const result = await box.exec('python -c "print(2 + 2)"');
 
 The sandbox profile is a policy boundary. Nimbus enforces
 `runtimes.allow` and the preinstall/on-demand flags before any RPC.
-`box.tools({ namespace: 'sandbox' })` is a Proteus-style tool provider;
+`box.tools({ namespace: 'sandbox' })` is a Proteus-style tool provider.
 `@nimbus-sh/sdk/flue` adapts it to Flue's sandbox contract.
 
 ## From React
@@ -59,8 +59,8 @@ returns `{ sessionId, ready, error, attachUrl }` from the shell's
 `nimbus:ready` / `nimbus:error` postMessages, for building the iframe
 directly.
 
-Nimbus is a Worker/DO/WASM sandbox, not a Linux VM. The boundaries are
-listed in [capabilities & limits](/docs/fine-print/capabilities/). The
+Nimbus is a Worker/DO/WASM sandbox, not a Linux VM. [Capabilities &
+limits](/docs/fine-print/capabilities/) lists the boundaries. The
 hosted demo uses
 [`apps/hosted-demo`](https://github.com/AshishKumar4/Nimbus/tree/main/apps/hosted-demo),
 the same embedder shape an external project can ship.

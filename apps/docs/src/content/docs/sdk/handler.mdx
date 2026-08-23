@@ -25,8 +25,8 @@ verifies; the URL is the auth. In enforce mode, `/new` needs a
 `session:create` Bearer token and uses the
 [attach exchange](/docs/sdk/tokens/).
 
-`sdk.remote` mounts `/api/nimbus/v1/sandboxes/<id>/rpc`; it stays off
-until enabled. Nimbus ships no token-mint endpoint. Use `routes` to add
+`sdk.remote` mounts `/api/nimbus/v1/sandboxes/<id>/rpc`. It is off by
+default. Nimbus ships no token-mint endpoint. Use `routes` to add
 one behind your own user auth.
 
 ```ts
@@ -73,6 +73,6 @@ const config = buildNimbusWranglerConfig({
 | `nimbus runtime list` | — | Shows staged runtimes |
 
 With `runtimeCache: 'shared'`, Nimbus creates and seeds the standard
-bucket. `'byoa'` binds `${prefix}-runtime-cache`; stage its blobs with
+bucket. `'byoa'` binds `${prefix}-runtime-cache`. Stage its blobs with
 `runtime sync`. `mintToken`, `syncRuntimes`, `setupCloudflare`, and
 `scaffold` are also callable from code.

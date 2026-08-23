@@ -94,7 +94,7 @@ await box.ports.unexpose(3000);
 
 Each `(session, port)` gets one host, `<port>--<id>.<suffix>`, where the
 suffix is the deployment's `NIMBUS_PREVIEW_HOST_SUFFIX` binding. The app
-is mounted at that host's root, so root-absolute paths resolve without
+mounts at that host's root, so root-absolute paths resolve without
 rewriting. A deployment with no suffix bound falls back to
 `/s/<id>/port/<port>/` on the endpoint.
 
