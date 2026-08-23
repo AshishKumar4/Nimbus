@@ -23,10 +23,58 @@
  *   `request.method` and application headers mirror the outer request,
  *   Nimbus credentials/internal headers are removed, and
  *   `request.body` is a ReadableStream (or null for GET/HEAD) that
- *   the facet can consume once. The returned Response is returned
- *   to the outer fetch as-is; its body is streamed directly.
+ *   the facet can consume once. The returned Response is streamed
+ *   straight back, with one normalization: the hop speaks identity,
+ *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+/**
+ * Content codings this hop can undo. `DecompressionStream` decodes exactly
+ * these; brotli and zstd have no decoder in the runtime, so a body in one of
+ * those cannot be repaired here.
+ */
+const DECODABLE_CONTENT_CODINGS = new Map([
+    ['gzip', 'gzip'],
+    ['x-gzip', 'gzip'],
+    ['deflate', 'deflate'],
+]);
+/**
+ * Hand back a port target's response with its bytes and its headers in
+ * agreement.
+ *
+ * A `Response` a facet builds always holds an identity body. The runtime
+ * treats the bytes a `Response` is constructed from as unencoded and runs its
+ * own content negotiation on the way out: it drops a `Content-Encoding` the
+ * client did not ask for, and compresses again when the client did. Either
+ * way a guest server's `Content-Encoding` is a label with nothing behind it,
+ * and the browser renders compressed bytes as text.
+ *
+ * The forwarded request asks the target for `identity`, so this decode covers
+ * the server that compresses whatever the client said. A coding with no
+ * decoder answers 502: an honest failure beats a page of mojibake.
+ */
+function decodeContentCoding(response, port) {
+    const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
+    if (!coding || coding === 'identity' || response.body === null)
+        return response;
+    const format = DECODABLE_CONTENT_CODINGS.get(coding);
+    if (!format) {
+        void response.body.cancel().catch(() => { });
+        return new Response(JSON.stringify({
+            error: `port proxy: target answered Content-Encoding "${coding}", which this hop cannot decode`,
+            port,
+        }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    const headers = new Headers(response.headers);
+    headers.delete('Content-Encoding');
+    // The decoded body has a different length; the Response re-derives it.
+    headers.delete('Content-Length');
+    return new Response(response.body.pipeThrough(new DecompressionStream(format)), {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+    });
+}
 function createPortCapability() {
     const bytes = crypto.getRandomValues(new Uint8Array(12));
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -217,6 +265,10 @@ export class PortRegistry {
             if (authorization)
                 headers.set('authorization', authorization);
             headers.set('X-Nimbus-Port', String(port));
+            // A Response cannot carry an encoded body across this hop, so the
+            // target is asked for the one coding that survives it. See
+            // `decodeContentCoding` for the server that compresses anyway.
+            headers.set('Accept-Encoding', 'identity');
             // `duplex: 'half'` is required by workerd when body is a
             // ReadableStream — otherwise `new Request(…)` throws. It's not
             // part of the published @cloudflare/workers-types RequestInit,
@@ -255,12 +307,12 @@ export class PortRegistry {
                     headers: { 'Content-Type': 'application/json' },
                 });
             }
-            // Return the facet's Response as-is. Body is streamed; headers,
-            // status, and status-text pass through unchanged. We do NOT
-            // inject Access-Control-Allow-Origin — a port proxy forwards
-            // whatever CORS policy the user's HTTP server chose (audit C3
+            // Stream the facet's Response back. Status, status-text, and every
+            // header pass through; only a content coding the hop cannot carry is
+            // undone. We do NOT inject Access-Control-Allow-Origin — a port proxy
+            // forwards whatever CORS policy the user's HTTP server chose (audit C3
             // discourages gratuitous wildcards on non-static routes).
-            return response;
+            return decodeContentCoding(response, port);
         }
         catch (error) {
             // Server-side triage — users see only the 502 body, operators

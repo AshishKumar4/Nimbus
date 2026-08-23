@@ -23,8 +23,9 @@
  *   `request.method` and application headers mirror the outer request,
  *   Nimbus credentials/internal headers are removed, and
  *   `request.body` is a ReadableStream (or null for GET/HEAD) that
- *   the facet can consume once. The returned Response is returned
- *   to the outer fetch as-is; its body is streamed directly.
+ *   the facet can consume once. The returned Response is streamed
+ *   straight back, with one normalization: the hop speaks identity,
+ *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
 import type { RouteableFacetTarget } from './os-contracts.js';
 export interface PortEntry {
