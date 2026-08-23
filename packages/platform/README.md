@@ -15,7 +15,8 @@ error. No call site has to string-match its own.
 
 Use it if you write Workers or Durable Object code. It answers whether to
 retry a failed call, and what the limit is before you write past it. It has
-no runtime dependencies and imports nothing from `cloudflare:`, so it loads in workerd,
+no runtime dependencies and imports nothing from `cloudflare:`, so it loads
+in workerd,
 bun, and node.
 
 ## Install
