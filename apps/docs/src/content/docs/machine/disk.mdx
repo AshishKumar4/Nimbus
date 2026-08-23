@@ -15,7 +15,7 @@ still here tomorrow
 ```
 
 The disk preserves arbitrary bytes, symlinks, stat metadata, and exec bits.
-A behavioral probe writes arbitrary bytes through `fs.writeFileSync`.
+Write raw bytes with `fs.writeFileSync` and read them back unchanged.
 `chmod +x` survives, and `./prog` honors it. Every inode stores `uid`,
 `gid`, and `mode` durably, and a process without permission gets `EACCES`
 rather than silent success ([security](/docs/internals/security/)). The
@@ -27,13 +27,13 @@ The shell, all four runtimes, the editor, `box.files` in the SDK, and the
 agent's tools see the same bytes. A compiled C program can read with
 `fopen("./data.txt", "r")` what `cat` sees.
 
-Process writes stream to the supervisor with credit backpressure. With no
-credit, a process can't send more. That lets a parallel `npm install` or an
+Process writes stream to the supervisor with credit backpressure. A process
+with no credit cannot send more. That lets a parallel `npm install` or an
 84,000-file checkout fit inside a 128 MiB isolate. `fsync` and process exit
-are durability boundaries. Hibernation doesn't lose committed writes.
+are durability boundaries, and hibernation does not lose a committed write.
 
-Short-lived runtime paths read from bounded, revision-invalidated
-snapshots for speed. Long-running processes increasingly use the live
-bridge. The target is one rule: reads see either the latest committed
-state or their own unflushed write. [Inside the disk](/docs/internals/disk/)
-explains the machinery.
+Short-lived runtime paths read bounded, revision-invalidated snapshots for
+speed. Long-running processes increasingly use the live bridge. The goal for
+every path is one rule. A read sees the latest committed state, or its own
+unflushed write. [Inside the disk](/docs/internals/disk/) explains the
+machinery.

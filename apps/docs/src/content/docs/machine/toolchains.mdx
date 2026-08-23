@@ -5,6 +5,9 @@ description: The exact runtime and package support for Node, Bun, Python, Ruby, 
 
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 
+A session ships five toolchains: `node`, `bun`, `python`, `ruby`, and
+`clang`. Compile and run C without leaving the shell.
+
 ```bash
 $ cat > hello.c <<'EOF'
 #include <stdio.h>
@@ -21,8 +24,8 @@ Bun binaries. `python` is Pyodide CPython 3.13.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
 builds, user headers, and `fopen` against session files. `-pthread` is
 refused, because that sysroot ships no `wasm32-wasip1-threads` libc to link
-against. Nimbus runs pthread programs correctly. Build them with a full
-wasi-sdk and the futex shim from
+against. Nimbus still runs pthread programs correctly. To run one, build it
+with a full wasi-sdk and the futex shim from
 [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md),
 then run the `.wasm` in a session.
 
@@ -37,10 +40,10 @@ gem install rack                # pure gems from RubyGems (alpha)
 
 npm works against the live registry. Tarballs cache in R2 across sessions,
 large dependency trees shard across peer DOs, and a 611-package app installs
-in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end,
-and probes run Flask and Rack apps in preview tabs. Curated source artifacts and
-declared Pyodide extension modules also work. Runtimes are packages too. Run
-`python` before installing it and the shell prints the install hint.
+in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end, and
+Flask and Rack apps run in preview tabs. Curated source artifacts and declared
+Pyodide extension modules also work. Runtimes are packages too. Run `python`
+before installing it and the shell prints the install hint.
 
 The terminal below asks for a runtime that isn't installed, installs it
 with `nimbus install`, and opens the CPython REPL it just fetched. The
@@ -60,5 +63,5 @@ seconds, up to a minute cold.
 	]}
 />
 
-Native artifacts don't work. Manylinux wheels, native gems, `.node`
+Native artifacts do not work. Manylinux wheels, native gems, `.node`
 addons, and ELF files fail before import with an exact ABI diagnostic.

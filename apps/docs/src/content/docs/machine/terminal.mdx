@@ -5,6 +5,9 @@ description: A POSIX-like shell with stateful Python and Ruby REPLs, attached ta
 
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 
+A session opens on a POSIX-like shell. Run pipelines, redirect output, and
+mark a file executable. The exec bit persists with the file.
+
 ```bash
 $ printf 'cherry\napple\nbanana\n' > fruits.txt
 $ sort fruits.txt | head -2
@@ -17,12 +20,12 @@ The shell is a real lexer, parser, and interpreter for POSIX-like syntax.
 Pipes, redirects, heredocs, command substitution, `set -e`, `trap`,
 `source`, `$?`, and 60+ coreutils work. Shebangs and WASM magic dispatch
 `./script.sh` and `./hello.wasm`. Full IFS splitting and complete job
-control aren't done. The probes in `tests/behavioral/shell/` cover every
-claim here.
+control are not done. `tests/behavioral/shell/` holds the probes for this
+syntax.
 
-The terminal below is a live sandbox running a redirect, a pipe through
-real coreutils, and `id`, which prints the credential every command runs
-under. After the demo, you can type your own commands.
+The terminal below runs a redirect, a pipe through real coreutils, and `id`,
+which prints the credential every command runs under. Type your own commands
+when it finishes.
 
 <NimbusSandbox
 	title="nimbus — shell"
@@ -38,23 +41,22 @@ under. After the demo, you can type your own commands.
 ## REPLs
 
 Run `python`, `ruby`, `node`, or `bun` with no arguments to open a REPL.
-Python and Ruby are stateful real interpreters, so variables and imports
-persist across submits. Node and Bun can't keep declarations: workerd's CSP
-blocks runtime `eval`. Their banners say so, and scripts are unaffected.
-Leave with <kbd>Ctrl</kbd>+<kbd>D</kbd> or `exit`.
+Python and Ruby are real interpreters and keep their state, so variables and
+imports persist across submits. Node and Bun cannot keep declarations,
+because workerd's CSP blocks runtime `eval`. Their banners say so, and
+scripts are unaffected. Leave with <kbd>Ctrl</kbd>+<kbd>D</kbd> or `exit`.
 
 ## Full-screen CLIs <span class="nimbus-chip" data-kind="alpha">alpha</span>
 
 Foreground npm bins open in attached tabs. Keystrokes reach the process,
 resizes propagate, and ANSI redraws render. Pipe the same bin and it sees
-`isTTY: false`. Behavioral probes run the Pi coding agent end to end
-through both install paths.
+`isTTY: false`. The Pi coding agent runs end to end through both install
+paths.
 
-opencode is the reference stress test. Its serve half boots, passes its
-health gate, and streams SSE. The TUI half renders frames but runs on a
-thin memory margin that is still being hardened, so full-TUI support is
-not yet claimed. Full PTY parity (raw and cooked modes, signals, and
-scrollback replay) is roadmap.
+opencode's serve half boots, passes its health gate, and streams SSE. Its
+TUI half renders frames, but runs on a thin memory margin that is still
+being hardened, so full-TUI support is not yet claimed. Full PTY parity
+(raw and cooked modes, signals, and scrollback replay) is roadmap.
 
 ## Recovery
 
