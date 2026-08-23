@@ -93,8 +93,11 @@ function ctxFor(sockets) {
 {
   // A tab that only pings never wakes the object, so only the runtime's
   // own auto-response records that it is there.
-  const pinger = socket({ seenAt: NOW, autoResponseAt: new Date(NOW + 100_000) });
-  assert.equal(hasLiveShellOwner(ctxFor([pinger]), [pinger], NOW + 101_000), true);
+  const at = NOW + SHELL_OWNER_LIVENESS_MS + 30_000;
+  const pinger = socket({ seenAt: NOW, autoResponseAt: new Date(at - 2_000) });
+  assert.equal(hasLiveShellOwner(ctxFor([pinger]), [pinger], at), true, 'the stamp is stale; only the ping says otherwise');
+  const silent = socket({ seenAt: NOW });
+  assert.equal(hasLiveShellOwner(ctxFor([silent]), [silent], at), false);
 
   const blind = { readyState: WebSocket.OPEN, deserializeAttachment: () => ({ kind: 'shell', seenAt: NOW }) };
   assert.equal(hasLiveShellOwner(undefined, [blind], NOW + 1_000), true, 'a host without the API still reads the stamp');

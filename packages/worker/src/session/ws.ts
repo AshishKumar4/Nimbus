@@ -51,7 +51,7 @@ import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-p
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { noteShellSocketActivity } from './shell-socket.js';
+import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
 import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 
@@ -210,7 +210,7 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     // The stamp goes in the attachment because isolate memory does not
     // survive hibernation and the /ws upgrade has to read it afterwards.
     // Rate-limited inside; see src/session/shell-socket.ts.
-    noteShellSocketActivity(ws);
+    if (attach?.kind === 'shell') noteShellSocketActivity(ws);
     const data = typeof message === 'string' ? message : dec.decode(message);
     const value: unknown = JSON.parse(data);
     // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE
@@ -358,6 +358,12 @@ export async function wsClose(
   // terminal reconnect (see 607e472 — do NOT kill running processes
   // here). Only reap per-tab state.
 
+  // The runtime says this socket is finished, so it no longer holds the
+  // terminal. Drop its liveness stamp before anything else: the frame
+  // that triggered this close stamped it moments ago, and leaving that
+  // behind would make the reconnect look like a second tab.
+  clearShellSocketStamp(ws);
+
   // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
   // The Track B' state-machine transition. Persist final shell
   // state + record a recovery_event BEFORE we null the in-memory
@@ -436,6 +442,11 @@ export async function wsError(self: WsHost, ws: WebSocket, _error?: any): Promis
     } catch { /* best-effort */ }
     return;
   }
+
+  // Same reasoning as wsClose: this socket stops holding the terminal
+  // here. It matters more on this path, because the handler that just
+  // blew the 5-s cap is the one that stamped the socket.
+  clearShellSocketStamp(ws);
 
   // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
   // Same architectural step as wsClose: persist shell state + record

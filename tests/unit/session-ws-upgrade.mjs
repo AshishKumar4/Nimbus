@@ -8,7 +8,6 @@ const NOW = 1_700_000_000_000;
 
 function makeSession(ctx) {
   return {
-    _b4Phase: 'hydrated',
     shell: {},
     terminal: {},
     kernel: {},
@@ -22,12 +21,12 @@ function makeSession(ctx) {
  * on it. An absent `seenAt` models a socket an older deploy tagged.
  */
 function socket({ kind = 'shell', readyState = WebSocket.OPEN, seenAt, autoResponseAt } = {}) {
-  const attachment = seenAt === undefined ? { kind } : { kind, seenAt };
+  let attachment = seenAt === undefined ? { kind } : { kind, seenAt };
   return {
     readyState,
     autoResponseAt: autoResponseAt ?? null,
     deserializeAttachment: () => attachment,
-    serializeAttachment: (next) => { Object.assign(attachment, next); },
+    serializeAttachment: (next) => { attachment = next; },
   };
 }
 
