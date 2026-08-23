@@ -498,6 +498,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           joinExistingSession(self as any, server, appendScrollback, loadScrollback);
         } catch (err: any) {
           console.error('warm-rejoin error:', err?.message, err?.stack);
+          try { server.close(1011, 'rejoin failed'); } catch { /* already closing */ }
           return new Response('Rejoin failed: ' + err?.message, { status: 500 });
         }
         return new Response(null, { status: 101, webSocket: client });
@@ -508,6 +509,7 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         await self.initSession(server);
       } catch (err: any) {
         console.error('initSession error:', err?.message, err?.stack);
+        try { server.close(1011, 'init failed'); } catch { /* already closing */ }
         return new Response('Init failed: ' + err?.message, { status: 500 });
       }
       return new Response(null, { status: 101, webSocket: client });
