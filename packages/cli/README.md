@@ -1,7 +1,7 @@
 # @nimbus-sh/cli
 
-CLI for Nimbus: scaffolding, token mint/verify, session helpers, and runtime
-cache operations.
+Scaffold a Nimbus Worker, mint and verify tokens, open sessions, and sync the
+runtime cache.
 
 ## Install
 
@@ -24,14 +24,16 @@ bun packages/cli/src/scaffold-bin.ts my-app
 ### `nimbus init [directory]`
 
 Scaffolds a Nimbus-powered Workers project. `.` uses the current directory.
+
 The generated app embeds the interactive Nimbus UI and enables the
-authenticated remote sandbox API. Add application-specific auth routes in
-`src/index.ts` when you are ready to mint user tokens from your backend.
-It also includes the session Agent UI. Configure Cloudflare OAuth and Workers
-AI by adding the non-secret `NIMBUS_CF_OAUTH_CLIENT_ID`,
+authenticated remote sandbox API. Add your own auth routes in `src/index.ts`
+before you mint user tokens from the backend.
+
+The app also carries the session agent UI. To configure Cloudflare OAuth and
+Workers AI, add the non-secret `NIMBUS_CF_OAUTH_CLIENT_ID`,
 `NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`, and
-`NIMBUS_AGENT_GATEWAY_ID` vars, then store `NIMBUS_AGENT_COOKIE_SECRET`
-with `wrangler secret put`.
+`NIMBUS_AGENT_GATEWAY_ID` vars. Then store `NIMBUS_AGENT_COOKIE_SECRET` with
+`wrangler secret put`.
 
 ```bash
 nimbus init my-nimbus
@@ -116,9 +118,8 @@ Exit codes: 0 success, 65 token-validation failure, 78 env missing.
 
 ### `nimbus runtime sync`
 
-Uploads runtime blobs/manifests and updates the runtime catalog through the
-public CLI wrapper. This is the user-facing path for Python, Ruby, and clang
-runtime cache operations.
+Uploads runtime blobs and manifests, then updates the runtime catalog. This
+is the user-facing path for the Python, Ruby, and clang runtime caches.
 
 ```bash
 CLOUDFLARE_ACCOUNT_ID=<id> nimbus runtime sync --bucket nimbus-runtime-cache-public clang
@@ -167,8 +168,8 @@ Every verb is also exported as a function:
 import { mintToken, syncRuntimes, scaffold } from '@nimbus-sh/cli';
 ```
 
-`mintToken(argv)` and friends return a Promise<number> (process exit
-code). Stdout / stderr write directly via `process.stdout`/`process.stderr`.
+`mintToken(argv)` and its siblings return a Promise<number>, the process exit
+code. They write to `process.stdout` and `process.stderr` directly.
 
 ## Engines
 
