@@ -383,8 +383,8 @@ export async function ensureProgrammaticReady(
 ): Promise<{ ok: true; preinstalled: string[] }> {
   if (!self.shell) {
     await self.initSession(makeHeadlessWebSocket());
-    // Programmatic boot owns no real terminal socket. Mark the session
-    // drained so a later browser /ws can warm-join instead of 409ing.
+    // A programmatic boot owns no terminal socket, which is what
+    // 'drained' reports to the diagnostics and the recovery ring.
     self._b4Phase = 'drained';
   } else {
     self.ensureSqliteFs();

@@ -51,6 +51,7 @@ import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-p
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
+import { noteShellSocketActivity } from './shell-socket.js';
 import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 
@@ -205,6 +206,11 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
       await routeProcessLogClientMessage(self, ws, attach, message);
       return;
     }
+    // A frame arriving is the peer proving it is still on this socket.
+    // The stamp goes in the attachment because isolate memory does not
+    // survive hibernation and the /ws upgrade has to read it afterwards.
+    // Rate-limited inside; see src/session/shell-socket.ts.
+    noteShellSocketActivity(ws);
     const data = typeof message === 'string' ? message : dec.decode(message);
     const value: unknown = JSON.parse(data);
     // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE
@@ -400,10 +406,9 @@ export async function wsClose(
   // upgrade calls terminal.attach(newWs) to swap in the new socket.
   //
   // Pre-B'.5 we nulled these three fields to avoid two-tab cross-
-  // wiring (the 409 in nimbus-session-routes.ts:97 protected against
-  // overwriting an active shell). With phase=drained surfaced on the
-  // host, the /ws handler can disambiguate "warm session waiting for
-  // rejoin" (warmJoin path) from "active session busy" (still 409).
+  // wiring, which cost every reconnect a full rebuild. The upgrade now
+  // reads the sockets instead: a shell socket a peer still holds is the
+  // busy session it refuses, and this one is closing.
   // Reset the one-shot "wrangler alias" banner so a reconnecting user
   // sees it again — terminal-lifetime state, not session-lifetime.
   self.wranglerAliasBannerShown = false;
