@@ -4,7 +4,7 @@ The Cloudflare half of Nimbus: the `NimbusSession` Durable Object, router,
 static assets, facet machinery, and auth internals. The filesystem, shell,
 and WASI runtime layer live in
 [`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core), which
-this package composes on — core also runs standalone in bun or node.
+this package composes on. Core also runs standalone in bun or node.
 
 Application code should import the deploy-time API through
 `@nimbus-sh/sdk/worker`. This package is still installed because it carries
@@ -232,7 +232,7 @@ runtime installs, long-running processes, logs, and preview ports. Model calls
 use the AI SDK with Cloudflare Workers AI's OpenAI-compatible endpoint and an
 optional AI Gateway name.
 
-For user-owned quota, create a Cloudflare OAuth client with response type
+For user-owned quota, create a Cloudflare OAuth client. Use response type
 `Code`, grant type `Authorization Code`, token authentication method `None`,
 and redirect URL `https://<your-nimbus-host>/api/nimbus/oauth/callback`.
 Nimbus uses PKCE and stores user OAuth tokens only in encrypted `HttpOnly`,
@@ -288,7 +288,7 @@ export default createNimbusHandler({
 
 ## Required bindings
 
-Every binding is load-bearing — see `apps/hosted-demo/wrangler.jsonc` or
+Every binding is load-bearing. See `apps/hosted-demo/wrangler.jsonc` or
 `@nimbus-sh/config` for the canonical set:
 
 - `NIMBUS_SESSION` (Durable Object) — per-session SQLite state
@@ -299,7 +299,7 @@ Every binding is load-bearing — see `apps/hosted-demo/wrangler.jsonc` or
 
 ## Status
 
-v0.1 — first public release. SemVer not yet stable; expect breaking
-changes through v0.x. Issues + PRs welcome.
+v0.1 is the first public release. SemVer is not stable yet, so expect
+breaking changes through v0.x. Issues + PRs welcome.
 
 MIT. © Ashish Kumar Singh + contributors.

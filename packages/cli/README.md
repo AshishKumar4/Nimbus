@@ -152,12 +152,12 @@ NIMBUS_TOKEN=<jwt-with-session-create> \
 nimbus session new
 ```
 
-The token is sent only as an `Authorization: Bearer` header — it never
-appears in any URL. The printed attach URL is the server's redirect
-Location verbatim: on enforced deployments it carries a short-lived
-(90 s), single-use bootstrap token pinned to the new session. Opening it
-once sets the session cookie and redirects to the clean `/s/<id>/` URL;
-reusing it returns 401.
+The token is sent only as an `Authorization: Bearer` header. It never
+appears in any URL. The printed attach URL is the server's redirect Location
+verbatim. On enforced deployments that URL carries a short-lived (90 s),
+single-use bootstrap token pinned to the new session. Opening it once sets
+the session cookie and redirects to the clean `/s/<id>/` URL. Reusing it
+returns 401.
 
 ## Programmatic use
 

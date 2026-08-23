@@ -29,7 +29,7 @@ minting user tokens from the backend.
 
 The session UI also includes an Agent surface inside the editor workspace. To
 let users connect their own Cloudflare account for Workers AI, create a
-Cloudflare OAuth client with response type `Code`, grant type
+Cloudflare OAuth client. Use response type `Code`, grant type
 `Authorization Code`, token authentication method `None`, and redirect URL
 `https://<your-nimbus-host>/api/nimbus/oauth/callback`. Add
 `NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`,

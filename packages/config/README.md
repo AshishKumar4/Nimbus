@@ -64,7 +64,7 @@ writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
 | `extraAliases` | `Record<string, string>` | `{}` | Extra entries merged into the alias map. |
 | `agent` | `object` | unset | Emits non-secret Agent vars for Cloudflare OAuth, Workers AI model, AI Gateway, and owner-account fallback. |
 
-Agent secrets are never written by this package. Store them with Wrangler:
+This package never writes Agent secrets. Store them with Wrangler:
 
 ```bash
 npx wrangler secret put NIMBUS_AGENT_COOKIE_SECRET
@@ -76,7 +76,7 @@ npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 1. **Forwards-compat**: if Nimbus adds a required binding in v0.2,
    this package updates and your `wrangler.jsonc` regenerates cleanly.
 2. **Alias map**: 12 alias entries are required for `isomorphic-git`
-   and the npm installer to work. Easy to copy-paste-drift. This
+   and the npm installer to work. Copying them by hand drifts. This
    helper exports them as `NIMBUS_REQUIRED_ALIASES`.
 3. **Programmatic**: usable from Pulumi/Terraform/CDK or any custom CI.
 
@@ -88,7 +88,7 @@ import { NIMBUS_REQUIRED_ALIASES } from '@nimbus-sh/config';
 ## Sandbox profiles
 
 `defineNimbusConfig()` is a typed identity helper for SDK/runtime policy. It
-does not write files and does not affect Wrangler output by itself; pass the
+does not write files and does not affect Wrangler output by itself. Pass the
 returned object to `Nimbus.fromEnv(env, nimbusConfig)`,
 `Nimbus.connect({ config: nimbusConfig, ... })`, and
 `createNimbusHandler({ sdk: { remote: true, config: nimbusConfig } })`.

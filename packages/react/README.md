@@ -1,6 +1,6 @@
 # @nimbus-sh/react
 
-`<NimbusTerminal />` — drop a Nimbus terminal into any React app.
+`<NimbusTerminal />` drops a Nimbus terminal into any React app.
 
 ## Install
 
@@ -99,7 +99,7 @@ function MyTerm({ token }: { token: string }) {
 
 Three reasons:
 
-1. The xterm shell ships once from Nimbus — no per-embedder bundle bloat.
+1. The xterm shell ships once from Nimbus, so no embedder pays bundle bloat.
 2. Cross-origin isolation: embedder JS can't snoop the WebSocket.
 3. The shell handles keybinding/resize/CSP-quirks natively; we don't
    want to duplicate that logic in a React component.
