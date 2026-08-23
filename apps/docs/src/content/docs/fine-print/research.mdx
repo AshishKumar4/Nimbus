@@ -24,8 +24,9 @@ the memory-reuse path takes ~0.5 ms. Full instantiate+copy is
 GC-dominated, so the design reuses instances. A facet-budget overrun is a
 catchable error, which maps to `fork()` returning `ENOMEM`. Exec runs
 live on the same mechanism. That covers fork plus exec of a different wasm
-image with a real `waitpid` exit status, vfork and posix_spawn fast paths,
-and cross-facet placement (fork+exec+wait ~1.9 ms at 16 MiB).
+image with a real `waitpid` exit status. It also covers vfork and
+posix_spawn fast paths, and cross-facet placement (fork+exec+wait ~1.9 ms
+at 16 MiB).
 
 The mechanism now carries a real program: GNU bash 5.2.37 and BusyBox
 1.37.0 coreutils run in a dedicated facet on this fork/pipe/setjmp

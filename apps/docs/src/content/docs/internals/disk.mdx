@@ -23,7 +23,7 @@ invalidate the cache.
 ## The write pipeline
 
 Facets never mutate files directly. Every write streams to the
-supervisor as length-prefixed, checksummed frames, and a weighted credit
+supervisor as length-prefixed, checksummed frames. A weighted credit
 pool governs the stream: 8 MiB of retained payload bytes, shared across
 every writer in the session. A sender acquires credit sized to each
 64 KiB chunk before the supervisor reads its payload. With no credit, the

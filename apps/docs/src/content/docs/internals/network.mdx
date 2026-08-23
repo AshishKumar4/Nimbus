@@ -11,7 +11,7 @@ Loopback `curl`, the port preview, and the default app preview all go
 through the supervisor's port registry. The registry is a map from port
 to owning pid and the facet stub that serves it. A facet's
 `listen(port)` is an RPC that writes this map, and ports are torn down
-with their pid. Loopback exists only inside the session: the DNS shim
+with their pid. Loopback exists only inside the session. The DNS shim
 resolves `localhost` and nothing else, and a connection to
 `127.0.0.1:<port>` is a lookup in this registry, not a network hop.
 
