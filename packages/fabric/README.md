@@ -4,42 +4,29 @@
 > cloud OS. This README is edited and maintained with Claude (AI) and
 > presented as-is.
 
-This package runs real programs on Durable Objects, DO facets, and the
-Worker Loader. Where
-[`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core) is the
-backend-agnostic OS (filesystem, shell, process contracts), this package is
-what that OS stands on when the host is Cloudflare. It imports core's shared
-primitives and none of its policy.
+Run long-lived programs on Cloudflare Durable Objects.
 
-I extracted it because almost none of it is specific to Nimbus. Anyone who
-hosts long-lived processes on Durable Objects meets the same platform
-behaviors we did: `await put()` resolving before durability, one alarm per
-object, a 65,536-facet lifetime budget, a frozen in-DO clock, RPC stubs that
-die with their request context. This package is the machinery we built against
-those behaviors. The doc comments carry the measured numbers that justified
-each mechanism, so the design record stays with the code.
+A Durable Object gives you one alarm, one 128 MiB isolate, a 30-second CPU
+turn, and storage that can reset under you. This package turns those into
+things you can build on: many timers on the one alarm, work that survives a
+reset, CPU work that spans turns, and real processes in their own isolates.
 
-I measured everything below on deployed production workerd between June and
-August 2026. Where a specific date matters it is given.
+Use it if you host something that outlives a request. A dev server, a build,
+an agent, a terminal session.
 
-## Install and compose
+## Requirements
 
-Your Worker must set `compatibility_flags: ["nodejs_compat"]`. The timer
-dispatcher imports `AsyncLocalStorage` from `node:async_hooks`, which workerd
-ships only under that flag. Without it the module fails to load, and the
-failure arrives at deploy time. The dispatcher needs
-async-local state because several Durable Objects from one script can share a
-V8 isolate, and a module-scoped variable would leak the dispatch context
-between them.
+Set `compatibility_flags: ["nodejs_compat"]` in your Worker. The timer
+dispatcher needs `AsyncLocalStorage`, which workerd ships only under that
+flag. Without it the module fails to load at deploy time.
 
-The root export pulls `cloudflare:workers`, so `import ... from
-'@nimbus-sh/fabric'` resolves only inside a Worker. Outside workerd (unit
-tests, tooling), import the subpath modules directly:
-`@nimbus-sh/fabric/timers.js`, `@nimbus-sh/fabric/fenced-work.js`, and so
-on. Most of the package is structurally typed against plain objects, so it
-can be tested in bun or node.
+Import the root inside a Worker. Outside workerd, import subpaths such as
+`@nimbus-sh/fabric/timers.js`, which are typed against plain objects and run
+in bun or node.
 
-An embedder states its composition once, in its composition root:
+## Setup
+
+Declare your composition once, in your Worker's entry module.
 
 ```ts
 import { composeFabric, adoptCtxExports } from '@nimbus-sh/fabric';
@@ -58,20 +45,12 @@ composeFabric({
 adoptCtxExports(ctx.exports);
 ```
 
-Both calls are first-write-wins.
-
-Before a release reaches the registry, consumers link it by packed tarball:
-`npm pack` here, a `file:` path there. Bun pins a `file:` tarball by the integrity hash in its lockfile and keeps
-serving the extraction it already has. Repacking the tarball at the same path
-changes nothing at the consumer. After a repack, bump the version you
-pack or delete the tarball's lockfile entry; a plain `bun install` is not
-enough.
+Both calls take the first value they are given.
 
 ## Timers
 
-A Durable Object has ONE alarm, and a second `setAlarm()` silently overwrites
-the first. Every alarm-driven subsystem therefore coordinates through a single
-reason→deadline map in storage, with one dispatcher:
+A Durable Object has one alarm, and a second `setAlarm()` overwrites the
+first. Route every timer through one dispatcher instead.
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
@@ -96,23 +75,16 @@ export class MySession extends DurableObject {
 }
 ```
 
-`schedule` keeps the earliest deadline per reason and arms the real alarm
-at the minimum across all of them. `dispatch` snapshots the fireable set
-before running any handler, so a handler that re-schedules itself is not
-re-fired in the same dispatch. It drops unknown reasons silently, because a
-rollback from a deploy that added reasons must not wedge the alarm. When no
-reasons remain it deletes the map and does not re-arm, which lets the object
-hibernate.
+`schedule` stores a deadline per reason and arms the alarm at the earliest
+one. `dispatch` runs the reasons that are due, ignores reasons it does not
+know, and stops re-arming when none are left, which lets the object
+hibernate. A handler re-arms itself by returning `{ rearmAt }`.
 
 ## Generations and reset detection
 
-Workerd recycles isolates freely: cold starts, hibernation wakes, and resets
-all hand you a fresh module scope over the same storage. The isolate
-generation is a persisted counter that increments once per fresh isolate.
-Process IDs derive from it (`PID_GEN_STRIDE` = 1,000,000 in core's process
-table). This yields the reset predicate the rest of the package uses. **A pid at or
-below the current generation's base was allocated by a previous
-incarnation.**
+Workerd hands you a fresh isolate on cold starts, hibernation wakes, and
+resets. The generation counter tells you which incarnation you are in, and
+process IDs derive from it.
 
 ```ts
 import { adoptGeneration, generation } from '@nimbus-sh/fabric';
@@ -125,19 +97,18 @@ export class MySession extends DurableObject {
 }
 ```
 
-Adopt the persisted value first. Bump only after the `put` resolves. An unpersisted bump would be re-read by the next
-boot and re-issued. Two instances would then share one generation, which is
-the pid aliasing the counter exists to prevent. `await put()` returning is not
-durability. The output gate keeps a pid from generation N from escaping before
-N is on disk.
+This gives you one reliable test for stale state: **an ID at or below the
+current generation's base came from a previous incarnation.**
+
+Adopt the persisted value before bumping it. `await put()` returning is not
+durability, so a bump that has not landed can be re-issued to the next boot,
+and two instances would share a generation.
 
 ## Fenced work
 
-The platform resets a Durable Object over what one turn has outstanding in
-storage, and the reset destroys every write that turn had in flight. A
-long-running launch holds everything in memory, so the process it is building
-dies silently with the instance. A later instance reads the journal to learn
-that this happened:
+A reset destroys whatever the current turn had in flight, including a
+half-built process. Journal the work first, and a later instance can finish
+it.
 
 ```ts
 import { FencedWork, type FencedWorkRecord } from '@nimbus-sh/fabric';
@@ -160,33 +131,18 @@ await journal.release(pid);
 await journal.recoverInterrupted();
 ```
 
-Two details caused production incidents before they became mechanisms:
+Write the row before the work starts and release it when the process ends,
+not when the launch ends. Resets usually arrive after a launch settles, so a
+launch-scoped row is already gone when recovery looks for it.
 
-- **`put` then `sync()`.** `await storage.put()` resolves before durability.
-  Measured live: a launch killed in its first chunks left NO row for the
-  replacement instance to find. The recovery this feeds sat inert while its own
-  test stayed green. `sync()` is the storage layer's durability barrier. The
-  journal writes through it on the way in and on the way out. The way out is
-  delete-then-sync, so a reset moments after release cannot resurrect a process
-  the user watched end.
-- **The row lives for the process's lifetime, not the launch's.** Measured on
-  staging, 2026-08-13: every observed reset struck seconds AFTER the launch
-  settled. A launch-scoped row would already have been deleted when recovery
-  went looking.
-
-Recovery applies the generation predicate (`pid <= generationBase()`), deletes
-each stale row, and re-drives once per record (`FENCED_WORK_MAX_ATTEMPT` =
-1). One attempt is the limit, because a reset that recurs is not transient.
+The journal writes through `ctx.storage.sync()`, because `await put()`
+resolves before the write is durable. Recovery re-drives each stale row once.
 
 ## Turn pacing
 
-One DO turn has a CPU budget of about 30 s. We were killed with `exceededCpu`
-at 31.8 s and 32.5 s. Yielding inside an invocation buys nothing: CPU accrues
-to the invocation, and only re-entering the object resets it. A long turn also
-pins the actor's only thread, so the terminal WebSocket dies even when the work
-succeeds. Progress cannot be measured in milliseconds, because the in-DO clock
-does not advance without I/O (0 ms across 200,000 consecutive reads). The pacer
-therefore accounts in bytes:
+One turn gets about 30 seconds of CPU. Yielding inside a turn does not help,
+because CPU accrues to the invocation. Only re-entering the object resets the
+budget, and a long turn also blocks the actor's thread and drops WebSockets.
 
 ```ts
 import { TurnBudget, PacedWork, onColdStart, timers } from '@nimbus-sh/fabric';
@@ -204,19 +160,13 @@ await budget.spend(bytesJustProcessed);   // suspends every TURN_CHUNK_MAX_BYTES
 'launch-turn': () => pump.pump(),
 ```
 
-The pump awaits each resumed chunk, so the invocation that granted the turn
-pays for the work. Nothing runs detached in a handler's microtask drain. A
-past-deadline alarm is delivered as soon as the object is free, which makes
-`schedule(..., Date.now())` a "re-enter now" primitive. Without an
-alarm-capable host the pump degrades to a same-context timer. That is the
-single-turn behaviour this path always had, and it is less responsive.
+Account in bytes, not milliseconds: the in-DO clock does not advance without
+I/O. `spend()` suspends every 2 MB and resumes on a fresh turn. Scheduling a
+past deadline re-enters the object immediately.
 
 ## Isolate pool
 
-`IsolatePool` runs plain functions in warm dynamic-worker isolates over
-`env.LOADER`. Functions are serialized with `fn.toString()`, so they must be
-self-contained: no captured variables, no `this` (rejected at dispatch), and
-their last parameter receives the forwarded bindings.
+Run plain functions in warm dynamic-worker isolates.
 
 ```ts
 import { IsolatePool } from '@nimbus-sh/fabric';
@@ -236,46 +186,32 @@ try {
 }
 ```
 
-Slots are stable (`slot = index % concurrency`), so a batch of 67 tarball
-extractions reuses 4 warm isolates instead of paying 67 cold starts. Wasm
-rides the loader's modules map as `{ wasm: ArrayBuffer }`. That is the only
-path that works: request-time `WebAssembly.compile` is CSP-blocked, RPC of a
-compiled `Module` is refused by structured clone, and inlining bytes into the
-module source OOMs the supervisor.
+Functions are serialized with `fn.toString()`, so they must be
+self-contained: no captured variables, no `this`. Bindings arrive as the last
+parameter. Slots are stable, so a batch of 67 tasks reuses 4 warm isolates
+instead of paying 67 cold starts.
 
-The cache key folds the function hash, the preamble hash, a wasm fingerprint,
-and the first 12 characters of the owning DO's id. That last term is a
-security fix. Without it, session B's pool reused session A's warm isolate,
-which still carried A's `env.SUPERVISOR` binding. B's writes landed silently
-in A's filesystem while B's install reported success. Warm isolates are scoped
-to one session unless a pool opts into `cacheScope: 'global'`, which is
-reserved for stateless compute pools that take no supervisor binding and
-retain no user state.
+Ship wasm through the loader's modules map as `{ wasm: ArrayBuffer }`. It is
+the only path that works. Request-time `WebAssembly.compile` is blocked by
+CSP, structured clone refuses a compiled `Module`, and inlining bytes into
+the source exhausts the supervisor's memory.
 
-`Fanout` is the tier above. A single DO method can drive at most 4 concurrent
-Worker Loader fetches. Batches of fewer than 5 tasks therefore run in the
-coordinator through an `IsolatePool`. Wider batches shard deterministically
-across sibling DOs, up to 32, dispatched in phases of 4 to bound simultaneous
-cold starts. Transient peer resets retry on a 250/750/1500 ms schedule; an
-overloaded peer gets the 1/3/6 s one.
+Warm isolates are scoped to one session. A pool may opt into
+`cacheScope: 'global'` only if it takes no supervisor binding and keeps no
+user state.
 
-Every fabric call into the loader lands on a per-DO ledger (`budgets.js`,
-which also owns the module-map ceiling and the facet-ID count). The ledger
-counts distinct ids ever gotten, plus live and peak concurrent Loader fetches,
-read via `loaderLedgerStats(ctx)`. Each id permanently holds one of the ~5–6
-dynamic-worker slots, because a keyed `loader.get(id)` is never released. A
-"Too many concurrent dynamic workers" refusal classifies as
-`dynamic_worker_cap` and names the ids holding slots. The ledger measures and
-names failures; it does not gate admission. The platform's cap is approximate,
-and a gate on an approximate number would refuse work the platform would have
-run.
+`Fanout` handles wider batches. One DO method can drive at most 4 concurrent
+loader fetches, so batches under 5 run in the coordinator and larger ones
+shard across up to 32 sibling objects, 4 at a time.
+
+Each keyed `loader.get(id)` permanently holds one of roughly 5–6
+dynamic-worker slots. `loaderLedgerStats(ctx)` reports what you have
+consumed, and a cap refusal names the IDs holding slots.
 
 ## Process fabric
 
-A resident process (a dev server, a socket runner, an attached TUI) is a DO
-facet whose class comes from a dynamic worker. `processes(ctx, env).spawn` is
-the one way such a process comes into existence, and `ProcessFabric` is the
-lifecycle around it:
+A resident process is a Durable Object facet running a class from a dynamic
+worker.
 
 ```ts
 import { ProcessFabric, createProcessHost } from '@nimbus-sh/fabric';
@@ -300,126 +236,81 @@ handle.kill();
 await handle.done;
 ```
 
-The dynamic worker must export a Durable Object class named `NimbusProcess`
-(`RESIDENT_PROCESS_CLASS`) with `startProcess(args)` and
-`handleHttpRequest(request)`. Its `startProcess` declares one of two
-contracts. `'lifetime'` holds the call open for the process's whole life and
-settles at exit, as an attached TUI does. `'boot'` returns a payload once the
-process is up, and the facet stays resident, as a server does.
+The worker exports a Durable Object class named `NimbusProcess` with
+`startProcess(args)` and `handleHttpRequest(request)`. `startProcess`
+declares one of two contracts. Use `'lifetime'` when the call should stay
+open for the process's life, as an attached terminal does. Use `'boot'` when
+it should return once the process is up and leave the facet resident, as a
+server does.
 
-Four pieces are worth knowing about:
+**Facet names come from a free list.** A Durable Object allows 65,536 facets
+over its lifetime, and IDs are never reclaimed, so the limit counts facets
+ever created. Reusing a name costs no new ID. `facetIdBudget(ctx)` reports
+`{ consumed, budget }`.
 
-- **The slot book.** A Durable Object admits 65,536 facets over its LIFETIME.
-  The IDs are append-only and never reclaimed, so the bound counts facets ever
-  created. Naming facets after pids burned one ID per spawn with no way back.
-  Reusing a NAME costs no new ID, so facet names come from a per-DO free list
-  (`proc-slot-<n>`, lowest reused first). A slot is released only after
-  `facets.abort` + `facets.delete`, because a slot handed out during teardown
-  would put two processes on one name. The book counts the names it mints
-  durably: `facetIdBudget(ctx)` reports `{ consumed, budget }`, first uses
-  only, adopted across resets. A creation failure with the budget consumed
-  names the budget and the count, rather than repeating the platform's opaque
-  message. Exhaustion is permanent for the object.
-- **At-most-once start.** The facet's start callback re-running would
-  re-execute the user's program, answering a request from a process the user
-  never started. Both re-entry cases (released, lost) throw instead.
-- **Boot specs name large members by VFS path.** A whole structured-clone RPC
-  value caps at 32 MiB, and one node snapshot alone serialized to 44,252,709
-  bytes. `vfsWasmModules` and `vfsTextModules` send paths. The hosting actor
-  reads the bytes through the `ResidentDiskReader` it was given, inside the
-  loader's cache-miss callback, so they exist only for the duration of the
-  load. Text images are verified against the digest their own path claims,
-  because a truncated image would otherwise boot as silently-wrong code.
-- **The substrate is one deployment-wide value** (`createProcessHost`'s mode,
-  `'facet'` or `'peer'`), never per-spawn. No program name, mode, or payload
-  size reaches the choice.
+**Large boot members travel as VFS paths.** A structured-clone RPC value caps
+at 32 MiB. Use `vfsWasmModules` and `vfsTextModules`; the host reads the
+bytes during the load and verifies each image against the digest its path
+claims.
 
-What each substrate costs, measured on the production shape:
+**The substrate is one deployment-wide setting**, `'facet'` or `'peer'`,
+never a per-spawn choice.
 
 | | spawn | memory | CPU | SQLite |
 |---|---|---|---|---|
-| facet | 8–16 ms | independent (~208 MiB each) | SHARED | own |
+| facet | 8–16 ms | independent (~208 MiB each) | shared | own |
 | peer | 242–359 ms | independent | independent | own |
 
-Facet CPU is shared because facets are separate isolates inside one actor
-thread. Awaiting I/O yields the thread completely, but a deliberate 9,956 ms
-CPU burn stalled a sibling for 9,966 ms. A peer pays roughly 20× the spawn
-cost to buy that back. A peer also verifies its placement: it compares a
-module-scope UUID token across the hop, and tries up to 4 sibling names. A peer
-that co-located would share the CPU it was chosen to escape.
+Facets are separate isolates in one actor thread, so they scale memory but
+not CPU. Awaiting I/O yields the thread; a 9,956 ms CPU burn stalled a
+sibling for 9,966 ms. A peer costs about 20× the spawn time and buys real CPU
+isolation, and it verifies it did not co-locate.
 
-The substrates also differ in image delivery, and the `ProcessImageDelivery`
-contract states the difference. A facet shares its session's Durable Object,
-so the session's store is reachable by copy-on-write (`ctx.facets.clone`:
-18–31 ms for a 45.73 MB corpus, 34–54 ms for 1 GB, flat because nothing is
-copied). A facet also shares the session's ~10 GiB storage budget. A peer
-brings its own budget and no reflink: clone is same-object-only, and workerd
-exposes no `VACUUM INTO`, `ATTACH`, or `sqlite3_backup` across objects. Clone
-carries a hazard we measured. ANY unresolvable `src`, such as a typo or a name
-not created yet, silently EMPTIES the destination and reports success.
-`cloneStorage` is the one way the fabric calls clone. It takes the caller's
-`populated(name)` probe and asserts it positively on the source before the
-clone and on the destination after. A typo is refused before the platform
-call, and a wiped destination is never reported as success. An emptied facet
-still shows a 4,096-byte database, one page, so the probe must find the
-caller's own data rather than a non-zero size.
+A facet shares its session's object, so it can copy the session's store by
+reflink (`ctx.facets.clone`, 18–31 ms for 45.73 MB, 34–54 ms for 1 GB) and
+shares the session's ~10 GiB budget. A peer brings its own storage and cannot
+reflink.
+
+Call clone through `cloneStorage`. An unresolvable `src` empties the
+destination and reports success, so the wrapper checks the source before the
+call and the destination after. An emptied facet still shows a 4,096-byte
+database, so check for your own data rather than a non-zero size.
 
 ## Image store
 
-`ImageStore` materializes generated boot images into a content-addressed
-store (`var/lib/nimbus/facet-images/<sha256>.js`) through a small
-`ImageBlobStore` port. The embedder owns the disk. The store owns the protocol:
+`ImageStore` writes generated boot images into a content-addressed store at
+`var/lib/nimbus/facet-images/<sha256>.js`, through an `ImageBlobStore` port
+you implement.
 
-- **Root before the first byte.** The whole root set is registered
-  synchronously before any byte lands, so the sweep can never observe a
-  written-but-unclaimed image, however many turns the write spans.
-- **Sliced writes.** One transaction takes `FACET_IMAGE_WRITE_SLICE_BYTES`
-  (a whole number of VFS chunks under the 1 MiB transaction bound). A slice
-  ending mid-chunk forces a read-back, and an oversize write falls back to
-  copy-on-write, which is quadratic. A 22.9 MB map written in one turn took
-  the session down with it about 25% of the time. Slicing and pacing the write
-  removed that.
-- **Size equality is completeness.** A write only ever grows the file from
-  offset zero, so an interrupted write leaves a strictly shorter file; the
-  reader verifies the digest before the loader sees the bytes.
-- **The sweep roots off the process table.** An image is live for as long as
-  a process boots from it. There is no TTL and no eviction heuristic. After a
-  reset the table is empty, so every orphan goes.
+It registers the whole root set before writing any byte, so a sweep never
+sees an unclaimed image. Writes are sliced to stay inside the 1 MiB
+transaction bound; a 22.9 MB map written in one turn reset the session about
+a quarter of the time. Because a write only grows the file from offset zero,
+matching size means a complete write, and the reader verifies the digest
+before the loader sees the bytes. Images stay live while a process boots from
+them, rooted in the process table, with no TTL.
 
 ## Binding shims
 
 `NimbusLoaderRPC`, `NimbusLoadedWorker`, `NimbusLoadedEntrypoint`,
 `NimbusAssetsRPC`, `NimbusDurableObjectNamespace`, and `NimbusDOStub` give a
-dynamically-loaded inner Worker working `env` bindings. They exist because of three platform behaviors:
+dynamically-loaded inner Worker working `env` bindings.
 
-- **`WorkerStub` does not serialize**, so each hop a caller makes
-  (`load → getEntrypoint → fetch`) is its own `WorkerEntrypoint` class.
-- **Stubs are I/O objects bound to the request that minted them** ("Cannot
-  perform I/O on behalf of a different request"). The shims therefore store
-  CODE, never stubs, and re-resolve through `LOADER.get(id, cb)` in the
-  current context. Workerd caches by id, so repeated loads are close to free.
-  The code map is a hard-capped LRU of 32 entries: `wrangler dev`'s
-  rebuild-on-save loop once grew it without bound to a 128 MiB isolate crash.
-- **An RPC stub's method is a wildcard property**: `method.call(ep, request)`
-  builds the pipelined path `method.call` and serializes `ep` as an argument,
-  which workerd refuses ("Entrypoints to dynamically-loaded workers cannot be
-  transferred"). Calls must be written `ep.method(request)`.
+Three platform rules shape them. A `WorkerStub` does not serialize, so each
+hop is its own `WorkerEntrypoint` class. A stub belongs to the request that
+minted it, so the shims store code rather than stubs and re-resolve through
+`LOADER.get(id, cb)`; workerd caches by ID, and the code map is capped at 32
+entries. An RPC method is a wildcard property, so call `ep.method(request)`
+and never `method.call(ep, request)`, which workerd refuses.
 
-Nesting is capped at depth 4, and `NIMBUS_INNER_LOADER_DEPTH` raises it.
-Nimbus-in-Nimbus works; five levels is a runaway.
+Nesting is capped at depth 4. Raise it with `NIMBUS_INNER_LOADER_DEPTH`.
 
 ## Measured platform limits
 
-These tables are the part of this package I most wanted to publish. They are
-enforced by the code above where code can enforce them; the rest is here so
-the next person does not have to measure them again. All figures are from
-production workerd, June–August 2026.
-
-The tables are the short form. [PLATFORM.md](PLATFORM.md) is the full
-catalog. It merges the same invariants with a sibling project's independent
-measurements. Every entry is dated and graded by evidence (probe / source /
-production / documented). Every entry also says whether this library enforces
-it or you handle it yourself.
+Figures below come from production workerd, June to August 2026. The code
+above enforces them where it can. [PLATFORM.md](PLATFORM.md) is the full
+catalog: every entry dated, graded by evidence, and marked as enforced here
+or left to you.
 
 ### Durable Object storage
 
@@ -491,16 +382,14 @@ it or you handle it yourself.
 
 ## Related packages
 
-`@nimbus-sh/core` is the OS this machinery hosts; core never imports fabric.
-[`@nimbus-sh/platform`](https://www.npmjs.com/package/@nimbus-sh/platform) is
-the zero-dependency leaf under both: the measured limits tables, the error
-taxonomy, RPC disposal, and the supervisor budget machinery.
+[`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core) is the
+backend-agnostic OS: filesystem, shell, process contracts.
+[`@nimbus-sh/platform`](https://www.npmjs.com/package/@nimbus-sh/platform)
+holds the limits tables, the error taxonomy, RPC disposal, and the supervisor
+budget machinery.
 [`@nimbus-sh/worker`](https://www.npmjs.com/package/@nimbus-sh/worker) is the
-canonical embedder: it supplies the seams above, the supervisor entrypoint,
-the session protocol, and everything user-facing. If you want the full hosted
-product shape, start from `npx create-nimbus-app`. If you are building your
-own thing on Durable Objects, take this package and its doc comments on their
-own.
+reference embedder, with the supervisor entrypoint and the session protocol.
+For the full hosted product, start from `npx create-nimbus-app`.
 
 ## License
 
