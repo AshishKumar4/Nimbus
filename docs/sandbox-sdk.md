@@ -151,18 +151,18 @@ not add native Linux execution, Docker, or a second filesystem.
 
 ## Agentic CLI Compatibility
 
-Nimbus supports many primitives needed by JavaScript and WASM-based agent
-tools: persistent home/config files, npm/npx installs, npm alias dependencies,
-`child_process.spawn`, `exec`, `execFile`, piped stdin/stdout/stderr, process
-streams, process stdin writes, resize/signal delivery, logs, outbound HTTPS, and
-preview ports for HTTP-like agent servers.
+JavaScript and WASM-based agent tools get persistent home/config files,
+npm/npx installs, npm alias dependencies, `child_process.spawn`, `exec`,
+`execFile`, piped stdin/stdout/stderr, process streams, process stdin writes,
+resize/signal delivery, logs, outbound HTTPS, and preview ports for HTTP-like
+agent servers.
 
 Foreground attached npm-bin processes have a TTY-shaped terminal surface with
 stdin, raw mode state, resize events, ANSI output, and signal delivery. This is
 still alpha and is not a complete POSIX PTY contract. Pi's official
 `curl -fsSL https://pi.dev/install.sh | sh` installer and direct npm path are
-production-probed. Tools such as opencode and Proteus-style CLIs need live
-probes before these docs claim they run unmodified.
+production-probed. opencode and Proteus-style CLIs are not yet proven to run
+unmodified; they need live probes first.
 
 Tools that ship only native platform shards such as `linux-x64`, `darwin`, or
 `win32` binaries need a WASM build, pure-JS entrypoint, or Nimbus adapter.

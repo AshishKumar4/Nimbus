@@ -2,9 +2,8 @@
 
 Last refreshed: 2026-07-24
 
-Status: pilot implementation plan. This document describes the code changes
-needed before implementation. It is scoped to the hosted demo plus the
-Nimbus core hardening the hosted demo depends on.
+Status: pilot implementation plan. It covers the hosted demo and the Nimbus
+core hardening the hosted demo depends on.
 
 ## Objective
 
@@ -654,7 +653,7 @@ Recommended defaults for the pilot:
 - Cleanup cron: hourly.
 - Cleanup batch size: 100 expired sessions per pass.
 
-Decision still worth confirming before implementation:
+One decision still needs confirming:
 
 - Whether `/new` should remain a bookmarkable GET that renders a launch page,
   or become POST-only from the landing page. For security, POST-only creation

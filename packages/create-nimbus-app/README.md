@@ -14,7 +14,7 @@ npx wrangler deploy
 If setup reports Cloudflare R2 error `10042`, enable R2 in the Cloudflare
 Dashboard once for this account, then rerun the setup command.
 
-Options:
+## Options
 
 ```bash
 npx create-nimbus-app my-nimbus-worker --name my-worker-name
@@ -23,15 +23,20 @@ npx create-nimbus-app . --name my-worker-name
 
 This package is a small wrapper around `@nimbus-sh/cli`.
 
-The generated Worker embeds the interactive Nimbus UI and enables the
-authenticated remote sandbox API. Add your application auth route before
-minting user tokens from the backend.
+## What you get
 
-The session UI also includes an Agent surface inside the editor workspace. To
-let users connect their own Cloudflare account for Workers AI, create a
-Cloudflare OAuth client. Use response type `Code`, grant type
-`Authorization Code`, token authentication method `None`, and redirect URL
-`https://<your-nimbus-host>/api/nimbus/oauth/callback`. Add
-`NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`,
-and `NIMBUS_AGENT_GATEWAY_ID` to `wrangler.jsonc`, then store
-`NIMBUS_AGENT_COOKIE_SECRET` with `wrangler secret put`.
+The generated Worker embeds the interactive Nimbus UI and enables the
+authenticated remote sandbox API. Add your own auth route before you mint
+user tokens from the backend.
+
+The session UI also carries an agent surface inside the editor workspace.
+
+## Letting users bring their own Cloudflare account
+
+Create a Cloudflare OAuth client for Workers AI. Use response type `Code`,
+grant type `Authorization Code`, token authentication method `None`, and
+redirect URL `https://<your-nimbus-host>/api/nimbus/oauth/callback`.
+
+Add `NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`,
+`NIMBUS_AGENT_MODEL`, and `NIMBUS_AGENT_GATEWAY_ID` to `wrangler.jsonc`.
+Then store `NIMBUS_AGENT_COOKIE_SECRET` with `wrangler secret put`.

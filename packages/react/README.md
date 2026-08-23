@@ -1,6 +1,9 @@
 # @nimbus-sh/react
 
-`<NimbusTerminal />` drops a Nimbus terminal into any React app.
+Put a Nimbus terminal in a React app.
+
+`<NimbusTerminal />` renders the hosted session shell, attached to a session
+your backend minted a token for.
 
 ## Install
 
@@ -76,7 +79,7 @@ const ref = useRef<NimbusTerminalRef>(null);
 - `getUrl()` — current attach URL.
 - `getElement()` — the underlying `<iframe>` HTMLElement.
 
-## Headless: `useNimbusSession()`
+## Headless hook: `useNimbusSession()`
 
 For embedders that want their own UI:
 
@@ -95,15 +98,11 @@ function MyTerm({ token }: { token: string }) {
 }
 ```
 
-## Why an iframe (not direct DOM render)?
-
-Three reasons:
+## Why an iframe
 
 1. The xterm shell ships once from Nimbus, so no embedder pays bundle bloat.
-2. Cross-origin isolation: embedder JS can't snoop the WebSocket.
-3. The shell handles keybinding/resize/CSP-quirks natively; we don't
-   want to duplicate that logic in a React component.
-
-Nimbus currently embeds the hosted terminal shell through an iframe.
+2. Cross-origin isolation: embedder JS cannot read the WebSocket.
+3. The shell already handles keybindings, resize, and CSP quirks. A React
+   component would duplicate that logic.
 
 MIT.

@@ -185,10 +185,8 @@ behavior. They must stay documented until production probes prove otherwise.
 This is the implementation spec for completing Nimbus OS compatibility. It is
 a consolidation plan. It names existing source modules that must be hardened
 into single sources of truth, and it forbids parallel systems that restate the
-same process, file, network, package, or SDK concepts.
-The sections after this draft describe the same contracts in more detail; if a
-future edit finds drift, merge the duplicate wording instead of adding another
-plan section.
+same process, file, network, package, or SDK concepts. The execution order is
+in § Immediate Workstreams.
 
 Completion means Nimbus behaves like a small POSIX-like cloud OS for supported
 ABI surfaces:
@@ -500,24 +498,6 @@ retired only after the replacement path is routed and probed.
 | Duplicated npm native policy in loader preamble | Resolved: one `PackageAbiPolicy` is serialized into the preamble and fully parity-checked against the supervisor policy | Done. Keep the parity gate green when the policy changes |
 | Hardcoded runtime aliases/defaults | Resolved in `package-manager.ts` (aliases derive from catalog manifests); the CLI `DEFAULT_RUNTIME_VERSIONS` table is still hand-maintained | Make the CLI runtime list catalog-driven or parity-checked |
 | Stale comments describing real implementations as stubs, old runtime sizes, old WebSocket hibernation posture, or old concurrency | They mislead future implementation and docs | Clean comments when touching affected modules; do not change behavior only for comment cleanup unless in-scope |
-
-### Completion Order
-
-The order matters because each step removes a future source of duplication.
-
-1. Add the session process/PTY supervisor facade over existing process modules.
-2. Add live VFS range/revision operations under the existing runtime bridge.
-3. Harden the existing virtual socket kernel for streaming and backpressure.
-4. Fix SDK/embed auth, shell ready/error events, CLI token support, and preview
-   auth because those are product-facing and independent of runtime internals.
-5. Move Node async FS and Node HTTP/net onto the shared contracts.
-6. Move WASI, Ruby, and Python long-running runtime IO onto live bridge or live
-   mirror semantics.
-7. Complete shell AST expansion/redirection/job semantics and retire replaced
-   normalizers/stubs.
-8. Centralize ABI policy and make runtime/package defaults catalog-driven.
-9. Add probes for each completed capability and then update README/UI/support
-   claims.
 
 ## Compatibility Model
 
@@ -1078,9 +1058,6 @@ Existing probes cover:
 - static parity checks for native executable loader policy:
   `tests/behavioral/static-checks/native-executable-preamble-parity.mjs`
 
-This document did not rerun the full probe suite. It records source-backed
-current state and the test surfaces that should be used to prove future work.
-
 ## Required New Probes
 
 Add black-box probes for:
@@ -1192,9 +1169,8 @@ Nimbus OS compatibility is ready to market when these are true:
 
 ## Immediate Workstreams
 
-These are the concrete workstreams implied by the source audit. Treat this as
-the canonical execution list; earlier ordered lists summarize the same sequence
-at a higher level.
+These are the concrete workstreams implied by the source audit. The order
+matters because each step removes a future source of duplication.
 
 1. Add a session process/PTY supervisor facade over the existing process table,
    input store, log store, process-terminal WebSocket, and child-process broker.
@@ -1205,12 +1181,14 @@ at a higher level.
 3. Harden the existing virtual socket kernel and port registry with streaming,
    backpressure, abort handling, limits, and hibernation-aware metadata.
 4. Fix SDK/embed auth, real shell `nimbus:ready`/`nimbus:error` events, CLI token
-   support, and remote preview auth.
+   support, and remote preview auth. Those are product-facing and independent
+   of runtime internals.
 5. Keep package-bin launch based on structured shebang/bin metadata handling and
    terminal-context-aware TTY selection. Avoid regex parsing when package
    metadata or a JavaScript parser can identify the entrypoint.
 6. Continue replacing remaining shell parser debt with structured POSIX shell
-   AST execution in the Nimbus-owned shell substrate.
+   AST execution in the Nimbus-owned shell substrate, and retire the
+   normalizers and stubs it replaces.
 7. Move Node dynamic Worker `fs` shims to the live bridge while preserving fast
    bundled reads for known immutable module sources.
 8. Move WASI, Ruby, and Python long-running runtime IO to live bridge or live

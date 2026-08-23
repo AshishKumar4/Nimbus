@@ -14,6 +14,12 @@ reset, CPU work that spans turns, and real processes in their own isolates.
 Use it if you host something that outlives a request. A dev server, a build,
 an agent, a terminal session.
 
+## Install
+
+```bash
+npm install @nimbus-sh/fabric
+```
+
 ## Requirements
 
 Set `compatibility_flags: ["nodejs_compat"]` in your Worker. The timer
