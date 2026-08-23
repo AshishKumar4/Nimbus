@@ -34,6 +34,7 @@
  */
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
+import { hasLiveShellOwner } from './shell-socket.js';
 /**
  * Set the current phase + record a transition. Fail-soft on the
  * observability call; the phase update on `self` is direct and
@@ -56,51 +57,26 @@ export function setPhase(self, toState, trigger) {
     catch { /* observability is non-critical */ }
 }
 /**
- * [B'.5] Identify the original phase-based warm-rejoin case. The /ws
- * upgrade classifier below also recognizes headless sessions whose
- * lifecycle phase does not describe a real terminal attachment.
+ * Decide what a /ws upgrade should do with the session it lands on.
  *
- * Conditions for warm rejoin:
- *   1. Phase = 'drained' (a wsClose / wsError fired since last init).
- *   2. Kernel + Shell + Terminal are still alive in-memory (the
- *      [B'.5] change to wsClose stopped nulling them).
- *   3. Same isolate (no DO eviction since the close).
+ *   - cold:      no session to join. Either nothing was ever built, or a
+ *                previous teardown left the object half-built. A Shell
+ *                without its Kernel or its Terminal serves nobody, and
+ *                nothing else rebuilds one, so the upgrade does.
+ *   - conflict:  another browser terminal holds this session. The caller
+ *                answers 409, which is what stops two tabs from driving
+ *                one shell. See `shell-socket.ts` for what proves that a
+ *                socket still has a peer on it.
+ *   - warm-join: the session is built and unattended. Skip the rebuild
+ *                and hand the live Shell to the incoming socket.
  *
+ * The caller classifies BEFORE it accepts the incoming socket, so the
+ * upgrade cannot count itself as the incumbent.
  */
-export function isWarmRejoin(self) {
-    return self._b4Phase === 'drained'
-        && self.shell != null
-        && self.terminal != null
-        && self.kernel != null;
-}
-/**
- * Classify a shell WebSocket upgrade from the actual attachment state.
- * A non-null Shell can belong to a headless programmatic boot, so only an
- * open socket tagged as `shell` proves that another browser terminal is
- * currently attached.
- */
-export function classifyWsUpgrade(self, sockets) {
-    if (isWarmRejoin(self))
-        return 'warm-join';
-    if (self.shell == null)
+export function classifyWsUpgrade(self, sockets, now = Date.now()) {
+    if (self.shell == null || self.terminal == null || self.kernel == null)
         return 'cold';
-    if (self.terminal == null || self.kernel == null)
-        return 'conflict';
-    const hasOpenShellSocket = sockets.some((socket) => {
-        if (socket.readyState !== WebSocket.OPEN)
-            return false;
-        try {
-            const attachment = socket.deserializeAttachment();
-            return typeof attachment === 'object'
-                && attachment !== null
-                && 'kind' in attachment
-                && attachment.kind === 'shell';
-        }
-        catch {
-            return false;
-        }
-    });
-    return hasOpenShellSocket ? 'conflict' : 'warm-join';
+    return hasLiveShellOwner(self.ctx, sockets, now) ? 'conflict' : 'warm-join';
 }
 /**
  * [B'.5] Run the warm-rejoin path. Skips Phase B (kernel + shell are

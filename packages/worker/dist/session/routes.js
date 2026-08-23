@@ -35,6 +35,7 @@ import { VITE_CONFIG_KEY } from './keys.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
 import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
+import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -411,20 +412,11 @@ export async function handleFetch(self, request) {
             catch { }
             return new Response(null, { status: 101, webSocket: client });
         }
-        // [B'.5] Three-way decision on a /ws upgrade:
-        //   1. Warm join: kernel/shell/terminal are alive in-memory and
-        //      no real open shell socket is attached. This includes both
-        //      a drained browser session and a headless programmatic boot.
-        //      The lifecycle phase alone does not prove that a browser
-        //      terminal socket is currently attached.
-        //   2. Cold init: no shell yet (first connect, or post-DO-
-        //      eviction). Run the full R/B/W/O sequence.
-        //   3. Active conflict: an open socket tagged `shell` proves
-        //      another browser terminal is attached. 409 prevents
-        //      two-tab cross-wiring (multi-tab share is separate).
-        // Decide before accepting/tagging the incoming server socket so
-        // it cannot be mistaken for an already-attached terminal.
-        const wsUpgrade = classifyWsUpgrade(self, self.ctx.getWebSockets());
+        // [B'.5] Three-way decision on a /ws upgrade — see
+        // classifyWsUpgrade. Decide before accepting/tagging the incoming
+        // server socket so it cannot be mistaken for the incumbent.
+        const priorSockets = self.ctx.getWebSockets();
+        const wsUpgrade = classifyWsUpgrade(self, priorSockets);
         if (wsUpgrade === 'conflict') {
             return new Response(JSON.stringify({
                 error: 'session already has active terminal',
@@ -434,13 +426,16 @@ export async function handleFetch(self, request) {
                 headers: { 'Content-Type': 'application/json' },
             });
         }
+        // This upgrade is taking the terminal, so no shell socket in
+        // `priorSockets` still has a peer. Close them: a socket whose tab
+        // is gone, or one a failed upgrade accepted and never handed to a
+        // client, otherwise stays accepted for the life of the object and
+        // refuses every later reconnect.
+        closeStaleShellSockets(self.ctx, priorSockets);
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
         self.ctx.acceptWebSocket(server);
-        try {
-            server.serializeAttachment?.({ kind: 'shell' });
-        }
-        catch { }
+        tagShellSocket(server);
         if (wsUpgrade === 'warm-join') {
             // Warm rejoin path. The existing Shell is alive; we just
             // swap the WebSocketTerminal's ws ref + replay scrollback.
@@ -449,6 +444,10 @@ export async function handleFetch(self, request) {
             }
             catch (err) {
                 console.error('warm-rejoin error:', err?.message, err?.stack);
+                try {
+                    server.close(1011, 'rejoin failed');
+                }
+                catch { /* already closing */ }
                 return new Response('Rejoin failed: ' + err?.message, { status: 500 });
             }
             return new Response(null, { status: 101, webSocket: client });
@@ -459,6 +458,10 @@ export async function handleFetch(self, request) {
         }
         catch (err) {
             console.error('initSession error:', err?.message, err?.stack);
+            try {
+                server.close(1011, 'init failed');
+            }
+            catch { /* already closing */ }
             return new Response('Init failed: ' + err?.message, { status: 500 });
         }
         return new Response(null, { status: 101, webSocket: client });
