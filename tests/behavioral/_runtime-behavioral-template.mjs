@@ -91,14 +91,34 @@ export async function launchBrowser(opts = {}) {
 
 // The session terminal paints through whichever xterm backend loaded this
 // boot: DOM rows when the WebGL addon fails to activate, a canvas when it
-// succeeds. A canvas leaves #terminal-container without text nodes, so
-// probes read the active buffer's viewport — the same rows a DOM renderer
-// would show — instead of DOM text. `term` is the shell's session-terminal
-// global; attached process tabs keep DOM renderers and can be read via
-// `.xterm-rows`.
+// succeeds — a canvas leaves #terminal-container without text nodes. So
+// probes match the active buffer's viewport, the rows a DOM renderer would
+// show, but only once a live surface exists (visible xterm with nonempty
+// DOM rows or a visible canvas): stale buffer text must never satisfy a
+// wait for a hidden or detached terminal. `term` is the shell's
+// session-terminal global; attached process tabs keep DOM renderers and
+// can be read via `.xterm-rows`.
 function sessionTerminalInPage(source) {
+  const container = document.getElementById('terminal-container');
+  const shown = (el) => {
+    const style = getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  let rendered = false;
+  if (container && shown(container)) {
+    const xterm = container.querySelector('.xterm');
+    if (xterm && shown(xterm)) {
+      const rows = container.querySelector('.xterm-rows');
+      if (rows && shown(rows) && (rows.innerText || '').trim() !== '') rendered = true;
+      for (const canvas of container.querySelectorAll('canvas')) {
+        const rect = canvas.getBoundingClientRect();
+        if (shown(canvas) && rect.width > 0 && rect.height > 0) rendered = true;
+      }
+    }
+  }
+  if (!rendered) return source ? false : '';
   const buffer = term.buffer.active;
-  const first = buffer.baseY;
+  const first = buffer.viewportY;
   const lines = [];
   for (let i = first; i < first + term.rows; i++) {
     lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
