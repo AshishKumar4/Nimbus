@@ -85,8 +85,8 @@ Nimbus already has a real base:
   `process`, `Buffer`, `events`, streams, `crypto`, `zlib`, DNS, HTTP,
   HTTPS, `child_process`, `readline`, `tty`, timers, and related utility
   modules. `net` is only partially shaped today: HTTP preview bridging exists,
-  but general `net.Socket` connect/listen semantics remain honest unsupported
-  or transitional paths.
+  but general `net.Socket` connect/listen semantics remain unsupported or
+  transitional.
 - Node async filesystem calls (`fs.readFile`, `fs.stat`, `fs.readdir`,
   `fs.access`, `fs.promises.*`, and `FileHandle` reads/stats) can fall back
   to the session supervisor for live SQLite VFS data through the shared
@@ -142,9 +142,9 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   file-handle/page-cache design for high-volume long-lived workloads.
 - Agentic CLI support has production probes for Node process primitives,
   foreground attached npm-bin TTY tabs, Pi's official installer path, the Pi
-  npm CLI path, package-bin exit/shebang behavior, and opencode's installer and
-  native npm package reaching explicit unsupported native ABI diagnostics.
-  Unmodified opencode and the local Proteus CLI are not
+  npm CLI path, and package-bin exit/shebang behavior. Probes also cover
+  opencode's installer and native npm package reaching explicit unsupported
+  native ABI diagnostics. Unmodified opencode and the local Proteus CLI are not
   yet proven as working Nimbus workloads; native-package shards still need
   Nimbus ABI artifacts or precise diagnostics.
 - The shell has a structured lexer/parser/interpreter for common POSIX-like
@@ -183,9 +183,9 @@ behavior. They must stay documented until production probes prove otherwise.
 ## Completion Draft
 
 This is the implementation spec for completing Nimbus OS compatibility. It is
-deliberately a consolidation plan: it names existing source modules that must be
-hardened into single sources of truth, and it forbids adding parallel systems
-that merely restate the same process, file, network, package, or SDK concepts.
+a consolidation plan. It names existing source modules that must be hardened
+into single sources of truth, and it forbids parallel systems that restate the
+same process, file, network, package, or SDK concepts.
 The sections after this draft describe the same contracts in more detail; if a
 future edit finds drift, merge the duplicate wording instead of adding another
 plan section.
@@ -373,7 +373,7 @@ Implementation rules:
 
 ### ABI-Aware Package Completion
 
-Package managers must install by ABI rather than hope.
+Package managers must install by ABI.
 
 Required artifact classes:
 
@@ -436,13 +436,13 @@ Required behavior:
   preview `<port>--<sid>.<suffix>` at whatever path was requested (the
   previewed app owns its path space). `POST /new` and
   `GET /s/<id>/api/preview-url?port=<n>` each mint a short-lived (90 s),
-  single-use token — `session:bootstrap` and `session:preview` respectively —
-  whose `jti` is consumed set-if-absent in the session DO's storage; replays
+  single-use token: `session:bootstrap` and `session:preview` respectively.
+  The `jti` is consumed set-if-absent in the session DO's storage. Replays
   return 401, and neither scope authenticates anything but its own exchange.
   Long-lived tokens travel only in `Authorization` headers, never in URLs.
-  The `__Host-` prefix is required, not cosmetic: previews serve untrusted
-  code on a sibling subdomain, and without it that code could set a shadowing
-  cookie for the parent domain. Implemented in
+  The `__Host-` prefix is required. Previews serve untrusted code on a sibling
+  subdomain, and without the prefix that code could set a shadowing cookie for
+  the parent domain. Implemented in
   `packages/worker/src/router/index.ts` and `packages/worker/src/auth/`;
   covered by `tests/behavioral/auth/new/router-session-scope-and-pin.mjs` and
   `tests/unit/preview-host-router.mjs`.
@@ -450,10 +450,10 @@ Required behavior:
   partition, so two concurrently embedded sessions on one page evict each
   other's cookie; concurrent multi-session embeds in enforce mode need a
   per-session cookie design (follow-up).
-- The public shell emits `nimbus:ready` and `nimbus:error` messages that the
-  React package actually receives. The shell emits both, and
+- The public shell emits `nimbus:ready` and `nimbus:error` messages, and the
+  React package receives them.
   `tests/behavioral/embed/new/react-embed-ready-event.mjs` asserts
-  embedder-side reception of `nimbus:ready` in a real browser; it must stay
+  embedder-side reception of `nimbus:ready` in a real browser, and it must stay
   green in live runs.
 - Browser session-id parsing accepts the same IDs the server accepts.
 - CLI session commands support `NIMBUS_TOKEN` and `--token` for enforced
@@ -668,11 +668,11 @@ interface RuntimeFsBridge {
 This bridge is the contract. Implementations may optimize with page caches,
 batching, or snapshots, but they must preserve coherence. The stateless range
 operations (`readRange`/`writeRange`/`truncate`) update only the 64 KiB chunks
-a range touches — never whole-file rewrites — and carry no server-side handle
+a range touches, never whole-file rewrites. They carry no server-side handle
 state, so they remain correct across supervisor hibernation. `revision(path)`
 is a per-path subtree watermark: it changes iff that path or anything under it
-mutated, which is what runtime snapshot caches and page caches key on instead
-of the global counter. Current production wiring uses the bridge for
+mutated. Runtime snapshot caches and page caches key on it instead of the
+global counter. Current production wiring uses the bridge for
 supervisor file RPCs and Node async filesystem fallback; Node FileHandle
 positional IO, `fs.promises.truncate`, and live appends ride the range ops.
 Python, Ruby, and WASI still need direct long-lived bridge integration.
@@ -811,7 +811,7 @@ Runtime adapters should bind to the same kernel:
 
 ### Package ABI Registry
 
-Package managers must install by ABI, not by hope.
+Package managers must install by ABI.
 
 Required registry dimensions:
 
@@ -915,8 +915,8 @@ Target:
 Non-goal:
 
 - Linux process model, fork, ptrace, arbitrary device IO, or PARALLEL
-  pthreads. Threads are correct and serial; a shared-CPU substrate is what the
-  platform does not have.
+  pthreads. Threads are correct and serial; the platform does not have a
+  shared-CPU substrate.
 
 Correct engineering path:
 

@@ -3,8 +3,8 @@
 Last refreshed: 2026-07-24
 
 Status: pilot implementation plan. This document describes the code changes
-needed before implementation. It is intentionally scoped to the hosted demo
-plus Nimbus core hardening that the hosted demo depends on.
+needed before implementation. It is scoped to the hosted demo plus the
+Nimbus core hardening the hosted demo depends on.
 
 ## Objective
 
@@ -81,10 +81,10 @@ Current hosted-demo state:
 
 3. Browser users should not receive Nimbus JWTs in the hosted demo.
 
-   The hosted demo Worker should authenticate the user, verify sandbox
-   ownership, mint a short-lived session-pinned Nimbus JWT internally, inject
-   it as an `Authorization` header, and then call the Nimbus handler. The
-   browser should only hold the demo login cookie.
+   The hosted demo Worker should authenticate the user and verify sandbox
+   ownership. It should then mint a short-lived session-pinned Nimbus JWT
+   internally, inject it as an `Authorization` header, and call the Nimbus
+   handler. The browser should only hold the demo login cookie.
 
 4. Cloudflare login and agent OAuth are separate.
 
@@ -226,7 +226,7 @@ Pilot behavior:
 - If they create sandboxes in production, they must insert rows in
   `demo_sessions` and use the same idle cleanup path.
 - Prefer moving production smoke to behavioral tests rather than leaving
-  public unauthenticated sandbox creation endpoints.
+  endpoints that create sandboxes without authentication.
 
 ## Demo D1 Registry
 
