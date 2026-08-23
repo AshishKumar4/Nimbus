@@ -15,13 +15,13 @@ hello from clang on the edge
 ```
 
 `node` and `bun` run on workerd's `nodejs_compat` V8 with Nimbus shims for
-`fs`, `child_process`, HTTP, and streams. They are not upstream Node or Bun
-binaries, but they are not stubs. `python` is Pyodide CPython 3.13.
+`fs`, `child_process`, HTTP, and streams. They are not the upstream Node or
+Bun binaries. `python` is Pyodide CPython 3.13.
 `ruby` is ruby.wasm 3.3. `clang` is LLVM 8 with a modern wasi-libc sysroot.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
 builds, user headers, and `fopen` against session files. `-pthread` is
 refused, because that sysroot ships no `wasm32-wasip1-threads` libc to link
-against. Nimbus *runs* pthread programs correctly — build them with a full
+against. Nimbus runs pthread programs correctly. Build them with a full
 wasi-sdk and the futex shim from
 [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md),
 then run the `.wasm` in a session.
@@ -37,8 +37,8 @@ gem install rack                # pure gems from RubyGems (alpha)
 
 npm works against the live registry. Tarballs cache in R2 across sessions,
 large dependency trees shard across peer DOs, and a 611-package app installs
-in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end;
-probes run Flask and Rack apps in preview tabs. Curated source artifacts and
+in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end,
+and probes run Flask and Rack apps in preview tabs. Curated source artifacts and
 declared Pyodide extension modules also work. Runtimes are packages too. Run
 `python` before installing it and the shell prints the install hint.
 

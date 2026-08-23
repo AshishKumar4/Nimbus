@@ -8,7 +8,7 @@ import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 
 <GitPipeline caption="A clone has three resource profiles — network, CPU, and writes. No single isolate budget fits all three, so each phase gets its own." />
 
-`git clone` fetches real packfiles from real remotes over HTTPS. It is one of
+`git clone` fetches real packfiles from remotes over HTTPS. It is one of
 the heaviest operations a session runs. Fetch needs network time, `index-pack`
 needs CPU, and checkout makes many writes. Each phase gets a fresh CPU
 budget, and checkout is split into resumable chunks.
@@ -37,7 +37,7 @@ facebook/react, with 7,300 files, clones in ~28 s. Bounded continuation has
 materialized 84,000-file worktrees. The result is ordinary session disk: the
 editor sees it, `npm install` runs in it, and it persists.
 
-Transport is HTTPS only; SSH is not supported. There is also a known
-ceiling: `index-pack` CPU can still exceed one invocation's budget on clones
-with 75,000+ objects, such as microsoft/TypeScript. Making that phase
+Transport is HTTPS only; SSH is not supported. `index-pack` CPU can still
+exceed one invocation's budget on clones with 75,000+ objects, such as
+microsoft/TypeScript. Making that phase
 resumable is [in progress](/docs/fine-print/research/).

@@ -1,7 +1,7 @@
 # @nimbus-sh/sdk
 
-SDK for Nimbus — Worker embedder, programmatic sandbox handles,
-token mint/verify, typed errors, and session URL helpers.
+SDK for Nimbus: the Worker embedder, programmatic sandbox handles, token
+mint/verify, typed errors, and session URL helpers.
 
 ## Install
 
@@ -11,7 +11,7 @@ npm install @nimbus-sh/sdk @nimbus-sh/worker @nimbus-sh/config
 
 Use `@nimbus-sh/sdk/worker` as the public Worker embedder entrypoint.
 `@nimbus-sh/worker` is still installed because it carries the runtime assets
-and Durable Object implementation, but application code imports the
+and the Durable Object implementation. Application code imports the
 deploy-time API through the SDK.
 
 Create a deployable Nimbus Worker:
@@ -73,13 +73,13 @@ export default createNimbusHandler({
 ```
 
 The bundled session UI includes an Agent surface in the editor workspace.
-Configure it with Worker vars
-`NIMBUS_CF_OAUTH_CLIENT_ID`, `NIMBUS_CF_OAUTH_SCOPES`,
-`NIMBUS_AGENT_MODEL`, `NIMBUS_AGENT_GATEWAY_ID`, and the secrets
-`NIMBUS_AGENT_COOKIE_SECRET` or `NIMBUS_CLOUDFLARE_API_TOKEN` when you want
-Cloudflare OAuth or owner-token Workers AI access. User OAuth uses
-Authorization Code + PKCE and encrypted browser cookies; Nimbus does not store
-user OAuth tokens in Durable Object storage.
+Configure it with the Worker vars `NIMBUS_CF_OAUTH_CLIENT_ID`,
+`NIMBUS_CF_OAUTH_SCOPES`, `NIMBUS_AGENT_MODEL`, and
+`NIMBUS_AGENT_GATEWAY_ID`. Add the secret `NIMBUS_AGENT_COOKIE_SECRET` or
+`NIMBUS_CLOUDFLARE_API_TOKEN` when you want Cloudflare OAuth or owner-token
+Workers AI access. User OAuth uses Authorization Code + PKCE and encrypted
+browser cookies. Nimbus does not store user OAuth tokens in Durable Object
+storage.
 
 ## Programmatic sandbox quickstart
 
@@ -157,9 +157,9 @@ export default createNimbusHandler({
 ```
 
 `Nimbus.connect()` calls the versioned `/api/nimbus/v1` API internally. The
-Worker verifies the JWT, enforces `sid` pins and `sandbox:use` scope, applies
-the configured runtime policy, and delegates to the same `NimbusSession` RPC
-methods used by `Nimbus.fromEnv()`.
+Worker verifies the JWT, enforces `sid` pins and `sandbox:use` scope, and
+applies the configured runtime policy. It then delegates to the same
+`NimbusSession` RPC methods that `Nimbus.fromEnv()` uses.
 
 Sandbox destruction is a separate lifecycle operation. Tokens that call
 `box.destroy()` must include `session:destroy` or `session:admin` in addition
@@ -233,9 +233,9 @@ await box.ports.unexpose(3000);
 ```
 
 On deployments with a preview host suffix configured (the hosted product sets
-`NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev`), `port.url` is the hostname form
-`https://<port>--<session-id>.<suffix>/` instead; the `/s/<id>/port/<n>/`
-path route works on every deployment.
+`NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev`), `port.url` takes the hostname
+form `https://<port>--<session-id>.<suffix>/` instead. The
+`/s/<id>/port/<n>/` path route works on every deployment.
 
 Runtime policy comes from the sandbox profile:
 
@@ -252,11 +252,12 @@ object with `tools.exec.execute`, `runCode`, `readFile`, `writeFile`,
 `logs`, `exposePort`, `unexposePort`, `listPorts`, `installRuntime`, and
 `listRuntimes`.
 
-`provider.capabilities` is intentionally honest: Nimbus claims shell,
+`provider.capabilities` reports what Nimbus can do. Nimbus claims shell,
 JavaScript/TypeScript, npm, git, owned filesystem, outbound fetch, inbound
 HTTP-like port routing, process spawn/long-running processes, Python/Ruby
-when allowed, and clang-backed WASI/WebAssembly execution. It does not claim Docker, apt, GPU,
-custom Linux images, native Linux ELF execution, or raw TCP listeners.
+when allowed, and clang-backed WASI/WebAssembly execution. It does not claim
+Docker, apt, GPU, custom Linux images, native Linux ELF execution, or raw TCP
+listeners.
 
 ## Quickstart — mint a session token
 
@@ -361,8 +362,8 @@ JWT (HS256) with these claims:
 }
 ```
 
-Both `tn` and `sub` must match `[A-Za-z0-9._-]{1,128}` — exported as
-`ID_COMPONENT_RE` if you need to validate user input.
+Both `tn` and `sub` must match `[A-Za-z0-9._-]{1,128}`. The pattern is
+exported as `ID_COMPONENT_RE` if you need to validate user input.
 
 The `scope` discriminator means a token minted for another product
 (e.g. Mossaic VFS, `scope: "vfs"`) is rejected even when signed with

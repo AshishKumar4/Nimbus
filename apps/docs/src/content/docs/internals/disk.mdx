@@ -1,6 +1,6 @@
 ---
 title: Inside the disk
-description: The SQLite VFS — inodes, 64 KiB chunks, revision watermarks, and the credit-backpressured write path.
+description: The SQLite VFS. Inodes, 64 KiB chunks, revision watermarks, and the credit-backpressured write path.
 ---
 
 import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
@@ -8,33 +8,33 @@ import DiskLayers from '../../../components/diagrams/DiskLayers.astro';
 <DiskLayers caption="The Durable Object's SQLite storage is the single source of truth for every byte in the session." />
 
 Inodes live in a SQLite table and file contents in 64 KiB chunks. The
-inode row carries the POSIX surface — kind, size, mtime, `mode`, `uid`,
-`gid` — and a content id; chunks are stored against the content id, not
-the path, which is what makes atomic replacement possible. An LRU keeps
-up to 512 hot chunks (32 MiB) in memory without making memory the source
-of truth, and it shrinks itself under memory pressure.
+inode row carries the POSIX surface (kind, size, mtime, `mode`, `uid`,
+`gid`) and a content id. Chunks are stored against the content id rather
+than the path, which is what makes atomic replacement possible. An LRU
+keeps up to 512 hot chunks (32 MiB) in memory without making memory the
+source of truth. It shrinks itself under memory pressure.
 
 Every path also carries a revision watermark for its subtree. One global
 mutation clock ticks per write, and the written path plus all of its
-ancestors are stamped with the new value — so `revision('src')` answers
-"has anything under `src` changed" in one lookup, and an unrelated write
-doesn't invalidate the cache.
+ancestors take the new value. So `revision('src')` answers "has anything
+under `src` changed" in one lookup, and an unrelated write does not
+invalidate the cache.
 
 ## The write pipeline
 
 Facets never mutate files directly. Every write streams to the
-supervisor as length-prefixed, checksummed frames, and the stream is
-governed by a weighted credit pool: 8 MiB of retained payload bytes,
-shared across every writer in the session. A sender acquires credit
-sized to each 64 KiB chunk *before* the supervisor reads its payload;
-with no credit, the RPC body itself stops being read, so backpressure
-reaches the sender through the stream. Waiters are served in FIFO order,
-so a 52,500-file `npm install` and an 84,000-file checkout can run in
-parallel inside 128 MiB isolates without either starving the other.
+supervisor as length-prefixed, checksummed frames. A weighted credit
+pool governs the stream: 8 MiB of retained payload bytes, shared across
+every writer in the session. A sender acquires credit sized to each
+64 KiB chunk before the supervisor reads its payload. With no credit, the
+RPC body itself stops being read, so backpressure reaches the sender
+through the stream. Waiters are served in FIFO order. A 52,500-file
+`npm install` and an 84,000-file checkout can run in parallel inside
+128 MiB isolates without either starving the other.
 
 Publication is path-atomic. A bulk write stages its chunks into a fresh
-content generation under bounded transactions (at most 1 MiB of blob
-bytes per transaction), then a single SQLite transaction swaps the
+content generation under bounded transactions, at most 1 MiB of blob
+bytes per transaction. A single SQLite transaction then swaps the
 inode's content id to the staged generation and marks the old one for
 collection. A crash mid-stream leaves a committed prefix of whole files,
 not a partially-written file or a partially-published tree.
@@ -48,19 +48,19 @@ committed write.
 Runtimes use `RuntimeFsBridge` for stat, range reads and writes, truncate,
 directory and symlink operations, `revision(path)`, and events. The bridge
 is stateless, credentialed per process, and survives supervisor
-hibernation. Range operations touch only the chunks in range — appending
-a byte to a large file never rewrites the file.
+hibernation. Range operations touch only the chunks in range, so
+appending a byte to a large file never rewrites the file.
 
 Not every read goes to the live bridge yet. Node's synchronous `fs` runs
-against a bounded snapshot of the working tree — capped at 24 MiB and
-4,000 files, `node_modules` excluded — with a local write cache, because
-synchronous calls cannot await an RPC. Node's async `fs` uses the live
+against a bounded snapshot of the working tree, capped at 24 MiB and
+4,000 files with `node_modules` excluded. It also keeps a local write
+cache, because synchronous calls cannot await an RPC. Node's async `fs` uses the live
 bridge. Fresh git clones carry a metadata-only closed-world overlay
 across invocation boundaries so checkout phases can resume without
 re-reading the world. Python, Ruby, bash, and WASI one-shots still use a
 snapshot plus diff flush; moving them to the live bridge is
 [active work](/docs/fine-print/research/).
 
-The coherence rule: every read sees the latest committed revision or its
-own unflushed write. Conflicts fail loudly rather than overwriting data
-silently.
+The coherence rule is that every read sees the latest committed revision
+or its own unflushed write. Conflicts fail loudly rather than overwriting
+data silently.

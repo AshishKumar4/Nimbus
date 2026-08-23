@@ -15,12 +15,13 @@ still here tomorrow
 ```
 
 The disk preserves arbitrary bytes, symlinks, stat metadata, and exec bits.
-`fs.writeFileSync` with arbitrary bytes is probed. `chmod +x` survives, and
-`./prog` honors it. Ownership is real too: every inode stores `uid`, `gid`,
-and `mode` durably, and a process without permission gets `EACCES`, not
-silent success ([security](/docs/internals/security/)). The VFS event bus sends coalesced file changes to the
-editor and dev servers, which is what keeps Vite HMR working. Each path has
-a revision watermark, so runtime caches know when to refresh.
+A behavioral probe writes arbitrary bytes through `fs.writeFileSync`.
+`chmod +x` survives, and `./prog` honors it. Every inode stores `uid`,
+`gid`, and `mode` durably, and a process without permission gets `EACCES`
+rather than silent success ([security](/docs/internals/security/)). The
+VFS event bus sends coalesced file changes to the editor and dev servers,
+which is what keeps Vite HMR working. Each path has a revision watermark,
+so runtime caches know when to refresh.
 
 The shell, all four runtimes, the editor, `box.files` in the SDK, and the
 agent's tools see the same bytes. A compiled C program can read with

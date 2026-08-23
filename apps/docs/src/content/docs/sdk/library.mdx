@@ -5,7 +5,7 @@ description: The workspace in bun, node, or your own Durable Object, without the
 
 `@nimbus-sh/core` is the OS without the Worker: the durable SQLite
 filesystem, the shell with 60+ Unix commands, and the WASI runtime layer.
-It has no Cloudflare dependency — you hand it a SQLite and get back `.fs`
+It has no Cloudflare dependency. You hand it a SQLite and get back `.fs`
 and `.exec`.
 
 ## In bun or node
@@ -31,18 +31,18 @@ await ws.exec('cat /home/user/hello.txt | wc -c');   // { stdout: '3\n', exitCod
 ```
 
 `node:sqlite` works the same way. The workspace behaves as a tenant in a
-database you own: it creates and touches only its own tables, and
-`destroy()` drops exactly those — it never calls `deleteAll()`.
-`transactionSync` must be a real transaction; an implementation that only
+database you own. It creates and touches only its own tables, and
+`destroy()` drops those tables without calling `deleteAll()`.
+`transactionSync` must be a real transaction. An implementation that only
 calls the callback turns every atomic write into a torn one.
 
 ## In your own Durable Object
 
-The same class runs over `ctx.storage.sql`. The one thing the host owes it
-is a `generation` that never repeats across instances — pids derive from
-it, and a repeated generation would hand a dead process live write
-authority. Persist a counter and bump it once per instance; never a
-constant, never `Date.now()`:
+The same class runs over `ctx.storage.sql`. The host must supply a
+`generation` that never repeats across instances. Pids derive from it, so
+a repeated generation gives a dead process live write authority. Persist a
+counter and bump it once per instance. A constant or `Date.now()` does not
+work:
 
 ```ts
 import { DurableObject } from 'cloudflare:workers';
@@ -70,10 +70,9 @@ export class Workspace extends DurableObject {
 }
 ```
 
-The platform re-instantiates the class more often than it looks like it
-does — cold starts, hibernation wakes, resets — which is why the counter
-bumps per instance and the bumped value is used only after the `put`
-resolves.
+Cold starts, hibernation wakes, and resets all re-instantiate the class.
+The counter bumps once per instance, and the code uses the bumped value
+only after the `put` resolves.
 
 ## Runtime packages
 
@@ -104,20 +103,21 @@ await ws.exec('python -c "print(6*7)"');    // CPython 3.13 with the real stdlib
 manifests and sha256-verified blobs the hosted product serves from R2.
 
 `localFacetHost()` covers bun and node only. On workerd the CSP forbids
-request-time `WebAssembly.instantiate`; wasm rides the Worker Loader
-module map, which is the machinery in `@nimbus-sh/worker` and
-`@nimbus-sh/fabric`. The shell, coreutils, and filesystem need none of it.
+request-time `WebAssembly.instantiate`. Wasm rides the Worker Loader
+module map instead, which is the machinery in `@nimbus-sh/worker` and
+`@nimbus-sh/fabric`. The shell, the coreutils, and the filesystem do not
+need it.
 
 ## The Durable Object machinery
 
 `@nimbus-sh/fabric` is the Cloudflare half as a standalone library, for
-building your own thing on Durable Objects rather than embedding Nimbus:
-the resident-process fabric, warm Worker Loader pools, the multi-reason
-alarm multiplexer, instance-reset detection, the durable launch journal,
-and byte-accounted turn pacing. Its
+building your own thing on Durable Objects rather than embedding Nimbus.
+It holds the resident-process fabric, warm Worker Loader pools, the
+multi-reason alarm multiplexer, instance-reset detection, the durable
+launch journal, and byte-accounted turn pacing. Its
 [README](https://github.com/AshishKumar4/Nimbus/tree/main/packages/fabric)
-carries the measured platform-invariant tables — DO storage, CPU, facet,
-and RPC ceilings — that the machinery was built against.
+carries the measured platform-invariant tables the machinery was built
+against: DO storage, CPU, facet, and RPC ceilings.
 
 For the full hosted product shape (sessions, terminal, ports, auth), use
 [`create-nimbus-app`](/docs/sdk/embed/) instead of composing these by hand.
