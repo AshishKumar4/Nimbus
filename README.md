@@ -6,9 +6,9 @@
 
 > This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rough edges, and I only work on it in my spare time. This README is edited and maintained with Claude (AI) and presented as-is.
 
-**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network — instant, effectively unlimited, isolate-native sandboxes with no Docker, no VM boot, and no image pull. Open a URL (or call the SDK) and get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands.
+**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network. Sandboxes are instant and isolate-native, with no Docker, no VM boot, and no image pull. Open a URL (or call the SDK) and get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands.
 
-The OS half is also a library. [`@nimbus-sh/core`](packages/core) runs the same durable filesystem, shell, and wasm runtimes in bun or node over a local SQLite — no Cloudflare account involved — and embeds inside other people's Durable Objects. See [Use Nimbus as a library](#use-nimbus-as-a-library).
+The OS half is also a library. [`@nimbus-sh/core`](packages/core) runs the same durable filesystem, shell, and wasm runtimes in bun or node over a local SQLite, with no Cloudflare account involved. It also embeds inside other people's Durable Objects. See [Use Nimbus as a library](#use-nimbus-as-a-library).
 
 🌐 **Try it now:** https://nimbus-os.dev
 
@@ -26,19 +26,19 @@ Nimbus to your own Cloudflare account with `npx create-nimbus-app`.
 
 ## Why Nimbus
 
-Cloud dev environments today are either heavy VMs (slow to start, expensive to idle) or browser sandboxes that can't run real toolchains. Nimbus is different:
+Cloud dev environments today are either heavy VMs (slow to start, expensive to idle) or browser sandboxes that can't run real toolchains. Nimbus takes a third route:
 
-- **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on — not a JS interpreter stub, but also not the upstream Node/Bun binaries: it's the workerd-compatibility surface). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
-- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.7 s median (measured with the ComputeSDK TTI methodology, N=200, 100% success). No VM boot. No image pull.
-- **Built for agents.** Every agent can mint its own sandbox through the SDK — sandboxes are cheap enough to create per-task, and 100 simultaneous creates succeed without a warm pool.
-- **128 MiB is a segment, not a ceiling.** Every isolate on Workers is capped at 128 MiB — so Nimbus treats processes the way an OS treats them: heavy apps span *multiple* isolates. Each process gets its own isolate (its own memory and CPU budget), wired together over the session's loopback network. opencode runs this way: its server and TUI are two cooperating processes in two isolates.
+- **Linux-like userland.** `node` and `bun` over the Cloudflare workerd `nodejs_compat` runtime (the same V8 your Workers code runs on: the workerd-compatibility surface, not a JS interpreter stub and not the upstream Node/Bun binaries). Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
+- **Fast Worker startup.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.7 s median (measured with the ComputeSDK TTI methodology, N=200, 100% success). There is no VM boot and no image pull.
+- **Built for agents.** Every agent can mint its own sandbox through the SDK. Sandboxes are cheap enough to create per-task, and 100 simultaneous creates succeed without a warm pool.
+- **One process, one isolate, 128 MiB each.** Every isolate on Workers is capped at 128 MiB, so Nimbus treats processes the way an OS treats them: heavy apps span *multiple* isolates. Each process gets its own isolate (its own memory and CPU budget), wired together over the session's loopback network. opencode runs this way: its server and TUI are two cooperating processes in two isolates.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
-- **The URL is the session.** Bookmark it, share it, hand it to a teammate — they join the same filesystem.
+- **The URL is the session.** Bookmark it, share it, hand it to a teammate. They join the same filesystem.
 - **10 GB of persistent storage per session**, SQLite-backed, durable across reconnects and DO eviction.
 
 ## Architecture (high level)
 
-One session = one Cloudflare Durable Object (the **supervisor**) plus a fabric of Worker Loader isolates (**facets**). The supervisor owns the durable state: the SQLite-backed filesystem, the shell, the process table, and the port registry. Every process runs in its own facet isolate with its own 128 MiB memory and CPU budget — one-shot facets for commands, resident keyed facets for servers, and a dedicated git engine. Facets write back through a streamed, credit-backpressured RPC pipeline so a parallel `npm install` or an 84,000-file checkout can't overwhelm the supervisor.
+One session = one Cloudflare Durable Object (the **supervisor**) plus a fabric of Worker Loader isolates (**facets**). The supervisor owns the durable state: the SQLite-backed filesystem, the shell, the process table, and the port registry. Every process runs in its own facet isolate with its own 128 MiB memory and CPU budget: one-shot facets for commands, resident keyed facets for servers, and a dedicated git engine. Facets write back through a streamed, credit-backpressured RPC pipeline so a parallel `npm install` or an 84,000-file checkout can't overwhelm the supervisor.
 
 ```mermaid
 flowchart LR
@@ -57,7 +57,7 @@ flowchart LR
   DO -- "L2/L3 cache" --> R2[("R2 + edge cache<br/>npm tarballs · runtime blobs · staged apps")]
 ```
 
-Loopback networking is real: a process can `curl http://127.0.0.1:5000/` and reach a server running in a *different* isolate — the supervisor's port registry routes it, the same path the browser preview uses. That's what lets one app span multiple isolates. Here is opencode running as a two-process app:
+Loopback networking is real: a process can `curl http://127.0.0.1:5000/` and reach a server running in a *different* isolate. The supervisor's port registry routes it, on the same path the browser preview uses. That is what lets one app span multiple isolates. Here is opencode running as a two-process app:
 
 ```mermaid
 sequenceDiagram
@@ -120,7 +120,7 @@ Nimbus is under active development. Current framework support is:
 - **Stable:** Vite + React, the Cloudflare Vite Plugin, single-file Workers, Workers with Static Assets, npm + git workflows, Python and Ruby scripts, clang C compilation (single-file and multi-file).
 - **Vite-based frameworks:** Astro, SvelteKit, and Remix/React Router use the Vite path. Nuxt has Vite/Nitro caveats.
 - **Unfinished OS work:** broader binary-extension artifact catalogs beyond declared packages, complete upstream `pip`/Bundler CLI parity, an opencode `disallowed operation in global scope` boot failure (live, under investigation), index-pack CPU headroom for 75,000+-object clones (fetch can exceed the per-invocation CPU budget on repos like microsoft/TypeScript), full POSIX PTY parity, live filesystem bridges for every long-running runtime, and a real `umask`.
-- **Active research, mechanism proven live:** real `fork()`/`exec()` for compiled binaries over the isolate fabric via Binaryen Asyncify — execution-state capture, parent/child divergence, and grandchild forks all validated inside a production facet (fork of a 16 MiB image in under 1 ms). The acid test passed: unmodified GNU bash 5.2 runs live (`nimbus install bash`) with fork/pipes/subshells/command substitution, plus a BusyBox coreutils set (ls, cat, cp, mv, rm, mkdir, grep, sed, awk, find, wc, sort, chmod, ...) compiled to wasm32-wasi and exec'd as real external commands on bash's PATH, under S2a permission enforcement.
+- **Active research, mechanism proven live:** real `fork()`/`exec()` for compiled binaries over the isolate fabric via Binaryen Asyncify. Execution-state capture, parent/child divergence, and grandchild forks are all validated inside a production facet (fork of a 16 MiB image in under 1 ms). Unmodified GNU bash 5.2 runs live (`nimbus install bash`) with fork, pipes, subshells, and command substitution. A BusyBox coreutils set (ls, cat, cp, mv, rm, mkdir, grep, sed, awk, find, wc, sort, chmod, ...) is compiled to wasm32-wasi and exec'd as real external commands on bash's PATH, under S2a permission enforcement.
 - **Explicit limits:** Next.js dev server, Cloudflare Pages (`wrangler pages dev`), Docker, apt, native Linux ELF execution, native platform-only CLI shards, native Linux Python wheels, native Ruby extensions without Nimbus-compatible artifacts, and raw public TCP listeners. A single session allows one active terminal owner at a time; sequential reconnect/share preserves filesystem and shell state.
 
 ## Quickstart
@@ -207,20 +207,21 @@ await ws.exec('python -c "print(6*7)"');    // CPython 3.13 with the real stdlib
 ```
 
 Ruby 3.3 and clang work the same way. Every runtime package carries the same
-manifest and sha256-verified blobs the hosted product serves from R2 — one
-publisher, two transports. The workspace behaves as a tenant in a database
-you own: it touches only its own tables, and `destroy()` drops exactly those.
+manifest and sha256-verified blobs the hosted product serves from R2. The
+workspace behaves as a tenant in a database you own: it touches only its own
+tables, and `destroy()` drops those tables.
 [Full details in the package README](packages/core).
 
 ### The Cloudflare machinery: @nimbus-sh/fabric
 
 [`@nimbus-sh/fabric`](packages/fabric) is the other half, for people building
-their own thing on Durable Objects rather than embedding Nimbus: the
-facet/process fabric behind resident processes, warm Worker Loader pools, the
-multi-reason alarm multiplexer, the generation counter that detects instance
-resets, the durable launch journal, and byte-accounted turn pacing. Its README
-carries the platform-invariant tables — the measured DO storage, CPU, facet,
-and RPC ceilings this machinery was built against — which may be worth reading
+their own thing on Durable Objects rather than embedding Nimbus. It carries
+the facet/process fabric behind resident processes, warm Worker Loader pools,
+the multi-reason alarm multiplexer, the generation counter that detects
+instance resets, the durable launch journal, and byte-accounted turn pacing.
+Its README
+carries the platform-invariant tables: the measured DO storage, CPU, facet,
+and RPC ceilings this machinery was built against. They are worth reading
 even if you never install the package. The full evidence-graded catalog is
 [`packages/fabric/PLATFORM.md`](packages/fabric/PLATFORM.md).
 
@@ -327,7 +328,7 @@ const sessionEnv = await sandboxFactory.createSessionEnv({
 
 Nimbus is a Cloudflare Worker/DO/WASM sandbox, not a Linux VM. It supports
 owned VFS, shell, npm/npx, git, long-running HTTP-like processes, Python,
-Ruby, clang-to-WASI, process logs, and port routing. It does not claim Docker,
+Ruby, clang-to-WASI, process logs, and port routing. It does not provide Docker,
 apt, GPUs, custom Linux images, native Linux ELF execution, or raw TCP
 listeners.
 
@@ -351,7 +352,7 @@ the same shape any external project ships.
 
 ## REPL
 
-`python`, `ruby`, `node`, and `bun` launch interactive REPLs when given no arguments. There are two honest categories:
+`python`, `ruby`, `node`, and `bun` launch interactive REPLs when given no arguments. There are two categories:
 
 **Stateful (real interpreter, real persistence):**
 
@@ -360,7 +361,7 @@ the same shape any external project ships.
 
 **Stateless emulation (workerd CSP-bounded):**
 
-- `node` / `bun` — workerd's CSP blocks runtime `eval` and `new Function`, so we can't persist `var` / `let` / `const` declarations across submits the way upstream Node/Bun do. `console.log` and per-line side effects work; for stateful work, run a script (`node -e '<code>'` or `node script.js`). The banner says exactly this.
+- `node` / `bun` — workerd's CSP blocks runtime `eval` and `new Function`, so we can't persist `var` / `let` / `const` declarations across submits the way upstream Node/Bun do. `console.log` and per-line side effects work; for stateful work, run a script (`node -e '<code>'` or `node script.js`). The banner says so.
 
 Press Ctrl-D or type `exit` / `.exit` to leave. Probes: `tests/behavioral/repl/` (13 probes covering exit semantics, prompts, stateful Python, error recovery).
 
@@ -375,13 +376,13 @@ What's wired today (v12 sysroot, currently deployed):
 - User headers in cwd or under `-I<dir>`.
 - `fopen("...", "r" | "w" | "a")` against VFS paths (relative + absolute).
 - 128-bit math intrinsics (`__muloti4`, `__divti3`) provided via linked `libclang_rt.builtins-wasm32.a`.
-- OS-grade binary dispatch: `clang` marks linked executables `0o755`, so `clang hello.c -o hello && ./hello` runs directly — no wrapper, no manual step. `chmod -x hello && ./hello` honestly fails with `Permission denied` (exit 126); non-wasm files with the exec bit dispatch via `#!` shebang or fall back to `sh`.
+- Binary dispatch: `clang` marks linked executables `0o755`, so `clang hello.c -o hello && ./hello` runs directly, with no wrapper and no manual step. `chmod -x hello && ./hello` fails with `Permission denied` (exit 126). Non-wasm files with the exec bit dispatch via `#!` shebang or fall back to `sh`.
 
 The stdio/atexit behavior is covered by the v13 probes in `tests/behavioral/clang-stdio/`. Sysroot selection is catalog-driven in R2, so after a catalog flip, verify the live deploy with those probes.
 
 Probes: `tests/behavioral/clang/`, `tests/behavioral/clang-includes/`, `tests/behavioral/clang-stdio/`, `tests/behavioral/wasi-paths/`.
 
-`-pthread` / `wasi-threads` programs run correctly but never in parallel: one core, one thread at a time. Build them with `--import-memory --shared-memory` and the futex shim — see [docs/wasi-threads.md](docs/wasi-threads.md).
+`-pthread` / `wasi-threads` programs run correctly but never in parallel: one core, one thread at a time. Build them with `--import-memory --shared-memory` and the futex shim. See [docs/wasi-threads.md](docs/wasi-threads.md).
 
 ## Performance
 
@@ -486,7 +487,7 @@ which exercise both SDK transports against the deployed app.
 
 ## Tests
 
-`tests/behavioral/` contains a large black-box probe suite that drives a real session via `POST /new` + WebSocket. Probes assert real user-visible behavior -- structural-only assertions (regex on a bundle, HTTP 200 alone) are not accepted as pass criteria. See `tests/behavioral/PROBE-QUALITY.md` for the contract.
+`tests/behavioral/` contains a large black-box probe suite that drives a real session via `POST /new` + WebSocket. Probes assert real user-visible behavior. Structural-only assertions (regex on a bundle, HTTP 200 alone) are not accepted as pass criteria. See `tests/behavioral/PROBE-QUALITY.md` for the contract.
 
 Run them all against the live deploy:
 
