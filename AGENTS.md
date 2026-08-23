@@ -282,8 +282,8 @@ with that deployment's `JWT_SECRET`.
 
 Two kinds exist, for two different jobs.
 
-**Staging** is the persistent one and the right answer for "does this change
-work": `bun run staging:deploy` then `bun run staging:test`. See
+**Staging** is the persistent one, and the right answer for "does this change
+work". Run `bun run staging:deploy` then `bun run staging:test`. See
 § Staging And Promote.
 
 **A throwaway** is for a one-off question. No shared secret needed, and gone
@@ -371,7 +371,7 @@ database, rate-limit namespace and Worker:
 | `env.staging` | `nimbus-staging` | `nimbus-demo-staging` | `bun run staging:deploy` |
 | `env.production` | `nimbus` | `nimbus-demo` | `bun run deploy:production` |
 
-That split is load-bearing: `wrangler deploy --name foo` overrides ONLY the
+That split is load-bearing. `wrangler deploy --name foo` overrides ONLY the
 name, and every binding still comes from the block being deployed. Two
 throwaway probes wrote rows into the live demo D1 that way: one deployed from
 `apps/hosted-demo` by hand, one from a copy of the config with `env` stripped
@@ -384,9 +384,8 @@ and each non-production env block, enumerated from the files. The staging and
 throwaway scripts run the same check before they invoke wrangler, and
 `tests/unit/deploy-isolation.mjs` holds the line in CI.
 
-Two things about deploys are not obvious, both learned the hard way. A deploy
-that dies during **asset upload still creates the script**, so a failed deploy
-is not "nothing to clean up". `wrangler deploy` can fail that way and
+A deploy that dies during **asset upload still creates the script**, so a
+failed deploy is not "nothing to clean up". `wrangler deploy` can fail that way and
 **still exit 0**, so a green probe run proves nothing about which build it ran
 against. Verify by version id, never by exit status. `_deploy-target.mjs`'s
 `deployAndVerify` reads the active version back from the API and refuses a
@@ -448,7 +447,7 @@ Versioned preview URLs are not a verification path here, whatever the
 `preview_urls` key suggests. Measured 2026-08-05 on `nimbus-staging` with
 wrangler 4.98.0: neither `wrangler deploy` nor `wrangler versions upload`
 prints one, and `<version-prefix>-<worker>.<subdomain>.workers.dev` 404s for
-version ids that exist. A hostname is never the isolation either: every
+version ids that exist. A hostname is never the isolation either. Every
 subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
 `*` route hands them all to the production Worker (measured 2026-08-04,
 `deadbeef.nimbus-os.dev`).
