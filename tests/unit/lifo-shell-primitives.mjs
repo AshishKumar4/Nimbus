@@ -57,7 +57,7 @@ try {
     'curl -fsS http://127.0.0.1:8123/missing; echo STATUS:$?',
     {
       stdout: 'STATUS:22\n',
-      stderr: 'curl: (404) The requested URL returned error: 404\n',
+      stderr: 'curl: (22) The requested URL returned error: 404\n',
       exitCode: 0,
     });
 
@@ -69,7 +69,7 @@ try {
     'curl -fIsS http://127.0.0.1:8123/missing; echo STATUS:$?',
     {
       stdout: 'STATUS:22\n',
-      stderr: 'curl: (404) The requested URL returned error: 404\n',
+      stderr: 'curl: (22) The requested URL returned error: 404\n',
       exitCode: 0,
     });
 
