@@ -6,8 +6,8 @@ variables, `pthread_join`, thread-local storage, barriers, semaphores,
 
 They do not run in parallel. One core, one thread at a time. A CPU-bound
 program with four threads finishes with the right answer and no faster than the
-single-threaded version, plus context-switch overhead. Correctness and
-compatibility are what this buys; speedup is not on offer.
+single-threaded version, plus context-switch overhead. This buys correctness
+and compatibility, not speed.
 
 ## How it works
 
@@ -20,19 +20,19 @@ they need no cross-isolate primitive:
   which is where each thread's `__stack_pointer` and `__tls_base` live. TLS
   needs no host emulation: `wasi_thread_start` sets both from the start struct
   the spawning thread allocated.
-- One cooperative scheduler — round-robin, run-to-park, creation order, exactly
-  one thread executing at a time. Memory is genuinely shared; access to it is
-  serialised, which is what makes correctness reachable.
+- One cooperative scheduler: round-robin, run-to-park, creation order, exactly
+  one thread executing at a time. Memory is shared, and access to it is
+  serialised, so results stay correct.
 - One software futex. `Atomics.wait` throws on Workers and the
   `memory.atomic.wait32` instruction traps for the same reason, so blocking is a
-  host park: the waiter registers a predicate — `*addr != val` — and yields.
+  host park: the waiter registers a predicate (`*addr != val`) and yields.
   There is no wake call. Every scheduling pass re-tests every waiter, so the
   futex is level-triggered and a lost wakeup is not expressible.
 
 That last property also makes deadlock detection exact rather than heuristic.
 If every live thread is parked on a predicate, none holds, and no host I/O or
-timer is outstanding, then no thread can run, so memory can never change, so no
-predicate can ever become true. Nimbus says so instead of hanging:
+timer is outstanding, then no thread can run. Memory can never change, so no
+predicate can ever become true. Nimbus reports it and stops:
 
 ```
 deadlock: every thread is blocked and nothing can wake them (tids 1, 2)
@@ -40,7 +40,7 @@ deadlock: every thread is blocked and nothing can wake them (tids 1, 2)
 
 The implementation is `packages/worker/src/runtime/wasi-threads.ts`. It is the
 host-side sibling of `runtime/ruby-green-threads.ts`, which runs the same model
-inside the Ruby VM over fibers — one concurrency model at two layers.
+inside the Ruby VM over fibers. One concurrency model runs at two layers.
 
 ## Building a program
 
@@ -58,18 +58,19 @@ Three requirements, each checked before the program runs:
 - **`wasi_thread_start` exported.** The wasi-threads entry point; `-pthread`
   emits it.
 - **`nimbus-threads.c` linked, against wasi-sdk 27 or newer.** wasi-libc
-  compiles its futex wait to `memory.atomic.wait32`, which traps on Workers with
-  *"Atomics.wait cannot be called in this context"* the first time a lock is
-  contended. wasi-libc calls the weak symbol
+  compiles its futex wait to `memory.atomic.wait32`. That instruction traps on
+  Workers with *"Atomics.wait cannot be called in this context"* the first
+  time a lock is contended. wasi-libc calls the weak symbol
   `__wasilibc_futex_wait_maybe_busy` instead whenever something defines it; that
   file defines it, routing every blocking pthread operation to the host futex.
-  The hook is wasi-libc's own — no patched libc, no binary rewriting.
+  The hook is wasi-libc's own, so there is no patched libc and no binary
+  rewriting.
 
   The version floor is load-bearing, and ignoring it fails quietly. A wasi-libc
   without that hook never *calls* the definition, so the linker drops it as
-  unreachable and the build succeeds with no warning — leaving a binary that
-  looks correctly built and is refused at load. Measured: wasi-sdk 25 ships no
-  hook, wasi-sdk 27 does.
+  unreachable and the build succeeds with no warning. The binary looks
+  correctly built and is refused at load. Measured: wasi-sdk 25 ships no hook,
+  wasi-sdk 27 does.
 
 A build missing any of these is rejected at load with the build line in the
 error, rather than run in a way that could corrupt.
@@ -77,10 +78,10 @@ error, rather than run in a way that could corrupt.
 ## Limits
 
 - **No parallelism.** Every resident Nimbus process is a Durable Object Facet,
-  and facet siblings serialise on CPU, so there is no independent-CPU substrate
+  and facet siblings serialise on CPU. There is no independent-CPU substrate
   to offload to. This is a property of the platform, not a pending feature.
-- **No preemption yet.** A thread that never reaches a blocking operation — a
-  bare spin loop, a tight compute loop — holds the process until it does. A
+- **No preemption yet.** A thread that never reaches a blocking operation (a
+  bare spin loop, a tight compute loop) holds the process until it does. A
   spinlock that calls `sched_yield()` is fine; one that does not will hang.
   Nimbus controls the module build, so back-edge yield fuel can fix this, and
   that is the next step.

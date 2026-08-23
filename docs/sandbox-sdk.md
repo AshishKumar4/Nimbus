@@ -1,8 +1,8 @@
 # Nimbus Sandbox SDK
 
 Nimbus exposes a programmable sandbox API for Cloudflare Workers and Durable
-Objects. The SDK is designed for backend services that need isolated execution,
-persistent files, runtime installation, process management, and preview ports.
+Objects. Use it for backend services that need isolated execution, persistent
+files, runtime installation, process management, and preview ports.
 
 ## Packages
 
@@ -117,13 +117,12 @@ images, native Linux ELF execution, or raw TCP listeners.
 ## Proteus-Style Tool Provider
 
 `box.tools({ namespace: 'sandbox', kind: 'sandbox' })` returns a provider with
-execution, code, file, runtime, process, and port tools. It is intended for
-agent runtimes that need a sandbox provider without depending on a browser
-terminal or WebSocket session.
+execution, code, file, runtime, process, and port tools. Use it for agent
+runtimes that need a sandbox provider without a browser terminal or WebSocket
+session.
 
-Capabilities are reported honestly. For example, Python is reported when it is
-allowed by policy, Ruby is reported when allowed by policy, and clang support
-is reported as WASI/WebAssembly execution rather than Linux ELF execution.
+The provider reports Python and Ruby when policy allows them. It reports clang
+as WASI/WebAssembly execution, not Linux ELF execution.
 
 ## Flue Connector
 
@@ -163,7 +162,7 @@ stdin, raw mode state, resize events, ANSI output, and signal delivery. This is
 still alpha and is not a complete POSIX PTY contract. Pi's official
 `curl -fsSL https://pi.dev/install.sh | sh` installer and direct npm path are
 production-probed. Tools such as opencode and Proteus-style CLIs need live
-probes before Nimbus docs should claim they run unmodified.
+probes before these docs claim they run unmodified.
 
 Tools that ship only native platform shards such as `linux-x64`, `darwin`, or
 `win32` binaries need a WASM build, pure-JS entrypoint, or Nimbus adapter.
