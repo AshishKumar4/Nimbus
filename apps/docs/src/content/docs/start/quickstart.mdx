@@ -6,6 +6,9 @@ description: Start a live sandbox from the browser, the SDK, or your own Cloudfl
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
+Start a sandbox in the browser, from the SDK, or on your own Cloudflare
+account. Each route gives you the same shell, disk, and toolchains.
+
 <NimbusSandbox
 	title="nimbus — quickstart"
 	rows={16}
@@ -17,12 +20,12 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 	]}
 />
 
-The terminal above is a live sandbox running real `node` on workerd's V8:
-a prime sieve, then a 256-color banner. It is the same session **Launch**
-creates at [nimbus-os.dev](https://nimbus-os.dev). The
-`/s/<id>/` URL is the session: bookmark it, and the files persist between
-visits. An idle session costs nothing. Type your own commands once the
-demo finishes. `npm install`, `git clone`, and `python` all work.
+The terminal above is a live sandbox running real `node` on workerd's V8. It
+runs a prime sieve, then a 256-color banner.
+**Launch** at [nimbus-os.dev](https://nimbus-os.dev) creates the same session.
+The `/s/<id>/` URL is the session. Bookmark it and the files persist between
+visits. An idle session costs nothing. Type your own commands when the demo
+finishes. `npm install`, `git clone`, and `python` all work.
 
 Try this first:
 
@@ -33,8 +36,10 @@ cd Markflow && npm install  # real npm, live registry
 npm run dev                 # vite with HMR, previewed in the iframe
 ```
 
-The SDK can create one sandbox per task. Create to first command is ~0.7 s
-median ([benchmarks](/docs/fine-print/benchmarks/)).
+From code, create one sandbox per task. Create to first command takes ~0.7 s
+median ([benchmarks](/docs/fine-print/benchmarks/)). Use a colocated Durable
+Object binding inside your own Worker, or connect to any deployment with a
+token.
 
 <Tabs>
 <TabItem label="Colocated (your Worker)">
@@ -66,7 +71,8 @@ await box.ready();
 </TabItem>
 </Tabs>
 
-To run Nimbus in your own Cloudflare account:
+To run Nimbus on your own Cloudflare account, scaffold a Worker and deploy
+it:
 
 ```bash
 npx create-nimbus-app my-nimbus-worker && cd my-nimbus-worker && npm install
