@@ -68,7 +68,7 @@ starts. opencode's map is roughly 20 MB and a Ruby interpreter image is
 <RequestLifecycle caption="A preview request and an in-session curl take the same path through the registry, and the response streams the whole way." />
 
 Writes flow one way, and facets never own files. Every mutation streams to the
-supervisor through a credit pool, so a parallel `npm install` can't flood the
+supervisor through a credit pool, so a parallel `npm install` cannot flood the
 DO ([inside the disk](/docs/internals/disk/) has the numbers).
 
 ## One process, one facet

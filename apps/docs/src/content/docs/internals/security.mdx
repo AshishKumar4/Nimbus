@@ -20,7 +20,7 @@ One session is one supervisor Durable Object plus the facet isolates it
 spawns. A facet receives one capability when it starts: an RPC stub
 pointing at its own session's supervisor. Generated facet code cannot
 import supervisor modules, cannot reach another session's DO, and cannot
-mint stubs it wasn't given.
+mint stubs it was not given.
 
 ## No runtime code generation
 
@@ -31,9 +31,9 @@ that constraint. WASM modules enter a facet pre-compiled through the
 module map, and nothing in a session can generate and execute new
 machine code.
 
-This is why the `node` and `bun` REPLs can't keep declarations between
-submits: evaluating a REPL line is runtime code generation, which the CSP
-blocks. The REPL banners note it.
+The `node` and `bun` REPLs therefore cannot keep declarations between
+submits. Evaluating a REPL line is runtime code generation, and the CSP
+blocks it. The REPL banners note it.
 
 ## Unix permissions, enforced at one seam
 
@@ -124,7 +124,7 @@ neither the app nor the session's logs. The session cookie is
 a `Domain` attribute or a `Path` other than `/`. Preview code cannot set a
 shadowing cookie for the parent domain.
 
-A preview URL is a link: it lands in history, referrers, and chat logs.
+A preview URL is a link. It lands in history, referrers, and chat logs.
 Under enforced auth, `GET /s/<id>/api/preview-url?port=<n>` mints it a
 token scoped `session:preview`. The token is pinned to that session, good
 for 90 seconds, and carries a `jti` the session DO consumes set-if-absent.
@@ -167,9 +167,10 @@ platform cap. A supervisor OOM resets the session; a facet OOM does not.
   able to exfiltrate.
 - **A known upstream availability issue.** Certain user-space activity
   can crash the shared workerd process, which resets the
-  sessions running on it. The impact is availability only: sessions
+  sessions running on it. The impact is availability only. Sessions
   reconnect and disks survive, and it is not a path to another tenant's
   data. It is reproduced, reported, and being escalated with Cloudflare.
 
 The [research page](/docs/fine-print/research/) tracks all of these. The
-hosted demo is for evaluation only: no SLA, and not a place for secrets.
+hosted demo is for evaluation only. It has no SLA, and it is not a place for
+secrets.
