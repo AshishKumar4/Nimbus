@@ -4,22 +4,21 @@ description: All 46 preview1 functions, JSPI-suspended sockets, and the gaps sta
 ---
 
 Compiled binaries from `clang`, and any `wasm32-wasi` module you bring,
-run on the Nimbus `wasi_snapshot_preview1` host. **All 46 preview1
-functions work.**
+run on the Nimbus `wasi_snapshot_preview1` host. All 46 preview1
+functions work.
 
-Preview1 itself has no `sock_open`, `bind` or `listen` — it can only act on
+Preview1 itself has no `sock_open`, `bind` or `listen`. It can only act on
 descriptors the host already handed over. Nimbus hands them over through
-synthetic paths: `path_open('/dev/nimbus/listen/<port>')` binds a listening
-descriptor, and a connection is taken from it either by `sock_accept`, which
-is what a guest compiled against wasi-libc calls, or by reading the
-descriptor, which is what a guest layered over its own filesystem
-(`ruby.wasm`) has to do instead. Both end at the same socket fd, so a WASM
+synthetic paths. `path_open('/dev/nimbus/listen/<port>')` binds a listening
+descriptor. A guest compiled against wasi-libc takes a connection from it
+with `sock_accept`; a guest layered over its own filesystem (`ruby.wasm`)
+reads the descriptor instead. Both end at the same socket fd, so a WASM
 server takes `/port` traffic the same way a Node one does.
 
 Blocking I/O uses JSPI. Socket calls, `poll_oneoff` and the file reads
 that can reach the session filesystem are wrapped in
 `WebAssembly.Suspending`, and every entry into such a guest runs under
-`WebAssembly.promising` — V8 requires the suspender at call time even for
+`WebAssembly.promising`. V8 requires the suspender at call time even for
 an import that returns a plain errno, so there is no partial adoption and
 no fallback. A guest whose entries are synchronous by contract (the
 terminal render backend, driven per frame from a sync caller) asks for
@@ -36,8 +35,8 @@ queues the connection and asks the runtime to service it on one dedicated
 cooperative pump, the only place a JSPI suspension is legal. Pyodide and
 ruby.wasm serve loopback ports this way.
 
-JSPI suspends a call; it cannot snapshot a stack. Programs that need
-`fork` or `setjmp` — bash above all — are additionally instrumented with
+JSPI suspends a call, but it cannot snapshot a stack. Programs that need
+`fork` or `setjmp`, bash among them, are additionally instrumented with
 Asyncify, which can unwind a running program's call stack to memory and
 rewind it in another instance. [The process
 fabric](/docs/internals/processes/) covers what that unlocked.
@@ -57,14 +56,14 @@ arrive pre-compiled in the module map. Pyodide extension packages must
 therefore be declared startup modules, while arbitrary dynamic loading
 fails with a clear diagnostic.
 
-WASI files are a cache over the session filesystem: the spawn seed is a
+WASI files are a cache over the session filesystem. The spawn seed is a
 manifest of sizes, content is fetched on first read, and writes go back
-as they happen — so a process that never exits still persists. bash and
-python are the two runtimes not yet on it; each still carries a private
+as they happen, so a process that never exits still persists. bash and
+python are the two runtimes not yet on it. Each still carries a private
 filesystem that copies the subtree in and reports a diff on exit.
 
-The remaining gaps are [tracked with designs](/docs/fine-print/research/).
-stdin is EOF. There are no inbound sockets.
+stdin is EOF, and there are no inbound sockets. The remaining gaps are
+[tracked with designs](/docs/fine-print/research/).
 
 ## Threads
 

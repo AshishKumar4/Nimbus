@@ -20,95 +20,95 @@ TUI joined by loopback, with a separate budget for each half.
 
 ## Why a Durable Object
 
-Workers are stateless and can run anywhere; a sandbox needs one place
+Workers are stateless and can run anywhere. A sandbox needs one place
 where the working directory, the process table, and the disk agree. A
 Durable Object is the only Cloudflare primitive that is both durable and
 strongly consistent: a single-threaded actor with transactional SQLite
-storage attached. One session is exactly one DO instance, addressed by
-`tenant:sessionId`. There is one instance per session and no replicas, so
-there is no cache-coherence protocol to run.
+storage attached. One session is one DO instance, addressed by
+`tenant:sessionId`. There are no replicas, so there is no cache-coherence
+protocol to run.
 
 The supervisor holds, in one actor:
 
-- **The disk** — the SQLite-backed VFS, 10 GB, the single source of
+- **The disk**: the SQLite-backed VFS, 10 GB, the single source of
   truth for every byte ([inside the disk](/docs/internals/disk/)).
-- **The process table** — pid-keyed state that survives facet resets;
-  `ps` reads the DO, never a facet. Each process carries an immutable
+- **The process table**: pid-keyed state that survives facet resets.
+  `ps` reads the DO, not a facet. Each process carries an immutable
   credential (uid, gid, groups, umask) assigned at spawn.
-- **The port registry** — which pid owns which port, and the facet stub
+- **The port registry**: which pid owns which port, and the facet stub
   that serves it ([ports & routing](/docs/internals/network/)).
-- **Per-process log ring buffers and input queues** — durable and
+- **Per-process log ring buffers and input queues**: durable and
   bounded, so `logs <pid>` works after a facet dies.
-- **Hibernatable WebSockets** — terminals survive DO eviction, and
+- **Hibernatable WebSockets**: terminals survive DO eviction, and
   configured auto-responses answer idle pings without waking the actor.
 
-The supervisor enforces a soft heap ceiling on itself of 64 MiB, half the
-platform cap. A supervisor OOM resets the whole session rather than failing
-a single process, so heavy work is pushed out to facets.
+The supervisor holds a self-imposed heap ceiling of 64 MiB, half the
+platform cap. A supervisor OOM resets the whole session instead of failing
+one process. Nimbus therefore pushes heavy work out to facets.
 
 ## Facets: the Worker Loader fabric
 
 Facets are dynamically loaded Workers created through the platform's
 Worker Loader binding. Each gets the standard `nodejs_compat` runtime, a
-128 MiB heap of its own, and exactly one injected capability: a
+128 MiB heap of its own, and one injected capability: a
 `SUPERVISOR` RPC stub pointing back at its own session. Generated facet
-code cannot import supervisor modules — the RPC surface is the whole
+code cannot import supervisor modules, so the RPC surface is the whole
 contract.
 
 The loader keys isolates by content hash and slot, so repeated runs of
 the same program reuse a warm isolate instead of re-instantiating. Warm
-reuse also sets the failure rule: a route stub for an evicted facet fails
-loudly rather than re-loading the code, because a re-loaded isolate is an
-empty worker with nothing listening.
+reuse also fixes what happens on failure. A route stub for an evicted
+facet fails loudly rather than re-loading the code, because a re-loaded
+isolate is an empty worker with nothing listening.
 
-The supervisor describes a big app with a small spec — argv, env, a
-bounded VFS snapshot — and the full module map is assembled lazily, inside
-the loader's cache-miss callback, so it exists only while a process is
-actually starting. opencode's map is roughly 20 MB and a Ruby interpreter
-image is 34 MiB; both are read at load time and dropped, rather than held.
+The supervisor describes a big app with a small spec: argv, env, and a
+bounded VFS snapshot. The loader assembles the full module map lazily,
+inside its own cache-miss callback, so the map exists only while a process
+starts. opencode's map is roughly 20 MB and a Ruby interpreter image is
+34 MiB. Both are read at load time and dropped, not held.
 
 <RequestLifecycle caption="A preview request and an in-session curl take the same path through the registry, and the response streams the whole way." />
 
-Writes flow one way. Facets never own files. Every mutation streams to the
+Writes flow one way, and facets never own files. Every mutation streams to the
 supervisor through a credit pool, so a parallel `npm install` can't flood the
 DO ([inside the disk](/docs/internals/disk/) has the numbers).
 
 ## One process, one facet
 
-Every resident process — a `node` server, a Python or Ruby socket server,
-opencode's TUI and its headless server — runs as a **DO Facet** of its own
-session: a named child actor whose class comes from a dynamic worker the
-session loads itself. There is one placement and nothing above the fabric
-can branch on it.
+Every resident process runs as a DO Facet of its own session: a named
+child actor whose class comes from a dynamic worker the session loads
+itself. A `node` server, a Python or Ruby socket server, and opencode's
+TUI and headless server all run this way. There is one placement, and
+nothing above the fabric can branch on it.
 
-A facet gets its own memory envelope: measured at ~208 MiB each, identical
-whether the session holds 0 or 128 MiB, and 1,664 MiB live across eight
-facets plus the parent. Containment runs both ways — a facet that runs out
-of memory takes down its own process and leaves the session running, and a
-session that resets leaves the facet's memory intact.
+A facet gets its own memory envelope, measured at ~208 MiB each. The
+figure is the same whether the session holds 0 or 128 MiB, and eight
+facets plus the parent hold 1,664 MiB live. Containment runs both ways. A
+facet that runs out of memory takes down its own process and leaves the
+session running, and a session that resets leaves the facet's memory
+intact.
 
 <ProcessFacet caption="A process facet is a child actor of the session. It gets its own memory envelope, and the SUPERVISOR binding it receives carries the session's doId, so its filesystem, terminal, and port calls land on the session." />
 
 The `SUPERVISOR` binding a facet receives carries a `doId` in its props,
-and the RPC layer resolves that doId to a stub on every call, so
+and the RPC layer resolves that doId to a stub on every call. So
 `readFile`, `writeFile`, stdout and stderr frames, the stdin pump, and
-`registerPort` all land on the session. Compute and resident memory move;
-the disk, the terminal, and the ports stay where they are.
+`registerPort` all land on the session. Compute and resident memory move.
+The disk, the terminal, and the ports stay where they are.
 
-Because a facet is addressed by *name* rather than by a transferred
+Because a facet is addressed by name rather than by a transferred
 entrypoint, the session re-resolves it in any later request context. That
-is what lets a resident process serve a port at all: inbound HTTP, SSE and
-WebSockets stream straight through the session to the process. It also
-starts in 8–16 ms warm.
+is what lets a resident process serve a port: inbound HTTP, SSE, and
+WebSockets stream straight through the session to the process. A warm
+facet starts in 8–16 ms.
 
-The cost, stated plainly: facets are separate isolates inside the session's
-**single actor thread**. A facet awaiting I/O yields it completely — while
-one parks on a socket, on stdin, or on an outbound call, a sibling's
-latency is indistinguishable from idle. A facet spending sustained CPU
-stalls every sibling *and their syscalls* for that whole duration. So this
-fabric hosts I/O-bound resident processes. The CPU-heavy work — clang,
-esbuild, npm install — runs one-shot or fans out across sibling DOs
-instead.
+Facets are separate isolates inside the session's single actor thread, and
+that has a cost. A facet awaiting I/O yields the thread. While one parks
+on a socket, on stdin, or on an outbound call, a sibling runs at idle
+latency. A facet spending sustained CPU stalls every sibling, and their
+syscalls, for that whole duration. So this fabric hosts I/O-bound resident
+processes. CPU-heavy work such as clang, esbuild, and npm install runs
+one-shot or fans out across sibling DOs instead.
 
 ## Design constraints
 
@@ -127,5 +127,5 @@ Nimbus inherits workerd's isolation, the same primitives Cloudflare runs
 untrusted customer code on. The CSP allows no runtime `eval` and no
 request-time WASM compilation. Sessions share only read-only,
 content-addressed caches, and loopback stays inside a session.
-[Security](/docs/internals/security/) covers the full model — isolation,
-Unix permissions, tokens — and its current gaps.
+[Security](/docs/internals/security/) covers the whole model: isolation,
+Unix permissions, tokens, and the current gaps.

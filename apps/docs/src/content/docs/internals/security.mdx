@@ -9,8 +9,8 @@ import PermissionsSeam from '../../../components/diagrams/PermissionsSeam.astro'
 ## The isolation boundary
 
 Each process runs in its own V8 isolate, spawned by Cloudflare's Worker
-Loader, the same isolation Cloudflare uses for untrusted code. There is
-no extra Nimbus sandbox underneath; the isolate is the boundary.
+Loader, the same isolation Cloudflare uses for untrusted code. Nimbus adds
+no second sandbox underneath, so the isolate is the boundary.
 
 One session is one supervisor Durable Object plus the facet isolates it
 spawns. A facet receives one capability when it starts: an RPC stub
@@ -23,7 +23,7 @@ mint stubs it wasn't given.
 workerd's content security policy forbids `eval` and `new Function` at
 request time, and forbids compiling WASM from raw bytes at request time.
 Nimbus runs everything, including compilers and interpreters, inside
-that constraint: WASM modules enter a facet pre-compiled through the
+that constraint. WASM modules enter a facet pre-compiled through the
 module map, and nothing in a session can generate and execute new
 machine code.
 
@@ -37,15 +37,15 @@ blocks. The REPL banners note it.
 
 Every inode stores `mode`, `uid`, and `gid` in the session's SQLite disk,
 so `chmod` and `chown` are real mutations that survive hibernation. Every
-process carries an immutable credential — uid, gid, groups, umask —
-assigned at spawn and inherited from its parent, and every filesystem
+process carries an immutable credential (uid, gid, groups, umask),
+assigned at spawn and inherited from its parent. Every filesystem
 operation is bound to that credential before it reaches the VFS. The VFS
 exposes no uncredentialed mutation surface, and path resolution checks
 traverse permission on every component.
 
 Denials return standard errno: `EACCES` for access, `EPERM` for ownership
 rules, in every runtime. Root (uid 0) bypasses permission bits as Unix
-root does; a normal user does not. The terminal below runs as uid 1000
+root does. The terminal below runs as uid 1000
 against a history file owned by root:
 
 <NimbusSandbox
@@ -64,27 +64,27 @@ against a history file owned by root:
 
 Loopback never leaves the session. The DNS shim resolves `localhost` and
 nothing else, and `127.0.0.1:<port>` is a lookup in the session's own
-port registry — a map inside the supervisor DO — not a network hop. Two
-sessions both listening on port 3000 are isolated; neither can reach the
+port registry, a map inside the supervisor DO, not a network hop. Two
+sessions both listening on port 3000 are isolated. Neither can reach the
 other's port.
 
 The only thing sessions share is a read-only, content-addressed cache:
 npm tarballs keyed by `name@version` (immutable on the registry since
 2018) and runtime blobs, stored in R2. Sessions reach that cache through
-narrow supervisor RPC methods — the R2 bindings live on the Worker, not
-in any session or facet — so no session can write another session's view
-of a package. There is no cross-session filesystem, no shared scratch
-space, and no DO that serves two sessions.
+narrow supervisor RPC methods, and the R2 bindings live on the Worker
+rather than in any session or facet. So no session can write another
+session's view of a package. There is no cross-session filesystem, no
+shared scratch space, and no DO that serves two sessions.
 
 ## Who can attach
 
 Session access is bearer tokens: HS256, verified with a constant-time
-comparison against a fixed algorithm — the verifier never reads the
+comparison against a fixed algorithm. The verifier never reads the
 algorithm from the token header. Claims carry a tenant, a subject,
 optional scopes (`session:create`, `session:attach`, `session:destroy`,
 `sandbox:use`, …), and an optional `sid` pin that locks the token to one
 session. Attaching to a terminal requires `session:attach` and a matching
-pin; server-minted bootstrap tokens are single-use, consumed atomically
+pin. Server-minted bootstrap tokens are single-use, consumed atomically
 in the DO, so a replayed bootstrap gets a 401. Secrets rotate with a
 previous-secret grace window.
 
@@ -97,26 +97,26 @@ fixed ten-minute session lifetime.
 
 A session serves each exposed port on a hostname of its own,
 `<port>--<id>.<suffix>`, where the suffix is the deployment's
-`NIMBUS_PREVIEW_HOST_SUFFIX` binding. The app is mounted at that host's root
-and owns the whole path space, which makes the origin the trust boundary:
-everything served there is untrusted user code.
+`NIMBUS_PREVIEW_HOST_SUFFIX` binding. The app mounts at that host's root
+and owns the whole path space, so the origin is the trust boundary.
+Everything served there is untrusted user code.
 
 The router matches the preview hostname before anything else. Embedder
 routes, `/new`, `/s/<id>/`, the agent OAuth callback, the SDK's remote API,
 and the static-asset fallthrough all run after it, so
-`https://3000--<id>.<suffix>/login` reaches the app's own `/login` and no
-Nimbus endpoint is ever same-origin with code the app served.
+`https://3000--<id>.<suffix>/login` reaches the app's own `/login`. No
+Nimbus endpoint is same-origin with code the app served.
 
-Nimbus credentials are removed before the request crosses into the app. The
-port proxy strips `Authorization`, `Proxy-Authorization`, every `X-Nimbus-*`
-header, and every cookie in the platform namespace — names starting with
-`nimbus_`, `__Host-nimbus`, or `__Secure-nimbus`. Matching the namespace
-instead of an enumerated list also covers the agent OAuth cookie in the
+Nimbus strips its own credentials before the request crosses into the app.
+The port proxy removes `Authorization`, `Proxy-Authorization`, every
+`X-Nimbus-*` header, and every cookie in the platform namespace: names
+starting with `nimbus_`, `__Host-nimbus`, or `__Secure-nimbus`. Matching
+the namespace rather than an enumerated list also covers the agent OAuth cookie in the
 session layer and an embedder's own cookies, which this layer never imports.
 Cookies the app itself set are preserved. A token arriving as
 `?nimbus_token=` is deleted from the query at the same edge, so it reaches
 neither the app nor the session's logs. The session cookie is
-`__Host-nimbus_token`, and browsers reject that prefix on any cookie carrying
+`__Host-nimbus_token`. Browsers reject that prefix on any cookie carrying
 a `Domain` attribute or a `Path` other than `/`, so preview code cannot set a
 shadowing cookie for the parent domain.
 
@@ -126,12 +126,12 @@ scoped `session:preview`, pinned to that session, good for 90 seconds, and
 carrying a `jti` the session DO consumes set-if-absent. The preview host
 trades that token once for the sid-pinned `session:attach` cookie and
 redirects to the requested path. A replayed link gets `401`. The same token
-sent as a bearer to `/s/<id>/` gets `403` — `session:preview` grants that one
-exchange and nothing else. Reusable embedder attach tokens are refused at the
-preview exchange; only the single-use mint opens it.
+sent as a bearer to `/s/<id>/` gets `403`, because `session:preview` grants
+that one exchange and nothing else. The preview exchange refuses reusable
+embedder attach tokens, and accepts only the single-use mint.
 
 The hostname carries the session id, and every request on it is checked
-against the token's `sid` pin, so a credential minted for one session is
+against the token's `sid` pin. A credential minted for one session is
 rejected on another session's preview host.
 
 A deployment with no suffix bound serves previews at `/s/<id>/port/<n>/`
@@ -162,7 +162,7 @@ OOM does not.
   shipped, so do not put a sandbox in front of secrets it should not be
   able to exfiltrate.
 - **A known upstream availability issue.** Certain user-space activity
-  can currently crash the shared workerd process, which resets the
+  can crash the shared workerd process, which resets the
   sessions running on it. The impact is availability only: sessions
   reconnect and disks survive, and it is not a path to another tenant's
   data. It is reproduced, reported, and being escalated with Cloudflare.

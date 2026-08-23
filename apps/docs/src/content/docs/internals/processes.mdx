@@ -8,12 +8,12 @@ import ProcessLifecycle from '../../../components/diagrams/ProcessLifecycle.astr
 <ProcessLifecycle caption="The table lives in the DO; the work lives in facets. State a facet holds is either reconstructible or the process is marked dead." />
 
 The process table lives in the supervisor DO, never in facets. A facet's
-module state can vanish when workerd resets its isolate. `ps` still reads the
-DO. Logs and input queues are durable and bounded, and terminals use
-hibernatable WebSockets.
+module state can vanish when workerd resets its isolate, and `ps` still
+reads the DO. Logs and input queues are durable and bounded, and terminals
+use hibernatable WebSockets.
 
-Every process also carries an immutable credential — uid, gid,
-supplementary groups, umask — assigned at spawn and inherited from its
+Every process also carries an immutable credential (uid, gid,
+supplementary groups, umask), assigned at spawn and inherited from its
 parent. The credential travels with every filesystem call the process
 makes, which is what makes [Unix permissions](/docs/internals/security/)
 enforceable at one seam.
@@ -49,18 +49,18 @@ Shell pipelines wire commands with in-memory pipe channels inside one
 isolate; `sort file | grep -v x` never crosses an RPC. A spawned child
 (`child_process`, npm bins) gets its own facet, with stdio flowing over
 supervisor RPC and its pid registered in the DO before the facet boots.
-Inside the bash runner, WASM instances are connected by real byte-buffer
-pipes with blocking reads, so `echo a | tr a b` produces `b` through an
-actual `pipe(2)`.
+Inside the bash runner, the scheduler connects WASM instances with real
+byte-buffer pipes and blocking reads, so `echo a | tr a b` produces `b`
+through a `pipe(2)`.
 
 ## fork(), setjmp, and real bash
 
-V8 isolates have no `fork(2)`, so Nimbus implements one. Asyncify — the
-instrumentation that lets WASM unwind and rewind its call stack —
-snapshots a running program: the parent's linear memory is copied, every
+V8 isolates have no `fork(2)`, so Nimbus implements one. Asyncify, the
+instrumentation that lets WASM unwind and rewind its call stack,
+snapshots a running program. The parent's linear memory is copied, every
 exported global including the stack pointer is restored into a sibling
 instance of the same module, and both sides rewind. The parent resumes
-holding the child pid; the child resumes holding 0. The same machinery
+holding the child pid, and the child resumes holding 0. The same machinery
 provides asyncify-native `setjmp`/`longjmp`, which bash requires.
 
 GNU bash 5.2.37, compiled to `wasm32-wasi` and asyncified, runs in a
@@ -68,9 +68,9 @@ dedicated facet with a scheduler that services fork, exec, `waitpid`,
 blocking pipe reads, and setjmp across multiple live WASM instances in one
 isolate. Its coreutils are BusyBox 1.37.0, one multicall binary mapped to
 every applet name, exec'd as plain WASI programs and pumped by the same
-scheduler. Copying a 16 MiB image on the reuse path costs ~0.5 ms;
+scheduler. Copying a 16 MiB image on the reuse path costs ~0.5 ms, and
 fork+exec+wait of a different image is ~1.9 ms. The default interactive
-shell is still the Nimbus interpreter;
+shell is still the Nimbus interpreter.
 `bash` is installed as a program, and folding the fork machinery into
 the default process model is [tracked on the research
 page](/docs/fine-print/research/).

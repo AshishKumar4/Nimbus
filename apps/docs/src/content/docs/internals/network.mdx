@@ -9,7 +9,7 @@ import PortRouting from '../../../components/diagrams/PortRouting.astro';
 
 Loopback `curl`, the port preview, and the default app preview all go
 through the supervisor's port registry. The registry is a map from port
-to owning pid and the facet stub that serves it; a facet's
+to owning pid and the facet stub that serves it. A facet's
 `listen(port)` is an RPC that writes this map, and ports are torn down
 with their pid. Loopback exists only inside the session: the DNS shim
 resolves `localhost` and nothing else, and a connection to
@@ -20,27 +20,28 @@ A browser reaches a port on a hostname of its own,
 `NIMBUS_PREVIEW_HOST_SUFFIX` binding. The router resolves that host to the
 same `/port/<n>/` lookup with the app mounted at the host's root, so
 root-absolute paths resolve without rewriting. Only the canonical form
-parses: a leading zero in the port, a second dot in the label, or a session
-id that is not a DNS label is not a preview host. Deployments with no suffix
+parses. A leading zero in the port, a second dot in the label, or a session
+id that is not a DNS label all fail to match. Deployments with no suffix
 bound reach the registry at `/s/<id>/port/<n>/` instead. The preview host is
 also a trust boundary ([security](/docs/internals/security/) covers what is
 stripped at it).
 
 No registry entry returns `502`: no process is listening. A registered port
 whose stub isn't attached returns `501`. That state exists during the boot
-window between registration and a serving isolate. A dead port and a booting
-port return different codes, and neither is masked by a retry.
+window between registration and a serving isolate. No retry masks either
+code.
 
 A routed request crosses the isolate boundary as a native Request over
-Workers RPC — not a structured-clone copy — so binary bodies pass
-byte-for-byte in both directions, and the request body itself streams
+Workers RPC, not a structured-clone copy. Binary bodies pass
+byte-for-byte in both directions, and the request body streams
 into the facet.
 
 Responses stream end to end. The relay pipes the facet's body through an
 identity stream and keeps the routing call open until the body finishes.
 Closing it early kills the stream, and materializing the body first
-collapses an SSE feed into one batch at stream-close. Live probes check each SSE tick in the
-session shell and through the preview path at ~300 ms intervals. In-session
+collapses an SSE feed into one batch at stream-close. Live probes check
+each SSE tick in the session shell and through the preview path at
+~300 ms intervals. In-session
 `curl` writes each chunk as it arrives, and <kbd>Ctrl</kbd>+<kbd>C</kbd>
 cancels the read. Abandoned readers also cancel their relay pipes.
 
