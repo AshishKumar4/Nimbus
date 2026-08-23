@@ -24,7 +24,7 @@ Bun binaries. `python` is Pyodide CPython 3.13.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
 builds, user headers, and `fopen` against session files. `-pthread` is
 refused, because that sysroot ships no `wasm32-wasip1-threads` libc to link
-against. Nimbus still runs pthread programs correctly. To run one, build it
+against. Nimbus runs pthread programs correctly. To run one, build it
 with a full wasi-sdk and the futex shim from
 [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md),
 then run the `.wasm` in a session.

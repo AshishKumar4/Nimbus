@@ -40,7 +40,7 @@ Responses stream end to end. The relay pipes the facet's body through an
 identity stream and keeps the routing call open until the body finishes.
 Closing it early kills the stream, and materializing the body first
 collapses an SSE feed into one batch at stream-close. SSE ticks arrive one
-by one in the session shell and through the preview path, at ~300 ms
+by one in the session shell and through the preview path at ~300 ms
 intervals. In-session
 `curl` writes each chunk as it arrives, and <kbd>Ctrl</kbd>+<kbd>C</kbd>
 cancels the read. Abandoned readers also cancel their relay pipes.

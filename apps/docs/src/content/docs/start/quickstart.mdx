@@ -20,9 +20,9 @@ account. Each route gives you the same shell, disk, and toolchains.
 	]}
 />
 
-The terminal above is a live sandbox running real `node` on workerd's V8. It
-runs a prime sieve, then a 256-color banner.
-**Launch** at [nimbus-os.dev](https://nimbus-os.dev) creates the same session.
+The terminal above is a live sandbox running real `node` on workerd's V8,
+first a prime sieve, then a 256-color banner. **Launch** at
+[nimbus-os.dev](https://nimbus-os.dev) creates the same session.
 The `/s/<id>/` URL is the session. Bookmark it and the files persist between
 visits. An idle session costs nothing. Type your own commands when the demo
 finishes. `npm install`, `git clone`, and `python` all work.
@@ -71,8 +71,8 @@ await box.ready();
 </TabItem>
 </Tabs>
 
-To run Nimbus on your own Cloudflare account, scaffold a Worker and deploy
-it:
+To run Nimbus on your own Cloudflare account, scaffold a Worker and
+deploy it:
 
 ```bash
 npx create-nimbus-app my-nimbus-worker && cd my-nimbus-worker && npm install

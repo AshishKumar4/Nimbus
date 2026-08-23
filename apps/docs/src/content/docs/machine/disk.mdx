@@ -34,6 +34,6 @@ are durability boundaries, and hibernation does not lose a committed write.
 
 Short-lived runtime paths read bounded, revision-invalidated snapshots for
 speed. Long-running processes increasingly use the live bridge. The goal for
-every path is one rule. A read sees the latest committed state, or its own
+every path is one rule. A read sees the latest committed state or its own
 unflushed write. [Inside the disk](/docs/internals/disk/) explains the
 machinery.

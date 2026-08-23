@@ -9,8 +9,8 @@ limits](/docs/fine-print/capabilities/) only when a probe proves it live.
 
 ## fork() on V8 isolates — mechanism proven live
 
-Workers has no `fork()` primitive, so Nimbus implements one. It ran on
-production Cloudflare infrastructure on 2026-07-16.
+Workers has no `fork()` primitive, so Nimbus implements one. The mechanism
+ran on production Cloudflare infrastructure on 2026-07-16.
 Asyncify unwinds the running WASM program. A sibling instance of the same
 module starts at request time. That is legal because workerd blocks only
 raw-byte compilation. The parent's linear memory is copied, every exported
