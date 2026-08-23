@@ -3,15 +3,95 @@ import { isLoopbackHost } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
-const SHORT_VALUE_OPTIONS = new Set(['X', 'H', 'd', 'o', 'w']);
+const SHORT_VALUE_OPTIONS = new Set(['X', 'H', 'd', 'o', 'w', 'D']);
 const MAX_REDIRECTS = 20;
+/** curl's exit code for local write failures (-o/-D targets). */
+const CURL_WRITE_ERROR_EXIT = 23;
+/**
+ * A dump-target failure is a local write problem, not a transport error: it
+ * must surface as exit 23 with the precise cause, never as a rejected
+ * virtual call or a generic connection-failure exit 7.
+ */
+class CurlHeaderWriteError extends Error {
+    constructor(action, target, cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        super(`${action} dump-header file '${target}': ${detail}`);
+    }
+}
+/**
+ * Transfer-scoped sink for -D/--dump-header, opened once per command before
+ * the request. '-' streams straight to stdout with no init; a VFS path is
+ * truncated into existence up front — an empty file is the truthful record
+ * of a response that never arrived — and every received header block is
+ * persisted on arrival, before any body drain. With no -D at all the sink
+ * is inert.
+ */
+class CurlHeaderSink {
+    ctx;
+    target;
+    contents = [];
+    constructor(ctx, target) {
+        this.ctx = ctx;
+        this.target = target;
+    }
+    /** True when no -D was given: every sink method is a no-op. */
+    get inert() {
+        return this.target === null;
+    }
+    /** Truncate/create the file target up front; '-' and inert sinks no-op. */
+    async open() {
+        if (!this.target || this.target === '-')
+            return;
+        try {
+            this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), '');
+        }
+        catch (error) {
+            throw new CurlHeaderWriteError('create', this.target, error);
+        }
+    }
+    /** Persist one received response's header block, in arrival order. */
+    async writeBlock(response) {
+        if (!this.target)
+            return;
+        const block = curlHeaderBlock(response);
+        try {
+            if (this.target === '-') {
+                this.ctx.stdout.write(block);
+                return;
+            }
+            this.contents.push(block);
+            this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), this.contents.join(''));
+        }
+        catch (error) {
+            throw new CurlHeaderWriteError('write', this.target, error);
+        }
+    }
+}
+function reportCurlWriteError(ctx, error) {
+    ctx.stderr.write(`curl: (${CURL_WRITE_ERROR_EXIT}) Failed ${error.message}\n`);
+    return CURL_WRITE_ERROR_EXIT;
+}
+/**
+ * Persist one arrived response block; a failing dump target cancels the
+ * undrained body before the write error surfaces, so the abandoned
+ * transfer leaks no stream on its way to exit 23.
+ */
+async function writeHeaderDump(sink, response) {
+    try {
+        await sink.writeBlock(response);
+    }
+    catch (error) {
+        cancelStreamBody(response.body);
+        throw error;
+    }
+}
 function createCurlImpl(kernel) {
     return async (ctx) => {
         const options = parseCurlArgs(ctx.args);
         let url = options.url;
         if (!url) {
             ctx.stderr.write('curl: no URL specified\n');
-            ctx.stderr.write('Usage: curl [-fsSLI#] [-X method] [-H header] [-d data] [-o file] [-w format] url\n');
+            ctx.stderr.write('Usage: curl [-fsSLI#] [-X method] [-H header] [-d data] [-o file] [-D file] [-w format] url\n');
             return 1;
         }
         // Ensure URL has protocol
@@ -25,49 +105,49 @@ function createCurlImpl(kernel) {
             ctx.stderr.write(`curl: ${error instanceof Error ? error.message : String(error)}\n`);
             return 26;
         }
-        if (kernel?.portRegistry) {
-            const virtual = await resolveVirtualCurlResponse(kernel, ctx, options, url);
-            if (virtual?.kind === 'response') {
-                return handleCurlResponse(ctx, options, virtual.response);
-            }
-            if (virtual?.kind === 'external') {
-                url = virtual.url;
-            }
-            if (virtual?.kind === 'error') {
-                return virtual.exitCode;
-            }
-        }
+        const headers = new CurlHeaderSink(ctx, options.dumpHeaders ?? null);
         try {
             const requestSignal = createRequestSignal(ctx.signal, options.maxTimeSeconds);
-            const fetchOptions = {
-                method: options.method,
-                headers: Object.keys(options.headers).length > 0 ? options.headers : undefined,
-                body: options.data,
-                redirect: options.followRedirects ? 'follow' : 'manual',
-                signal: requestSignal.signal,
-            };
             try {
-                const response = await fetch(url, fetchOptions);
-                const effectiveUrl = response.url || url;
-                // Body streams to stdout as it arrives (SSE/chunked responses flow
-                // live); an -o file needs the whole payload for a single VFS write.
-                const body = options.outputFile
-                    ? new Uint8Array(await response.arrayBuffer())
-                    : response.body ?? '';
-                return await handleCurlResponse(ctx, options, {
-                    status: response.status,
-                    statusText: response.statusText,
-                    headers: headersToRecord(response.headers),
-                    body,
-                    url: effectiveUrl,
+                await headers.open();
+                if (kernel?.portRegistry) {
+                    const virtual = await resolveVirtualCurlResponse(kernel, ctx, options, url, headers);
+                    if (virtual?.kind === 'response') {
+                        return handleCurlResponse(ctx, options, virtual.response);
+                    }
+                    if (virtual?.kind === 'external') {
+                        url = virtual.url;
+                    }
+                    if (virtual?.kind === 'error') {
+                        return virtual.exitCode;
+                    }
+                }
+                // -L with a dump target needs every hop's headers, so redirects are
+                // followed manually here; without -D the fetch-native follow keeps
+                // its proven semantics.
+                if (options.followRedirects && !headers.inert) {
+                    return await followExternalWithDump(ctx, options, url, headers, requestSignal.signal);
+                }
+                const response = await fetch(url, {
+                    method: options.method,
+                    headers: Object.keys(options.headers).length > 0 ? options.headers : undefined,
+                    body: options.data,
+                    redirect: options.followRedirects ? 'follow' : 'manual',
+                    signal: requestSignal.signal,
                 });
+                // Headers are dumped on arrival — before any arrayBuffer()/body drain.
+                await writeHeaderDump(headers, response);
+                return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, url));
             }
             finally {
                 requestSignal.cleanup();
             }
         }
-        catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
+        catch (error) {
+            if (error instanceof CurlHeaderWriteError) {
+                return reportCurlWriteError(ctx, error);
+            }
+            const msg = error instanceof Error ? error.message : String(error);
             if (msg === CURL_TIMEOUT_ERROR) {
                 ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
             }
@@ -80,6 +160,96 @@ function createCurlImpl(kernel) {
             }
             return 7;
         }
+    };
+}
+/** Request headers fetch-follow strips when a redirect crosses origins. */
+const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'cookie2'];
+/** Content headers that only make sense on a request that carries a body. */
+const CONTENT_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 'expect'];
+/**
+ * Bounded manual redirect walk for external -L with a dump target: every
+ * hop's header block is written on arrival, and the final response goes
+ * through normal handling; exceeding the cap reports curl's redirect error.
+ * Request mutation mirrors fetch-follow: 301/302 collapse only POST to a
+ * bodyless GET, 303 collapses everything but HEAD, 307/308 preserve method
+ * and body; content headers go with the body, and credential headers are
+ * stripped when a hop crosses origins.
+ */
+async function followExternalWithDump(ctx, options, startUrl, headers, signal) {
+    let current = new URL(startUrl);
+    let method = options.method;
+    let data = options.data;
+    let requestHeaders = new Headers(Object.keys(options.headers).length > 0 ? options.headers : {});
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+        const response = await fetch(current, {
+            method,
+            headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
+            body: data,
+            redirect: 'manual',
+            signal,
+        });
+        // Dump on arrival — before any drain of this hop's body.
+        await writeHeaderDump(headers, response);
+        const record = headersToRecord(response.headers);
+        if (!isRedirectStatus(response.status)) {
+            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || current.toString()));
+        }
+        const location = getHeader(record, 'location');
+        if (!location) {
+            // Redirect status without a target: nothing to follow, handle as final.
+            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || current.toString()));
+        }
+        if (redirects === MAX_REDIRECTS) {
+            cancelStreamBody(response.body);
+            break;
+        }
+        let next;
+        try {
+            next = new URL(location, current);
+        }
+        catch {
+            // Unusable Location: this hop is as final as it gets — the body must
+            // still be drainable, so it is only released once we decide to follow.
+            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, current.toString()));
+        }
+        // Follow decision made: this hop's body is no longer needed.
+        cancelStreamBody(response.body);
+        if ([301, 302].includes(response.status) && method === 'POST') {
+            method = 'GET';
+            data = undefined;
+        }
+        else if (response.status === 303 && method !== 'HEAD') {
+            method = 'GET';
+            data = undefined;
+        }
+        if (data === undefined) {
+            for (const name of CONTENT_HEADERS)
+                requestHeaders.delete(name);
+        }
+        if (next.origin !== current.origin) {
+            for (const name of CREDENTIAL_HEADERS)
+                requestHeaders.delete(name);
+        }
+        current = next;
+    }
+    ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
+    return 47;
+}
+/**
+ * Shape a native Response for response handling. Body streams to stdout as
+ * they arrive (SSE/chunked responses flow live); an -o file needs the whole
+ * payload for a single VFS write.
+ */
+async function drainCurlResponse(options, response, url) {
+    const body = options.outputFile
+        ? new Uint8Array(await response.arrayBuffer())
+        : response.body ?? '';
+    return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headersToRecord(response.headers),
+        body,
+        url,
     };
 }
 const CURL_TIMEOUT_ERROR = 'curl request timeout';
@@ -150,6 +320,11 @@ function parseLongOption(options, arg, args, index) {
         case '--output': {
             const { value, consumed } = readValue();
             options.outputFile = value;
+            return consumed;
+        }
+        case '--dump-header': {
+            const { value, consumed } = readValue();
+            options.dumpHeaders = value;
             return consumed;
         }
         case '--write-out': {
@@ -247,6 +422,9 @@ function applyShortValueOption(options, flag, value) {
         case 'w':
             options.writeOut = value;
             break;
+        case 'D':
+            options.dumpHeaders = value;
+            break;
     }
 }
 /**
@@ -293,10 +471,10 @@ function addHeader(options, header) {
         return;
     options.headers[header.slice(0, colonIdx).trim()] = header.slice(colonIdx + 1).trim();
 }
-async function resolveVirtualCurlResponse(kernel, ctx, options, startUrl) {
+async function resolveVirtualCurlResponse(kernel, ctx, options, startUrl, headers) {
     let currentUrl = startUrl;
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-        const response = await fetchVirtualCurlResponse(kernel, ctx, options, currentUrl);
+        const response = await fetchVirtualCurlResponse(kernel, ctx, options, currentUrl, headers);
         if (!response) {
             return redirects === 0 ? null : { kind: 'external', url: currentUrl };
         }
@@ -325,7 +503,7 @@ async function resolveVirtualCurlResponse(kernel, ctx, options, startUrl) {
  * Hand one curl request to the supervisor's loopback router and shape the
  * answer as curl sees it. Null when nothing is listening on `port`.
  */
-async function routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port) {
+async function routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port, headers) {
     if (!kernel.routeLoopback)
         return null;
     const hasBody = options.method !== 'GET' && options.method !== 'HEAD' && options.data !== undefined;
@@ -337,6 +515,8 @@ async function routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port
     }));
     if (!response)
         return null;
+    // Dump on arrival — before the optional arrayBuffer() drain below.
+    await writeHeaderDump(headers, response);
     return {
         status: response.status,
         statusText: response.statusText,
@@ -349,7 +529,7 @@ async function routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port
         url: response.url || url,
     };
 }
-async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
+async function fetchVirtualCurlResponse(kernel, ctx, options, url, headers) {
     let requestUrl;
     try {
         requestUrl = new URL(url);
@@ -372,7 +552,7 @@ async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
         if (!requestCarriesSessionAiToken(new Headers(options.headers), ctx.env[NIMBUS_AI_TOKEN_ENV] || '')) {
             return null;
         }
-        return routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, NIMBUS_AI_GATEWAY_PORT);
+        return routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, NIMBUS_AI_GATEWAY_PORT, headers);
     }
     const handler = kernel.portRegistry.get(port);
     if (handler) {
@@ -398,6 +578,11 @@ async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
                 return { exitCode: 7 };
             }
         }
+        await headers.writeBlock({
+            status: vRes.statusCode,
+            statusText: statusText(vRes.statusCode),
+            headers: vRes.headers,
+        });
         return {
             status: vRes.statusCode,
             statusText: statusText(vRes.statusCode),
@@ -406,7 +591,7 @@ async function fetchVirtualCurlResponse(kernel, ctx, options, url) {
             url,
         };
     }
-    const routed = await routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port);
+    const routed = await routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port, headers);
     if (routed)
         return routed;
     ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
@@ -417,7 +602,7 @@ async function handleCurlResponse(ctx, options, response) {
     if (options.headOnly) {
         cancelStreamBody(response.body);
         if (!failed) {
-            await writeCurlOutput(ctx, options, curlHeaders(response));
+            await writeCurlOutput(ctx, options, curlHeaderBlock(response));
         }
         writeCurlFailure(ctx, options, response);
         writeCurlWriteOut(ctx, options, response);
@@ -443,10 +628,20 @@ function cancelStreamBody(body) {
         body.cancel().catch(() => { });
     }
 }
+/**
+ * --fail diagnostic: curl's own wording pairs its exit code with the
+ * offending HTTP status.
+ */
 function writeCurlFailure(ctx, options, response) {
     if (options.fail && options.showError && response.status >= 400) {
-        ctx.stderr.write(`curl: (${response.status}) The requested URL returned error: ${response.status}\n`);
+        ctx.stderr.write(`curl: (22) The requested URL returned error: ${response.status}\n`);
     }
+}
+function curlExitCode(options, status) {
+    return options.fail && status >= 400 ? 22 : 0;
+}
+function isRedirectStatus(status) {
+    return status >= 300 && status < 400;
 }
 async function writeCurlOutput(ctx, options, body) {
     if (!options.outputFile) {
@@ -533,18 +728,38 @@ function headersToRecord(headers) {
     });
     return record;
 }
-function curlHeaders(response) {
-    const lines = [`HTTP/${response.status} ${response.statusText}`];
-    for (const [key, value] of Object.entries(response.headers)) {
-        lines.push(`${key}: ${value}`);
+function curlHeaderEntries(headers) {
+    if (!(headers instanceof Headers))
+        return Object.entries(headers);
+    // TS's Headers lib type predates getSetCookie; the runtime has it.
+    const getSetCookie = headers.getSetCookie;
+    const pairs = [];
+    for (const [name, value] of headers.entries()) {
+        if (typeof getSetCookie === 'function' && name.toLowerCase() === 'set-cookie')
+            continue;
+        pairs.push([name, value]);
     }
-    return lines.join('\n') + '\n';
+    if (typeof getSetCookie === 'function') {
+        for (const value of getSetCookie.call(headers))
+            pairs.push(['set-cookie', value]);
+    }
+    return pairs;
 }
-function curlExitCode(options, status) {
-    return options.fail && status >= 400 ? 22 : 0;
-}
-function isRedirectStatus(status) {
-    return status >= 300 && status < 400;
+/**
+ * The received response as an HTTP/1.1 header block: status line plus each
+ * header terminated CRLF, closed by the blank CRLF line that ends every
+ * header section. fetch exposes no negotiated wire version, so HTTP/1.1 is
+ * the explicit compatibility representation — a bare `HTTP/<code>` is not
+ * valid status-line syntax. Both -I's stdout display and -D's dump share
+ * this one serializer so the two surfaces cannot drift.
+ */
+function curlHeaderBlock(response) {
+    const reason = response.statusText;
+    const statusLine = reason
+        ? `HTTP/1.1 ${response.status} ${reason}`
+        : `HTTP/1.1 ${response.status}`;
+    const lines = [statusLine, ...curlHeaderEntries(response.headers).map(([n, v]) => `${n}: ${v}`)];
+    return lines.map((line) => `${line}\r\n`).join('') + '\r\n';
 }
 function getHeader(headers, name) {
     const wanted = name.toLowerCase();
