@@ -15,7 +15,7 @@ ok from another isolate
 ```
 
 That `curl` crossed an isolate boundary. Each process runs in its own V8
-isolate with a 128 MiB heap of its own, so the platform's memory cap is a
+isolate with a 128 MiB heap, so the platform's memory cap is a
 per-process budget. The supervisor joins processes through its port
 registry. Start a server and it automatically becomes resident, with a
 keyed isolate and a registered port.
@@ -39,6 +39,6 @@ is HTTP(S) through session routes. The platform has no raw public TCP inbound.
 
 Loopback lets one app span cooperating isolates. The opencode server and TUI
 pair is alpha. `fork()` runs inside the installable `bash` program, whose
-facet carries a fork, exec, and `waitpid` scheduler; the default process
+facet carries a fork, exec, and `waitpid` scheduler. The default process
 model does not fork yet ([the process
 fabric](/docs/internals/processes/)).
