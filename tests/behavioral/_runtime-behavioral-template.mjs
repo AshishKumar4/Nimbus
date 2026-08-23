@@ -89,6 +89,34 @@ export async function launchBrowser(opts = {}) {
   return browser;
 }
 
+// The session terminal paints through whichever xterm backend loaded this
+// boot: DOM rows when the WebGL addon fails to activate, a canvas when it
+// succeeds. A canvas leaves #terminal-container without text nodes, so
+// probes read the active buffer's viewport — the same rows a DOM renderer
+// would show — instead of DOM text. `term` is the shell's session-terminal
+// global; attached process tabs keep DOM renderers and can be read via
+// `.xterm-rows`.
+function sessionTerminalInPage(source) {
+  const buffer = term.buffer.active;
+  const first = buffer.baseY;
+  const lines = [];
+  for (let i = first; i < first + term.rows; i++) {
+    lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
+  }
+  if (!source) return lines.join('\n');
+  return new RegExp(source).test(lines.join('\n'));
+}
+
+/** Text the session terminal currently shows, whatever renderer won. */
+export function sessionTerminalText(page) {
+  return page.evaluate(sessionTerminalInPage, undefined);
+}
+
+/** Resolves once the session terminal shows text matching `pattern`. */
+export function waitForSessionTerminalText(page, pattern, timeout = 30_000) {
+  return page.waitForFunction(sessionTerminalInPage, { timeout }, pattern.source);
+}
+
 export async function applyProbeCookies(page, base = BASE) {
   if (AUTH_TOKEN) {
     await page.setExtraHTTPHeaders({ Authorization: `Bearer ${AUTH_TOKEN}` });

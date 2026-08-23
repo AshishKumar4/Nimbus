@@ -2,8 +2,8 @@
 // preview/new/vite-preview-dedupes-port-tab — Vite's canonical /preview/
 // tab should not be duplicated by its registered /port/<n>/ alias.
 
-import { makeAsserter, mintSession } from '../../_driver.mjs';
-import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
+import { applyProbeCookies, exchangeAttachCookie, launchBrowser, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -43,9 +43,7 @@ try {
   });
   a.check('session shell page returns 200', response?.status() === 200, `status=${response?.status()}`);
 
-  await page.waitForFunction(() => /user@nimbus:/.test(document.getElementById('terminal-container')?.innerText || ''), {
-    timeout: 30_000,
-  });
+  await waitForSessionTerminalText(page, /user@nimbus:/);
 
   await sendShellInput([
     'mkdir -p /home/user/vite-dedupe',
@@ -101,6 +99,10 @@ try {
   await sendShellInput('vite stop\r').catch(() => {});
   await page.close().catch(() => {});
   await browser.close().catch(() => {});
+  const cleanup = await deleteSession(sid);
+  a.check('probe session deleted',
+    cleanup.ok,
+    `status=${cleanup.status} body=${JSON.stringify(cleanup.body.slice(0, 500))}`);
 }
 
 const sum = a.summary();

@@ -3,8 +3,8 @@
 // HTTP port while Markdown preview is active, the preview pane creates a port
 // tab and focuses it.
 
-import { makeAsserter, mintSession } from '../../_driver.mjs';
-import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
+import { deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
+import { applyProbeCookies, exchangeAttachCookie, launchBrowser, sessionTerminalText, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -53,10 +53,7 @@ try {
       && md?.classList.contains('active');
   }, { timeout: 90_000 });
 
-  await page.waitForFunction(() => {
-    const text = document.getElementById('terminal-container')?.innerText || '';
-    return /user@nimbus:/.test(text);
-  }, { timeout: 30_000 });
+  await waitForSessionTerminalText(page, /user@nimbus:/);
 
   const serverJs = `
 const http = require('http');
@@ -93,8 +90,8 @@ server.listen(3000, '0.0.0.0', () => console.log('LISTENING 3000'));
     url: document.getElementById('urlBar')?.value || '',
     iframeHidden: getComputedStyle(document.getElementById('preview-frame')).display === 'none',
     iframeText: document.getElementById('preview-frame')?.contentDocument?.body?.innerText || '',
-    terminalText: document.getElementById('terminal-container')?.innerText || '',
   }));
+  state.terminalText = await sessionTerminalText(page);
   pid = Number(state.terminalText.match(/pid=(\d+)/)?.[1] || 0);
   a.check('node --watch returns long-running pid', pid > 0, state.terminalText.slice(-500));
   a.check('new port tab is focused and rendered',
@@ -112,6 +109,10 @@ server.listen(3000, '0.0.0.0', () => console.log('LISTENING 3000'));
   if (pid > 0) await sendShellInput(`kill ${pid}\r`).catch(() => {});
   await page.close().catch(() => {});
   await browser.close().catch(() => {});
+  const cleanup = await deleteSession(sid);
+  a.check('probe session deleted',
+    cleanup.ok,
+    `status=${cleanup.status} body=${JSON.stringify(cleanup.body.slice(0, 500))}`);
 }
 
 const sum = a.summary();
