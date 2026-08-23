@@ -4,8 +4,8 @@
 > cloud OS. This README is edited and maintained with Claude (AI) and
 > presented as-is.
 
-The Cloudflare-specific half of Nimbus: the machinery for running real
-programs on Durable Objects, DO facets, and the Worker Loader. Where
+This package runs real programs on Durable Objects, DO facets, and the
+Worker Loader. Where
 [`@nimbus-sh/core`](https://www.npmjs.com/package/@nimbus-sh/core) is the
 backend-agnostic OS (filesystem, shell, process contracts), this package is
 what that OS stands on when the host is Cloudflare. It imports core's shared
@@ -22,7 +22,7 @@ each mechanism, so the design record stays with the code.
 I measured everything below on deployed production workerd between June and
 August 2026. Where a specific date matters it is given.
 
-## Importing it
+## Install and compose
 
 Your Worker must set `compatibility_flags: ["nodejs_compat"]`. The timer
 dispatcher imports `AsyncLocalStorage` from `node:async_hooks`, which workerd
@@ -61,14 +61,13 @@ adoptCtxExports(ctx.exports);
 Both calls are first-write-wins.
 
 Before a release reaches the registry, consumers link it by packed tarball:
-`npm pack` here, a `file:` path there. One bun behavior matters when you do.
-Bun pins a `file:` tarball by the integrity hash in its lockfile and keeps
+`npm pack` here, a `file:` path there. Bun pins a `file:` tarball by the integrity hash in its lockfile and keeps
 serving the extraction it already has. Repacking the tarball at the same path
 changes nothing at the consumer. After a repack, bump the version you
 pack or delete the tarball's lockfile entry; a plain `bun install` is not
 enough.
 
-## One alarm, many reasons
+## Timers
 
 A Durable Object has ONE alarm, and a second `setAlarm()` silently overwrites
 the first. Every alarm-driven subsystem therefore coordinates through a single
@@ -105,14 +104,14 @@ rollback from a deploy that added reasons must not wedge the alarm. When no
 reasons remain it deletes the map and does not re-arm, which lets the object
 hibernate.
 
-## Knowing which incarnation you are
+## Generations and reset detection
 
 Workerd recycles isolates freely: cold starts, hibernation wakes, and resets
 all hand you a fresh module scope over the same storage. The isolate
 generation is a persisted counter that increments once per fresh isolate.
 Process IDs derive from it (`PID_GEN_STRIDE` = 1,000,000 in core's process
-table). That gives the reset predicate everything else builds on: **a pid at
-or below the current generation's base was allocated by a previous
+table). This yields the reset predicate the rest of the package uses. **A pid at or
+below the current generation's base was allocated by a previous
 incarnation.**
 
 ```ts
@@ -126,14 +125,13 @@ export class MySession extends DurableObject {
 }
 ```
 
-The ordering inside matters: adopt the persisted value first, and bump only
-after the `put` resolves. An unpersisted bump would be re-read by the next
+Adopt the persisted value first. Bump only after the `put` resolves. An unpersisted bump would be re-read by the next
 boot and re-issued. Two instances would then share one generation, which is
 the pid aliasing the counter exists to prevent. `await put()` returning is not
 durability. The output gate keeps a pid from generation N from escaping before
 N is on disk.
 
-## The launch journal: surviving resets
+## Fenced work
 
 The platform resets a Durable Object over what one turn has outstanding in
 storage, and the reset destroys every write that turn had in flight. A
@@ -162,7 +160,7 @@ await journal.release(pid);
 await journal.recoverInterrupted();
 ```
 
-Two details cost us incidents before they became mechanisms:
+Two details caused production incidents before they became mechanisms:
 
 - **`put` then `sync()`.** `await storage.put()` resolves before durability.
   Measured live: a launch killed in its first chunks left NO row for the
@@ -180,7 +178,7 @@ Recovery applies the generation predicate (`pid <= generationBase()`), deletes
 each stale row, and re-drives once per record (`FENCED_WORK_MAX_ATTEMPT` =
 1). One attempt is the limit, because a reset that recurs is not transient.
 
-## Pacing big work across turns
+## Turn pacing
 
 One DO turn has a CPU budget of about 30 s. We were killed with `exceededCpu`
 at 31.8 s and 32.5 s. Yielding inside an invocation buys nothing: CPU accrues
@@ -213,7 +211,7 @@ past-deadline alarm is delivered as soon as the object is free, which makes
 alarm-capable host the pump degrades to a same-context timer. That is the
 single-turn behaviour this path always had, and it is less responsive.
 
-## Running programs: the isolate pool
+## Isolate pool
 
 `IsolatePool` runs plain functions in warm dynamic-worker isolates over
 `env.LOADER`. Functions are serialized with `fn.toString()`, so they must be
@@ -272,7 +270,7 @@ names failures; it does not gate admission. The platform's cap is approximate,
 and a gate on an approximate number would refuse work the platform would have
 run.
 
-## Running processes: the resident fabric
+## Process fabric
 
 A resident process (a dev server, a socket runner, an attached TUI) is a DO
 facet whose class comes from a dynamic worker. `processes(ctx, env).spawn` is
@@ -366,12 +364,11 @@ call, and a wiped destination is never reported as success. An emptied facet
 still shows a 4,096-byte database, one page, so the probe must find the
 caller's own data rather than a non-zero size.
 
-## The image store
+## Image store
 
 `ImageStore` materializes generated boot images into a content-addressed
 store (`var/lib/nimbus/facet-images/<sha256>.js`) through a small
-`ImageBlobStore` port. The embedder owns the disk, and the store owns the
-protocol:
+`ImageBlobStore` port. The embedder owns the disk. The store owns the protocol:
 
 - **Root before the first byte.** The whole root set is registered
   synchronously before any byte lands, so the sweep can never observe a
@@ -389,12 +386,11 @@ protocol:
   a process boots from it. There is no TTL and no eviction heuristic. After a
   reset the table is empty, so every orphan goes.
 
-## Binding shims for inner workers
+## Binding shims
 
 `NimbusLoaderRPC`, `NimbusLoadedWorker`, `NimbusLoadedEntrypoint`,
 `NimbusAssetsRPC`, `NimbusDurableObjectNamespace`, and `NimbusDOStub` give a
-dynamically-loaded inner Worker working `env` bindings. They exist because of
-three platform behaviors, and each one cost a debugging session:
+dynamically-loaded inner Worker working `env` bindings. They exist because of three platform behaviors:
 
 - **`WorkerStub` does not serialize**, so each hop a caller makes
   (`load → getEntrypoint → fetch`) is its own `WorkerEntrypoint` class.
@@ -412,7 +408,7 @@ three platform behaviors, and each one cost a debugging session:
 Nesting is capped at depth 4, and `NIMBUS_INNER_LOADER_DEPTH` raises it.
 Nimbus-in-Nimbus works; five levels is a runaway.
 
-## The platform, measured
+## Measured platform limits
 
 These tables are the part of this package I most wanted to publish. They are
 enforced by the code above where code can enforce them; the rest is here so
@@ -493,7 +489,7 @@ it or you handle it yourself.
 | `exceededMemory` and `exceededCpu` are both uncatchable inside the dying isolate, observable only across an RPC boundary | absence of the error is not evidence of its absence |
 | `process.memoryUsage()` returns 0 in DO context | any heap estimate is a lower bound; say so |
 
-## Relation to the other packages
+## Related packages
 
 `@nimbus-sh/core` is the OS this machinery hosts; core never imports fabric.
 [`@nimbus-sh/platform`](https://www.npmjs.com/package/@nimbus-sh/platform) is
