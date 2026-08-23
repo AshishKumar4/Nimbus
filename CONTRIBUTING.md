@@ -44,7 +44,8 @@ Loader behavior.
 ## Behavioral probes
 
 The behavioral suite drives real Nimbus sessions through HTTP and WebSocket.
-Good probes assert observable behavior, not just status codes or static HTML.
+Good probes assert observable behavior. A status code or static HTML is not
+enough.
 
 ```bash
 BASE=https://nimbus-os.dev bun test:behavioral

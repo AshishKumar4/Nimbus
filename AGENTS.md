@@ -85,8 +85,8 @@ range RPCs (`fsReadRange`/`fsWriteRange`/`fsTruncate`), which rewrite only the
 touched 64 KiB chunks; VFS revisions are per-path subtree watermarks
 (`SqliteVFS.revision(path?)`).
 
-Every resident process — node servers, python/ruby socket servers, the opencode
-TUI and its headless server — is a DO Facet named `proc-<pid>`. **Which actor
+Every resident process (node servers, python/ruby socket servers, the opencode
+TUI and its headless server) is a DO Facet named `proc-<pid>`. **Which actor
 hosts that facet is one deployment-wide var, `NIMBUS_PROCESS_HOST`:**
 
 | Value | Where the process runs | Spawn | Memory | CPU |
@@ -94,7 +94,7 @@ hosts that facet is one deployment-wide var, `NIMBUS_PROCESS_HOST`:**
 | `facet` (default) | a child actor of the user's own session DO | ~250 ms p50 | independent | shared with siblings |
 | `peer` | a child actor of a sibling session DO | ~1,400 ms p50 | independent | independent |
 
-Both give the process its own SQLite, and both run the same code — a peer opens
+Both give the process its own SQLite, and both run the same code: a peer opens
 it by calling the same `processes(ctx, env).spawn` on its own `ctx`. Peer routing costs
 one extra DO hop, measured at +13 ms per request. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
@@ -144,13 +144,12 @@ Do not tell users to run `packages/worker/scripts/bundle-runtime.mjs` unless
 they are changing the runtime ingestion pipeline itself.
 
 Embedders off Cloudflare have no R2 binding, so the same runtimes are also
-published to npm — `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
-`@nimbus-sh/runtime-ruby` and `@nimbus-sh/runtime-clang`, which
-`NimbusWorkspace.create({ runtimes })` installs into the workspace filesystem
-at the path `nimbus install` uses. One publisher builds them all: the package
-is `bundle-runtime.mjs <name> <version> --npm-package <dir>`, which stages what
-the R2 path stages and lays the blobs out under the keys its own manifest
-names. A runtime joins the npm set by gaining an `npm` entry in its spec;
+published to npm: `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
+`@nimbus-sh/runtime-ruby` and `@nimbus-sh/runtime-clang`.
+`NimbusWorkspace.create({ runtimes })` installs them into the workspace
+filesystem at the path `nimbus install` uses. One script builds them all:
+`bundle-runtime.mjs <name> <version> --npm-package <dir>` stages what the R2
+path stages, and lays the blobs out under the keys its own manifest names. A runtime joins the npm set by gaining an `npm` entry in its spec;
 `node` and `bun` have none, because they are workerd's `nodejs_compat` rather
 than an artifact to ship.
 
@@ -284,7 +283,7 @@ with that deployment's `JWT_SECRET`.
 Two kinds exist, for two different jobs.
 
 **Staging** is the persistent one and the right answer for "does this change
-work" — `bun run staging:deploy` then `bun run staging:test`. See
+work": `bun run staging:deploy` then `bun run staging:test`. See
 § Staging And Promote.
 
 **A throwaway** is for a one-off question. No shared secret needed, and gone
@@ -318,9 +317,9 @@ and refuses to start while another suite holds it, naming the holder;
 of target keeps the `JWT_SECRET` already on it, so tokens minted earlier
 stay valid and a target can be redeployed under a suite already running
 against it. Replacing that secret takes `--rotate-secrets`, and it 401s
-every token in flight. Deploying over a target this checkout holds no
-secret for — somebody else's throwaway, or staging after losing
-`~/.local/state/nimbus` — stops before the build instead of taking it over.
+every token in flight. Deploying over a target this checkout holds no secret
+for (somebody else's throwaway, or staging after losing
+`~/.local/state/nimbus`) stops before the build instead of taking it over.
 
 Agent-specific probes:
 
@@ -352,13 +351,13 @@ Agent-specific probes:
 
 The root `predev` script regenerates worker bundles.
 
-Every deploy path — `predeploy`, `deploy:production`, the throwaway and
-staging targets — runs `scripts/dist-integrity.mjs` instead of a build. It
+Every deploy path (`predeploy`, `deploy:production`, the throwaway and
+staging targets) runs `scripts/dist-integrity.mjs` instead of a build. It
 compiles `src` → `dist`, bundles (which reads `dist`), rebuilds so the
 regenerated artifacts reach `dist`, and refuses the deploy if any of that
 changed a file. `dist` is tracked and wrangler ships `dist`, so a commit
 whose `dist` predates its `src` deploys a Worker missing changes its own
-source contains; the gate makes that a refusal rather than a silent no-op
+source contains. The gate makes that a refusal rather than a silent no-op
 deploy. It adds ~6s. When it refuses, the tree it refused has already been
 rebuilt: review the diff, commit it, deploy again.
 
@@ -385,27 +384,27 @@ and each non-production env block, enumerated from the files. The staging and
 throwaway scripts run the same check before they invoke wrangler, and
 `tests/unit/deploy-isolation.mjs` holds the line in CI.
 
-Two things about deploys that are not obvious, both learned the hard way:
-a deploy that dies during **asset upload still creates the script**, so a
-failed deploy is not "nothing to clean up"; and `wrangler deploy` can fail
-that way and **still exit 0**, so a green probe run proves nothing about
-which build it ran against. Verify by version id, never by exit status —
-`_deploy-target.mjs`'s `deployAndVerify` reads the active version back from
-the API and refuses a deploy that did not change it. Enumerate scripts with
-`GET /accounts/<id>/workers/scripts` — a 404 on the workers.dev hostname does
+Two things about deploys are not obvious, both learned the hard way. A deploy
+that dies during **asset upload still creates the script**, so a failed deploy
+is not "nothing to clean up". `wrangler deploy` can fail that way and
+**still exit 0**, so a green probe run proves nothing about which build it ran
+against. Verify by version id, never by exit status. `_deploy-target.mjs`'s
+`deployAndVerify` reads the active version back from the API and refuses a
+deploy that did not change it. Enumerate scripts with
+`GET /accounts/<id>/workers/scripts`. A 404 on the workers.dev hostname does
 not mean the script is absent.
 
 ## Staging And Promote
 
 Staging is two Workers, deployed from one `dist` by one command, because
-production is two surfaces and verifying only one of them is not verifying:
+production is two surfaces and verifying one does not verify the other:
 
 - **`nimbus-staging`** — `apps/hosted-demo`, `env.staging`. The product
   mirror: same `main`, same `dist/assets` (shell + `/docs`), same inherited
   smart placement, same cleanup cron, its own D1 and rate-limit namespace.
   Its `POST /new` is gated on an interactive Cloudflare cookie exactly as
-  production's is, so the demo's own surfaces — login, the anonymous docs
-  terminal, session cleanup — are verified here in a browser.
+  production's is, so the demo's own surfaces (login, the anonymous docs
+  terminal, session cleanup) are verified here in a browser.
 - **`nimbus-probe-staging`** — `apps/probe` under a `--name` override. The
   bearer-token embedder the behavioral suite can drive. It binds no
   account-level state of its own, so a name override is complete isolation
@@ -439,9 +438,9 @@ Rollback is `wrangler versions deploy --name nimbus <previous-version-id>`;
 
 **The hazard is the deploy target, never the hostname.** `wrangler versions
 upload -e production` and `wrangler deploy -e production` both act on the
-Worker named `nimbus` — the first appends to the live script's version list,
-the second shifts its traffic — so neither is a way to "test without
-touching prod", and visiting a preview URL afterwards does not make it one.
+Worker named `nimbus`. The first appends to the live script's version list,
+and the second shifts its traffic. Neither is a way to "test without touching
+prod", and visiting a preview URL afterwards does not make it one.
 Isolation is a distinct Worker name: `nimbus-staging`,
 `nimbus-probe-staging`, or a `nimbus-tw-*` throwaway.
 
@@ -449,7 +448,7 @@ Versioned preview URLs are not a verification path here, whatever the
 `preview_urls` key suggests. Measured 2026-08-05 on `nimbus-staging` with
 wrangler 4.98.0: neither `wrangler deploy` nor `wrangler versions upload`
 prints one, and `<version-prefix>-<worker>.<subdomain>.workers.dev` 404s for
-version ids that exist. Nor is a hostname ever the isolation: every
+version ids that exist. A hostname is never the isolation either: every
 subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
 `*` route hands them all to the production Worker (measured 2026-08-04,
 `deadbeef.nimbus-os.dev`).
@@ -469,7 +468,7 @@ subdomain of `nimbus-os.dev` resolves and answers 200, because the zone's
   editing and preserve sibling work.
 - To read a file at another ref, use `git show <ref>:<path>`, or a worktree
   already at that ref. `git checkout <ref> -- <path>` writes the index as well
-  as the working tree, so it stages a diff without saying so, and it mixes
+  as the working tree, so it stages a diff without saying so. It also mixes
   trees: another ref's tests run against this branch's source and fail for
   reasons that are not real.
 - `git status --short` prints two columns, staged then unstaged. Read both
