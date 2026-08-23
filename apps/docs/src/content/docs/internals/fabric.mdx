@@ -79,10 +79,13 @@ loads itself. A `node` server, a Python or Ruby socket server, and opencode's
 TUI and headless server all run this way.
 
 A facet gets its own memory envelope, measured at ~208 MiB each. The
-figure is the same whether the session holds 0 or 128 MiB, and eight
-facets plus the parent hold 1,664 MiB live. Containment runs both ways. A
-facet that runs out of memory takes down its own process and leaves the
-session running. A session that resets leaves the facet's memory intact.
+figure is the same whether the session holds 0 or 128 MiB, which is what
+proves the envelope is independent. Eight facets at 192 MiB plus a
+128 MiB parent were live at once, 1,664 MiB under one object.
+
+Containment runs both ways. A facet that runs out of memory takes down its
+own process and leaves the session running. A session that resets leaves the
+facet's memory intact.
 
 <ProcessFacet caption="A process facet is a child actor of the session. It gets its own memory envelope, and the SUPERVISOR binding it receives carries the session's doId, so its filesystem, terminal, and port calls land on the session." />
 
