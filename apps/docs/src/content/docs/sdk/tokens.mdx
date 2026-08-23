@@ -3,6 +3,9 @@ title: Tokens & auth
 description: Sign HS256 JWTs and attach browser sessions without putting long-lived tokens in URLs.
 ---
 
+Mint a token for a tenant, then attach a browser session without putting a
+long-lived token in a URL.
+
 ```ts
 import { issueNimbusToken } from '@nimbus-sh/sdk';
 
@@ -24,11 +27,14 @@ The seven scopes are `session:create`, `session:attach`,
 `session:bootstrap`, `session:preview`, `session:destroy`,
 `session:admin`, `sandbox:use`. Nimbus mints `session:bootstrap` and
 `session:preview` itself. Each is single-use and grants nothing beyond
-its own exchange. The default TTL is 1 hour and the maximum is 30 days.
-A larger value throws `E_TOKEN_TTL_TOO_LARGE`. For rotation, set
-`JWT_SECRET_PREVIOUS` next to the new `JWT_SECRET`. Verification accepts
-either secret, but issuing uses the primary. Drop the old one after the
-longest TTL passes.
+its own exchange.
+
+The default TTL is 1 hour and the maximum is 30 days. A larger value throws
+`E_TOKEN_TTL_TOO_LARGE`.
+
+To rotate the secret, set `JWT_SECRET_PREVIOUS` next to the new
+`JWT_SECRET`. Verification accepts either secret, and issuing uses the
+primary. Drop the old secret after the longest TTL passes.
 
 ## How a browser session gets authorized
 

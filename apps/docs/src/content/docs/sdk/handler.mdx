@@ -3,6 +3,9 @@ title: Configure the handler
 description: Set handler options, generate wrangler config, and run the CLI.
 ---
 
+`createNimbusHandler` is the Worker entry point. Its options set the auth
+mode, the remote API, your own routes, and the session hooks.
+
 ```ts
 import { createNimbusHandler } from '@nimbus-sh/sdk/worker';
 

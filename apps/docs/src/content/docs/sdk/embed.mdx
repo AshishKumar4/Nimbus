@@ -3,6 +3,9 @@ title: Embed Nimbus in a Worker
 description: Deploy Nimbus, create sandboxes in code, or add the terminal to React.
 ---
 
+Deploy Nimbus to your own Cloudflare account, then create sandboxes from your
+Worker or from a React page.
+
 ```bash
 npx create-nimbus-app my-nimbus-worker && cd my-nimbus-worker && npm install
 CLOUDFLARE_ACCOUNT_ID=<account-id> npx @nimbus-sh/cli setup cloudflare --name my-nimbus-worker
@@ -37,8 +40,8 @@ const box = Nimbus.fromEnv(env, config).sandbox('job-123', { tenant: 'acme', sub
 const result = await box.exec('python -c "print(2 + 2)"');
 ```
 
-The sandbox profile is a policy boundary. Nimbus enforces
-`runtimes.allow` and the preinstall/on-demand flags before any RPC.
+The sandbox profile is a policy boundary. Nimbus enforces `runtimes.allow`
+and the preinstall and on-demand flags before any RPC.
 `box.tools({ namespace: 'sandbox' })` is a Proteus-style tool provider.
 `@nimbus-sh/sdk/flue` adapts it to Flue's sandbox contract.
 
