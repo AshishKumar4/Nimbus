@@ -1,6 +1,6 @@
 ---
 title: Nimbus documentation
-description: Nimbus is an open-source, POSIX-like sandbox that runs on Cloudflare Durable Objects — a real shell with node, python, ruby, git, npm, and clang; no containers, no VMs.
+description: Nimbus is an open-source, POSIX-like sandbox that runs on Cloudflare Durable Objects. It gives you a real shell with node, python, ruby, git, npm, and clang. No containers, no VMs.
 tableOfContents: false
 prev: false
 next: false
@@ -10,8 +10,8 @@ import NimbusSandbox from '../../components/NimbusSandbox.astro';
 
 Nimbus is an open-source, POSIX-like sandbox that runs on Cloudflare Durable
 Objects. Each sandbox is a real shell with <code>node</code>, <code>python</code>,
-<code>ruby</code>, <code>git</code>, <code>npm</code>, and <code>clang</code> —
-no containers, no VMs. Sessions boot in ~0.7&nbsp;s median, cost nothing while
+<code>ruby</code>, <code>git</code>, <code>npm</code>, and <code>clang</code>.
+No containers, no VMs. Sessions boot in ~0.7&nbsp;s median, cost nothing while
 idle, and keep a 10&nbsp;GB persistent disk.
 
 <div class="nx-actions">
@@ -23,9 +23,9 @@ idle, and keep a 10&nbsp;GB persistent disk.
 ## Live sandbox
 
 The terminal below is a live sandbox, created on demand when it scrolls into
-view — a real session on the hosted deployment, the same thing the SDK creates.
-Anonymous sessions last 10 minutes and are capacity-limited; if none are
-available, retry in a minute.
+view. It is a real session on the hosted deployment, the same thing the SDK
+creates. Anonymous sessions last 10 minutes and are capacity-limited. If none
+are available, retry in a minute.
 
 <NimbusSandbox title="nimbus — live sandbox" rows={14} />
 
@@ -85,4 +85,4 @@ available, retry in a minute.
   </section>
 </div>
 
-<p class="nx-footnote">Nimbus is MIT-licensed and in alpha. Every capability claim is verified against a live session by behavioral probes; <a href="/docs/fine-print/capabilities/">Capabilities &amp; limits</a> states what works, what is partial, and what is not supported.</p>
+<p class="nx-footnote">Nimbus is MIT-licensed and in alpha. Every capability claim is verified against a live session by behavioral probes. <a href="/docs/fine-print/capabilities/">Capabilities &amp; limits</a> states what works, what is partial, and what is not supported.</p>
