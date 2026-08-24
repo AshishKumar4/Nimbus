@@ -2,6 +2,79 @@ import { Buffer } from './buffer.js';
 
 type ZlibCallback = (err: Error | null, result?: Buffer) => void;
 
+/**
+ * Node's async surface: the callback is required, with options optional in
+ * front of it. There is no promise return to fall back on.
+ */
+interface ZlibAsync {
+  (data: ZlibInput, callback: ZlibCallback): void;
+  (data: ZlibInput, options: object, callback: ZlibCallback): void;
+}
+
+/**
+ * Everything a zlib entry point accepts: strings encode to UTF-8;
+ * ArrayBuffers and every ArrayBufferView carry their own bytes.
+ */
+type ZlibInput = string | ArrayBufferView | ArrayBuffer;
+
+/**
+ * One funnel for every entry point. The result views the caller's exact
+ * byte region — byteOffset and byteLength preserved, element values never
+ * reinterpreted — so sniffing and the codec see identical bytes for a
+ * Uint8Array, a Uint16Array, an offset DataView, or a bare ArrayBuffer.
+ */
+function toBytes(data: ZlibInput): Uint8Array {
+  if (typeof data === 'string') return new TextEncoder().encode(data);
+  if (data instanceof Uint8Array) return data;
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return new Uint8Array(data);
+}
+
+/**
+ * Node splits decompression failures two ways, and the engine's own failure
+ * is the only thing that can tell them apart: an input that ran out is
+ * Z_BUF_ERROR / errno -5, while everything else — bad header, bad block, and
+ * a checksum or length trailer that can only fail once the member is
+ * complete — is Z_DATA_ERROR / errno -3 carrying the engine's message. Which
+ * side of a write or a close the failure lands on says nothing about that,
+ * so it is not consulted.
+ */
+function isUnexpectedEnd(cause: unknown): boolean {
+  const message = cause instanceof Error && typeof cause.message === 'string' ? cause.message : String(cause);
+  return /unexpected end|end of (?:file|input|stream)|premature|truncated|\bEOF\b/i.test(message);
+}
+
+function zDataError(cause: unknown): Error {
+  const message = cause instanceof Error && cause.message ? cause.message : String(cause);
+  return Object.assign(new Error(message), { code: 'Z_DATA_ERROR', errno: -3, cause });
+}
+
+function zBufError(cause: unknown): Error {
+  return Object.assign(new Error('unexpected end of file'), {
+    code: 'Z_BUF_ERROR',
+    errno: -5,
+    cause,
+  });
+}
+
+/**
+ * Node throws this synchronously rather than deferring a callback that does
+ * not exist.
+ */
+function invalidCallback(value: unknown): TypeError {
+  const received =
+    value === undefined ? 'undefined'
+    : value === null ? 'null'
+    : typeof value === 'object' ? `an instance of ${value.constructor?.name ?? 'Object'}`
+    : `type ${typeof value} (${String(value)})`;
+  return Object.assign(
+    new TypeError(`The "callback" argument must be of type function. Received ${received}`),
+    { code: 'ERR_INVALID_ARG_TYPE' },
+  );
+}
+
 async function processStream(
   data: Uint8Array,
   format: CompressionFormat,
@@ -13,15 +86,35 @@ async function processStream(
       : new DecompressionStream(format);
 
   const writer = stream.writable.getWriter();
-  writer.write(data as unknown as ArrayBuffer);
-  writer.close();
-
   const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
+  // Feeding and draining run together: a single write large enough to fill
+  // the codec's output queue only completes while somebody reads. Both sides
+  // are contained so neither rejection surfaces unhandled, and the first
+  // failure is the one reported.
+  const failures: unknown[] = [];
+  const record = (reason: unknown): void => {
+    if (failures.length === 0) failures.push(reason);
+  };
+  const drain = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      chunks.push(value);
+    }
+  })().catch(record);
+  const feed = (async () => {
+    await writer.write(data);
+    await writer.close();
+  })().catch(record);
+  await Promise.all([drain, feed]);
+
+  if (failures.length > 0) {
+    const reason = failures[0];
+    if (type === 'decompress') {
+      throw isUnexpectedEnd(reason) ? zBufError(reason) : zDataError(reason);
+    }
+    throw reason instanceof Error ? reason : new Error(String(reason));
   }
 
   let totalLength = 0;
@@ -46,14 +139,17 @@ function looksLikeGzip(data: Uint8Array): boolean {
 function wrapAsync(
   format: CompressionFormat | ((data: Uint8Array) => CompressionFormat),
   type: 'compress' | 'decompress',
-) {
-  return function (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback): void {
-    const callback = typeof optionsOrCb === 'function' ? (optionsOrCb as ZlibCallback) : cb!;
-    const input = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-    const raw = input instanceof Buffer ? new Uint8Array(input) : input;
-    processStream(raw, typeof format === 'function' ? format(raw) : format, type)
-      .then((result) => callback(null, result))
-      .catch((err) => callback(err instanceof Error ? err : new Error(String(err))));
+): ZlibAsync {
+  return function (data: ZlibInput, optionsOrCb: object | ZlibCallback, cb?: ZlibCallback): void {
+    const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
+    if (typeof callback !== 'function') throw invalidCallback(callback);
+    const bytes = toBytes(data);
+    // Two arms, not .then().catch(): a callback that throws on success must
+    // not be handed its own exception as a second, failed invocation.
+    processStream(bytes, typeof format === 'function' ? format(bytes) : format, type).then(
+      (result) => callback(null, result),
+      (err) => callback(err instanceof Error ? err : new Error(String(err))),
+    );
   };
 }
 
@@ -77,25 +173,25 @@ function syncUnavailable(name: string, asyncName: string): never {
   ), { code: 'ERR_ZLIB_SYNC_UNAVAILABLE' });
 }
 
-export function gzipSync(): never {
+export function gzipSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('gzipSync', 'gzip');
 }
-export function gunzipSync(): never {
+export function gunzipSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('gunzipSync', 'gunzip');
 }
-export function deflateSync(): never {
+export function deflateSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('deflateSync', 'deflate');
 }
-export function inflateSync(): never {
+export function inflateSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('inflateSync', 'inflate');
 }
-export function deflateRawSync(): never {
+export function deflateRawSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('deflateRawSync', 'deflateRaw');
 }
-export function inflateRawSync(): never {
+export function inflateRawSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('inflateRawSync', 'inflateRaw');
 }
-export function unzipSync(): never {
+export function unzipSync(buffer?: ZlibInput, options?: object): never {
   syncUnavailable('unzipSync', 'unzip');
 }
 

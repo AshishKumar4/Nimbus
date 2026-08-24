@@ -1,18 +1,90 @@
 import { Buffer } from './buffer.js';
+/**
+ * One funnel for every entry point. The result views the caller's exact
+ * byte region — byteOffset and byteLength preserved, element values never
+ * reinterpreted — so sniffing and the codec see identical bytes for a
+ * Uint8Array, a Uint16Array, an offset DataView, or a bare ArrayBuffer.
+ */
+function toBytes(data) {
+    if (typeof data === 'string')
+        return new TextEncoder().encode(data);
+    if (data instanceof Uint8Array)
+        return data;
+    if (ArrayBuffer.isView(data)) {
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    return new Uint8Array(data);
+}
+/**
+ * Node splits decompression failures two ways, and the engine's own failure
+ * is the only thing that can tell them apart: an input that ran out is
+ * Z_BUF_ERROR / errno -5, while everything else — bad header, bad block, and
+ * a checksum or length trailer that can only fail once the member is
+ * complete — is Z_DATA_ERROR / errno -3 carrying the engine's message. Which
+ * side of a write or a close the failure lands on says nothing about that,
+ * so it is not consulted.
+ */
+function isUnexpectedEnd(cause) {
+    const message = cause instanceof Error && typeof cause.message === 'string' ? cause.message : String(cause);
+    return /unexpected end|end of (?:file|input|stream)|premature|truncated|\bEOF\b/i.test(message);
+}
+function zDataError(cause) {
+    const message = cause instanceof Error && cause.message ? cause.message : String(cause);
+    return Object.assign(new Error(message), { code: 'Z_DATA_ERROR', errno: -3, cause });
+}
+function zBufError(cause) {
+    return Object.assign(new Error('unexpected end of file'), {
+        code: 'Z_BUF_ERROR',
+        errno: -5,
+        cause,
+    });
+}
+/**
+ * Node throws this synchronously rather than deferring a callback that does
+ * not exist.
+ */
+function invalidCallback(value) {
+    const received = value === undefined ? 'undefined'
+        : value === null ? 'null'
+            : typeof value === 'object' ? `an instance of ${value.constructor?.name ?? 'Object'}`
+                : `type ${typeof value} (${String(value)})`;
+    return Object.assign(new TypeError(`The "callback" argument must be of type function. Received ${received}`), { code: 'ERR_INVALID_ARG_TYPE' });
+}
 async function processStream(data, format, type) {
     const stream = type === 'compress'
         ? new CompressionStream(format)
         : new DecompressionStream(format);
     const writer = stream.writable.getWriter();
-    writer.write(data);
-    writer.close();
     const reader = stream.readable.getReader();
     const chunks = [];
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done)
-            break;
-        chunks.push(value);
+    // Feeding and draining run together: a single write large enough to fill
+    // the codec's output queue only completes while somebody reads. Both sides
+    // are contained so neither rejection surfaces unhandled, and the first
+    // failure is the one reported.
+    const failures = [];
+    const record = (reason) => {
+        if (failures.length === 0)
+            failures.push(reason);
+    };
+    const drain = (async () => {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done)
+                return;
+            chunks.push(value);
+        }
+    })().catch(record);
+    const feed = (async () => {
+        await writer.write(data);
+        await writer.close();
+    })().catch(record);
+    await Promise.all([drain, feed]);
+    if (failures.length > 0) {
+        const reason = failures[0];
+        if (type === 'decompress') {
+            throw isUnexpectedEnd(reason) ? zBufError(reason) : zDataError(reason);
+        }
+        throw reason instanceof Error ? reason : new Error(String(reason));
     }
     let totalLength = 0;
     for (const c of chunks)
@@ -35,11 +107,12 @@ function looksLikeGzip(data) {
 function wrapAsync(format, type) {
     return function (data, optionsOrCb, cb) {
         const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
-        const input = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-        const raw = input instanceof Buffer ? new Uint8Array(input) : input;
-        processStream(raw, typeof format === 'function' ? format(raw) : format, type)
-            .then((result) => callback(null, result))
-            .catch((err) => callback(err instanceof Error ? err : new Error(String(err))));
+        if (typeof callback !== 'function')
+            throw invalidCallback(callback);
+        const bytes = toBytes(data);
+        // Two arms, not .then().catch(): a callback that throws on success must
+        // not be handed its own exception as a second, failed invocation.
+        processStream(bytes, typeof format === 'function' ? format(bytes) : format, type).then((result) => callback(null, result), (err) => callback(err instanceof Error ? err : new Error(String(err))));
     };
 }
 export const gzip = wrapAsync('gzip', 'compress');
@@ -58,25 +131,25 @@ export const unzip = wrapAsync((data) => (looksLikeGzip(data) ? 'gzip' : 'deflat
 function syncUnavailable(name, asyncName) {
     throw Object.assign(new Error(`zlib.${name}: synchronous compression is not available on this runtime. Use the async zlib.${asyncName}(data, callback) form instead.`), { code: 'ERR_ZLIB_SYNC_UNAVAILABLE' });
 }
-export function gzipSync() {
+export function gzipSync(buffer, options) {
     syncUnavailable('gzipSync', 'gzip');
 }
-export function gunzipSync() {
+export function gunzipSync(buffer, options) {
     syncUnavailable('gunzipSync', 'gunzip');
 }
-export function deflateSync() {
+export function deflateSync(buffer, options) {
     syncUnavailable('deflateSync', 'deflate');
 }
-export function inflateSync() {
+export function inflateSync(buffer, options) {
     syncUnavailable('inflateSync', 'inflate');
 }
-export function deflateRawSync() {
+export function deflateRawSync(buffer, options) {
     syncUnavailable('deflateRawSync', 'deflateRaw');
 }
-export function inflateRawSync() {
+export function inflateRawSync(buffer, options) {
     syncUnavailable('inflateRawSync', 'inflateRaw');
 }
-export function unzipSync() {
+export function unzipSync(buffer, options) {
     syncUnavailable('unzipSync', 'unzip');
 }
 export const constants = {

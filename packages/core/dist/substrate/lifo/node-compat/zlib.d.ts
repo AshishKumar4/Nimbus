@@ -1,19 +1,32 @@
 import { Buffer } from './buffer.js';
 type ZlibCallback = (err: Error | null, result?: Buffer) => void;
-export declare const gzip: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare const gunzip: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare const deflate: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare const inflate: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare const deflateRaw: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare const inflateRaw: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare const unzip: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-export declare function gzipSync(): never;
-export declare function gunzipSync(): never;
-export declare function deflateSync(): never;
-export declare function inflateSync(): never;
-export declare function deflateRawSync(): never;
-export declare function inflateRawSync(): never;
-export declare function unzipSync(): never;
+/**
+ * Node's async surface: the callback is required, with options optional in
+ * front of it. There is no promise return to fall back on.
+ */
+interface ZlibAsync {
+    (data: ZlibInput, callback: ZlibCallback): void;
+    (data: ZlibInput, options: object, callback: ZlibCallback): void;
+}
+/**
+ * Everything a zlib entry point accepts: strings encode to UTF-8;
+ * ArrayBuffers and every ArrayBufferView carry their own bytes.
+ */
+type ZlibInput = string | ArrayBufferView | ArrayBuffer;
+export declare const gzip: ZlibAsync;
+export declare const gunzip: ZlibAsync;
+export declare const deflate: ZlibAsync;
+export declare const inflate: ZlibAsync;
+export declare const deflateRaw: ZlibAsync;
+export declare const inflateRaw: ZlibAsync;
+export declare const unzip: ZlibAsync;
+export declare function gzipSync(buffer?: ZlibInput, options?: object): never;
+export declare function gunzipSync(buffer?: ZlibInput, options?: object): never;
+export declare function deflateSync(buffer?: ZlibInput, options?: object): never;
+export declare function inflateSync(buffer?: ZlibInput, options?: object): never;
+export declare function deflateRawSync(buffer?: ZlibInput, options?: object): never;
+export declare function inflateRawSync(buffer?: ZlibInput, options?: object): never;
+export declare function unzipSync(buffer?: ZlibInput, options?: object): never;
 export declare const constants: {
     Z_NO_FLUSH: number;
     Z_PARTIAL_FLUSH: number;
@@ -34,13 +47,13 @@ export declare const constants: {
     Z_DEFAULT_COMPRESSION: number;
 };
 declare const _default: {
-    gzip: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-    gunzip: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-    deflate: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-    inflate: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-    deflateRaw: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-    inflateRaw: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
-    unzip: (data: Uint8Array | string, optionsOrCb: unknown, cb?: ZlibCallback) => void;
+    gzip: ZlibAsync;
+    gunzip: ZlibAsync;
+    deflate: ZlibAsync;
+    inflate: ZlibAsync;
+    deflateRaw: ZlibAsync;
+    inflateRaw: ZlibAsync;
+    unzip: ZlibAsync;
     gzipSync: typeof gzipSync;
     gunzipSync: typeof gunzipSync;
     deflateSync: typeof deflateSync;

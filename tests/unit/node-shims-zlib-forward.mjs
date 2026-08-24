@@ -304,13 +304,23 @@ function shimScope(extraParams) {
   }
 
   // Exact empty flush: an unzip that never receives data fails through the
-  // stream's error path with Node's unexpected-end decompression error —
-  // no codec is invented and no silent success is possible.
+  // stream's error path. Node classifies input that ends before a member
+  // begins as Z_BUF_ERROR / errno -5, not as corrupt data; the native module
+  // is the oracle for that shape.
+  const emptyOracle = (() => {
+    try {
+      realZlib.unzipSync(Buffer.alloc(0));
+      return assert.fail('fixture: empty input must fail natively');
+    } catch (e) {
+      return { code: e.code, errno: e.errno, message: e.message };
+    }
+  })();
   await new Promise((resolve) => {
     const emptyUnzip = zlib.createUnzip();
     emptyUnzip.on('error', (e) => {
-      assert.match(e.message, /unexpected end/i);
-      assert.equal(e.code, 'Z_DATA_ERROR');
+      assert.equal(e.message, emptyOracle.message, 'empty flush uses node\'s message');
+      assert.equal(e.code, emptyOracle.code, 'empty flush code matches native zlib');
+      assert.equal(e.errno, emptyOracle.errno, 'empty flush errno matches native zlib');
       resolve();
     });
     emptyUnzip.on('end', () => {
@@ -451,6 +461,310 @@ function shimScope(extraParams) {
     assert.equal(settledCount, 4, 'writes settle after an immediate destroy');
     assert.ok(abortCalls.count > 0, 'unpressured destroy still reaches the codec writer');
     assert.equal(gz.readableLength, heldAtDestroy, 'no byte buffers past destroy');
+  }
+  // ── sync refusals keep Node's callable shape ─────────────────────────────
+  // A script written against real zlib passes (data, options); the refusal
+  // must be reached honestly at that arity. Declared arity is observable as
+  // function.length, so a zero-arg declaration cannot hide behind JS's
+  // extra-argument tolerance.
+  for (const [name, asyncName] of [
+    ['gzipSync', 'gzip'], ['gunzipSync', 'gunzip'], ['deflateSync', 'deflate'],
+    ['inflateSync', 'inflate'], ['deflateRawSync', 'deflateRaw'],
+    ['inflateRawSync', 'inflateRaw'], ['unzipSync', 'unzip'],
+  ]) {
+    assert.equal(typeof zlib[name], 'function', `${name} exists`);
+    assert.equal(zlib[name].length, 2, `${name} declares (data, options)`);
+    assert.throws(
+      () => zlib[name](Buffer.from('x'), {}),
+      (e) => e.code === 'ERR_ZLIB_SYNC_UNAVAILABLE' && e.message.includes(asyncName),
+      `${name} refuses with Node-shaped arguments`,
+    );
+  }
+
+  // ── input normalization: ArrayBuffer and every ArrayBufferView ───────────
+  {
+    const payload = 'view-matrix-input';
+    const gz = realZlib.gzipSync(Buffer.from(payload));
+    const gunzipOnce = (input) => new Promise((resolve, reject) =>
+      zlib.gunzip(input, (err, res) => err ? reject(err) : resolve(res)));
+
+    // Bare ArrayBuffer.
+    const ab = new ArrayBuffer(gz.length);
+    new Uint8Array(ab).set(gz);
+    assert.equal((await gunzipOnce(ab)).toString(), payload, 'ArrayBuffer input');
+
+    // DataView over the same bytes. `new Uint8Array(dataView)` yields an
+    // empty view, which used to surface as unexpected-end.
+    assert.equal((await gunzipOnce(new DataView(ab))).toString(), payload, 'DataView input');
+
+    // Uint16Array carrying identical bytes: element values must never be
+    // reinterpreted (`new Uint8Array(u16)` converted them to garbage).
+    let evenGz = null;
+    let evenLabel = '';
+    for (let i = 0; i < 16 && !evenGz; i++) {
+      const candidate = realZlib.gzipSync(Buffer.from(`even-${i}`));
+      if (candidate.length % 2 === 0) { evenGz = candidate; evenLabel = `even-${i}`; }
+    }
+    assert.ok(evenGz, 'fixture: found an even-length gzip payload');
+    const u16 = new Uint16Array(evenGz.length / 2);
+    new Uint8Array(u16.buffer).set(evenGz);
+    assert.equal((await gunzipOnce(u16)).toString(), evenLabel, 'Uint16Array keeps its bytes');
+
+    // Offset views: only the viewed region may reach the codec.
+    const padded = new Uint8Array(8 + gz.length + 8);
+    padded.set(gz, 8);
+    assert.equal(
+      (await gunzipOnce(padded.subarray(8, 8 + gz.length))).toString(), payload,
+      'offset Uint8Array view',
+    );
+    assert.equal(
+      (await gunzipOnce(new DataView(padded.buffer, 8, gz.length))).toString(), payload,
+      'offset DataView view',
+    );
+    const padEven = new Uint8Array(8 + evenGz.length);
+    padEven.set(evenGz, 8);
+    const offU16 = new Uint16Array(padEven.buffer, 8, evenGz.length / 2);
+    assert.equal((await gunzipOnce(offU16)).toString(), evenLabel, 'offset Uint16Array view');
+
+    // unzip sniffs through any view: gzip magic read as bytes, not undefined.
+    const unzipOnce = (input) => new Promise((resolve, reject) =>
+      zlib.unzip(input, (err, res) => err ? reject(err) : resolve(res)));
+    assert.equal((await unzipOnce(ab)).toString(), payload, 'unzip sniffs an ArrayBuffer');
+    assert.equal((await unzipOnce(new DataView(ab))).toString(), payload, 'unzip sniffs a DataView');
+
+    // Compress side: an offset source view round-trips byte-exactly.
+    const srcBytes = new TextEncoder().encode('offset-deflate-source');
+    const srcBuf = new ArrayBuffer(srcBytes.length + 5);
+    new Uint8Array(srcBuf, 5).set(srcBytes);
+    const packedFromView = await new Promise((resolve, reject) =>
+      zlib.deflateRaw(new Uint8Array(srcBuf, 5, srcBytes.length), (e, r) => e ? reject(e) : resolve(r)));
+    assert.equal(realZlib.inflateRawSync(packedFromView).toString(), 'offset-deflate-source');
+  }
+
+  // ── decompression failures carry node's own classification ────────────────
+  // realZlib is the oracle: for every fixture the native module is asked
+  // which code/errno it reports, and the fallback must agree. Corrupt bytes
+  // are Z_DATA_ERROR / -3; input that ends early is Z_BUF_ERROR / -5.
+  {
+    const goodGz = realZlib.gzipSync(Buffer.from('classify-me'));
+    const deflated = realZlib.deflateSync(Buffer.from('classify-me'));
+    const corruptGz = Buffer.from(goodGz);
+    corruptGz[0] ^= 0xff;
+    const badZlibHeader = Buffer.from(deflated);
+    badZlibHeader[1] ^= 0xff;
+    // Trailer corruption: the member decodes completely and only its
+    // checksum or length check fails. Node calls that bad data, so a
+    // classification keyed on "failed at finish" would report it as a short
+    // stream — the engine's own failure is what decides.
+    const badGzipCrc = Buffer.from(goodGz);
+    badGzipCrc[goodGz.length - 8] ^= 0xff;
+    const badGzipLength = Buffer.from(goodGz);
+    badGzipLength[goodGz.length - 1] ^= 0xff;
+    const badZlibAdler = Buffer.from(deflated);
+    badZlibAdler[deflated.length - 1] ^= 0xff;
+
+    const oracle = (nativeFn, input, label) => {
+      try {
+        nativeFn(input);
+        return assert.fail(`fixture ${label} must fail natively`);
+      } catch (e) {
+        assert.ok(typeof e.code === 'string' && typeof e.errno === 'number',
+          `${label}: oracle reports a zlib classification`);
+        return { code: e.code, errno: e.errno };
+      }
+    };
+    const failsAs = (fn, input) => new Promise((resolve) => fn(input, (err) => resolve(err)));
+
+    const cases = [
+      ['corrupt gzip magic', (d) => realZlib.gunzipSync(d), zlib.gunzip, corruptGz],
+      ['truncated gzip', (d) => realZlib.gunzipSync(d), zlib.gunzip, goodGz.subarray(0, goodGz.length - 1)],
+      ['invalid zlib header', (d) => realZlib.inflateSync(d), zlib.inflate, badZlibHeader],
+      ['truncated deflate', (d) => realZlib.inflateSync(d), zlib.inflate, deflated.subarray(0, deflated.length - 2)],
+      ['reserved deflate block type', (d) => realZlib.inflateRawSync(d), zlib.inflateRaw, Buffer.from([0x07])],
+      ['garbage unzip input', (d) => realZlib.unzipSync(d), zlib.unzip, Buffer.from([0x07, 0x07, 0x07])],
+      ['empty gunzip input', (d) => realZlib.gunzipSync(d), zlib.gunzip, Buffer.alloc(0)],
+      ['corrupt gzip crc trailer', (d) => realZlib.gunzipSync(d), zlib.gunzip, badGzipCrc],
+      ['corrupt gzip length trailer', (d) => realZlib.gunzipSync(d), zlib.gunzip, badGzipLength],
+      ['corrupt zlib adler trailer', (d) => realZlib.inflateSync(d), zlib.inflate, badZlibAdler],
+    ];
+    for (const [label, nativeFn, fallbackFn, input] of cases) {
+      const expected = oracle(nativeFn, input, label);
+      const actual = await failsAs(fallbackFn, input);
+      assert.ok(actual instanceof Error, `${label}: failure reaches the callback`);
+      assert.equal(actual.code, expected.code, `${label}: code matches native zlib`);
+      assert.equal(actual.errno, expected.errno, `${label}: errno matches native zlib`);
+      if (expected.code === 'Z_BUF_ERROR') {
+        assert.equal(actual.message, 'unexpected end of file', `${label}: node's short-input message`);
+      } else {
+        assert.ok(actual.message.length > 0, `${label}: engine message retained`);
+        assert.ok(actual.cause != null, `${label}: engine failure kept as cause`);
+      }
+    }
+
+    // Streaming classifies on the same split: corruption seen while feeding
+    // is a data error, a stream that simply stops is a buffer error.
+    const streamError = (factory, writes) => new Promise((resolve) => {
+      const t = factory();
+      t.on('error', resolve);
+      t.on('end', () => resolve(null));
+      for (const w of writes) t.write(w);
+      t.end();
+    });
+    const corruptStream = await streamError(zlib.createGunzip, [corruptGz.subarray(0, 4), corruptGz.subarray(4)]);
+    assert.ok(corruptStream instanceof Error, 'streaming corrupt gzip errors');
+    assert.equal(corruptStream.code, 'Z_DATA_ERROR', 'streaming corrupt gzip is a data error');
+    assert.equal(corruptStream.errno, -3);
+    assert.ok(corruptStream.cause != null, 'streaming data error keeps the engine failure');
+
+    const shortGz = goodGz.subarray(0, goodGz.length - 3);
+    const shortStream = await streamError(zlib.createGunzip, [shortGz]);
+    assert.ok(shortStream instanceof Error, 'streaming short gzip errors');
+    assert.deepEqual(
+      { code: shortStream.code, errno: shortStream.errno },
+      oracle((d) => realZlib.gunzipSync(d), shortGz, 'streaming short gzip'),
+      'streaming short-input classification matches native zlib',
+    );
+    assert.equal(shortStream.message, 'unexpected end of file');
+
+    // The trailer cases again as streams, with the body accepted first and
+    // the broken trailer arriving in its own write before end(). This is the
+    // shape that a timing-based rule got wrong: every fed byte was accepted
+    // and the input was closed, yet node reports a data error.
+    for (const [label, nativeFn, factory, bytes, bodyLength] of [
+      ['gzip crc trailer', (d) => realZlib.gunzipSync(d), zlib.createGunzip, badGzipCrc, goodGz.length - 8],
+      ['gzip length trailer', (d) => realZlib.gunzipSync(d), zlib.createGunzip, badGzipLength, goodGz.length - 4],
+      ['zlib adler trailer', (d) => realZlib.inflateSync(d), zlib.createInflate, badZlibAdler, deflated.length - 4],
+    ]) {
+      const err = await streamError(factory, [bytes.subarray(0, bodyLength), bytes.subarray(bodyLength)]);
+      assert.ok(err instanceof Error, `streaming ${label}: errors`);
+      assert.deepEqual(
+        { code: err.code, errno: err.errno },
+        oracle(nativeFn, bytes, `streaming ${label}`),
+        `streaming ${label}: classification matches native zlib`,
+      );
+      assert.ok(err.cause != null, `streaming ${label}: engine failure kept as cause`);
+    }
+  }
+
+  // ── the callback is required, and it runs exactly once ────────────────────
+  {
+    const gz = realZlib.gzipSync(Buffer.from('cb-contract'));
+    for (const [name, input] of [['gzip', 'x'], ['gunzip', gz], ['unzip', gz], ['deflateRaw', 'x']]) {
+      assert.throws(
+        () => zlib[name](input),
+        (e) => e instanceof TypeError && e.code === 'ERR_INVALID_ARG_TYPE' && /"callback" argument/.test(e.message),
+        `${name} without a callback throws synchronously`,
+      );
+      assert.throws(
+        () => zlib[name](input, {}),
+        (e) => e instanceof TypeError && e.code === 'ERR_INVALID_ARG_TYPE',
+        `${name} with options but no callback throws synchronously`,
+      );
+    }
+
+    // A callback that throws must not be re-entered with its own exception:
+    // .then().catch() did exactly that, reporting a fake decompression
+    // failure after the result had already been delivered.
+    const seen = [];
+    const swallow = () => {};
+    process.on('unhandledRejection', swallow);
+    zlib.gunzip(gz, (err, res) => {
+      seen.push({ err, res });
+      throw new Error('callback exploded');
+    });
+    await new Promise((tick) => setTimeout(tick, 20));
+    process.off('unhandledRejection', swallow);
+    assert.equal(seen.length, 1, 'a throwing callback is invoked exactly once');
+    assert.equal(seen[0].err, null, 'the single invocation is the success path');
+    assert.equal(seen[0].res.toString(), 'cb-contract', 'the result was delivered before the throw');
+  }
+
+  // ── destroy wakes the pump parked in reader.read(); later writes error ────
+  {
+    // Spy scope counting release calls while delegating to the real codecs.
+    const released = { cancel: 0, abort: 0 };
+    const spyWrap = (RealCtor) => class {
+      constructor(algo) {
+        const real = new RealCtor(algo);
+        const writer = real.writable.getWriter();
+        const reader = real.readable.getReader();
+        this.writable = {
+          getWriter: () => ({
+            write: (c) => writer.write(c),
+            close: () => writer.close(),
+            abort: (reason) => { released.abort += 1; return writer.abort(reason); },
+          }),
+        };
+        this.readable = {
+          getReader: () => ({
+            read: () => reader.read(),
+            cancel: (reason) => { released.cancel += 1; return reader.cancel(reason); },
+          }),
+        };
+      }
+    };
+    const spied = shimScope([
+      { name: '__real_zlib', value: undefined },
+      { name: 'CompressionStream', value: spyWrap(CompressionStream) },
+      { name: 'DecompressionStream', value: spyWrap(DecompressionStream) },
+    ]);
+
+    // Partial compressed input can never decode: once the write settles, the
+    // pump sits blocked inside reader.read(). destroy() must wake it
+    // immediately, produce no output, and turn later writes into errors.
+    const partialDestroyCase = (factory, partial) => new Promise((resolve, reject) => {
+      const t = factory();
+      let ended = false;
+      let sawData = false;
+      let closeFired = false;
+      t.on('error', () => {});
+      t.on('end', () => { ended = true; });
+      t.on('data', () => { sawData = true; });
+      t.on('close', () => { closeFired = true; });
+      t.write(partial, () => {});
+      setTimeout(() => {
+        try {
+          t.destroy();
+          let lateErr;
+          t.write(Buffer.from('after-destroy'), (e) => { lateErr = e; });
+          setTimeout(() => {
+            try {
+              assert.ok(closeFired, 'close fires with destroy');
+              assert.equal(sawData, false, 'partial input produces no output');
+              assert.equal(ended, false, 'destroyed stream never ends');
+              assert.ok(lateErr instanceof Error, 'write after destroy reports an error');
+              assert.equal(lateErr.code, 'ERR_STREAM_DESTROYED', 'destroyed-write error code');
+              resolve();
+            } catch (e) { reject(e); }
+          }, 20);
+        } catch (e) { reject(e); }
+      }, 10);
+    });
+
+    // Cut points chosen where this engine has produced no output yet: a
+    // longer inflate prefix already decodes one byte here, which would
+    // defeat the "no output before destroy" assertion.
+    const gzHeaderOnly = realZlib.gzipSync(Buffer.from('never-decoded')).subarray(0, 8);
+    const zlPrefix = realZlib.deflateSync(Buffer.from('never-decoded-inflate')).subarray(0, 3);
+    await partialDestroyCase(spied.zlib.createGunzip, gzHeaderOnly);
+    await partialDestroyCase(spied.zlib.createInflate, zlPrefix);
+    await partialDestroyCase(spied.zlib.createUnzip, gzHeaderOnly);
+
+    // Each destroyed codec was torn down on both sides.
+    assert.ok(released.cancel >= 3, 'reader cancelled for each destroyed codec');
+    assert.ok(released.abort >= 3, 'writer aborted for each destroyed codec');
+
+    // Destroy before the first write: nothing to release, no crash, and a
+    // later write still reports the destroyed error.
+    const fresh = spied.zlib.createGunzip();
+    fresh.on('error', () => {});
+    fresh.destroy();
+    await new Promise((resolve) => {
+      fresh.write(Buffer.from('x'), (e) => {
+        assert.equal(e.code, 'ERR_STREAM_DESTROYED', 'write after pre-start destroy errors');
+        resolve();
+      });
+    });
   }
 }
 
