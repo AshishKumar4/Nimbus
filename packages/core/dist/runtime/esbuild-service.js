@@ -806,24 +806,33 @@ import esbuildWasmUrl from 'esbuild-wasm/esbuild.wasm';
  * Cached reference to the esbuild namespace. Populated on first
  * `loadEsbuild()` call; nullable until then so module-load code paths
  * that never touch bundling can complete without ever evaluating
- * `esbuild-wasm/lib/main.js`.
+ * esbuild-wasm's JS at all.
  */
 let _esbuildMod = null;
 let _esbuildLoadPromise = null;
 /**
- * Lazily load the esbuild-wasm namespace. Safe to call many times;
- * concurrent callers share a single in-flight Promise. Throws if the
- * CJS main module itself can't run (i.e. the runtime doesn't support
- * the require('fs') pattern esbuild-wasm uses) — callers should catch
- * and surface a helpful error rather than crash the Worker.
+ * Load the esbuild-wasm namespace. Safe to call many times; concurrent
+ * callers share a single in-flight Promise, and a rejection clears the
+ * cache so a later call can retry.
+ *
+ * Exported so `tests/unit/esbuild-wasm-entrypoint.mjs` can drive the real
+ * specifier under a Node-style resolver. A test that restated the specifier
+ * would grade its own copy of it, and this defect reached production
+ * precisely because nothing graded the resolution.
+ *
+ * The specifier stays a literal: a computed one would defeat the host
+ * bundler's static analysis and leave the module out of the deployed worker.
  */
-async function loadEsbuild() {
+export async function loadEsbuild() {
     if (_esbuildMod)
         return _esbuildMod;
     if (_esbuildLoadPromise)
         return _esbuildLoadPromise;
     _esbuildLoadPromise = (async () => {
-        const mod = await import('esbuild-wasm');
+        // Deliberately dynamic: a static import would evaluate esbuild-wasm in
+        // every session, including the ones that only serve a shell and never
+        // bundle. The specifier is still a literal so the host bundler sees it.
+        const mod = await import('esbuild-wasm/esm/browser.js');
         _esbuildMod = mod;
         return _esbuildMod;
     })();
@@ -831,8 +840,6 @@ async function loadEsbuild() {
         return await _esbuildLoadPromise;
     }
     catch (e) {
-        // Reset so a future call can retry (e.g., after the caller has done
-        // environment setup we didn't anticipate).
         _esbuildLoadPromise = null;
         throw e;
     }

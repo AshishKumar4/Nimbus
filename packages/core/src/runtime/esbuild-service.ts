@@ -744,55 +744,74 @@ function convertEsmImportsToRequire(src: string): { requires: string; body: stri
 
 // ── esbuild-wasm imports ────────────────────────────────────────────────
 //
-// We must NOT eagerly import('esbuild-wasm') at module evaluation.
-// esbuild-wasm's CJS `lib/main.js` runs `createRequire(import.meta.url)('fs')`
-// at module-init, which workerd rejects with:
-//     "Dynamic require of \"fs\" is not supported"
-// on dynamic-worker instances (nodejs_compat only satisfies static
-// `import 'node:fs'`, NOT runtime __require2-style CJS requires).
+// `esbuild-wasm` ships no `exports` map. Its `main` is the Node CJS build
+// `lib/main.js`, and only the LEGACY `browser` field points at a build that
+// can run here. Every resolver that ignores that legacy field resolves the
+// bare specifier to `lib/main.js`: Node, Bun, and — the case that matters in
+// production — the worker environment of a host bundler, because Vite leaves
+// `browser` out of `resolve.mainFields` for every non-client environment.
 //
-// Types are imported type-only so TypeScript sees `esbuild.Plugin` /
-// `esbuild.Loader` without emitting a runtime require. The actual
-// namespace is loaded lazily by `loadEsbuild()` below, triggered on
-// the first transform/build/initialize call. If no caller ever runs
-// esbuild (e.g. an inner Nimbus that only serves its shell), the
-// module never loads and `__require2('fs')` is never hit.
+// `lib/main.js` cannot serve this file, for two independent reasons:
+//   1. It runs `createRequire(import.meta.url)('fs')` at module init, which
+//      workerd rejects with `Dynamic require of "fs" is not supported`
+//      (`nodejs_compat` satisfies static `import 'node:fs'`, not runtime
+//      CJS requires).
+//   2. Its `initialize()` refuses the `wasmModule` option outright:
+//      `The "wasmModule" option only works in the browser`.
 //
-// The .wasm import is a compile-time asset binding (wrangler resolves
-// it to a WebAssembly.Module) — it does NOT execute esbuild-wasm's
-// main.js, so it's safe to keep at the top level.
-import type * as esbuild from 'esbuild-wasm';
+// `wasmModule` is the only initialization form available to us. There is no
+// filesystem for the Node build to read, and `wasmURL` would fetch a third
+// party mid-request, which the 100% edge contract forbids. So the entrypoint
+// is named rather than inferred: `esm/browser.js` is the one build whose
+// `initialize()` accepts a precompiled module. It is also the exact file
+// `packages/worker/scripts/bundle-esbuild-wasm.mjs` stages for facets, and
+// that script gates it against `createRequire` / `require('fs')` on every
+// install — so both consumers of esbuild-wasm load the same vetted build.
+//
+// The load stays lazy: a session that never bundles never evaluates it.
+//
+// The .wasm import is a compile-time asset binding (the host bundler resolves
+// it to a WebAssembly.Module) and executes no esbuild-wasm JS, so it is safe
+// at the top level.
+import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 import esbuildWasmUrl from 'esbuild-wasm/esbuild.wasm';
 
 /**
  * Cached reference to the esbuild namespace. Populated on first
  * `loadEsbuild()` call; nullable until then so module-load code paths
  * that never touch bundling can complete without ever evaluating
- * `esbuild-wasm/lib/main.js`.
+ * esbuild-wasm's JS at all.
  */
 let _esbuildMod: typeof esbuild | null = null;
 let _esbuildLoadPromise: Promise<typeof esbuild> | null = null;
 
 /**
- * Lazily load the esbuild-wasm namespace. Safe to call many times;
- * concurrent callers share a single in-flight Promise. Throws if the
- * CJS main module itself can't run (i.e. the runtime doesn't support
- * the require('fs') pattern esbuild-wasm uses) — callers should catch
- * and surface a helpful error rather than crash the Worker.
+ * Load the esbuild-wasm namespace. Safe to call many times; concurrent
+ * callers share a single in-flight Promise, and a rejection clears the
+ * cache so a later call can retry.
+ *
+ * Exported so `tests/unit/esbuild-wasm-entrypoint.mjs` can drive the real
+ * specifier under a Node-style resolver. A test that restated the specifier
+ * would grade its own copy of it, and this defect reached production
+ * precisely because nothing graded the resolution.
+ *
+ * The specifier stays a literal: a computed one would defeat the host
+ * bundler's static analysis and leave the module out of the deployed worker.
  */
-async function loadEsbuild(): Promise<typeof esbuild> {
+export async function loadEsbuild(): Promise<typeof esbuild> {
   if (_esbuildMod) return _esbuildMod;
   if (_esbuildLoadPromise) return _esbuildLoadPromise;
   _esbuildLoadPromise = (async () => {
-    const mod = await import('esbuild-wasm');
+    // Deliberately dynamic: a static import would evaluate esbuild-wasm in
+    // every session, including the ones that only serve a shell and never
+    // bundle. The specifier is still a literal so the host bundler sees it.
+    const mod = await import('esbuild-wasm/esm/browser.js');
     _esbuildMod = mod as unknown as typeof esbuild;
     return _esbuildMod;
   })();
   try {
     return await _esbuildLoadPromise;
   } catch (e) {
-    // Reset so a future call can retry (e.g., after the caller has done
-    // environment setup we didn't anticipate).
     _esbuildLoadPromise = null;
     throw e;
   }
