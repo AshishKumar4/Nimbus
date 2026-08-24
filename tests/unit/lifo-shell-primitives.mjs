@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
+import { PipeChannel } from '../../packages/core/src/substrate/lifo/shell/pipe.ts';
+import { TerminalStdin } from '../../packages/core/src/substrate/lifo/shell/terminal-stdin.ts';
 
 const box = await Sandbox.create({ persist: false });
 
@@ -76,6 +78,66 @@ try {
   await assertRun('virtual curl follows local redirects',
     'curl -fsSL http://127.0.0.1:8123/redirect; echo STATUS:$?',
     { stdout: 'OK_BODY\nSTATUS:0\n', stderr: '', exitCode: 0 });
+
+  await assertRun('virtual curl reports the redirected URL via %{url_effective}',
+    "curl -fsSLo /dev/null -w '%{url_effective}\\n' http://127.0.0.1:8123/redirect; echo STATUS:$?",
+    { stdout: 'http://127.0.0.1:8123/ok\nSTATUS:0\n', stderr: '', exitCode: 0 });
+
+  await assertRun('empty -D target attempts the resolved path and exits 23',
+    "curl -sS -D '' -o /dev/null http://127.0.0.1:8123/dump-target; echo STATUS:$?",
+    {
+      stdout: 'STATUS:23\n',
+      stderr: "curl: (23) Failed create dump-header file '': EISDIR: '/home/user': is a directory\n",
+      exitCode: 0,
+    });
+
+  // Input redirection opens and authorizes the target before the command
+  // runs, so even a command that never reads sees open(2) semantics.
+  await assertRun('input redirection fails a command that never reads',
+    'true < /missing/file; echo STATUS:$?',
+    { stdout: 'STATUS:1\n', stderr: 'sh: /missing/file: No such file or directory\n', exitCode: 0 });
+
+  await assertRun('input redirection refuses directories',
+    'true < /home/user; echo STATUS:$?',
+    { stdout: 'STATUS:1\n', stderr: 'sh: /home/user: Is a directory\n', exitCode: 0 });
+
+  box.kernel.vfs.writeFile('/tmp/locked.bin', 'secret');
+  box.kernel.vfs.chmod('/tmp/locked.bin', 0o000);
+  await assertRun('input redirection honors read authorization',
+    'true < /tmp/locked.bin; echo STATUS:$?',
+    { stdout: 'STATUS:1\n', stderr: 'sh: /tmp/locked.bin: Permission denied\n', exitCode: 0 });
+
+  // A bounded byte read returns what a live producer already delivered;
+  // it must not wait for maxLength bytes to fill or for the writer to close.
+  {
+    const encoder = new TextEncoder();
+    const channel = new PipeChannel();
+    let delivered = null;
+    const parked = channel.reader.readBytes(4096).then((bytes) => { delivered = bytes; return bytes; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    channel.writer.writeBytes(encoder.encode('ab'));
+    let timer;
+    const guard = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('readBytes waited for fill')), 2000);
+    });
+    await Promise.race([parked, guard]);
+    clearTimeout(timer);
+    assert.deepEqual(delivered, encoder.encode('ab'));
+    channel.writer.writeBytes(encoder.encode('cdef'));
+    assert.deepEqual(await channel.reader.readBytes(3), encoder.encode('cde'));
+    assert.deepEqual(await channel.reader.readBytes(4096), encoder.encode('f'));
+    channel.close();
+    assert.equal(await channel.reader.readBytes(4096), null);
+
+    const term = new TerminalStdin();
+    term.feed('x');
+    assert.deepEqual(await term.readBytes(4096), encoder.encode('x'));
+    term.feed('yz');
+    assert.deepEqual(await term.readBytes(1), encoder.encode('y'));
+    assert.deepEqual(await term.readBytes(4096), encoder.encode('z'));
+    term.close();
+    assert.equal(await term.readBytes(4096), null);
+  }
 } finally {
   box.destroy();
 }

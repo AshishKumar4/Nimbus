@@ -23,8 +23,9 @@ class CurlHeaderWriteError extends Error {
  * the request. '-' streams straight to stdout with no init; a VFS path is
  * truncated into existence up front — an empty file is the truthful record
  * of a response that never arrived — and every received header block is
- * persisted on arrival, before any body drain. With no -D at all the sink
- * is inert.
+ * persisted on arrival, before any body drain. With no -D flag at all the
+ * sink is inert; an empty-string target is still a target — it resolves to
+ * the cwd, the write is attempted up front, and failing it exits 23.
  */
 class CurlHeaderSink {
     ctx;
@@ -38,9 +39,9 @@ class CurlHeaderSink {
     get inert() {
         return this.target === null;
     }
-    /** Truncate/create the file target up front; '-' and inert sinks no-op. */
+    /** Truncate/create the file target up front; '-' needs no init, no -D skips. */
     async open() {
-        if (!this.target || this.target === '-')
+        if (this.target === null || this.target === '-')
             return;
         try {
             this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), '');
@@ -51,7 +52,7 @@ class CurlHeaderSink {
     }
     /** Persist one received response's header block, in arrival order. */
     async writeBlock(response) {
-        if (!this.target)
+        if (this.target === null)
             return;
         const block = curlHeaderBlock(response);
         try {
@@ -137,7 +138,7 @@ function createCurlImpl(kernel) {
                 });
                 // Headers are dumped on arrival — before any arrayBuffer()/body drain.
                 await writeHeaderDump(headers, response);
-                return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, url));
+                return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || url));
             }
             finally {
                 requestSignal.cleanup();

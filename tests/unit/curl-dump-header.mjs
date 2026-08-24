@@ -161,6 +161,26 @@ const headerDumpShape = (text, status = 200) => {
   assert.match(errText, /curl: \(23\) Failed create dump-header file '\/tmp\/h': EACCES/);
 }
 
+// ── empty -D target: still a real target — attempted up front, exit 23 ────────
+{
+  // An empty filename resolves to cwd itself; curl must attempt that write
+  // and fail the transfer with 23, never silently carry on without a dump.
+  const attempts = [];
+  const { curl, ctx, out } = makeEnv(['-sS', '-D', '', '-o', '/dev/null', URL], {
+    writeFile: (path, data) => {
+      attempts.push([path, data]);
+      throw new Error('EISDIR: illegal operation on a directory');
+    },
+  });
+  assert.equal(await curl(ctx), 23, 'an empty target is attempted, never silently ignored');
+  assert.deepEqual(attempts, [['/home/user', '']], 'the empty path resolves against cwd and opens before any request');
+  assert.match(
+    out.filter(([ch]) => ch === 'err').map(([, s]) => s).join(''),
+    /^curl: \(23\) Failed create dump-header file '': EISDIR/,
+    'the failure names the empty target and its cause',
+  );
+}
+
 // ── mid-transfer dump failure: exit 23, already-received blocks stay ──────────
 {
   const writes = [];
@@ -288,7 +308,9 @@ function withMockFetch(script) {
     });
     const step = script.shift();
     if (!step) throw new Error(`unexpected extra fetch: ${calls.at(-1).url}`);
-    return new Response(step.body ?? '', { status: step.status ?? 200, headers: step.headers ?? {} });
+    const res = new Response(step.body ?? '', { status: step.status ?? 200, headers: step.headers ?? {} });
+    if (step.url) Object.defineProperty(res, 'url', { value: step.url });
+    return res;
   };
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
@@ -417,6 +439,40 @@ const postedArgs = (extra = []) => [
     assert.match(
       out.filter(([ch]) => ch === 'err').map(([, s]) => s).join(''),
       /curl: \(47\) Maximum \(20\) redirects followed/,
+    );
+  } finally { mock.restore(); }
+}
+
+// ── native follow (no -D): %{url_effective} names the landed URL ──────────────
+{
+  // Real fetch hands back only the final response, carrying the post-redirect
+  // URL in response.url; the native path must surface it, not the typed URL.
+  const mock = withMockFetch([{ status: 200, body: 'ok', url: `${START}landed` }]);
+  try {
+    const { curl, ctx, out } = makeEnv(
+      ['-s', '-L', '-o', '/dev/null', '-w', '%{url_effective}', `${START}gone`],
+      { kernel: {} },
+    );
+    assert.equal(await curl(ctx), 0);
+    assert.equal(mock.calls[0].url, `${START}gone`);
+    assert.equal(
+      out.filter(([ch]) => ch === 'out').map(([, s]) => s).join(''),
+      `${START}landed`,
+      '%{url_effective} follows response.url past the typed URL',
+    );
+  } finally { mock.restore(); }
+}
+
+{
+  // Without response.url the effective URL falls back to what was requested.
+  const mock = withMockFetch([{ status: 200, body: 'ok' }]);
+  try {
+    const { curl, ctx, out } = makeEnv(['-s', '-o', '/dev/null', '-w', '%{url_effective}', START], { kernel: {} });
+    assert.equal(await curl(ctx), 0);
+    assert.equal(
+      out.filter(([ch]) => ch === 'out').map(([, s]) => s).join(''),
+      START,
+      'an unreported response URL falls back to the request URL',
     );
   } finally { mock.restore(); }
 }
