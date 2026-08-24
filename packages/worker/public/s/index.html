@@ -1835,6 +1835,23 @@
       }
     }
 
+    function previewNavigation(url) {
+      try {
+        const parsed = new URL(url, location.origin);
+        if (!parsed.searchParams.has('nimbus_token')) {
+          return { url, attachUrl: null, attachPending: false };
+        }
+        parsed.searchParams.delete('nimbus_token');
+        return {
+          url: parsed.href,
+          attachUrl: url,
+          attachPending: true,
+        };
+      } catch {
+        return { url, attachUrl: null, attachPending: false };
+      }
+    }
+
     function absolutePreviewUrl(url) {
       return new URL(url, location.origin).href;
     }
@@ -1919,6 +1936,39 @@
       return ensurePreviewTab(appTabFor('vite')).id;
     }
 
+    function previewFrameOwnsAttach(tab) {
+      if (!previewFrame || !tab.attachUrl) return false;
+      const src = previewFrame.getAttribute('src') || '';
+      return previewFrame.dataset.previewTabId === tab.id
+        && previewFrame.dataset.previewAttachGeneration === String(tab.attachGeneration || 0)
+        && absolutePreviewUrl(src) === absolutePreviewUrl(tab.attachUrl);
+    }
+
+    function refreshPortPreviewAttach(tab) {
+      if (!tab || tab.type !== 'port' || tab.attachRefresh) return;
+      const generation = (tab.attachGeneration || 0) + 1;
+      tab.attachGeneration = generation;
+      tab.attachPending = true;
+      tab.attachInFlight = false;
+      tab.attachUrl = null;
+      tab.attachRefresh = portPreviewUrl(tab.port).then((minted) => {
+        const current = previewTabs.get(tab.id);
+        if (!current || current.attachGeneration !== generation) return;
+        Object.assign(current, previewNavigation(minted), {
+          attachGeneration: generation,
+          attachInFlight: false,
+          attachRefresh: null,
+        });
+        if (activePreviewTabId === current.id) activatePreviewTab(current.id);
+      }).catch(() => {
+        const current = previewTabs.get(tab.id);
+        if (!current || current.attachGeneration !== generation) return;
+        current.attachPending = false;
+        current.attachInFlight = false;
+        current.attachRefresh = null;
+      });
+    }
+
     function activatePreviewTab(id) {
       const tab = previewTabs.get(id);
       if (!tab) return;
@@ -1937,8 +1987,44 @@
       if (markdownPreview) markdownPreview.classList.remove('active');
       if (previewFrame) {
         previewFrame.style.display = 'block';
-        const next = absolutePreviewUrl(tab.url);
-        if (previewFrame.src !== next) previewFrame.src = tab.url;
+        if (tab.type === 'port' && tab.attachPending) {
+          if (tab.attachInFlight) {
+            if (!previewFrameOwnsAttach(tab)) refreshPortPreviewAttach(tab);
+            setPreviewUrlBar(tab.url);
+            return;
+          }
+          if (!tab.attachUrl) {
+            refreshPortPreviewAttach(tab);
+            setPreviewUrlBar(tab.url);
+            return;
+          }
+          const generation = (tab.attachGeneration || 0) + 1;
+          const attachUrl = tab.attachUrl;
+          tab.attachGeneration = generation;
+          tab.attachInFlight = true;
+          previewFrame.dataset.previewTabId = tab.id;
+          previewFrame.dataset.previewAttachGeneration = String(generation);
+          previewFrame.addEventListener('load', () => {
+            const current = previewTabs.get(tab.id);
+            if (!current
+              || current.attachGeneration !== generation
+              || previewFrame.dataset.previewTabId !== tab.id
+              || previewFrame.dataset.previewAttachGeneration !== String(generation)
+              || absolutePreviewUrl(previewFrame.getAttribute('src') || '') !== absolutePreviewUrl(attachUrl)) {
+              return;
+            }
+            current.attachPending = false;
+            current.attachInFlight = false;
+            current.attachUrl = null;
+            current.attachRefresh = null;
+          }, { once: true });
+          previewFrame.src = attachUrl;
+        } else {
+          previewFrame.dataset.previewTabId = tab.id;
+          delete previewFrame.dataset.previewAttachGeneration;
+          const next = absolutePreviewUrl(tab.url);
+          if (previewFrame.src !== next) previewFrame.src = tab.url;
+        }
       }
       setPreviewUrlBar(tab.url);
     }
@@ -1982,7 +2068,13 @@
 
       for (const entry of visiblePorts) {
         const id = 'port:' + entry.port;
-        const existed = previewTabs.has(id);
+        let existing = previewTabs.get(id);
+        let navigation = {};
+        if (!existing) {
+          const minted = await portPreviewUrl(entry.port);
+          existing = previewTabs.get(id);
+          if (!existing) navigation = previewNavigation(minted);
+        }
         ensurePreviewTab({
           id,
           type: 'port',
@@ -1990,9 +2082,9 @@
           pid: entry.pid,
           label: ':' + entry.port,
           title: 'Port ' + entry.port,
-          url: await portPreviewUrl(entry.port),
+          ...navigation,
           running: true,
-        }, { focusNew: !existed });
+        }, { focusNew: !existing });
       }
 
       if (activeWasRemoved || !activePreviewTabId || !previewTabs.has(activePreviewTabId)) {
@@ -2081,6 +2173,10 @@
       const active = activePreviewTabId ? previewTabs.get(activePreviewTabId) : null;
       if (active?.type === 'markdown') {
         Editor.refreshMarkdownPreview().catch(() => {});
+        return;
+      }
+      if (active?.type === 'port' && active.attachPending) {
+        refreshPortPreviewAttach(active);
         return;
       }
       // Refreshing without a running backend should re-poll the

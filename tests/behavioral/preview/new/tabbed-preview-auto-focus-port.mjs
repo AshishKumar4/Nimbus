@@ -19,6 +19,12 @@ await applyProbeCookies(page);
 await exchangeAttachCookie(page, sid);
 const runtimeErrors = [];
 let pid = 0;
+const previewOrigin = `https://3000--${sid}.preview.nimbus.test`;
+const previewTokenUrl = `${previewOrigin}/?nimbus_token=one-shot-preview-token`;
+const previewCleanUrl = `${previewOrigin}/`;
+let previewApiRequests = 0;
+let previewTokenRequests = 0;
+let previewCleanRequests = 0;
 
 async function sendShellInput(data) {
   await page.waitForFunction(() => {
@@ -38,12 +44,61 @@ page.on('console', (msg) => {
   }
 });
 
+await page.setRequestInterception(true);
+page.on('request', async (request) => {
+  const url = request.url();
+  try {
+    if (url.includes(`/s/${sid}/api/preview-url?port=3000`)) {
+      previewApiRequests += 1;
+      await request.respond({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ url: previewTokenUrl }),
+      });
+      return;
+    }
+    if (url === previewTokenUrl) {
+      previewTokenRequests += 1;
+      if (previewTokenRequests === 1) {
+        await request.respond({
+          status: 302,
+          headers: {
+            Location: previewCleanUrl,
+            'Set-Cookie': '__Host-nimbus_token=fake-preview-cookie; Path=/; Secure; HttpOnly; SameSite=Lax',
+          },
+          body: '',
+        });
+      } else {
+        await request.respond({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Attach bootstrap token already used', code: 'E_BOOTSTRAP_CONSUMED' }),
+        });
+      }
+      return;
+    }
+    if (url === previewCleanUrl) {
+      previewCleanRequests += 1;
+      await request.respond({
+        status: 200,
+        contentType: 'text/html',
+        body: '<!doctype html><body>single-use-preview-clean</body>',
+      });
+      return;
+    }
+    await request.continue();
+  } catch (error) {
+    if (!request.isInterceptResolutionHandled()) await request.abort('failed');
+    runtimeErrors.push(`request interception: ${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+
 try {
   const response = await page.goto(`${process.env.BASE}/s/${sid}/`, {
     waitUntil: 'domcontentloaded',
     timeout: 90_000,
   });
-  a.check('session shell page returns 200', response?.status() === 200, `status=${response?.status()}`);
+  a.check('session shell page returns a usable document', [200, 304].includes(response?.status()), `status=${response?.status()}`);
 
   await page.waitForFunction(() => {
     const active = document.querySelector('#previewTabs .preview-tab.active');
@@ -73,15 +128,29 @@ server.listen(3000, '0.0.0.0', () => console.log('LISTENING 3000'));
     '',
   ].join('\n'));
 
-  await page.waitForFunction(() => {
+  await page.waitForFunction((cleanUrl) => {
     const active = document.querySelector('#previewTabs .preview-tab.active');
     const frame = document.getElementById('preview-frame');
     const url = document.getElementById('urlBar')?.value || '';
     return active?.textContent?.includes(':3000')
-      && /\/port\/3000\/$/.test(url)
+      && url === cleanUrl
       && frame
       && getComputedStyle(frame).display !== 'none'
-      && /nimbus-preview-tab:\//.test(frame.contentDocument?.body?.innerText || '');
+      && /single-use-preview-clean/.test(frame.contentDocument?.body?.innerText || '');
+  }, { timeout: 30_000 }, previewCleanUrl);
+
+  const cleanRequestsBeforeSwitch = previewCleanRequests;
+  await page.evaluate(() => {
+    const click = (label) => Array.from(document.querySelectorAll('#previewTabs .preview-tab'))
+      .find((tab) => tab.textContent?.includes(label))?.click();
+    click('welcome.md');
+    click(':3000');
+    click('welcome.md');
+    click(':3000');
+  });
+  await page.waitForFunction(() => {
+    const frame = document.getElementById('preview-frame');
+    return /single-use-preview-clean/.test(frame?.contentDocument?.body?.innerText || '');
   }, { timeout: 30_000 });
 
   const state = await page.evaluate(() => ({
@@ -97,10 +166,17 @@ server.listen(3000, '0.0.0.0', () => console.log('LISTENING 3000'));
   a.check('new port tab is focused and rendered',
     state.activeTab.includes(':3000')
     && state.tabs.some((tab) => tab.includes('welcome.md'))
-    && /\/port\/3000\/$/.test(state.url)
+    && state.url === previewCleanUrl
+    && !state.url.includes('nimbus_token=')
     && !state.iframeHidden
-    && /nimbus-preview-tab:\//.test(state.iframeText),
+    && /single-use-preview-clean/.test(state.iframeText),
     JSON.stringify(state));
+  a.check('single-use preview URL is consumed once and never replayed',
+    previewApiRequests >= 1
+    && previewApiRequests <= 2
+    && previewTokenRequests === 1
+    && previewCleanRequests > cleanRequestsBeforeSwitch,
+    JSON.stringify({ previewApiRequests, previewTokenRequests, previewCleanRequests }));
 
   a.check('no browser runtime errors during preview tab switch',
     runtimeErrors.length === 0,
