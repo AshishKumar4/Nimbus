@@ -9,23 +9,36 @@ class SedParseError extends Error {
     }
 }
 // GNU keeps already-written output when an empty pattern has nothing to
-// repeat yet, so the error carries the output emitted before it fired.
+// repeat yet; whatever a pass emitted before the failure has already left
+// through its sink.
 class SedRuntimeError extends Error {
-    partialOutput;
-    constructor(partialOutput = '') {
+    constructor() {
         super('no previous regular expression');
-        this.partialOutput = partialOutput;
     }
 }
-function toLogicalLines(text) {
+// Yields logical lines on demand instead of materializing an array, so a
+// multi-file pass holds only the current file's text plus one lookahead
+// line. A file boundary starts a new logical line either way (GNU manual
+// §6.1); `terminated` records whether the source ended the line itself.
+function* iterateLogicalLines(text) {
     if (text === '')
-        return [];
-    const terminated = text.endsWith('\n');
-    const parts = (terminated ? text.slice(0, -1) : text).split('\n');
-    return parts.map((part, index) => ({
-        text: part ?? '',
-        terminated: terminated || index < parts.length - 1,
-    }));
+        return;
+    const finalTerminated = text.endsWith('\n');
+    let start = 0;
+    for (let nl = text.indexOf('\n'); nl !== -1; nl = text.indexOf('\n', start)) {
+        yield { text: text.slice(start, nl), terminated: true };
+        start = nl + 1;
+    }
+    const tail = text.slice(start);
+    if (tail !== '' || !finalTerminated) {
+        yield { text: tail, terminated: finalTerminated };
+    }
+}
+function pullFrom(lines) {
+    return () => {
+        const step = lines.next();
+        return step.done ? null : step.value;
+    };
 }
 function parseSedScript(expr) {
     const cur = { expr, i: 0 };
@@ -265,6 +278,104 @@ function toJavascriptPattern(pattern) {
     }
     return result;
 }
+// One pass over a logical-line stream: per-command range state, cycle
+// numbering, and GNU footnote-8 newline handling live here. A non-in-place
+// run shares one pass across all files and hands every emitted chunk
+// straight to its sink; an in-place run buffers a single file's chunks so
+// its rewrite stays all-or-nothing. The previous-regex record is passed in
+// so it spans passes.
+class SedPass {
+    quiet;
+    out;
+    entries;
+    evalCtx;
+    pendingNewline = false;
+    constructor(commands, quiet, out, lastRegex) {
+        this.quiet = quiet;
+        this.out = out;
+        this.entries = commands.map((command) => ({ command, range: { open: false } }));
+        this.evalCtx = { line: '', lineNumber: 0, isLast: false, lastRegex };
+    }
+    // Runs one cycle per line with a single lookahead, so `$` still selects
+    // the true last line while later input is not read yet.
+    runAll(next) {
+        let current = next();
+        let lookahead = next();
+        let lineNumber = 0;
+        while (current !== null) {
+            this.runCycle(current.text, current.terminated, ++lineNumber, lookahead === null);
+            current = lookahead;
+            lookahead = next();
+        }
+    }
+    runCycle(text, terminated, lineNumber, isLast) {
+        const ctx = this.evalCtx;
+        ctx.lineNumber = lineNumber;
+        ctx.isLast = isLast;
+        let line = text;
+        let deleted = false;
+        for (const entry of this.entries) {
+            // Later addresses see the pattern space as earlier commands left it.
+            ctx.line = line;
+            if (!selects(entry.command, entry.range, ctx))
+                continue;
+            const command = entry.command;
+            if (command.type === 'p') {
+                this.emit(line, terminated);
+            }
+            else if (command.type === 'd') {
+                deleted = true;
+                break;
+            }
+            else if (command.type === 's' && command.replacement !== undefined) {
+                let regex = command.pattern;
+                if (command.emptyPattern) {
+                    if (!ctx.lastRegex.source)
+                        throw new SedRuntimeError();
+                    // Match flags come from the repeated expression; only action
+                    // flags such as g come from this substitution.
+                    let flags = ctx.lastRegex.flags ?? '';
+                    if (command.global && !flags.includes('g'))
+                        flags += 'g';
+                    regex = new RegExp(ctx.lastRegex.source, flags);
+                }
+                if (!regex)
+                    continue;
+                let changed = false;
+                regex.lastIndex = 0;
+                line = line.replace(regex, (...match) => {
+                    changed = true;
+                    return expandReplacement(command.replacement ?? '', match.slice(1, -2), String(match[0]));
+                });
+                if (!command.emptyPattern) {
+                    ctx.lastRegex.source = regex.source;
+                    // Only match modifiers repeat with an empty pattern; g is an
+                    // action flag of the substitution that used the expression.
+                    ctx.lastRegex.flags = command.insensitive ? 'i' : '';
+                }
+                if (changed && command.print)
+                    this.emit(line, terminated);
+            }
+        }
+        if (!deleted && !this.quiet)
+            this.emit(line, terminated);
+    }
+    emit(text, terminated) {
+        if (!terminated) {
+            // Footnote 8: the missing newline waits until more output follows.
+            if (this.pendingNewline)
+                this.out('\n');
+            this.out(text);
+            this.pendingNewline = true;
+            return;
+        }
+        if (this.pendingNewline) {
+            this.out('\n');
+            this.pendingNewline = false;
+        }
+        this.out(`${text}\n`);
+    }
+}
 export async function runSed(ctx) {
     const options = parseSedArgs(ctx.args);
     if (options.expressions.length === 0) {
@@ -272,7 +383,8 @@ export async function runSed(ctx) {
         return 1;
     }
     // Execution state: the last regular expression any address or substitution
-    // actually evaluated, shared by `//` and empty s patterns across -e chunks.
+    // actually evaluated, shared by `//` and empty s patterns across -e chunks
+    // and files.
     const lastRegex = {};
     const commands = [];
     for (const expr of options.expressions) {
@@ -287,98 +399,12 @@ export async function runSed(ctx) {
             throw e;
         }
     }
-    // Each input line carries whether its source ended it with a newline; a
-    // file boundary starts the next logical line either way (GNU manual §6.1).
-    function processText(input) {
-        if (input.length === 0)
-            return '';
-        const lastLine = input.length - 1;
-        const work = commands.map((command) => ({ command, range: { open: false } }));
-        const output = [];
-        let pendingNewline = false;
-        const emit = (text, index) => {
-            const source = input[index];
-            if (source !== undefined && !source.terminated) {
-                // Footnote 8: the missing newline waits until more output follows.
-                if (pendingNewline)
-                    output.push('\n');
-                output.push(text);
-                pendingNewline = true;
-                return;
-            }
-            if (pendingNewline) {
-                output.push('\n');
-                pendingNewline = false;
-            }
-            output.push(`${text}\n`);
-        };
-        const evalCtx = { line: '', lineNumber: 0, isLast: false, lastRegex };
-        try {
-            for (let li = 0; li < input.length; li++) {
-                let line = input[li]?.text ?? '';
-                evalCtx.lineNumber = li + 1;
-                evalCtx.isLast = li === lastLine;
-                let deleted = false;
-                for (const entry of work) {
-                    // Later addresses see the pattern space as earlier commands left it.
-                    evalCtx.line = line;
-                    if (!selects(entry.command, entry.range, evalCtx))
-                        continue;
-                    const command = entry.command;
-                    if (command.type === 'p') {
-                        emit(line, li);
-                    }
-                    else if (command.type === 'd') {
-                        deleted = true;
-                        break;
-                    }
-                    else if (command.type === 's' && command.replacement !== undefined) {
-                        let regex = command.pattern;
-                        if (command.emptyPattern) {
-                            if (!lastRegex.source)
-                                throw new SedRuntimeError();
-                            // Match flags come from the repeated expression; only action
-                            // flags such as g come from this substitution.
-                            let flags = lastRegex.flags ?? '';
-                            if (command.global && !flags.includes('g'))
-                                flags += 'g';
-                            regex = new RegExp(lastRegex.source, flags);
-                        }
-                        if (!regex)
-                            continue;
-                        let changed = false;
-                        regex.lastIndex = 0;
-                        line = line.replace(regex, (...match) => {
-                            changed = true;
-                            return expandReplacement(command.replacement ?? '', match.slice(1, -2), String(match[0]));
-                        });
-                        if (!command.emptyPattern) {
-                            lastRegex.source = regex.source;
-                            // Only match modifiers repeat with an empty pattern; g is an
-                            // action flag of the substitution that used the expression.
-                            lastRegex.flags = command.insensitive ? 'i' : '';
-                        }
-                        if (changed && command.print)
-                            emit(line, li);
-                    }
-                }
-                if (!deleted && !options.quiet)
-                    emit(line, li);
-            }
-        }
-        catch (e) {
-            // Output already emitted stays written; only the failing cycle is lost.
-            if (e instanceof SedRuntimeError)
-                throw new SedRuntimeError(output.join(''));
-            throw e;
-        }
-        return output.join('');
-    }
+    const streamOut = (chunk) => ctx.stdout.write(chunk);
     try {
         if (options.files.length === 0) {
             if (ctx.stdin) {
-                const text = await ctx.stdin.readAll();
-                ctx.stdout.write(processText(toLogicalLines(text)));
+                const lines = iterateLogicalLines(await ctx.stdin.readAll());
+                new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(pullFrom(lines));
             }
             else {
                 ctx.stderr.write('sed: missing file operand\n');
@@ -386,45 +412,81 @@ export async function runSed(ctx) {
             }
             return 0;
         }
+        if (options.inPlace) {
+            let exitCode = 0;
+            for (const file of options.files) {
+                const path = resolve(ctx.cwd, file);
+                try {
+                    ctx.vfs.stat(path);
+                    if (isBinaryMime(getMimeType(path))) {
+                        ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
+                        continue;
+                    }
+                    const content = ctx.vfs.readFileString(path);
+                    // One buffered pass per file: nothing touches the file until its
+                    // whole result exists, keeping the rewrite all-or-nothing.
+                    const chunks = [];
+                    new SedPass(commands, options.quiet, (chunk) => chunks.push(chunk), lastRegex)
+                        .runAll(pullFrom(iterateLogicalLines(content)));
+                    ctx.vfs.writeFile(path, chunks.join(''));
+                }
+                catch (e) {
+                    if (e instanceof VFSError) {
+                        ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
+                        exitCode = 1;
+                    }
+                    else {
+                        throw e;
+                    }
+                }
+            }
+            return exitCode;
+        }
+        // All readable files feed one shared pass, so global line numbers, range
+        // state, `$` and the previous-regex record span files. Each file opens
+        // only after the previous one is fully consumed — at most one file's text
+        // is ever held — and output leaves as each line is decided.
         let exitCode = 0;
-        const stream = [];
-        for (const file of options.files) {
-            const path = resolve(ctx.cwd, file);
-            try {
-                ctx.vfs.stat(path);
-                if (isBinaryMime(getMimeType(path))) {
-                    ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
-                    continue;
+        let index = 0;
+        let lines = null;
+        const nextLine = () => {
+            for (;;) {
+                if (lines !== null) {
+                    const step = lines.next();
+                    if (!step.done)
+                        return step.value;
+                    lines = null; // release this file before any later file is read
                 }
-                const content = ctx.vfs.readFileString(path);
-                if (options.inPlace) {
-                    ctx.vfs.writeFile(path, processText(toLogicalLines(content)));
+                if (index >= options.files.length)
+                    return null;
+                const file = options.files[index++];
+                const path = resolve(ctx.cwd, file);
+                try {
+                    ctx.vfs.stat(path);
+                    if (isBinaryMime(getMimeType(path))) {
+                        ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
+                        continue;
+                    }
+                    lines = iterateLogicalLines(ctx.vfs.readFileString(path));
                 }
-                else {
-                    stream.push(content);
+                catch (e) {
+                    if (e instanceof VFSError) {
+                        ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
+                        exitCode = 1;
+                    }
+                    else {
+                        throw e;
+                    }
                 }
             }
-            catch (e) {
-                if (e instanceof VFSError) {
-                    ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
-                    exitCode = 1;
-                }
-                else {
-                    throw e;
-                }
-            }
-        }
-        if (!options.inPlace) {
-            const lines = stream.flatMap((text) => toLogicalLines(text));
-            ctx.stdout.write(processText(lines));
-        }
+        };
+        new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(nextLine);
         return exitCode;
     }
     catch (e) {
         if (e instanceof SedRuntimeError) {
-            // In-place runs write files, not stdout: partial output stays unwritten.
-            if (!options.inPlace)
-                ctx.stdout.write(e.partialOutput);
+            // Output emitted before the failing cycle already reached stdout; an
+            // in-place run wrote no file for the aborted pass.
             ctx.stderr.write(`sed: ${e.message}\n`);
             return 1;
         }

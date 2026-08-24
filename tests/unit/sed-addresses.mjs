@@ -198,6 +198,105 @@ await expectOut('an unterminated last file keeps no final newline',
 await expectOut('line numbers continue past an unterminated file',
   `sed -n '2p' /tmp/glue1.txt /tmp/glue2.txt`, 'b\n');
 
+// ── several files feed one streaming pass ──────────────────────────────────
+await sh('printf "1\\n2\\n3\\n4\\n" > /tmp/s1.txt');
+await sh('printf "5\\n6\\n7\\n" > /tmp/s2.txt');
+await sh('printf "" > /tmp/sempty.txt');
+await sh('printf "not text" > /tmp/skip.png');
+
+await expectOut('$ lands on the last readable file',
+  `sed -n '$p' /tmp/s1.txt /tmp/s2.txt`, '7\n');
+await expectOut('an empty file in the list shifts no numbering',
+  `sed -n '$p' /tmp/s2.txt /tmp/sempty.txt`, '7\n');
+await expectOut('a skipped binary file shifts no numbering',
+  `sed -n '$p' /tmp/s2.txt /tmp/skip.png`, '7\n');
+await expectOut('a numeric range runs across the boundary',
+  `sed -n '3,5p' /tmp/s1.txt /tmp/s2.txt`, '3\n4\n5\n');
+await expectOut('a range open at a boundary continues into the next file',
+  `sed -n '/2/,/6/p' /tmp/s1.txt /tmp/s2.txt`, '2\n3\n4\n5\n6\n');
+await expectOut('$d deletes the last line of the last readable file',
+  `sed '$d' /tmp/s1.txt /tmp/s2.txt`, '1\n2\n3\n4\n5\n6\n');
+await expectOut('a range ending at $ spans every readable file',
+  `sed -n '6,$p' /tmp/s1.txt /tmp/s2.txt`, '6\n7\n');
+await expectOut('an unterminated boundary keeps GNU newline rules inside a range',
+  `sed -n '2,3p' /tmp/glue1.txt /tmp/glue3.txt`, 'x\ny');
+
+{
+  const r = await sh(`sed -n 'p' /tmp/gone.txt /tmp/s1.txt`);
+  check('a missing first file fails with exit 1 before any output, as before',
+    r.exitCode === 1 && r.stdout === '' && r.stderr === 'ENOENT: tmp/gone.txt\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+{
+  await sh('printf "1\\n2\\n" > /tmp/half1.txt');
+  await sh('printf "3\\n4\\n5\\n" > /tmp/half2.txt');
+  const r = await sh(`sed -n '2,//p' /tmp/half1.txt /tmp/half2.txt`);
+  check('a runtime error opening the next file keeps earlier streamed output',
+    r.exitCode === 1 && r.stdout === '2\n'
+      && r.stderr === 'sed: no previous regular expression\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+{
+  await sh('printf "1\\n2\\n" > /tmp/ipA.txt');
+  await sh('printf "3\\n4\\n5\\n" > /tmp/ipB.txt');
+  const r = await sh(`sed -i -n '2,//p' /tmp/ipA.txt /tmp/ipB.txt`);
+  check('-i rewrites files before the failure and leaves the failing one untouched',
+    r.exitCode === 1 && r.stdout === ''
+      && r.stderr === 'sed: no previous regular expression\n'
+      && (await sh('cat /tmp/ipA.txt')).stdout === '2\n'
+      && (await sh('cat /tmp/ipB.txt')).stdout === '3\n4\n5\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+// ── files are read lazily, one at a time ───────────────────────────────────
+{
+  await sh('printf "r1\\nr2\\nr3\\nr4\\n" > /tmp/f1.txt');
+  await sh('printf "r5\\nr6\\n" > /tmp/f2.txt');
+  await sh('printf "r7\\n" > /tmp/f3.txt');
+  const events = [];
+  const protoReadFileString = SqliteVFS.prototype.readFileString;
+  rawVfs.readFileString = function (path, cred) {
+    events.push(`read ${path}`);
+    return protoReadFileString.call(this, path, cred);
+  };
+  try {
+    await box.shell.execute("sed -n 'p' /tmp/f1.txt /tmp/f2.txt /tmp/f3.txt", {
+      onStdout: (data) => { events.push(`out ${JSON.stringify(data)}`); },
+    });
+  } finally {
+    delete rawVfs.readFileString;
+  }
+  // Each later file opens only once the previous file's lines up to the
+  // last-but-one are emitted, so no two file contents are ever held at once.
+  const expected = [
+    'read /tmp/f1.txt',
+    'out "r1\\n"', 'out "r2\\n"', 'out "r3\\n"',
+    'read /tmp/f2.txt',
+    'out "r4\\n"', 'out "r5\\n"',
+    'read /tmp/f3.txt',
+    'out "r6\\n"', 'out "r7\\n"',
+  ];
+  check('each file opens only after the previous one is fully emitted',
+    JSON.stringify(events) === JSON.stringify(expected),
+    `events=${JSON.stringify(events)}`);
+}
+
+// ── large multi-file inputs stay byte-exact ────────────────────────────────
+{
+  const linesOf = (tag, count) =>
+    Array.from({ length: count }, (_, i) => `${tag}${i + 1}`).join('\n') + '\n';
+  const big1 = linesOf('A', 5000);
+  const big2 = linesOf('B', 3000);
+  root.writeFile('/tmp/big1.txt', big1);
+  root.writeFile('/tmp/big2.txt', big2);
+  await expectOut('a copy over two large files is byte-exact',
+    `sed '' /tmp/big1.txt /tmp/big2.txt`, big1 + big2);
+  await expectOut('line numbers continue across a large boundary',
+    `sed -n '4999,5001p' /tmp/big1.txt /tmp/big2.txt`, 'A4999\nA5000\nB1\n');
+  await expectOut('$ reaches the last line of a large second file',
+    `sed -n '$p' /tmp/big1.txt /tmp/big2.txt`, 'B3000\n');
+}
+
 await sh('printf "1\\n2\\n3\\n" > /tmp/edit.txt');
 {
   const r = await sh(`sed -i '2d' /tmp/edit.txt`);
