@@ -40,6 +40,7 @@ import { exitCodeForAbortSignal } from './signals.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
+import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 
 /**
  * Bytes a file-backed descriptor holds before committing. Matches the stream
@@ -1391,7 +1392,7 @@ export class Interpreter {
         const body = heredoc.quoted
           ? heredoc.body
           : await expandWord([{ text: heredoc.body, quoted: 'double' }], expandCtx);
-        this.setInputFd(fds, redir.fd ?? 0, { stream: this.createStringReader(body), terminal: false });
+        this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
         continue;
       }
 
@@ -1533,11 +1534,17 @@ export class Interpreter {
       return { stream: terminalStdin, terminal: true };
     }
     if (target === '/dev/stdin') return this.resolveInputFd('0', fds.inputFds, fds.terminalInputFds);
+    const targetPath = resolve(this.config.getCwd(), target);
+    const vfs = io.vfs ?? this.config.vfs;
     try {
-      return {
-        stream: this.createFileReader(io.vfs ?? this.config.vfs, resolve(this.config.getCwd(), target)),
-        terminal: false,
-      };
+      // Open-authorize before the command runs, the way open(2) would: a
+      // missing, unreadable, or directory target fails the redirection even
+      // when the command never reads a byte.
+      if (vfs.stat(targetPath).type === 'directory') {
+        throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
+      }
+      vfs.access(targetPath, 0o4);
+      return { stream: this.createFileReader(vfs, targetPath), terminal: false };
     } catch (error) {
       throw new RedirectionOpenError(target, error);
     }
@@ -1611,6 +1618,10 @@ export class Interpreter {
    * Byte-faithful redirected input: bounded range reads keep >64 KiB
    * redirections intact and preserve bytes that are not valid UTF-8, while
    * the text view still decodes progressively across chunk boundaries.
+   *
+   * Only a zero-length range means EOF. Devices and some mounts answer with
+   * fewer bytes than asked whenever their internal bound is hit; those short
+   * nonempty reads advance the offset and continue, exactly like read(2).
    */
   private createFileReader(vfs: VFS, path: string): CommandInputStream {
     const decoder = new TextDecoder('utf-8');
@@ -1624,13 +1635,7 @@ export class Interpreter {
         return null;
       }
       offset += chunk.length;
-      if (chunk.length < max) eof = true;
       return chunk;
-    };
-    const pushBack = (text: string) => {
-      const bytes = encode(text);
-      offset -= bytes.length;
-      eof = false;
     };
     return {
       readBytes: async (maxLength: number) => {
@@ -1680,58 +1685,6 @@ export class Interpreter {
         }
         line += decoder.decode();
         return sawAny || line.length > 0 ? line : null;
-      },
-    };
-  }
-
-  /**
-   * Heredoc input behind the full reader contract, byte-offset based so
-   * bounded byte reads split exactly where the consumer asks and nothing
-   * is discarded between windows.
-   */
-  private createStringReader(content: string): CommandInputStream {
-    const bytes = encode(content);
-    const decoder = new TextDecoder('utf-8');
-    let offset = 0;
-    const pull = (max: number): Uint8Array | null => {
-      if (offset >= bytes.length) return null;
-      const end = Math.min(offset + max, bytes.length);
-      const chunk = bytes.subarray(offset, end);
-      offset = end;
-      return chunk;
-    };
-    return {
-      readBytes: async (maxLength: number) => {
-        if (maxLength <= 0) return new Uint8Array(0);
-        return pull(maxLength);
-      },
-      read: async () => {
-        while (offset < bytes.length) {
-          const end = Math.min(offset + 65536, bytes.length);
-          const text = decoder.decode(bytes.subarray(offset, end), { stream: true });
-          offset = end;
-          if (text.length > 0) return text;
-        }
-        const tail = decoder.decode();
-        return tail.length > 0 ? tail : null;
-      },
-      readAll: async () => {
-        if (offset >= bytes.length) return '';
-        const out = decoder.decode(bytes.subarray(offset));
-        offset = bytes.length;
-        return out;
-      },
-      readLine: async () => {
-        if (offset >= bytes.length) return null;
-        const newline = bytes.indexOf(0x0a, offset);
-        if (newline === -1) {
-          const line = decoder.decode(bytes.subarray(offset));
-          offset = bytes.length;
-          return line;
-        }
-        const line = decoder.decode(bytes.subarray(offset, newline));
-        offset = newline + 1;
-        return line;
       },
     };
   }

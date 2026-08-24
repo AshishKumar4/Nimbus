@@ -28,7 +28,7 @@ import {
 import type { Command, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { runSed } from '../substrate/lifo/commands/text/sed.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
-import { encode, concatBytes } from '../substrate/lifo/utils/encoding.js';
+import { encode } from '../substrate/lifo/utils/encoding.js';
 import {
   findUnixGroupName,
   findUnixUserName,
@@ -39,11 +39,10 @@ import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevat
 /**
  * stdin as the shell hands it over: a pipe reader, whose `readAll` resolves
  * once upstream closes, or the terminal's own stream, which stays open past
- * the command and so is taken from `buffer` instead of awaited.
+ * the command and is drained in place via `drainBuffered`.
  */
 type ShellStdin = CommandInputStream & {
   feed?(text: string): void;
-  buffer?: string[];
 };
 
 /**
@@ -1609,7 +1608,16 @@ async function streamStdinBytes(ctx: Ctx, writer: SinkWriter, limit: number): Pr
   let copied = 0;
   while (copied < limit) {
     const want = limit - copied;
-    const chunk = reader.readBytes ? await reader.readBytes(want) : enc.encode((await reader.read()) ?? '');
+    let chunk: Uint8Array | null;
+    if (reader.readBytes) {
+      chunk = await reader.readBytes(want);
+    } else {
+      // Text-only readers report EOF with null; encoding that null into an
+      // empty chunk would spin the loop forever without advancing.
+      const text = await reader.read();
+      if (text === null) break;
+      chunk = enc.encode(text);
+    }
     if (chunk === null) break;
     const bytes = chunk.subarray(0, want);
     writer.write(bytes);
@@ -4202,16 +4210,6 @@ function mkFile(vfs: UnixVfs): CmdFn {
 // ── Hex dumps: od, hexdump, xxd ─────────────────────────────────────────
 
 /**
- * Pull up to `remaining` bytes of stdin. A drained string is sliced; a live
- * pipe reader is pulled in bounded chunks and stops as soon as the limit is
- * met, which is what lets `yes | od -N8` terminate its producer.
- */
-
-/**
- * Read up to `remaining` bytes of a file through bounded range reads, so
- * `xxd -l 16 big.bin` never loads `big.bin` whole.
- */
-/**
  * Dump-tool byte counts: decimal, `0x` hex, leading-zero octal, and the
  * classic suffixes (`b` blocks of 512, K/KiB, KB, M, G — powers of 1024
  * except the round-decimal `KB`/`MB`/`GB` spellings). Null means the value
@@ -4388,9 +4386,6 @@ function parseOdArgs(args: string[]): OdArgs {
   return { radix, types, limit, verbose, files };
 }
 
-/** Reads operands (or stdin once) under a running byte limit. */
-
-
 /**
  * Sequential bytes for a dump tool: each operand in order, stdin once,
  * bounded range reads for files and bounded pulls for pipes. Only one
@@ -4401,7 +4396,7 @@ class DumpByteSource {
   private operands: (string | undefined)[];
   private operandIndex = 0;
   private remaining: number;
-  private current: Uint8Array | null = null;
+  private currentPath = '';
   private cursor = 0;
   private haveOpen = false;
   private stdinMode = false;
@@ -4418,7 +4413,6 @@ class DumpByteSource {
 
   constructor(
     private ctx: Ctx,
-    private vfs: UnixVfs,
     private label: string,
     files: string[],
     limit: number | undefined,
@@ -4447,9 +4441,11 @@ class DumpByteSource {
           return true;
         }
         // Probe the file now so per-operand errors surface exactly once.
-        const probe = this.vfs.readRange(resolvePath(this.ctx.cwd, file), 0, 1);
-        void probe;
-        this.current = null;
+        // Named operands read through ctx.vfs — the mount-aware seam the
+        // host handed the command — so /dev and other mounts resolve while
+        // an embedder's credentialed view keeps its authorization.
+        this.currentPath = absolutePath(this.ctx.cwd, file);
+        this.ctx.vfs.readRange(this.currentPath, 0, 1);
         this.cursor = 0;
         this.haveOpen = true;
         this.opened++;
@@ -4465,11 +4461,10 @@ class DumpByteSource {
   private closeCurrent(): void {
     this.haveOpen = false;
     this.stdinMode = false;
-    this.current = null;
+    this.currentPath = '';
     this.cursor = 0;
   }
 
-  /** Next up-to-max bytes across operands; null once limit or true EOF. */
   /** One bounded pull; drained strings are encoded once and sliced by byte. */
   private async stdinPull(max: number): Promise<Uint8Array | null> {
     if (typeof this.ctx.stdin === 'string') {
@@ -4485,38 +4480,45 @@ class DumpByteSource {
       readBytes?: (n: number) => Promise<Uint8Array | null>;
     };
     if (typeof reader?.read !== 'function') return null;
-    // read/readAll-only embedders lose nothing: overflow bytes from a
-    // bounded pull wait in stdinOverflow until the next one.
-    const parts: Uint8Array[] = [];
-    let got = 0;
-    while (got < max) {
-      let chunk: Uint8Array | null = null;
-      if (this.stdinOverflow.length > 0) {
-        chunk = this.stdinOverflow.shift() ?? null;
-      } else if (reader.readBytes) {
-        chunk = await reader.readBytes(Math.min(65536, max - got));
-      } else {
-        const text = await reader.read();
-        chunk = text === null ? null : enc.encode(text);
-      }
-      if (chunk === null || chunk.length === 0) break; // empty read = EOF
-      const take = chunk.length <= max - got ? chunk : chunk.subarray(0, max - got);
-      parts.push(take);
-      got += take.length;
-      if (take.length < chunk.length) this.stdinOverflow.push(chunk.subarray(take.length));
+    // read/readAll-only embedders lose nothing: overflow bytes from a bounded
+    // pull wait in stdinOverflow until the next one. A live stream hands back
+    // its first available chunk — waiting to fill `max` would stall a sparse
+    // producer that has written one byte and not the rest.
+    let chunk: Uint8Array | null;
+    if (this.stdinOverflow.length > 0) {
+      chunk = this.stdinOverflow.shift() ?? null;
+    } else if (reader.readBytes) {
+      chunk = await reader.readBytes(Math.min(65536, max));
+    } else {
+      const text = await reader.read();
+      chunk = text === null ? null : enc.encode(text);
     }
-    if (parts.length === 0) return null;
-    if (parts.length === 1) return parts[0];
-    const out = new Uint8Array(got);
-    let at = 0;
-    for (const part of parts) {
-      out.set(part, at);
-      at += part.length;
-    }
-    return out;
+    if (chunk === null || chunk.length === 0) return null;
+    if (chunk.length <= max) return chunk;
+    this.stdinOverflow.unshift(chunk.subarray(max));
+    return chunk.subarray(0, max);
   }
 
+  /**
+   * Up to `max` bytes, filling across chunks and operands. A row-oriented
+   * caller wants the whole row before it formats anything, exactly as GNU od
+   * fills its 16-byte buffer, so this waits for the count it asked for.
+   */
   async take(max: number): Promise<Uint8Array | null> {
+    return this.collect(max, false);
+  }
+
+  /**
+   * Up to `max` bytes, waiting only for the first ones to arrive. A caller
+   * that formats whatever has landed uses this: file operands still answer
+   * in bulk, while a live stream is never waited on for bytes a sparse
+   * producer has not written yet.
+   */
+  async takeReady(max: number): Promise<Uint8Array | null> {
+    return this.collect(max, true);
+  }
+
+  private async collect(max: number, ready: boolean): Promise<Uint8Array | null> {
     if (!this.probedFirst) {
       // The first named operand must be attempted even under a zero limit,
       // so `-l0 /missing` reports the open error instead of succeeding.
@@ -4542,21 +4544,29 @@ class DumpByteSource {
           this.closeCurrent();
           continue;
         }
-      } else {
-        const path = resolvePath(this.ctx.cwd, this.operands[this.operandIndex - 1] as string);
-        chunk = this.vfs.readRange(path, this.cursor, want);
-        if (chunk.length === 0) {
-          this.closeCurrent();
-          continue;
-        }
-        this.cursor += chunk.length;
+        // A live stream hands back what it has: `takeReady` stops here so a
+        // sparse producer keeps rendering, while `take` loops for the rest of
+        // the row it was asked for.
+        parts.push(chunk);
+        got += chunk.length;
+        this.total += chunk.length;
+        this.remaining -= chunk.length;
+        if (ready) break;
+        continue;
       }
+      // File operands keep filling: range reads are bulk and cost nothing
+      // extra, and a block may span consecutive operands.
+      chunk = this.ctx.vfs.readRange(this.currentPath, this.cursor, want);
+      if (chunk.length === 0) {
+        this.closeCurrent();
+        continue;
+      }
+      this.cursor += chunk.length;
       const take = chunk.length <= want ? chunk : chunk.subarray(0, want);
       parts.push(take);
       got += take.length;
       this.total += take.length;
       this.remaining -= take.length;
-      this.opened++; // reading bytes proves the operand opened
     }
     if (parts.length === 0) return null;
     if (parts.length === 1) return parts[0];
@@ -4570,16 +4580,14 @@ class DumpByteSource {
   }
 }
 
-
-
-function mkOd(vfs: UnixVfs): CmdFn {
+function mkOd(): CmdFn {
   return async (ctx) => {
     const parsed = parseOdArgs(ctx.args);
     if ('error' in parsed) {
       ctx.stderr.write(`${parsed.error}\n`);
       return 1;
     }
-    const src = new DumpByteSource(ctx, vfs, 'od', parsed.files, parsed.limit);
+    const src = new DumpByteSource(ctx, 'od', parsed.files, parsed.limit);
     const specs = parsed.types.map((name) => OD_TYPES[name]);
     // With several -t types every item shares one column width (the widest
     // natural width plus one); each type prints on its own continuation
@@ -4614,7 +4622,7 @@ function mkOd(vfs: UnixVfs): CmdFn {
       }
     }
     if (parsed.radix !== 'n') {
-    if (src.failedAll) return 1;
+      if (src.failedAll) return 1;
       ctx.stdout.write(`${odAddress(parsed.radix, src.total, true)}\n`);
     }
     return src.failed ? 1 : 0;
@@ -4649,6 +4657,20 @@ const HEXDUMP_DIGIT_WIDTHS: Readonly<Record<string, { x: number; o: number; d: n
   '4': { x: 8, o: 11, d: 10 },
 };
 
+/** Shared empty unit: a conversion past end-of-input sees no bytes at all. */
+const HEXDUMP_EMPTY_UNIT = new Uint8Array(0);
+/** Source bytes fetched per pull while streaming `-e` blocks. */
+const HEXDUMP_PULL_BYTES = 4096;
+/** Digits an address directive can render: `Number.MAX_SAFE_INTEGER` in octal. */
+const HEXDUMP_MAX_ADDRESS_DIGITS = 20;
+/**
+ * Characters one `-e` block may render. A block is held twice while it is
+ * classified — the line and its dedup key — so this ceiling bounds two
+ * strings of ~2 MiB UTF-16 each, small beside a Durable Object's memory and
+ * far above any format that dumps real data.
+ */
+const HEXDUMP_MAX_BLOCK_CHARS = 1 << 20;
+
 // util-linux rejects escaped delimiters inside -e units rather than
 // decoding them, so `\"` is deliberately absent here.
 const HEXDUMP_ESCAPES: Readonly<Record<string, string>> = {
@@ -4679,12 +4701,18 @@ function parseHexdumpDirectives(fmt: string): { segments: (string | HexdumpDirec
     }
     let digits = '';
     while (fmt[j] >= '0' && fmt[j] <= '9') digits += fmt[j++];
-    if (digits !== '') directive.width = Number(digits);
+    if (digits !== '') {
+      directive.width = Number(digits);
+      // A width outside the safe-integer range can never render; reject the
+      // format here rather than attempting an unbounded allocation later.
+      if (!Number.isSafeInteger(directive.width)) return bad(`%${fmt.slice(i + 1, j + 1)}`);
+    }
     if (fmt[j] === '.') {
       let prec = '';
       j++;
       while (fmt[j] >= '0' && fmt[j] <= '9') prec += fmt[j++];
       directive.precision = prec === '' ? 0 : Number(prec);
+      if (!Number.isSafeInteger(directive.precision)) return bad(`%${fmt.slice(i + 1, j + 1)}`);
     }
     if (fmt[j] === '_' && fmt[j + 1] === 'a' && 'dxo'.includes(fmt[j + 2])) {
       directive.kind = 'addr';
@@ -4801,63 +4829,106 @@ function hexdumpFieldWidth(directive: HexdumpDirective, size: number): number {
 }
 
 /**
- * Render one `-e` block. A directive past the end of input renders as
- * field-width spaces rather than dropping its slot, and a lone trailing
- * space right before the format's newline collapses — together those are
- * what keep util-linux's `"%02x "` rows free of ragged edges. Address
- * directives report the offset of the next byte to display; with
- * `blankAddresses` they contribute nothing, which gives repeat suppression
- * a key that ignores where each block sits.
+ * Render one `-e` block straight off the source, one unit at a time. A
+ * directive past the end of input renders as field-width spaces rather than
+ * dropping its slot, and address directives report the offset of the next
+ * byte to display. The dedup key repeats all of it except addresses, so
+ * repeat suppression ignores where each block sits.
+ *
+ * util-linux's nospace rule: a unit repeated more than once drops the single
+ * trailing whitespace character of its own format text on its LAST
+ * repetition, EOF padding included. Exactly that one character goes, which
+ * is why `3/1 "%02x  "` keeps one of its two spaces, `2/1 "%02x\t"` keeps
+ * the padding that follows the dropped tab, and a unit repeated once keeps
+ * its spacing verbatim.
+ *
+ * Input arrives unit-sized: nothing collects count*size bytes however large
+ * the repetition count is, and parseHexdumpArgs has already refused any
+ * format whose block could outgrow {@link HEXDUMP_MAX_BLOCK_CHARS}.
+ *
+ * Returns the rendered line, its address-free key, and the source bytes the
+ * block consumed; null once a block consumes nothing, i.e. true end.
  */
-function hexdumpRenderBlock(pieces: HexdumpPiece[], bytes: Uint8Array, blockStart: number, blankAddresses = false): string {
-  let out = '';
+async function hexdumpRenderBlock(
+  pieces: HexdumpPiece[],
+  pullUnit: (size: number) => Promise<Uint8Array>,
+  blockStart: number,
+): Promise<{ line: string; key: string; consumed: number } | null> {
+  let line = '';
+  let key = '';
   let pos = 0;
-  const displayOffset = () => blockStart + pos;
+  let consumed = 0;
+  let ended = false;
   for (const piece of pieces) {
     const iterations = piece.consumes ? piece.count : 1;
+    const tail = piece.segments[piece.segments.length - 1];
+    const dropsTailSpace = iterations > 1
+      && typeof tail === 'string'
+      && /[ \t\n\r\v\f]$/.test(tail);
     for (let iteration = 0; iteration < iterations; iteration++) {
-      const missing = piece.consumes && pos >= bytes.length;
+      const lastIteration = iteration === iterations - 1;
+      let unit: Uint8Array = HEXDUMP_EMPTY_UNIT;
+      if (piece.consumes && !ended) {
+        unit = await pullUnit(piece.size);
+        if (unit.length < piece.size) ended = true;
+      }
+      const missing = piece.consumes && unit.length === 0;
       // Literals always render; only byte conversions pad when input ran
       // out, so a trailing literal still reaches the line on short blocks.
-      for (const segment of piece.segments) {
-        if (typeof segment === 'string') { out += segment; continue; }
+      for (let index = 0; index < piece.segments.length; index++) {
+        const segment = piece.segments[index];
+        if (typeof segment === 'string') {
+          const text = dropsTailSpace && lastIteration && index === piece.segments.length - 1
+            ? segment.slice(0, -1)
+            : segment;
+          line += text;
+          key += text;
+          continue;
+        }
         if (segment.kind === 'addr') {
-          if (blankAddresses) continue;
-          const shown = displayOffset();
+          const shown = blockStart + pos;
           const digits = segment.radix === 'd'
             ? String(shown)
             : shown.toString(segment.radix === 'o' ? 8 : 16);
-          out += hexdumpFormatNumber(segment, digits);
+          line += hexdumpFormatNumber(segment, digits);
           continue;
         }
         if (missing) {
-          out += ' '.repeat(hexdumpFieldWidth(segment, piece.size));
+          const pad = ' '.repeat(hexdumpFieldWidth(segment, piece.size));
+          line += pad;
+          key += pad;
           continue;
         }
-        let unit = 0;
-        for (let b = piece.size - 1; b >= 0; b--) unit = unit * 256 + (bytes[pos + b] ?? 0);
+        let value = 0;
+        for (let b = piece.size - 1; b >= 0; b--) value = value * 256 + (unit[b] ?? 0);
         pos += piece.size;
         if (segment.conv === 'c') {
-          out += hexdumpFormatNumber(segment, String.fromCharCode(unit & 0xff));
+          const text = hexdumpFormatNumber(segment, String.fromCharCode(value & 0xff));
+          line += text;
+          key += text;
           continue;
         }
         let digits: string;
         if (segment.conv === 'd') {
           const signBit = 256 ** piece.size / 2;
-          digits = String(unit >= signBit ? unit - signBit * 2 : unit);
+          digits = String(value >= signBit ? value - signBit * 2 : value);
         } else if (segment.conv === 'u') {
-          digits = String(unit);
+          digits = String(value);
         } else if (segment.conv === 'o') {
-          digits = unit.toString(8);
+          digits = value.toString(8);
         } else {
-          digits = unit.toString(16);
+          digits = value.toString(16);
           if (segment.conv === 'X') digits = digits.toUpperCase();
         }
-        out += hexdumpFormatNumber(segment, digits);
+        const text = hexdumpFormatNumber(segment, digits);
+        line += text;
+        key += text;
       }
+      consumed += unit.length;
     }
   }
-  return out;
+  if (consumed === 0) return null;
+  return { line, key, consumed };
 }
 
 /** Body columns for the fixed modes; the caller prefixes the address. */
@@ -4941,19 +5012,53 @@ function parseHexdumpArgs(args: string[]): HexdumpArgs {
     if (!parsed.pieces.some((piece) => piece.consumes)) {
       return { error: `hexdump: bad format {${value}}` };
     }
+    // The block is held twice while it is classified, so a format whose
+    // rendering cannot fit is refused here — before a byte is ever read.
+    let blockChars = 0;
+    for (const piece of parsed.pieces) {
+      let perIteration = 0;
+      for (const segment of piece.segments) {
+        if (typeof segment === 'string') { perIteration += segment.length; continue; }
+        if (segment.kind === 'addr') {
+          perIteration += Math.max(segment.width ?? 0, HEXDUMP_MAX_ADDRESS_DIGITS);
+          continue;
+        }
+        // A narrow field cannot shrink a value: `%1u` over four bytes still
+        // renders ten characters. Size each conversion by the widest of its
+        // field width, its precision plus a sign, and the natural maximum
+        // for its byte size.
+        const digits = HEXDUMP_DIGIT_WIDTHS[String(piece.size)];
+        const natural = segment.conv === 'c'
+          ? 1
+          : segment.conv === 'd'
+            ? digits.d + 1
+            : segment.conv === 'u'
+              ? digits.d
+              : segment.conv === 'o'
+                ? digits.o
+                : digits.x;
+        perIteration += Math.max(segment.width ?? 0, natural, (segment.precision ?? 0) + 1);
+      }
+      blockChars += (piece.consumes ? piece.count : 1) * perIteration;
+    }
+    if (blockChars > HEXDUMP_MAX_BLOCK_CHARS) {
+      return {
+        error: `hexdump: format renders ${blockChars} characters per block, over the ${HEXDUMP_MAX_BLOCK_CHARS} limit`,
+      };
+    }
     pieces = parsed.pieces;
   }
   return { mode, pieces, length, verbose, files };
 }
 
-function mkHexdump(vfs: UnixVfs): CmdFn {
+function mkHexdump(): CmdFn {
   return async (ctx) => {
     const parsed = parseHexdumpArgs(ctx.args);
     if ('error' in parsed) {
       ctx.stderr.write(`${parsed.error}\n`);
       return 1;
     }
-    const src = new DumpByteSource(ctx, vfs, 'hexdump', parsed.files, parsed.length);
+    const src = new DumpByteSource(ctx, 'hexdump', parsed.files, parsed.length);
     const dedup = new RowDedup();
     if (parsed.pieces !== null) {
       const lastPiece = parsed.pieces[parsed.pieces.length - 1];
@@ -4961,30 +5066,33 @@ function mkHexdump(vfs: UnixVfs): CmdFn {
       // Repeat suppression needs line boundaries; free-form formats emit
       // the whole stream, which is what -v spells on util-linux.
       const lineStructured = typeof lastSegment === 'string' && lastSegment.endsWith('\n');
-      const multiIteration = parsed.pieces.some((piece) => piece.consumes && piece.count > 1);
-      const blockBytes = parsed.pieces.reduce(
-        (sum, piece) => sum + (piece.consumes ? piece.count * piece.size : 0),
-        0,
-      );
+      // Units arrive from a small stash fed well ahead of demand, so
+      // per-unit pulls amortize into large source reads without ever
+      // holding count*size bytes for a block.
+      let pending = HEXDUMP_EMPTY_UNIT;
+      const pullUnit = async (size: number): Promise<Uint8Array> => {
+        while (pending.length < size) {
+          // Ready reads: a file answers the whole block in one range read,
+          // and a live producer answers with whatever it has already written.
+          const chunk = await src.takeReady(Math.max(size - pending.length, HEXDUMP_PULL_BYTES));
+          if (chunk === null || chunk.length === 0) break;
+          const merged = new Uint8Array(pending.length + chunk.length);
+          merged.set(pending);
+          merged.set(chunk, pending.length);
+          pending = merged;
+        }
+        const unit = pending.subarray(0, size);
+        pending = pending.subarray(unit.length);
+        return unit;
+      };
       let offset = 0;
       while (true) {
-        const window = await src.take(blockBytes);
-        if (window === null || window.length === 0) break;
-        let line = hexdumpRenderBlock(parsed.pieces, window, offset);
-        offset += window.length;
-        if (!lineStructured) { ctx.stdout.write(line); continue; }
-        // util-linux trims exactly one trailing space on lines produced by a
-        // multi-iteration unit; count-1 units keep their spacing verbatim.
-        // Trim one trailing space only when the unit that owns the tail
-        // (the last consuming piece) iterates more than once; a later
-        // count-1 unit keeps its spacing.
-        const lastConsuming = parsed.pieces.filter((piece) => piece.consumes).pop();
-        if (lastConsuming !== undefined && lastConsuming.count > 1 && line.endsWith(' \n')) {
-          line = line.slice(0, -2) + '\n';
-        }
-        const key = hexdumpRenderBlock(parsed.pieces, window, offset - window.length, true);
-        switch (dedup.classify(key, parsed.verbose)) {
-          case 'print': ctx.stdout.write(line); break;
+        const block = await hexdumpRenderBlock(parsed.pieces, pullUnit, offset);
+        if (block === null) break;
+        offset += block.consumed;
+        if (!lineStructured) { ctx.stdout.write(block.line); continue; }
+        switch (dedup.classify(block.key, parsed.verbose)) {
+          case 'print': ctx.stdout.write(block.line); break;
           case 'star': ctx.stdout.write('*\n'); break;
         }
       }
@@ -5025,7 +5133,7 @@ function mkHexdump(vfs: UnixVfs): CmdFn {
  * continuous hex in bounded 30-byte rows. The default row layout predates
  * this fix and is preserved verbatim.
  */
-function mkXxd(vfs: UnixVfs): CmdFn {
+function mkXxd(): CmdFn {
   return async (ctx) => {
     let plain = false;
     let limit: number | undefined;
@@ -5058,25 +5166,25 @@ function mkXxd(vfs: UnixVfs): CmdFn {
     // Prime the source FIRST: pull the initial window (surfacing any open
     // error) before the output file exists to truncate.
     const rowSize = plain ? 30 : 16;
-    const src = new DumpByteSource(ctx, vfs, 'xxd', operands.slice(0, 1), limit);
+    const src = new DumpByteSource(ctx, 'xxd', operands.slice(0, 1), limit);
     const firstWindow = await src.take(rowSize);
     if (src.failedAll || (src.failed && src.opened === 0)) return 1;
 
-    // A second operand names the output file; `-` there means stdout.
+    // A second operand names the output file; `-` there means stdout. It
+    // routes through ctx.vfs like every other named path, so dumps may land
+    // on devices and mounts as they do on Unix.
     const output = operands[1];
-    const outPath = output !== undefined && output !== '-'
-      ? resolvePath(ctx.cwd, output)
-      : null;
+    const outAbs = output !== undefined && output !== '-' ? absolutePath(ctx.cwd, output) : null;
 
     let offset = 0;
     let fileOffset = 0;
     let pending: string[] = [];
     let pendingBytes = 0;
     let writeFailed = false;
-    const flush = (path: string) => {
-      if (pending.length === 0 || writeFailed) return;
+    const flush = () => {
+      if (pending.length === 0 || writeFailed || outAbs === null) return;
       try {
-        vfs.writeRange(path, fileOffset, encode(pending.join('')));
+        ctx.vfs.writeRange(outAbs, fileOffset, encode(pending.join('')));
       } catch (error) {
         ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`);
         writeFailed = true;
@@ -5098,11 +5206,11 @@ function mkXxd(vfs: UnixVfs): CmdFn {
       return `${rowOffset.toString(16).padStart(8, '0')}: ${pairs.padEnd(48)}  ${ascii}\n`;
     };
 
-    if (outPath !== null) {
+    if (outAbs !== null) {
       // Input proved readable above, so truncating here cannot destroy data
       // on a failed dump.
       try {
-        vfs.writeFile(outPath, '', { mode: 0o644 });
+        ctx.vfs.writeFile(outAbs, '');
       } catch (error) {
         ctx.stderr.write(`xxd: ${output}: ${fsErrorMessage(error)}\n`);
         return 1;
@@ -5113,16 +5221,16 @@ function mkXxd(vfs: UnixVfs): CmdFn {
     while (window !== null && window.length > 0 && !writeFailed) {
       const text = renderWindow(offset, window);
       offset += window.length;
-      if (outPath !== null) {
+      if (outAbs !== null) {
         pending.push(text);
         pendingBytes += text.length;
-        if (pendingBytes >= 65536) flush(outPath);
+        if (pendingBytes >= 65536) flush();
       } else {
         ctx.stdout.write(text);
       }
       window = await src.take(rowSize);
     }
-    if (outPath !== null) flush(outPath);
+    if (outAbs !== null) flush();
     return src.failed || writeFailed ? 1 : 0;
   }
 }
@@ -5255,9 +5363,12 @@ export function registerUnixCommands(
   registry.register('readlink', wrap(withInvocationVfs(sqliteVfs, mkReadlink)));
   registry.register('sha256sum', wrap(withInvocationVfs(sqliteVfs, mkSha256sum)));
   registry.register('file', wrap(withInvocationVfs(sqliteVfs, mkFile)));
-  registry.register('xxd', wrapStreaming(withInvocationVfs(sqliteVfs, mkXxd)));
-  registry.register('od', wrapStreaming(withInvocationVfs(sqliteVfs, mkOd)));
-  registry.register('hexdump', wrapStreaming(withInvocationVfs(sqliteVfs, mkHexdump)));
+  // od/hexdump/xxd read operands and sinks through ctx.vfs — the
+  // mount-aware seam the host hands every command — so they need no
+  // invocation-scoped raw view of their own.
+  registry.register('xxd', wrapStreaming(mkXxd()));
+  registry.register('od', wrapStreaming(mkOd()));
+  registry.register('hexdump', wrapStreaming(mkHexdump()));
 
   registry.register('chown', wrap(mkChown(sqliteVfs)));
 

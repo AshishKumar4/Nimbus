@@ -92,29 +92,21 @@ export class PipeChannel {
     return sawAny || tail.length > 0 ? line : null;
   }
 
+  /**
+   * Bounded byte read: returns whatever the producer has already delivered,
+   * capped at maxLength. maxLength bounds the result, it is never a fill
+   * target — waiting to complete it would stall every consumer downstream of
+   * a live open producer. A larger chunk keeps only its first maxLength
+   * bytes; the remainder stays queued in original order.
+   */
   private async readBytes(maxLength: number): Promise<Uint8Array | null> {
     if (maxLength <= 0) return new Uint8Array(0);
 
-    const parts: Uint8Array[] = [];
-    let got = 0;
-    while (got < maxLength) {
-      const chunk = await this.pull();
-      if (chunk === null) break;
-      const take = chunk.length <= maxLength - got ? chunk : chunk.subarray(0, maxLength - got);
-      parts.push(take);
-      got += take.length;
-      if (take.length < chunk.length) this.buffer.unshift(chunk.subarray(take.length));
-    }
-    if (parts.length === 0) return null;
-    if (parts.length === 1) return parts[0];
-    const total = parts.reduce((sum, part) => sum + part.length, 0);
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) {
-      out.set(part, at);
-      at += part.length;
-    }
-    return out;
+    const chunk = await this.pull();
+    if (chunk === null) return null;
+    if (chunk.length <= maxLength) return chunk;
+    this.buffer.unshift(chunk.subarray(maxLength));
+    return chunk.subarray(0, maxLength);
   }
 
   close(): void {

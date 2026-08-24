@@ -17,6 +17,13 @@ export declare class PipeChannel {
     private read;
     private readAll;
     private readLine;
+    /**
+     * Bounded byte read: returns whatever the producer has already delivered,
+     * capped at maxLength. maxLength bounds the result, it is never a fill
+     * target — waiting to complete it would stall every consumer downstream of
+     * a live open producer. A larger chunk keeps only its first maxLength
+     * bytes; the remainder stays queued in original order.
+     */
     private readBytes;
     close(): void;
     private deliver;

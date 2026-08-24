@@ -66,36 +66,22 @@ export class TerminalStdin {
         }
     }
     /**
-     * Bounded byte read; always makes progress while data remains, splitting
-     * encoded code points across successive calls when maxLength demands it.
+     * Bounded byte read: returns whatever the user has already typed, capped
+     * at maxLength. maxLength bounds the result, it is never a fill target —
+     * a command reading bytes must not stall until maxLength arrive. A larger
+     * queued chunk keeps only its first maxLength bytes; the remainder stays
+     * queued, so `dd bs=1` over `é` still yields c3, then a9.
      */
     async readBytes(maxLength) {
         if (maxLength <= 0)
             return new Uint8Array(0);
-        const parts = [];
-        let got = 0;
-        while (got < maxLength) {
-            const chunk = await this.pull();
-            if (chunk === null)
-                break;
-            const take = chunk.length <= maxLength - got ? chunk : chunk.subarray(0, maxLength - got);
-            parts.push(take);
-            got += take.length;
-            if (take.length < chunk.length)
-                this.buffer.unshift(chunk.subarray(take.length));
-        }
-        if (parts.length === 0)
+        const chunk = await this.pull();
+        if (chunk === null)
             return null;
-        if (parts.length === 1)
-            return parts[0];
-        const total = parts.reduce((sum, part) => sum + part.length, 0);
-        const out = new Uint8Array(total);
-        let at = 0;
-        for (const part of parts) {
-            out.set(part, at);
-            at += part.length;
-        }
-        return out;
+        if (chunk.length <= maxLength)
+            return chunk;
+        this.buffer.unshift(chunk.subarray(maxLength));
+        return chunk.subarray(0, maxLength);
     }
     /** Read all remaining input until EOF, joined together. */
     async readAll() {

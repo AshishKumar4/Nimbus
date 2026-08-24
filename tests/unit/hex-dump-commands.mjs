@@ -610,6 +610,189 @@ for (const cmd of ['xxd -l0 /nonexistent', 'od -N0 /nonexistent', 'hexdump -n0 /
     exitCode === 0 && outText === ' c3 a9 41\n',
     `exit=${exitCode} stdout=${JSON.stringify(outText)} stderr=${JSON.stringify(errText)}`);
 }
+
+// ── mount-boundary operands: devices resolve through the shell's VFS ──────
+
+{
+  const r = await sh('od -An -tx1 -N4 /dev/zero');
+  check('od reads /dev/zero through the mount-aware seam', r.exitCode === 0 &&
+      r.stdout === ' 00 00 00 00\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  const r = await sh('xxd /tmp/a.bin /dev/null');
+  check('xxd writes its dump to /dev/null', r.exitCode === 0 && r.stdout === '' && r.stderr === '',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  const r = await sh(`hexdump -v -e '1/1 "%02x"' -n 3 /dev/zero`);
+  check('line-free formats stream device input verbatim', r.exitCode === 0 && r.stdout === '000000',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  // Every row is identical, so repeat suppression must survive the
+  // unit-streaming renderer: one printed row, one star, rest skipped.
+  const r = await sh(`hexdump -e '4/1 "%02x\\n"' -n 12 /dev/zero`);
+  check('structured rows dedup across streamed device blocks', r.exitCode === 0 &&
+      r.stdout === '00\n00\n00\n00*\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  const r = await sh(`hexdump -e '"%99999999999999999999999d"' /tmp/a.bin`);
+  check('unrepresentable field widths fail loudly before any read', r.exitCode !== 0 &&
+      r.stderr === 'hexdump: bad format {%99999999999999999999999d}\n',
+    `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  // At the device's own 1 MiB bound the redirect reader gets a short
+  // nonempty window; that is not EOF — the read continues to the real end.
+  const r = await sh('head -c 1100000 < /dev/zero | wc -c');
+  check('redirected device reads continue past one short window', r.exitCode === 0 &&
+      r.stdout.trim() === '1100000',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+// ── util-linux nospace parity (measured against util-linux 2.41.3) ────────
+
+root.writeFile('tmp/abc3.bin', bytes([0x61, 0x62, 0x63]), { mode: 0o644 });
+root.writeFile('tmp/abc6.bin', bytes([0x61, 0x62, 0x63, 0x64, 0x65, 0x66]), { mode: 0o644 });
+
+for (const [format, file, expected, name] of [
+  ['2/1 "%02x " "\\n"', 'abc3.bin', '61 62\n63   \n', 'a repeated unit drops one trailing space on its last repetition'],
+  ['2/1 "%02x " "|\\n"', 'abc3.bin', '61 62|\n63   |\n', 'the drop lands inside the block, not at its tail'],
+  ['2/1 "%02x" "\\n"', 'abc3.bin', '6162\n63  \n', 'a unit without trailing whitespace keeps all its EOF padding'],
+  ['2/1 "%02x \\n"', 'abc3.bin', '61 \n62 63 \n   ', 'a newline inside the unit is the character that drops'],
+  ['3/1 "%02x  " "\\n"', 'abc3.bin', '61  62  63 \n', 'exactly one of two trailing spaces goes'],
+  ['2/1 "%02x\\t" "\\n"', 'abc3.bin', '61\t62\n63\t  \n', 'a dropped tab leaves the padding that follows it'],
+  ['2/1 "%02x " "\\n"', 'a.bin', '41   \n', 'an EOF-padded last repetition drops its own trailing space'],
+  ['2/1 "%02x " 2/1 "%02x " "\\n"', 'abc6.bin', '61 6263 64\n65 66     \n', 'every repeated unit drops its own tail, not just the last unit'],
+]) {
+  const r = await sh(`hexdump -v -e '${format}' /tmp/${file}`);
+  check(`nospace: ${name}`, r.exitCode === 0 && r.stdout === expected,
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} want=${JSON.stringify(expected)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  const r = await sh(`hexdump -e '4/1 "%02x " "\\n"' -n 12 /dev/zero`);
+  check('nospace survives repeat suppression over streamed device blocks', r.exitCode === 0 &&
+      r.stdout === '00 00 00 00\n*\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+// ── bounded block rendering and non-stalling live input ───────────────────
+
+{
+  // The rendering, not the input, is what would blow up here: refused before
+  // /dev/zero is opened, so an endless device cannot be read either.
+  const r = await sh(`hexdump -e '134217728/1 "%02x"' /dev/zero`);
+  check('a repetition count whose block cannot fit is refused loudly', r.exitCode !== 0 &&
+      r.stderr === 'hexdump: format renders 268435456 characters per block, over the 1048576 limit\n',
+    `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  const r = await sh(`hexdump -e '"%100000000d"' /dev/zero`);
+  check('a field width whose block cannot fit is refused loudly', r.exitCode !== 0 &&
+      r.stderr === 'hexdump: format renders 100000000 characters per block, over the 1048576 limit\n',
+    `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  // A narrow field cannot shrink the value it prints: util-linux renders
+  // 4294967295 for `%1u` over four bytes, so the cap sizes conversions by
+  // their natural maximum rather than by the width the format asks for.
+  const r = await sh(`hexdump -e '1048576/4 "%1u"' /dev/zero`);
+  check('a narrow field width cannot understate the block size', r.exitCode !== 0 &&
+      r.stderr === 'hexdump: format renders 10485760 characters per block, over the 1048576 limit\n',
+    `exit=${r.exitCode} stderr=${JSON.stringify(r.stderr)}`);
+}
+
+{
+  // A live producer that has written one byte and nothing more. The dump must
+  // render it without waiting for a full pull window or for EOF.
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  let handed = false;
+  const sparse = Object.assign(Object.create(null), {
+    read: async () => {
+      if (handed) { await gate; return null; }
+      handed = true;
+      return 'A';
+    },
+    readBytes: async () => {
+      if (handed) { await gate; return null; }
+      handed = true;
+      return bytes([0x41]);
+    },
+  });
+  const hexdumpCmd = await box.commands.registry.resolve('hexdump');
+  let outText = '';
+  const running = hexdumpCmd({
+    args: ['-v', '-e', '1/1 "%02x"'],
+    cwd: '/tmp',
+    env: {},
+    pid: 1,
+    cred: CRED_KERNEL,
+    vfs: rawVfs.as(CRED_KERNEL),
+    stdin: sparse,
+    stdout: { write: (t) => { outText += t; } },
+    stderr: { write: () => {} },
+    signal: new AbortController().signal,
+    setUmask: () => {},
+    runAs: async () => 0,
+  });
+  const deadline = Date.now() + 2000;
+  while (outText === '' && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  check('a sparse live producer renders its first byte before EOF', outText === '41',
+    `stdout=${JSON.stringify(outText)}`);
+  release();
+  await running;
+}
+
+{
+  // A text-only reader reports EOF with null; encoding that into an empty
+  // chunk used to spin here forever.
+  const nullOnly = Object.assign(Object.create(null), { read: async () => null });
+  const headCmd = await box.commands.registry.resolve('head');
+  let outText = '';
+  let timer;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('head -c spun on a null read')), 2000);
+  });
+  const exitCode = await Promise.race([
+    headCmd({
+      args: ['-c', '1'],
+      cwd: '/tmp',
+      env: {},
+      pid: 1,
+      cred: CRED_KERNEL,
+      vfs: rawVfs.as(CRED_KERNEL),
+      stdin: nullOnly,
+      stdout: { write: (t) => { outText += t; } },
+      stderr: { write: () => {} },
+      signal: new AbortController().signal,
+      setUmask: () => {},
+      runAs: async () => 0,
+    }),
+    guard,
+  ]);
+  clearTimeout(timer);
+  check('head -c stops at a text-only reader EOF', exitCode === 0 && outText === '',
+    `exit=${exitCode} stdout=${JSON.stringify(outText)}`);
+}
+
+{
+  const r = await sh('head -c 1 < /dev/null; echo STATUS:$?');
+  check('head -c over an empty redirect ends immediately', r.exitCode === 0 &&
+      r.stdout === 'STATUS:0\n',
+    `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+}
+
 box.destroy();
 
 console.log(failures.length === 0 ? `\nALL PASS (${checks} checks)` : `\n${failures.length} FAILED (${checks} checks)`);

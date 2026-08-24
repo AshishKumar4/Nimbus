@@ -24,8 +24,11 @@ export declare class TerminalStdin implements TerminalInputStream {
     read(): Promise<string | null>;
     readLine(): Promise<string | null>;
     /**
-     * Bounded byte read; always makes progress while data remains, splitting
-     * encoded code points across successive calls when maxLength demands it.
+     * Bounded byte read: returns whatever the user has already typed, capped
+     * at maxLength. maxLength bounds the result, it is never a fill target —
+     * a command reading bytes must not stall until maxLength arrive. A larger
+     * queued chunk keeps only its first maxLength bytes; the remainder stays
+     * queued, so `dd bs=1` over `é` still yields c3, then a9.
      */
     readBytes(maxLength: number): Promise<Uint8Array | null>;
     /** Read all remaining input until EOF, joined together. */

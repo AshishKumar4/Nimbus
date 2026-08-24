@@ -17,10 +17,11 @@
 /**
  * A command's output destination.
  *
- * `writeBytes` is present on sinks that store bytes verbatim (files). Sinks
- * that are inherently textual — the terminal, shell pipes — omit it and
- * receive decoded text instead. This is a real capability difference, not a
- * fallback: a terminal has no way to hold a byte that is not text.
+ * `writeBytes` is present on sinks that store bytes verbatim — files,
+ * `/dev/null`, and shell pipes, which carry the producer's exact bytes.
+ * Sinks without it take decoded text instead. This is a real capability
+ * difference, not a fallback: a terminal has no way to hold a byte that is
+ * not text.
  */
 export interface ByteSink {
     write(text: string): void;
