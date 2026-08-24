@@ -78,13 +78,12 @@ export class OpenTUIWasmBackend {
      * semantics), so each `dlopen`'d symbol call frees what was allocated before
      * it. Without this a per-frame `rgbaPtr(color)` would leak linear memory.
      *
-     * `view` is the source ArrayBufferView when the caller passed a writable one:
-     * native FFI `ptr(view)` yields a live pointer into the view's storage, so
-     * after the symbol call the view must reflect anything Zig wrote into it. Many
-     * FFIRenderLib wrappers materialize OUT-buffers this way — `getCursorState`,
-     * `getTerminalCapabilities`, `getRenderStats`, the span-feed's
-     * `streamDrainSpans(ptr(outBuffer))`, every `editBufferGet*`/`editorViewGet*` —
-     * so the claimed-scratch release copies these back before freeing.
+     * `view` is a writable byte view over the caller's original storage.
+     * Native `ptr(value)` exposes live memory for both ArrayBuffer and typed-array
+     * inputs, so every transient allocation copies back after the symbol call.
+     * OpenTUI's struct getters use bare ArrayBuffers (`LogicalCursorStruct`,
+     * `VisualCursorStruct`, stats, terminal capabilities), while span-feed drains
+     * use typed arrays. Both forms must observe Zig's writes.
      */
     #pendingPtrScratch = [];
     /**
@@ -176,12 +175,10 @@ export class OpenTUIWasmBackend {
     // allocation as transient scratch that the next symbol call frees (see
     // `#bindSymbol`). This keeps a per-frame `rgbaPtr(color)` loop leak-free.
     //
-    // A writable ArrayBufferView is also an OUT-buffer here: native `ptr(view)` is
-    // a live pointer into the view's storage, so after the call the view must
-    // reflect Zig's writes. We record the source view so the claimed-scratch
-    // release copies it back (the span-feed `streamDrainSpans(ptr(drainBuffer))`
-    // and every FFIRenderLib `ptr(outBuffer)`/`ptr(cursorBuffer)`/`ptr(statsBuffer)`
-    // getter depend on this). Read-only ArrayBuffers carry a null view (copy-in only).
+    // Every ArrayBuffer and ArrayBufferView is potentially an OUT-buffer:
+    // native `ptr(value)` is a live pointer into the same storage. Copy the
+    // arena bytes back after the call so bare struct buffers and typed-array
+    // windows have identical semantics.
     ptr(value) {
         const { bytes, byteOffset, byteLength } = viewBytes(value);
         const size = byteLength === 0 ? ARENA_ALIGN : byteLength;
@@ -192,7 +189,7 @@ export class OpenTUIWasmBackend {
         this.#pendingPtrScratch.push({
             offset,
             size,
-            view: ArrayBuffer.isView(value) ? value : null,
+            view: ArrayBuffer.isView(value) ? value : new Uint8Array(value),
         });
         return offset;
     }
@@ -336,8 +333,13 @@ export class OpenTUIWasmBackend {
                     scratchBytes += s.size;
                 diag.rec(name, this.#exports.memory.buffer.byteLength - memBefore, marshaled, scratchBytes);
             }
-            if (returns === 'u64' || returns === 'i64') {
-                return typeof result === 'bigint' ? result : BigInt(result);
+            if (returns === 'u64') {
+                const value = typeof result === 'bigint' ? result : BigInt(result);
+                return BigInt.asUintN(64, value);
+            }
+            if (returns === 'i64') {
+                const value = typeof result === 'bigint' ? result : BigInt(result);
+                return BigInt.asIntN(64, value);
             }
             return result;
         };

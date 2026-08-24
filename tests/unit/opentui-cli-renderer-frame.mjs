@@ -193,6 +193,38 @@ try {
   assert.equal(stdin.isRaw, true, 'renderer setupTerminal did not put stdin into raw mode');
   console.log('  [1] createCliRenderer() built a CliRenderer over the wasm backend (no OOB; span-feed output path; raw mode engaged)');
 
+  // ── attached-TTY editing: the high-level Textarea path OpenCode uses ──────
+  // OpenTUI's getters pass bare ArrayBuffers through backend.ptr(), and an
+  // empty selection is a u64 all-ones sentinel. Losing copy-back or treating
+  // that u64 as signed leaves the cursor at column zero: text appends, but
+  // arrows jump to the start and backspace deletes nothing.
+  const textarea = new otui.TextareaRenderable(renderer, {
+    id: 'cursor-probe',
+    width: 60,
+    height: 3,
+  });
+  renderer.root.add(textarea);
+  textarea.focus();
+  for (const char of 'abcd') {
+    stdin.emit('data', Buffer.from(char));
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.equal(textarea.plainText, 'abcd');
+  assert.equal(textarea.cursorOffset, 4);
+  stdin.emit('data', Buffer.from('\x1b[D'));
+  await new Promise((r) => setTimeout(r, 25));
+  stdin.emit('data', Buffer.from('\x1b[D'));
+  await new Promise((r) => setTimeout(r, 25));
+  stdin.emit('data', Buffer.from('X'));
+  await new Promise((r) => setTimeout(r, 25));
+  assert.equal(textarea.plainText, 'abXcd', 'left-arrow keys did not move the OpenTUI cursor');
+  assert.equal(textarea.cursorOffset, 3);
+  stdin.emit('data', Buffer.from('\x7f'));
+  await new Promise((r) => setTimeout(r, 25));
+  assert.equal(textarea.plainText, 'abcd', 'backspace did not delete before the OpenTUI cursor');
+  assert.equal(textarea.cursorOffset, 2);
+  console.log('  [2] Textarea cursor, arrow keys, and backspace match vanilla OpenTUI');
+
   // ── draw known content onto the frame buffer and drive frames. loop() runs
   //    the render pipeline → lib.render → the Zig core emits the frame ANSI into
   //    the span feed → feed.onData → our stdout sink. ──
@@ -210,7 +242,7 @@ try {
 
   // ── assert real ANSI escape sequences were emitted ──
   assert.ok(/\x1b\[/.test(out), 'no CSI escape sequences in renderer output');
-  console.log(`  [2] renderer emitted ${out.length} bytes through the span-feed → stdout seam — real ANSI present`);
+  console.log(`  [3] renderer emitted ${out.length} bytes through the span-feed → stdout seam — real ANSI present`);
 
   // ── assert the drawn content reached the frame ──
   assert.ok(out.includes(MARKER), `drawn content "${MARKER}" not found in the rendered frame (${out.length}B)`);
@@ -220,12 +252,12 @@ try {
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
     .replace(/\x1b./g, '');
   assert.ok(printable.includes(MARKER), `"${MARKER}" appeared only inside escape sequences, not as drawn frame content`);
-  console.log(`  [3] drawn content "${MARKER}" rendered into the frame grid — the high-level renderer drew through the backend`);
+  console.log(`  [4] drawn content "${MARKER}" rendered into the frame grid — the high-level renderer drew through the backend`);
 
   // ── clean teardown (destroy restores terminal state through the backend) ──
   renderer.destroy();
   renderer = null;
-  console.log('  [4] renderer.destroy() completed cleanly (terminal-restore path ran through the backend)');
+  console.log('  [5] renderer.destroy() completed cleanly (terminal-restore path ran through the backend)');
 
   console.log("opentui-cli-renderer-frame OK: opencode's real createCliRenderer path renders ANSI frames with content through the Nimbus wasm backend's span feed");
 } finally {

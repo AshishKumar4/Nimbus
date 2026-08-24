@@ -91,7 +91,31 @@ drawn = drawn.replace(/ +/g, ' ').trim();
 assert.ok(drawn.includes('hello facet'), `facet backend draw/liveView lost data: ${JSON.stringify(drawn)}`);
 console.log('  [2] facet backend arena copy-in + liveView round-tripped the drawn text');
 
-// ── Parity 3: span-feed render produces ANSI through the 3 token callbacks ────
+// ── Parity 3: bare ArrayBuffer out-params copy back cursor structs ───────────
+// OpenTUI's high-level EditBuffer/EditorView getters allocate bare
+// ArrayBuffers, pass backend.ptr(buffer), then unpack the same buffer. A
+// copy-in-only ptr() leaves every cursor at zero: text appends, but arrows and
+// backspace act at the start of the prompt.
+const edit = s.createEditBuffer(1, null);
+const editorView = s.createEditorView(edit, 80, 24);
+assert.equal(s.editorViewGetSelection(editorView), 0xffffffffffffffffn,
+  'u64 selection sentinel must preserve unsigned 64-bit return semantics');
+const editText = encoder.encode('abcd');
+s.editBufferInsertText(edit, editText, editText.length);
+const logicalCursor = new ArrayBuffer(12);
+s.editBufferGetCursorPosition(edit, backend.ptr(logicalCursor));
+assert.deepEqual([...new Uint32Array(logicalCursor)], [0, 4, 4],
+  'bare ArrayBuffer ptr() did not copy the logical cursor out-param back');
+const visualCursor = new ArrayBuffer(20);
+s.editorViewGetVisualCursor(editorView, backend.ptr(visualCursor));
+assert.deepEqual([...new Uint32Array(visualCursor)], [0, 4, 0, 4, 4],
+  'bare ArrayBuffer ptr() did not copy the visual cursor out-param back');
+s.destroyEditorView(editorView);
+s.destroyEditBuffer(edit);
+console.log('  [3] bare ArrayBuffer out-params copied logical and visual cursors back');
+
+
+// ── Parity 4: span-feed render produces ANSI through the 3 token callbacks ────
 const streamEvents = [];
 const streamCb = lib.createCallback(
   (streamPtr, eventId, arg0, arg1) => streamEvents.push({ eventId, arg0, arg1 }),
@@ -112,7 +136,7 @@ const ansi = streamEvents
 assert.ok(ansi.includes('\x1b['), 'facet backend span feed produced no ANSI escapes');
 assert.ok(ansi.includes('hello facet'), 'facet backend span feed missing the drawn text');
 lib.close();
-console.log(`  [3] facet backend span-feed render produced ${ansi.length} ANSI bytes with the drawn text`);
+console.log(`  [4] facet backend span-feed render produced ${ansi.length} ANSI bytes with the drawn text`);
 
 console.log('opentui-facet-backend-parity OK: the .toString()-serialized facet backend ' +
   'matches the TS OpenTUIWasmBackend behavior (dlopen, arena, liveView, callbacks, render)');
