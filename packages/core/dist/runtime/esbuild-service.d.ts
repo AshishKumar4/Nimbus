@@ -100,7 +100,21 @@ export declare function getSharedRuntimeExternals(specifier: string): string[];
  * Unicode identifier tables.
  */
 export declare function hasTopLevelAwait(src: string): boolean;
-import type * as esbuild from 'esbuild-wasm';
+import type * as esbuild from 'esbuild-wasm/esm/browser.js';
+/**
+ * Load the esbuild-wasm namespace. Safe to call many times; concurrent
+ * callers share a single in-flight Promise, and a rejection clears the
+ * cache so a later call can retry.
+ *
+ * Exported so `tests/unit/esbuild-wasm-entrypoint.mjs` can drive the real
+ * specifier under a Node-style resolver. A test that restated the specifier
+ * would grade its own copy of it, and this defect reached production
+ * precisely because nothing graded the resolution.
+ *
+ * The specifier stays a literal: a computed one would defeat the host
+ * bundler's static analysis and leave the module out of the deployed worker.
+ */
+export declare function loadEsbuild(): Promise<typeof esbuild>;
 export interface TransformResult {
     code: string;
     map: string;
