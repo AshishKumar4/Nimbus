@@ -24,6 +24,7 @@
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 
 import { loadEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 
@@ -36,9 +37,12 @@ for (const name of ['initialize', 'transform', 'build', 'stop']) {
 
 // The wasm the supervisor hands to initialize() is a compiled module. The
 // host bundler produces it from a static `.wasm` import; here we compile the
-// installed binary, which is the same bytes.
+// installed binary, which is the same bytes. Resolve it from the package that
+// declares the dependency: Bun's isolated install keeps esbuild-wasm out of
+// the workspace root, so a resolution from tests/ finds nothing.
+const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const wasmModule = await WebAssembly.compile(
-  await readFile(new URL(import.meta.resolve('esbuild-wasm/esbuild.wasm'))),
+  await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm')),
 );
 assert.ok(wasmModule instanceof WebAssembly.Module, 'esbuild.wasm compiles');
 
