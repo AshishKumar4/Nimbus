@@ -15,9 +15,9 @@ import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs
 import { type VfsAcquireResult, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
+import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';

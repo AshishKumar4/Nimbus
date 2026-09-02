@@ -20,6 +20,8 @@ import { CRED_KERNEL } from './os-contracts.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
+import { tokenizer, tokTypes } from 'acorn';
+import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -52,7 +54,7 @@ import { errorText } from '../_shared/error-text.js';
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
  */
-export const BUNDLER_VERSION = 'v8';
+export const BUNDLER_VERSION = 'v9';
 // ── Shared-runtime externals ────────────────────────────────────────────
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
@@ -140,95 +142,6 @@ export function getSharedRuntimeExternals(specifier) {
     });
 }
 /**
- * Detect top-level await in source. Used by `EsbuildService.transform`
- * to decide whether to async-IIFE-wrap CJS-target sources (see
- * transform()'s header comment).
- *
- * Token scan over a comment-and-string-stripped source. Tracks paren
- * depth AND function-body depth so a `{` inside a parameter list (a
- * default-value object literal — `async function f(opts = {})`) is NOT
- * mistaken for the function body. The earlier heuristic lacked the paren
- * guard: the `= {}` braces consumed the body-tracking slot, leaving the
- * real body untracked so an internal `await` read as top-level. That
- * wrongly routed such files (e.g. @bluwy/giget-core's
- * download-template.js, reached by create-astro) into the two-pass
- * ESM→require rewrite, whose assembled output still carried export/import
- * statements → "Cannot use import statement outside a module" at startup.
- *
- * Arrow bodies are distinguished from arrow expression bodies (the
- * `arrowPending` flag): only a `{` immediately following `=>` opens a
- * function scope. The idiomatic object-returning arrow `x => ({ ... })`
- * has its `{` at parenDepth 1, so it opens no body slot — otherwise the
- * leaked slot would be consumed by a later top-level `{ ... }` block,
- * making a real top-level `await` inside it read as non-TLA (false
- * negative) and routing genuine ESM-with-TLA into the wrong transform.
- *
- * A regex/token scan (not acorn) is kept here deliberately: pulling
- * acorn into the esbuild-service bundle chunk duplicates its ~15 KiB
- * Unicode identifier tables.
- */
-export function hasTopLevelAwait(src) {
-    if (!src || src.indexOf('await') === -1)
-        return false;
-    const stripped = stripCommentsAndStrings(src);
-    // Tokens: keywords, arrow, and each bracket kind. `parenDepth` rises
-    // inside `(...)`; a `{` only opens a function body when a `function`/
-    // `=>` is pending AND we're at parenDepth 0 (past the param list).
-    const re = /\b(await|function|class)\b|=>|\{|\}|\(|\)/g;
-    const fnEntryDepths = [];
-    let depth = 0;
-    let parenDepth = 0;
-    let pendingFn = 0;
-    // An arrow can have either a block body (`=> { ... }`) — which opens a
-    // function scope — or an expression body (`=> expr`), which does not.
-    // We can only tell which by looking at the token right after `=>`: a
-    // block body has `{` as its very next token. `arrowPending` carries
-    // that "the next `{` (and only an immediately-following `{`) is this
-    // arrow's body" intent, separately from `pendingFn` so the idiomatic
-    // `x => ({ ... })` (object-returning expression body, `{` at parenDepth
-    // 1) does not leak a body slot onto a later top-level block.
-    let arrowPending = false;
-    for (let m = re.exec(stripped); m !== null; m = re.exec(stripped)) {
-        const tok = m[0];
-        if (arrowPending && tok !== '{')
-            arrowPending = false;
-        if (tok === '(') {
-            parenDepth++;
-        }
-        else if (tok === ')') {
-            if (parenDepth > 0)
-                parenDepth--;
-        }
-        else if (tok === '{') {
-            depth++;
-            if (arrowPending) {
-                fnEntryDepths.push(depth);
-                arrowPending = false;
-            }
-            else if (pendingFn > 0 && parenDepth === 0) {
-                fnEntryDepths.push(depth);
-                pendingFn--;
-            }
-        }
-        else if (tok === '}') {
-            if (fnEntryDepths.length > 0 && fnEntryDepths[fnEntryDepths.length - 1] === depth)
-                fnEntryDepths.pop();
-            depth--;
-        }
-        else if (tok === 'function' || tok === 'class') {
-            pendingFn++;
-        }
-        else if (tok === '=>') {
-            arrowPending = true;
-        }
-        else if (tok === 'await') {
-            if (fnEntryDepths.length === 0)
-                return true;
-        }
-    }
-    return false;
-}
-/**
  * Cheap heuristic: does the source contain a top-level ESM `import`
  * statement? Used by `EsbuildService.transform` to detect sources that
  * cannot be IIFE-wrapped as-is.
@@ -261,10 +174,8 @@ export function hasTopLevelAwait(src) {
  * EXCLUDED — those are expressions, legal anywhere including IIFE
  * bodies, and need no rewrite.
  *
- * Operates on the comment-and-string-stripped source so commented-out
- * imports and "import" appearing inside string literals don't trigger.
- * We reuse the comment/string stripper from `hasTopLevelAwait`'s pass
- * — see `stripCommentsAndStrings` below.
+ * Operates on comment-and-string-stripped source so commented-out imports
+ * and "import" inside string literals do not trigger.
  */
 function hasEsmImports(src) {
     if (!src || src.indexOf('import') === -1)
@@ -289,10 +200,8 @@ function hasEsmExports(src) {
  * source, replacing each with a single space. The result is byte-aligned
  * with the input on a per-line basis (newlines are preserved), so error
  * line numbers from downstream parsers still align with the original.
- *
- * Shared by `hasTopLevelAwait` (which had this inline) and
- * `hasEsmImports`. Pure function — no caching needed for the small
- * inputs we see (typical .mjs entry-point: <2KiB).
+ * Shared by the import/export classifiers. Pure function — no caching needed
+ * for the small entry points that reach the true-TLA fallback.
  */
 function stripCommentsAndStrings(src) {
     let stripped = '';
@@ -304,9 +213,8 @@ function stripCommentsAndStrings(src) {
     // start-of-file). Pre-fix the stripper had no regex awareness, so
     // patterns like `var X = /^(?:'…)/` contained an unmatched `'` that
     // bit it as a string opener that didn't close until many lines
-    // later — corrupting every downstream classifier (export-scanner,
-    // hasEsmImports, hasTopLevelAwait). Real-world bite: sv-utils@0.0.3
-    // index.mjs has dozens of these regex literals.
+    // later — corrupting the import/export classifiers. Real-world bite:
+    // sv-utils@0.0.3 index.mjs has dozens of these regex literals.
     let lastNonWsChar = '';
     const recordOut = (ch) => {
         if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') {
@@ -559,7 +467,7 @@ function convertEsmImportsToRequire(src) {
             continue;
         }
         // Side-effect import: `import "m";` / `import 'm';`
-        let m = line.match(/^[ \t]*import\s+["']([^"']+)["']\s*;?\s*$/);
+        let m = line.match(/^[ \t]*import\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
             requires.push(`require(${JSON.stringify(m[1])});`);
             continue;
@@ -572,14 +480,14 @@ function convertEsmImportsToRequire(src) {
         // statement survived into the async-IIFE wrap → SyntaxError
         // "import statement outside module" at facet pre-compile.
         // Default + namespace: `import x, * as ns from "m";`
-        m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+        m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
             const def = m[1], ns = m[2], mod = m[3];
             requires.push(`const ${ns} = require(${JSON.stringify(mod)}); const ${def} = ${ns}.__esModule ? ${ns}.default : ${ns};`);
             continue;
         }
         // Default + named: `import x, { a, b as c } from "m";`
-        m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+        m = line.match(/^[ \t]*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
             const def = m[1], bindings = m[2], mod = m[3];
             const tmp = `_nimbus_m_${counter++}`;
@@ -593,13 +501,13 @@ function convertEsmImportsToRequire(src) {
             continue;
         }
         // Namespace: `import * as ns from "m";`
-        m = line.match(/^[ \t]*import\s+\*\s+as\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+        m = line.match(/^[ \t]*import\s*\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
             requires.push(`const ${m[1]} = require(${JSON.stringify(m[2])});`);
             continue;
         }
         // Named only: `import { a, b as c } from "m";`
-        m = line.match(/^[ \t]*import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+        m = line.match(/^[ \t]*import\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
             const bindings = m[1], mod = m[2];
             const named = bindings.split(',').map((b) => {
@@ -612,7 +520,7 @@ function convertEsmImportsToRequire(src) {
             continue;
         }
         // Default only: `import x from "m";`
-        m = line.match(/^[ \t]*import\s+([\w$]+)\s+from\s+["']([^"']+)["']\s*;?\s*$/);
+        m = line.match(/^[ \t]*import\s+([\w$]+)\s+from\s*["']([^"']+)["']\s*;?\s*$/);
         if (m) {
             const def = m[1], mod = m[2];
             requires.push(`const ${def} = (() => { const _m = require(${JSON.stringify(mod)}); return _m && _m.__esModule ? _m.default : _m; })();`);
@@ -801,6 +709,367 @@ function convertEsmImportsToRequire(src) {
     }
     return { requires: requires.join('\n'), body: out.join('\n') };
 }
+function topLevelModuleDeclarationRanges(source) {
+    try {
+        const tokens = tokenizer(source, {
+            ecmaVersion: 'latest',
+            sourceType: 'module',
+            allowHashBang: true,
+        });
+        const ranges = [];
+        let active = null;
+        let braces = 0;
+        let parens = 0;
+        let brackets = 0;
+        const updateDepth = (type) => {
+            if (type === tokTypes.braceL || type === tokTypes.dollarBraceL)
+                braces++;
+            else if (type === tokTypes.braceR)
+                braces = Math.max(0, braces - 1);
+            else if (type === tokTypes.parenL)
+                parens++;
+            else if (type === tokTypes.parenR)
+                parens = Math.max(0, parens - 1);
+            else if (type === tokTypes.bracketL)
+                brackets++;
+            else if (type === tokTypes.bracketR)
+                brackets = Math.max(0, brackets - 1);
+        };
+        while (true) {
+            const token = tokens.getToken();
+            const type = token.type;
+            if (type === tokTypes.eof)
+                return active ? null : ranges;
+            if (active) {
+                updateDepth(type);
+                if (type === tokTypes.semi && braces === 0 && parens === 0 && brackets === 0) {
+                    ranges.push({ ...active, end: token.end });
+                    active = null;
+                }
+                continue;
+            }
+            const topLevel = braces === 0 && parens === 0 && brackets === 0;
+            if (topLevel && type === tokTypes._import) {
+                const next = tokens.getToken();
+                if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) {
+                    active = { start: token.start, kind: 'import' };
+                }
+                updateDepth(next.type);
+                continue;
+            }
+            if (topLevel && type === tokTypes._export) {
+                active = { start: token.start, kind: 'export' };
+                continue;
+            }
+            updateDepth(type);
+        }
+    }
+    catch {
+        return null;
+    }
+}
+function hasUnscopedAwait(source) {
+    try {
+        const tokens = tokenizer(source, {
+            ecmaVersion: 'latest',
+            sourceType: 'module',
+            allowHashBang: true,
+        });
+        const functionBraces = [];
+        const functionParenDepths = [];
+        const methodParenCandidates = [];
+        const arrowExpressions = [];
+        let bracketDepth = 0;
+        let pendingMethodBody = false;
+        let pendingArrowBody = false;
+        let pendingFunctionKeyword = false;
+        let previous = tokTypes.eof;
+        let previousEnd = 0;
+        while (true) {
+            const token = tokens.getToken();
+            const type = token.type;
+            if (type === tokTypes.eof)
+                return false;
+            if (pendingMethodBody && type !== tokTypes.braceL)
+                pendingMethodBody = false;
+            if (pendingArrowBody && type !== tokTypes.braceL) {
+                arrowExpressions.push({
+                    parens: methodParenCandidates.length,
+                    braces: functionBraces.length,
+                    brackets: bracketDepth,
+                });
+                pendingArrowBody = false;
+            }
+            if (pendingFunctionKeyword) {
+                if (type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
+                    || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq)
+                    functionParenDepths.pop();
+                pendingFunctionKeyword = false;
+            }
+            if (source.slice(previousEnd, token.start).includes('\n')) {
+                while (arrowExpressions.length > 0) {
+                    const arrow = arrowExpressions[arrowExpressions.length - 1];
+                    if (methodParenCandidates.length !== arrow.parens
+                        || functionBraces.length !== arrow.braces
+                        || bracketDepth !== arrow.brackets)
+                        break;
+                    arrowExpressions.pop();
+                }
+            }
+            while (arrowExpressions.length > 0) {
+                const arrow = arrowExpressions[arrowExpressions.length - 1];
+                const delimited = (type === tokTypes.semi || type === tokTypes.comma)
+                    && methodParenCandidates.length === arrow.parens
+                    && functionBraces.length === arrow.braces
+                    && bracketDepth === arrow.brackets;
+                const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
+                    || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
+                    || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
+                if (!delimited && !closed)
+                    break;
+                arrowExpressions.pop();
+            }
+            if (type === tokTypes.name
+                && source.slice(token.start, token.end) === 'await'
+                && !functionBraces.includes(true)
+                && arrowExpressions.length === 0)
+                return true;
+            if (type === tokTypes._function || type === tokTypes._class) {
+                if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
+                    functionParenDepths.push(methodParenCandidates.length);
+                    pendingFunctionKeyword = true;
+                }
+            }
+            else if (type === tokTypes.arrow) {
+                pendingArrowBody = true;
+            }
+            else if (type === tokTypes.parenL) {
+                methodParenCandidates.push(functionBraces.length > 0
+                    && (previous === tokTypes.name || previous === tokTypes.string
+                        || previous === tokTypes.num || previous === tokTypes.bracketR));
+            }
+            else if (type === tokTypes.parenR) {
+                pendingMethodBody = methodParenCandidates.pop() === true;
+            }
+            else if (type === tokTypes.bracketL) {
+                bracketDepth++;
+            }
+            else if (type === tokTypes.bracketR) {
+                bracketDepth = Math.max(0, bracketDepth - 1);
+            }
+            else if (type === tokTypes.dollarBraceL) {
+                functionBraces.push(false);
+            }
+            else if (type === tokTypes.braceL) {
+                const functionBody = pendingArrowBody
+                    || pendingMethodBody
+                    || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
+                if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
+                    functionParenDepths.pop();
+                }
+                functionBraces.push(functionBody);
+                pendingArrowBody = false;
+                pendingMethodBody = false;
+            }
+            else if (type === tokTypes.braceR) {
+                functionBraces.pop();
+            }
+            previousEnd = token.end;
+            previous = type;
+        }
+    }
+    catch {
+        return true;
+    }
+}
+function convertBundledModuleDeclarations(snippets) {
+    const imports = [];
+    const exports = [];
+    let importIndex = 0;
+    let markedEsm = false;
+    for (const snippet of snippets) {
+        const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
+        if (bindingList && !/\}\s*from\b/.test(snippet)) {
+            if (!markedEsm) {
+                exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+                markedEsm = true;
+            }
+            for (const binding of bindingList[1].split(',')) {
+                const match = binding.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
+                if (!match)
+                    return null;
+                const local = match[1];
+                const exported = match[2] || local;
+                exports.push(`Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`);
+            }
+            continue;
+        }
+        let ast;
+        try {
+            ast = parseJavaScriptModule(snippet);
+        }
+        catch {
+            return null;
+        }
+        const body = nodeList(ast, 'body');
+        if (body.length !== 1)
+            return null;
+        const declaration = body[0];
+        if (declaration.type === 'ImportDeclaration') {
+            const source = literalStringValue(nodeProp(declaration, 'source'));
+            if (!source)
+                return null;
+            const specifiers = nodeList(declaration, 'specifiers');
+            if (specifiers.length === 0) {
+                imports.push(`module.require(${JSON.stringify(source)});`);
+                continue;
+            }
+            const moduleName = `__nimbus_import_${importIndex++}`;
+            imports.push(`const ${moduleName} = module.require(${JSON.stringify(source)});`);
+            for (const specifier of specifiers) {
+                const local = nodeName(nodeProp(specifier, 'local'));
+                if (!local)
+                    return null;
+                if (specifier.type === 'ImportDefaultSpecifier') {
+                    imports.push(`const ${local} = ${moduleName} && ${moduleName}.__esModule ? ${moduleName}.default : ${moduleName};`);
+                }
+                else if (specifier.type === 'ImportNamespaceSpecifier') {
+                    imports.push(`const ${local} = ${moduleName};`);
+                }
+                else if (specifier.type === 'ImportSpecifier') {
+                    const imported = nodeName(nodeProp(specifier, 'imported'));
+                    if (!imported)
+                        return null;
+                    imports.push(`const ${local} = ${moduleName}[${JSON.stringify(imported)}];`);
+                }
+                else {
+                    return null;
+                }
+            }
+            continue;
+        }
+        if (declaration.type === 'ExportNamedDeclaration') {
+            if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration'))
+                return null;
+            if (!markedEsm) {
+                exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+                markedEsm = true;
+            }
+            for (const specifier of nodeList(declaration, 'specifiers')) {
+                const local = nodeName(nodeProp(specifier, 'local'));
+                const exported = nodeName(nodeProp(specifier, 'exported'));
+                if (!local || !exported)
+                    return null;
+                exports.push(`Object.defineProperty(module.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`);
+            }
+            continue;
+        }
+        if (declaration.type === 'ExportDefaultDeclaration') {
+            const value = nodeProp(declaration, 'declaration');
+            if (!value || typeof value.start !== 'number' || typeof value.end !== 'number')
+                return null;
+            if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration')
+                return null;
+            if (!markedEsm) {
+                exports.push('Object.defineProperty(module.exports, "__esModule", { value: true });');
+                markedEsm = true;
+            }
+            exports.push(`Object.defineProperty(module.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`);
+            continue;
+        }
+        return null;
+    }
+    return { imports: imports.join('\n'), exports: exports.join('\n') };
+}
+function importMetaEdits(source, absoluteUrl) {
+    const edits = [];
+    try {
+        const tokens = tokenizer(source, {
+            ecmaVersion: 'latest',
+            sourceType: 'module',
+            allowHashBang: true,
+        });
+        while (true) {
+            const start = tokens.getToken();
+            if (start.type === tokTypes.eof)
+                return edits;
+            if (start.type !== tokTypes._import)
+                continue;
+            const dot1 = tokens.getToken();
+            if (dot1.type !== tokTypes.dot)
+                continue;
+            const meta = tokens.getToken();
+            if (meta.type !== tokTypes.name || source.slice(meta.start, meta.end) !== 'meta')
+                return null;
+            const dot2 = tokens.getToken();
+            if (dot2.type !== tokTypes.dot)
+                return null;
+            const property = tokens.getToken();
+            if (property.type !== tokTypes.name)
+                return null;
+            const propertyName = source.slice(property.start, property.end);
+            if (propertyName === 'url') {
+                edits.push({ start: start.start, end: property.end, text: JSON.stringify(absoluteUrl) });
+            }
+            else if (propertyName === 'resolve') {
+                edits.push({
+                    start: start.start,
+                    end: property.end,
+                    text: `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${JSON.stringify(absoluteUrl)}))`,
+                });
+            }
+            else {
+                return null;
+            }
+        }
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Converts bundler-emitted ESM without constructing an AST or loading
+ * esbuild-wasm. Returns null for module declarations that are not the compact,
+ * semicolon-terminated shapes emitted by current JS bundlers.
+ */
+export function rewriteBundledEsmToCjs(source, absoluteUrl) {
+    if (hasUnscopedAwait(source))
+        return null;
+    const declarations = topLevelModuleDeclarationRanges(source);
+    if (!declarations || declarations.length === 0)
+        return null;
+    const declarationSnippets = declarations.map(({ start, end }) => source.slice(start, end));
+    for (let i = 0; i < declarations.length; i++) {
+        if (/^[ \t]*export\s+default\b/.test(declarationSnippets[i])
+            && source.slice(declarations[i].end).trim() !== '')
+            return null;
+    }
+    const converted = convertBundledModuleDeclarations(declarationSnippets);
+    if (!converted)
+        return null;
+    const metaEdits = importMetaEdits(source, absoluteUrl);
+    if (!metaEdits)
+        return null;
+    const edits = [
+        ...declarations.map(({ start, end }) => ({ start, end, text: '' })),
+        ...metaEdits.filter((edit) => !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+    ].sort((a, b) => a.start - b.start);
+    const bodyParts = [];
+    let cursor = 0;
+    for (const edit of edits) {
+        if (edit.start < cursor)
+            return null;
+        bodyParts.push(source.slice(cursor, edit.start), edit.text);
+        cursor = edit.end;
+    }
+    bodyParts.push(source.slice(cursor));
+    const body = bodyParts.join('');
+    return {
+        code: converted.imports + '\n' + body + '\n' + converted.exports,
+        map: '',
+        warnings: [],
+    };
+}
 import esbuildWasmUrl from 'esbuild-wasm/esbuild.wasm';
 /**
  * Cached reference to the esbuild namespace. Populated on first
@@ -844,6 +1113,97 @@ export async function loadEsbuild() {
         throw e;
     }
 }
+async function transformWithEsbuild(esbuildApi, source, options) {
+    let code = source;
+    const format = options?.format || 'esm';
+    const loader = options?.loader || 'ts';
+    if (format === 'cjs') {
+        try {
+            const direct = await esbuildApi.transform(code, {
+                loader,
+                format,
+                target: options?.target || 'esnext',
+                sourcemap: options?.sourcemap ?? false,
+                minify: options?.minify ?? false,
+                jsx: options?.jsx,
+                jsxFactory: options?.jsxFactory,
+                jsxFragment: options?.jsxFragment,
+                tsconfigRaw: options?.tsconfigRaw,
+                define: options?.define,
+                supported: { 'dynamic-import': false },
+            });
+            return {
+                code: direct.code,
+                map: direct.map || '',
+                warnings: direct.warnings?.map((warning) => ({
+                    text: warning.text,
+                    location: warning.location,
+                })) || [],
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!/top-level await.*not supported.*cjs/i.test(message))
+                throw error;
+        }
+        if (hasEsmImports(code) || hasEsmExports(code)) {
+            const pass1 = await esbuildApi.transform(code, {
+                loader,
+                format: 'esm',
+                target: options?.target || 'esnext',
+                sourcemap: false,
+                minify: false,
+                jsx: options?.jsx,
+                jsxFactory: options?.jsxFactory,
+                jsxFragment: options?.jsxFragment,
+                tsconfigRaw: options?.tsconfigRaw,
+                define: options?.define,
+                supported: { 'dynamic-import': false },
+            });
+            const { requires, body } = convertEsmImportsToRequire(pass1.code);
+            return {
+                code: requires + '\nreturn (async () => {\n' + body + '\n})();\n',
+                map: '',
+                warnings: pass1.warnings?.map((warning) => ({
+                    text: warning.text,
+                    location: warning.location,
+                })) || [],
+            };
+        }
+        code = 'return (async () => {\n' + code + '\n})();\n';
+    }
+    const result = await esbuildApi.transform(code, {
+        loader,
+        format,
+        target: options?.target || 'esnext',
+        sourcemap: options?.sourcemap ?? false,
+        minify: options?.minify ?? false,
+        jsx: options?.jsx,
+        jsxFactory: options?.jsxFactory,
+        jsxFragment: options?.jsxFragment,
+        tsconfigRaw: options?.tsconfigRaw,
+        define: options?.define,
+        supported: { 'dynamic-import': false },
+    });
+    return {
+        code: result.code,
+        map: result.map || '',
+        warnings: result.warnings?.map((warning) => ({
+            text: warning.text,
+            location: warning.location,
+        })) || [],
+    };
+}
+/** Source needed by the slim Worker Loader transform isolate. */
+export function generateEsbuildTransformRuntimeSource() {
+    return [
+        stripCommentsAndStrings.toString(),
+        hasEsmImports.toString(),
+        hasEsmExports.toString(),
+        convertEsmImportsToRequire.toString(),
+        transformWithEsbuild.toString(),
+    ].join('\n');
+}
 // ── EsbuildService ──────────────────────────────────────────────────────
 export class EsbuildService {
     vfs;
@@ -852,7 +1212,7 @@ export class EsbuildService {
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     _esbuild = null;
     constructor(vfs) {
-        this.vfs = vfs.as(CRED_KERNEL);
+        this.vfs = vfs ? vfs.as(CRED_KERNEL) : null;
     }
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
@@ -994,82 +1354,7 @@ export class EsbuildService {
      */
     async transform(code, options) {
         await this.ensureInit();
-        const format = options?.format || 'esm';
-        const loader = options?.loader || 'ts';
-        // ── CJS + TLA + ESM module syntax: two-pass with module rewrite ──
-        // This precedes the simple TLA-only IIFE wrap. We test ESM module
-        // syntax first because the IIFE wrap is incompatible with import
-        // and export statements; if both conditions hold we MUST go through
-        // the rewrite path.
-        if (format === 'cjs' && hasTopLevelAwait(code) && (hasEsmImports(code) || hasEsmExports(code))) {
-            // Pass 1: emit ESM so esbuild accepts TLA + imports without complaint.
-            // We use the same loader/target so TS/JSX is handled here too.
-            const pass1 = await this._esbuild.transform(code, {
-                loader,
-                format: 'esm',
-                target: options?.target || 'esnext',
-                sourcemap: false, // pass-1 source map is discarded; pass-2 doesn't run esbuild
-                minify: false, // minify only on the final output if requested
-                jsx: options?.jsx,
-                jsxFactory: options?.jsxFactory,
-                jsxFragment: options?.jsxFragment,
-                tsconfigRaw: options?.tsconfigRaw,
-                define: options?.define,
-                // Dynamic-import lowering: rewrites `import(x)` to
-                // `Promise.resolve().then(() => __toESM(require(x)))` so the
-                // call routes through Nimbus's scopedRequire → VFS lookup
-                // instead of workerd's worker-module-map resolver (which only
-                // knows {'runner.js': workerCode}). Without this, every user
-                // dynamic import() rejects with "No such module ..." — and if
-                // user code has no .catch() (e.g. create-astro.mjs's
-                // `import('./dist/index.js').then(({main}) => main())`), the
-                // rejection is unhandled and the facet exits silently
-                supported: { 'dynamic-import': false },
-            });
-            const { requires, body } = convertEsmImportsToRequire(pass1.code);
-            const assembled = requires + '\n' +
-                'return (async () => {\n' +
-                body +
-                '\n})();\n';
-            return {
-                code: assembled,
-                map: '',
-                warnings: pass1.warnings?.map((w) => ({
-                    text: w.text,
-                    location: w.location,
-                })) || [],
-            };
-        }
-        // ── CJS + TLA (no ESM imports): single-pass IIFE wrap (P2 fix) ──
-        let sourceToTransform = code;
-        if (format === 'cjs' && hasTopLevelAwait(code)) {
-            sourceToTransform =
-                'return (async () => {\n' +
-                    code +
-                    '\n})();\n';
-        }
-        const result = await this._esbuild.transform(sourceToTransform, {
-            loader,
-            format,
-            target: options?.target || 'esnext',
-            sourcemap: options?.sourcemap ?? false,
-            minify: options?.minify ?? false,
-            jsx: options?.jsx,
-            jsxFactory: options?.jsxFactory,
-            jsxFragment: options?.jsxFragment,
-            tsconfigRaw: options?.tsconfigRaw,
-            define: options?.define,
-            // Dynamic-import lowering — see two-pass branch above for rationale.
-            supported: { 'dynamic-import': false },
-        });
-        return {
-            code: result.code,
-            map: result.map || '',
-            warnings: result.warnings?.map(w => ({
-                text: w.text,
-                location: w.location,
-            })) || [],
-        };
+        return transformWithEsbuild(this._esbuild, code, options);
     }
     /**
      * Bundle entry points from the VFS.
@@ -1112,13 +1397,18 @@ export class EsbuildService {
             warnings: result.warnings?.map(w => ({ text: w.text, location: w.location })) || [],
         };
     }
+    requireVfs() {
+        if (!this.vfs)
+            throw new Error('EsbuildService build requires a VFS');
+        return this.vfs;
+    }
     /**
      * VFS resolver plugin for esbuild.
      * Reads directly from the SqliteVFS (synchronous, co-located — no snapshot needed).
      * Handles: absolute paths, relative paths, bare specifiers (node_modules).
      */
     makeVfsPlugin() {
-        const vfs = this.vfs;
+        const vfs = this.requireVfs();
         const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
         const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
         // Path helpers shared with git-commands via ./vfs-path.ts.

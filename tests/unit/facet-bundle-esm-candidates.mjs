@@ -131,4 +131,50 @@ for (const [path, cell] of Object.entries(state.bundle)) {
 // Non-JS content stays byte-identical: the pass parses before it rewrites.
 assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
 
+// Sources at or above the transform isolation boundary must never initialize
+// esbuild-wasm in the session supervisor. Pi 0.84.3 introduced a 3.7 MiB ESM
+// chunk; transforming it beside the VFS snapshot exceeded the 128 MiB limit.
+{
+  const root = 'home/user/node_modules/large-esm';
+  const entry = `${root}/cli.js`;
+  const large = `${root}/large.js`;
+  const largeFiles = {
+    'home/user/package.json': JSON.stringify({ name: 'large-test' }),
+    [`${root}/package.json`]: JSON.stringify({ name: 'large-esm', type: 'module' }),
+    [entry]: 'import "./large.js";\n',
+    [large]: `const payload = "${'x'.repeat(600_000)}";\nexport{payload};\n`,
+  };
+  let isolatedCalls = 0;
+  const local = {
+    async transform(code) {
+      assert.ok(code.length < 512 * 1024, 'large source reached supervisor transform');
+      return { code: '/* local-cjs */\n', map: '', warnings: [] };
+    },
+  };
+  const isolated = async (code) => {
+    isolatedCalls++;
+    assert.ok(code.length >= 512 * 1024);
+    return { code: '/* isolated-cjs */\n', map: '', warnings: [] };
+  };
+  const largeState = await buildPrefetchBundle(
+    new FakeVfs(largeFiles), `/${entry}`, 'home/user', largeFiles[entry], local,
+    undefined, undefined, undefined, isolated,
+  );
+  assert.equal(isolatedCalls, 0, 'bounded bundler rewrite should avoid esbuild entirely');
+  assert.match(largeState.bundle[large], /Object\.defineProperty\(module\.exports, "payload"/);
+
+  const unsupported = `${root}/unsupported.js`;
+  const unsupportedFiles = {
+    ...largeFiles,
+    [entry]: 'import "./unsupported.js";\n',
+    [unsupported]: `export function payload() { return "${'x'.repeat(600_000)}"; }\n`,
+  };
+  const unsupportedState = await buildPrefetchBundle(
+    new FakeVfs(unsupportedFiles), `/${entry}`, 'home/user', unsupportedFiles[entry], local,
+    undefined, undefined, undefined, isolated,
+  );
+  assert.equal(isolatedCalls, 1, 'unsupported large syntax should use the isolated transform worker');
+  assert.equal(unsupportedState.bundle[unsupported], '/* isolated-cjs */\n');
+}
+
 console.log('facet-bundle-esm-candidates: ok');

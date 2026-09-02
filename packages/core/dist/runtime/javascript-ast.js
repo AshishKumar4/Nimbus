@@ -1,4 +1,4 @@
-import { parse } from 'acorn';
+import { parse, tokenizer, tokTypes } from 'acorn';
 export function parseJavaScriptModule(source) {
     return parse(source, {
         ecmaVersion: 'latest',
@@ -7,17 +7,55 @@ export function parseJavaScriptModule(source) {
     });
 }
 export function hasTopLevelModuleSyntax(source) {
-    let ast;
     try {
-        ast = parseJavaScriptModule(source);
+        const tokens = tokenizer(source, {
+            ecmaVersion: 'latest',
+            sourceType: 'module',
+            allowHashBang: true,
+        });
+        let braceDepth = 0;
+        let parenDepth = 0;
+        let bracketDepth = 0;
+        let previous;
+        const updateDepth = (type) => {
+            if (type === tokTypes.braceL || type === tokTypes.dollarBraceL)
+                braceDepth++;
+            else if (type === tokTypes.braceR)
+                braceDepth = Math.max(0, braceDepth - 1);
+            else if (type === tokTypes.parenL)
+                parenDepth++;
+            else if (type === tokTypes.parenR)
+                parenDepth = Math.max(0, parenDepth - 1);
+            else if (type === tokTypes.bracketL)
+                bracketDepth++;
+            else if (type === tokTypes.bracketR)
+                bracketDepth = Math.max(0, bracketDepth - 1);
+        };
+        while (true) {
+            const token = tokens.getToken();
+            const type = token.type;
+            if (type === tokTypes.eof)
+                return false;
+            const topLevel = braceDepth === 0 && parenDepth === 0 && bracketDepth === 0;
+            if (topLevel && previous !== tokTypes.dot) {
+                if (type === tokTypes._export)
+                    return true;
+                if (type === tokTypes._import) {
+                    const next = tokens.getToken();
+                    if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot)
+                        return true;
+                    updateDepth(next.type);
+                    previous = next.type;
+                    continue;
+                }
+            }
+            updateDepth(type);
+            previous = type;
+        }
     }
     catch {
         return false;
     }
-    return nodeList(ast, 'body').some((node) => node.type === 'ImportDeclaration' ||
-        node.type === 'ExportNamedDeclaration' ||
-        node.type === 'ExportDefaultDeclaration' ||
-        node.type === 'ExportAllDeclaration');
 }
 export function nodeList(node, key) {
     const value = node[key];

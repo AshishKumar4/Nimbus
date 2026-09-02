@@ -4,6 +4,7 @@
 // and leave `pi` runnable as a normal short command.
 
 import {
+  connectProcessTerminal,
   deleteSession,
   makeAsserter,
   mintSession,
@@ -70,6 +71,40 @@ try {
   a.check('pi --version exits as a short command after official install',
     /\b\d+\.\d+\.\d+\b/.test(checkText) && !/\[bin started \(long-running\)/.test(checkText),
     JSON.stringify(checkText.slice(-1200)));
+
+  const launch = await t.run('pi', 60_000);
+  const launchText = stripAnsi(launch.output);
+  const pid = Number(launchText.match(/\[bin started \(long-running\): pid=(\d+) cmd="pi"\]/)?.[1] || 0);
+  a.check('official install launches Pi as an attached TUI', pid > 0, JSON.stringify(launchText.slice(-1000)));
+  if (pid > 0) {
+    const proc = await connectProcessTerminal(sid, pid);
+    await proc.waitFor(
+      (out) => /pi v\d+\.\d+\.\d+|ctrl\+o|escape interrupt/.test(out),
+      90_000,
+      'Pi TUI chrome after official install',
+    );
+    a.check('officially installed Pi renders its TUI',
+      /pi v\d+\.\d+\.\d+|ctrl\+o|escape interrupt/.test(proc.output),
+      JSON.stringify(proc.output.slice(-1200)));
+    proc.input('installer-check');
+    let echoed = false;
+    try {
+      await proc.waitFor((out) => /installer-check/.test(out), 20_000, 'Pi input after official install');
+      echoed = true;
+    } catch { /* reported below */ }
+    a.check('officially installed Pi accepts input and stays alive',
+      echoed && !proc.closed && !proc.exit,
+      `echoed=${echoed} closed=${proc.closed} exit=${JSON.stringify(proc.exit)} `
+        + JSON.stringify(proc.output.slice(-1200)));
+    const shellAfter = await t.run('echo SHELL_SURVIVED_PI_INSTALLER_TUI', 30_000);
+    a.check('shell survives officially installed Pi TUI',
+      /SHELL_SURVIVED_PI_INSTALLER_TUI/.test(stripAnsi(shellAfter.output)),
+      JSON.stringify(stripAnsi(shellAfter.output).slice(-600)));
+    proc.signal('SIGTERM');
+    try { await proc.waitFor(() => !!proc.exit, 15_000, 'Pi SIGTERM exit'); }
+    catch { proc.input('\u0003'); }
+    try { proc.ws.close(); } catch {}
+  }
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);

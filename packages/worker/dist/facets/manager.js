@@ -31,7 +31,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { FencedWork, } from '@nimbus-sh/fabric/fenced-work.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, rewriteBundledEsmToCjs, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
@@ -46,6 +46,7 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
+const ISOLATED_ESM_TRANSFORM_MIN_BYTES = 512 * 1024;
 /**
  * Detect & restore a Uint8Array that's been JSON-mangled to a
  * {"0":n,"1":n,...} object during the result-envelope round-trip.
@@ -408,11 +409,11 @@ function __mkCompiledFn(code) {
     code = __nl >= 0 ? code.slice(__nl + 1) : "";
   }
   function renameIfDeclared(name) {
-    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
+    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "(?![$\\\\w])", "m");
     return re.test(code) ? name + "__nimbus_unused" : name;
   }
   const baseParams = [
-    "exports", "require", "module",
+    "exports", renameIfDeclared("require"), "module",
     renameIfDeclared("__filename"),
     renameIfDeclared("__dirname"),
   ];
@@ -687,11 +688,11 @@ const __NimbusHostResponse = globalThis.Response;
 
 function __mkCompiledFn(code) {
   function renameIfDeclared(name) {
-    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "\\\\b", "m");
+    const re = new RegExp("(?:^|\\\\n|;)\\\\s*(?:const|let|var|function|class)\\\\s+" + name + "(?![$\\\\w])", "m");
     return re.test(code) ? name + "__nimbus_unused" : name;
   }
   const baseParams = [
-    "exports", "require", "module",
+    "exports", renameIfDeclared("require"), "module",
     renameIfDeclared("__filename"),
     renameIfDeclared("__dirname"),
   ];
@@ -2828,7 +2829,7 @@ export function bundleTypescriptLoader(path) {
  *
  * Returns the count of files transformed (for diagnostics).
  */
-async function transformEsmInBundle(bundle, esbuild, pacer) {
+async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
     let transformed = 0;
     let failed = 0;
     // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
@@ -2841,8 +2842,11 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
         // esbuild.transform expect strings.
         if (typeof src !== 'string')
             continue;
-        if (bundleTypescriptLoader(path) === null && !looksLikeEsm(src))
-            continue;
+        if (bundleTypescriptLoader(path) === null) {
+            const esm = looksLikeEsm(src);
+            if (!esm)
+                continue;
+        }
         candidates.push(path);
     }
     for (const path of candidates) {
@@ -2876,12 +2880,18 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
             continue;
         }
         try {
-            const t = await esbuild.transform(src, {
+            const transformOptions = {
                 loader: bundleTypescriptLoader(path) ?? 'js',
                 format: 'cjs',
                 target: 'esnext',
                 define: importMetaDefines(absUrl),
-            });
+            };
+            const bounded = transformOptions.loader === 'js' && src.length >= ISOLATED_ESM_TRANSFORM_MIN_BYTES
+                ? rewriteBundledEsmToCjs(src, absUrl)
+                : null;
+            const t = bounded ?? (isolatedTransform && src.length >= ISOLATED_ESM_TRANSFORM_MIN_BYTES
+                ? await isolatedTransform(src, transformOptions)
+                : await esbuild.transform(src, transformOptions));
             const code = bindImportMetaResolve(t.code, absUrl);
             bundle[path] = code;
             __esmTransformCache.set(key, code);
@@ -2905,7 +2915,6 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
             // __compiledModules, and the failure surfaces at require time
             // with FULL diagnostic context. Net effect for users: the same
             // upstream tool still fails, but they now see WHY.
-            //
             // Probe: tests/behavioral/npm-create/new/create-astro-diagnostic.mjs
             // asserts the user-visible error contains "esbuild transform" so
             // future diagnostic regressions are caught.
@@ -2939,7 +2948,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer) {
+export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
     // resetting the DO three times. Take the budget the enrichment passes are
@@ -2949,14 +2958,14 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer);
+        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, isolatedTransform);
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer) {
+async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
@@ -3071,7 +3080,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //     "file was not pre-bundled" at request time.
     if (esbuild) {
         try {
-            await transformEsmInBundle(bundle, esbuild, pacer);
+            await transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform);
             // Recount bytes after the transform — CJS rebuilds can be larger
             // OR smaller than the ESM source. We don't try to thread totalBytes
             // through the transform because the eviction loop below recomputes
@@ -3413,7 +3422,7 @@ export class FacetManager {
             this.prefetchBundleCache.set(key, cached);
             return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
         }
-        const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile, this.residencyProfiles.get(key));
+        const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile, this.residencyProfiles.get(key), undefined, this.hooks.transformLargeEsm);
         vfsState.bundleKey = key;
         vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
@@ -3947,7 +3956,7 @@ export class FacetManager {
             this.imageStore.ensureDir();
         const processVfs = this.vfs?.as(entry.cred);
         const vfsState = processVfs
-            ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined)
+            ? await buildPrefetchBundle(processVfs, undefined, opts.cwd, '', this.esbuild || undefined, DEFAULT_FACET_BUNDLE_PROFILE, undefined, undefined, this.hooks.transformLargeEsm)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const vfsBundle = _serializeBundleForFacet(vfsState.bundle);
         assertStagedBundleFitsRpcPayload(vfsBundle, vfsState.bundle);
@@ -4545,7 +4554,7 @@ export class FacetManager {
         const __bundleStart = diagOn ? Date.now() : 0;
         const processVfs = this.vfs?.as(entry.cred);
         const vfsState = processVfs
-            ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile, undefined, pacer)
+            ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile, undefined, pacer, this.hooks.transformLargeEsm)
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const processEnv = opts.attachedTty

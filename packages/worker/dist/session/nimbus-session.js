@@ -16,6 +16,8 @@ import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { ESBUILD_TRANSFORM_WORKER_ID, esbuildTransformWorkerCode, } from '../facets/esbuild-transform.js';
+import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NpmInstaller } from '../npm/installer.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
@@ -889,6 +891,20 @@ export class NimbusSession extends CloudflareDurableObject {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
                 requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
                 notify: (line) => this._notifySession(line),
+                transformLargeEsm: async (code, options) => {
+                    const loader = Reflect.get(this.env, 'LOADER');
+                    if (!loader || typeof loader.get !== 'function') {
+                        throw new Error('Nimbus: env.LOADER unavailable for isolated esbuild transform');
+                    }
+                    const assets = Reflect.get(this.env, 'ASSETS');
+                    if (!assets || typeof assets.fetch !== 'function') {
+                        throw new Error('Nimbus: env.ASSETS unavailable for isolated esbuild transform');
+                    }
+                    const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () => esbuildTransformWorkerCode(await fetchEsbuildWasmBytes({ ASSETS: assets })));
+                    const transformClass = worker.getDurableObjectClass('EsbuildTransformFacet');
+                    const facet = this.ctx.facets.get(`esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`, async () => ({ class: transformClass }));
+                    return facet.transform(code, options);
+                },
                 onSpawn: (pid, command, longRunning) => {
                     const attachedTty = this.processes.get(pid)?.attachedTty === true;
                     if (longRunning) {

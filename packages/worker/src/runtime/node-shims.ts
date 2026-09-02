@@ -5618,6 +5618,21 @@ const __processMod = {
   },
   platform: "linux", arch: "x64",
   version: ${NODE_VERSION_LITERAL}, versions: ${NODE_VERSIONS_LITERAL},
+  features: Object.freeze({
+    inspector: false,
+    debug: false,
+    uv: false,
+    ipv6: true,
+    tls_alpn: true,
+    tls_sni: true,
+    tls_ocsp: false,
+    tls: true,
+    openssl_is_boringssl: true,
+  }),
+  getBuiltinModule: (specifier) => {
+    const key = String(specifier).replace(/^node:/, "");
+    return Object.prototype.hasOwnProperty.call(builtins, key) ? builtins[key] : undefined;
+  },
   execPath: "/usr/local/bin/node",
   execArgv: [],
   pid: 1, ppid: 0, title: "node",
@@ -7190,9 +7205,11 @@ function __resolveImportsField(name, fromDir) {
 function __mkCompiledFn(code) {
   const reFn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__filename\\s*=/m;
   const reDn = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+__dirname\\s*=/m;
+  const reRequire = /(?:^|\\n|;)\\s*(?:const|let|var)\\s+require\\s*=/m;
   const fnName = reFn.test(code) ? "__filename__nimbus_unused" : "__filename";
   const dnName = reDn.test(code) ? "__dirname__nimbus_unused"  : "__dirname";
-  return new Function("exports", "require", "module", fnName, dnName, code);
+  const requireName = reRequire.test(code) ? "require__nimbus_unused" : "require";
+  return new Function("exports", requireName, "module", fnName, dnName, code);
 }
 
 function __exportsTarget(mod) {
@@ -7271,6 +7288,7 @@ function __loadModule(resolvedPath) {
   };
   scopedRequire.cache = __moduleCache;
   scopedRequire.main = __require.main;
+  mod.require = scopedRequire;
 
   // X.5-M3: thread currently-loading module path through globalThis so the
   // URL shim null-base fallback (in node-shims url module) can compose

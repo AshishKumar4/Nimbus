@@ -20,10 +20,12 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, type TransformResult } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ProcessHostFactory } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+type EsbuildTransformOptions = NonNullable<Parameters<EsbuildService['transform']>[1]>;
+type LargeEsmTransform = (code: string, options: EsbuildTransformOptions) => Promise<TransformResult>;
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -550,7 +552,7 @@ export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | nul
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget): Promise<FacetVfsState>;
+export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, isolatedTransform?: LargeEsmTransform): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -583,6 +585,7 @@ export interface FacetManagerHooks {
      * survives until someone reconnects to read it.
      */
     notify?: (line: string) => void;
+    transformLargeEsm?: LargeEsmTransform;
 }
 export interface LongRunningWorkerSpawnOptions {
     port?: number;

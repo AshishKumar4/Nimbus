@@ -49,7 +49,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
  */
-export declare const BUNDLER_VERSION = "v8";
+export declare const BUNDLER_VERSION = "v9";
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
  * `specifier` so that React / React-DOM / Scheduler share a single instance
@@ -72,34 +72,11 @@ export declare const BUNDLER_VERSION = "v8";
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
 /**
- * Detect top-level await in source. Used by `EsbuildService.transform`
- * to decide whether to async-IIFE-wrap CJS-target sources (see
- * transform()'s header comment).
- *
- * Token scan over a comment-and-string-stripped source. Tracks paren
- * depth AND function-body depth so a `{` inside a parameter list (a
- * default-value object literal — `async function f(opts = {})`) is NOT
- * mistaken for the function body. The earlier heuristic lacked the paren
- * guard: the `= {}` braces consumed the body-tracking slot, leaving the
- * real body untracked so an internal `await` read as top-level. That
- * wrongly routed such files (e.g. @bluwy/giget-core's
- * download-template.js, reached by create-astro) into the two-pass
- * ESM→require rewrite, whose assembled output still carried export/import
- * statements → "Cannot use import statement outside a module" at startup.
- *
- * Arrow bodies are distinguished from arrow expression bodies (the
- * `arrowPending` flag): only a `{` immediately following `=>` opens a
- * function scope. The idiomatic object-returning arrow `x => ({ ... })`
- * has its `{` at parenDepth 1, so it opens no body slot — otherwise the
- * leaked slot would be consumed by a later top-level `{ ... }` block,
- * making a real top-level `await` inside it read as non-TLA (false
- * negative) and routing genuine ESM-with-TLA into the wrong transform.
- *
- * A regex/token scan (not acorn) is kept here deliberately: pulling
- * acorn into the esbuild-service bundle chunk duplicates its ~15 KiB
- * Unicode identifier tables.
+ * Converts bundler-emitted ESM without constructing an AST or loading
+ * esbuild-wasm. Returns null for module declarations that are not the compact,
+ * semicolon-terminated shapes emitted by current JS bundlers.
  */
-export declare function hasTopLevelAwait(src: string): boolean;
+export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /**
  * Load the esbuild-wasm namespace. Safe to call many times; concurrent
@@ -115,6 +92,18 @@ import type * as esbuild from 'esbuild-wasm/esm/browser.js';
  * bundler's static analysis and leave the module out of the deployed worker.
  */
 export declare function loadEsbuild(): Promise<typeof esbuild>;
+export interface EsbuildTransformOptions {
+    loader?: 'ts' | 'tsx' | 'jsx' | 'js' | 'css' | 'json';
+    format?: 'esm' | 'cjs' | 'iife';
+    target?: string;
+    sourcemap?: boolean | 'inline' | 'external';
+    minify?: boolean;
+    jsx?: 'transform' | 'preserve' | 'automatic';
+    jsxFactory?: string;
+    jsxFragment?: string;
+    tsconfigRaw?: string;
+    define?: Record<string, string>;
+}
 export interface TransformResult {
     code: string;
     map: string;
@@ -138,13 +127,15 @@ export interface BuildResult {
         location?: esbuild.Location | null;
     }[];
 }
+/** Source needed by the slim Worker Loader transform isolate. */
+export declare function generateEsbuildTransformRuntimeSource(): string;
 export declare class EsbuildService {
     private vfs;
     private initialized;
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     private _esbuild;
-    constructor(vfs: SqliteVFS);
+    constructor(vfs?: SqliteVFS);
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
      * via `loadEsbuild()` (which itself is deferred) and caches it on
@@ -215,18 +206,7 @@ export declare class EsbuildService {
      * This is bytes-stable for sources outside the TLA+ESM-imports
      * intersection.
      */
-    transform(code: string, options?: {
-        loader?: 'ts' | 'tsx' | 'jsx' | 'js' | 'css' | 'json';
-        format?: 'esm' | 'cjs' | 'iife';
-        target?: string;
-        sourcemap?: boolean | 'inline' | 'external';
-        minify?: boolean;
-        jsx?: 'transform' | 'preserve' | 'automatic';
-        jsxFactory?: string;
-        jsxFragment?: string;
-        tsconfigRaw?: string;
-        define?: Record<string, string>;
-    }): Promise<TransformResult>;
+    transform(code: string, options?: EsbuildTransformOptions): Promise<TransformResult>;
     /**
      * Bundle entry points from the VFS.
      */
@@ -246,6 +226,7 @@ export declare class EsbuildService {
         alias?: Record<string, string>;
         keepNames?: boolean;
     }): Promise<BuildResult>;
+    private requireVfs;
     /**
      * VFS resolver plugin for esbuild.
      * Reads directly from the SqliteVFS (synchronous, co-located — no snapshot needed).
