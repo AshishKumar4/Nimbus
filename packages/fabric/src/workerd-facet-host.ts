@@ -136,9 +136,14 @@ interface LoadedWorkerStub {
  * Durable Object class, so a resident process can be re-entered; `load` is
  * unkeyed and yields a stateless entrypoint, which is all a program that ends
  * with its call can ever need.
+ *
+ * `get` stays wide on purpose: the platform passes a null id for the unkeyed
+ * call and answers the callback with the code object or a promise of it, so a
+ * narrower declaration would refuse the real binding. The fabric itself always
+ * passes a string id and a promise callback.
  */
 interface WorkerLoaderBinding {
-  get(id: string, code: () => Promise<unknown>): { getDurableObjectClass(name: string): unknown };
+  get(id: string | null, code: () => unknown): { getDurableObjectClass(name: string): unknown };
   load(code: unknown): LoadedWorkerStub;
 }
 
