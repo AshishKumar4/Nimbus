@@ -373,14 +373,41 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         disposeRpcResource(supervisorBinding);
     }
 }
-async function residentWorkerConfig(env, disk, supervisor, boot) {
+/**
+ * The WorkerCode the loader callback returns for one resident boot: the
+ * module map from {@link residentLoaderConfig} (or the staged assembler),
+ * plus the isolate's env and network posture.
+ *
+ * A `code` boot with an explicit `env` — defined, even as `{}` — is the
+ * embedder's whole statement about the isolate: the env rides through
+ * exactly as minted (loopback stubs by reference) with `globalOutbound`,
+ * `limits` and `capabilities` beside it, and the composed supervisor
+ * entrypoint is not consulted at all, so no SUPERVISOR binding appears.
+ * Without one, the default holds: inherited network plus a SUPERVISOR
+ * minted from the composed entrypoint for the coordinator's identity.
+ */
+export async function residentWorkerConfig(env, disk, supervisor, boot) {
+    if (boot.kind === 'code' && boot.code.env !== undefined) {
+        const isolated = await residentLoaderConfig(boot.code, disk());
+        assertModuleMapWithinCodeLimit(configModules(isolated));
+        return isolated;
+    }
     const config = boot.kind === 'staged'
         ? await stagedBootAssembler()(env, boot.stage)
         : await residentLoaderConfig(boot.code, disk());
-    assertModuleMapWithinCodeLimit(config.modules ?? {});
+    assertModuleMapWithinCodeLimit(configModules(config));
     const supervisorRpc = supervisorEntrypoint();
     if (!supervisorRpc) {
         throw new Error(`Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
     return { ...config, env: { SUPERVISOR: supervisorRpc({ props: supervisor }) } };
+}
+/** The module map a loader config assembled, or empty when it named none. */
+function configModules(config) {
+    const modules = 'modules' in config ? config.modules : undefined;
+    if (typeof modules !== 'object' || modules === null)
+        return {};
+    // Loader configs only ever carry a module map under this key.
+    const map = modules;
+    return map;
 }

@@ -107,6 +107,13 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     }, z.core.$strip>]>>;
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+    globalOutbound: z.ZodOptional<z.ZodNull>;
+    limits: z.ZodOptional<z.ZodObject<{
+        cpuMs: z.ZodOptional<z.ZodNumber>;
+        subRequests: z.ZodOptional<z.ZodNumber>;
+    }, z.core.$strip>>;
+    capabilities: z.ZodOptional<z.ZodUnknown>;
 }, z.core.$strip>;
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
 /**
@@ -132,6 +139,13 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         }, z.core.$strip>]>>;
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+        env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        globalOutbound: z.ZodOptional<z.ZodNull>;
+        limits: z.ZodOptional<z.ZodObject<{
+            cpuMs: z.ZodOptional<z.ZodNumber>;
+            subRequests: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strip>>;
+        capabilities: z.ZodOptional<z.ZodUnknown>;
     }, z.core.$strip>;
 }, z.core.$strip>], "kind">;
 export type ResidentBootSpec = {
@@ -201,6 +215,12 @@ export interface ResidentDiskReader {
  * path, verifying each generated image against the digest its own path claims.
  * Runs inside the loader's cache-miss callback, so the bytes exist only for
  * the duration of the load.
+ *
+ * The spec's isolation posture rides along verbatim: an explicit `env` is
+ * the isolate's whole env (loopback stubs by reference, never cloned or
+ * re-minted), `globalOutbound: null` denies outbound, `limits` bounds the
+ * run, and `capabilities` is retained untouched. Absent fields stay absent
+ * so the worker config can tell "embedder takes the env" from the default.
  */
 export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader): Promise<Record<string, unknown>>;
 /**

@@ -12,7 +12,7 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
-import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
+import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
     handleHttpRequest?: (request: Request) => Promise<Response>;
@@ -164,5 +164,19 @@ export declare class Processes {
      */
     run<T>(supervisor: ResidentSupervisorProps, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
 }
+/**
+ * The WorkerCode the loader callback returns for one resident boot: the
+ * module map from {@link residentLoaderConfig} (or the staged assembler),
+ * plus the isolate's env and network posture.
+ *
+ * A `code` boot with an explicit `env` — defined, even as `{}` — is the
+ * embedder's whole statement about the isolate: the env rides through
+ * exactly as minted (loopback stubs by reference) with `globalOutbound`,
+ * `limits` and `capabilities` beside it, and the composed supervisor
+ * entrypoint is not consulted at all, so no SUPERVISOR binding appears.
+ * Without one, the default holds: inherited network plus a SUPERVISOR
+ * minted from the composed entrypoint for the coordinator's identity.
+ */
+export declare function residentWorkerConfig(env: ResidentFacetEnv, disk: () => ResidentDiskReader, supervisor: ResidentSupervisorProps, boot: ResidentBootSpec): Promise<Record<string, unknown>>;
 export {};
 //# sourceMappingURL=workerd-facet-host.d.ts.map

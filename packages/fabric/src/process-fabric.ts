@@ -131,6 +131,36 @@ export const ResidentCodeSpecSchema = z.object({
    * image store below and the spec names it.
    */
   vfsTextModules: z.record(z.string(), z.string()).optional(),
+  /**
+   * The isolate's exact `env`: one entry per binding the embedder minted,
+   * carried by reference so loopback stubs survive untouched. Defined —
+   * even as `{}` — means the embedder takes the whole env and no
+   * SUPERVISOR binding is injected; absent keeps the default (a SUPERVISOR
+   * minted from the composed supervisor entrypoint).
+   */
+  env: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Outbound network: `null` denies every `fetch()`/`connect()` inside the
+   * isolate; absent inherits the parent's network. Only `null` is
+   * expressible here — a redirecting outbound belongs to the embedder's
+   * staged assembler, not to a serializable code spec.
+   */
+  globalOutbound: z.null().optional(),
+  /**
+   * CPU and subrequest bounds enforced at the isolate boundary. A load that
+   * omits them gets the account's whole compute budget, so callers that
+   * run untrusted programs always set both.
+   */
+  limits: z
+    .object({ cpuMs: z.number().optional(), subRequests: z.number().optional() })
+    .optional(),
+  /**
+   * Opaque WorkerCode passthrough, retained verbatim by
+   * {@link residentLoaderConfig}. No caller sets one today; the field
+   * exists so a future loader capability does not need a spec revision
+   * to travel beside the module map.
+   */
+  capabilities: z.unknown().optional(),
 });
 
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
@@ -238,6 +268,12 @@ export interface ResidentDiskReader {
  * path, verifying each generated image against the digest its own path claims.
  * Runs inside the loader's cache-miss callback, so the bytes exist only for
  * the duration of the load.
+ *
+ * The spec's isolation posture rides along verbatim: an explicit `env` is
+ * the isolate's whole env (loopback stubs by reference, never cloned or
+ * re-minted), `globalOutbound: null` denies outbound, `limits` bounds the
+ * run, and `capabilities` is retained untouched. Absent fields stay absent
+ * so the worker config can tell "embedder takes the env" from the default.
  */
 export async function residentLoaderConfig(
   spec: ResidentCodeSpec,
@@ -258,6 +294,10 @@ export async function residentLoaderConfig(
     compatibilityFlags: spec.compatibilityFlags,
     mainModule: spec.mainModule,
     modules: { ...spec.modules, ...resolved },
+    ...(spec.env !== undefined ? { env: spec.env } : {}),
+    ...(spec.globalOutbound !== undefined ? { globalOutbound: spec.globalOutbound } : {}),
+    ...(spec.limits !== undefined ? { limits: spec.limits } : {}),
+    ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
   };
 }
 

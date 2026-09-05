@@ -31,6 +31,21 @@ export interface WorkerCode {
   compatibilityDate: string;
   compatibilityFlags?: string[];
   allowExperimental?: boolean;
+  /**
+   * CPU and subrequest bounds enforced at the isolate boundary, mirroring
+   * `workerdResourceLimits` in @cloudflare/workers-types. A load that omits
+   * them gets the account's whole compute budget.
+   */
+  limits?: {
+    cpuMs?: number;
+    subRequests?: number;
+  };
+  /**
+   * Opaque loader capability passthrough. No caller sets one today; the
+   * field exists so a future loader capability travels beside the module
+   * map without a type revision at every seam.
+   */
+  capabilities?: unknown;
   mainModule: string;
   modules: Record<string, ModuleContent>;
   env?: Record<string, unknown>;
