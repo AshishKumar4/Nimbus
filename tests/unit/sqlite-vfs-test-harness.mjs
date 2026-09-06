@@ -52,9 +52,9 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
 
   const storage = {
     transactionSync(callback) {
-      if (activeTransaction !== null) {
-        throw new Error('nested test transactions are not supported');
-      }
+      // bun:sqlite uses savepoints for nested calls, matching the host port.
+      const parentTransaction = activeTransaction;
+      const parentStatement = transactionStatement;
       activeTransaction = ++transactionCount;
       transactionStatement = 0;
       try {
@@ -70,8 +70,8 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
         }
         return result;
       } finally {
-        activeTransaction = null;
-        transactionStatement = 0;
+        activeTransaction = parentTransaction;
+        transactionStatement = parentStatement;
       }
     },
   };

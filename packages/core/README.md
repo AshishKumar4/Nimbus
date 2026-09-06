@@ -134,6 +134,20 @@ The workspace is a tenant in a database you own:
   from it, and a repeated generation would hand a dead process live write
   authority.
 
+When your own SQL rows must commit with filesystem bytes, use
+`SqliteVFS.withTransaction(callback)` instead of an outer
+`storage.transactionSync`. Use the credentialed synchronous VFS methods inside
+the callback, not the workspace's asynchronous file methods. The callback can
+read its writes; revisions and watch events publish only after commit. On
+rollback, Nimbus clears cached chunks and reloads the always-resident inode
+tree from SQLite before rethrowing with the original error as `cause`.
+
+The method must own the outermost transaction on the same SQL host. Do not
+nest it or start asynchronous work inside it. The host's transaction primitive
+must support nested savepoints for individual VFS writes. If rollback reload
+also fails, Nimbus throws an `AggregateError` carrying both failures; discard
+that VFS instance and reopen it after storage recovers.
+
 ## What the worker package adds
 
 Resident processes (long-running servers, attached TUIs), the session

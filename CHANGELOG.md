@@ -3,6 +3,13 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Fixed failed VFS metadata writes publishing uncommitted times, modes or
+  ownership in memory. Added `SqliteVFS.withTransaction(callback)` for embedders
+  committing their SQL rows together with filesystem writes: rollback restores
+  the inode/content mirror, and revisions/watch events publish only on commit.
+
 ## 2026-08-11
 
 The first publish since 2026-06-06. Everything on npm until now was built from
