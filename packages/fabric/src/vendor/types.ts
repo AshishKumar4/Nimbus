@@ -40,12 +40,6 @@ export interface WorkerCode {
     cpuMs?: number;
     subRequests?: number;
   };
-  /**
-   * Opaque loader capability passthrough. No caller sets one today; the
-   * field exists so a future loader capability travels beside the module
-   * map without a type revision at every seam.
-   */
-  capabilities?: unknown;
   mainModule: string;
   modules: Record<string, ModuleContent>;
   env?: Record<string, unknown>;

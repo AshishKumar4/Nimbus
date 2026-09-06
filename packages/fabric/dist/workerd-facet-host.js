@@ -380,8 +380,8 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
  *
  * A `code` boot with an explicit `env` — defined, even as `{}` — is the
  * embedder's whole statement about the isolate: the env rides through
- * exactly as minted (loopback stubs by reference) with `globalOutbound`,
- * `limits` and `capabilities` beside it, and the composed supervisor
+ * exactly as minted (loopback stubs by reference) with `globalOutbound`
+ * and `limits` beside it, and the composed supervisor
  * entrypoint is not consulted at all, so no SUPERVISOR binding appears.
  * Without one, the default holds: inherited network plus a SUPERVISOR
  * minted from the composed entrypoint for the coordinator's identity.

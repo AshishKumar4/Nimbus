@@ -138,13 +138,6 @@ export const ResidentCodeSpecSchema = z.object({
     limits: z
         .object({ cpuMs: z.number().optional(), subRequests: z.number().optional() })
         .optional(),
-    /**
-     * Opaque WorkerCode passthrough, retained verbatim by
-     * {@link residentLoaderConfig}. No caller sets one today; the field
-     * exists so a future loader capability does not need a spec revision
-     * to travel beside the module map.
-     */
-    capabilities: z.unknown().optional(),
 });
 /**
  * The boot-spec union, with the staged arm's payload validated by the
@@ -224,8 +217,8 @@ export function facetImagePathDigest(path) {
  *
  * The spec's isolation posture rides along verbatim: an explicit `env` is
  * the isolate's whole env (loopback stubs by reference, never cloned or
- * re-minted), `globalOutbound: null` denies outbound, `limits` bounds the
- * run, and `capabilities` is retained untouched. Absent fields stay absent
+ * re-minted), `globalOutbound: null` denies outbound and `limits` bounds the
+ * run. Absent fields stay absent
  * so the worker config can tell "embedder takes the env" from the default.
  */
 export async function residentLoaderConfig(spec, disk) {
@@ -247,7 +240,6 @@ export async function residentLoaderConfig(spec, disk) {
         ...(spec.env !== undefined ? { env: spec.env } : {}),
         ...(spec.globalOutbound !== undefined ? { globalOutbound: spec.globalOutbound } : {}),
         ...(spec.limits !== undefined ? { limits: spec.limits } : {}),
-        ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
     };
 }
 /**

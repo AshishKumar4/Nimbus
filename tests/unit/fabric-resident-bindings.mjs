@@ -37,7 +37,6 @@ const GADGET_SPEC = {
   env: { FILES, WORKSPACE },
   globalOutbound: null,
   limits: { cpuMs: 2_000, subRequests: 64 },
-  capabilities: { snapshot: ['vfs-read'] },
 };
 
 const DISK = {
@@ -59,7 +58,6 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.equal(boot.code.env.WORKSPACE, WORKSPACE);
   assert.equal(boot.code.globalOutbound, null);
   assert.deepEqual(boot.code.limits, { cpuMs: 2_000, subRequests: 64 });
-  assert.deepEqual(boot.code.capabilities, { snapshot: ['vfs-read'] });
 }
 
 // A bare spec still parses, with every isolation field absent.
@@ -68,11 +66,10 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.equal(parsed.env, undefined);
   assert.equal(parsed.globalOutbound, undefined);
   assert.equal(parsed.limits, undefined);
-  assert.equal(parsed.capabilities, undefined);
 }
 
 // The loader config denies outbound, keeps the exact stubs, and retains
-// the bounds and capabilities beside the resolved module map.
+// the bounds beside the resolved module map.
 {
   const source = 'export const snapshot = 1;';
   const digest = await facetImageDigest(source);
@@ -97,7 +94,6 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.equal(config.env.WORKSPACE, WORKSPACE);
   assert.equal(config.globalOutbound, null);
   assert.deepEqual(config.limits, { cpuMs: 2_000, subRequests: 64 });
-  assert.deepEqual(config.capabilities, { snapshot: ['vfs-read'] });
   assert.equal(config.modules['server.js'], 'export class Gadget {}');
   assert.equal(config.modules['snapshot.js'], source);
   assert.ok(config.modules['runtime.wasm'] instanceof Object);
