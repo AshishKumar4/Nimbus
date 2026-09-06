@@ -243,7 +243,7 @@ async function registerWasmRuntimes(deps) {
         getEsbuild: () => {
             if (!esbuild) {
                 esbuild = import('../runtime/esbuild-service.js')
-                    .then((module) => new module.EsbuildService(deps.vfs));
+                    .then((module) => new module.EsbuildService(deps.vfs.as(CRED_KERNEL)));
             }
             return esbuild;
         },

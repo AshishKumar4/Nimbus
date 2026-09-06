@@ -16,7 +16,6 @@
  * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
  * facet once wasm module passing to dynamic workers is stable.
  */
-import { CRED_KERNEL } from './os-contracts.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
@@ -1211,8 +1210,9 @@ export class EsbuildService {
     initPromise = null;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     _esbuild = null;
+    /** Build reads use only the caller-supplied view; omit it for transform-only use. */
     constructor(vfs) {
-        this.vfs = vfs ? vfs.as(CRED_KERNEL) : null;
+        this.vfs = vfs ?? null;
     }
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
@@ -1404,7 +1404,7 @@ export class EsbuildService {
     }
     /**
      * VFS resolver plugin for esbuild.
-     * Reads directly from the SqliteVFS (synchronous, co-located — no snapshot needed).
+     * Reads through the caller's credentialed view (synchronous, no snapshot needed).
      * Handles: absolute paths, relative paths, bare specifiers (node_modules).
      */
     makeVfsPlugin() {

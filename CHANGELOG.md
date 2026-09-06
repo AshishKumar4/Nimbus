@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed compiler privilege escalation: `EsbuildService` now accepts a
+  `CredentialedVfs` instead of a raw `SqliteVFS`. Embedders compiling authored
+  code must pass the author's view (`new EsbuildService(vfs.as(authorCred))`);
+  kernel callers explicitly pass `vfs.as(CRED_KERNEL)`. Transform-only use
+  still needs no VFS. Absolute and transitive imports cannot read beyond the
+  supplied view's authority.
 - Fixed failed VFS metadata writes publishing uncommitted times, modes or
   ownership in memory. Added `SqliteVFS.withTransaction(callback)` for embedders
   committing their SQL rows together with filesystem writes: rollback restores

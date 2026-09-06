@@ -16,7 +16,7 @@
  * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
  * facet once wasm module passing to dynamic workers is stable.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -135,7 +135,8 @@ export declare class EsbuildService {
     private initPromise;
     /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
     private _esbuild;
-    constructor(vfs?: SqliteVFS);
+    /** Build reads use only the caller-supplied view; omit it for transform-only use. */
+    constructor(vfs?: CredentialedVfs);
     /**
      * Initialize esbuild-wasm (lazy, on first use). Loads the namespace
      * via `loadEsbuild()` (which itself is deferred) and caches it on
@@ -229,7 +230,7 @@ export declare class EsbuildService {
     private requireVfs;
     /**
      * VFS resolver plugin for esbuild.
-     * Reads directly from the SqliteVFS (synchronous, co-located — no snapshot needed).
+     * Reads through the caller's credentialed view (synchronous, no snapshot needed).
      * Handles: absolute paths, relative paths, bare specifiers (node_modules).
      */
     private makeVfsPlugin;

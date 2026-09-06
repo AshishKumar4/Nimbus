@@ -80,7 +80,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       .find((p) => kernelFs.exists(p)) ?? null;
     if (cfgPath) {
       try {
-        if (!self.esbuildService) self.esbuildService = new EsbuildService(self.sqliteFs!);
+        if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
         const bundleResult = await self.esbuildService.build([cfgPath], {
           bundle: true,
           format: 'esm',

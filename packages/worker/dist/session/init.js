@@ -689,7 +689,7 @@ export async function initSession(self, ws) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = new EsbuildService(self.sqliteFs);
+                    self.esbuildService = new EsbuildService(kernelFs);
                 }
                 return self.esbuildService;
             },
@@ -838,7 +838,7 @@ export async function initSession(self, ws) {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
-                    self.esbuildService = new EsbuildService(self.sqliteFs);
+                    self.esbuildService = new EsbuildService(kernelFs);
                 }
                 return self.esbuildService;
             },
@@ -886,7 +886,7 @@ export async function initSession(self, ws) {
                     getEsbuild: () => {
                         if (!self.esbuildService) {
                             self.ensureSqliteFs();
-                            self.esbuildService = new EsbuildService(self.sqliteFs);
+                            self.esbuildService = new EsbuildService(kernelFs);
                         }
                         return self.esbuildService;
                     },
@@ -956,7 +956,7 @@ export async function initSession(self, ws) {
         // Lazy-init esbuild service
         if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = new EsbuildService(self.sqliteFs);
+            self.esbuildService = new EsbuildService(kernelFs);
         }
         // Parse flags
         const flags = {};
@@ -1091,7 +1091,7 @@ export async function initSession(self, ws) {
                     // Transform TS to JS
                     if (cfgName.endsWith('.ts')) {
                         if (!self.esbuildService)
-                            self.esbuildService = new EsbuildService(self.sqliteFs);
+                            self.esbuildService = new EsbuildService(kernelFs);
                         const t = await self.esbuildService.transform(cfgCode, { loader: 'ts', format: 'esm' });
                         cfgCode = t.code;
                     }
@@ -1106,7 +1106,7 @@ export async function initSession(self, ws) {
         // ── vite build ──
         if (args[0] === 'build') {
             if (!self.esbuildService)
-                self.esbuildService = new EsbuildService(self.sqliteFs);
+                self.esbuildService = new EsbuildService(kernelFs);
             const htmlPath = cwd + '/index.html';
             let entryPoint = cwd + '/src/main.tsx';
             let origHtml = '';
@@ -1222,7 +1222,7 @@ export async function initSession(self, ws) {
             }
             // Start vite on the dist directory
             if (!self.esbuildService)
-                self.esbuildService = new EsbuildService(self.sqliteFs);
+                self.esbuildService = new EsbuildService(kernelFs);
             if (self.viteDevServer?.isRunning)
                 self.viteDevServer.stop();
             const previewBasePath = self.viteBasePath;
@@ -1395,7 +1395,7 @@ export async function initSession(self, ws) {
             }
         }
         if (!self.esbuildService)
-            self.esbuildService = new EsbuildService(self.sqliteFs);
+            self.esbuildService = new EsbuildService(kernelFs);
         const previewBasePath = self.viteBasePath;
         const viteDefine = viteConfig.define;
         // Vite dev servers are represented as long-running process-table
@@ -1563,7 +1563,7 @@ export async function initSession(self, ws) {
         // Lazy-init esbuild
         if (!self.esbuildService) {
             self.ensureSqliteFs();
-            self.esbuildService = new EsbuildService(self.sqliteFs);
+            self.esbuildService = new EsbuildService(kernelFs);
         }
         // Parse --root flag; default to the shell cwd so `npm run dev` from
         // a project directory picks up that project's wrangler.jsonc.

@@ -53,7 +53,7 @@ export async function startRealVite(self, opts) {
         if (cfgPath) {
             try {
                 if (!self.esbuildService)
-                    self.esbuildService = new EsbuildService(self.sqliteFs);
+                    self.esbuildService = new EsbuildService(kernelFs);
                 const bundleResult = await self.esbuildService.build([cfgPath], {
                     bundle: true,
                     format: 'esm',

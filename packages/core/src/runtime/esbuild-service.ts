@@ -17,8 +17,7 @@
  * facet once wasm module passing to dynamic workers is stable.
  */
 
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
-import { CRED_KERNEL } from './os-contracts.js';
+import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { resolvePackageEntry, resolveExports, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
@@ -1262,8 +1261,9 @@ export class EsbuildService {
   /** Resolved esbuild namespace — populated by ensureInit() after loadEsbuild(). */
   private _esbuild: typeof esbuild | null = null;
 
-  constructor(vfs?: SqliteVFS) {
-    this.vfs = vfs ? vfs.as(CRED_KERNEL) : null;
+  /** Build reads use only the caller-supplied view; omit it for transform-only use. */
+  constructor(vfs?: CredentialedVfs) {
+    this.vfs = vfs ?? null;
   }
 
   /**
@@ -1485,7 +1485,7 @@ export class EsbuildService {
 
   /**
    * VFS resolver plugin for esbuild.
-   * Reads directly from the SqliteVFS (synchronous, co-located — no snapshot needed).
+   * Reads through the caller's credentialed view (synchronous, no snapshot needed).
    * Handles: absolute paths, relative paths, bare specifiers (node_modules).
    */
   private makeVfsPlugin(): esbuild.Plugin {

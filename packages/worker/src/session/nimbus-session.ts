@@ -1506,7 +1506,8 @@ export class NimbusSession extends CloudflareDurableObject {
   ensureNpmInstaller(onProgress?: (msg: string) => void) {
     this.ensureSqliteFs();
     if (!this.esbuildService) {
-      this.esbuildService = new EsbuildService(this.sqliteFs!);
+      if (!this.sqliteFs) throw new Error('Session VFS is not initialized');
+      this.esbuildService = new EsbuildService(this.sqliteFs.as(CRED_KERNEL));
     }
     // ── Lazy fetch-proxy ────────────────────────────────────────────
     // The fetch-proxy is a singleton dynamic worker (LOADER.load) that

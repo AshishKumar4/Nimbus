@@ -3633,12 +3633,7 @@ export class FacetManager {
         // CJS before they hit the facet's `new Function` pre-compile loop.
         // Lazy-create one if NimbusSession didn't share its own.
         if (this.vfs && !this.esbuild) {
-            try {
-                this.esbuild = new EsbuildService(this.vfs);
-            }
-            catch {
-                this.esbuild = null;
-            }
+            this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
         }
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
@@ -4541,12 +4536,7 @@ export class FacetManager {
     }
     async _residentLaunchBody(entry, code, command, cwd, opts, pacer) {
         if (this.vfs && !this.esbuild) {
-            try {
-                this.esbuild = new EsbuildService(this.vfs);
-            }
-            catch {
-                this.esbuild = null;
-            }
+            this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
         }
         if (this.vfs)
             this.imageStore.ensureDir();

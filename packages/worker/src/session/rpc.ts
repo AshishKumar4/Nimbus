@@ -1267,7 +1267,8 @@ export async function _rpcRouteLoopback(self: RpcHost, port: number, request: Re
 export async function _rpcTransform(self: RpcHost, code: string, loader: string): Promise<{ code: string; map: string } | null> {
     if (!self.esbuildService) {
       self.ensureSqliteFs();
-      self.esbuildService = new EsbuildService(self.sqliteFs!);
+      if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
+      self.esbuildService = new EsbuildService(self.sqliteFs.as(CRED_KERNEL));
     }
     try {
       const result = await self.esbuildService.transform(code, {
