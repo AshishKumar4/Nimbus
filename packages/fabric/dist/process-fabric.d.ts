@@ -108,11 +108,6 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    globalOutbound: z.ZodOptional<z.ZodNull>;
-    limits: z.ZodOptional<z.ZodObject<{
-        cpuMs: z.ZodOptional<z.ZodNumber>;
-        subRequests: z.ZodOptional<z.ZodNumber>;
-    }, z.core.$strip>>;
 }, z.core.$strip>;
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
 /**
@@ -139,11 +134,6 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-        globalOutbound: z.ZodOptional<z.ZodNull>;
-        limits: z.ZodOptional<z.ZodObject<{
-            cpuMs: z.ZodOptional<z.ZodNumber>;
-            subRequests: z.ZodOptional<z.ZodNumber>;
-        }, z.core.$strip>>;
     }, z.core.$strip>;
 }, z.core.$strip>], "kind">;
 export type ResidentBootSpec = {
@@ -216,8 +206,7 @@ export interface ResidentDiskReader {
  *
  * The spec's isolation posture rides along verbatim: an explicit `env` is
  * the isolate's whole env (loopback stubs by reference, never cloned or
- * re-minted), `globalOutbound: null` denies outbound and `limits` bounds the
- * run. Absent fields stay absent
+ * re-minted). An absent env stays absent
  * so the worker config can tell "embedder takes the env" from the default.
  */
 export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: ResidentDiskReader): Promise<Record<string, unknown>>;

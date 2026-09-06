@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 // fabric-resident-bindings — a resident `code` boot with an explicit env
-// must reach the loader exactly as the embedder minted it: outbound denied,
-// loopback stubs by reference, CPU/subrequest bounds intact, and no
-// SUPERVISOR injection. An omitted env keeps the old default (inherited
-// network plus a minted SUPERVISOR binding).
+// must reach the loader exactly as the embedder minted it: loopback stubs by
+// reference and no SUPERVISOR injection. An omitted env keeps the default
+// (inherited network plus a minted SUPERVISOR binding).
 
 import assert from 'node:assert/strict';
 import { z } from 'zod/v4';
@@ -28,15 +27,13 @@ const WORKSPACE = { read: async () => ({ jobs: [] }) };
 const BASE = {
   compatibilityDate: '2025-12-01',
   compatibilityFlags: ['nodejs_compat'],
-  mainModule: 'server.js',
-  modules: { 'server.js': 'export class Gadget {}' },
+  mainModule: 'app.js',
+  modules: { 'app.js': 'export class App {}' },
 };
 
-const GADGET_SPEC = {
+const BOUND_SPEC = {
   ...BASE,
   env: { FILES, WORKSPACE },
-  globalOutbound: null,
-  limits: { cpuMs: 2_000, subRequests: 64 },
 };
 
 const DISK = {
@@ -48,28 +45,23 @@ const DISK = {
 
 const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
 
-// The boot-spec union carries the gadget triple through validation, or the
-// gadget load cannot express its current production bounds.
+// The boot-spec union carries an explicit env through validation by
+// reference, or an embedder cannot hand an isolate the stubs it minted.
 {
   const schema = residentBootSpecSchema(z.unknown());
-  const boot = schema.parse({ kind: 'code', code: GADGET_SPEC });
+  const boot = schema.parse({ kind: 'code', code: BOUND_SPEC });
   assert.equal(boot.kind, 'code');
   assert.equal(boot.code.env.FILES, FILES);
   assert.equal(boot.code.env.WORKSPACE, WORKSPACE);
-  assert.equal(boot.code.globalOutbound, null);
-  assert.deepEqual(boot.code.limits, { cpuMs: 2_000, subRequests: 64 });
 }
 
-// A bare spec still parses, with every isolation field absent.
+// A bare spec still parses, with the env absent.
 {
   const parsed = ResidentCodeSpecSchema.parse(BASE);
   assert.equal(parsed.env, undefined);
-  assert.equal(parsed.globalOutbound, undefined);
-  assert.equal(parsed.limits, undefined);
 }
 
-// The loader config denies outbound, keeps the exact stubs, and retains
-// the bounds beside the resolved module map.
+// The loader config keeps the exact stubs beside the resolved module map.
 {
   const source = 'export const snapshot = 1;';
   const digest = await facetImageDigest(source);
@@ -84,7 +76,7 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   };
   const config = await residentLoaderConfig(
     ResidentCodeSpecSchema.parse({
-      ...GADGET_SPEC,
+      ...BOUND_SPEC,
       vfsTextModules: { 'snapshot.js': textPath },
       vfsWasmModules: { 'runtime.wasm': '/img/runtime.wasm' },
     }),
@@ -92,9 +84,8 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   );
   assert.equal(config.env.FILES, FILES);
   assert.equal(config.env.WORKSPACE, WORKSPACE);
-  assert.equal(config.globalOutbound, null);
-  assert.deepEqual(config.limits, { cpuMs: 2_000, subRequests: 64 });
-  assert.equal(config.modules['server.js'], 'export class Gadget {}');
+  assert.equal('globalOutbound' in config, false);
+  assert.equal(config.modules['app.js'], 'export class App {}');
   assert.equal(config.modules['snapshot.js'], source);
   assert.ok(config.modules['runtime.wasm'] instanceof Object);
 }
@@ -107,13 +98,11 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
     {},
     () => DISK,
     SUPERVISOR,
-    { kind: 'code', code: ResidentCodeSpecSchema.parse(GADGET_SPEC) },
+    { kind: 'code', code: ResidentCodeSpecSchema.parse(BOUND_SPEC) },
   );
   assert.equal(config.env.FILES, FILES);
   assert.equal(config.env.WORKSPACE, WORKSPACE);
   assert.equal('SUPERVISOR' in config.env, false);
-  assert.equal(config.globalOutbound, null);
-  assert.deepEqual(config.limits, { cpuMs: 2_000, subRequests: 64 });
 }
 
 // An explicitly empty env is still explicit: nothing is injected into it.
@@ -158,7 +147,7 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.deepEqual(config.env.SUPERVISOR, { __supervisor: SUPERVISOR });
   assert.equal('globalOutbound' in config, false);
   assert.equal(config.compatibilityDate, '2025-12-01');
-  assert.equal(config.mainModule, 'server.js');
+  assert.equal(config.mainModule, 'app.js');
 }
 
 console.log('fabric-resident-bindings: ok');

@@ -31,15 +31,6 @@ export interface WorkerCode {
   compatibilityDate: string;
   compatibilityFlags?: string[];
   allowExperimental?: boolean;
-  /**
-   * CPU and subrequest bounds enforced at the isolate boundary, mirroring
-   * `workerdResourceLimits` in @cloudflare/workers-types. A load that omits
-   * them gets the account's whole compute budget.
-   */
-  limits?: {
-    cpuMs?: number;
-    subRequests?: number;
-  };
   mainModule: string;
   modules: Record<string, ModuleContent>;
   env?: Record<string, unknown>;
