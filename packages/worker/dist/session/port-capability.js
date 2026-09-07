@@ -26,9 +26,14 @@ function owner(self, port) {
 function key(port) {
     return `${PORT_CAPABILITY_KEY_PREFIX}${Number(port)}`;
 }
+/** Read retained exposure metadata without starting a session or restoring a listener. */
+export async function readPortExposure(ctx, port) {
+    const stored = PortExposureSchema.safeParse(await ctx.storage.get(key(port)));
+    return stored.success ? stored.data : null;
+}
 export async function readPortCapability(self, port) {
-    const stored = PortExposureSchema.safeParse(await self.ctx.storage.get(key(port)));
-    return stored.success && stored.data.owner === owner(self, port) ? stored.data.capability : null;
+    const stored = await readPortExposure(self.ctx, port);
+    return stored !== null && stored.owner === owner(self, port) ? stored.capability : null;
 }
 /**
  * Re-adopt the persisted capability into whatever the registry holds now.

@@ -29,6 +29,12 @@ export interface PortCapabilityHost {
     /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
     portCapabilityOwner?(port: number): string | null;
 }
+export interface PortExposure {
+    readonly capability: string;
+    readonly owner: string | null;
+}
+/** Read retained exposure metadata without starting a session or restoring a listener. */
+export declare function readPortExposure(ctx: PortCapabilityHost['ctx'], port: number): Promise<PortExposure | null>;
 export declare function readPortCapability(self: PortCapabilityHost, port: number): Promise<string | null>;
 /**
  * Re-adopt the persisted capability into whatever the registry holds now.

@@ -37,6 +37,10 @@ export interface PortCapabilityHost {
 /** The shape `createPortCapability` mints: 12 random bytes, hex. */
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 const PortExposureSchema = z.object({ capability: PortCapabilitySchema, owner: z.string().nullable() });
+export interface PortExposure {
+  readonly capability: string;
+  readonly owner: string | null;
+}
 
 function owner(self: PortCapabilityHost, port: number): string | null {
   return self.portCapabilityOwner?.(Number(port)) ?? null;
@@ -46,12 +50,18 @@ function key(port: number): string {
   return `${PORT_CAPABILITY_KEY_PREFIX}${Number(port)}`;
 }
 
+/** Read retained exposure metadata without starting a session or restoring a listener. */
+export async function readPortExposure(ctx: PortCapabilityHost['ctx'], port: number): Promise<PortExposure | null> {
+  const stored = PortExposureSchema.safeParse(await ctx.storage.get(key(port)));
+  return stored.success ? stored.data : null;
+}
+
 export async function readPortCapability(
   self: PortCapabilityHost,
   port: number,
 ): Promise<string | null> {
-  const stored = PortExposureSchema.safeParse(await self.ctx.storage.get(key(port)));
-  return stored.success && stored.data.owner === owner(self, port) ? stored.data.capability : null;
+  const stored = await readPortExposure(self.ctx, port);
+  return stored !== null && stored.owner === owner(self, port) ? stored.capability : null;
 }
 
 /**
