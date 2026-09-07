@@ -30,10 +30,17 @@ export interface PortCapabilityHost {
     };
   };
   portRegistry: PortRegistry;
+  /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
+  portCapabilityOwner?(port: number): string | null;
 }
 
 /** The shape `createPortCapability` mints: 12 random bytes, hex. */
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
+const PortExposureSchema = z.object({ capability: PortCapabilitySchema, owner: z.string().nullable() });
+
+function owner(self: PortCapabilityHost, port: number): string | null {
+  return self.portCapabilityOwner?.(Number(port)) ?? null;
+}
 
 function key(port: number): string {
   return `${PORT_CAPABILITY_KEY_PREFIX}${Number(port)}`;
@@ -43,8 +50,8 @@ export async function readPortCapability(
   self: PortCapabilityHost,
   port: number,
 ): Promise<string | null> {
-  const stored = PortCapabilitySchema.safeParse(await self.ctx.storage.get(key(port)));
-  return stored.success ? stored.data : null;
+  const stored = PortExposureSchema.safeParse(await self.ctx.storage.get(key(port)));
+  return stored.success && stored.data.owner === owner(self, port) ? stored.data.capability : null;
 }
 
 /**
@@ -65,7 +72,7 @@ export async function persistPortCapability(
   port: number,
   capability: string,
 ): Promise<void> {
-  await self.ctx.storage.put(key(port), PortCapabilitySchema.parse(capability));
+  await self.ctx.storage.put(key(port), { capability: PortCapabilitySchema.parse(capability), owner: owner(self, port) });
 }
 
 /**

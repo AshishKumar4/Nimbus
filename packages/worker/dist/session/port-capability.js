@@ -19,12 +19,16 @@ import { z } from 'zod/v4';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 /** The shape `createPortCapability` mints: 12 random bytes, hex. */
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
+const PortExposureSchema = z.object({ capability: PortCapabilitySchema, owner: z.string().nullable() });
+function owner(self, port) {
+    return self.portCapabilityOwner?.(Number(port)) ?? null;
+}
 function key(port) {
     return `${PORT_CAPABILITY_KEY_PREFIX}${Number(port)}`;
 }
 export async function readPortCapability(self, port) {
-    const stored = PortCapabilitySchema.safeParse(await self.ctx.storage.get(key(port)));
-    return stored.success ? stored.data : null;
+    const stored = PortExposureSchema.safeParse(await self.ctx.storage.get(key(port)));
+    return stored.success && stored.data.owner === owner(self, port) ? stored.data.capability : null;
 }
 /**
  * Re-adopt the persisted capability into whatever the registry holds now.
@@ -37,7 +41,7 @@ export async function restorePortCapability(self, port) {
     return self.portRegistry.restoreCapability(Number(port), stored) ? stored : null;
 }
 export async function persistPortCapability(self, port, capability) {
-    await self.ctx.storage.put(key(port), PortCapabilitySchema.parse(capability));
+    await self.ctx.storage.put(key(port), { capability: PortCapabilitySchema.parse(capability), owner: owner(self, port) });
 }
 /**
  * Retire the durable capability for a port. Called before every registration

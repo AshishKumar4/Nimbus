@@ -26,6 +26,8 @@ export interface PortCapabilityHost {
         };
     };
     portRegistry: PortRegistry;
+    /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
+    portCapabilityOwner?(port: number): string | null;
 }
 export declare function readPortCapability(self: PortCapabilityHost, port: number): Promise<string | null>;
 /**

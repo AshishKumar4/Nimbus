@@ -104,6 +104,8 @@ export interface ProgrammaticHost {
   sqliteFs: SqliteVFS | null;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
+  /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
+  portCapabilityOwner?(port: number): string | null;
   facetManager: ProgrammaticFacetManager | null;
   viteDevServer: ProgrammaticViteServer | null;
   cirrusReal: ProgrammaticCirrusServer | null;
