@@ -1336,7 +1336,7 @@
     "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
     "packages/sdk/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
     "packages/sdk/NOTICE.md": "68465263ab6d7060d9e2fede5037971c202824c5fee3d75e9ef2e01624e2d329",
-    "packages/sdk/README.md": "ee31a349cb681271596d237dce32ec985f044829e639323e8202b23b4739d7a4",
+    "packages/sdk/README.md": "174658917598a4d27ed42ab66713da55897595edd0611ee9206a4e00b9f1b67d",
     "packages/sdk/dist/errors.d.ts": "241c59522a3ed0234735e54bb30a5f7de531c4bdcb77a053e3adbb9d527dfab6",
     "packages/sdk/dist/errors.d.ts.map": "fc78442b8a2599db19277b704c987bac85a376df50b0f8108e7c72ed592860b8",
     "packages/sdk/dist/errors.js": "d9e9629bd3fd26b002789161e6052681a3f1fd243041d6382d0a11b56b9a31bc",
