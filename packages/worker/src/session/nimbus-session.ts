@@ -43,7 +43,7 @@ import {
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
-import { NpmInstaller } from '../npm/installer.js';
+import type { NpmInstaller } from '../npm/installer.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
 // moved to sibling modules (-rpc uses recordFailure for _reportExternalExit;
@@ -1503,12 +1503,16 @@ export class NimbusSession extends CloudflareDurableObject {
     };
   }
 
-  ensureNpmInstaller(onProgress?: (msg: string) => void) {
+  async ensureNpmInstaller(onProgress?: (msg: string) => void) {
     this.ensureSqliteFs();
     if (!this.esbuildService) {
       if (!this.sqliteFs) throw new Error('Session VFS is not initialized');
       this.esbuildService = new EsbuildService(this.sqliteFs.as(CRED_KERNEL));
     }
+    // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
+    // subgraph) on first npm use so it stays out of the cold script-eval
+    // graph. The install command paths that call this are already async.
+    const { NpmInstaller } = await import('../npm/installer.js');
     // ── Lazy fetch-proxy ────────────────────────────────────────────
     // The fetch-proxy is a singleton dynamic worker (LOADER.load) that
     // buffers registry responses to dodge wrangler-local-dev port

@@ -149,7 +149,7 @@ export interface SessionInternal {
   _ensureFacetProcessManager(): any;
   ensureFetchProxy(log?: (msg: string) => void): any | null;
   buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
-  ensureNpmInstaller(onProgress?: (msg: string) => void): void;
+  ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<void>;
   _envFlagDefaultOn(name: string): boolean;
   _setCpRegistry(r: any): void;
   hydrateSessionBasePath(request: Request): Promise<void>;

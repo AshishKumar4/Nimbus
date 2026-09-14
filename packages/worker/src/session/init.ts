@@ -76,7 +76,6 @@ import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { parseNpmInstallInvocation } from '../npm/install-args.js';
 import { npmLogEnabled, type NpmLogLevel } from '../npm/npm-log.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
-import { registerGitCommands } from '../git/commands.js';
 import {
   makeNimbusVerbHandler,
   createRuntimeCommandHintResolver,
@@ -507,8 +506,13 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
 
     // ── Git integration (isomorphic-git) ──
     // ctx + env are passed for clone/fetch/pull which run in a facet to avoid
-    // exhausting the supervisor DO's CPU budget on large repos.
-    registerGitCommands(registry, sqliteFs, self.ctx, self.env);
+    // exhausting the supervisor DO's CPU budget on large repos. The command
+    // module (+ its ~106 KB network-facet dependency) is loaded lazily on the
+    // first `git` invocation so it stays out of the cold script-eval graph.
+    registry.register('git', async (ctx: any) => {
+      const { runGitCommand } = await import('../git/commands.js');
+      return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+    });
 
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
@@ -1785,7 +1789,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
 
       ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
 
-      self.ensureNpmInstaller((msg: string) => {
+      await self.ensureNpmInstaller((msg: string) => {
         ctx.stdout.write('[npm] ' + msg + '\n');
       });
       const result = await self.npmInstaller!.install(cwd, { packages, pid: ctx.pid });
@@ -2296,7 +2300,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
           : 'dependencies from package.json';
         ctx.stdout.write(`\x1b[36mInstalling ${pkgLabel} (npm v2 — batched writes)...\x1b[0m\n`);
 
-        self.ensureNpmInstaller((msg: string) => {
+        await self.ensureNpmInstaller((msg: string) => {
           ctx.stdout.write('[npm] ' + msg + '\n');
         });
 
@@ -2479,7 +2483,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
 
       // Nimbus-native npx install + run path. Routes package installation
       // through NpmInstaller's full-packument resolver.
-      self.ensureNpmInstaller((msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'));
+      await self.ensureNpmInstaller((msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'));
       self.ensureSqliteFs();
       const installer = self.npmInstaller!;
       const resolveResult = await resolveNpxBinary(

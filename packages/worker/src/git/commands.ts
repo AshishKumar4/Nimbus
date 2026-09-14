@@ -268,447 +268,460 @@ export function registerGitCommands(
   doCtx?: DurableObjectState,
   doEnv?: any,
 ): void {
-  registry.register('git', async (ctx: Ctx) => {
-    const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
-    const fs = createGitFs(credentialedVfs);
-    const args = ctx.args;
-    const sub = args[0];
-    const subArgs = args.slice(1);
-    const dir = getDir(ctx);
+  registry.register('git', (ctx: Ctx) => runGitCommand(ctx, vfs, doCtx, doEnv));
+}
 
-    if (sub === '--version' || sub === '-v') {
-      ctx.stdout.write('git version 2.44.0 (isomorphic-git/cf-git)\n');
-      return 0;
-    }
+/**
+ * The `git` command handler. Split out from registration so it can be
+ * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping
+ * this module and its ~106 KB network-facet dependency out of the cold
+ * script-eval graph.
+ */
+export async function runGitCommand(
+  ctx: Ctx,
+  vfs: SqliteVFS,
+  doCtx?: DurableObjectState,
+  doEnv?: any,
+): Promise<number> {
+  const credentialedVfs = vfs.as(requireVfsCred(ctx.cred, 'git'));
+  const fs = createGitFs(credentialedVfs);
+  const args = ctx.args;
+  const sub = args[0];
+  const subArgs = args.slice(1);
+  const dir = getDir(ctx);
 
-    if (!sub || sub === '--help' || sub === '-h') {
-      ctx.stdout.write('usage: git <command> [<args>]\n\n');
-      ctx.stdout.write('Commands:\n');
-      ctx.stdout.write('  init, clone, status, add, commit, log, branch,\n');
-      ctx.stdout.write('  checkout, diff, remote, fetch, pull, push, merge,\n');
-      ctx.stdout.write('  reset, tag, config, --version\n');
-      return 0;
-    }
+  if (sub === '--version' || sub === '-v') {
+    ctx.stdout.write('git version 2.44.0 (isomorphic-git/cf-git)\n');
+    return 0;
+  }
 
-    // Lazy-load isomorphic-git only when actually needed.
-    // Note: http transport isn't loaded here — network ops (clone/fetch/pull)
-    // run inside the git-network-facet which imports its own http transport.
-    let git: any;
-    try {
-      git = await getGit();
-    } catch (e: any) {
-      ctx.stderr.write(`git: failed to load git module: ${e?.message}\n`);
-      return 1;
-    }
+  if (!sub || sub === '--help' || sub === '-h') {
+    ctx.stdout.write('usage: git <command> [<args>]\n\n');
+    ctx.stdout.write('Commands:\n');
+    ctx.stdout.write('  init, clone, status, add, commit, log, branch,\n');
+    ctx.stdout.write('  checkout, diff, remote, fetch, pull, push, merge,\n');
+    ctx.stdout.write('  reset, tag, config, --version\n');
+    return 0;
+  }
 
-    try {
-      switch (sub) {
-        case 'init': {
-          // git init [path] — if path given, use it; otherwise use cwd
-          let initDir = dir;
-          const initPath = subArgs.find((a: string) => !a.startsWith('-'));
-          if (initPath) {
-            initDir = initPath.startsWith('/') ? initPath : dir + '/' + initPath;
-            // Ensure the target directory exists in VFS
-            const stripped = initDir.replace(/^\/+/, '');
-            if (!credentialedVfs.exists(stripped)) credentialedVfs.mkdir(stripped, { recursive: true });
-          }
-          await git.init({ fs, dir: initDir });
-          ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
-          return 0;
+  // Lazy-load isomorphic-git only when actually needed.
+  // Note: http transport isn't loaded here — network ops (clone/fetch/pull)
+  // run inside the git-network-facet which imports its own http transport.
+  let git: any;
+  try {
+    git = await getGit();
+  } catch (e: any) {
+    ctx.stderr.write(`git: failed to load git module: ${e?.message}\n`);
+    return 1;
+  }
+
+  try {
+    switch (sub) {
+      case 'init': {
+        // git init [path] — if path given, use it; otherwise use cwd
+        let initDir = dir;
+        const initPath = subArgs.find((a: string) => !a.startsWith('-'));
+        if (initPath) {
+          initDir = initPath.startsWith('/') ? initPath : dir + '/' + initPath;
+          // Ensure the target directory exists in VFS
+          const stripped = initDir.replace(/^\/+/, '');
+          if (!credentialedVfs.exists(stripped)) credentialedVfs.mkdir(stripped, { recursive: true });
         }
-
-        case 'clone': {
-          const { url, dest: destArg, depth, isBg, branch } = parseCloneArgs(subArgs);
-          if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
-          // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
-          // resolved to `<cwd>//tmp/x` because the `subArgs[1]` branch
-          // unconditionally prepended getDir(ctx). The clone "succeeded" into
-          // <cwd>//tmp/x (note double slash) and the user's later `cd /tmp/x`
-          // hit ENOENT. Real-world git treats absolute targets as absolute.
-          let dest: string;
-          if (destArg) {
-            dest = destArg.startsWith('/')
-              ? destArg
-              : getDir(ctx) + '/' + destArg;
-          } else {
-            dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
-          }
-
-          if (!doCtx || !doEnv) {
-            ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
-            return 1;
-          }
-
-          ctx.stdout.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
-
-          // A clone's closed-world filesystem view is correct only while no
-          // other session surface can mutate its destination subtree. Acquire
-          // the lease before the facet performs its lstat/readdir emptiness
-          // proof; the clone's W7 stream carries the opaque owner capability
-          // through the trusted SupervisorRPC binding.
-          const mutationLease = vfs.acquireExclusiveMutation(dest, {
-            includeMissingAncestors: true,
-          });
-
-          // Delegate to git-network-facet: heavy packfile processing runs in
-          // a dynamic worker with its own CPU budget, not the supervisor DO.
-          const doClone = async (): Promise<boolean> => {
-            try {
-              const result = await execGitNetwork(doCtx, doEnv, {
-                op: 'clone',
-                pid: ctx.pid,
-                dir: dest as string,
-                url,
-                ref: branch,
-                depth,
-                exclusiveDestination: true,
-                exclusiveMutationRoot: mutationLease.root,
-                mutationOwner: mutationLease.owner,
-                // Verification/tuning knob: force a small per-chunk entry bound
-                // so ordinary repos exercise the multi-invocation chunked
-                // checkout path. Unset in production → the 10k default applies.
-                checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
-                  ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
-                  : undefined,
-                auth: {
-                  username: ctx.env.GIT_USERNAME || '',
-                  password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-                },
-              });
-              if (result.success) {
-                ctx.stdout.write(
-                  `\n[git] clone complete (${result.filesWritten} files, ` +
-                  `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
-                );
-              } else {
-                ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
-              }
-              return result.success;
-            } finally {
-              vfs.releaseExclusiveMutation(mutationLease.owner);
-            }
-          };
-
-          if (isBg) {
-            const task = doClone();
-            doCtx.waitUntil(task);
-            ctx.stdout.write('[git] clone running in background...\n');
-            return 0;
-          } else {
-            return (await doClone()) ? 0 : 1;
-          }
-        }
-
-        case 'status': {
-          const matrix = await git.statusMatrix({ fs, dir });
-          let clean = true;
-          for (const [filepath, head, workdir, stage] of matrix) {
-            if (head === workdir && workdir === stage) continue;
-            clean = false;
-            if (head === 0 && workdir === 2 && stage === 0) ctx.stdout.write(`\x1b[31m?? ${filepath}\x1b[0m\n`);
-            else if (head === 0 && stage === 2) ctx.stdout.write(`\x1b[32mA  ${filepath}\x1b[0m\n`);
-            else if (head === 1 && workdir === 2 && stage === 2) ctx.stdout.write(`\x1b[32mM  ${filepath}\x1b[0m\n`);
-            else if (head === 1 && workdir === 2 && stage === 1) ctx.stdout.write(`\x1b[31m M ${filepath}\x1b[0m\n`);
-            else if (head === 1 && workdir === 0) ctx.stdout.write(`\x1b[31m D ${filepath}\x1b[0m\n`);
-            else if (head === 1 && stage === 0) ctx.stdout.write(`\x1b[32mD  ${filepath}\x1b[0m\n`);
-            else ctx.stdout.write(`   ${filepath} [${head},${workdir},${stage}]\n`);
-          }
-          if (clean) ctx.stdout.write('nothing to commit, working tree clean\n');
-          return 0;
-        }
-
-        case 'add': {
-          const paths = subArgs.filter(a => !a.startsWith('-'));
-          if (paths.length === 0 || paths.includes('.')) {
-            // Add all
-            const matrix = await git.statusMatrix({ fs, dir });
-            for (const [filepath, head, workdir, stage] of matrix) {
-              if (head !== workdir || workdir !== stage) {
-                if (workdir === 0) await git.remove({ fs, dir, filepath });
-                else await git.add({ fs, dir, filepath });
-              }
-            }
-          } else {
-            for (const filepath of paths) {
-              await git.add({ fs, dir, filepath });
-            }
-          }
-          return 0;
-        }
-
-        case 'commit': {
-          const msgIdx = subArgs.indexOf('-m');
-          const message = msgIdx >= 0 ? subArgs[msgIdx + 1] : 'commit';
-          if (!message) { ctx.stderr.write('error: empty commit message\n'); return 1; }
-          const sha = await git.commit({
-            fs, dir, message,
-            author: getAuthor(ctx),
-          });
-          ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
-          return 0;
-        }
-
-        case 'log': {
-          const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
-          const oneline = subArgs.includes('--oneline');
-          const commits = await git.log({ fs, dir, depth: maxCount });
-          for (const c of commits) {
-            if (oneline) {
-              ctx.stdout.write(`\x1b[33m${c.oid.slice(0, 7)}\x1b[0m ${c.commit.message.split('\n')[0]}\n`);
-            } else {
-              ctx.stdout.write(`\x1b[33mcommit ${c.oid}\x1b[0m\n`);
-              ctx.stdout.write(`Author: ${c.commit.author.name} <${c.commit.author.email}>\n`);
-              ctx.stdout.write(`Date:   ${new Date(c.commit.author.timestamp * 1000).toDateString()}\n\n`);
-              ctx.stdout.write(`    ${c.commit.message}\n\n`);
-            }
-          }
-          return 0;
-        }
-
-        case 'branch': {
-          if (subArgs.length === 0 || subArgs[0] === '-a' || subArgs[0] === '--list') {
-            const branches = await git.listBranches({ fs, dir });
-            const current = await git.currentBranch({ fs, dir });
-            for (const b of branches) {
-              ctx.stdout.write(b === current ? `\x1b[32m* ${b}\x1b[0m\n` : `  ${b}\n`);
-            }
-            if (subArgs.includes('-a')) {
-              try {
-                const remotes = await git.listBranches({ fs, dir, remote: 'origin' });
-                for (const b of remotes) ctx.stdout.write(`  \x1b[31mremotes/origin/${b}\x1b[0m\n`);
-              } catch {}
-            }
-          } else if (subArgs.includes('-d') || subArgs.includes('-D')) {
-            const name = subArgs.find(a => !a.startsWith('-'));
-            if (name) {
-              await git.deleteBranch({ fs, dir, ref: name });
-              ctx.stdout.write(`Deleted branch ${name}\n`);
-            }
-          } else {
-            const name = subArgs[0];
-            await git.branch({ fs, dir, ref: name });
-            ctx.stdout.write(`Created branch ${name}\n`);
-          }
-          return 0;
-        }
-
-        case 'checkout': {
-          const ref = subArgs.find(a => !a.startsWith('-'));
-          if (!ref) { ctx.stderr.write('error: specify a branch\n'); return 1; }
-          if (subArgs.includes('-b')) {
-            await git.branch({ fs, dir, ref });
-            await git.checkout({ fs, dir, ref });
-            ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
-          } else {
-            await git.checkout({ fs, dir, ref });
-            ctx.stdout.write(`Switched to branch '${ref}'\n`);
-          }
-          return 0;
-        }
-
-        case 'diff': {
-          // Simple diff: show unstaged changes
-          const matrix = await git.statusMatrix({ fs, dir });
-          for (const [filepath, head, workdir, stage] of matrix) {
-            if (workdir !== head || workdir !== stage) {
-              ctx.stdout.write(`\x1b[1mdiff --git a/${filepath} b/${filepath}\x1b[0m\n`);
-              try {
-                const raw = await fs.promises.readFile(dir + '/' + filepath);
-                const content = typeof raw === 'string' ? raw : dec.decode(raw as Uint8Array);
-                const lines = content.split('\n');
-                for (let i = 0; i < Math.min(lines.length, 50); i++) {
-                  if (head === 0) ctx.stdout.write(`\x1b[32m+${lines[i]}\x1b[0m\n`);
-                  else ctx.stdout.write(` ${lines[i]}\n`);
-                }
-                if (lines.length > 50) ctx.stdout.write(`... (${lines.length - 50} more lines)\n`);
-              } catch {}
-              ctx.stdout.write('\n');
-            }
-          }
-          return 0;
-        }
-
-        case 'remote': {
-          if (subArgs[0] === 'add' && subArgs[1] && subArgs[2]) {
-            await git.addRemote({ fs, dir, remote: subArgs[1], url: subArgs[2] });
-            ctx.stdout.write(`Remote '${subArgs[1]}' added\n`);
-          } else if (subArgs[0] === 'remove' || subArgs[0] === 'rm') {
-            await git.deleteRemote({ fs, dir, remote: subArgs[1] });
-            ctx.stdout.write(`Remote '${subArgs[1]}' removed\n`);
-          } else {
-            const remotes = await git.listRemotes({ fs, dir });
-            for (const r of remotes) {
-              ctx.stdout.write(subArgs.includes('-v') ? `${r.remote}\t${r.url} (fetch)\n` : `${r.remote}\n`);
-            }
-          }
-          return 0;
-        }
-
-        case 'fetch': {
-          const remote = subArgs[0] || 'origin';
-          if (!doCtx || !doEnv) {
-            ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
-            return 1;
-          }
-          ctx.stdout.write(`Fetching from ${remote}...\n`);
-          const result = await execGitNetwork(doCtx, doEnv, {
-            op: 'fetch',
-            pid: ctx.pid,
-            dir,
-            remote,
-            auth: {
-              username: ctx.env.GIT_USERNAME || '',
-              password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-            },
-          });
-          if (result.success) {
-            ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
-            return 0;
-          } else {
-            ctx.stderr.write(`\n[git] fetch failed: ${result.error}\n`);
-            return 1;
-          }
-        }
-
-        case 'pull': {
-          const remote = subArgs[0] || 'origin';
-          const branch = subArgs[1] || await git.currentBranch({ fs, dir }) || 'main';
-          if (!doCtx || !doEnv) {
-            ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
-            return 1;
-          }
-          ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
-          const result = await execGitNetwork(doCtx, doEnv, {
-            op: 'pull',
-            pid: ctx.pid,
-            dir,
-            remote,
-            ref: branch,
-            author: getAuthor(ctx),
-            auth: {
-              username: ctx.env.GIT_USERNAME || '',
-              password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-            },
-          });
-          if (result.success) {
-            ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
-            return 0;
-          } else {
-            ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
-            return 1;
-          }
-        }
-
-        case 'push': {
-          const remote = subArgs[0] || 'origin';
-          const branch = subArgs[1] || await git.currentBranch({ fs, dir }) || 'main';
-          if (!doCtx || !doEnv) {
-            ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
-            return 1;
-          }
-          ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
-          const result = await execGitNetwork(doCtx, doEnv, {
-            op: 'push',
-            pid: ctx.pid,
-            dir,
-            remote,
-            ref: branch,
-            auth: {
-              username: ctx.env.GIT_USERNAME || '',
-              password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
-            },
-          });
-          if (result.success) {
-            ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
-            return 0;
-          } else {
-            ctx.stderr.write(`\n[git] push failed: ${result.error}\n`);
-            return 1;
-          }
-        }
-
-        case 'merge': {
-          const theirs = subArgs[0];
-          if (!theirs) { ctx.stderr.write('usage: git merge <branch>\n'); return 1; }
-          await git.merge({
-            fs, dir, theirs,
-            author: getAuthor(ctx),
-          });
-          ctx.stdout.write(`Merged ${theirs}\n`);
-          return 0;
-        }
-
-        case 'reset': {
-          const hard = subArgs.includes('--hard');
-          const soft = subArgs.includes('--soft');
-          const ref = subArgs.find(a => !a.startsWith('-')) || 'HEAD';
-          const oid = await git.resolveRef({ fs, dir, ref });
-
-          // Move the current branch to the target OID
-          const branch = await git.currentBranch({ fs, dir });
-          if (branch) {
-            await git.writeRef({ fs, dir, ref: `refs/heads/${branch}`, value: oid, force: true });
-          }
-
-          if (!soft) {
-            // Reset index (--mixed behavior, also applies to --hard)
-            const matrix = await git.statusMatrix({ fs, dir });
-            for (const [filepath] of matrix) {
-              try { await git.resetIndex({ fs, dir, filepath }); } catch {}
-            }
-          }
-
-          if (hard) {
-            // Reset working tree to match the target
-            await git.checkout({ fs, dir, ref: oid, force: true });
-          }
-
-          ctx.stdout.write(`HEAD is now at ${oid.slice(0, 7)}\n`);
-          return 0;
-        }
-
-        case 'tag': {
-          if (subArgs.length === 0) {
-            const tags = await git.listTags({ fs, dir });
-            for (const t of tags) ctx.stdout.write(t + '\n');
-          } else if (subArgs.includes('-d')) {
-            const name = subArgs.find(a => !a.startsWith('-'));
-            if (name) await git.deleteTag({ fs, dir, ref: name });
-          } else {
-            const name = subArgs[0];
-            await git.tag({ fs, dir, ref: name });
-            ctx.stdout.write(`Created tag ${name}\n`);
-          }
-          return 0;
-        }
-
-        case 'config': {
-          const key = subArgs.find(a => !a.startsWith('-'));
-          const value = subArgs[subArgs.indexOf(key || '') + 1];
-          if (key && value) {
-            const [section, ...rest] = key.split('.');
-            await git.setConfig({ fs, dir, path: key, value });
-            ctx.stdout.write(`${key}=${value}\n`);
-          } else if (key) {
-            try {
-              const val = await git.getConfig({ fs, dir, path: key });
-              ctx.stdout.write(`${val}\n`);
-            } catch { ctx.stderr.write(`config: key '${key}' not set\n`); return 1; }
-          } else {
-            ctx.stderr.write('usage: git config <key> [value]\n');
-            return 1;
-          }
-          return 0;
-        }
-
-        default:
-          ctx.stderr.write(`git: '${sub}' is not a git command. See 'git --help'.\n`);
-          return 1;
+        await git.init({ fs, dir: initDir });
+        ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
+        return 0;
       }
-    } catch (e: any) {
-      ctx.stderr.write(`fatal: ${e?.message || e}\n`);
-      return 128;
+
+      case 'clone': {
+        const { url, dest: destArg, depth, isBg, branch } = parseCloneArgs(subArgs);
+        if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
+        // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
+        // resolved to `<cwd>//tmp/x` because the `subArgs[1]` branch
+        // unconditionally prepended getDir(ctx). The clone "succeeded" into
+        // <cwd>//tmp/x (note double slash) and the user's later `cd /tmp/x`
+        // hit ENOENT. Real-world git treats absolute targets as absolute.
+        let dest: string;
+        if (destArg) {
+          dest = destArg.startsWith('/')
+            ? destArg
+            : getDir(ctx) + '/' + destArg;
+        } else {
+          dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
+        }
+
+        if (!doCtx || !doEnv) {
+          ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
+          return 1;
+        }
+
+        ctx.stdout.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
+
+        // A clone's closed-world filesystem view is correct only while no
+        // other session surface can mutate its destination subtree. Acquire
+        // the lease before the facet performs its lstat/readdir emptiness
+        // proof; the clone's W7 stream carries the opaque owner capability
+        // through the trusted SupervisorRPC binding.
+        const mutationLease = vfs.acquireExclusiveMutation(dest, {
+          includeMissingAncestors: true,
+        });
+
+        // Delegate to git-network-facet: heavy packfile processing runs in
+        // a dynamic worker with its own CPU budget, not the supervisor DO.
+        const doClone = async (): Promise<boolean> => {
+          try {
+            const result = await execGitNetwork(doCtx, doEnv, {
+              op: 'clone',
+              pid: ctx.pid,
+              dir: dest as string,
+              url,
+              ref: branch,
+              depth,
+              exclusiveDestination: true,
+              exclusiveMutationRoot: mutationLease.root,
+              mutationOwner: mutationLease.owner,
+              // Verification/tuning knob: force a small per-chunk entry bound
+              // so ordinary repos exercise the multi-invocation chunked
+              // checkout path. Unset in production → the 10k default applies.
+              checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
+                ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
+                : undefined,
+              auth: {
+                username: ctx.env.GIT_USERNAME || '',
+                password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
+              },
+            });
+            if (result.success) {
+              ctx.stdout.write(
+                `\n[git] clone complete (${result.filesWritten} files, ` +
+                `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
+              );
+            } else {
+              ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+            }
+            return result.success;
+          } finally {
+            vfs.releaseExclusiveMutation(mutationLease.owner);
+          }
+        };
+
+        if (isBg) {
+          const task = doClone();
+          doCtx.waitUntil(task);
+          ctx.stdout.write('[git] clone running in background...\n');
+          return 0;
+        } else {
+          return (await doClone()) ? 0 : 1;
+        }
+      }
+
+      case 'status': {
+        const matrix = await git.statusMatrix({ fs, dir });
+        let clean = true;
+        for (const [filepath, head, workdir, stage] of matrix) {
+          if (head === workdir && workdir === stage) continue;
+          clean = false;
+          if (head === 0 && workdir === 2 && stage === 0) ctx.stdout.write(`\x1b[31m?? ${filepath}\x1b[0m\n`);
+          else if (head === 0 && stage === 2) ctx.stdout.write(`\x1b[32mA  ${filepath}\x1b[0m\n`);
+          else if (head === 1 && workdir === 2 && stage === 2) ctx.stdout.write(`\x1b[32mM  ${filepath}\x1b[0m\n`);
+          else if (head === 1 && workdir === 2 && stage === 1) ctx.stdout.write(`\x1b[31m M ${filepath}\x1b[0m\n`);
+          else if (head === 1 && workdir === 0) ctx.stdout.write(`\x1b[31m D ${filepath}\x1b[0m\n`);
+          else if (head === 1 && stage === 0) ctx.stdout.write(`\x1b[32mD  ${filepath}\x1b[0m\n`);
+          else ctx.stdout.write(`   ${filepath} [${head},${workdir},${stage}]\n`);
+        }
+        if (clean) ctx.stdout.write('nothing to commit, working tree clean\n');
+        return 0;
+      }
+
+      case 'add': {
+        const paths = subArgs.filter(a => !a.startsWith('-'));
+        if (paths.length === 0 || paths.includes('.')) {
+          // Add all
+          const matrix = await git.statusMatrix({ fs, dir });
+          for (const [filepath, head, workdir, stage] of matrix) {
+            if (head !== workdir || workdir !== stage) {
+              if (workdir === 0) await git.remove({ fs, dir, filepath });
+              else await git.add({ fs, dir, filepath });
+            }
+          }
+        } else {
+          for (const filepath of paths) {
+            await git.add({ fs, dir, filepath });
+          }
+        }
+        return 0;
+      }
+
+      case 'commit': {
+        const msgIdx = subArgs.indexOf('-m');
+        const message = msgIdx >= 0 ? subArgs[msgIdx + 1] : 'commit';
+        if (!message) { ctx.stderr.write('error: empty commit message\n'); return 1; }
+        const sha = await git.commit({
+          fs, dir, message,
+          author: getAuthor(ctx),
+        });
+        ctx.stdout.write(`[${sha.slice(0, 7)}] ${message}\n`);
+        return 0;
+      }
+
+      case 'log': {
+        const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
+        const oneline = subArgs.includes('--oneline');
+        const commits = await git.log({ fs, dir, depth: maxCount });
+        for (const c of commits) {
+          if (oneline) {
+            ctx.stdout.write(`\x1b[33m${c.oid.slice(0, 7)}\x1b[0m ${c.commit.message.split('\n')[0]}\n`);
+          } else {
+            ctx.stdout.write(`\x1b[33mcommit ${c.oid}\x1b[0m\n`);
+            ctx.stdout.write(`Author: ${c.commit.author.name} <${c.commit.author.email}>\n`);
+            ctx.stdout.write(`Date:   ${new Date(c.commit.author.timestamp * 1000).toDateString()}\n\n`);
+            ctx.stdout.write(`    ${c.commit.message}\n\n`);
+          }
+        }
+        return 0;
+      }
+
+      case 'branch': {
+        if (subArgs.length === 0 || subArgs[0] === '-a' || subArgs[0] === '--list') {
+          const branches = await git.listBranches({ fs, dir });
+          const current = await git.currentBranch({ fs, dir });
+          for (const b of branches) {
+            ctx.stdout.write(b === current ? `\x1b[32m* ${b}\x1b[0m\n` : `  ${b}\n`);
+          }
+          if (subArgs.includes('-a')) {
+            try {
+              const remotes = await git.listBranches({ fs, dir, remote: 'origin' });
+              for (const b of remotes) ctx.stdout.write(`  \x1b[31mremotes/origin/${b}\x1b[0m\n`);
+            } catch {}
+          }
+        } else if (subArgs.includes('-d') || subArgs.includes('-D')) {
+          const name = subArgs.find(a => !a.startsWith('-'));
+          if (name) {
+            await git.deleteBranch({ fs, dir, ref: name });
+            ctx.stdout.write(`Deleted branch ${name}\n`);
+          }
+        } else {
+          const name = subArgs[0];
+          await git.branch({ fs, dir, ref: name });
+          ctx.stdout.write(`Created branch ${name}\n`);
+        }
+        return 0;
+      }
+
+      case 'checkout': {
+        const ref = subArgs.find(a => !a.startsWith('-'));
+        if (!ref) { ctx.stderr.write('error: specify a branch\n'); return 1; }
+        if (subArgs.includes('-b')) {
+          await git.branch({ fs, dir, ref });
+          await git.checkout({ fs, dir, ref });
+          ctx.stdout.write(`Switched to a new branch '${ref}'\n`);
+        } else {
+          await git.checkout({ fs, dir, ref });
+          ctx.stdout.write(`Switched to branch '${ref}'\n`);
+        }
+        return 0;
+      }
+
+      case 'diff': {
+        // Simple diff: show unstaged changes
+        const matrix = await git.statusMatrix({ fs, dir });
+        for (const [filepath, head, workdir, stage] of matrix) {
+          if (workdir !== head || workdir !== stage) {
+            ctx.stdout.write(`\x1b[1mdiff --git a/${filepath} b/${filepath}\x1b[0m\n`);
+            try {
+              const raw = await fs.promises.readFile(dir + '/' + filepath);
+              const content = typeof raw === 'string' ? raw : dec.decode(raw as Uint8Array);
+              const lines = content.split('\n');
+              for (let i = 0; i < Math.min(lines.length, 50); i++) {
+                if (head === 0) ctx.stdout.write(`\x1b[32m+${lines[i]}\x1b[0m\n`);
+                else ctx.stdout.write(` ${lines[i]}\n`);
+              }
+              if (lines.length > 50) ctx.stdout.write(`... (${lines.length - 50} more lines)\n`);
+            } catch {}
+            ctx.stdout.write('\n');
+          }
+        }
+        return 0;
+      }
+
+      case 'remote': {
+        if (subArgs[0] === 'add' && subArgs[1] && subArgs[2]) {
+          await git.addRemote({ fs, dir, remote: subArgs[1], url: subArgs[2] });
+          ctx.stdout.write(`Remote '${subArgs[1]}' added\n`);
+        } else if (subArgs[0] === 'remove' || subArgs[0] === 'rm') {
+          await git.deleteRemote({ fs, dir, remote: subArgs[1] });
+          ctx.stdout.write(`Remote '${subArgs[1]}' removed\n`);
+        } else {
+          const remotes = await git.listRemotes({ fs, dir });
+          for (const r of remotes) {
+            ctx.stdout.write(subArgs.includes('-v') ? `${r.remote}\t${r.url} (fetch)\n` : `${r.remote}\n`);
+          }
+        }
+        return 0;
+      }
+
+      case 'fetch': {
+        const remote = subArgs[0] || 'origin';
+        if (!doCtx || !doEnv) {
+          ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
+          return 1;
+        }
+        ctx.stdout.write(`Fetching from ${remote}...\n`);
+        const result = await execGitNetwork(doCtx, doEnv, {
+          op: 'fetch',
+          pid: ctx.pid,
+          dir,
+          remote,
+          auth: {
+            username: ctx.env.GIT_USERNAME || '',
+            password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
+          },
+        });
+        if (result.success) {
+          ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+          return 0;
+        } else {
+          ctx.stderr.write(`\n[git] fetch failed: ${result.error}\n`);
+          return 1;
+        }
+      }
+
+      case 'pull': {
+        const remote = subArgs[0] || 'origin';
+        const branch = subArgs[1] || await git.currentBranch({ fs, dir }) || 'main';
+        if (!doCtx || !doEnv) {
+          ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
+          return 1;
+        }
+        ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
+        const result = await execGitNetwork(doCtx, doEnv, {
+          op: 'pull',
+          pid: ctx.pid,
+          dir,
+          remote,
+          ref: branch,
+          author: getAuthor(ctx),
+          auth: {
+            username: ctx.env.GIT_USERNAME || '',
+            password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
+          },
+        });
+        if (result.success) {
+          ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+          return 0;
+        } else {
+          ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
+          return 1;
+        }
+      }
+
+      case 'push': {
+        const remote = subArgs[0] || 'origin';
+        const branch = subArgs[1] || await git.currentBranch({ fs, dir }) || 'main';
+        if (!doCtx || !doEnv) {
+          ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
+          return 1;
+        }
+        ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
+        const result = await execGitNetwork(doCtx, doEnv, {
+          op: 'push',
+          pid: ctx.pid,
+          dir,
+          remote,
+          ref: branch,
+          auth: {
+            username: ctx.env.GIT_USERNAME || '',
+            password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
+          },
+        });
+        if (result.success) {
+          ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
+          return 0;
+        } else {
+          ctx.stderr.write(`\n[git] push failed: ${result.error}\n`);
+          return 1;
+        }
+      }
+
+      case 'merge': {
+        const theirs = subArgs[0];
+        if (!theirs) { ctx.stderr.write('usage: git merge <branch>\n'); return 1; }
+        await git.merge({
+          fs, dir, theirs,
+          author: getAuthor(ctx),
+        });
+        ctx.stdout.write(`Merged ${theirs}\n`);
+        return 0;
+      }
+
+      case 'reset': {
+        const hard = subArgs.includes('--hard');
+        const soft = subArgs.includes('--soft');
+        const ref = subArgs.find(a => !a.startsWith('-')) || 'HEAD';
+        const oid = await git.resolveRef({ fs, dir, ref });
+
+        // Move the current branch to the target OID
+        const branch = await git.currentBranch({ fs, dir });
+        if (branch) {
+          await git.writeRef({ fs, dir, ref: `refs/heads/${branch}`, value: oid, force: true });
+        }
+
+        if (!soft) {
+          // Reset index (--mixed behavior, also applies to --hard)
+          const matrix = await git.statusMatrix({ fs, dir });
+          for (const [filepath] of matrix) {
+            try { await git.resetIndex({ fs, dir, filepath }); } catch {}
+          }
+        }
+
+        if (hard) {
+          // Reset working tree to match the target
+          await git.checkout({ fs, dir, ref: oid, force: true });
+        }
+
+        ctx.stdout.write(`HEAD is now at ${oid.slice(0, 7)}\n`);
+        return 0;
+      }
+
+      case 'tag': {
+        if (subArgs.length === 0) {
+          const tags = await git.listTags({ fs, dir });
+          for (const t of tags) ctx.stdout.write(t + '\n');
+        } else if (subArgs.includes('-d')) {
+          const name = subArgs.find(a => !a.startsWith('-'));
+          if (name) await git.deleteTag({ fs, dir, ref: name });
+        } else {
+          const name = subArgs[0];
+          await git.tag({ fs, dir, ref: name });
+          ctx.stdout.write(`Created tag ${name}\n`);
+        }
+        return 0;
+      }
+
+      case 'config': {
+        const key = subArgs.find(a => !a.startsWith('-'));
+        const value = subArgs[subArgs.indexOf(key || '') + 1];
+        if (key && value) {
+          const [section, ...rest] = key.split('.');
+          await git.setConfig({ fs, dir, path: key, value });
+          ctx.stdout.write(`${key}=${value}\n`);
+        } else if (key) {
+          try {
+            const val = await git.getConfig({ fs, dir, path: key });
+            ctx.stdout.write(`${val}\n`);
+          } catch { ctx.stderr.write(`config: key '${key}' not set\n`); return 1; }
+        } else {
+          ctx.stderr.write('usage: git config <key> [value]\n');
+          return 1;
+        }
+        return 0;
+      }
+
+      default:
+        ctx.stderr.write(`git: '${sub}' is not a git command. See 'git --help'.\n`);
+        return 1;
     }
-  });
+  } catch (e: any) {
+    ctx.stderr.write(`fatal: ${e?.message || e}\n`);
+    return 128;
+  }
 }
