@@ -70,18 +70,37 @@ http.createServer((req, res) => {
   a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
 
   // The same scoped URL answers again — re-driven on request, no reservation.
-  const after = await pollPort(PORT, 'plain-app:', 30_000);
-  a.check('the scoped path URL answers again after the reset with no expose ever called', after.ok,
-    `status=${after.last.status} body=${after.last.body?.slice(0, 120)}`);
-  const bootAfter = after.last.body?.match(/boot=([^\s|]+)/)?.[1] ?? '';
-  a.check('the answering process was re-driven (new boot nonce)', bootAfter !== '' && bootAfter !== bootBefore,
-    `before=${bootBefore} after=${bootAfter}`);
+  // The 204 leaves before the isolate unwinds, so the first polls may still
+  // reach the old instance: the proof is a DIFFERENT boot nonce on the same
+  // URL within the budget, not merely a 200.
+  let bootAfter = '';
+  let last = { status: 0, body: '' };
+  {
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      last = await fetchPort(sid, PORT, '/');
+      const boot = last.body?.match(/boot=([^\s|]+)/)?.[1] ?? '';
+      if (last.status === 200 && last.body.includes('plain-app:') && boot && boot !== bootBefore) { bootAfter = boot; break; }
+      await sleep(500);
+    }
+  }
+  a.check('the scoped path URL answers again after the reset with no expose ever called, from a re-driven process (new boot nonce)',
+    bootAfter !== '', `before=${bootBefore} last status=${last.status} body=${last.body?.slice(0, 120)}`);
 
   // apps.list sees the identity, derived, unnamed, scoped, running.
   const { Nimbus } = await import('../../../packages/sdk/src/index.ts');
   const box = Nimbus.connect({ endpoint: BASE, ...(process.env.NIMBUS_PROBE_TOKEN ? { token: process.env.NIMBUS_PROBE_TOKEN } : {}) }).sandbox(sid);
-  const apps = await box.apps.list();
-  const app = apps.find((row) => row.port === PORT);
+  let apps = await box.apps.list();
+  let app = apps.find((row) => row.port === PORT);
+  {
+    // The re-driven launch settles a beat after its port answers.
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && app?.status !== 'running') {
+      await sleep(500);
+      apps = await box.apps.list();
+      app = apps.find((row) => row.port === PORT);
+    }
+  }
   a.check('apps.list reports the resident under a derived identity', app !== undefined && /^auto:[a-f0-9]{24}$/.test(app.owner),
     JSON.stringify(apps));
   if (app) {

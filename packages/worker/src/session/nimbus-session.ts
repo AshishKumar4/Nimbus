@@ -984,6 +984,12 @@ export class NimbusSession extends CloudflareDurableObject {
    * manager decides 'started' | 'absent' | 'failed'; the route maps them.
    */
   async ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'> {
+    // Stood up the same way the alarm pump stands itself up: a port request
+    // is the first thing to reach a replacement instance as often as an
+    // alarm is, and the launch it re-drives needs a filesystem to be
+    // re-driven onto — measured live (staging 2026-09-14): without it the
+    // re-drive failed with "a resident process needs a session filesystem".
+    this.ensureSqliteFs();
     this.ensureFacetManager();
     return this.facetManager!.ensureDurableAppOnPort(port);
   }
