@@ -14,7 +14,7 @@
  *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
  *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
  *   - IS_OPTIONAL_NATIVE_BINDING(pkg) → boolean
- *   - PARSE_SEMVER(v) → [major, minor, patch] | null
+ *   - PARSE_SEMVER(v) → [major, minor, patch, prerelease[]] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
  *   - RESOLVE_VERSION(versions, range) → string | null
@@ -26,15 +26,15 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with the supervisor module.
  *
- * The semver helpers are pasted from src/npm/resolver.ts and MUST stay
- * byte-equivalent — divergence would mean the facet picks different
- * versions than the in-supervisor path.
+ * The semver helpers are embedded from src/npm/semver.ts the same way, so
+ * the facet picks versions with the supervisor's own implementation.
  *
  * Preamble bytes are part of the loader-cache key for IsolatePool —
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */
 import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeArtifactReject, policyShouldSkipPackage, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
+import { compareSemver, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
 export const NPM_RESOLVE_PREAMBLE = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
@@ -101,94 +101,18 @@ function __DRAIN_EVENTS() {
   return out;
 }
 
-// ── Semver helpers (pasted from src/npm-resolver.ts:83-202) ─────────────
-function PARSE_SEMVER(v) {
-  const m = v.replace(/^v/, '').match(/^(\\d+)\\.(\\d+)\\.(\\d+)/);
-  return m ? [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])] : null;
-}
-
-function COMPARE_SEMVER(a, b) {
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-}
-
-function __SATISFIES_COMPARATOR(version, comparator) {
-  const comp = comparator.trim();
-  if (!comp || comp === '*' || comp === 'latest' || comp === '' || comp === 'x') return true;
-  let op = '';
-  let rangeStr = comp;
-  const prefixMatch = comp.match(/^([~^]|>=|<=|>|<|=)\\s*/);
-  if (prefixMatch) {
-    op = prefixMatch[1];
-    rangeStr = comp.slice(prefixMatch[0].length);
-  }
-  rangeStr = rangeStr.replace(/\\.x/g, '.0');
-  if (rangeStr.match(/^\\d+$/)) rangeStr += '.0.0';
-  else if (rangeStr.match(/^\\d+\\.\\d+$/)) rangeStr += '.0';
-  const vParts = PARSE_SEMVER(version);
-  const rParts = PARSE_SEMVER(rangeStr);
-  if (!vParts || !rParts) return false;
-  const cmp = COMPARE_SEMVER(vParts, rParts);
-  switch (op) {
-    case '^': {
-      if (rParts[0] > 0) {
-        return vParts[0] === rParts[0] && cmp >= 0;
-      }
-      if (rParts[1] > 0) {
-        return vParts[0] === 0 && vParts[1] === rParts[1] && cmp >= 0;
-      }
-      return vParts[0] === 0 && vParts[1] === 0 && vParts[2] === rParts[2];
-    }
-    case '~': {
-      return vParts[0] === rParts[0] && vParts[1] === rParts[1] && vParts[2] >= rParts[2];
-    }
-    case '>=': return cmp >= 0;
-    case '>':  return cmp > 0;
-    case '<=': return cmp <= 0;
-    case '<':  return cmp < 0;
-    case '=':  return cmp === 0;
-    default: {
-      if (comp.match(/^\\d/)) {
-        return cmp === 0;
-      }
-      return cmp === 0;
-    }
-  }
-}
-
-function SATISFIES_RANGE(version, range) {
-  const trimmed = range.trim();
-  if (!trimmed || trimmed === '*' || trimmed === 'latest' || trimmed === '') return true;
-  const orParts = trimmed.split(/\\s*\\|\\|\\s*/);
-  for (const orPart of orParts) {
-    const hyphen = orPart.match(/^(\\S+)\\s+-\\s+(\\S+)$/);
-    if (hyphen) {
-      if (__SATISFIES_COMPARATOR(version, '>=' + hyphen[1]) &&
-          __SATISFIES_COMPARATOR(version, '<=' + hyphen[2])) {
-        return true;
-      }
-      continue;
-    }
-    const andParts = orPart.trim().split(/\\s+/);
-    const allMatch = andParts.every((part) => __SATISFIES_COMPARATOR(version, part));
-    if (allMatch) return true;
-  }
-  return false;
-}
-
-function RESOLVE_VERSION(versions, range) {
-  if (!range || range === 'latest' || range === '*' || range === '') return null;
-  const matching = versions.filter((v) => {
-    if (v.includes('-') && !range.includes('-')) return false;
-    return SATISFIES_RANGE(v, range);
-  });
-  if (matching.length === 0) return null;
-  matching.sort((a, b) => {
-    const ap = PARSE_SEMVER(a);
-    const bp = PARSE_SEMVER(b);
-    if (!ap || !bp) return 0;
-    return COMPARE_SEMVER(bp, ap);
-  });
-  return matching[0];
-}
+// ── Semver (embedded from src/npm/semver.ts) ────────────────────────────
+// Generated — do not edit here. npm/semver.ts is the single implementation;
+// tests/unit/npm-semver.mjs asserts the embedded functions answer exactly as
+// the exported ones do.
+${parseSemver.toString()}
+${compareSemver.toString()}
+${semverComparators.toString()}
+${satisfiesRange.toString()}
+${resolveVersion.toString()}
+function PARSE_SEMVER(v) { return parseSemver(v); }
+function COMPARE_SEMVER(a, b) { return compareSemver(a, b); }
+function SATISFIES_RANGE(version, range) { return satisfiesRange(version, range); }
+function RESOLVE_VERSION(versions, range) { return resolveVersion(versions, range); }
 // ── end npm-resolve preamble ────────────────────────────────────────────
 `;

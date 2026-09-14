@@ -149,9 +149,15 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             suggest: reject.suggest,
         });
     };
-    // 1. SKIP_PACKAGES gate.
+    // 1. SKIP_PACKAGES gate. Loud, like the warn path below: a transitive
+    //    dependency the policy leaves out of node_modules is a fact the
+    //    install log and the registry events must carry, because the program
+    //    that requires it will fail at runtime and nothing else says why.
     // @ts-ignore — preamble.
     if (!spec.topLevel && SHOULD_SKIP_PACKAGE(spec.name, !!spec.frameworkAware)) {
+        const reason = 'build-time or Nimbus-provided package; not installed as a transitive dependency';
+        messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${spec.name} — ${reason}`);
+        events.push({ type: 'transitive-skip', from: spec.name, reason });
         return out(null, 0, 'skipped');
     }
     // 2. Registry policy.
