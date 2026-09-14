@@ -142,7 +142,7 @@ export interface PacedWorkHost {
    * reason. Without it the pump degrades to a same-context timer — see
    * {@link PacedWork.nextTurn}.
    */
-  requestTurn?: () => void;
+  requestTurn?: (notBefore?: number) => void;
 }
 
 /**
@@ -160,7 +160,7 @@ export class PacedWork implements TurnScheduler {
    * half-built work for pids that no longer exist, where re-driving a launch
    * from its inputs is the same idempotent work again.
    */
-  private waiters: Array<{ resume: () => void; chunkEnded: Promise<void> }> = [];
+  private waiters: Array<{ resume: () => void; chunkEnded: Promise<void>; notBefore: number }> = [];
 
   /**
    * `ctx` keys the cold-start queue the pump drains first on every turn it
@@ -181,14 +181,14 @@ export class PacedWork implements TurnScheduler {
    * always performed, so a harness or a runtime without alarms loses the
    * responsiveness but keeps the behaviour.
    */
-  nextTurn(chunkEnded: Promise<void>): Promise<void> {
+  nextTurn(chunkEnded: Promise<void>, notBefore = 0): Promise<void> {
     return new Promise<void>((resume) => {
-      this.waiters.push({ resume, chunkEnded });
+      this.waiters.push({ resume, chunkEnded, notBefore });
       if (this.host.requestTurn) {
-        this.host.requestTurn();
+        this.host.requestTurn(notBefore);
         return;
       }
-      setTimeout(() => { void this.pump(); }, 0);
+      setTimeout(() => { void this.pump(); }, Math.max(0, notBefore - Date.now()));
     });
   }
 
@@ -206,9 +206,11 @@ export class PacedWork implements TurnScheduler {
     // is what an alarm calls, and the first turn after a reset is the
     // re-delivered alarm of a launch the reset interrupted.
     await runColdStart(this.ctx);
-    const waiting = this.waiters;
+    const now = Date.now();
+    const waiting = this.waiters.filter((waiter) => waiter.notBefore <= now);
+    this.waiters = this.waiters.filter((waiter) => waiter.notBefore > now);
+    if (this.waiters.length > 0) this.host.requestTurn?.(Math.min(...this.waiters.map((waiter) => waiter.notBefore)));
     if (waiting.length === 0) return;
-    this.waiters = [];
     for (const waiter of waiting) waiter.resume();
     await Promise.all(waiting.map((waiter) => waiter.chunkEnded));
   }

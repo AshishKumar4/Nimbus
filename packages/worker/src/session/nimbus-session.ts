@@ -657,8 +657,8 @@ export class NimbusSession extends CloudflareDurableObject {
    * it arrives as a new invocation, so the chunk runs against a fresh CPU
    * budget rather than the one the launch has already been spending.
    */
-  private _scheduleLaunchTurn(): Promise<boolean> {
-    return timers(this, this.ctx).schedule('resident-launch', Date.now());
+  private _scheduleLaunchTurn(notBefore = 0): Promise<boolean> {
+    return timers(this, this.ctx).schedule('resident-launch', Math.max(Date.now(), notBefore));
   }
 
   /**
@@ -1133,7 +1133,7 @@ export class NimbusSession extends CloudflareDurableObject {
         processHostFor,
         {
           onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
-          requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
+          requestLaunchTurn: (notBefore) => { void this._scheduleLaunchTurn(notBefore); },
           notify: (line) => this._notifySession(line),
           transformLargeEsm: async (code, options) => {
             const loader = Reflect.get(this.env, 'LOADER');

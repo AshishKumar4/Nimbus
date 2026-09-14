@@ -225,6 +225,11 @@ export class FencedWork<R extends FencedWorkRecord> {
     let inflight = this.drives.get(key);
     if (inflight === undefined) {
       inflight = (async (): Promise<boolean> => {
+        if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
+          this.host.onAbandoned?.(record);
+          await this.supersede(key);
+          return true;
+        }
         let failed = false;
         try {
           await this.host.redrive(record, record.attempt + 1);

@@ -3568,7 +3568,7 @@ export interface FacetManagerHooks {
    * genuinely re-enters the object: a fresh turn is both a released thread and
    * a fresh CPU budget, and a launch needs each for a different reason.
    */
-  requestLaunchTurn?: () => void;
+  requestLaunchTurn?: (notBefore?: number) => void;
   /**
    * Put a line in front of the user, whether or not a terminal is attached.
    *
@@ -3677,8 +3677,6 @@ interface ResidentLaunchRecord extends FencedWorkRecord {
    * budget with backoff.
    */
   restart?: ResidentRestartPolicy;
-  /** Consecutive on-failure restarts this lineage has spent; reset by a healthy run. */
-  restarts?: number;
   /** The reserved port `$PORT` was injected with — what a registration is checked against. */
   injectedPort?: number;
   /** The resident bound a different port than its reservation holds while `$PORT` was injected. */
@@ -3688,12 +3686,8 @@ interface ResidentLaunchRecord extends FencedWorkRecord {
 export type ResidentRestartPolicy = 'never' | 'on-failure';
 /** The env var a launch reads its restart policy from — set by startProcess({ restart }) and `nimbus start --restart`. */
 export const RESTART_POLICY_ENV = 'NIMBUS_RESTART';
-/** Consecutive on-failure restarts a lineage may spend before it is left stopped. */
-export const RESTART_ON_FAILURE_BUDGET = 3;
-/** First backoff; doubles per consecutive restart. */
+/** Backoff per spent FencedWork attempt; a healthy boot resets that existing budget. */
 const RESTART_BACKOFF_BASE_MS = 1_000;
-/** A run at least this long resets the consecutive-restart count: the crash was not a loop. */
-const RESTART_HEALTHY_RUN_MS = 60_000;
 
 function residentRestartPolicy(env: Record<string, string> | undefined): ResidentRestartPolicy {
   return env?.[RESTART_POLICY_ENV] === 'on-failure' ? 'on-failure' : 'never';
@@ -3941,28 +3935,16 @@ export class FacetManager {
       await this.launchJournal.release(pid);
       return;
     }
-    const ranMs = entry.endTime !== null && entry.endTime !== undefined ? entry.endTime - entry.startTime : 0;
-    const restarts = ranMs >= RESTART_HEALTHY_RUN_MS ? 0 : (row.restarts ?? 0);
-    if (restarts >= RESTART_ON_FAILURE_BUDGET) {
-      this.hooks.notify?.(
-        `\x1b[2m[nimbus: "${row.command}" exited with code ${entry.exitCode} `
-        + `${restarts} times in a row — leaving it stopped]\x1b[0m\r\n`,
-      );
-      await this.launchJournal.release(pid);
-      return;
-    }
-    const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** restarts;
+    const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** row.attempt;
     this.hooks.notify?.(
       `\x1b[2m[nimbus: "${row.command}" exited with code ${entry.exitCode} — `
-      + `restarting in ${delayMs / 1000}s (restart ${restarts + 1} of ${RESTART_ON_FAILURE_BUDGET})]\x1b[0m\r\n`,
+      + `restarting in ${delayMs / 1000}s (FencedWork attempt ${row.attempt + 1})]\x1b[0m\r\n`,
     );
-    const { promise: waited, resolve: done } = withResolvers();
-    setTimeout(done, delayMs);
-    await waited;
+    await this.launchPump.nextTurn(Promise.resolve(), Date.now() + delayMs);
     // The process may have been removed or the session destroyed during the
     // backoff; a row that is gone is owed nothing.
     if (!(await this.launchJournal.rows()).has(key)) return;
-    await this.launchJournal.drive(key, { ...row, restarts: restarts + 1 });
+    await this.launchJournal.drive(key, row);
   }
 
   /** Claim identity AND write its recovery row in one serializable storage transaction. */
@@ -5308,7 +5290,7 @@ export class FacetManager {
   private async _redrive(record: ResidentLaunchRecord, attempt: number): Promise<unknown> {
     const { recipe } = record;
     switch (recipe.kind) {
-      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, { restarts: record.restarts });
+      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
       case 'worker': {
         // The embedder's resolver decides everything; only a self-owned
         // launch — nobody composed an embedder hook — falls through to the
@@ -5342,7 +5324,7 @@ export class FacetManager {
    * than inside the boot spec and is read only when the facet loads.
    */
   spawnNode(code: string, opts: ResidentSpawnOptions = {}): Promise<{ pid: number }> {
-    return this._spawnResident(code, opts, 0, {});
+    return this._spawnResident(code, opts, 0);
   }
 
   /**
@@ -5354,7 +5336,6 @@ export class FacetManager {
     code: string,
     opts: ResidentSpawnOptions,
     attempt: number,
-    lineage: { restarts?: number },
   ): Promise<{ pid: number }> {
     this.processes.reap();
     const command = opts.command || (opts.filename ? `node ${opts.filename}` : 'node <script>');
@@ -5375,7 +5356,7 @@ export class FacetManager {
       try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}
     }
 
-    const launch = this._runResidentLaunch(entry, code, command, opts, attempt, lineage);
+    const launch = this._runResidentLaunch(entry, code, command, opts, attempt);
     if (!opts.attachedTty) {
       // A server's caller is told a port is bound, so it has to wait for the
       // boot that binds it. The wait costs this turn nothing: every chunk of
@@ -5412,7 +5393,6 @@ export class FacetManager {
     command: string,
     opts: ResidentSpawnOptions,
     attempt: number,
-    lineage: { restarts?: number },
   ): Promise<void> {
     const cwd = opts.cwd || '/home/user';
     const pacer = new TurnBudget(
@@ -5456,7 +5436,6 @@ export class FacetManager {
       pid: entry.pid, command, attempt, phase: 'starting', owner,
       recipe: { kind: 'node', code, opts: { ...opts, skipSpawn: undefined, callerPid: undefined } },
       restart: residentRestartPolicy(opts.env),
-      ...(lineage.restarts !== undefined ? { restarts: lineage.restarts } : {}),
     };
     let duplicateOf: number | null;
     try {
@@ -5500,7 +5479,6 @@ export class FacetManager {
       owner,
       ...(held !== null ? { port: held.port, injectedPort: held.port } : {}),
       restart: residentRestartPolicy(opts.env),
-      ...(lineage.restarts !== undefined ? { restarts: lineage.restarts } : {}),
     };
     try {
       if (!ephemeral) await this.launchJournal.journal(record);

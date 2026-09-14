@@ -34,7 +34,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { FacetManager, RESTART_ON_FAILURE_BUDGET } from '../../packages/worker/src/facets/manager.ts';
+import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { FENCED_WORK_MAX_ATTEMPT } from '../../packages/fabric/src/fenced-work.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -589,25 +590,21 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   fm.finishProcess(a.pid, 1, 'crashed');
   const redriven = await waitFor(async () => (await journalRows(ctx)).find((r) => r.pid > a.pid && r.command === 'node crashy.js'), 5_000);
   assert.ok(redriven, 'a crash under on-failure re-drove the launch');
-  assert.equal(redriven.restarts, 1, 'the restart count is carried on the new row');
+  assert.equal(redriven.restarts, undefined, 'no parallel restart counter');
   assert.equal(redriven.restart, 'on-failure', 'so is the policy');
   await waitFor(async () => processes.get(redriven.pid)?.state === 'running' && self.portRegistry.get(20740)?.pid === redriven.pid, 5_000);
   assert.equal(world.boots.length, boots + 1, 'one boot for the restart');
   assert.equal(await rowFor(ctx, a.pid), undefined, 'the crashed row is superseded');
-  assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(restart 1 of/.test(line)), JSON.stringify(notices));
+  assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(FencedWork attempt 1/.test(line)), JSON.stringify(notices));
 
-  // The budget: spend the rest, then it stays stopped.
-  let current = redriven;
-  for (let n = 2; n <= RESTART_ON_FAILURE_BUDGET; n++) {
-    fm.finishProcess(current.pid, 1, 'crashed');
-    const next = await waitFor(async () => (await journalRows(ctx)).find((r) => r.pid > current.pid && r.command === 'node crashy.js'), 15_000);
-    assert.equal(next.restarts, n, `restart ${n} carried its count`);
-    await waitFor(async () => processes.get(next.pid)?.state === 'running', 5_000);
-    current = next;
-  }
-  fm.finishProcess(current.pid, 1, 'crashed');
-  await waitFor(async () => (await rowFor(ctx, current.pid)) === undefined, 5_000);
-  assert.ok(notices.some((line) => /times in a row — leaving it stopped/.test(line)), JSON.stringify(notices.slice(-3)));
+  // Healthy boot resets the SAME attempt budget. A spent unproven launch
+  // cannot bypass the journal's ceiling through the terminal-hook path.
+  const healthy = await rowFor(ctx, redriven.pid);
+  assert.equal(healthy.attempt, 0);
+  await ctx.storage.put(`resident-launch:${redriven.pid}`, { ...healthy, phase: 'starting', attempt: FENCED_WORK_MAX_ATTEMPT });
+  fm.finishProcess(redriven.pid, 1, 'crashed before healthy boot');
+  await waitFor(async () => (await rowFor(ctx, redriven.pid)) === undefined, 5_000);
+  assert.ok(notices.some((line) => /leaving it stopped/.test(line)), JSON.stringify(notices.slice(-3)));
   assert.equal((await journalRows(ctx)).some((r) => r.command === 'node crashy.js'), false, 'nothing left to re-drive');
 
   // 'never' (the default) and a clean exit release the row.
