@@ -929,10 +929,10 @@ function sessionIdOf(self: ProgrammaticHost): string | null {
 
 /**
  * The port-centric surface, kept for every caller that has a port and
- * nothing else — a dev server, a python resident, a process outside the
+ * nothing else — a dev server or a process outside the
  * resident lifecycle. When the port's occupant carries an identity the
  * exposure is the same lazy reservation `apps.expose` makes; when it does
- * not, the row is written port-only, as before. One implementation:
+ * not, this compatibility path writes the row port-only, as before. One implementation:
  * `applyExposure` below.
  */
 export async function rpcExposePort(
@@ -980,7 +980,7 @@ export async function rpcExposeApp(
   if (resolved.owner === null) {
     throw new Error(
       `${describeTarget(target)} has no launch record to bind an identity to — `
-      + 'only node residents and durable worker apps carry one; use ports.expose for a bare port',
+      + 'only journalled residents carry one; use ports.expose for a bare port',
     );
   }
   const exposed = await applyExposure(self, resolved.port, resolved.owner, options);
@@ -1225,7 +1225,7 @@ async function resolveAppTarget(
   if ('pid' in target) {
     const asPid = await byPid(Number(target.pid));
     if (asPid === null) {
-      throw new Error(`pid ${target.pid} has no launch record — only node residents and durable worker apps carry one`);
+      throw new Error(`pid ${target.pid} has no launch record — only journalled residents carry one`);
     }
     return asPid;
   }

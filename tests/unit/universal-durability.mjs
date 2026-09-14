@@ -694,6 +694,14 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
 // ── 11. apps.list shapes ────────────────────────────────────────────────────
 {
+  const { self, portRegistry, ctx } = setup();
+  portRegistry.register(20840, 999);
+  const exposed = await rpcExposePort(self, 20840);
+  assert.equal(exposed.owner, null, 'legacy bare ports remain supported through the shared exposure implementation');
+  assert.equal((await readPortReservation(ctx, 20840)).owner, null);
+  assert.equal(exposed.capability, portRegistry.get(20840).capability);
+}
+{
   const { fm, ctx, self } = setup();
   await reservePort(ctx, { owner: 'embedder-app', preferredPort: 20750, occupiedPorts: NONE, visibility: 'public', capability: 'f'.repeat(24), name: 'shop' });
   const a = await fm.spawnNode(SERVER, {
