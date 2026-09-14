@@ -193,7 +193,8 @@ export interface SessionInternal {
   _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
   _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<any>;
   _rpcListPorts(): Promise<any>;
-  _rpcExposePort(port: number): Promise<any>;
+  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<any>;
+  _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<any>;
   _rpcUnexposePort(port: number): Promise<any>;
   _rpcDeleteFile(path: string, options?: { recursive?: boolean }): Promise<void>;
 }

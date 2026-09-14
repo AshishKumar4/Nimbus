@@ -19,7 +19,7 @@ import { PID_GEN_STRIDE, type ProcessEntry } from '@nimbus-sh/core/runtime/proce
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
-import { PortRegistry, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -34,6 +34,8 @@ import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from '
 import {
   clearPortCapability,
   persistPortCapability,
+  readPortReservation,
+  reservePort,
   restorePortCapability,
 } from './port-capability.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
@@ -827,17 +829,72 @@ export async function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPo
   return entries.map(serializePort);
 }
 
-export async function rpcExposePort(self: ProgrammaticHost, port: number) {
+export async function rpcExposePort(
+  self: ProgrammaticHost,
+  port: number,
+  options?: { visibility?: 'scoped' | 'public' },
+) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
   const entry = self.portRegistry.get(n);
   if (entry) await persistPortCapability(self, n, entry.capability);
+  // The stored record decides visibility: a reservation's mark is sticky,
+  // so 'public' survives persists of unrelated fields — and the caller's
+  // explicit choice, when given, lands on the row the same way.
+  if (options?.visibility !== undefined) {
+    const reservation = await readPortReservation(self.ctx, n);
+    if (reservation !== null && reservation.visibility !== options.visibility) {
+      await reservePort(self.ctx, {
+        owner: reservation.owner ?? '__exposure__',
+        preferredPort: n,
+        occupiedPorts: new Set(self.portRegistry.getAll().map((e) => e.port).filter((p) => p !== n)),
+        visibility: options.visibility,
+      });
+    }
+  }
+  const record = await readPortReservation(self.ctx, n);
   return {
     port: n,
     listening: !!entry,
     pid: entry?.pid ?? null,
     registeredAt: entry?.registeredAt ?? null,
     capability: entry?.capability ?? null,
+    visibility: record?.visibility ?? 'scoped',
+  };
+}
+
+/**
+ * The embedder's durable-application seam: reserve (or re-answer) the port
+ * `owner` holds, minting the capability the application's public URL is
+ * built on — minted HERE, stored on the reservation, so a URL handed out
+ * before the application has ever booted is the one its eventual binding
+ * re-adopts, and the one a reset re-adopts again. Answers the port, the
+ * capability, and the record's visibility.
+ */
+export async function rpcEnsureDurableApp(
+  self: ProgrammaticHost,
+  input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' },
+): Promise<{ port: number; capability: string | null; visibility: 'scoped' | 'public' }> {
+  await ensureProgrammaticReady(self);
+  const owner = input.owner;
+  if (typeof owner !== 'string' || owner.length === 0) {
+    throw new Error('ensureDurableApp: owner must be a non-empty string');
+  }
+  const occupied = new Set(self.portRegistry.getAll().map((entry) => entry.port));
+  const port = await reservePort(self.ctx, {
+    owner,
+    preferredPort: input.preferredPort,
+    occupiedPorts: occupied,
+    // Minted here, not at boot: the URL is built from this capability, and
+    // re-drive re-adopts it out of the same row.
+    capability: createPortCapability(),
+    ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
+  });
+  const record = await readPortReservation(self.ctx, port);
+  return {
+    port,
+    capability: record?.capability ?? null,
+    visibility: record?.visibility ?? 'scoped',
   };
 }
 

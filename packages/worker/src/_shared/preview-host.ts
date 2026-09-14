@@ -16,20 +16,46 @@ const PREVIEW_HOST_SAFE_SID_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 /** Canonical port form only: no leading zeros, so `03000--x` is not a host. */
 const PREVIEW_HOST_LABEL_RE = /^(0|[1-9]\d*)--(.+)$/;
 
+// The public capability form: the bearer is the capability itself, no
+// attach token and no embedder credential ever crosses this hostname.
+// The label carries everything a request needs — which port, which
+// session, and which token — so it works with no server-side lookup.
+const PREVIEW_CAPABILITY_HOST_LABEL_RE = /^([a-f0-9]{24})--(\d{1,5})--([a-z0-9-]{1,63})$/;
 /** Binding that carries the deployment's preview-host suffix. */
 const PREVIEW_HOST_SUFFIX_BINDING = 'NIMBUS_PREVIEW_HOST_SUFFIX';
 
 export interface PreviewHost {
   port: number;
   sid: string;
-}
-
-export function isPreviewHostSafeSid(sid: string): boolean {
-  return sid.length <= 56 && PREVIEW_HOST_SAFE_SID_RE.test(sid);
+  /**
+   * Present only on the public capability form `<cap>--<port>--<sid>`: the
+   * bearer is the capability itself, so the request skips session-attach
+   * auth entirely — the session decides by the port's stored visibility.
+   */
+  capability?: string;
 }
 
 export function buildPreviewHost(sid: string, port: number, suffix: string): string {
   return `${port}--${sid}.${suffix}`;
+}
+
+/**
+ * `<capability>--<port>--<sid>.<suffix>` — the unauthenticated sibling of
+ * `buildPreviewHost`, for applications whose visibility is `public`. The
+ * capability is the bearer: 24 lowercase hex, the same shape the port
+ * registry mints.
+ */
+export function buildPublicPreviewHost(
+  sid: string,
+  port: number,
+  capability: string,
+  suffix: string,
+): string {
+  return `${capability}--${port}--${sid}.${suffix}`;
+}
+
+export function isPreviewHostSafeSid(sid: string): boolean {
+  return sid.length <= 56 && PREVIEW_HOST_SAFE_SID_RE.test(sid);
 }
 
 /**
@@ -59,6 +85,17 @@ export function parsePreviewHost(
 
   const label = normalizedHost.slice(0, -suffixWithDot.length);
   if (!label || label.includes('.')) return null;
+
+  // The capability form is checked first: its leading 24-hex run would
+  // otherwise parse as the port of the legacy form's widest match.
+  const capabilityMatch = label.match(PREVIEW_CAPABILITY_HOST_LABEL_RE);
+  if (capabilityMatch) {
+    const capability = capabilityMatch[1];
+    const port = Number(capabilityMatch[2]);
+    const sid = capabilityMatch[3];
+    if (port < 1 || port > 65535 || !isPreviewHostSafeSid(sid)) return null;
+    return { port, sid, capability };
+  }
 
   const match = label.match(PREVIEW_HOST_LABEL_RE);
   if (!match) return null;

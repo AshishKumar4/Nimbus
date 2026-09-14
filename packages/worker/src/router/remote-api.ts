@@ -101,7 +101,8 @@ interface NimbusSessionRpcStub {
   _rpcSignalProcess(pid: number, signal: string): Promise<unknown>;
   _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<unknown>;
   _rpcListPorts(): Promise<unknown>;
-  _rpcExposePort(port: number): Promise<unknown>;
+  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<unknown>;
+  _rpcEnsureDurableApp(input: { owner?: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<unknown>;
   _rpcUnexposePort(port: number): Promise<unknown>;
   _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
 }
@@ -375,8 +376,21 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), processLogOptions(args[1]));
     case 'listPorts':
       return ctx.stub._rpcListPorts();
-    case 'exposePort':
-      return ctx.stub._rpcExposePort(numberArg(args[0], 'port'));
+    case 'exposePort': {
+      const options = args[1] === undefined ? undefined : objectArg(args[1]);
+      return ctx.stub._rpcExposePort(numberArg(args[0], 'port'), options === undefined ? undefined : {
+        visibility: options.visibility === undefined ? undefined
+          : options.visibility === 'public' ? 'public' : 'scoped',
+      });
+    }
+    case 'ensureDurableApp': {
+      const input = objectArg(args[0]);
+      return ctx.stub._rpcEnsureDurableApp({
+        owner: stringArg(input.owner, 'owner'),
+        ...(input.preferredPort === undefined ? {} : { preferredPort: numberArg(input.preferredPort, 'preferredPort') }),
+        ...(input.visibility === undefined ? {} : { visibility: input.visibility === 'public' ? 'public' : 'scoped' }),
+      });
+    }
     case 'unexposePort':
       return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
     case 'destroy':

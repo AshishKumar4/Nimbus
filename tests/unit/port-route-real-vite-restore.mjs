@@ -109,6 +109,9 @@ function makeWokenSession(storage = {}) {
         async get(k) { return store.get(k); },
         async put(k, v) { store.set(k, v); },
         async delete(k) { store.delete(k); },
+        // The reservation paths run read-modify-write inside one unit; the
+        // stub serializes them the way the DO storage does.
+        async transaction(body) { return body(this); },
       },
       acceptWebSocket() {},
     },

@@ -48,6 +48,8 @@ import {
   renderInvalidSessionHtml,
   SESSION_ROUTE_PREFIX,
   LEGACY_PUBLIC_DO_SEGMENT,
+  PREVIEW_CAPABILITY_HEADER,
+  PUBLIC_BEARER_HEADER,
 } from '../_shared/session-router.js';
 import {
   issueNimbusToken,
@@ -249,6 +251,33 @@ export function createNimbusHandler(
             'Cache-Control': 'no-store',
           },
         });
+      }
+
+      if (preview.capability !== undefined) {
+        // The public capability form carries no attach token and never
+        // asks for one: the capability IS the bearer, so there is no
+        // session:attach exchange and no embedder credential to verify.
+        // Forward with the bearer mark + the capability header; the
+        // session answers only when the port's stored visibility is
+        // `public` and the capability matches, anything else is its 404.
+        // DO naming is the legacy-public segment — there is no tenant to
+        // verify, and the DO-side visibility check is the gate.
+        return forwardToSession(
+          request,
+          {
+            sessionId: preview.sid,
+            innerPath: `/port/${preview.port}${url.pathname === '/' ? '/' : url.pathname}`,
+            basePath: '',
+          },
+          env,
+          {
+            tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
+            extraHeaders: {
+              [PREVIEW_CAPABILITY_HEADER]: preview.capability,
+              [PUBLIC_BEARER_HEADER]: '1',
+            },
+          },
+        );
       }
 
       if (

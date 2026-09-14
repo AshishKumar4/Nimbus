@@ -912,7 +912,12 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcSignalProcess(pid: number, signal: string) { return _programmatic.rpcSignalProcess(this as any, pid, signal); }
   async _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }) { return _programmatic.rpcProcessLogs(this as any, pid, options); }
   async _rpcListPorts() { return _programmatic.rpcListPorts(this as any); }
-  async _rpcExposePort(port: number) { return _programmatic.rpcExposePort(this as any, port); }
+  async _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }) {
+    return _programmatic.rpcExposePort(this as any, port, options);
+  }
+  async _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }) {
+    return _programmatic.rpcEnsureDurableApp(this as any, input);
+  }
   async _rpcUnexposePort(port: number) { return _programmatic.rpcUnexposePort(this as any, port); }
   /** Capability-authenticated port route, for an embedder holding the token. */
   async _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string) {

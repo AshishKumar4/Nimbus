@@ -62,12 +62,12 @@ const CAP2 = 'b'.repeat(24);
   // A durable application reserved its port; the SDK then tells the embedder
   // the registry's capability, which persists it. With no owner hook anywhere
   // the row must still read back owned.
-  rows.set(`${PORT_CAPABILITY_KEY_PREFIX}20000`, { owner: 'workspace/app-a/caller-a', capability: null });
+  rows.set(`${PORT_CAPABILITY_KEY_PREFIX}20000`, { owner: 'workspace/app-a/caller-a', capability: null, visibility: 'scoped' },);
   const self = activate(20000, 1, 'A');
   await persistPortCapability(self, 20000, CAP);
   assert.deepEqual(
     await readPortReservation(ctx, 20000),
-    { owner: 'workspace/app-a/caller-a', capability: CAP },
+    { owner: 'workspace/app-a/caller-a', capability: CAP, visibility: 'scoped' },
     'persist keeps the stored owner instead of writing null',
   );
 }
@@ -100,7 +100,7 @@ const CAP2 = 'b'.repeat(24);
     'a foreign owner gets nothing — the row does not answer for it',
   );
   // And the record itself is unchanged either way.
-  assert.deepEqual(await readPortReservation(ctx, 20000), { owner: 'workspace/app-a/caller-a', capability: CAP });
+  assert.deepEqual(await readPortReservation(ctx, 20000), { owner: 'workspace/app-a/caller-a', capability: CAP, visibility: 'scoped' });
 }
 
 // ── an ownerless exposure behaves the way it always did ─────────────────────

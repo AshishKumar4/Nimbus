@@ -31,6 +31,9 @@ function makeHost(portRegistry) {
         async get(key) { return store.get(key); },
         async put(key, value) { store.set(key, value); },
         async delete(key) { store.delete(key); },
+        // The reservation paths run read-modify-write inside one unit; the
+        // stub serializes them the way the DO storage does.
+        async transaction(body) { return body(this); },
       },
     },
   };

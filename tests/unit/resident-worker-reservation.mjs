@@ -93,7 +93,7 @@ const capHost = { ctx, portRegistry };
     'a durable spawn that does not own the port is refused',
   );
   assert.equal(world.boots.length, bootsBefore, 'the refused spawn never evaluated the program');
-  assert.deepEqual(record(20030), { owner: 'A', capability: 'a'.repeat(24) }, "the real owner's record is untouched");
+  assert.deepEqual(record(20030), { owner: 'A', capability: 'a'.repeat(24), visibility: 'scoped' }, "the real owner's record is untouched");
   assert.equal(portRegistry.get(20030)?.pid, portBefore.pid, "the owner's listener is still registered");
   assert.equal(portRegistry.get(20030)?.capability, portBefore.capability, "the owner's exposure is intact");
 }
@@ -145,7 +145,7 @@ const capHost = { ctx, portRegistry };
   assert.ok(outcome instanceof Error && CONFLICT.test(outcome.message),
     `the spawn is refused once the reservation changed hands, got ${outcome}`);
   assert.equal(portRegistry.get(20040), undefined, 'the refused spawn installed no listener');
-  assert.deepEqual(record(20040), { owner: 'C', capability: null }, "C's reassignment stands");
+  assert.deepEqual(record(20040), { owner: 'C', capability: null, visibility: 'scoped' }, "C's reassignment stands");
 }
 
 // ── 4. a bare reservation (no capability) spawns without minting an exposure ──
@@ -159,7 +159,7 @@ const capHost = { ctx, portRegistry };
   assert.equal(portRegistry.get(20050)?.pid, spawned.pid, 'the owner registers the port');
   assert.equal(await readPortExposure(ctx, 20050), null,
     'a bare reservation stays unexposed — no persisted capability is minted or adopted');
-  assert.deepEqual(await readPortReservation(ctx, 20050), { owner: 'D', capability: null });
+  assert.deepEqual(await readPortReservation(ctx, 20050), { owner: 'D', capability: null, visibility: 'scoped' });
 }
 
 // ── 5. an SDK-side persist must not rewrite a durable reservation's owner ────
@@ -180,7 +180,7 @@ const capHost = { ctx, portRegistry };
   await persistPortCapability(capHost, 20060, 'e'.repeat(24));
   assert.deepEqual(
     await readPortReservation(ctx, 20060),
-    { owner: 'E', capability: 'e'.repeat(24) },
+    { owner: 'E', capability: 'e'.repeat(24), visibility: 'scoped' },
     'persisting a capability keeps the stored reservation owner',
   );
 

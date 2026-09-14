@@ -61,9 +61,10 @@ import {
   clearPortCapability,
   persistPortCapability,
   readPortCapability,
+  readPortReservation,
   restorePortCapability,
 } from './port-capability.js';
-import { PREVIEW_CAPABILITY_HEADER } from '../_shared/session-router.js';
+import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -251,6 +252,15 @@ export async function routeToSessionPort(
       // 404, not 403: a wrong capability must not confirm that the port is
       // listening at all.
       return new Response('Not found', { status: 404 });
+    }
+    // The public bearer form arrived without a session attach: the
+    // capability is real, but it authorises this route only for a port the
+    // owner deliberately exposed — the stored visibility is the gate.
+    if (request.headers.get(PUBLIC_BEARER_HEADER) !== null) {
+      const reservation = await readPortReservation(self.ctx, port);
+      if (reservation === null || reservation.visibility !== 'public') {
+        return new Response('Not found', { status: 404 });
+      }
     }
   }
   if (port === self._viteShimPort) {
