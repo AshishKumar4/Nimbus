@@ -1,5 +1,5 @@
 import { resolve, join } from '../../utils/path.js';
-import { decompressGzip, parseTar } from '../../utils/archive.js';
+import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, RegistryVersionInfoSchema, } from './registry-schemas.js';
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 const GLOBAL_BIN = '/usr/bin';
@@ -132,48 +132,14 @@ async function fetchWithRange(registry, name, range, signal) {
     }
     return data.versions[matching[0].version];
 }
-async function downloadAndExtract(tarballUrl, targetDir, vfs, signal) {
+async function fetchAndStreamPackage(tarballUrl, targetDir, vfs, signal) {
     const response = await fetch(tarballUrl, { signal });
     if (!response.ok) {
         throw new Error(`Failed to download tarball: ${response.status}`);
     }
-    const arrayBuffer = await response.arrayBuffer();
-    const compressed = new Uint8Array(arrayBuffer);
-    // Decompress gzip → parse tar
-    const decompressed = await decompressGzip(compressed);
-    const entries = parseTar(decompressed);
-    // Ensure target directory
-    try {
-        vfs.mkdir(targetDir, { recursive: true });
-    }
-    catch { /* exists */ }
-    // Extract, stripping the first path component (npm tarballs use "package/")
-    for (const entry of entries) {
-        const slashIdx = entry.path.indexOf('/');
-        if (slashIdx === -1)
-            continue;
-        const relativePath = entry.path.slice(slashIdx + 1);
-        if (!relativePath)
-            continue;
-        const fullPath = join(targetDir, relativePath);
-        if (entry.type === 'directory') {
-            try {
-                vfs.mkdir(fullPath, { recursive: true });
-            }
-            catch { /* exists */ }
-        }
-        else {
-            // Ensure parent exists
-            const parent = fullPath.slice(0, fullPath.lastIndexOf('/'));
-            if (parent) {
-                try {
-                    vfs.mkdir(parent, { recursive: true });
-                }
-                catch { /* exists */ }
-            }
-            vfs.writeFile(fullPath, entry.data);
-        }
-    }
+    if (!response.body)
+        throw new Error(`Registry served no body for ${tarballUrl}`);
+    return writeTarballStream(response.body, targetDir, vfs);
 }
 function readProjectPackageJson(vfs, cwd) {
     const pkgPath = join(cwd, 'package.json');
@@ -220,7 +186,10 @@ async function installSinglePackage(name, version, targetBase, vfs, npmRegistry,
     }
     stdout.write(`  ${name}${version ? '@' + version : ''}...\n`);
     const info = await fetchPackageInfo(npmRegistry, name, version, signal);
-    await downloadAndExtract(info.dist.tarball, targetDir, vfs, signal);
+    const written = await fetchAndStreamPackage(info.dist.tarball, targetDir, vfs, signal);
+    if (written.files === 0 || !vfs.exists(join(targetDir, 'package.json'))) {
+        throw new Error(`${name}: extraction wrote ${written.files} files and left no package.json in ${targetDir}`);
+    }
     let installed = 1;
     // Global install: link binaries
     if (isGlobal) {
@@ -285,7 +254,7 @@ async function npmInit(ctx) {
     ctx.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
     return 0;
 }
-async function npmInstall(ctx, registry, kernel) {
+async function npmInstall(ctx, registry, kernel, deps) {
     const args = ctx.args.slice(1);
     let isGlobal = false;
     let saveDev = false;
@@ -318,6 +287,20 @@ async function npmInstall(ctx, registry, kernel) {
             ctx.vfs.mkdir(GLOBAL_BIN, { recursive: true });
         }
         catch { /* exists */ }
+    }
+    if (deps?.installer) {
+        const projectDir = isGlobal ? GLOBAL_MODULES : ctx.cwd;
+        const result = await deps.installer.install(projectDir, {
+            packages: packages.length > 0 ? packages : undefined,
+            production: saveDev ? false : undefined,
+            pid: ctx.pid,
+        });
+        for (const failure of result.failed)
+            ctx.stderr.write(`npm ERR! ${failure}\n`);
+        ctx.stdout.write(`\nadded ${result.installed.length} package${result.installed.length === 1 ? '' : 's'}`
+            + ` (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s\n`);
+        registerLocalBins(ctx.vfs, projectDir, registry, kernel);
+        return result.failed.length > 0 ? 1 : 0;
     }
     if (packages.length === 0) {
         // Install from package.json
@@ -734,7 +717,7 @@ async function npmSearch(ctx) {
     return 0;
 }
 // ─── Factory ───
-export function createNpmCommand(registry, shellExecute, kernel) {
+export function createNpmCommand(registry, shellExecute, kernel, deps) {
     return async (ctx) => {
         const subcommand = ctx.args[0];
         if (!subcommand || subcommand === '--help' || subcommand === '-h') {
@@ -747,7 +730,7 @@ export function createNpmCommand(registry, shellExecute, kernel) {
             case 'install':
             case 'i':
             case 'add':
-                return npmInstall(ctx, registry, kernel);
+                return npmInstall(ctx, registry, kernel, deps);
             case 'uninstall':
             case 'remove':
             case 'rm':

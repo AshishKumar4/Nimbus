@@ -30,6 +30,8 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { hostNamespace, hostDispatchMethod } from '@nimbus-sh/platform/composition.js';
+import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
@@ -105,20 +107,48 @@ function _estimateWriteBatchBytes(payload: any): number {
 // with composeFabric.
 
 export class SupervisorRPC extends WorkerEntrypoint {
-  /**
-   * The supervisor DO stub for RPC routing, found from the doId in ctx.props.
-   *
-   * Minted per call, because that is the only lifetime an instance of this
-   * class has: workerd constructs a NEW WorkerEntrypoint for every RPC call,
-   * not one per facet invocation, so a field cached here is written and
-   * discarded by the same call and never read by another (measured: two calls
-   * on one stub produced instances #3 and #4, each having served one call).
-   */
-  private _getStub(): any {
-    const doId = (this.ctx as any).props?.doId;
-    if (!doId) throw new Error('SupervisorRPC: missing doId in props');
-    const id = (this.env as any).NIMBUS_SESSION.idFromString(doId);
-    return (this.env as any).NIMBUS_SESSION.get(id);
+  /** Resolve the composed host anew for each WorkerEntrypoint invocation. */
+  private _dispatch(): (envelope: SupervisorOpEnvelope) => Promise<unknown> {
+    const doId = (this.ctx.props as { doId?: unknown } | undefined)?.doId;
+    if (typeof doId !== 'string' || doId.length === 0) {
+      throw new Error('SupervisorRPC: missing doId in props');
+    }
+    const binding = hostNamespace();
+    const namespace = Reflect.get(this.env, binding) as DurableObjectNamespace | undefined;
+    if (!namespace || typeof namespace.idFromString !== 'function') {
+      throw new Error(`SupervisorRPC: env.${binding} is not a Durable Object namespace; `
+        + "a workspace host names its own with composeFabric({ hostNamespace: '<binding>' })");
+    }
+    const stub = namespace.get(namespace.idFromString(doId));
+    const method = hostDispatchMethod();
+    const dispatch: unknown = Reflect.get(stub, method);
+    if (typeof dispatch !== 'function') {
+      throw new Error(`SupervisorRPC: the workspace host mounts no ${method}(); `
+        + 'a host forwards one method to workspace.supervisorOp(op)');
+    }
+    // Never `.call(stub, …)` on an RpcStub: the proxy treats `call` as a
+    // property get, which becomes an RPC to a method literally named "call".
+    // `Reflect.apply` reaches the proxied member's apply trap instead, and on
+    // a plain-object host it still invokes the method with the stub as `this`.
+    return (envelope) => Reflect.apply(dispatch as (e: SupervisorOpEnvelope) => Promise<unknown>, stub, [envelope]);
+  }
+
+  private _op<T>(
+    op: string,
+    args: readonly unknown[] = [],
+    extra: Omit<SupervisorOpEnvelope, 'op' | 'args'> = {},
+  ): Promise<T> {
+    return this._dispatch()({ op, args, ...extra }) as Promise<T>;
+  }
+
+  /** Stamp filesystem credentials from the binding, not the supplied arguments. */
+  private _fsOp<T>(op: string, args: readonly unknown[] = []): Promise<T> {
+    return this._op<T>(op, args, { pid: this._pid() });
+  }
+
+  private _reportingPid(): number {
+    const pid = (this.ctx.props as { pid?: unknown } | undefined)?.pid;
+    return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : 0;
   }
 
   private _call<T>(promise: Promise<T>): Promise<T> {
@@ -144,7 +174,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   // ── Filesystem RPC ────────────────────────────────────────────────────
 
   async readFile(path: string): Promise<string | null> {
-    return this._call(this._getStub()._rpcReadFile(path, this._pid()));
+    return this._call(this._fsOp('readFile', [path]));
   }
 
   /**
@@ -152,7 +182,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * object/pack files where the text readFile would corrupt content.
    */
   async readFileBytes(path: string): Promise<Uint8Array | null> {
-    return this._call(this._getStub()._rpcReadFileBytes(path, this._pid()));
+    return this._call(this._fsOp('readFileBytes', [path]));
   }
 
   async writeFile(path: string, content: string | Uint8Array): Promise<number> {
@@ -161,31 +191,31 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
     // and corrupting binary content. RPC structured-clone handles
     // Uint8Array transparently; downstream _rpcWriteFile also accepts
-    return this._call(this._getStub()._rpcWriteFile(path, content, this._pid()));
+    return this._call(this._fsOp('writeFile', [path, content]));
   }
 
   async stat(path: string): Promise<any> {
-    return this._call(this._getStub()._rpcStat(path, this._pid()));
+    return this._call(this._fsOp('stat', [path]));
   }
 
   async lstat(path: string): Promise<any> {
-    return this._call(this._getStub()._rpcLstat(path, this._pid()));
+    return this._call(this._fsOp('lstat', [path]));
   }
 
   async hasLegacySymlinkUnder(path: string): Promise<boolean> {
-    return this._call(this._getStub()._rpcHasLegacySymlinkUnder(path, this._pid()));
+    return this._call(this._fsOp('hasLegacySymlinkUnder', [path]));
   }
 
   async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
-    return this._call(this._getStub()._rpcUtimes(path, atimeMs, mtimeMs, this._pid()));
+    return this._call(this._fsOp('utimes', [path, atimeMs, mtimeMs]));
   }
 
   async chmod(path: string, mode: number): Promise<void> {
-    return this._call(this._getStub()._rpcChmod(path, mode, this._pid()));
+    return this._call(this._fsOp('chmod', [path, mode]));
   }
 
   async access(path: string, mode: number): Promise<void> {
-    return this._call(this._getStub()._rpcAccess(path, mode, this._pid()));
+    return this._call(this._fsOp('access', [path, mode]));
   }
 
   async chown(
@@ -194,43 +224,43 @@ export class SupervisorRPC extends WorkerEntrypoint {
     gid: number,
     options?: { followSymlinks?: boolean },
   ): Promise<void> {
-    return this._call(this._getStub()._rpcChown(path, uid, gid, this._pid(), options));
+    return this._call(this._fsOp('chown', [path, uid, gid, options]));
   }
 
   async setUmask(mask: number): Promise<number> {
-    return this._call(this._getStub()._rpcSetUmask(mask, this._pid()));
+    return this._call(this._fsOp('setUmask', [mask]));
   }
 
   async readdir(path: string): Promise<{ name: string; type: string }[]> {
-    return this._call(this._getStub()._rpcReaddir(path, this._pid()));
+    return this._call(this._fsOp('readdir', [path]));
   }
 
   async exists(path: string): Promise<boolean> {
-    return this._call(this._getStub()._rpcExists(path, this._pid()));
+    return this._call(this._fsOp('exists', [path]));
   }
 
   async mkdir(path: string): Promise<void> {
-    return this._call(this._getStub()._rpcMkdir(path, this._pid()));
+    return this._call(this._fsOp('mkdir', [path]));
   }
 
   async rmdir(path: string): Promise<void> {
-    return this._call(this._getStub()._rpcRmdir(path, this._pid()));
+    return this._call(this._fsOp('rmdir', [path]));
   }
 
   async rename(from: string, to: string): Promise<void> {
-    return this._call(this._getStub()._rpcRename(from, to, this._pid()));
+    return this._call(this._fsOp('rename', [from, to]));
   }
 
   async unlink(path: string): Promise<void> {
-    return this._call(this._getStub()._rpcUnlink(path, this._pid()));
+    return this._call(this._fsOp('unlink', [path]));
   }
 
   async readlink(path: string): Promise<string | null> {
-    return this._call(this._getStub()._rpcReadlink(path, this._pid()));
+    return this._call(this._fsOp('readlink', [path]));
   }
 
   async symlink(target: string, path: string): Promise<void> {
-    return this._call(this._getStub()._rpcSymlink(target, path, this._pid()));
+    return this._call(this._fsOp('symlink', [target, path]));
   }
 
   /**
@@ -245,11 +275,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * disposal, which targets the returned value.
    */
   async fsAcquire(epoch: string | null, cursor: number): Promise<VfsAcquireResult> {
-    return this._call(this._getStub()._rpcFsAcquire(epoch, cursor, this._pid()));
+    return this._call(this._fsOp('fsAcquire', [epoch, cursor]));
   }
 
   async fsRevision(path?: string): Promise<number> {
-    return this._call(this._getStub()._rpcFsRevision(path, this._pid()));
+    return this._call(this._fsOp('fsRevision', [path]));
   }
 
   /**
@@ -270,7 +300,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * never mistaken for a complete listing.
    */
   async fsList(after?: string | null, limit?: number | null): Promise<VfsListPage> {
-    return this._call(this._getStub()._rpcFsList(after ?? null, limit ?? null, this._pid()));
+    return this._call(this._fsOp('fsList', [after ?? null, limit ?? null]));
   }
 
   /**
@@ -282,35 +312,35 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * facet's next synchronous read serves bytes the authority has replaced.
    */
   async wsOpen(url: string, protocols: string[]): Promise<{ id: number; protocol: string }> {
-    return this._call(this._getStub()._rpcWsOpen(url, protocols, this._pid()));
+    return this._call(this._fsOp('wsOpen', [url, protocols]));
   }
 
   async wsPoll(id: number, waitMs: number): Promise<unknown[]> {
-    return this._call(this._getStub()._rpcWsPoll(id, waitMs, this._pid()));
+    return this._call(this._fsOp('wsPoll', [id, waitMs]));
   }
 
   async wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void> {
-    return this._call(this._getStub()._rpcWsSend(id, text, bytes, this._pid()));
+    return this._call(this._fsOp('wsSend', [id, text, bytes]));
   }
 
   async wsClose(id: number, code?: number, reason?: string): Promise<void> {
-    return this._call(this._getStub()._rpcWsClose(id, code, reason, this._pid()));
+    return this._call(this._fsOp('wsClose', [id, code, reason]));
   }
 
   async fsOpen(path: string, flags: any): Promise<any> {
-    return this._call(this._getStub()._rpcFsOpen(path, flags, this._pid()));
+    return this._call(this._fsOp('fsOpen', [path, flags]));
   }
 
   async fsRead(handleId: number, offset: number | null, length: number): Promise<Uint8Array> {
-    return this._call(this._getStub()._rpcFsRead(handleId, offset, length, this._pid()));
+    return this._call(this._fsOp('fsRead', [handleId, offset, length]));
   }
 
   async fsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[]): Promise<number> {
-    return this._call(this._getStub()._rpcFsWrite(handleId, offset, bytes, this._pid()));
+    return this._call(this._fsOp('fsWrite', [handleId, offset, bytes]));
   }
 
   async fsClose(handleId: number): Promise<void> {
-    return this._call(this._getStub()._rpcFsClose(handleId, this._pid()));
+    return this._call(this._fsOp('fsClose', [handleId]));
   }
 
   /**
@@ -319,7 +349,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * hibernation and never rewrite whole files for partial updates.
    */
   async fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-    return this._call(this._getStub()._rpcFsReadRange(path, offset, length, this._pid()));
+    return this._call(this._fsOp('fsReadRange', [path, offset, length]));
   }
 
   /**
@@ -329,7 +359,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * session's heap for the rest of its life.
    */
   async fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-    return this._call(this._getStub()._rpcFsReadRangeUncached(path, offset, length, this._pid()));
+    return this._call(this._fsOp('fsReadRangeUncached', [path, offset, length]));
   }
 
   /**
@@ -354,14 +384,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
     setLastRpcFrame('fsReadBatch', payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {
-      return await this._call(this._getStub()._rpcFsReadBatch(requests, this._pid()));
+      return await this._call(this._fsOp('fsReadBatch', [requests]));
     } finally {
       rpcPayloadEnd(payloadBytes);
     }
   }
 
   async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<number> {
-    return this._call(this._getStub()._rpcFsWriteRange(path, offset, bytes, this._pid()));
+    return this._call(this._fsOp('fsWriteRange', [path, offset, bytes]));
   }
 
   async fsAppend(
@@ -371,25 +401,18 @@ export class SupervisorRPC extends WorkerEntrypoint {
     bytes: Uint8Array | ArrayBuffer,
   ): Promise<number> {
     return this._call(
-      this._getStub()._rpcFsAppend(
-        path,
-        this._writerId(),
-        moduleId,
-        operationId,
-        bytes,
-        this._pid(),
-      ),
+      this._op('fsAppend', [path, moduleId, operationId, bytes], { pid: this._pid(), writerId: this._writerId() }),
     );
   }
 
   async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
     return this._call(
-      this._getStub()._rpcFsAppendAck(this._writerId(), moduleId, operationId, this._pid()),
+      this._fsOp('fsAppendAck', [this._writerId(), moduleId, operationId]),
     );
   }
 
   async fsTruncate(path: string, size: number): Promise<void> {
-    return this._call(this._getStub()._rpcFsTruncate(path, size, this._pid()));
+    return this._call(this._fsOp('fsTruncate', [path, size]));
   }
 
   /**
@@ -413,7 +436,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     setLastRpcFrame('writeBatch', payloadBytes);
     rpcPayloadStart(payloadBytes);
     try {
-      return await this._call(this._getStub()._rpcWriteBatch(payload, this._pid()));
+      return await this._call(this._fsOp('writeBatch', [payload]));
     } finally {
       rpcPayloadEnd(payloadBytes);
     }
@@ -446,11 +469,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {
       const mutationOwner = (this.ctx as any).props?.mutationOwner;
-      return await this._call(this._getStub()._rpcWriteBatchStream(
-        stream,
-        typeof mutationOwner === 'string' ? mutationOwner : undefined,
-        this._pid(),
-      ));
+      return await this._call(this._op('writeBatchStream', [], { pid: this._pid(), mutationOwner: typeof mutationOwner === 'string' ? mutationOwner : undefined, stream }));
     } finally {
       rpcPayloadEnd(STREAM_RESIDENT_BYTES);
     }
@@ -478,7 +497,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     const payloadBytes = (Array.isArray(entries) ? entries.length : 0) * REGISTRY_ENTRY_BYTES;
     rpcPayloadStart(payloadBytes);
     try {
-      return await this._call(this._getStub()._rpcPutRegistryEntries(entries));
+      return await this._call(this._op('putRegistryEntries', [entries]));
     } finally {
       rpcPayloadEnd(payloadBytes);
     }
@@ -585,11 +604,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
   // ── Process I/O ───────────────────────────────────────────────────────
 
   async stdout(data: string): Promise<void> {
-    return this._call(this._getStub()._rpcStdout((this.ctx as any).props?.pid || 0, data));
+    return this._call(this._op('stdout', [data], { pid: this._reportingPid() }));
   }
 
   async stderr(data: string): Promise<void> {
-    return this._call(this._getStub()._rpcStderr((this.ctx as any).props?.pid || 0, data));
+    return this._call(this._op('stderr', [data], { pid: this._reportingPid() }));
   }
 
   /**
@@ -603,23 +622,23 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async reportExit(code: number, tail?: string): Promise<void> {
     const pid = (this.ctx as any).props?.pid || 0;
-    return this._call(this._getStub()._rpcReportExit(pid, code, tail || ''));
+    return this._call(this._op('reportExit', [code, tail || ''], { pid }));
   }
 
   // ── Prefetch ──────────────────────────────────────────────────────────
 
   async prefetch(cwd: string, entryCode: string): Promise<Record<string, string>> {
-    return this._call(this._getStub()._rpcPrefetch(cwd, entryCode));
+    return this._call(this._op('prefetch', [cwd, entryCode]));
   }
 
   // ── Port registration ─────────────────────────────────────────────────
 
   async registerPort(port: number): Promise<void> {
-    return this._call(this._getStub()._rpcRegisterPort((this.ctx as any).props?.pid || 0, port));
+    return this._call(this._op('registerPort', [port], { pid: this._reportingPid() }));
   }
 
   async unregisterPort(port: number): Promise<void> {
-    return this._call(this._getStub()._rpcUnregisterPort(port));
+    return this._call(this._op('unregisterPort', [port]));
   }
 
   /**
@@ -635,13 +654,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * exactly how PortRegistry.routeRequest returns the facet's Response as-is.
    */
   async routeLoopback(port: number, request: Request): Promise<Response> {
-    return this._getStub()._rpcRouteLoopback(port, request);
+    return this._op('routeLoopback', [port, request]);
   }
 
   // ── Esbuild transform ─────────────────────────────────────────────────
 
   async transform(code: string, loader: string): Promise<{ code: string; map: string } | null> {
-    return this._call(this._getStub()._rpcTransform(code, loader));
+    return this._call(this._op('transform', [code, loader]));
   }
 
   // ── child_process [W8 Phase 1] ────────────────────────────────────────
@@ -652,15 +671,15 @@ export class SupervisorRPC extends WorkerEntrypoint {
   //
 
   async cpSpawn(req: any): Promise<{ childPid: number }> {
-    return this._call(this._getStub()._rpcCpSpawn({ ...req, parentPid: this._pid() }));
+    return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
   }
 
   async cpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {
-    return this._call(this._getStub()._rpcCpStdinWrite(childPid, data));
+    return this._call(this._op('cpStdinWrite', [childPid, data]));
   }
 
   async cpStdinEnd(childPid: number): Promise<void> {
-    return this._call(this._getStub()._rpcCpStdinEnd(childPid));
+    return this._call(this._op('cpStdinEnd', [childPid]));
   }
 
   async cpReadStdin(childPid: number, waitMs: number): Promise<{
@@ -669,7 +688,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     resize?: { columns: number; rows: number };
     signal?: string;
   }> {
-    return this._call(this._getStub()._rpcCpReadStdin(childPid, waitMs));
+    return this._call(this._op('cpReadStdin', [childPid, waitMs]));
   }
 
   async cpReadOutput(
@@ -678,19 +697,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
     sinceSeq: number,
     waitMs: number,
   ): Promise<{ chunks: { seq: number; data: string }[]; closed: boolean; maxSeq: number }> {
-    return this._call(this._getStub()._rpcCpReadOutput(childPid, fd, sinceSeq, waitMs));
+    return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs]));
   }
 
   async cpDrainOutput(childPid: number): Promise<{ stdout: string; stderr: string; stdoutClosed: boolean; stderrClosed: boolean }> {
-    return this._call(this._getStub()._rpcCpDrainOutput(childPid));
+    return this._call(this._op('cpDrainOutput', [childPid]));
   }
 
   async cpKill(childPid: number, signal: string): Promise<boolean> {
-    return this._call(this._getStub()._rpcCpKill(childPid, signal));
+    return this._call(this._op('cpKill', [childPid, signal]));
   }
 
   async cpWait(childPid: number, waitMs: number): Promise<{ done: boolean; exitCode: number | null; signal: string | null }> {
-    return this._call(this._getStub()._rpcCpWait(childPid, waitMs));
+    return this._call(this._op('cpWait', [childPid, waitMs]));
   }
 
   /**
@@ -704,6 +723,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async cpDispatchInline(req: any, kind: string): Promise<{
     exitCode: number; stdout: string; stderr: string;
   }> {
-    return this._call(this._getStub()._rpcCpDispatchInline(req, kind));
+    return this._call(this._op('cpDispatchInline', [req, kind]));
   }
 }

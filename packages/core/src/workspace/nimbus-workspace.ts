@@ -48,6 +48,8 @@ import { seedRuntimePackage, type RuntimePackage } from '../runtime/runtime-pack
 import type { EsbuildService } from '../runtime/esbuild-service.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
+import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
+import { createSupervisorOpHandler, type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 
 export interface NimbusWorkspaceOptions {
   /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
@@ -126,6 +128,15 @@ export interface NimbusWorkspaceOptions {
    * carry REPLs and a resident-process substrate this cannot reach.
    */
   readonly facets?: FacetHost;
+  /** Isolate-wide fabric composition, including the hosting namespace. */
+  readonly fabric?: FabricComposition;
+  /** Explicit exports override the bag on the transaction host. */
+  readonly ctxExports?: CtxExports;
+  /** The process table that allocated supervisor-binding pids. */
+  readonly processes?: SessionProcessSupervisor;
+  readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+  /** Host operations, including overrides for host-specific accounting. */
+  readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
 }
 
 /**
@@ -168,6 +179,7 @@ export class NimbusWorkspace {
     registry: CommandRegistry,
     env: Record<string, string>,
     private readonly sql: SqlDatabase,
+    private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
   ) {
     this.vfs = vfs;
     this.kernel = kernel;
@@ -182,6 +194,10 @@ export class NimbusWorkspace {
   }
 
   static async create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace> {
+    if (options.fabric) composeFabric(options.fabric);
+    const exports = options.ctxExports
+      ?? (options.transactions as (TransactionHost & { exports?: CtxExports }) | undefined)?.exports;
+    if (exports) adoptCtxExports(exports);
     const vfs = options.vfs ?? openFilesystem(options);
     const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
     seedBaseFilesystem(vfs, mounts);
@@ -234,11 +250,19 @@ export class NimbusWorkspace {
       });
     }
 
-    return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql);
+    const supervisorOps = createSupervisorOpHandler({
+      vfs, processes: options.processes, output: options.processOutput, extend: options.supervisorOps,
+    });
+    return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, supervisorOps);
   }
 
   exec(command: string, options?: RunOptions): Promise<CommandResult> {
     return this.commands.run(command, options);
+  }
+
+  /** The hosting object forwards its supervisorOp RPC to this method. */
+  supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
+    return this.supervisorOps(envelope);
   }
 
   /**

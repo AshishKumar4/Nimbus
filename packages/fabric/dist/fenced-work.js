@@ -64,8 +64,8 @@ export class FencedWork {
     }
     /**
      * Record a launch as in flight, so an instance that replaces this one knows
-     * it never finished. Best-effort: a launch that cannot be journalled still
-     * runs, and a reset then costs exactly what it cost before the journal.
+     * it never finished. A launch that cannot be journalled does not start: the
+     * rejection reaches the caller, which reports it like any launch failure.
      *
      * Synced, not merely put: `await put()` resolves before durability, and the
      * reset this journal exists for destroys every write its turn still had
@@ -78,13 +78,13 @@ export class FencedWork {
      * losing its row costs a retype, not a recovery.
      */
     async journal(record) {
+        this.journalledPids.add(record.pid);
         try {
-            this.journalledPids.add(record.pid);
             await this.storage.put(`${FENCED_WORK_KEY_PREFIX}${record.pid}`, record);
             await this.storage.sync();
         }
-        catch (e) {
-            console.warn('[nimbus] resident launch journal write failed:', errorMessage(e));
+        catch (cause) {
+            throw new Error('resident launch journal write failed', { cause });
         }
     }
     /** True while this instance holds a journal row for `pid`. */
@@ -99,13 +99,8 @@ export class FencedWork {
     async release(pid) {
         if (!this.journalledPids.delete(pid))
             return;
-        try {
-            await this.storage.delete(`${FENCED_WORK_KEY_PREFIX}${pid}`);
-            await this.storage.sync();
-        }
-        catch (e) {
-            console.warn('[nimbus] resident launch journal delete failed:', errorMessage(e));
-        }
+        await this.storage.delete(`${FENCED_WORK_KEY_PREFIX}${pid}`);
+        await this.storage.sync();
     }
     /**
      * Re-drive the launches a previous instance was building when it was reset.
@@ -116,8 +111,12 @@ export class FencedWork {
      * that replaces this one. So the first turn after a reset is already this
      * one.
      *
-     * Runs once per instance: the journal only changes when a launch of THIS
-     * instance starts or settles, and those are rows this instance wrote.
+     * Runs once per instance — re-calls in the same instance are no-ops — and
+     * re-drives every row whose pid is `> 0` and at or below `generationBase()`
+     * with `attempt < FENCED_WORK_MAX_ATTEMPT`; the rest are abandoned. What the
+     * re-drive resolver receives is the journalled recipe and nothing else:
+     * env and credentials are never written to storage, so the resolver's
+     * embedder re-resolves them rather than reading them back.
      */
     async recoverInterrupted() {
         if (this.recovered)
@@ -174,15 +173,7 @@ export class FencedWork {
      * a previous generation the terminal hook will never fire for.
      */
     async supersede(key) {
-        try {
-            await this.storage.delete(key);
-            await this.storage.sync();
-        }
-        catch (e) {
-            console.warn('[nimbus] resident launch journal supersede failed:', errorMessage(e));
-        }
+        await this.storage.delete(key);
+        await this.storage.sync();
     }
-}
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
 }

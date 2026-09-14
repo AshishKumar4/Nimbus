@@ -123,6 +123,9 @@ export const ResidentCodeSpecSchema = z.object({
      * minted from the composed supervisor entrypoint).
      */
     env: z.record(z.string(), z.unknown()).optional(),
+    /** Absent inherits outbound, null denies it, a binding mediates it by reference. */
+    globalOutbound: z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
+        && 'fetch' in value && typeof value.fetch === 'function').nullable().optional(),
 });
 /**
  * The boot-spec union, with the staged arm's payload validated by the
@@ -222,6 +225,7 @@ export async function residentLoaderConfig(spec, disk) {
         mainModule: spec.mainModule,
         modules: { ...spec.modules, ...resolved },
         ...(spec.env !== undefined ? { env: spec.env } : {}),
+        ...(spec.globalOutbound !== undefined ? { globalOutbound: spec.globalOutbound } : {}),
     };
 }
 /**

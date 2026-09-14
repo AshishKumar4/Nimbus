@@ -396,7 +396,8 @@ export class Actor extends Server {
     }
     /** Leased facets: disposal retires (storage wiped), `detach()` keeps it. */
     get facets() {
-        return (this.#facets ??= facetPool(this.ctx));
+        this.#facets ??= facetPool(this.ctx);
+        return this.#facets;
     }
     /**
      * The process fabric over this actor's substrate. Declare the substrate
@@ -404,7 +405,8 @@ export class Actor extends Server {
      * use.
      */
     get processes() {
-        return (this.#processes ??= new ProcessFabric(this.processHost()));
+        this.#processes ??= new ProcessFabric(this.processHost());
+        return this.#processes;
     }
     /** The substrate {@link processes} runs on. Override to declare one. */
     processHost() {

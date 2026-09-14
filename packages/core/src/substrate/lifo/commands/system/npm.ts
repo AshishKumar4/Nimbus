@@ -3,7 +3,7 @@ import type { CommandRegistry } from '../registry.js';
 import type { VFS } from '../../kernel/vfs/index.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
-import { decompressGzip, parseTar } from '../../utils/archive.js';
+import { writeTarballStream, type TarballWriteResult } from '../../../../_shared/tarball.js';
 import {
 	RegistryPackumentSchema,
 	RegistrySearchResponseSchema,
@@ -35,6 +35,24 @@ export type ShellExecuteFn = (
 	cmd: string,
 	ctx: CommandContext,
 ) => Promise<number>;
+
+/** A host may supply a facet-based installer instead of in-process extraction. */
+export interface NpmInstallPort {
+	install(
+		projectDir: string,
+		options: { packages?: string[]; production?: boolean; pid?: number },
+	): Promise<{
+		installed: string[];
+		failed: string[];
+		totalFiles: number;
+		elapsed: number;
+		cachedHits?: number;
+	}>;
+}
+
+export interface NpmCommandDeps {
+	readonly installer?: NpmInstallPort;
+}
 
 // ─── Helpers ───
 
@@ -188,48 +206,19 @@ async function fetchWithRange(
 	return data.versions[matching[0].version];
 }
 
-async function downloadAndExtract(
+async function fetchAndStreamPackage(
 	tarballUrl: string,
 	targetDir: string,
 	vfs: VFS,
 	signal: AbortSignal,
-): Promise<void> {
+): Promise<TarballWriteResult> {
 	const response = await fetch(tarballUrl, { signal });
 	if (!response.ok) {
 		throw new Error(`Failed to download tarball: ${response.status}`);
 	}
 
-	const arrayBuffer = await response.arrayBuffer();
-	const compressed = new Uint8Array(arrayBuffer);
-
-	// Decompress gzip → parse tar
-	const decompressed = await decompressGzip(compressed);
-	const entries = parseTar(decompressed);
-
-	// Ensure target directory
-	try { vfs.mkdir(targetDir, { recursive: true }); } catch { /* exists */ }
-
-	// Extract, stripping the first path component (npm tarballs use "package/")
-	for (const entry of entries) {
-		const slashIdx = entry.path.indexOf('/');
-		if (slashIdx === -1) continue;
-
-		const relativePath = entry.path.slice(slashIdx + 1);
-		if (!relativePath) continue;
-
-		const fullPath = join(targetDir, relativePath);
-
-		if (entry.type === 'directory') {
-			try { vfs.mkdir(fullPath, { recursive: true }); } catch { /* exists */ }
-		} else {
-			// Ensure parent exists
-			const parent = fullPath.slice(0, fullPath.lastIndexOf('/'));
-			if (parent) {
-				try { vfs.mkdir(parent, { recursive: true }); } catch { /* exists */ }
-			}
-			vfs.writeFile(fullPath, entry.data);
-		}
-	}
+	if (!response.body) throw new Error(`Registry served no body for ${tarballUrl}`);
+	return writeTarballStream(response.body, targetDir, vfs);
 }
 
 function readProjectPackageJson(vfs: VFS, cwd: string): PackageJson | null {
@@ -300,7 +289,12 @@ async function installSinglePackage(
 
 	const info = await fetchPackageInfo(npmRegistry, name, version, signal);
 
-	await downloadAndExtract(info.dist.tarball, targetDir, vfs, signal);
+	const written = await fetchAndStreamPackage(info.dist.tarball, targetDir, vfs, signal);
+	if (written.files === 0 || !vfs.exists(join(targetDir, 'package.json'))) {
+		throw new Error(
+			`${name}: extraction wrote ${written.files} files and left no package.json in ${targetDir}`,
+		);
+	}
 
 	let installed = 1;
 
@@ -378,7 +372,12 @@ async function npmInit(ctx: CommandContext): Promise<number> {
 	return 0;
 }
 
-async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): Promise<number> {
+async function npmInstall(
+	ctx: CommandContext,
+	registry: CommandRegistry,
+	kernel?: Kernel,
+	deps?: NpmCommandDeps,
+): Promise<number> {
 	const args = ctx.args.slice(1);
 
 	let isGlobal = false;
@@ -407,6 +406,22 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 	if (isGlobal) {
 		try { ctx.vfs.mkdir(GLOBAL_MODULES, { recursive: true }); } catch { /* exists */ }
 		try { ctx.vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
+	}
+
+	if (deps?.installer) {
+		const projectDir = isGlobal ? GLOBAL_MODULES : ctx.cwd;
+		const result = await deps.installer.install(projectDir, {
+			packages: packages.length > 0 ? packages : undefined,
+			production: saveDev ? false : undefined,
+			pid: ctx.pid,
+		});
+		for (const failure of result.failed) ctx.stderr.write(`npm ERR! ${failure}\n`);
+		ctx.stdout.write(
+			`\nadded ${result.installed.length} package${result.installed.length === 1 ? '' : 's'}`
+			+ ` (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s\n`,
+		);
+		registerLocalBins(ctx.vfs, projectDir, registry, kernel);
+		return result.failed.length > 0 ? 1 : 0;
 	}
 
 	if (packages.length === 0) {
@@ -853,7 +868,12 @@ async function npmSearch(ctx: CommandContext): Promise<number> {
 
 // ─── Factory ───
 
-export function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel): Command {
+export function createNpmCommand(
+	registry: CommandRegistry,
+	shellExecute?: ShellExecuteFn,
+	kernel?: Kernel,
+	deps?: NpmCommandDeps,
+): Command {
 	return async (ctx) => {
 		const subcommand = ctx.args[0];
 
@@ -868,7 +888,7 @@ export function createNpmCommand(registry: CommandRegistry, shellExecute?: Shell
 			case 'install':
 			case 'i':
 			case 'add':
-				return npmInstall(ctx, registry, kernel);
+				return npmInstall(ctx, registry, kernel, deps);
 			case 'uninstall':
 			case 'remove':
 			case 'rm':

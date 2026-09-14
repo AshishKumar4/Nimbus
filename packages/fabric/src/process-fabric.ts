@@ -76,6 +76,7 @@
 
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ServiceStub } from './vendor/types.js';
 
 /**
  * The class every generated resident runner exports. One name for every
@@ -139,6 +140,11 @@ export const ResidentCodeSpecSchema = z.object({
    * minted from the composed supervisor entrypoint).
    */
   env: z.record(z.string(), z.unknown()).optional(),
+  /** Absent inherits outbound, null denies it, a binding mediates it by reference. */
+  globalOutbound: z.custom<ServiceStub>((value) =>
+    value !== null && (typeof value === 'object' || typeof value === 'function')
+    && 'fetch' in value && typeof value.fetch === 'function',
+  ).nullable().optional(),
 });
 
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
@@ -272,6 +278,7 @@ export async function residentLoaderConfig(
     mainModule: spec.mainModule,
     modules: { ...spec.modules, ...resolved },
     ...(spec.env !== undefined ? { env: spec.env } : {}),
+    ...(spec.globalOutbound !== undefined ? { globalOutbound: spec.globalOutbound } : {}),
   };
 }
 

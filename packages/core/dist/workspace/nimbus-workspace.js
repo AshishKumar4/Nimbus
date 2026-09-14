@@ -34,6 +34,8 @@ import { rehydrateInstalledRuntimesView, } from '../runtime/installed-runtimes.j
 import { seedRuntimePackage } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
+import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
+import { createSupervisorOpHandler } from './supervisor-op.js';
 /**
  * A durable filesystem and a shell over it.
  *
@@ -47,6 +49,7 @@ import { installPathExecResolver } from '../shell/exec-dispatch.js';
  */
 export class NimbusWorkspace {
     sql;
+    supervisorOps;
     /**
      * Credentialed and mount-aware. Acts as the session user, never as the
      * kernel: a pid-less caller must not gain more authority than the shell it
@@ -66,8 +69,9 @@ export class NimbusWorkspace {
      */
     env;
     commands;
-    constructor(vfs, kernel, shell, registry, env, sql) {
+    constructor(vfs, kernel, shell, registry, env, sql, supervisorOps) {
         this.sql = sql;
+        this.supervisorOps = supervisorOps;
         this.vfs = vfs;
         this.kernel = kernel;
         this.shell = shell;
@@ -80,6 +84,12 @@ export class NimbusWorkspace {
         this.fs = new SandboxFsImpl(kernel.vfs.as(CRED_SESSION_USER), () => shell.getCwd());
     }
     static async create(options) {
+        if (options.fabric)
+            composeFabric(options.fabric);
+        const exports = options.ctxExports
+            ?? options.transactions?.exports;
+        if (exports)
+            adoptCtxExports(exports);
         const vfs = options.vfs ?? openFilesystem(options);
         const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
         seedBaseFilesystem(vfs, mounts);
@@ -118,10 +128,17 @@ export class NimbusWorkspace {
                 home,
             });
         }
-        return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql);
+        const supervisorOps = createSupervisorOpHandler({
+            vfs, processes: options.processes, output: options.processOutput, extend: options.supervisorOps,
+        });
+        return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, supervisorOps);
     }
     exec(command, options) {
         return this.commands.run(command, options);
+    }
+    /** The hosting object forwards its supervisorOp RPC to this method. */
+    supervisorOp(envelope) {
+        return this.supervisorOps(envelope);
     }
     /**
      * Apply the login files, and begin reading the terminal when there is one.

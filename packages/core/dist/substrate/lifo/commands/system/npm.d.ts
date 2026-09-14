@@ -17,9 +17,26 @@ interface PackageJson {
     };
 }
 export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<number>;
+/** A host may supply a facet-based installer instead of in-process extraction. */
+export interface NpmInstallPort {
+    install(projectDir: string, options: {
+        packages?: string[];
+        production?: boolean;
+        pid?: number;
+    }): Promise<{
+        installed: string[];
+        failed: string[];
+        totalFiles: number;
+        elapsed: number;
+        cachedHits?: number;
+    }>;
+}
+export interface NpmCommandDeps {
+    readonly installer?: NpmInstallPort;
+}
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
-export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel): Command;
+export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
 export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn): Command;
 export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): Promise<number>;
 export {};

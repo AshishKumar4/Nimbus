@@ -118,6 +118,8 @@ import {
 } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
+import { sessionSupervisorOp } from './supervisor-op.js';
+import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { processHostFor } from '../loaders/process-host.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
@@ -707,6 +709,10 @@ export class NimbusSession extends CloudflareDurableObject {
   // DEFECT-D1: ctx is protected and not on a public interface).
 
   // Supervisor RPC (file/log/HMR/batch)
+  supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
+    return sessionSupervisorOp(this, envelope);
+  }
+
   async _rpcReadFile(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid); }
   async _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }

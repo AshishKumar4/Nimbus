@@ -27,8 +27,11 @@ import type { CommandResult, RunOptions, SandboxFs } from '../substrate/lifo/san
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
+import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { type RuntimePackage } from '../runtime/runtime-package.js';
+import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
+import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 export interface NimbusWorkspaceOptions {
     /** The host's SQLite. In a Durable Object: `ctx.storage.sql`. */
     readonly sql: SqlDatabase;
@@ -106,6 +109,15 @@ export interface NimbusWorkspaceOptions {
      * carry REPLs and a resident-process substrate this cannot reach.
      */
     readonly facets?: FacetHost;
+    /** Isolate-wide fabric composition, including the hosting namespace. */
+    readonly fabric?: FabricComposition;
+    /** Explicit exports override the bag on the transaction host. */
+    readonly ctxExports?: CtxExports;
+    /** The process table that allocated supervisor-binding pids. */
+    readonly processes?: SessionProcessSupervisor;
+    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+    /** Host operations, including overrides for host-specific accounting. */
+    readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
 }
 /**
  * A durable filesystem and a shell over it.
@@ -120,6 +132,7 @@ export interface NimbusWorkspaceOptions {
  */
 export declare class NimbusWorkspace {
     private readonly sql;
+    private readonly supervisorOps;
     /**
      * Credentialed and mount-aware. Acts as the session user, never as the
      * kernel: a pid-less caller must not gain more authority than the shell it
@@ -142,6 +155,8 @@ export declare class NimbusWorkspace {
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
     exec(command: string, options?: RunOptions): Promise<CommandResult>;
+    /** The hosting object forwards its supervisorOp RPC to this method. */
+    supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /**
      * Apply the login files, and begin reading the terminal when there is one.
      *

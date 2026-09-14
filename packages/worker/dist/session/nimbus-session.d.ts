@@ -22,6 +22,7 @@ import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import * as _rpc from './rpc.js';
+import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';
@@ -249,6 +250,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * get/put, so two concurrent exchanges cannot both observe "absent".
      */
     _rpcConsumeAttachBootstrap(jti: string): Promise<boolean>;
+    supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     _rpcReadFile(path: string, pid?: number): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;

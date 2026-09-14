@@ -21,7 +21,7 @@ import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sq
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { EsbuildService, type TransformResult } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { type ProcessHostFactory } from '@nimbus-sh/fabric/process-fabric.js';
+import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 type EsbuildTransformOptions = NonNullable<Parameters<EsbuildService['transform']>[1]>;
@@ -610,6 +610,13 @@ export interface FacetManagerHooks {
      */
     notify?: (line: string) => void;
     transformLargeEsm?: LargeEsmTransform;
+    /**
+     * Resolve the launch inputs a journalled worker launch needs re-driven with.
+     * Keyed by `recipe.owner`: the embedder's own record of the durable
+     * application decides — `null` means it is stopped or removed, so it is not
+     * restarted.
+     */
+    resolveWorkerLaunch?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
 export interface LongRunningWorkerSpawnOptions {
     port?: number;
@@ -624,8 +631,23 @@ export interface LongRunningWorkerSpawnOptions {
      */
     vfsWasmModules?: Record<string, string>;
     compatibilityFlags?: string[];
+    compatibilityDate?: string;
+    env?: ResidentCodeSpec['env'];
+    globalOutbound?: ResidentCodeSpec['globalOutbound'];
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
+    /**
+     * Set for a worker a durable application owns: the launch is journalled and
+     * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
+     * A plain spawnWorker stays unjournaled.
+     */
+    durable?: {
+        owner: string;
+        image: {
+            runner: string;
+            application: string;
+        };
+    };
 }
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
@@ -640,6 +662,30 @@ export interface ResidentSpawnOptions {
     skipSpawn?: boolean;
     callerPid?: number;
     bundleProfile?: FacetBundleProfile;
+}
+/** The launch inputs a re-drive rebuilds a worker from: content digests and
+ *  transport, never env or credentials — the embedder resolves those. */
+export interface WorkerRecipe {
+    kind: 'worker';
+    /** The durable application this process belongs to, keyed by the embedder. */
+    owner: string;
+    /** Content digests of the two images the launch was built from. */
+    image: {
+        runner: string;
+        application: string;
+    };
+    port: number;
+    cwd: string;
+    compatibilityDate: string;
+    compatibilityFlags: string[];
+    startArgs: unknown;
+}
+/** What the embedder supplies for a re-driven worker launch. */
+export interface ResolvedWorkerLaunch {
+    env: ResidentCodeSpec['env'];
+    globalOutbound: ResidentCodeSpec['globalOutbound'];
+    /** Module name → source text, including the `worker.js` main module. */
+    modules: Record<string, string>;
 }
 export declare class FacetManager {
     private ctx;
@@ -674,7 +720,7 @@ export declare class FacetManager {
      * The resident-launch journal (fabric's fenced-work.ts): the durable
      * record of every resident this session owes the user, and its recovery
      * after an instance reset. This manager supplies what a launch IS — the
-     * inputs `_spawnResident` re-drives from — and how its loss is reported.
+     * recipe `_redrive` re-drives from — and how its loss is reported.
      */
     private readonly launchJournal;
     /**
@@ -1015,6 +1061,13 @@ export declare class FacetManager {
     /** Execution timeout. */
     private _execWithTimeout;
     /**
+     * Re-drive a journalled launch after an instance reset. What the journal
+     * row carries is the recipe and nothing else: env and credentials are never
+     * written to storage, so a worker launch's are re-resolved by the embedder
+     * through `hooks.resolveWorkerLaunch`.
+     */
+    private _redrive;
+    /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
      *
@@ -1063,6 +1116,8 @@ export declare class FacetManager {
         pid: number;
         boot: unknown;
     }>;
+    /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
+    private _spawnWorker;
     registerPort(pid: number, port: number): Promise<void>;
     waitForRouteablePorts(pid: number, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;
