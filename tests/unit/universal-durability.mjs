@@ -411,6 +411,25 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
 // ── 8. name host parse matrix + router resolution ───────────────────────────
 {
+  const { fm, self, ctx, directory, portRegistry } = setup();
+  const first = await fm.spawnNode(SERVER, { argv: ['rotate-race.js'], port: 20850 });
+  const exposed = await rpcExposeApp(self, 20850, { name: 'rotate-race', visibility: 'public' });
+  const originalGet = directory.namespace.get;
+  let replaced = false;
+  directory.namespace.get = () => ({ ...originalGet(), unbind: async (cap) => {
+    directory.rows.delete(cap);
+    if (!replaced) {
+      replaced = true;
+      fm.kill(first.pid);
+      await fm.spawnNode(SERVER, { argv: ['rotate-race-foreign.js'], port: 20850 });
+    }
+  } });
+  await assert.rejects(rpcRotateLink(self, 'rotate-race'), /port 20850 is served by a different process/,
+    'directory RPC suspension cannot allow rotation onto a replacement listener');
+  assert.equal((await readPortReservation(ctx, 20850)).capability, null);
+  assert.equal(portRegistry.hasCapability(20850, exposed.capability), false);
+}
+{
   const world = createFacetWorld(() => ({
     async startProcess(args) { return { state: 'listening', port: 20820, stdout: args.userEnv.LABEL }; },
     async handleHttpRequest() { return new Response('ruby resident'); },

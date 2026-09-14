@@ -1061,8 +1061,12 @@ async function applyExposure(
   // The live registration must answer the stored capability, or a URL
   // minted before the bind 404s until the next restore.
   if (record?.capability !== null && record?.capability !== undefined) {
-    if (record.owner !== null) await assertServingOwner(self, port, record.owner);
-    self.portRegistry.restoreCapability(port, record.capability);
+    const capability = record.capability;
+    if (record.owner !== null) {
+      await assertServingOwner(self, port, record.owner, () => self.portRegistry.restoreCapability(port, capability));
+    } else {
+      self.portRegistry.restoreCapability(port, capability);
+    }
   }
   if (record?.visibility === 'public' && record.capability !== null) {
     // A port that goes public must be resolvable: the capability the URL
@@ -1095,8 +1099,14 @@ export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): 
   if (previous.visibility === 'public' && previous.capability !== null) {
     await unbindPublicPortCapability(self, previous.capability);
   }
+  if (previous.owner !== null) await assertServingOwner(self, resolved.port, previous.owner);
   const capability = await rotatePortCapability(self, resolved.port, createPortCapability());
   if (capability === null) throw new Error(`${describeTarget(target)} is not exposed — nothing to rotate`);
+  if (previous.owner !== null) {
+    await assertServingOwner(self, resolved.port, previous.owner, () => self.portRegistry.restoreCapability(resolved.port!, capability));
+  } else {
+    self.portRegistry.restoreCapability(resolved.port, capability);
+  }
   if (previous.visibility === 'public') {
     await bindPublicPortCapability(self, capability, resolved.port, previous.name);
   }
@@ -1113,7 +1123,7 @@ export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): 
 }
 
 /** A name or owner identifies a reservation, never whoever happens to occupy its port. */
-async function assertServingOwner(self: ProgrammaticHost, port: number, owner: string): Promise<void> {
+async function assertServingOwner(self: ProgrammaticHost, port: number, owner: string, adopt?: () => unknown): Promise<void> {
   for (;;) {
     const live = self.portRegistry.get(port);
     if (live === undefined) return;
@@ -1122,6 +1132,7 @@ async function assertServingOwner(self: ProgrammaticHost, port: number, owner: s
     if (identity?.owner !== owner || identity.ephemeral) {
       throw new Error(`port ${port} is served by a different process (owner ${identity?.owner ?? 'none'})`);
     }
+    adopt?.();
     return;
   }
 }

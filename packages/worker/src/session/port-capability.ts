@@ -349,7 +349,8 @@ export async function rotatePortCapability(
     });
     return capability;
   });
-  if (rotated !== null) self.portRegistry.restoreCapability(Number(port), rotated);
+  // Registry adoption belongs to the caller, after a fresh serving-owner
+  // check: the storage await above may have allowed a new listener to bind.
   return rotated;
 }
 
