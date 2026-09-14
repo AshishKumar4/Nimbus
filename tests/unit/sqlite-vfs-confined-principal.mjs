@@ -135,6 +135,21 @@ assert.equal(
   'chmod 755 is normal for an unregistered principal',
 );
 
+// Renames resolve both names through the principal's private /tmp mapping.
+a.rename('/tmp/note.txt', '/tmp/renamed.txt');
+assert.equal(a.exists('/tmp/note.txt'), false);
+assert.equal(a.readFileString('/tmp/renamed.txt'), 'from A');
+assert.equal(root.readFileString('var/agents/a/tmp/renamed.txt'), 'from A');
+assert.equal(b.readFileString('/tmp/note.txt'), 'from B');
+assert.equal(root.readFileString('tmp/note.txt'), 'shared');
+a.writeFile('/tmp/replacement.txt', 'replacement');
+a.rename('/tmp/replacement.txt', '/tmp/renamed.txt');
+assert.equal(a.readFileString('/tmp/renamed.txt'), 'replacement');
+a.rename('/tmp/sub', '/tmp/moved');
+assert.equal(a.readFileString('/tmp/moved/deep.txt'), 'deep');
+assert.throws(() => a.rename('/tmp/missing', '/tmp/missing'), /ENOENT/);
+assert.throws(() => a.rename('/tmp/moved', '/tmp/moved/inside'), /EINVAL/);
+
 // ── Release restores the shared view ────────────────────────────────────────
 raw.releasePrincipal(A.uid);
 assert.equal(

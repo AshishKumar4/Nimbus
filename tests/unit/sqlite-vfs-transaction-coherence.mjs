@@ -53,7 +53,7 @@ for (const [name, mutate] of [
 }
 console.log('sqlite-vfs-transaction-coherence: standalone metadata rollback passed');
 
-// Original Kinu failure: a replacement publishes, then the host's index write
+// A replacement publishes, then the host's index write
 // fails. The next demand read must use the rolled-back generation, not EIO.
 {
   const { harness, raw, vfs } = open();
