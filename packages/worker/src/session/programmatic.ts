@@ -73,10 +73,17 @@ interface ProgrammaticContext {
   waitUntil?(promise: Promise<unknown>): void;
   storage: {
     get(key: string): Promise<unknown>;
+    put(key: string, value: unknown): Promise<void>;
     delete(key: string): Promise<void>;
     deleteAll(): Promise<void>;
     deleteAlarm(): Promise<void>;
-    put(key: string, value: unknown): Promise<void>;
+    list<T = unknown>(options: { prefix: string }): Promise<Map<string, T>>;
+    transaction<T>(body: (txn: {
+      get(key: string): Promise<unknown>;
+      put(key: string, value: unknown): Promise<void>;
+      delete(key: string): Promise<unknown>;
+      list<T2 = unknown>(options: { prefix: string }): Promise<Map<string, T2>>;
+    }) => Promise<T>): Promise<T>;
   };
 }
 
@@ -104,8 +111,6 @@ export interface ProgrammaticHost {
   sqliteFs: SqliteVFS | null;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
-  /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
-  portCapabilityOwner?(port: number): string | null;
   facetManager: ProgrammaticFacetManager | null;
   viteDevServer: ProgrammaticViteServer | null;
   cirrusReal: ProgrammaticCirrusServer | null;

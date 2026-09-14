@@ -11,9 +11,11 @@
  * back. Everything else is the security half of the same rule: a capability
  * names ONE registration, so any other registration on that port retires the
  * durable copy. Only a deliberate restore extends a capability's life, which
- * is why `clearPortCapability` sits next to every `portRegistry.register` and
+ * is why `clearPortCapability` sits next to every `portRegistry.register`,
  * `restorePortCapability` sits only at the two places a dev server is
- * deliberately brought back.
+ * deliberately brought back, and `restoreReservedPortCapability` sits only
+ * on the durable spawn's re-adopt path, gated on the stored reservation's
+ * owner.
  *
  * The same per-port record also carries a RESERVATION: an owner may hold a
  * port with no capability yet, so a durable application keeps its port across
@@ -28,15 +30,9 @@ import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 /** The minimum a caller needs to own a port capability. */
 export interface PortCapabilityHost {
   ctx: {
-    storage: {
-      get(key: string): Promise<unknown>;
-      put(key: string, value: unknown): Promise<void>;
-      delete(key: string): Promise<unknown>;
-    };
+    storage: PortReservationStorage;
   };
   portRegistry: PortRegistry;
-  /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
-  portCapabilityOwner?(port: number): string | null;
 }
 
 /** The transactional view a claim or release runs against: every read and write inside one serializable unit. */
@@ -72,10 +68,6 @@ export interface PortReservation {
 const RESERVATION_FIRST_PORT = 20000;
 const RESERVATION_LAST_PORT = 65535;
 
-function owner(self: PortCapabilityHost, port: number): string | null {
-  return self.portCapabilityOwner?.(Number(port)) ?? null;
-}
-
 function key(port: number): string {
   return `${PORT_CAPABILITY_KEY_PREFIX}${Number(port)}`;
 }
@@ -85,7 +77,7 @@ function conflict(detail: string): Error {
 }
 
 /** Read the raw per-port record: a reservation, an exposure, or nothing. */
-export async function readPortReservation(ctx: PortCapabilityHost['ctx'], port: number): Promise<PortReservation | null> {
+export async function readPortReservation(ctx: { storage: PortReservationTransaction }, port: number): Promise<PortReservation | null> {
   const stored = PortRecordSchema.safeParse(await ctx.storage.get(key(port)));
   return stored.success ? stored.data : null;
 }
@@ -160,8 +152,12 @@ export async function readPortCapability(
   self: PortCapabilityHost,
   port: number,
 ): Promise<string | null> {
+  // The stored record is the only source of truth: a capability belongs to
+  // whoever is registered on the port, and its owner field is preserved by
+  // persist, never consulted as a gate. Durable ownership rides the
+  // reservation's own restore path (restoreReservedPortCapability).
   const stored = await readPortExposure(self.ctx, port);
-  return stored !== null && stored.owner === owner(self, port) ? stored.capability : null;
+  return stored?.capability ?? null;
 }
 
 /**
@@ -177,12 +173,39 @@ export async function restorePortCapability(
   return self.portRegistry.restoreCapability(Number(port), stored) ? stored : null;
 }
 
+/**
+ * Re-adopt the persisted capability ONLY for the owner the stored record
+ * names. The durable re-drive calls this with its own owner: the reservation
+ * is the same source of truth the preflight reads, so a release or a foreign
+ * claim mid-boot cannot smuggle an exposure across.
+ */
+export async function restoreReservedPortCapability(
+  self: PortCapabilityHost,
+  port: number,
+  owner: string,
+): Promise<string | null> {
+  const stored = await readPortReservation(self.ctx, port);
+  if (stored === null || stored.owner !== owner || stored.capability === null) return null;
+  return self.portRegistry.restoreCapability(Number(port), stored.capability) ? stored.capability : null;
+}
+
 export async function persistPortCapability(
   self: PortCapabilityHost,
   port: number,
   capability: string,
 ): Promise<void> {
-  await self.ctx.storage.put(key(port), { capability: PortCapabilitySchema.parse(capability), owner: owner(self, port) });
+  // Read-modify-write inside the reservation's own transaction, and the stored
+  // record is the ONLY source of truth for owner: an SDK ports.list()/expose
+  // on a durable application's port must not rewrite the row it is reporting
+  // on, or the next durable preflight sees a reservation nobody owns.
+  await self.ctx.storage.transaction(async (txn) => {
+    const stored = await txn.get(key(port));
+    const parsed = PortRecordSchema.safeParse(stored);
+    await txn.put(key(port), {
+      capability: PortCapabilitySchema.parse(capability),
+      owner: parsed.success ? parsed.data.owner : null,
+    });
+  });
 }
 
 /**
@@ -191,10 +214,13 @@ export async function persistPortCapability(
  * port cannot reach the next one. An owner's reservation survives it.
  */
 export async function clearPortCapability(self: PortCapabilityHost, port: number): Promise<void> {
-  const stored = await readPortReservation(self.ctx, port);
-  if (stored !== null && stored.owner !== null) {
-    await self.ctx.storage.put(key(port), { owner: stored.owner, capability: null });
-    return;
-  }
-  await self.ctx.storage.delete(key(port));
+  await self.ctx.storage.transaction(async (txn) => {
+    const stored = PortRecordSchema.safeParse(await txn.get(key(port)));
+    const record = stored.success ? stored.data : null;
+    if (record !== null && record.owner !== null) {
+      await txn.put(key(port), { owner: record.owner, capability: null });
+      return;
+    }
+    await txn.delete(key(port));
+  });
 }

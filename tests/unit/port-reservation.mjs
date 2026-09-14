@@ -61,8 +61,7 @@ const noTxnStorage = {
   list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
 };
 const noTxnCtx = { storage: noTxnStorage };
-const ownerOf = new Map();
-const self = { ctx, portRegistry: { restoreCapability: () => true }, portCapabilityOwner: (port) => ownerOf.get(port) ?? null };
+const self = { ctx, portRegistry: { restoreCapability: () => true } };
 const record = (port) => rows.get(`${PORT_CAPABILITY_KEY_PREFIX}${port}`);
 const none = new Set();
 const CONFLICT = /port reservation conflict/;
@@ -95,7 +94,8 @@ const CONFLICT = /port reservation conflict/;
 
 // T4: exposing then clearing keeps the reservation with no capability.
 {
-  ownerOf.set(20000, 'A');
+  // The stored record is the source of truth: the capability takes the
+  // reservation's owner, not a hook the test has to mirror.
   await persistPortCapability(self, 20000, 'a'.repeat(24));
   assert.deepEqual(await readPortExposure(ctx, 20000), { capability: 'a'.repeat(24), owner: 'A' });
   await clearPortCapability(self, 20000);
@@ -132,9 +132,11 @@ const CONFLICT = /port reservation conflict/;
 }
 
 // T8: every claim — and every release — ran inside the store's transaction.
-// Twelve reserves and the three releases in T6.
+// Twelve reserves, three releases (T6), plus the persist and two clears in
+// T4–T5, which became read-modify-write transactions with the stored-owner
+// fix.
 {
-  assert.equal(transactions, 15);
+  assert.equal(transactions, 18);
 }
 
 // T9: two owners racing one preferred port — one claims, one is refused, the

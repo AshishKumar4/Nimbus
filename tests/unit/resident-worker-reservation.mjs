@@ -70,15 +70,15 @@ fm.setVfs(new SqliteVFS(disk.sql, disk.ctx));
 const none = new Set();
 const CONFLICT = /port reservation conflict: durable worker does not own port/;
 const record = (port) => ctx.storage.rows.get(`${PORT_CAPABILITY_KEY_PREFIX}${port}`);
-// The reservation host the capability API needs: an owner lookup by port.
-const ownerOf = new Map();
-const capHost = { ctx, portRegistry, portCapabilityOwner: (port) => ownerOf.get(port) ?? null };
+// The reservation host the capability API needs. No owner hook: the stored
+// record carries the owner — mirroring one through a hook is exactly the
+// setup that masked the persist-time owner overwrite this test now pins.
+const capHost = { ctx, portRegistry };
 
 // ── 1. a foreign durable spawn is refused before it ever boots ──────────────
 {
   // Owner A holds the reservation AND a live listener on the port.
   await reservePort(ctx, { owner: 'A', preferredPort: 20030, occupiedPorts: none });
-  ownerOf.set(20030, 'A');
   await persistPortCapability(capHost, 20030, 'a'.repeat(24));
   portRegistry.register(20030, 9001); // A's live listener
   const bootsBefore = world.boots.length;
@@ -118,7 +118,6 @@ const capHost = { ctx, portRegistry, portCapabilityOwner: (port) => ownerOf.get(
   // B holds a fresh port; its durable spawn is held at boot, then the
   // reservation is released and re-claimed by C before the boot resolves.
   await reservePort(ctx, { owner: 'B', preferredPort: 20040, occupiedPorts: none });
-  ownerOf.set(20040, 'B');
   const bootsBefore = world.boots.length;
   bootHold = defer();
   bootEntered = defer();
@@ -139,7 +138,6 @@ const capHost = { ctx, portRegistry, portCapabilityOwner: (port) => ownerOf.get(
   // Reassign the reservation while the launch is still parked, then let it boot.
   await releasePortReservation(ctx, { owner: 'B', port: 20040 });
   await reservePort(ctx, { owner: 'C', preferredPort: 20040, occupiedPorts: none });
-  ownerOf.set(20040, 'C');
   bootHold.resolve({ ok: true });
   const outcome = await refused;
   bootHold = null;
@@ -162,6 +160,43 @@ const capHost = { ctx, portRegistry, portCapabilityOwner: (port) => ownerOf.get(
   assert.equal(await readPortExposure(ctx, 20050), null,
     'a bare reservation stays unexposed — no persisted capability is minted or adopted');
   assert.deepEqual(await readPortReservation(ctx, 20050), { owner: 'D', capability: null });
+}
+
+// ── 5. an SDK-side persist must not rewrite a durable reservation's owner ────
+{
+  // The stored record is the only source of truth for owner. persistPortCapability
+  // used to rewrite the row with `owner: null` because the portCapabilityOwner
+  // hook it read was never implemented — the re-drive preflight then saw a
+  // reservation nobody owned, and the release threw 'held by another owner'.
+  // capHost carries NO hook: this is the shape the SDK's ports.list()/expose
+  // and the route readopt path actually run.
+  await reservePort(ctx, { owner: 'E', preferredPort: 20060, occupiedPorts: none });
+  const spawned = await fm.spawnWorker('export default {}', 'worker app', '/app', {
+    durable: { owner: 'E', image: { runner: 'r', application: 'e-app' } },
+    port: 20060,
+  });
+  assert.ok(spawned.pid > 0);
+  // The embedder is told the capability — persist lands it durably.
+  await persistPortCapability(capHost, 20060, 'e'.repeat(24));
+  assert.deepEqual(
+    await readPortReservation(ctx, 20060),
+    { owner: 'E', capability: 'e'.repeat(24) },
+    'persisting a capability keeps the stored reservation owner',
+  );
+
+  // A re-drive of the same application: the spawn's post-boot re-adopt must
+  // still pass its owner gate on the row persist wrote.
+  const redriven = await fm.spawnWorker('export default {}', 'worker app', '/app', {
+    durable: { owner: 'E', image: { runner: 'r', application: 'e-app' } },
+    port: 20060,
+  });
+  assert.ok(redriven.pid > 0, 'the re-drive boots under the persisted reservation');
+  assert.equal(portRegistry.get(20060)?.capability, 'e'.repeat(24),
+    'the persisted capability is re-adopted through the owner-gated path');
+
+  // And the owner can still release its own port.
+  assert.equal(await releasePortReservation(ctx, { owner: 'E', port: 20060 }), true,
+    'the owner still releases its port after a hookless persist');
 }
 
 console.log('resident-worker-reservation: ok');

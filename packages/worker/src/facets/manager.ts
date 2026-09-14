@@ -30,7 +30,7 @@ import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledge
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { clearPortCapability, readPortReservation } from '../session/port-capability.js';
+import { clearPortCapability, readPortReservation, restoreReservedPortCapability } from '../session/port-capability.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
@@ -5420,11 +5420,14 @@ export class FacetManager {
           }
           // The owner's hold on the port survives the instance reset that
           // re-drove this launch, and preview URLs minted against it stay
-          // valid: the durable capability is re-adopted rather than retired.
+          // valid: the durable capability is re-adopted through the
+          // reservation's own path, gated on the stored owner.
           this.portRegistry.register(opts.port, entry.pid);
-          if (reservation.capability !== null) {
-            this.portRegistry.restoreCapability(opts.port, reservation.capability);
-          }
+          await restoreReservedPortCapability(
+            { ctx: this.ctx, portRegistry: this.portRegistry },
+            opts.port,
+            opts.durable.owner,
+          );
         } else {
           // A new process on a port retires the previous occupant's preview
           // capability, so a URL handed out for that one cannot reach this one.
