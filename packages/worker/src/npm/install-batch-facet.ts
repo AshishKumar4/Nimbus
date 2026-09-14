@@ -260,6 +260,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   let sharedChunks: ChunkT[] = [];
   let sharedBufferedBytes = 0;
   let sharedOwners = new Set<number>();
+  // Directories staged into a wave, shard-wide. A directory is staged once
+  // per shard, not once per package — and a wave that fails removes its
+  // directories from this set so they are staged again (see doSharedFlush).
+  const landedDirs = new Set<string>();
   const ownerWaves = new Map<number, Set<Promise<SharedWaveOutcome>>>();
   const ownersWithCompletionMarker = new Set<number>();
   const completionMarkers = new Map<number, {
@@ -279,12 +283,20 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   // for too long", so the schedule has to outlast a queue that deep; the
   // whole-batch timeout is 10 minutes, which bounds it.
   const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000, 12000, 20000];
+  // "Network connection lost" is the RPC transport between this shard and
+  // the coordinator DO dropping under load — the same class: the wave may
+  // or may not have run, and re-sending identical path-keyed bytes is safe
+  // either way. It was the dominant shard failure on a 629-package install
+  // (Markflow): one lost wave failed every package that had contributed to
+  // it, and the directories that wave carried never landed, so later waves
+  // of unrelated packages failed with ENOENT on those parents.
   const isSheddableWaveError = (message: string): boolean => {
     const m = message.toLowerCase();
     return m.includes('overloaded')
       || m.includes('reset because its code was updated')
       || m.includes('starting up durable object storage')
-      || (m.includes('storage operation') && m.includes('reset'));
+      || (m.includes('storage operation') && m.includes('reset'))
+      || m.includes('network connection lost');
   };
   // Mutex: only one flush runs at a time. Concurrent installs awaiting
   // flush() will line up behind this promise and resolve in arrival
@@ -317,7 +329,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // with every contributing package before awaiting the RPC, so a package
     // cannot report success while another package happens to be the caller
     // that triggered its shared flush.
-    const wave = (async (): Promise<SharedWaveOutcome> => {
+    const sendWave = async (): Promise<SharedWaveOutcome> => {
       for (let attempt = 0; ; attempt++) {
         try {
           // Each attempt encodes its OWN bytes. The encoder hands chunk
@@ -354,6 +366,17 @@ export const installPackagesInFacet = async function installPackagesInFacet(
           await new Promise<void>((rs) => setTimeout(rs, delayMs));
         }
       }
+    };
+    const dirsInWave = inodesNow.filter((inode) => inode.isDir).map((inode) => inode.path);
+    const wave = (async (): Promise<SharedWaveOutcome> => {
+      const outcome = await sendWave();
+      // A wave that did not land took its directory inodes with it. Every
+      // package that staged one of them into this wave believes it exists;
+      // forget them so the next file under such a directory re-stages the
+      // chain into its own wave instead of failing ENOENT on a parent that
+      // was never written.
+      if (!outcome.ok) for (const dir of dirsInWave) landedDirs.delete(dir);
+      return outcome;
     })();
     for (const owner of ownersNow) {
       let waves = ownerWaves.get(owner);
@@ -796,7 +819,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       let totalFileInodes = 0;
       let totalBytesWritten = 0;
 
-      const dirSet = new Set<string>();
       let completionMarker: { path: string; data: Uint8Array } | null = null;
 
       // Stage `installRoot` and every directory down to `dirPath` (inclusive),
@@ -812,8 +834,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         const segs = suffix ? suffix.split('/') : [];
         for (let i = 0; i <= segs.length; i++) {
           const d = i === 0 ? installRoot : installRoot + '/' + segs.slice(0, i).join('/');
-          if (dirSet.has(d)) continue;
-          dirSet.add(d);
+          if (landedDirs.has(d)) {
+            // Staged by an earlier wave of this shard. This owner's files
+            // depend on it, so this owner must see that wave's outcome too.
+            sharedOwners.add(ownerId);
+            continue;
+          }
+          landedDirs.add(d);
           await enqueueSharedDirectory(ownerId, d, spec.mtime);
         }
       };

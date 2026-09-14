@@ -245,4 +245,80 @@ function okResult(decoded) {
   console.log('  case4: typed rejection surfaced without retry');
 }
 
+// ── Case 5: a lost RPC connection is the same class of shed ──────────────
+//
+// "Network connection lost." was the dominant shard failure on a
+// 629-package install (Markflow, 2026-09-14): the transport between the
+// shard and the coordinator dropped under load. The wave may or may not
+// have run; the bytes are path-keyed and identical, so re-sending is safe.
+{
+  let attempts = 0;
+  const result = await runBatch(async (stream) => {
+    attempts++;
+    const decoded = await decodeWave(stream);
+    detachLastPayload();
+    if (attempts === 1) throw new Error('Network connection lost.');
+    return okResult(decoded);
+  });
+  assert.ok(attempts >= 2, `a lost-connection wave must be re-sent (attempts=${attempts})`);
+  assert.ok(result.perPackage.every((pkg) => !pkg.errorText), 'every package installs once the wave lands');
+  console.log('  case5: lost connection re-sent');
+}
+
+// ── Case 6: a failed wave does not poison later waves through ENOENT ─────
+//
+// A wave that never lands took its directory inodes with it. Packages that
+// staged `node_modules` into that wave believed it existed, so the next
+// wave's files failed with ENOENT on a parent nothing had written — and
+// that error was attributed to whichever packages happened to share the
+// next wave (@babel/generator, esbuild) while the package whose wave was
+// lost (sass-embedded) was reported separately. The next wave must carry
+// the directories again.
+{
+  // A package with more files than one wave carries (SHARED_RPC_PATH_LIMIT
+  // = 128), so its install root and package dir flush in its FIRST wave and
+  // its remaining files, plus b and c, follow in later waves.
+  const wideParts = [...tarFile('package/package.json', '{"name":"a","version":"1.0.0"}')];
+  for (let i = 0; i < 200; i++) wideParts.push(...tarFile(`package/lib/f${i}.js`, `export const f${i} = ${i};`));
+  wideParts.push(new Uint8Array(1024));
+  const wideTar = new Uint8Array(wideParts.reduce((sum, part) => sum + part.length, 0));
+  { let offset = 0; for (const part of wideParts) { wideTar.set(part, offset); offset += part.length; } }
+  const wideTarball = new Uint8Array(gzipSync(wideTar));
+  const decodedWaves = [];
+  let attempts = 0;
+  const widePackages = packages.map((pkg) => (pkg.name === 'a' ? { ...pkg, integrity: 'sha512-wide' } : pkg));
+  const result = await installPackagesInFacet({ packages: widePackages, concurrency: 1 }, {
+    SUPERVISOR: {
+      async getCachedTarball(integrity) { return { bytes: (integrity === 'sha512-wide' ? wideTarball : tarball).slice(), events: [] }; },
+      async writeBatchStream(stream) {
+        attempts++;
+        const decoded = await decodeWave(stream);
+        detachLastPayload();
+        decodedWaves.push(decoded.paths);
+        // The first wave is lost for good (retry budget spent immediately by
+        // returning the storage layer's own verdict on the re-send).
+        if (attempts === 1) throw new Error('Network connection lost.');
+        if (attempts === 2) {
+          return { ok: false, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0,
+            error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: 'injected: first wave never lands' } };
+        }
+        return okResult(decoded);
+      },
+    },
+  });
+  // Package a's content wave was lost: a fails, honestly.
+  const a = result.perPackage.find((pkg) => pkg.name === 'a');
+  assert.match(a.errorText ?? '', /first wave never lands/, 'the package whose wave was lost fails with that reason');
+  // Packages b and c flushed in later waves: their waves must carry
+  // `node_modules` again, and they install.
+  const laterWaves = decodedWaves.slice(2);
+  assert.ok(laterWaves.length >= 1, `later waves exist (${decodedWaves.length} total)`);
+  assert.ok(laterWaves.some((paths) => paths.includes('node_modules')), `a later wave re-stages the install root: ${JSON.stringify(laterWaves)}`);
+  for (const name of ['b', 'c']) {
+    const pkg = result.perPackage.find((p) => p.name === name);
+    assert.equal(pkg.errorText, undefined, `${name} installs after the lost wave (errorText=${pkg.errorText})`);
+  }
+  console.log('  case6: a failed wave does not poison later waves');
+}
+
 console.log('npm-install-wave-shed-retry: all assertions passed');
