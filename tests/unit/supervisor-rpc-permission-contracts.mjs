@@ -91,14 +91,12 @@ await assert.rejects(
 const supervisorSource = readFileSync(fileURLToPath(
   new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url),
 ), 'utf8');
-for (const [method, delegate] of [
-  ['access', '_rpcAccess'],
-  ['chown', '_rpcChown'],
-  ['setUmask', '_rpcSetUmask'],
-]) {
+for (const method of ['access', 'chown', 'setUmask']) {
   const body = supervisorSource.match(new RegExp(`async ${method}\\([^]*?\\n  }`))?.[0] ?? '';
-  assert.match(body, new RegExp(`${delegate}\\([^]*this\\._pid\\(\\)`),
+  assert.match(body, new RegExp(`this\\._fsOp\\('${method}',`),
     `SupervisorRPC.${method} forwards only its bound process pid`);
 }
+assert.match(supervisorSource, /private _fsOp<T>[^]*?pid: this\._pid\(\)/,
+  'the shared filesystem dispatch stamps the supervisor-bound pid');
 
 console.log('supervisor permission RPC contracts: ok');

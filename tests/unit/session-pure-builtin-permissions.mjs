@@ -118,6 +118,9 @@ try {
 
   let supervisorSpawnRequest;
   const sessionStub = {
+    supervisorOp(envelope) {
+      return NimbusSession.prototype.supervisorOp.call(this, envelope);
+    },
     async _rpcCpSpawn(request) {
       supervisorSpawnRequest = request;
       return { childPid: 99 };
