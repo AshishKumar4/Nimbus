@@ -64,7 +64,7 @@ import {
   readPortReservation,
   restorePortCapability,
 } from './port-capability.js';
-import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER } from '../_shared/session-router.js';
+import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -285,26 +285,12 @@ export async function routeToSessionPort(
 
 /** The "durable application is (re)starting" 503 page — self-refreshing. */
 function renderPortStartingHtml(port: number): string {
-  return `<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="3">
-<title>Starting — Nimbus</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{height:100%}
-  body{background:#0a0a0a;color:#e6edf3;font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
-       display:flex;align-items:center;justify-content:center;padding:24px;
-       background-image:radial-gradient(700px 400px at 50% -10%,rgba(100,255,218,0.05),transparent 60%)}
-  .card{max-width:520px;text-align:center}
-  h1{font-size:28px;color:#64ffda;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace}
-  p{color:#8b949e;margin-bottom:24px}
-  code{font-family:ui-monospace,Menlo,monospace;background:#111;padding:2px 8px;border-radius:4px;color:#e6edf3}
-</style></head>
-<body><div class="card">
-<h1>Starting&hellip;</h1>
-<p>The application on port <code>${port}</code> is restarting.<br>This page refreshes itself.</p>
-</div></body></html>`;
+  return renderSessionStatusPage({
+    title: 'Starting',
+    heading: 'Starting&hellip;',
+    body: `The application on port <code>${port}</code> is restarting.<br>This page refreshes itself.`,
+    metaRefreshSeconds: 3,
+  });
 }
 /**
  * Re-adopt a preview capability the embedder already holds, after a restore

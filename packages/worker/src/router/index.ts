@@ -74,6 +74,34 @@ import {
   type NimbusSdkRouterConfig,
 } from './remote-api.js';
 import { parseAgentOAuthStateParam } from '../session/agent.js';
+import { publicDirectoryStub } from './public-directory.js';
+
+/**
+ * Positive directory resolutions, per isolate. A capability that resolved
+ * once keeps resolving — the row is deleted only when the port goes
+ * private, and a stale cache entry 404s honestly at the session's own
+ * visibility check anyway. Misses are never cached.
+ */
+const publicTenantCache = new Map<string, string>();
+
+/**
+ * The tenant segment a public capability URL forwards under. The directory
+ * is consulted first; a deployment without the binding falls back to the
+ * legacy-public DO name, which is where legacy-mode sessions already live.
+ */
+async function resolvePublicTenantSegment(capability: string, env: unknown): Promise<string | null> {
+  const cached = publicTenantCache.get(capability);
+  if (cached !== undefined) return cached;
+  const stub = publicDirectoryStub(env);
+  if (stub === null) return LEGACY_PUBLIC_DO_SEGMENT;
+  const entry = await stub.resolve(capability).catch(() => null);
+  if (entry === null) {
+    // An unresolvable capability 404s: no session DO is named for it.
+    return null;
+  }
+  publicTenantCache.set(capability, entry.tenantSegment);
+  return entry.tenantSegment;
+}
 
 export type {
   NimbusConfig as NimbusSdkConfig,
@@ -257,11 +285,14 @@ export function createNimbusHandler(
         // The public capability form carries no attach token and never
         // asks for one: the capability IS the bearer, so there is no
         // session:attach exchange and no embedder credential to verify.
-        // Forward with the bearer mark + the capability header; the
-        // session answers only when the port's stored visibility is
-        // `public` and the capability matches, anything else is its 404.
-        // DO naming is the legacy-public segment — there is no tenant to
-        // verify, and the DO-side visibility check is the gate.
+        // The capability names the owning session through the public
+        // directory — a positive hit is cached for the life of this
+        // isolate, a miss 404s, and a deployment without the binding
+        // falls back to the legacy-public DO name.
+        const tenantSegment = await resolvePublicTenantSegment(preview.capability, env);
+        if (tenantSegment === null) {
+          return new Response('Not found', { status: 404 });
+        }
         return forwardToSession(
           request,
           {
@@ -271,7 +302,7 @@ export function createNimbusHandler(
           },
           env,
           {
-            tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
+            tenantSegment,
             extraHeaders: {
               [PREVIEW_CAPABILITY_HEADER]: preview.capability,
               [PUBLIC_BEARER_HEADER]: '1',

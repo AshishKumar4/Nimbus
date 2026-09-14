@@ -20,6 +20,7 @@
 
 import {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,
@@ -65,6 +66,7 @@ import {
 // auto-populates loopback bindings.
 export {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,

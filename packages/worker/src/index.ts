@@ -31,6 +31,7 @@ import {
   NimbusDurableObjectNamespace,
   NimbusDOStub,
 } from './session/nimbus-session.js';
+import { NimbusPublicDirectory } from './router/public-directory-do.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
@@ -157,6 +158,7 @@ setRegistryEventSink((e) => {
 // enable_ctx_exports; default at compat date 2026-04-01+).
 export {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,

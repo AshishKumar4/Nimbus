@@ -34,10 +34,12 @@ import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from '
 import {
   clearPortCapability,
   persistPortCapability,
+  portRecordKey,
   readPortReservation,
   reservePort,
   restorePortCapability,
 } from './port-capability.js';
+import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 
@@ -70,6 +72,8 @@ interface ProgrammaticShellExecuteOptions {
 }
 
 interface ProgrammaticContext {
+  /** The session DO's own id — the public-directory binding reads its name. */
+  id?: { name?: unknown };
   getWebSockets?(tag?: string): WebSocket[];
   /** Holds a background process's work open for the life of the process. */
   waitUntil?(promise: Promise<unknown>): void;
@@ -842,17 +846,26 @@ export async function rpcExposePort(
   // so 'public' survives persists of unrelated fields — and the caller's
   // explicit choice, when given, lands on the row the same way.
   if (options?.visibility !== undefined) {
-    const reservation = await readPortReservation(self.ctx, n);
-    if (reservation !== null && reservation.visibility !== options.visibility) {
-      await reservePort(self.ctx, {
-        owner: reservation.owner ?? '__exposure__',
-        preferredPort: n,
-        occupiedPorts: new Set(self.portRegistry.getAll().map((e) => e.port).filter((p) => p !== n)),
-        visibility: options.visibility,
-      });
-    }
+    // A visibility choice is a write on the stored row, not a reservation
+    // claim: owner and capability stay exactly as they were.
+    await self.ctx.storage.transaction(async (txn) => {
+      const stored = await readPortReservation({ storage: txn }, n);
+      if (stored !== null && stored.visibility !== options.visibility) {
+        await txn.put(portRecordKey(n), {
+          owner: stored.owner,
+          capability: stored.capability,
+          visibility: options.visibility,
+        });
+      }
+    });
   }
   const record = await readPortReservation(self.ctx, n);
+  if (record?.visibility === 'public' && entry) {
+    // A port that goes public must be resolvable: the capability the URL
+    // carries has to name this session in the directory, and a non-legacy
+    // deployment without the binding is refused loudly — never half-public.
+    await bindPublicPortCapability(self, entry.capability, n);
+  }
   return {
     port: n,
     listening: !!entry,
@@ -891,6 +904,12 @@ export async function rpcEnsureDurableApp(
     ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
   });
   const record = await readPortReservation(self.ctx, port);
+  if (record?.visibility === 'public' && record.capability !== null) {
+    // The URL is built on this capability before the app has ever run:
+    // publish it to the directory now, loudly refusing a deployment whose
+    // binding is missing rather than minting an unroutable URL.
+    await bindPublicPortCapability(self, record.capability, port);
+  }
   return {
     port,
     capability: record?.capability ?? null,
@@ -902,10 +921,15 @@ export async function rpcUnexposePort(self: ProgrammaticHost, port: number) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
   // Before the unregister, so a crash between the two leaves a dead token
-  // rather than a live one.
+  // rather than a live one. A public capability also leaves the directory.
+  const record = await readPortReservation(self.ctx, n);
   await clearPortCapability(self, n);
+  if (record?.visibility === 'public' && record.capability !== null) {
+    await unbindPublicPortCapability(self, record.capability);
+  }
   return { port: n, ok: self.portRegistry.unregister(n) };
 }
+
 
 /**
  * Route an embedder request that carries a port capability. The embedder has

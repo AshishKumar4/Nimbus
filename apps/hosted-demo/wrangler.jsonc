@@ -220,7 +220,8 @@
   },
 	  "durable_objects": {
 	    "bindings": [
-	      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+	      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" },
+	      { "name": "NIMBUS_PUBLIC_DIRECTORY", "class_name": "NimbusPublicDirectory" }
 	    ]
 	  },
 	  // Development database, carrying the same migrations as production.
@@ -235,7 +236,8 @@
 	    }
 	  ],
 	  "migrations": [
-	    { "tag": "v1", "new_sqlite_classes": ["NimbusSession"] }
+	    { "tag": "v1", "new_sqlite_classes": ["NimbusSession"] },
+	    { "tag": "v2", "new_sqlite_classes": ["NimbusPublicDirectory"] }
 	  ],
 	  "worker_loaders": [
 	    { "binding": "LOADER" }

@@ -32,6 +32,7 @@ import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { clearPortCapability, readPortReservation, releasePortReservation, restoreReservedPortCapability } from '../session/port-capability.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
+import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
@@ -229,6 +230,13 @@ interface FacetManagerEnv {
    * default in `turn-budget.ts` applies.
    */
   NIMBUS_LAUNCH_CHUNK_BYTES?: string;
+
+  /**
+   * The bindings env verbatim — the directory binding the durable/public
+   * port surface needs isn't a parsed field, and the helpers that reach it
+   * take `env` themselves.
+   */
+  readonly rawEnv: unknown;
 }
 
 interface ProcessRpcResources {
@@ -268,6 +276,7 @@ function parseFacetManagerEnv(env: unknown): FacetManagerEnv {
     LOADER: loader,
     ASSETS: assets,
     NIMBUS_LAUNCH_CHUNK_BYTES: typeof chunkBytes === 'string' ? chunkBytes : undefined,
+    rawEnv: env,
   };
 }
 
@@ -5693,9 +5702,15 @@ export class FacetManager {
 
     // The reservation may outlive every journal row (spawn never finished
     // writing one), so scan the port records for the owner too.
-    const portRows = await this.ctx.storage.list<{ owner?: string }>({ prefix: PORT_CAPABILITY_KEY_PREFIX });
+    const portRows = await this.ctx.storage.list<{ owner?: string; capability?: string | null; visibility?: string }>({ prefix: PORT_CAPABILITY_KEY_PREFIX });
     for (const [key, record] of portRows) {
       if (record?.owner === owner) ownedPorts.add(Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length)));
+      // A public capability leaves the routing directory with the row —
+      // before the reservation is released so a mid-removal crash leaves a
+      // dead URL rather than a dangling route to this session.
+      if (record?.owner === owner && record.visibility === 'public' && typeof record.capability === 'string') {
+        await unbindPublicPortCapability(this._publicDirectoryHost(), record.capability);
+      }
     }
 
     for (const port of ownedPorts) {
@@ -5712,6 +5727,11 @@ export class FacetManager {
       try { deleteFacetStorage(this.ctx, name); } catch { /* already gone */ }
     }
     return name !== null || purged > 0 || ownedPorts.size > 0;
+  }
+
+  /** The session-shaped view the public-directory helpers read env from. */
+  private _publicDirectoryHost(): { env: unknown; ctx: { id?: { name?: unknown } } } {
+    return { env: this.env.rawEnv, ctx: this.ctx };
   }
   /**
    * Whether a request addressed to `port` can reach a durable application —

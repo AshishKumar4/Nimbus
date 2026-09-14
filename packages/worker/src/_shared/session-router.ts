@@ -198,18 +198,29 @@ export function forwardToSession(
   return stub.fetch(inner);
 }
 
-/** HTML body for the "invalid session ID" 400 page. Tiny, inline-only. */
-export function renderInvalidSessionHtml(attemptedId: string): string {
-  // Escape the attempted ID for display. We don't use innerHTML anywhere,
-  // but defensive escaping keeps the HTML validator happy and avoids any
-  // future XSS footguns if someone refactors this to document.write().
-  const safe = String(attemptedId).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]!));
+/**
+ * The card every session-facing error/status page shares: dark, centered,
+ * mono title. `metaRefreshSeconds` opts the page into self-refresh — the
+ * "starting" page re-asks on its own timer, the invalid page never does.
+ */
+export function renderSessionStatusPage(input: {
+  title: string;
+  heading: string;
+  body: string;
+  action?: { href: string; label: string };
+  metaRefreshSeconds?: number;
+}): string {
+  const refresh = input.metaRefreshSeconds !== undefined
+    ? `<meta http-equiv="refresh" content="${input.metaRefreshSeconds}">`
+    : '';
+  const action = input.action !== undefined
+    ? `<a class="btn" href="${input.action.href}">${input.action.label}</a>`
+    : '';
   return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Invalid session — Nimbus</title>
+${refresh}
+<title>${input.title} — Nimbus</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   html,body{height:100%}
@@ -224,8 +235,24 @@ export function renderInvalidSessionHtml(attemptedId: string): string {
   a.btn:hover{filter:brightness(1.1)}
 </style></head>
 <body><div class="card">
-<h1>Invalid session</h1>
-<p>The ID <code>${safe}</code> isn&rsquo;t a valid Nimbus session URL.<br>Launch a new one to get started.</p>
-<a class="btn" href="/">&larr; Back to Nimbus</a>
+<h1>${input.heading}</h1>
+<p>${input.body}</p>
+${action}
 </div></body></html>`;
+}
+
+/** HTML body for the "invalid session ID" 400 page. Tiny, inline-only. */
+export function renderInvalidSessionHtml(attemptedId: string): string {
+  // Escape the attempted ID for display. We don't use innerHTML anywhere,
+  // but defensive escaping keeps the HTML validator happy and avoids any
+  // future XSS footguns if someone refactors this to document.write().
+  const safe = String(attemptedId).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]!));
+  return renderSessionStatusPage({
+    title: 'Invalid session',
+    heading: 'Invalid session',
+    body: `The ID <code>${safe}</code> isn&rsquo;t a valid Nimbus session URL.<br>Launch a new one to get started.`,
+    action: { href: '/', label: '&larr; Back to Nimbus' },
+  });
 }

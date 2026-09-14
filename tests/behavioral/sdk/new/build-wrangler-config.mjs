@@ -35,8 +35,20 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
     && c.assets.run_worker_first?.includes('/s/*')
     && c.assets.run_worker_first?.includes('/new'));
   a.check('Smart Placement default', c.placement?.mode === 'smart');
+  a.check('no public-directory binding by default',
+    !c.durable_objects.bindings.find((b) => b.name === 'NIMBUS_PUBLIC_DIRECTORY'));
 }
 
+// 1b. nimbusPublicDirectory opts the public routing directory in.
+{
+  const c = buildNimbusWranglerConfig({ name: 'my-nimbus', nimbusPublicDirectory: true });
+  a.check('NIMBUS_PUBLIC_DIRECTORY DO binding',
+    c.durable_objects.bindings.some((b) =>
+      b.name === 'NIMBUS_PUBLIC_DIRECTORY' && b.class_name === 'NimbusPublicDirectory'));
+  a.check('nimbus-v2 migration declares the directory class',
+    c.migrations.some((m) => m.tag === 'nimbus-v2'
+      && m.new_sqlite_classes.includes('NimbusPublicDirectory')));
+}
 // 2. Shared runtime cache (default) → bucket is nimbus-runtime-cache-public.
 {
   const c = buildNimbusWranglerConfig({ name: 'shared' });

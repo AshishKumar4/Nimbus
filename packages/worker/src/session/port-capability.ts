@@ -75,8 +75,7 @@ export interface PortReservation {
 }
 const RESERVATION_FIRST_PORT = 20000;
 const RESERVATION_LAST_PORT = 65535;
-
-function key(port: number): string {
+export function portRecordKey(port: number): string {
   return `${PORT_CAPABILITY_KEY_PREFIX}${Number(port)}`;
 }
 
@@ -86,7 +85,7 @@ function conflict(detail: string): Error {
 
 /** Read the raw per-port record: a reservation, an exposure, or nothing. */
 export async function readPortReservation(ctx: { storage: PortReservationTransaction }, port: number): Promise<PortReservation | null> {
-  const stored = PortRecordSchema.safeParse(await ctx.storage.get(key(port)));
+  const stored = PortRecordSchema.safeParse(await ctx.storage.get(portRecordKey(port)));
   if (!stored.success) return null;
   return { ...stored.data, visibility: stored.data.visibility ?? 'scoped' };
 }
@@ -145,7 +144,7 @@ export async function reservePort(
       const capability = stored?.capability ?? input.capability ?? null;
       const visibility = input.visibility ?? stored?.visibility ?? 'scoped';
       if (stored === null || capability !== stored.capability || visibility !== (stored.visibility ?? 'scoped')) {
-        await txn.put(key(held.port), { owner: input.owner, capability, visibility });
+        await txn.put(portRecordKey(held.port), { owner: input.owner, capability, visibility });
       }
       return held.port;
     }
@@ -161,7 +160,7 @@ export async function reservePort(
       while (port <= RESERVATION_LAST_PORT && taken.has(port)) port += 1;
       if (port > RESERVATION_LAST_PORT) throw conflict('no free port left to reserve');
     }
-    await txn.put(key(port), {
+    await txn.put(portRecordKey(port), {
       owner: input.owner,
       capability: input.capability ?? null,
       visibility: input.visibility ?? 'scoped',
@@ -182,7 +181,7 @@ export async function releasePortReservation(
     const stored = await readPortReservation({ storage: txn }, input.port);
     if (stored === null) return false;
     if (stored.owner !== input.owner) throw conflict(`port ${input.port} is held by another owner`);
-    await txn.delete(key(input.port));
+    await txn.delete(portRecordKey(input.port));
     return true;
   });
 }
@@ -238,9 +237,9 @@ export async function persistPortCapability(
   // on a durable application's port must not rewrite the row it is reporting
   // on, or the next durable preflight sees a reservation nobody owns.
   await self.ctx.storage.transaction(async (txn) => {
-    const stored = await txn.get(key(port));
+    const stored = await txn.get(portRecordKey(port));
     const parsed = PortRecordSchema.safeParse(stored);
-    await txn.put(key(port), {
+    await txn.put(portRecordKey(port), {
       capability: PortCapabilitySchema.parse(capability),
       owner: parsed.success ? parsed.data.owner : null,
       ...(parsed.success && parsed.data.visibility !== undefined
@@ -257,16 +256,16 @@ export async function persistPortCapability(
  */
 export async function clearPortCapability(self: PortCapabilityHost, port: number): Promise<void> {
   await self.ctx.storage.transaction(async (txn) => {
-    const stored = PortRecordSchema.safeParse(await txn.get(key(port)));
+    const stored = PortRecordSchema.safeParse(await txn.get(portRecordKey(port)));
     const record = stored.success ? stored.data : null;
     if (record !== null && record.owner !== null) {
-      await txn.put(key(port), {
+      await txn.put(portRecordKey(port), {
         owner: record.owner,
         capability: null,
         ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
       });
       return;
     }
-    await txn.delete(key(port));
+    await txn.delete(portRecordKey(port));
   });
 }

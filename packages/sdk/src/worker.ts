@@ -9,6 +9,7 @@
 
 export {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,

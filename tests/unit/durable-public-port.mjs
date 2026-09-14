@@ -93,23 +93,48 @@ const CAP = 'abcdef0123456789abcdef01';
       };
     }
   }
+  // The public directory DO, faked: bind/resolve over a Map.
+  const directoryRows = new Map();
+  class FakePublicDirectory {
+    idFromName(name) { return { name }; }
+    get() {
+      return {
+        bind: async (cap, entry) => { directoryRows.set(cap, entry); },
+        unbind: async (cap) => { directoryRows.delete(cap); },
+        resolve: async (cap) => directoryRows.get(cap) ?? null,
+      };
+    }
+  }
   const env = {
     JWT_SECRET: 'public-preview-secret',
     NIMBUS_PREVIEW_HOST_SUFFIX: suffix,
     NIMBUS_SESSION: new FakeNamespace(),
+    NIMBUS_PUBLIC_DIRECTORY: new FakePublicDirectory(),
   };
+  // The session bound the capability when the port went public: the
+  // directory knows which tenant segment the URL belongs to.
+  directoryRows.set(CAP, { tenantSegment: 'acme:alice', sid, port: 3000 });
   const handler = createNimbusHandler({ auth: { mode: 'enforce' } });
   const host = buildPublicPreviewHost(sid, 3000, CAP, suffix);
 
   // No Authorization, no cookie, no query token — the capability is all of it.
   const routed = await handler.fetch(new Request(`https://${host}/app.js`), env, { waitUntil() {} });
   assert.equal(routed.status, 200, 'a public capability request reaches the session unauthenticated');
-  assert.equal(env.NIMBUS_SESSION.names.at(-1), `legacy:public:_:${sid}`,
-    'the forward names the legacy-public segment — no tenant was verified');
+  assert.equal(env.NIMBUS_SESSION.names.at(-1), `acme:alice:${sid}`,
+    'the forward names the directory-resolved tenant segment, not a legacy one');
   const forwarded = await routed.json();
   assert.equal(forwarded.pathname, '/port/3000/app.js');
   assert.equal(forwarded.bearer, '1', 'the bearer mark is set');
   assert.equal(forwarded.cap, CAP, 'the capability rides its header');
+
+  // A capability the directory never heard of is a plain 404 — nothing is
+  // forwarded anywhere for it.
+  const unknown = await handler.fetch(
+    new Request(`https://${buildPublicPreviewHost(sid, 3000, '0'.repeat(24), suffix)}/`),
+    env,
+    { waitUntil() {} },
+  );
+  assert.equal(unknown.status, 404, 'an unbound capability is 404, not a guess');
 
   // The scoped form still demands a session attach in enforce mode.
   const scoped = await handler.fetch(
