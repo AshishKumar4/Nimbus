@@ -67,7 +67,7 @@ const CAP2 = 'b'.repeat(24);
   await persistPortCapability(self, 20000, CAP);
   assert.deepEqual(
     await readPortReservation(ctx, 20000),
-    { owner: 'workspace/app-a/caller-a', capability: CAP, visibility: 'scoped' },
+    { kind: 'explicit', owner: 'workspace/app-a/caller-a', capability: CAP, visibility: 'scoped' },
     'persist keeps the stored owner instead of writing null',
   );
 }
@@ -100,7 +100,7 @@ const CAP2 = 'b'.repeat(24);
     'a foreign owner gets nothing — the row does not answer for it',
   );
   // And the record itself is unchanged either way.
-  assert.deepEqual(await readPortReservation(ctx, 20000), { owner: 'workspace/app-a/caller-a', capability: CAP, visibility: 'scoped' });
+  assert.deepEqual(await readPortReservation(ctx, 20000), { kind: 'explicit', owner: 'workspace/app-a/caller-a', capability: CAP, visibility: 'scoped' });
 }
 
 // ── an ownerless exposure behaves the way it always did ─────────────────────
