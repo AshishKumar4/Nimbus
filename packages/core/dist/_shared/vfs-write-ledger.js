@@ -317,26 +317,32 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
 }
 
 /**
- * Write back everything parked, keeping any failure for the exit drain.
+ * Write back the cells parked at THIS instant, and only those.
  *
- * The write-back sites that are not the exit drain — the debounce below and
- * the RELEASE barrier ahead of egress — have no caller who could act on a
- * failure: there is no user frame to throw into, and rejecting the fetch that
- * happened to trigger the flush would blame the wrong operation. Retaining
- * the failure in the channel \`__nimbusDrainVfsMutations\` already drains means
- * the exit path still reports it, so a lost write is loud exactly once and
- * never silent.
+ * Bounded on purpose, and deliberately not routed through
+ * \`__nimbusDrainVfsWrites\`, whose \`while (pending > 0)\` waits for the mutation
+ * queue to be EMPTY. That wait is correct at process exit, where no new writes
+ * are coming. Anywhere else it is a livelock: a facet unpacking a tarball adds
+ * mutations faster than the loop retires them, so the loop never returns.
+ * Sited ahead of egress — where it was — that stopped the request from ever
+ * leaving the facet, and \`npx sv create\` ran, printed its intro, and then
+ * never reported an exit at all. A barrier may delay a request; it may not
+ * wait on a condition a busy process never reaches.
+ *
+ * Failures are retained rather than thrown. The two callers — the debounce
+ * below, and the RELEASE barrier ahead of egress — have no frame that could
+ * act on one: rejecting the fetch that happened to trigger the flush would
+ * blame the wrong operation. The exit drain reports what is retained, so a
+ * lost write is loud exactly once and never silent.
  */
 async function __nimbusFlushVfsWriteBack(supervisor) {
   if (!supervisor) return;
-  try {
-    await __nimbusDrainVfsWrites(supervisor);
-  } catch (error) {
-    if (!__nimbusHasPendingVfsMutationFailure) {
-      __nimbusHasPendingVfsMutationFailure = true;
-      __nimbusPendingVfsMutationFailure = error;
-    }
-  }
+  const paths = Object.keys(__vfsWrites);
+  if (paths.length === 0) return;
+  await Promise.allSettled(paths.map((path) => __nimbusFlushVfsWrite(
+    path,
+    (content, snapshot) => __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
+  )));
 }
 
 /**
