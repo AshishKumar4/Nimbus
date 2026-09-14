@@ -19,7 +19,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
-import { NpmInstaller } from '../npm/installer.js';
+import type { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import * as _rpc from './rpc.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
@@ -546,7 +546,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * All concurrent fetches share ONE worker — no port exhaustion.
      */
     buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
-    ensureNpmInstaller(onProgress?: (msg: string) => void): void;
+    ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<void>;
     /**
      * Read an environment flag with default-on semantics. Mirrors the
      * shouldUseFacetPool / shouldUseFacetResolver / shouldUseBatchFacet

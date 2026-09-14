@@ -58,7 +58,6 @@ import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
 import { parseNpmInstallInvocation } from '../npm/install-args.js';
 import { npmLogEnabled } from '../npm/npm-log.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
-import { registerGitCommands } from '../git/commands.js';
 import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, } from '../runtime/package-manager.js';
 import { listInstalledRuntimes, rehydrateInstalledRuntimes, registerRunnerFactory, } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
@@ -454,8 +453,13 @@ export async function initSession(self, ws) {
     }));
     // ── Git integration (isomorphic-git) ──
     // ctx + env are passed for clone/fetch/pull which run in a facet to avoid
-    // exhausting the supervisor DO's CPU budget on large repos.
-    registerGitCommands(registry, sqliteFs, self.ctx, self.env);
+    // exhausting the supervisor DO's CPU budget on large repos. The command
+    // module (+ its ~106 KB network-facet dependency) is loaded lazily on the
+    // first `git` invocation so it stays out of the cold script-eval graph.
+    registry.register('git', async (ctx) => {
+        const { runGitCommand } = await import('../git/commands.js');
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+    });
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
     // 1. Register the clang-runner factory FIRST so the rehydration step
@@ -1666,7 +1670,7 @@ export async function initSession(self, ws) {
             kernelFs.writeFile(pkgJsonPath, '{"name":"project","version":"1.0.0","dependencies":{}}\n');
         }
         ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
-        self.ensureNpmInstaller((msg) => {
+        await self.ensureNpmInstaller((msg) => {
             ctx.stdout.write('[npm] ' + msg + '\n');
         });
         const result = await self.npmInstaller.install(cwd, { packages, pid: ctx.pid });
@@ -2164,7 +2168,7 @@ export async function initSession(self, ws) {
                 ? `${explicitPkgs.length} packages`
                 : 'dependencies from package.json';
             ctx.stdout.write(`\x1b[36mInstalling ${pkgLabel} (npm v2 — batched writes)...\x1b[0m\n`);
-            self.ensureNpmInstaller((msg) => {
+            await self.ensureNpmInstaller((msg) => {
                 ctx.stdout.write('[npm] ' + msg + '\n');
             });
             // `--loglevel` selects npm's own log protocol on stderr, where npm
@@ -2333,7 +2337,7 @@ export async function initSession(self, ws) {
         }
         // Nimbus-native npx install + run path. Routes package installation
         // through NpmInstaller's full-packument resolver.
-        self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
+        await self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
         self.ensureSqliteFs();
         const installer = self.npmInstaller;
         const resolveResult = await resolveNpxBinary(installer, self.sqliteFs.as(requireVfsCred('cred' in ctx ? ctx.cred : undefined, 'npx')), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid);
