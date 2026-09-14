@@ -107,17 +107,19 @@ const packument = (versions, distTags = {}) => JSON.stringify({
 
 // ── A deliberate policy skip is NOT a failure ────────────────────────────
 //
-// `typescript` is in SKIP_PACKAGES: at transitive depth the resolver drops
-// it on purpose. That must stay distinguishable from the failures above,
-// or every install of a project with build-only deps would go red.
+// `node-gyp` is a warn-reject: at transitive depth the resolver drops it on
+// purpose, saying so. That must stay distinguishable from the failures
+// above, or every install with a build-time native toolchain somewhere in
+// its tree would go red.
 {
   const res = await resolveOnePackumentInFacet(
-    spec({ name: 'typescript', range: '^5.0.0' }),
+    spec({ name: 'node-gyp', range: '^10.0.0' }),
     envReturning({ json: null, source: 'network', status: 404 }),
   );
   assert.equal(res.pkg, null);
   assert.equal(res.error, undefined, 'a policy skip carries no failure');
   assert.equal(res.packumentSource, 'skipped');
+  assert.ok(res.messages.some((m) => /\[skip\].*node-gyp/.test(m)), 'and it says so');
   console.log('  policy skip → skipped, no error');
 }
 

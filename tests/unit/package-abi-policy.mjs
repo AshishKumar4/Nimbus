@@ -126,11 +126,16 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
   assert.deepEqual(findRejects(specs, 'transitive').map((r) => r.from), ['sharp']);
 }
 
-// Framework-aware skip exemption.
-assert.equal(shouldSkipPackage('vite'), true);
+// The skip list is empty: nothing a project declares or depends on is
+// silently left out — what cannot run is a REJECT with a reason.
+assert.equal(shouldSkipPackage('vite'), false);
 assert.equal(shouldSkipPackageWithFramework('vite', true), false);
-assert.equal(shouldSkipPackage('@types/node'), true);
+assert.equal(shouldSkipPackage('typescript'), false);
+assert.equal(shouldSkipPackage('@types/node'), false);
 assert.equal(shouldSkipPackage('react'), false);
+for (const name of ['wrangler', '@cloudflare/vite-plugin', 'parcel', 'node-gyp']) {
+  assert.equal(lookupReject(name)?.transitive, 'warn', `${name} is a warn-reject with a reason`);
+}
 
 // ── 3. Metadata-driven native-artifact rejection ────────────────────────
 

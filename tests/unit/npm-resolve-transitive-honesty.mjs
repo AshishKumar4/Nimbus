@@ -79,11 +79,21 @@ const cacheEntry = (name, version) => ({
 }
 
 // ── 2. a transitive policy skip is loud ─────────────────────────────────────
+//
+// The list is empty today; the gate stays, and stays loud, for whatever is
+// ever put back on it. Exercised through a preamble built from a policy
+// that names typescript.
 {
+  const skipping = NPM_RESOLVE_PREAMBLE.replace('"skipPackages":[]', '"skipPackages":["typescript"]');
+  assert.notEqual(skipping, NPM_RESOLVE_PREAMBLE, 'the preamble carries the policy JSON');
+  const { SHOULD_SKIP_PACKAGE } = new Function(`${skipping}\nreturn { SHOULD_SKIP_PACKAGE };`)();
+  const restore = globalThis.SHOULD_SKIP_PACKAGE;
+  globalThis.SHOULD_SKIP_PACKAGE = SHOULD_SKIP_PACKAGE;
   const res = await resolveOnePackumentInFacet(
     spec({ name: 'typescript', range: '^5.0.0' }),
     envReturning({ json: null, source: 'network', status: 404 }),
   );
+  globalThis.SHOULD_SKIP_PACKAGE = restore;
   assert.equal(res.pkg, null);
   assert.equal(res.error, undefined, 'a policy skip is still not a failure');
   assert.equal(res.packumentSource, 'skipped');

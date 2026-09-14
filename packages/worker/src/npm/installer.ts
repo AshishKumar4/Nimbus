@@ -44,7 +44,6 @@ import {
 } from './npm-log.js';
 import {
   applySwaps, findRejects, lookupSwap, lookupReject,
-  shouldSkipPackage, shouldSkipPackageWithFramework,
   shouldWarnSkipTransitive, isOptionalNativeBinding,
   formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
   emitRegistryEvent,
@@ -1241,23 +1240,20 @@ export class NpmInstaller {
     try {
       const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
 
-      // Always include dependencies
+      // Every declared dependency is a spec. What cannot run here is
+      // refused by the reject policy below with its reason; nothing a
+      // project declares is quietly left out of node_modules.
       for (const [name, range] of Object.entries(pkgJson.dependencies || {})) {
-        if (!shouldSkipPackage(name)) {
-          specs[name] = range as string;
-        }
+        specs[name] = range as string;
       }
-
-      // Include devDeps unless production mode, skipping build-only
       for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
-        if (shouldSkipPackage(name) || name in specs) continue;
-        if (production) continue;
+        if (name in specs || production) continue;
         specs[name] = range as string;
         devOnly.add(name);
       }
     } catch { /* corrupt package.json */ }
 
-    return this.applyW6Registry(specs, devOnly);
+    return this.applyW6Registry(specs, devOnly, { declared: true });
   }
 
   /**
@@ -1271,6 +1267,7 @@ export class NpmInstaller {
   private applyW6Registry(
     specs: Record<string, string>,
     devOnly: ReadonlySet<string> = new Set(),
+    options: { declared?: boolean } = {},
   ): Record<string, string> {
     const { specs: swapped, swaps } = applySwaps(specs);
     for (const s of swaps) {
@@ -1280,6 +1277,23 @@ export class NpmInstaller {
       this.onProgress?.(formatSwapNotice(s));
       // W6.5: telemetry — fire-and-forget; sink swallows its own errors.
       emitRegistryEvent({ type: 'swap', from: s.from, to: s.to, ctx: 'top' });
+    }
+    // A dependency the project DECLARES that the policy refuses with
+    // transitive='warn' (wrangler, node-gyp, parcel — a toolchain that
+    // cannot run here) is left out with its reason on the install log, and
+    // the rest of the project installs: a cloned repo that lists wrangler
+    // in devDependencies still gets everything it runs. An explicit
+    // `npm install wrangler` — the user asked for exactly that package —
+    // still fails with the same reason, and a 'fail' reject aborts at any
+    // depth as before.
+    if (options.declared) {
+      for (const name of Object.keys(swapped)) {
+        const warn = shouldWarnSkipTransitive(name);
+        if (!warn) continue;
+        this.onProgress?.(formatTransitiveSkip(warn));
+        emitRegistryEvent({ type: 'reject', from: warn.from, reason: warn.reason, suggest: warn.suggest, ctx: 'top' });
+        delete swapped[name];
+      }
     }
     const rejects = findRejects(swapped, 'top');
     if (rejects.length > 0) {
@@ -1310,7 +1324,6 @@ export class NpmInstaller {
   ): boolean {
     // Every spec must be in the lockfile
     for (const name of Object.keys(specs)) {
-      if (shouldSkipPackage(name)) continue;
       if (!lockfile.has(name)) return false;
     }
     // X.5-F R2: every locked package's REQUIRED peerDependencies must
