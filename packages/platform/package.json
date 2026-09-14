@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/platform",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The measured Cloudflare platform truths Nimbus is built on — error taxonomy, limits tables, budget coordination, and wire-format primitives, with zero runtime dependencies.",
   "keywords": [
     "cloudflare",
