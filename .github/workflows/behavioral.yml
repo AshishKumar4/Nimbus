@@ -96,17 +96,11 @@ jobs:
         id: unit
         shell: bash
         run: |
-          failed=()
-          for f in tests/unit/*.mjs; do
-            echo "== $f"
-            bun "$f" || failed+=("$f")
-          done
-          if [ ${#failed[@]} -gt 0 ]; then
-            for f in "${failed[@]}"; do echo "::error file=$f::unit test failed: $f"; done
-            echo "count=${#failed[@]}" >> "$GITHUB_OUTPUT"
-            echo "Unit failures: ${#failed[@]}. The behavioral suite still runs; unit-gate fails this job at the end."
-          else
+          if bun run test:unit; then
             echo "count=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "Unit failures. The behavioral suite still runs; the unit gate fails this job at the end."
           fi
 
       - name: Require deploy credentials
