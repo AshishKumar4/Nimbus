@@ -105,6 +105,24 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.equal('SUPERVISOR' in config.env, false);
 }
 
+// An outbound binding is a capability, so validation must not clone it.
+{
+  const outbound = { fetch: async () => new Response('mediated') };
+  for (const value of [null, outbound]) {
+    const boot = residentBootSpecSchema(z.unknown()).parse({
+      kind: 'code', code: { ...BOUND_SPEC, globalOutbound: value },
+    });
+    assert.equal(boot.code.globalOutbound, value);
+    const config = await residentWorkerConfig({}, () => DISK, SUPERVISOR, boot);
+    assert.equal(config.globalOutbound, value);
+    assert.equal('SUPERVISOR' in config.env, false);
+    if (value !== null) assert.equal(await (await config.globalOutbound.fetch('https://test/')).text(), 'mediated');
+  }
+  for (const invalid of [false, 'inherit', 1, {}, { fetch: 'not callable' }]) {
+    assert.equal(ResidentCodeSpecSchema.safeParse({ ...BASE, globalOutbound: invalid }).success, false);
+  }
+}
+
 // An explicitly empty env is still explicit: nothing is injected into it.
 {
   const config = await residentWorkerConfig(
@@ -148,6 +166,15 @@ const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
   assert.equal('globalOutbound' in config, false);
   assert.equal(config.compatibilityDate, '2025-12-01');
   assert.equal(config.mainModule, 'app.js');
+}
+
+// Default supervisor injection must retain an independently selected outbound policy.
+{
+  const config = await residentWorkerConfig({}, () => DISK, SUPERVISOR, {
+    kind: 'code', code: ResidentCodeSpecSchema.parse({ ...BASE, globalOutbound: null }),
+  });
+  assert.equal(config.globalOutbound, null);
+  assert.deepEqual(config.env.SUPERVISOR, { __supervisor: SUPERVISOR });
 }
 
 console.log('fabric-resident-bindings: ok');
