@@ -486,6 +486,13 @@ export class NimbusSession extends CloudflareDurableObject {
   /** Have we attempted to hydrate sessionBasePath from storage yet? */
   sessionBasePathHydrated = false;
   /**
+   * The origin this session was last reached at (`https://host`), remembered
+   * beside the base path so the session can spell a path-form URL for one
+   * of its own applications — `nimbus expose` printing one, `apps.list`
+   * carrying one — on a deployment with no preview-host suffix.
+   */
+  sessionOrigin: string = '';
+  /**
    * Has the "wrangler is aliased to nimbus-wrangler" banner been shown
    * this session? Reset on WebSocket close/reopen so a reconnecting user
    * sees it once per terminal attach. Purely cosmetic; no persistence.
@@ -678,6 +685,8 @@ export class NimbusSession extends CloudflareDurableObject {
       try {
         const saved = await this.ctx.storage.get('session-base-path');
         if (typeof saved === 'string') this.sessionBasePath = saved;
+        const origin = await this.ctx.storage.get('session-origin');
+        if (typeof origin === 'string') this.sessionOrigin = origin;
       } catch { /* storage unavailable — stay empty */ }
       this.sessionBasePathHydrated = true;
     }
@@ -685,6 +694,17 @@ export class NimbusSession extends CloudflareDurableObject {
     if (fromHeader && fromHeader !== this.sessionBasePath) {
       this.sessionBasePath = fromHeader;
       try { await this.ctx.storage.put('session-base-path', fromHeader); } catch {}
+    }
+    // The router forwards the request under its own origin; a preview host
+    // is not this session's control-plane origin, so only a request that
+    // carried the base path (a /s/<sid>/… door) teaches it.
+    if (fromHeader) {
+      let origin = '';
+      try { origin = new URL(request.url).origin; } catch { /* not an absolute URL — nothing to learn */ }
+      if (origin && origin !== this.sessionOrigin) {
+        this.sessionOrigin = origin;
+        try { await this.ctx.storage.put('session-origin', origin); } catch {}
+      }
     }
   }
 
@@ -935,9 +955,17 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcSignalProcess(pid: number, signal: string) { return _programmatic.rpcSignalProcess(this as any, pid, signal); }
   async _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }) { return _programmatic.rpcProcessLogs(this as any, pid, options); }
   async _rpcListPorts() { return _programmatic.rpcListPorts(this as any); }
-  async _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }) {
+  async _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }) {
     return _programmatic.rpcExposePort(this as any, port, options);
   }
+  // The identity-centric application surface: one implementation each in
+  // programmatic.ts, addressed by port, pid, name or owner.
+  async _rpcExposeApp(target: _programmatic.AppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }) {
+    return _programmatic.rpcExposeApp(this as any, target, options);
+  }
+  async _rpcListApps() { return _programmatic.rpcListApps(this as any); }
+  async _rpcRotateLink(target: _programmatic.AppTarget) { return _programmatic.rpcRotateLink(this as any, target); }
+  async _rpcRemoveApp(target: _programmatic.AppTarget) { return _programmatic.rpcRemoveApp(this as any, target); }
   async _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }) {
     return _programmatic.rpcEnsureDurableApp(this as any, input);
   }

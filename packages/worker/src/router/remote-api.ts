@@ -101,12 +101,19 @@ interface NimbusSessionRpcStub {
   _rpcSignalProcess(pid: number, signal: string): Promise<unknown>;
   _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<unknown>;
   _rpcListPorts(): Promise<unknown>;
-  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<unknown>;
+  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<unknown>;
   _rpcEnsureDurableApp(input: { owner?: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<unknown>;
   _rpcRemoveDurableApp(owner: string): Promise<unknown>;
+  _rpcExposeApp(target: RemoteAppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<unknown>;
+  _rpcListApps(): Promise<unknown>;
+  _rpcRotateLink(target: RemoteAppTarget): Promise<unknown>;
+  _rpcRemoveApp(target: RemoteAppTarget): Promise<unknown>;
   _rpcUnexposePort(port: number): Promise<unknown>;
   _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
 }
+
+/** An app target on the wire: a port, a pid, a name/owner, or the explicit object forms. */
+type RemoteAppTarget = number | string | { port: number } | { pid: number } | { name: string } | { owner: string };
 
 interface NimbusSessionNamespace {
   idFromName(name: string): DurableObjectId;
@@ -379,11 +386,18 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       return ctx.stub._rpcListPorts();
     case 'exposePort': {
       const options = args[1] === undefined ? undefined : objectArg(args[1]);
-      return ctx.stub._rpcExposePort(numberArg(args[0], 'port'), options === undefined ? undefined : {
-        visibility: options.visibility === undefined ? undefined
-          : options.visibility === 'public' ? 'public' : 'scoped',
-      });
+      return ctx.stub._rpcExposePort(numberArg(args[0], 'port'), options === undefined ? undefined : exposeOptions(options));
     }
+    case 'exposeApp': {
+      const options = args[1] === undefined ? undefined : objectArg(args[1]);
+      return ctx.stub._rpcExposeApp(appTargetArg(args[0]), options === undefined ? undefined : exposeOptions(options));
+    }
+    case 'listApps':
+      return ctx.stub._rpcListApps();
+    case 'rotateLink':
+      return ctx.stub._rpcRotateLink(appTargetArg(args[0]));
+    case 'removeApp':
+      return ctx.stub._rpcRemoveApp(appTargetArg(args[0]));
     case 'ensureDurableApp': {
       const input = objectArg(args[0]);
       return ctx.stub._rpcEnsureDurableApp({
@@ -404,6 +418,24 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     default:
       throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
   }
+}
+
+function exposeOptions(options: Record<string, unknown>): { visibility?: 'scoped' | 'public'; name?: string } {
+  return {
+    ...(options.visibility === undefined ? {} : { visibility: options.visibility === 'public' ? 'public' as const : 'scoped' as const }),
+    ...(options.name === undefined ? {} : { name: stringArg(options.name, 'name') }),
+  };
+}
+
+function appTargetArg(value: unknown): RemoteAppTarget {
+  if (typeof value === 'number') return numberArg(value, 'target');
+  if (typeof value === 'string') return stringArg(value, 'target');
+  const target = objectArg(value);
+  if (target.port !== undefined) return { port: numberArg(target.port, 'port') };
+  if (target.pid !== undefined) return { pid: numberArg(target.pid, 'pid') };
+  if (target.name !== undefined) return { name: stringArg(target.name, 'name') };
+  if (target.owner !== undefined) return { owner: stringArg(target.owner, 'owner') };
+  throw apiError('Nimbus app target must be a port, a pid, a name, or { port | pid | name | owner }', 'E_ARG_SHAPE', 400);
 }
 
 function requireAnyScope(ctx: RemoteContext, scopes: readonly string[]): void {

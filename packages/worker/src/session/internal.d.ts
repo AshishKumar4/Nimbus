@@ -114,6 +114,7 @@ export interface SessionInternal {
   // ── Routing prefix + banners ────────────────────────────────────────
   sessionBasePath: string;
   sessionBasePathHydrated: boolean;
+  sessionOrigin: string;
   wranglerAliasBannerShown: boolean;
 
   // ── W8 child_process registry handle ────────────────────────────────

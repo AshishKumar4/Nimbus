@@ -33,15 +33,29 @@ import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
 import {
   clearPortCapability,
+  isValidAppName,
   persistPortCapability,
   PortRecordSchema,
   portRecordKey,
   readPortReservation,
+  readPortReservationByName,
+  readPortReservationByOwner,
   reservePort,
   restorePortCapability,
+  rotatePortCapability,
+  type PortReservation,
+  type PortVisibility,
 } from './port-capability.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
+import {
+  buildPreviewHost,
+  buildPublicPreviewHost,
+  isPreviewHostSafeSid,
+  readPreviewHostSuffix,
+} from '../_shared/preview-host.js';
+import type { ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy } from '../facets/manager.js';
+import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 
@@ -99,6 +113,8 @@ interface ProgrammaticFacetManager {
   kill(pid: number): boolean;
   hasResidentProcess(pid: number): boolean;
   removeDurableApp(owner: string): Promise<boolean>;
+  residentIdentity(pid: number): Promise<ResidentIdentity | null>;
+  listResidentApps(): Promise<ResidentAppSummary[]>;
 }
 
 interface ProgrammaticViteServer {
@@ -139,6 +155,8 @@ export interface ProgrammaticHost {
   _supervisorOps?: { forget(pid: number): void } | null;
   sessionBasePath?: string;
   sessionBasePathHydrated?: boolean;
+  /** The origin the session was last reached at — what a path-form URL is built on. */
+  sessionOrigin?: string;
   wranglerAliasBannerShown?: boolean;
   _b4Phase?: string | null;
   _w9PersistWired?: boolean;
@@ -173,6 +191,13 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
   shellId?: string;
   /** @internal Initial cwd for a shellId with no durable state yet. */
   shellRoot?: string;
+  /**
+   * What to do when the started process exits on its own with a non-zero
+   * code: 'never' (the default) leaves it stopped; 'on-failure' restarts it
+   * under the restart budget with backoff. A platform reset re-drives it
+   * either way. Carried to the launch as `$NIMBUS_RESTART`.
+   */
+  restart?: ResidentRestartPolicy;
 }
 
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
@@ -621,7 +646,16 @@ export async function rpcStartProcess(
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticStartResult> {
   await ensureProgrammaticReady(self, options);
-  return withShellState(self, options, true, (scoped) => startOnShell(self, command, options, scoped));
+  if (options.restart !== undefined && options.restart !== 'never' && options.restart !== 'on-failure') {
+    throw new Error(`startProcess: restart must be 'never' or 'on-failure', got ${String(options.restart)}`);
+  }
+  // The policy rides the command's environment: the resident the command
+  // starts reads it off its env at launch and journals it, so the shell,
+  // the SDK and a child_process spawn all carry it the same way.
+  const withPolicy: ProgrammaticExecOptions = options.restart === 'on-failure'
+    ? { ...options, env: { ...(options.env ?? {}), [RESTART_POLICY_ENV]: 'on-failure' } }
+    : options;
+  return withShellState(self, withPolicy, true, (scoped) => startOnShell(self, command, withPolicy, scoped));
 }
 
 async function startOnShell(
@@ -836,47 +870,354 @@ export async function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPo
   return entries.map(serializePort);
 }
 
+/** What `apps.expose` / `apps.rotateLink` answer: the application's address, as the caller can reach it. */
+export interface ExposedAppResult {
+  owner: string;
+  name: string | null;
+  port: number;
+  pid: number | null;
+  capability: string | null;
+  visibility: PortVisibility;
+  /** Built from the deployment's preview suffix or the session's last-seen origin; null when neither is known. */
+  url: string | null;
+}
+
+export interface ListedApp extends ResidentAppSummary {
+  url: string | null;
+}
+
+/** An app target as every app verb takes it: a port, a pid, or a name/owner. */
+export type AppTarget = number | string | { port: number } | { pid: number } | { name: string } | { owner: string };
+
+/**
+ * Browser-facing URL for an application, built inside the session: the
+ * host form when the deployment carries a preview suffix (name first, port
+ * otherwise; the public bearer form when public and a capability exists),
+ * else the path form on the origin the session was last reached at. Null
+ * when the session has never been reached over HTTP and has no suffix —
+ * an embedder builds its own from the port and capability in that case.
+ */
+export function appUrl(
+  self: ProgrammaticHost,
+  app: { port: number; name?: string | null; capability?: string | null; visibility?: PortVisibility },
+): string | null {
+  const sid = sessionIdOf(self);
+  const suffix = readPreviewHostSuffix(self.env);
+  if (suffix !== null && sid !== null && isPreviewHostSafeSid(sid)) {
+    const label = app.name ?? app.port;
+    if (app.visibility === 'public' && typeof app.capability === 'string') {
+      return `https://${buildPublicPreviewHost(sid, label, app.capability, suffix)}/`;
+    }
+    return `https://${buildPreviewHost(sid, label, suffix)}/`;
+  }
+  const origin = self.sessionOrigin;
+  if (!origin || sid === null) return null;
+  const base = self.sessionBasePath || `/s/${sid}`;
+  return app.name ? `${origin}${base}/app/${app.name}/` : `${origin}${base}/port/${app.port}/`;
+}
+
+/** The sid this DO serves: the last segment of its name, `tn:sub:sid`. */
+function sessionIdOf(self: ProgrammaticHost): string | null {
+  const name = (self.ctx as { id?: { name?: unknown } }).id?.name;
+  if (typeof name === 'string' && name.length > 0) {
+    const cut = name.lastIndexOf(':');
+    if (cut > 0) return name.slice(cut + 1);
+  }
+  const fromBase = (self.sessionBasePath || '').replace(/^\/s\//, '');
+  return fromBase.length > 0 ? fromBase : null;
+}
+
+/**
+ * The port-centric surface, kept for every caller that has a port and
+ * nothing else — a dev server, a python resident, a process outside the
+ * resident lifecycle. When the port's occupant carries an identity the
+ * exposure is the same lazy reservation `apps.expose` makes; when it does
+ * not, the row is written port-only, as before. One implementation:
+ * `applyExposure` below.
+ */
 export async function rpcExposePort(
   self: ProgrammaticHost,
   port: number,
-  options?: { visibility?: 'scoped' | 'public' },
+  options?: { visibility?: 'scoped' | 'public'; name?: string },
 ) {
   await ensureProgrammaticReady(self);
   const n = Number(port);
   const entry = self.portRegistry.get(n);
-  if (entry) await persistPortCapability(self, n, entry.capability);
-  // The stored record decides visibility: a reservation's mark is sticky,
-  // so 'public' survives persists of unrelated fields — and the caller's
-  // explicit choice, when given, lands on the row the same way.
-  if (options?.visibility !== undefined) {
-    // A visibility choice is a write on the stored row, not a reservation
-    // claim: owner and capability stay exactly as they were.
-    await self.ctx.storage.transaction(async (txn) => {
-      const stored = await readPortReservation({ storage: txn }, n);
-      if (stored !== null && stored.visibility !== options.visibility) {
-        await txn.put(portRecordKey(n), {
-          owner: stored.owner,
-          capability: stored.capability,
-          visibility: options.visibility,
-        });
-      }
-    });
+  const identity = entry === undefined ? null : await self.facetManager!.residentIdentity(entry.pid);
+  if (identity?.ephemeral) {
+    throw new Error(`port ${n} is served by the second instance of its program, which is not the durable one`);
   }
-  const record = await readPortReservation(self.ctx, n);
-  if (record?.visibility === 'public' && entry) {
-    // A port that goes public must be resolvable: the capability the URL
-    // carries has to name this session in the directory, and a non-legacy
-    // deployment without the binding is refused loudly — never half-public.
-    await bindPublicPortCapability(self, entry.capability, n);
-  }
+  const exposed = await applyExposure(self, n, identity?.owner ?? null, options ?? {});
   return {
     port: n,
     listening: !!entry,
     pid: entry?.pid ?? null,
     registeredAt: entry?.registeredAt ?? null,
-    capability: entry?.capability ?? null,
+    capability: exposed.capability,
+    visibility: exposed.visibility,
+    owner: exposed.owner,
+    name: exposed.name,
+  };
+}
+
+/**
+ * The identity-centric surface: the target names a running application —
+ * by port, by pid, or by name — and the exposure is what makes it durable
+ * under its identity: the port is reserved for the owner lazily, the
+ * capability minted when public and bound in the directory, the name
+ * stored on the reservation. Returns the address the caller can reach.
+ */
+export async function rpcExposeApp(
+  self: ProgrammaticHost,
+  target: AppTarget,
+  options: { visibility?: 'scoped' | 'public'; name?: string } = {},
+): Promise<ExposedAppResult> {
+  await ensureProgrammaticReady(self);
+  const resolved = await resolveAppTarget(self, target);
+  if (resolved.port === null) {
+    throw new Error(`${describeTarget(target)} has not bound a port yet — expose it once it is listening`);
+  }
+  if (resolved.owner === null) {
+    throw new Error(
+      `${describeTarget(target)} has no launch record to bind an identity to — `
+      + 'only node residents and durable worker apps carry one; use ports.expose for a bare port',
+    );
+  }
+  const exposed = await applyExposure(self, resolved.port, resolved.owner, options);
+  const live = self.portRegistry.get(resolved.port);
+  return {
+    owner: resolved.owner,
+    name: exposed.name,
+    port: resolved.port,
+    pid: live?.pid ?? null,
+    capability: exposed.capability,
+    visibility: exposed.visibility,
+    url: appUrl(self, { port: resolved.port, ...exposed }),
+  };
+}
+
+/**
+ * The one exposure implementation. With an owner: reserve the port for it
+ * (a conflict if another owner holds it), carrying the name and visibility
+ * onto the reservation and adopting the live capability so the URL in
+ * circulation is the one the reservation re-adopts after a reset; public
+ * exposures mint a capability if none is live yet and bind the directory.
+ * Without an owner: the row is written port-only, exactly as `exposePort`
+ * always did.
+ */
+async function applyExposure(
+  self: ProgrammaticHost,
+  port: number,
+  owner: string | null,
+  options: { visibility?: 'scoped' | 'public'; name?: string },
+): Promise<{ owner: string | null; name: string | null; capability: string | null; visibility: PortVisibility }> {
+  if (options.name !== undefined && !isValidAppName(options.name)) {
+    throw new Error(`'${options.name}' is not a valid app name: one DNS label, not all digits, not 24 hex`);
+  }
+  const entry = self.portRegistry.get(port);
+  if (owner !== null) {
+    const occupied = new Set(self.portRegistry.getAll().map((live) => live.port));
+    occupied.delete(port);
+    await reservePort(self.ctx, {
+      owner,
+      preferredPort: port,
+      occupiedPorts: occupied,
+      ...(entry !== undefined ? { capability: entry.capability } : {}),
+      ...(options.visibility !== undefined ? { visibility: options.visibility } : {}),
+      ...(options.name !== undefined ? { name: options.name } : {}),
+    });
+  } else {
+    if (entry) await persistPortCapability(self, port, entry.capability);
+    // A visibility or name choice is a write on the stored row, not a
+    // reservation claim: owner and capability stay exactly as they were.
+    if (options.visibility !== undefined || options.name !== undefined) {
+      await self.ctx.storage.transaction(async (txn) => {
+        const stored = await readPortReservation({ storage: txn }, port);
+        if (stored === null) return;
+        const visibility = options.visibility ?? stored.visibility;
+        const name = options.name ?? stored.name;
+        if (visibility === stored.visibility && name === stored.name) return;
+        await txn.put(portRecordKey(port), {
+          owner: stored.owner,
+          capability: stored.capability,
+          visibility,
+          ...(name !== undefined ? { name } : {}),
+        });
+      });
+    }
+  }
+  let record = await readPortReservation(self.ctx, port);
+  if (record?.visibility === 'public' && record.capability === null && owner !== null) {
+    // Public before the application has bound: mint now, so the URL exists
+    // and the binding re-adopts it, exactly as ensureDurableApp does.
+    await reservePort(self.ctx, {
+      owner, preferredPort: port, occupiedPorts: new Set(), capability: createPortCapability(),
+    });
+    record = await readPortReservation(self.ctx, port);
+  }
+  // The live registration must answer the stored capability, or a URL
+  // minted before the bind 404s until the next restore.
+  if (record?.capability !== null && record?.capability !== undefined) {
+    self.portRegistry.restoreCapability(port, record.capability);
+  }
+  if (record?.visibility === 'public' && record.capability !== null) {
+    // A port that goes public must be resolvable: the capability the URL
+    // carries has to name this session in the directory, and a non-legacy
+    // deployment without the binding is refused loudly — never half-public.
+    await bindPublicPortCapability(self, record.capability, port, record.name);
+  }
+  return {
+    owner: record?.owner ?? owner,
+    name: record?.name ?? null,
+    capability: record?.capability ?? entry?.capability ?? null,
     visibility: record?.visibility ?? 'scoped',
   };
+}
+
+/**
+ * Mint a new capability for the application and rebind the directory:
+ * every URL built on the old one stops resolving. The registry adopts the
+ * new value at once if the port is live, so the new URL answers without
+ * waiting for a restore.
+ */
+export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): Promise<ExposedAppResult> {
+  await ensureProgrammaticReady(self);
+  const resolved = await resolveAppTarget(self, target);
+  if (resolved.port === null || resolved.reservation === null) {
+    throw new Error(`${describeTarget(target)} is not exposed — nothing to rotate`);
+  }
+  const previous = resolved.reservation;
+  if (previous.visibility === 'public' && previous.capability !== null) {
+    await unbindPublicPortCapability(self, previous.capability);
+  }
+  const capability = await rotatePortCapability(self, resolved.port, createPortCapability());
+  if (capability === null) throw new Error(`${describeTarget(target)} is not exposed — nothing to rotate`);
+  if (previous.visibility === 'public') {
+    await bindPublicPortCapability(self, capability, resolved.port, previous.name);
+  }
+  const live = self.portRegistry.get(resolved.port);
+  return {
+    owner: resolved.owner ?? previous.owner ?? '',
+    name: previous.name ?? null,
+    port: resolved.port,
+    pid: live?.pid ?? null,
+    capability,
+    visibility: previous.visibility,
+    url: appUrl(self, { port: resolved.port, name: previous.name, capability, visibility: previous.visibility }),
+  };
+}
+
+/** Every stamped identity, with the URL each is reachable at. */
+export async function rpcListApps(self: ProgrammaticHost): Promise<ListedApp[]> {
+  await ensureProgrammaticReady(self);
+  const apps = await self.facetManager!.listResidentApps();
+  return apps.map((app) => ({
+    ...app,
+    url: app.port === null ? null : appUrl(self, { ...app, port: app.port }),
+  }));
+}
+
+/**
+ * End an application: kill its live pids, release the reservation, purge
+ * its journal rows, free the durable slot and its storage, unbind the
+ * directory — `removeDurableApp`, addressed by any target.
+ */
+export async function rpcRemoveApp(
+  self: ProgrammaticHost,
+  target: AppTarget,
+): Promise<{ owner: string; removed: boolean; port: number | null }> {
+  await ensureProgrammaticReady(self);
+  const resolved = await resolveAppTarget(self, target);
+  if (resolved.owner === null) {
+    throw new Error(`${describeTarget(target)} names no application — nothing to remove`);
+  }
+  return rpcRemoveDurableApp(self, resolved.owner);
+}
+
+function describeTarget(target: AppTarget): string {
+  if (typeof target === 'number') return `target ${target}`;
+  if (typeof target === 'string') return `'${target}'`;
+  if ('port' in target) return `port ${target.port}`;
+  if ('pid' in target) return `pid ${target.pid}`;
+  if ('name' in target) return `app '${target.name}'`;
+  return `owner '${target.owner}'`;
+}
+
+/**
+ * Resolve an app target to what the verbs need: the owner (from the
+ * serving pid's journal row, or the reservation), the port, and the
+ * reservation if one exists. A bare number is a port when something
+ * listens on it or a reservation names it, else a pid; a string is a name
+ * first, then an owner.
+ */
+async function resolveAppTarget(
+  self: ProgrammaticHost,
+  target: AppTarget,
+): Promise<{ owner: string | null; port: number | null; reservation: PortReservation | null }> {
+  const fm = self.facetManager!;
+  const byPort = async (port: number) => {
+    const live = self.portRegistry.get(port);
+    const reservation = await readPortReservation(self.ctx, port);
+    const identity = live === undefined ? null : await fm.residentIdentity(live.pid);
+    if (identity?.ephemeral) {
+      throw new Error(`port ${port} is served by the second instance of its program, which is not the durable one`);
+    }
+    return { owner: identity?.owner ?? reservation?.owner ?? null, port, reservation };
+  };
+  const byPid = async (pid: number) => {
+    const identity = await fm.residentIdentity(pid);
+    if (identity === null) return null;
+    if (identity.ephemeral) {
+      throw new Error(`pid ${pid} is the second instance of its program, which is not the durable one`);
+    }
+    const port = self.portRegistry.getAll().find((live) => live.pid === pid)?.port ?? identity.port ?? null;
+    const reservation = port === null ? null : await readPortReservation(self.ctx, port);
+    return { owner: identity.owner ?? null, port, reservation };
+  };
+  const byOwner = async (owner: string) => {
+    const held = await readPortReservationByOwner(self.ctx, owner);
+    if (held !== null) return { owner, port: held.port, reservation: held.reservation };
+    const app = (await fm.listResidentApps()).find((candidate) => candidate.owner === owner);
+    return app === undefined ? null : { owner, port: app.port, reservation: null };
+  };
+  const byName = async (name: string) => {
+    const held = await readPortReservationByName(self.ctx, name);
+    return held === null ? null : { owner: held.reservation.owner, port: held.port, reservation: held.reservation };
+  };
+
+  if (typeof target === 'number') {
+    if (!Number.isInteger(target) || target <= 0) throw new Error(`target ${target} is not a port or a pid`);
+    if (self.portRegistry.has(target) || (await readPortReservation(self.ctx, target)) !== null) {
+      return byPort(target);
+    }
+    const asPid = await byPid(target);
+    if (asPid !== null) return asPid;
+    if (target <= 65535) return byPort(target);
+    throw new Error(`nothing listens on port ${target} and no process ${target} exists`);
+  }
+  if (typeof target === 'string') {
+    const asName = await byName(target);
+    if (asName !== null) return asName;
+    const asOwner = await byOwner(target);
+    if (asOwner !== null) return asOwner;
+    throw new Error(`no application is named or owned '${target}'`);
+  }
+  if ('port' in target) return byPort(Number(target.port));
+  if ('pid' in target) {
+    const asPid = await byPid(Number(target.pid));
+    if (asPid === null) {
+      throw new Error(`pid ${target.pid} has no launch record — only node residents and durable worker apps carry one`);
+    }
+    return asPid;
+  }
+  if ('name' in target) {
+    const asName = await byName(target.name);
+    if (asName === null) throw new Error(`no application is named '${target.name}'`);
+    return asName;
+  }
+  const asOwner = await byOwner(target.owner);
+  if (asOwner === null) throw new Error(`no application is owned by '${target.owner}'`);
+  return asOwner;
 }
 
 /**

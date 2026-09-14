@@ -63,6 +63,7 @@ import {
   persistPortCapability,
   readPortCapability,
   readPortReservation,
+  readPortReservationByName,
   restorePortCapability,
 } from './port-capability.js';
 import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, CALLER_SCOPES_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
@@ -330,6 +331,28 @@ export function routeCapabilityPort(
 function portRouteMountBase(request: Request, port: number): string {
   const header = request.headers.get(BASE_PATH_HEADER);
   return header ? `${header}/port/${port}` : '';
+}
+
+/**
+ * The name-addressed door: `/app/<name>/…` — what the scoped `<name>--<sid>`
+ * host is forwarded as, and reachable in path form as `/s/<sid>/app/<name>/`.
+ * The name is a reservation alias only this session's records know, so it
+ * is resolved here and the request continues exactly as the port form would
+ * — same routing, same durable re-drive, same capability gate. A name
+ * nothing holds is a 404, never a guess.
+ */
+export async function routeToSessionApp(
+  self: RoutesHost,
+  name: string,
+  request: Request,
+  innerPath: string,
+  capability?: string,
+): Promise<Response> {
+  const held = await readPortReservationByName(self.ctx, name);
+  if (held === null) return new Response('Not found', { status: 404 });
+  const header = request.headers.get(BASE_PATH_HEADER);
+  const mountBase = header ? `${header}/app/${name}` : '';
+  return routeToSessionPort(self, held.port, request, innerPath, mountBase, capability);
 }
 
 /** True if `innerPath` targets the cirrus-real HMR socket, under any mount
@@ -1387,6 +1410,18 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
         request,
         path,
         portRouteMountBase(request, port),
+        capability ?? undefined,
+      );
+    }
+    // ── App route: the same door, addressed by a reservation's name ──
+    const appMatch = url.pathname.match(/^\/app\/([a-z0-9][a-z0-9-]{0,62})(\/.*)?$/);
+    if (appMatch) {
+      const capability = request.headers.get(PREVIEW_CAPABILITY_HEADER);
+      return routeToSessionApp(
+        self,
+        appMatch[1],
+        request,
+        normalizeForwardedHttpPath(appMatch[2] || '/'),
         capability ?? undefined,
       );
     }
