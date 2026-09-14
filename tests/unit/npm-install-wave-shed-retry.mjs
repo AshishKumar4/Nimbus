@@ -19,6 +19,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import {
   readableStreamToAsyncIterable,
+  streamPackageEntries,
   streamTarEntries,
 } from '../../packages/core/src/_shared/tarball-stream.ts';
 import {
@@ -26,6 +27,7 @@ import {
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
 
+globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
 // Workerd hands each enqueued chunk buffer to the RPC byte stream by

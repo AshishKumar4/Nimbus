@@ -297,7 +297,7 @@ async function main() {
     ' * helpers by name.',
     ' *',
     ' * Tar-stream symbols: parseTarHeader, streamTarEntries,',
-    ' *   readableStreamToAsyncIterable, MAX_FILE_BYTES.',
+    ' *   streamPackageEntries, readableStreamToAsyncIterable, MAX_FILE_BYTES.',
     ' * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,',
     ' *   W7_MAGIC, W7_MAX_RECORD_BYTES.',
     ' *',

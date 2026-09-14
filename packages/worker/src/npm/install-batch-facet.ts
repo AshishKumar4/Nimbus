@@ -33,8 +33,9 @@
  * Stability invariants (cloudflare-parallel):
  *   - No `this` references.
  *   - No closure capture other than args + preamble names.
- *   - Preamble symbols (streamTarEntries, readableStreamToAsyncIterable,
- *     MAX_FILE_BYTES) referenced via @ts-ignore.
+ *   - Preamble symbols (streamPackageEntries, streamTarEntries,
+ *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
+ *     @ts-ignore.
  */
 
 import type { FacetPackageSpec } from './install-facet.js';
@@ -123,10 +124,10 @@ export interface InstallBatchResult {
 // ── Facet function ──────────────────────────────────────────────────────
 //
 // Runs inside a IsolatePool isolate. Serialised via fn.toString();
-// the helpers it references at top-level scope (streamTarEntries,
-// readableStreamToAsyncIterable, MAX_FILE_BYTES) are NOT in the facet's
-// lexical scope — the pool injects them via the preamble. No static
-// imports of those names; references are bare identifiers.
+// the helpers it references at top-level scope (streamPackageEntries,
+// streamTarEntries, readableStreamToAsyncIterable, MAX_FILE_BYTES) are NOT
+// in the facet's lexical scope — the pool injects them via the preamble.
+// No static imports of those names; references are bare identifiers.
 
 export const installPackagesInFacet = async function installPackagesInFacet(
   batch: InstallBatchSpec,
@@ -836,10 +837,11 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       await enqueueDirsUpTo(pkgDir);
 
       // @ts-ignore — preamble symbol.
-      for await (const entry of streamTarEntries(asyncIter, onSkip)) {
-        // entry.name is already canonicalized (no "."/".." segments) by
-        // the tar parser, so joining under the canonical pkgDir yields a
-        // canonical path the w7-frame writer accepts.
+      for await (const entry of streamPackageEntries(asyncIter, onSkip)) {
+        // entry.name is canonicalized (no "."/".." segments) and stripped of
+        // the archive's single top-level directory by streamPackageEntries,
+        // so joining under the canonical pkgDir yields a canonical path the
+        // w7-frame writer accepts.
         const filePath = pkgDir + '/' + entry.name;
         // Stage this file's parent-dir chain before the file itself.
         await enqueueDirsUpTo(filePath.substring(0, filePath.lastIndexOf('/')));

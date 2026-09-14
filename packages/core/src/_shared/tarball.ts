@@ -2,7 +2,8 @@
  * Tarball extraction for streaming installers and buffered archive consumers.
  *
  * The streaming primitives it walks with (`parseTarHeader`, `streamTarEntries`,
- * `readableStreamToAsyncIterable`) live in `./tarball-stream.ts` — a
+ * `streamPackageEntries`, `readableStreamToAsyncIterable`) live in
+ * `./tarball-stream.ts` — a
  * dependency-free leaf, because `bundle-facet-workers.mjs` esbuilds that file
  * into a string the loader pool injects into dynamic workers, where an import
  * would not resolve.
@@ -12,8 +13,9 @@
  */
 
 import {
-  streamTarEntries,
+  streamPackageEntries,
   readableStreamToAsyncIterable,
+  streamTarEntries,
 } from './tarball-stream.js';
 
 export interface TarballWriteTarget {
@@ -30,13 +32,15 @@ export interface TarballWriteResult {
 }
 
 const PACKAGE_MANIFEST = 'package.json';
-
 /**
  * Stream a gzipped npm archive into a package directory. Entry names are
- * already canonical and prefix-stripped by streamTarEntries. Hold only the
- * current entry and the manifest; write the manifest last so a failed install
- * is not mistaken for a complete package on retry. A second manifest in one
- * archive is a malformed package, not an overwrite. Filesystem failures reject.
+ * canonical and made package-relative by streamPackageEntries, which learns
+ * the archive's single top-level directory (any name — npm permits more
+ * than `package/`) and refuses an archive that mixes roots. Hold only the
+ * current entry and the manifest; write the manifest last so a failed
+ * install is not mistaken for a complete package on retry. A second
+ * manifest in one archive is a malformed package, not an overwrite.
+ * Filesystem failures reject.
  */
 export async function writeTarballStream(
   body: ReadableStream<Uint8Array>,
@@ -50,7 +54,7 @@ export async function writeTarballStream(
   let files = 0;
   let bytes = 0;
   let manifest: Uint8Array | null = null;
-  const entries = streamTarEntries(
+  const entries = streamPackageEntries(
     readableStreamToAsyncIterable(body.pipeThrough(new DecompressionStream('gzip'))),
   );
   for await (const entry of entries) {

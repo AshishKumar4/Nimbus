@@ -9,7 +9,7 @@
 // "successful" install.
 
 import assert from 'node:assert/strict';
-import { canonicalTarName, streamTarEntries, parseTarHeader } from '../../packages/core/src/_shared/tarball-stream.ts';
+import { canonicalTarName, streamPackageEntries, streamTarEntries, parseTarHeader } from '../../packages/core/src/_shared/tarball-stream.ts';
 
 // ── canonicalTarName: collapse ./ and .. ; reject root escapes ──────────
 assert.equal(canonicalTarName('dist/index.js'), 'dist/index.js');
@@ -67,10 +67,17 @@ function buildTar(entries) {
   return out;
 }
 
-// Sanity: parseTarHeader canonicalizes on its own.
+// Sanity: parseTarHeader canonicalizes on its own — the top-level directory
+// stays on the name here; package-relative stripping is streamPackageEntries'
+// job, because the prefix is per-archive, not the fixed 'package' literal.
 {
   const h = parseTarHeader(tarHeader('package/./dist/index.js', 3));
-  assert.equal(h.name, 'dist/index.js', 'parseTarHeader strips package/ and collapses ./');
+  assert.equal(h.name, 'package/dist/index.js', 'parseTarHeader keeps the prefix and collapses ./');
+}
+
+{
+  const h = parseTarHeader(tarHeader('node/./LICENSE', 3));
+  assert.equal(h.name, 'node/LICENSE', 'a non-package root passes through untouched');
 }
 
 const tar = buildTar([
@@ -80,7 +87,14 @@ const tar = buildTar([
 async function* once(b) { yield b; }
 const names = [];
 for await (const e of streamTarEntries(once(tar))) names.push(e.name);
-assert.deepEqual(names.sort(), ['dist/cli.js', 'package.json'], 'entries are canonical, no "./" survives');
-for (const n of names) assert.ok(!n.includes('/./') && !n.startsWith('./'), `canonical: ${n}`);
+assert.deepEqual(names.sort(), ['package/dist/cli.js', 'package/package.json'],
+  'raw entries are canonical and keep their archive prefix');
+
+// streamPackageEntries learns 'package' from the first entry and strips it.
+const rel = [];
+for await (const e of streamPackageEntries(once(tar))) rel.push(e.name);
+assert.deepEqual(rel.sort(), ['dist/cli.js', 'package.json'],
+  'package entries come out package-relative, no "./" survives');
+for (const n of rel) assert.ok(!n.includes('/./') && !n.startsWith('./'), `canonical: ${n}`);
 
 console.log('npm-tar-entry-canonical: ok');

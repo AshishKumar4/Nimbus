@@ -8,9 +8,17 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-function archive(entries) {
+function archive(entries, prefix = 'package') {
   return gzipSync(createTar(entries.map(([name, data]) => ({
-    path: `package/${name}`, type: 'file', mode: 0o644, mtime: 0,
+    path: `${prefix}/${name}`, type: 'file', mode: 0o644, mtime: 0,
+    data: typeof data === 'string' ? new TextEncoder().encode(data) : data,
+  }))));
+}
+// Raw entry names verbatim — for archives whose shape the helper can't say,
+// like entries under two different top-level directories.
+function rawArchive(paths) {
+  return gzipSync(createTar(paths.map(([name, data]) => ({
+    path: name, type: 'file', mode: 0o644, mtime: 0,
     data: typeof data === 'string' ? new TextEncoder().encode(data) : data,
   }))));
 }
@@ -59,6 +67,39 @@ try {
     /two package\.json entries/,
   );
   assert.equal(vfs.exists('/dup/package.json'), false, 'a rejected duplicate leaves no manifest');
+  // npm permits ANY single top-level directory, not just 'package':
+  // @types/node@26 tarballs wrap their files in 'node/'. The learned prefix
+  // strips the same way and <prefix>/package.json is the root manifest.
+  const nodeResult = await writeTarballStream(
+    new Blob([archive(entries, 'node')]).stream(), '/node-pkg', target);
+  assert.deepEqual(nodeResult, { files: 3, bytes: manifest.length + 'console.log(42);'.length + 3 });
+  assert.equal(vfs.readFileString('/node-pkg/package.json'), manifest,
+    'the manifest is <prefix>/package.json whatever the prefix is named');
+  assert.equal(vfs.readFileString('/node-pkg/cli.js'), 'console.log(42);');
+
+  // Entries under two different top-level directories are not a package —
+  // refuse them instead of extracting a sibling of the root.
+  await assert.rejects(
+    writeTarballStream(new Blob([rawArchive([
+      ['node/package.json', manifest],
+      ['package/extra.js', 'x'],
+    ])]).stream(), '/mixed', target),
+    /not single-rooted/,
+  );
+  assert.equal(vfs.exists('/mixed/package.json'), false,
+    'a mixed-root archive leaves the manifest unwritten');
+
+  // A second root manifest is still refused under a non-package prefix too.
+  await assert.rejects(
+    writeTarballStream(
+      new Blob([archive([['package.json', manifest], ['cli.js', 'x'], ['package.json', manifest]], 'node')]).stream(),
+      '/dup-node',
+      target,
+    ),
+    /two package\.json entries/,
+  );
+  assert.equal(vfs.exists('/dup-node/package.json'), false);
+
   vfs.writeFile('/blocked', 'not a directory');
   await assert.rejects(writeTarballStream(new Blob([archive(entries)]).stream(), '/blocked', target));
 

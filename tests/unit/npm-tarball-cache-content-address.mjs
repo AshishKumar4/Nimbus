@@ -28,6 +28,7 @@ import {
 } from '../../packages/worker/src/npm/r2-cache.ts';
 import {
   readableStreamToAsyncIterable,
+  streamPackageEntries,
   streamTarEntries,
 } from '../../packages/core/src/_shared/tarball-stream.ts';
 import {
@@ -35,6 +36,7 @@ import {
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
 
+globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
 globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
