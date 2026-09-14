@@ -1046,6 +1046,8 @@ owner (`session/programmatic.ts`, one implementation behind
   ephemeral duplicate): `port N is served by a different process (owner X)`;
 - reserves that port for that owner if unreserved — a conflict if another
   owner holds it, or if the owner already holds a different port;
+- adopts an ownerless exposure previously written by `ports.list` in place,
+  setting owner/kind without changing its existing capability;
 - stores the visibility and the optional `name` on the reservation, adopts
   the live capability, mints one when public and none exists, and binds the
   public directory (with the name);

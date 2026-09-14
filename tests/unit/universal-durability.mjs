@@ -89,7 +89,7 @@ const routesEntry = build.outputs.find((o) => o.path.endsWith('/routes.js'));
 const programmaticEntry = build.outputs.find((o) => o.path.endsWith('/programmatic.js'));
 const { routeToSessionPort, routeToSessionApp } = await import(pathToFileURL(routesEntry.path).href);
 const {
-  rpcExposeApp, rpcExposePort, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess,
+  rpcExposeApp, rpcExposePort, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess, rpcListPorts,
 } = await import(pathToFileURL(programmaticEntry.path).href);
 
 const SID = 'nimble-otter-4271';
@@ -721,6 +721,17 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 }
 
 // ── 11. apps.list shapes ────────────────────────────────────────────────────
+{
+  const { fm, self, ctx } = setup();
+  const started = await fm.spawnNode(SERVER, { argv: ['listed-first.js'], port: 20860 });
+  const listed = (await rpcListPorts(self)).find((entry) => entry.port === 20860);
+  assert.equal((await readPortReservation(ctx, 20860)).owner, null, 'listPorts creates only an unowned exposure');
+  const exposed = await rpcExposeApp(self, { pid: started.pid }, { visibility: 'public', name: 'listed-first' });
+  assert.equal(exposed.capability, listed.capability, 'list then expose keeps the URL already handed out');
+  assert.equal((await readPortReservation(ctx, 20860)).owner, (await fm.residentIdentity(started.pid)).owner);
+  assert.equal((await readPortReservation(ctx, 20860)).kind, 'derived');
+  await assert.rejects(reservePort(ctx, { owner: 'foreign-owner', preferredPort: 20860, occupiedPorts: NONE }), /held by another owner/);
+}
 {
   const { self, portRegistry, ctx } = setup();
   portRegistry.register(20840, 999);

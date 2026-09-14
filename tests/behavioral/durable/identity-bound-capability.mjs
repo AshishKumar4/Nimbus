@@ -92,7 +92,10 @@ try {
   a.check('nothing is reserved before expose', !before.some((app) => app.port === PORT && app.capability !== null),
     JSON.stringify(before));
 
+  const listedPort = (await box.ports.list()).find((entry) => entry.port === PORT);
   const exposed = await box.apps.expose(PORT, { visibility: 'public', name: 'bound-app' });
+  a.check('listPorts then expose adopts the unowned exposure without changing its capability',
+    listedPort?.capability === exposed.capability, JSON.stringify({ listed: listedPort?.capability, exposed: exposed.capability }));
   a.check('apps.expose answers the derived owner', /^auto:[a-f0-9]{24}$/.test(exposed.owner), JSON.stringify(exposed));
   a.check('apps.expose mints a 24-hex capability', /^[a-f0-9]{24}$/.test(exposed.capability ?? ''), JSON.stringify(exposed));
   a.check('apps.expose reports public', exposed.visibility === 'public');

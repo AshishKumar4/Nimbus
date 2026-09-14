@@ -189,16 +189,21 @@ export async function reservePort(
   const claim = async (txn: PortReservationTransaction): Promise<number> => {
     const records = await txn.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
     const taken = new Set<number>(input.occupiedPorts);
+    const unowned = new Map<number, z.infer<typeof PortRecordSchema>>();
     let held: { port: number; stored: z.infer<typeof PortRecordSchema> | null } | null = null;
     for (const [storedKey, value] of records) {
       const port = Number(storedKey.slice(PORT_CAPABILITY_KEY_PREFIX.length));
       if (!Number.isInteger(port)) continue;
-      taken.add(port);
       const parsed = PortRecordSchema.safeParse(value);
+      // listPorts may already have persisted the live capability without an
+      // owner. That is an exposure to adopt, not somebody else's reservation.
+      if (parsed.success && parsed.data.owner === null) unowned.set(port, parsed.data);
+      else taken.add(port);
       if (!parsed.success) continue;
       if (parsed.data.owner === input.owner) {
         held = { port, stored: parsed.data };
-      } else if (input.name !== undefined && parsed.data.name === input.name) {
+      } else if (input.name !== undefined && parsed.data.name === input.name
+        && !(parsed.data.owner === null && port === input.preferredPort)) {
         throw conflict(`name '${input.name}' is already taken by another app on port ${port}`);
       }
     }
@@ -234,12 +239,14 @@ export async function reservePort(
       while (port <= RESERVATION_LAST_PORT && taken.has(port)) port += 1;
       if (port > RESERVATION_LAST_PORT) throw conflict('no free port left to reserve');
     }
+    const exposure = unowned.get(port);
+    const name = input.name ?? exposure?.name;
     await txn.put(portRecordKey(port), {
       owner: input.owner,
       kind: input.kind ?? 'explicit',
-      capability: input.capability ?? null,
-      visibility: input.visibility ?? 'scoped',
-      ...(input.name !== undefined ? { name: input.name } : {}),
+      capability: exposure?.capability ?? input.capability ?? null,
+      visibility: input.visibility ?? exposure?.visibility ?? 'scoped',
+      ...(name !== undefined ? { name } : {}),
     });
     return port;
   };
