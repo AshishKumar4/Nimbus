@@ -186,6 +186,7 @@ export declare class SqliteVFS {
     private _usedBytes;
     private _revision;
     private _pathRevisions;
+    private transactionPublication;
     private readonly _epoch;
     private _invalidations;
     private _invalidationBytes;
@@ -615,6 +616,24 @@ export declare class SqliteVFS {
     private _estimateBatchBytes;
     private errorMessage;
     private isSqliteNoMem;
+    /**
+     * Participate in an embedder's synchronous transaction: VFS writes and SQL
+     * issued by callback commit together; on rollback the in-memory mirror
+     * returns to the committed state before the error is rethrown with cause.
+     *
+     * This method MUST own the outermost transaction on this VFS's SQL host;
+     * use it instead of wrapping VFS calls in storage.transactionSync. Do not
+     * nest it, return a Promise/thenable, or start asynchronous work inside it.
+     * The callback may read its writes. Revisions and events publish only on
+     * commit, once for the combined mutation. Existing credential checks apply.
+     *
+     * Inodes are an always-resident cache (absence means ENOENT), so rollback
+     * discards cached chunks and rebuilds metadata/children/counters from SQL.
+     * No inode snapshot or undo log is retained. Recovery failure is surfaced
+     * with both errors; the embedder must discard this VFS in that case.
+     */
+    withTransaction<T>(callback: () => T): T;
+    private emitMutation;
     private transactionSync;
     private executeTransactionPlan;
     private executeMeasuredTransaction;

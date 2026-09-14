@@ -306,10 +306,9 @@ export class SqliteVFS {
     _lruShrinkRefcount = 0;
     // ── Running counters for O(1) getStats() (B3 / AUDIT M10 / M-S8) ──
     // Replaces the triple scan of this.inodes on every /api/stats poll.
-    // Bootstrapped in loadInodes(); maintained at every mutator entry:
-    //   mkdir/rmdir/writeFile/unlink/writeBatch (rename is a no-op —
-    //   same inode, new path). Invariant: these match a fresh O(N)
-    //   walk of this.inodes. Unit-tested in the A5/B3 runtime tests.
+    // Bootstrapped in loadInodes(); maintained at committed publication by
+    // mkdir, batch writes/deletes and rename. These match a fresh O(N)
+    // walk of this.inodes; rollback reloads them from the durable rows.
     _totalFiles = 0;
     _totalDirs = 0;
     _usedBytes = 0;
@@ -323,6 +322,7 @@ export class SqliteVFS {
     // so unrelated writes no longer invalidate them. In-memory only — the
     // clock resets with the DO lifetime, exactly like the caches keyed on it.
     _pathRevisions = new Map();
+    transactionPublication = null;
     // ── Invalidation log (facet cache coherence) ──────────────────────────
     // A facet's resident set is a cache of this VFS, and it learns what to
     // drop by asking `invalidatedSince(cursor)` for the delta. _pathRevisions
@@ -1255,6 +1255,11 @@ export class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     bumpRevision(paths) {
+        if (this.transactionPublication) {
+            for (const path of paths)
+                this.transactionPublication.paths.add(path);
+            return;
+        }
         const rev = ++this._revision;
         for (const path of paths) {
             let p = normalizeVfsPath(path);
@@ -1455,7 +1460,7 @@ export class SqliteVFS {
         this._addToChildrenIndex(pp, path);
         this._totalDirs++; // B3
         this.bumpRevision([path]);
-        this.events.emit('addDir', path);
+        this.emitMutation('addDir', path);
     }
     writeFile(path, content, options, cred, onCommit) {
         this.assertMutationsAllowed([path]);
@@ -2224,11 +2229,11 @@ export class SqliteVFS {
         }
         const atime = atimeMs !== null && Number.isFinite(atimeMs) ? Math.trunc(atimeMs) : this.now();
         const mtime = mtimeMs !== null && Number.isFinite(mtimeMs) ? Math.trunc(mtimeMs) : this.now();
+        this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, inode.path);
         inode.atime = atime;
         inode.mtime = mtime;
-        this.sql.exec("UPDATE inodes SET atime = ?, mtime = ? WHERE path = ?", atime, mtime, inode.path);
         this.bumpRevision([inode.path]);
-        this.events.emit('change', inode.path);
+        this.emitMutation('change', inode.path);
     }
     /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
@@ -2266,10 +2271,10 @@ export class SqliteVFS {
         }
         this.assertMutationsAllowed([inode.path]);
         const full = inodeTypeBits(inode.kind) | (mode & 0o7777);
-        inode.mode = full;
         this.sql.exec("UPDATE inodes SET mode = ? WHERE path = ?", full, inode.path);
+        inode.mode = full;
         this.bumpRevision([inode.path]);
-        this.events.emit('change', inode.path);
+        this.emitMutation('change', inode.path);
     }
     chown(path, uid, gid, cred, followLeaf) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf });
@@ -2291,13 +2296,15 @@ export class SqliteVFS {
         if (gid !== null && gid === inode.gid && cred.uid !== 0 && !owner)
             throw vfsError('EPERM', resolved.path);
         this.assertMutationsAllowed([inode.path]);
-        inode.uid = uid ?? inode.uid;
-        inode.gid = gid ?? inode.gid;
-        if (cred.uid !== 0)
-            inode.mode &= ~0o6000;
-        this.sql.exec('UPDATE inodes SET uid = ?, gid = ?, mode = ? WHERE path = ?', inode.uid, inode.gid, inode.mode, inode.path);
+        const nextUid = uid ?? inode.uid;
+        const nextGid = gid ?? inode.gid;
+        const nextMode = cred.uid === 0 ? inode.mode : inode.mode & ~0o6000;
+        this.sql.exec('UPDATE inodes SET uid = ?, gid = ?, mode = ? WHERE path = ?', nextUid, nextGid, nextMode, inode.path);
+        inode.uid = nextUid;
+        inode.gid = nextGid;
+        inode.mode = nextMode;
         this.bumpRevision([inode.path]);
-        this.events.emit('change', inode.path);
+        this.emitMutation('change', inode.path);
     }
     /**
      * Enumerate the filesystem, one bounded page at a time.
@@ -2698,7 +2705,7 @@ export class SqliteVFS {
             }
         }
         this.bumpRevision([...touchedPaths]);
-        this.events.emit('rename', newPath, oldPath);
+        this.emitMutation('rename', newPath, oldPath);
         this.runContentMaintenanceSafely(1);
     }
     /**
@@ -3347,6 +3354,76 @@ export class SqliteVFS {
         }
         return this.errorMessage(error).toUpperCase().includes('SQLITE_NOMEM');
     }
+    /**
+     * Participate in an embedder's synchronous transaction: VFS writes and SQL
+     * issued by callback commit together; on rollback the in-memory mirror
+     * returns to the committed state before the error is rethrown with cause.
+     *
+     * This method MUST own the outermost transaction on this VFS's SQL host;
+     * use it instead of wrapping VFS calls in storage.transactionSync. Do not
+     * nest it, return a Promise/thenable, or start asynchronous work inside it.
+     * The callback may read its writes. Revisions and events publish only on
+     * commit, once for the combined mutation. Existing credential checks apply.
+     *
+     * Inodes are an always-resident cache (absence means ENOENT), so rollback
+     * discards cached chunks and rebuilds metadata/children/counters from SQL.
+     * No inode snapshot or undo log is retained. Recovery failure is surfaced
+     * with both errors; the embedder must discard this VFS in that case.
+     */
+    withTransaction(callback) {
+        if (this.transactionPublication !== null) {
+            throw new Error('[sqlite-vfs] nested embedder transactions are not supported');
+        }
+        const storage = this.ctx.storage;
+        if (!storage)
+            throw new Error('[sqlite-vfs] atomic storage operation requires transactionSync');
+        const publication = {
+            paths: new Set(),
+            events: new Array(),
+        };
+        const maintenancePending = this.maintenancePending;
+        this.transactionPublication = publication;
+        let result;
+        try {
+            result = storage.transactionSync(() => {
+                const value = callback();
+                if (value !== null && (typeof value === 'object' || typeof value === 'function')
+                    && 'then' in value && typeof value.then === 'function') {
+                    throw new TypeError('[sqlite-vfs] transaction callback must be synchronous');
+                }
+                return value;
+            });
+        }
+        catch (error) {
+            this.evictAll();
+            this.maintenancePending = maintenancePending;
+            try {
+                this.loadInodes();
+            }
+            catch (reloadError) {
+                throw new AggregateError([error, reloadError], '[sqlite-vfs] transaction rollback reload failed', { cause: error });
+            }
+            throw new Error('[sqlite-vfs] embedder transaction rolled back', { cause: error });
+        }
+        finally {
+            this.transactionPublication = null;
+        }
+        if (publication.paths.size > 0)
+            this.bumpRevision([...publication.paths]);
+        for (const event of publication.events) {
+            this.events.emit(event.type, event.path, event.oldPath);
+        }
+        this.runContentMaintenanceSafely(1);
+        return result;
+    }
+    emitMutation(type, path, oldPath) {
+        if (this.transactionPublication) {
+            this.transactionPublication.events.push({ type, path, oldPath });
+        }
+        else {
+            this.events.emit(type, path, oldPath);
+        }
+    }
     transactionSync(callback) {
         if (!this.ctx?.storage?.transactionSync) {
             throw new Error('[sqlite-vfs] atomic storage operation requires transactionSync');
@@ -3602,6 +3679,8 @@ export class SqliteVFS {
         return { transactions };
     }
     runContentMaintenanceSafely(maxTransactions, force = false) {
+        if (this.transactionPublication)
+            return;
         if (!force && !this.maintenancePending)
             return;
         const startedAt = performance.now();
@@ -3907,10 +3986,10 @@ export class SqliteVFS {
         }
         // 5. Events observe the already-published metadata and revision.
         for (const inode of deletedInodes) {
-            this.events.emit(inode.isDir ? 'unlinkDir' : 'unlink', inode.path);
+            this.emitMutation(inode.isDir ? 'unlinkDir' : 'unlink', inode.path);
         }
         for (const entry of plan.inodes) {
-            this.events.emit(entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add', entry.path);
+            this.emitMutation(entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add', entry.path);
         }
         this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
         return { inodes: inodeCount, chunks: chunkCount };
