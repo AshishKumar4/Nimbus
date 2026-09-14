@@ -57,21 +57,37 @@ const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
 const PortVisibilitySchema = z.enum(['scoped', 'public']);
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
+/**
+ * The optional name alias a reservation may carry: one DNS label, so it can
+ * stand where the port stands in a preview host (`<name>--<sid>`). Never
+ * purely numeric — a numeric middle label IS a port — and never 24 hex, the
+ * shape a capability label has.
+ */
+export const APP_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+export function isValidAppName(name: string): boolean {
+  return APP_NAME_RE.test(name) && !name.includes('--')
+    && !/^\d+$/.test(name) && !/^[a-f0-9]{24}$/.test(name);
+}
+const AppNameSchema = z.string().refine(isValidAppName, 'app name must be a DNS label that is neither numeric nor 24 hex');
 export const PortRecordSchema = z.object({
   capability: PortCapabilitySchema.nullable(),
   owner: z.string().nullable(),
   visibility: PortVisibilitySchema.optional(),
+  name: AppNameSchema.optional(),
 });
 export interface PortExposure {
   readonly capability: string;
   readonly owner: string | null;
   readonly visibility: PortVisibility;
+  readonly name?: string;
 }
 /** The per-port record as stored: a bare reservation has no capability yet. */
 export interface PortReservation {
   readonly owner: string | null;
   readonly capability: string | null;
   readonly visibility: PortVisibility;
+  /** The reservation's name alias, when one was given at expose time. */
+  readonly name?: string;
 }
 const RESERVATION_FIRST_PORT = 20000;
 const RESERVATION_LAST_PORT = 65535;
@@ -94,8 +110,49 @@ export async function readPortReservation(ctx: { storage: PortReservationTransac
 export async function readPortExposure(ctx: PortCapabilityHost['ctx'], port: number): Promise<PortExposure | null> {
   const stored = await readPortReservation(ctx, port);
   return stored !== null && stored.capability !== null
-    ? { capability: stored.capability, owner: stored.owner, visibility: stored.visibility }
+    ? {
+        capability: stored.capability, owner: stored.owner, visibility: stored.visibility,
+        ...(stored.name !== undefined ? { name: stored.name } : {}),
+      }
     : null;
+}
+
+/** Every stored port record, keyed by port — the scan `apps.list` and the name lookups read. */
+export async function listPortReservations(
+  ctx: { storage: PortReservationTransaction },
+): Promise<Map<number, PortReservation>> {
+  const rows = await ctx.storage.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
+  const out = new Map<number, PortReservation>();
+  for (const [key, value] of rows) {
+    const port = Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length));
+    const parsed = PortRecordSchema.safeParse(value);
+    if (!Number.isInteger(port) || !parsed.success) continue;
+    out.set(port, { ...parsed.data, visibility: parsed.data.visibility ?? 'scoped' });
+  }
+  return out;
+}
+
+/** The port a name alias resolves to inside this session, or null. */
+export async function readPortReservationByName(
+  ctx: { storage: PortReservationTransaction },
+  name: string,
+): Promise<{ port: number; reservation: PortReservation } | null> {
+  if (!isValidAppName(name)) return null;
+  for (const [port, reservation] of await listPortReservations(ctx)) {
+    if (reservation.name === name) return { port, reservation };
+  }
+  return null;
+}
+
+/** The port an owner holds, or null when the owner has no reservation. */
+export async function readPortReservationByOwner(
+  ctx: { storage: PortReservationTransaction },
+  owner: string,
+): Promise<{ port: number; reservation: PortReservation } | null> {
+  for (const [port, reservation] of await listPortReservations(ctx)) {
+    if (reservation.owner === owner) return { port, reservation };
+  }
+  return null;
 }
 /**
  * Hold a port for `owner` across instances. The owner's existing port is
@@ -118,8 +175,13 @@ export async function reservePort(
     occupiedPorts: ReadonlySet<number>;
     capability?: string;
     visibility?: PortVisibility;
+    /** A name alias for the reservation — unique per session, DNS-label-safe. */
+    name?: string;
   },
 ): Promise<number> {
+  if (input.name !== undefined && !isValidAppName(input.name)) {
+    throw conflict(`'${input.name}' is not a valid app name (one DNS label, not numeric, not 24 hex)`);
+  }
   const claim = async (txn: PortReservationTransaction): Promise<number> => {
     const records = await txn.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
     const taken = new Set<number>(input.occupiedPorts);
@@ -129,8 +191,11 @@ export async function reservePort(
       if (!Number.isInteger(port)) continue;
       taken.add(port);
       const parsed = PortRecordSchema.safeParse(value);
-      if (parsed.success && parsed.data.owner === input.owner) {
+      if (!parsed.success) continue;
+      if (parsed.data.owner === input.owner) {
         held = { port, stored: parsed.data };
+      } else if (input.name !== undefined && parsed.data.name === input.name) {
+        throw conflict(`name '${input.name}' is already taken by another app on port ${port}`);
       }
     }
     const preferred = input.preferredPort;
@@ -138,13 +203,18 @@ export async function reservePort(
       if (preferred !== undefined && preferred !== held.port) {
         throw conflict(`owner already holds port ${held.port}, cannot reserve ${preferred}`);
       }
-      // Upgrade in place: adopt a caller-supplied capability the row lacks
-      // and/or apply the caller's visibility — never rotate an existing one.
+      // Upgrade in place: adopt a caller-supplied capability the row lacks,
+      // apply the caller's visibility and/or name — never rotate an existing
+      // capability.
       const stored = held.stored;
       const capability = stored?.capability ?? input.capability ?? null;
       const visibility = input.visibility ?? stored?.visibility ?? 'scoped';
-      if (stored === null || capability !== stored.capability || visibility !== (stored.visibility ?? 'scoped')) {
-        await txn.put(portRecordKey(held.port), { owner: input.owner, capability, visibility });
+      const name = input.name ?? stored?.name;
+      if (stored === null || capability !== stored.capability
+        || visibility !== (stored.visibility ?? 'scoped') || name !== stored.name) {
+        await txn.put(portRecordKey(held.port), {
+          owner: input.owner, capability, visibility, ...(name !== undefined ? { name } : {}),
+        });
       }
       return held.port;
     }
@@ -164,6 +234,7 @@ export async function reservePort(
       owner: input.owner,
       capability: input.capability ?? null,
       visibility: input.visibility ?? 'scoped',
+      ...(input.name !== undefined ? { name: input.name } : {}),
     });
     return port;
   };
@@ -245,8 +316,35 @@ export async function persistPortCapability(
       ...(parsed.success && parsed.data.visibility !== undefined
         ? { visibility: parsed.data.visibility }
         : {}),
+      ...(parsed.success && parsed.data.name !== undefined
+        ? { name: parsed.data.name }
+        : {}),
     });
   });
+}
+
+/**
+ * Replace the port's capability with a freshly minted one, in place: owner,
+ * visibility and name stay, every URL built on the old value stops
+ * resolving. Answers the new capability, or null when no record exists —
+ * there is nothing to rotate on a port nobody has reserved or exposed.
+ */
+export async function rotatePortCapability(
+  self: PortCapabilityHost,
+  port: number,
+  capability: string,
+): Promise<string | null> {
+  const rotated = await self.ctx.storage.transaction(async (txn) => {
+    const parsed = PortRecordSchema.safeParse(await txn.get(portRecordKey(port)));
+    if (!parsed.success) return null;
+    await txn.put(portRecordKey(port), {
+      ...parsed.data,
+      capability: PortCapabilitySchema.parse(capability),
+    });
+    return capability;
+  });
+  if (rotated !== null) self.portRegistry.restoreCapability(Number(port), rotated);
+  return rotated;
 }
 
 /**
@@ -263,6 +361,7 @@ export async function clearPortCapability(self: PortCapabilityHost, port: number
         owner: record.owner,
         capability: null,
         ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
+        ...(record.name !== undefined ? { name: record.name } : {}),
       });
       return;
     }

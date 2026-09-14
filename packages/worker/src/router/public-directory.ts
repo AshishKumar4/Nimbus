@@ -19,6 +19,9 @@ export interface PublicDirectoryEntry {
   readonly tenantSegment: string;
   readonly sid: string;
   readonly port: number;
+  /** The reservation's name alias, when the capability was bound with one —
+   *  what the `<cap>--<name>--<sid>` host form is verified against. */
+  readonly name?: string;
 }
 
 function rowKey(capability: string): string {
@@ -35,7 +38,7 @@ export class PublicDirectoryStore {
 
   async bind(
     capability: string,
-    entry: { tenantSegment: string; sid: string; port: number },
+    entry: { tenantSegment: string; sid: string; port: number; name?: string },
   ): Promise<void> {
     if (!/^[a-f0-9]{24}$/.test(capability)) {
       throw new Error('NimbusPublicDirectory.bind: capability must be 24 lowercase hex');
@@ -45,10 +48,14 @@ export class PublicDirectoryStore {
       || !Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535) {
       throw new Error('NimbusPublicDirectory.bind: entry needs tenantSegment, sid, and a real port');
     }
+    if (entry.name !== undefined && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(entry.name)) {
+      throw new Error('NimbusPublicDirectory.bind: name must be one DNS label');
+    }
     await this.ctx.storage.put(rowKey(capability), {
       tenantSegment: entry.tenantSegment,
       sid: entry.sid,
       port: entry.port,
+      ...(entry.name !== undefined ? { name: entry.name } : {}),
     });
   }
 
@@ -123,6 +130,7 @@ export async function bindPublicPortCapability(
   host: { env?: unknown; ctx?: { id?: { name?: unknown } }; tenantSegment?: string; sessionId?: string },
   capability: string,
   port: number,
+  name?: string,
 ): Promise<void> {
   const identity = sessionIdentity(host);
   if (identity === null) return;
@@ -135,7 +143,10 @@ export async function bindPublicPortCapability(
         + 'Add the binding and the NimbusPublicDirectory migration to wrangler.jsonc.',
     );
   }
-  await stub.bind(capability, { tenantSegment: identity.tenantSegment, sid: identity.sid, port });
+  await stub.bind(capability, {
+    tenantSegment: identity.tenantSegment, sid: identity.sid, port,
+    ...(name !== undefined ? { name } : {}),
+  });
 }
 
 /** Retire a public port's capability from the routing directory. */
