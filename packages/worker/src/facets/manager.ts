@@ -2234,22 +2234,81 @@ export function greedyAddMainEntries(
     }
   }
 
-  try {
-    for (const pkg of vfs.readdir(nmDir)) {
-      if (pkg.type !== 'directory') continue;
-      const pkgDir = nmDir + '/' + pkg.name;
-      if (pkg.name.startsWith('@')) {
-        try {
-          for (const sub of vfs.readdir(pkgDir)) {
-            if (sub.type === 'directory') addPkgEntry(pkgDir + '/' + sub.name);
-          }
-        } catch { /* ignore */ }
-      } else {
-        addPkgEntry(pkgDir);
-      }
-    }
-  } catch { /* ignore */ }
+  for (const pkgDir of speculativePackageDirs(vfs, cwdStripped, bundle)) addPkgEntry(pkgDir);
   return { added };
+}
+
+/**
+ * The packages a computed `require(name)` inside the program can plausibly
+ * name: the project root's own runtime `dependencies`, plus every package
+ * ONE `dependencies` hop from a package that already owns a file in the
+ * static closure. Never devDependencies, never a second hop.
+ *
+ * Unbounded, the greedy oversample read every installed package's main:
+ * for `node -e "import('got')"` in got's repo — a one-file static closure —
+ * that was 1,526 files / 10.9 MB from 706 packages, which every later pass
+ * re-scanned and esbuild-wasm transformed, and the exec path's 20 s bundle
+ * deadline fired on a program that reads none of it. A bound that followed
+ * dependency edges from the project's devDependencies reached all 772 of
+ * them (measured), because a library repo's dev toolchain reaches the whole
+ * tree. Computed requires almost always target a declared runtime
+ * dependency of the package doing the requiring, so the bound is one hop
+ * over `dependencies` only. Directories, sorted for a stable bundle.
+ */
+export function speculativePackageDirs(
+  vfs: CredentialedVfs,
+  cwdStripped: string,
+  bundle: Record<string, string | Uint8Array>,
+): string[] {
+  const runtimeDeps = (pkgJsonPath: string): string[] => {
+    try {
+      const meta = JSON.parse(vfs.readFileString(pkgJsonPath));
+      const names = new Set<string>();
+      for (const field of ['dependencies', 'optionalDependencies']) {
+        const deps = meta?.[field];
+        if (deps && typeof deps === 'object') for (const name of Object.keys(deps)) names.add(name);
+      }
+      return [...names];
+    } catch { return []; }
+  };
+  // The package that owns a bundle file: the last node_modules segment.
+  const ownerOf = (path: string): string | null => {
+    const idx = path.lastIndexOf('/node_modules/');
+    if (idx === -1) return null;
+    const segs = path.slice(idx + '/node_modules/'.length).split('/');
+    const name = segs[0]?.startsWith('@') ? segs.slice(0, 2).join('/') : segs[0];
+    return name ? path.slice(0, idx + '/node_modules/'.length) + name : null;
+  };
+  // Resolve a bare name the way require does from `fromDir`: the nearest
+  // node_modules up the tree that has it.
+  const resolveDir = (name: string, fromDir: string): string | null => {
+    let dir = fromDir;
+    for (;;) {
+      const candidate = dir + '/node_modules/' + name;
+      if (vfs.exists(candidate + '/package.json')) return candidate;
+      const idx = dir.lastIndexOf('/');
+      if (idx <= 0) return null;
+      dir = dir.slice(0, idx);
+    }
+  };
+  const reached = new Set<string>();
+  const hop = (fromDir: string): void => {
+    for (const name of runtimeDeps(fromDir + '/package.json')) {
+      const dir = resolveDir(name, fromDir);
+      if (dir !== null) reached.add(dir);
+    }
+  };
+  hop(cwdStripped);
+  const owners = new Set<string>();
+  for (const path of Object.keys(bundle)) {
+    const owner = ownerOf(path);
+    if (owner !== null) owners.add(owner);
+  }
+  for (const owner of owners) {
+    reached.add(owner);
+    hop(owner);
+  }
+  return [...reached].sort();
 }
 
 /**

@@ -205,6 +205,8 @@ const tsFiles = {
     'home/user/node_modules/left-pad/index.js': 2048,
   };
   const contents = {
+    // The oversample follows dependency edges: the project declares both.
+    'home/user/package.json': JSON.stringify({ name: 'app', dependencies: { typescript: '*', 'left-pad': '*' } }),
     'home/user/node_modules/typescript/package.json': JSON.stringify({ name: 'typescript', main: './lib/typescript.js' }),
     'home/user/node_modules/left-pad/package.json': JSON.stringify({ name: 'left-pad', main: 'index.js' }),
   };
