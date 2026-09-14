@@ -260,6 +260,7 @@ export function makeRubyRunnerFactory(deps: {
           startArgs: toRubyCallArgs(facetArgs),
           cwd,
           command: formatRubyCommand(binName, argv),
+          argv: [binName, ...argv],
         });
       } else {
         result = await dispatchRubyFacet(deps.facets, vfs, facetArgs, ctx.pid);
@@ -619,6 +620,7 @@ export interface RubyFacetResult {
  * no degraded version — it gets none, and says so.
  */
 export type RubyResidentStart = (spawn: {
+  argv: string[];
   /** VFS path of the interpreter. By path, not by value: it is 34.3 MiB. */
   wasmVfsPath: string;
   startArgs: RubyFacetCallArgs;

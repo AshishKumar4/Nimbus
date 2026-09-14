@@ -42,6 +42,8 @@ export function rubyResidentStart(facetMgr: FacetManager): RubyResidentStart {
     const command = args.command;
     const workerCode = buildRubySocketProcessWorker(buildRubyPreamble());
     const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
+      resident: { argv: args.argv, runtime: 'ruby' },
+      restart: args.startArgs.userEnv.NIMBUS_RESTART === 'on-failure' ? 'on-failure' : 'never',
       compatibilityFlags: ['nodejs_compat'],
       // By path, not by value: the image is 34.3 MiB — more than a single RPC
       // value may carry — so whichever host runs this process reads it itself.

@@ -45,6 +45,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
+import { rubyResidentStart } from '../../packages/worker/src/runtime/ruby-resident.ts';
 import {
   readPortReservation,
   readPortReservationByName,
@@ -408,6 +409,34 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 }
 
 // ── 8. name host parse matrix + router resolution ───────────────────────────
+{
+  const world = createFacetWorld(() => ({
+    async startProcess(args) { return { state: 'listening', port: 20820, stdout: args.userEnv.LABEL }; },
+    async handleHttpRequest() { return new Response('ruby resident'); },
+  }));
+  const first = setup({ world });
+  first.vfs.as(CRED_KERNEL).writeFile('ruby.wasm', new Uint8Array([0, 97, 115, 109]));
+  const argv = ['ruby', 'server.rb'];
+  const started = await rubyResidentStart(first.fm)({
+    argv, command: 'ruby server.rb', cwd: '/home/user', wasmVfsPath: 'ruby.wasm',
+    startArgs: { userCode: '# large boot input\n'.repeat(12000), rbArgv: ['server.rb'], progName: 'server.rb', cwd: '/home/user',
+      userEnv: { LABEL: 'original' }, fsSnapshot: { root: 'home/user', preopens: [], files: {}, dirs: [] } },
+  });
+  assert.ok(started.spawnedPid);
+  const row = await rowFor(first.ctx, started.spawnedPid);
+  assert.equal(row.owner, await deriveResidentOwner('/home/user', argv));
+  assert.equal(row.port, 20820);
+  assert.equal(row.recipe.startArgs, undefined, 'large runtime snapshot never becomes a DO storage value');
+  assert.ok(JSON.stringify(row).length < 2048, 'journal contains digests, not runtime boot payload');
+  assert.equal(await readPortReservation(first.ctx, 20820), null);
+  for (const name of world.liveFacets()) world.lose(name);
+  const next = setup({ storage: first.storage, world, disk: first.disk });
+  next.processes.setPidBase(PID_GEN_STRIDE);
+  assert.equal(await next.fm.ensureDurableAppOnPort(20820), 'started');
+  const recovered = (await journalRows(next.ctx)).find((candidate) => candidate.pid > PID_GEN_STRIDE);
+  assert.equal(recovered.owner, row.owner, 'runtime re-drive preserves derived identity');
+  assert.equal(recovered.port, 20820);
+}
 {
   const { fm, ctx, portRegistry, vfs } = setup();
   await reservePort(ctx, { owner: 'A', preferredPort: 20801, occupiedPorts: NONE, kind: 'derived' });

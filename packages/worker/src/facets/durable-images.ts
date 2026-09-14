@@ -67,6 +67,7 @@ export async function persistDurableWorkerImage(
     modules: Record<string, string | { wasm: ArrayBuffer }>;
     env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
+    startArgs?: unknown;
   },
 ): Promise<{ runner: string; application: string }> {
   const kernel = vfs.as(CRED_KERNEL);
@@ -77,6 +78,7 @@ export async function persistDurableWorkerImage(
     modules: payload.modules,
     env: payload.env ?? null,
     vfsWasmModules: payload.vfsWasmModules ?? null,
+    ...(payload.startArgs !== undefined ? { startArgs: payload.startArgs } : {}),
   });
   const application = await sha256Hex(applicationPayload);
   kernel.writeFile(imagePath(application), applicationPayload);
@@ -104,17 +106,19 @@ export async function resolveDurableWorkerImage(
     return null;
   }
   const runner = new TextDecoder().decode(runnerBytes);
-  const { modules = {}, env = null, vfsWasmModules = undefined } = JSON.parse(
+  const { modules = {}, env = null, vfsWasmModules = undefined, startArgs } = JSON.parse(
     new TextDecoder().decode(applicationBytes),
   ) as {
     modules?: Record<string, string>;
     env?: ResidentCodeSpec['env'] | null;
     vfsWasmModules?: Record<string, string> | null;
+    startArgs?: unknown;
   };
   return {
     env: env ?? null,
     globalOutbound: undefined,
     modules: { 'worker.js': runner, ...modules },
+    ...(startArgs !== undefined ? { startArgs } : {}),
     ...(vfsWasmModules !== null ? { vfsWasmModules } : {}),
   };
 }

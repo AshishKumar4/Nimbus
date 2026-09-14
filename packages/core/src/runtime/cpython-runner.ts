@@ -230,6 +230,7 @@ async function cpythonRunFacetFn(
  * that has none does not get a degraded version — it gets none, and says so.
  */
 export type CPythonResidentStart = (spawn: {
+  argv: string[];
   /** VFS path of the interpreter. By path, not by value: it is 10.6 MiB. */
   wasmVfsPath: string;
   startArgs: Record<string, unknown>;
@@ -474,7 +475,7 @@ export function makeCPythonRunnerFactory(deps: {
         const command = [binName, ...argv].map((part) =>
           (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
         const spawnResult = await deps.startResident(
-          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command });
+          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv] });
         if (spawnResult.stdout) ctx.stdout.write(spawnResult.stdout);
         if (spawnResult.stderr) ctx.stderr.write(spawnResult.stderr);
         return spawnResult.exitCode;

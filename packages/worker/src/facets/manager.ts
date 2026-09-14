@@ -3599,6 +3599,9 @@ export interface FacetManagerHooks {
 }
 
 export interface LongRunningWorkerSpawnOptions {
+  /** Interpreter residents share Node's atomic derived-owner claim. */
+  resident?: { runtime: 'ruby' | 'python'; argv: string[] };
+  restart?: ResidentRestartPolicy;
   port?: number;
   /** Inline modules: source text, or small wasm carried by value. */
   modules?: Record<string, string | { wasm: ArrayBuffer }>;
@@ -3645,6 +3648,7 @@ export interface ResidentSpawnOptions {
 /** The launch inputs a re-drive rebuilds a worker from: content digests and
  *  transport, never env or credentials — the embedder resolves those. */
 export interface WorkerRecipe {
+  resident?: LongRunningWorkerSpawnOptions['resident'];
   kind: 'worker';
   /** The durable application this process belongs to, keyed by the embedder. */
   owner: string;
@@ -3654,7 +3658,7 @@ export interface WorkerRecipe {
   cwd: string;
   compatibilityDate: string;
   compatibilityFlags: string[];
-  startArgs: unknown;
+  startArgs?: unknown;
 }
 interface NodeRecipe { kind: 'node'; code: string; opts: ResidentSpawnOptions }
 /**
@@ -3724,6 +3728,7 @@ function residentOwner(record: ResidentLaunchRecord): string | undefined {
 }
 /** What the embedder supplies for a re-driven worker launch. */
 export interface ResolvedWorkerLaunch {
+  startArgs?: unknown;
   /** Null is the absent answer — the same JSON the image blob carries. */
   env: ResidentCodeSpec['env'] | null;
   globalOutbound: ResidentCodeSpec['globalOutbound'];
@@ -5295,18 +5300,21 @@ export class FacetManager {
         // The embedder's resolver decides everything; only a self-owned
         // launch — nobody composed an embedder hook — falls through to the
         // session's image-store default.
-        const resolve = this.hooks.resolveWorkerLaunch ?? this.hooks.resolveWorkerLaunchFallback;
+        const resolve = recipe.resident
+          ? this.hooks.resolveWorkerLaunchFallback
+          : this.hooks.resolveWorkerLaunch ?? this.hooks.resolveWorkerLaunchFallback;
         if (!resolve) throw new Error('resident launch journal holds a worker launch but no resolveWorkerLaunch hook is composed');
         const resolved = await resolve(recipe);
         if (resolved === null) return undefined;
         const { 'worker.js': workerCode, ...modules } = resolved.modules;
         if (workerCode === undefined) throw new Error('resolved worker launch carries no worker.js module');
         return this._spawnWorker(workerCode, record.command, recipe.cwd, {
-          port: recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
-          compatibilityFlags: recipe.compatibilityFlags, startArgs: recipe.startArgs,
+          port: recipe.resident ? record.port : recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
+          compatibilityFlags: recipe.compatibilityFlags, startArgs: resolved.startArgs ?? recipe.startArgs,
+          resident: recipe.resident, restart: record.restart,
           env: resolved.env ?? undefined, globalOutbound: resolved.globalOutbound,
           vfsWasmModules: resolved.vfsWasmModules,
-          durable: { owner: recipe.owner, image: recipe.image },
+          durable: { owner: residentOwner(record) ?? recipe.owner, image: recipe.image },
         }, attempt);
       }
     }
@@ -5719,6 +5727,9 @@ export class FacetManager {
     opts: LongRunningWorkerSpawnOptions,
     attempt: number,
   ): Promise<{ pid: number; boot: unknown }> {
+    if (opts.resident && !opts.durable) {
+      opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
+    }
     this.processes.reap();
     const entry = this.processes.spawn(command, [], cwd);
     // Stamp the process-table entry so /api/processes exposes this as a
@@ -5741,7 +5752,7 @@ export class FacetManager {
         // owner already holds is persisted. Validated before the journal row is
         // written and before the process boots, so a foreign or absent
         // reservation refuses the launch rather than stealing the exposure.
-        if (opts.port && opts.port > 0 && opts.port < 65536) {
+        if (!opts.resident && opts.port && opts.port > 0 && opts.port < 65536) {
           const preFlight = await readPortReservation(this.ctx, opts.port);
           if (preFlight === null || preFlight.owner !== opts.durable.owner) {
             throw new Error('port reservation conflict: durable worker does not own port ' + opts.port);
@@ -5769,6 +5780,7 @@ export class FacetManager {
             modules: opts.modules ?? {},
             ...(opts.env !== undefined ? { env: opts.env } : {}),
             vfsWasmModules: opts.vfsWasmModules,
+            startArgs: opts.startArgs,
           });
         await this.ctx.storage.transaction(async (txn) => {
           const key = `${DURABLE_IMAGES_KEY_PREFIX}${opts.durable!.owner}`;
@@ -5792,27 +5804,35 @@ export class FacetManager {
             cwd,
             compatibilityDate,
             compatibilityFlags,
-            startArgs: opts.startArgs,
+            ...(opts.durable.image && !opts.resident ? { startArgs: opts.startArgs } : {}),
+            ...(opts.resident ? { resident: opts.resident } : {}),
           },
           // The row-level fields `ensureDurableAppOnPort` reads — same values
           // the recipe carries, stamped so port/owner lookup never depends on
           // the recipe's kind.
-          ...(opts.port !== undefined && opts.port > 0
-            ? { port: opts.port, owner: opts.durable.owner }
-            : {}),
+          owner: opts.durable.owner,
+          restart: opts.restart ?? 'never',
+          ...(opts.port !== undefined && opts.port > 0 ? { port: opts.port } : {}),
         };
         // The durable facet name is claimed once, ever, from DO storage — a
         // re-drive after a reset, an eviction's re-attach and a relaunch all
         // land on the same `app-slot-<n>`, which is the only thing that keeps
         // the retained SQLite bound to this application.
-        durableFacetName = await acquireDurableFacetSlot(this.ctx, opts.durable.owner);
-        await this.launchJournal.journal(record);
+        const duplicate = await this._claimResident(record);
+        if (duplicate !== null) {
+          this.ephemeralPids.set(entry.pid, opts.durable.owner);
+          this.hooks.notify?.(`\x1b[2m[nimbus: second instance of "${command}" is not the durable one — pid ${duplicate} keeps the identity]\x1b[0m\r\n`);
+        } else if (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner)) {
+          durableFacetName = await acquireDurableFacetSlot(this.ctx, opts.durable.owner);
+        }
       }
       handle = await this._startResidentProcess(entry.pid, {
         // These runners answer startProcess with a boot payload (listening
         // port, or a completed non-server run) and stay resident after it.
         startContract: 'boot',
-        startArgs: opts.startArgs,
+        startArgs: opts.resident && opts.startArgs && typeof opts.startArgs === 'object'
+          ? { ...opts.startArgs, supervisorPid: entry.pid }
+          : opts.startArgs,
         ...(durableFacetName !== undefined
           ? { facet: { name: durableFacetName, durable: true } }
           : {}),
@@ -5836,10 +5856,10 @@ export class FacetManager {
       if (record && this.launchJournal.has(entry.pid)) {
         // Booted and running: the launch proved itself, so the resident
         // starts its running life with a fresh re-drive budget.
-        await this.launchJournal.journal({ ...record, attempt: 0, phase: 'running' });
+        await this._amendRow(entry.pid, (row) => ({ ...row, attempt: 0, phase: 'running' }));
       }
       if (opts.port && opts.port > 0 && opts.port < 65536) {
-        if (opts.durable) {
+        if (opts.durable && !opts.resident) {
           // Re-read after the boot: a release or reassignment during it wins.
           // The durable launch registers only under a reservation it still
           // owns; it never clears or takes a foreign exposure.
@@ -5851,18 +5871,8 @@ export class FacetManager {
           // re-drove this launch, and preview URLs minted against it stay
           // valid: the durable capability is re-adopted through the
           // reservation's own path, gated on the stored owner.
-          this.portRegistry.register(opts.port, entry.pid);
-          await restoreReservedPortCapability(
-            { ctx: this.ctx, portRegistry: this.portRegistry },
-            opts.port,
-            opts.durable.owner,
-          );
-        } else {
-          // A new process on a port retires the previous occupant's preview
-          // capability, so a URL handed out for that one cannot reach this one.
-          await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port);
-          this.portRegistry.register(opts.port, entry.pid);
         }
+        await this._registerResidentPort(entry.pid, opts.port);
       }
       return { pid: entry.pid, boot };
     } catch (e: unknown) {

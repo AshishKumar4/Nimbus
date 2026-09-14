@@ -105,6 +105,8 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
     const command = args.command;
     const workerCode = buildCPythonSocketProcessWorker(buildCPythonPreamble());
     const spawned = await facetMgr.spawnWorker(workerCode, command, args.cwd, {
+      resident: { argv: args.argv, runtime: 'python' },
+      restart: z.object({ NIMBUS_RESTART: z.literal('on-failure') }).safeParse(args.startArgs.userEnv).success ? 'on-failure' : 'never',
       compatibilityFlags: ['nodejs_compat'],
       // By path, not by value: the interpreter is 10.6 MiB, more than a single
       // RPC value may carry, so whichever host runs this process reads it itself.
@@ -121,7 +123,7 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
     const data = boot.data;
 
     if (data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
-      facetMgr.registerPort(spawned.pid, data.port);
+      await facetMgr.registerPort(spawned.pid, data.port);
       const routeable = await facetMgr.waitForRouteablePorts(spawned.pid);
       const port = routeable.includes(data.port) ? data.port : routeable[0];
       if (!port) {
