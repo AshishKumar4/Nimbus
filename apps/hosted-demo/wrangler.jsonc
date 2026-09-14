@@ -377,7 +377,8 @@
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" },
+          { "name": "NIMBUS_PUBLIC_DIRECTORY", "class_name": "NimbusPublicDirectory" }
         ]
       },
       "d1_databases": [
@@ -454,7 +455,8 @@
       ],
 	      "durable_objects": {
 	        "bindings": [
-	          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }
+	          { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" },
+	          { "name": "NIMBUS_PUBLIC_DIRECTORY", "class_name": "NimbusPublicDirectory" }
 	        ]
 	      },
 	      "d1_databases": [
