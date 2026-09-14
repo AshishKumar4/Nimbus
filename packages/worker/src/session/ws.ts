@@ -34,10 +34,11 @@
  */
 
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { persistShellState } from './state-store.js';
+import { appendScrollback, persistShellState } from './state-store.js';
 import {
   handleFsWatchSubscribe,
   handleFsWatchUnsubscribe,
@@ -52,6 +53,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
+import type { InitSessionOptions } from './init.js';
 import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 
@@ -84,8 +86,80 @@ export interface WsHost {
   _w5LastPersistRingSize: number;
   /** [B'.4] live phase indicator — see nimbus-session-internal.d.ts */
   _b4Phase: import('@nimbus-sh/platform/oom-discriminator.js').SessionState | null;
+  /** The session rebuild a woken instance has in flight; see bindShellSocket. */
+  _wakeRebuild: Promise<void> | null;
+  initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
   _w5PersistRing(): Promise<void> | null;
   _w9FlushOnClose(): void;
+}
+
+/**
+ * Give the shell socket a frame arrived on a live session to land in.
+ *
+ * The runtime evicts a quiet object from memory while its accepted sockets
+ * stay open (the WebSocket Hibernation API), and the next frame from the
+ * peer wakes a fresh instance whose `shell`, `terminal` and `kernel` are
+ * null: the socket outlived the sleep, the session in memory did not.
+ * Measured 2026-09-14 on a deployed Worker: eight quiet seconds and the
+ * object is still there, ten and it is gone; the frame that wakes it is
+ * delivered and handled without error, and the peer gets nothing back —
+ * no output, no close, no error — because the terminal lookup that follows
+ * found nothing to hand it to. Only a new /ws upgrade rebuilt the session,
+ * and a peer whose socket still reads OPEN has no reason to make one. A
+ * browser tab hides this by probing every few seconds; a driver that
+ * simply waits between commands does not.
+ *
+ * So the rebuild runs here, on the socket that spoke, before the frame is
+ * handled: the cold path the upgrade takes after an eviction (cwd, env,
+ * mounts back from SQLite) minus the scrollback replay the peer already has
+ * on screen. Frames that land while the build runs await the same build —
+ * the input gate does not serialise handlers across a non-storage await, so
+ * without the shared promise two quick keystrokes would build two shells.
+ *
+ * A session that exists but answers to another socket — one an SDK call
+ * built on its headless terminal after the same wake — is handed to this
+ * socket the way the warm rejoin hands it to a new upgrade. The upgrade
+ * refuses a second shell socket while one still has a peer, so the socket
+ * that speaks is the one the peer is on.
+ *
+ * A build that fails closes the socket with a reason and answers false, so
+ * the caller drops the frame. The peer must learn that its shell is gone;
+ * the silence this replaces is the whole defect.
+ *
+ * A socket this side has already closed gets no session either: destroy
+ * closes every accepted socket and nulls the terminal before it wipes
+ * storage, and a frame still in flight on one of them must not rebuild
+ * the session it is tearing down.
+ */
+export async function bindShellSocket(self: WsHost, ws: WebSocket): Promise<boolean> {
+  if (ws.readyState !== WS_READY_STATE_OPEN) return false;
+  if (self.shell == null || self.terminal == null || self.kernel == null) {
+    if (!self._wakeRebuild) {
+      self._wakeRebuild = self.initSession(ws, { resume: 'wake' })
+        .finally(() => { self._wakeRebuild = null; });
+    }
+    try {
+      await self._wakeRebuild;
+    } catch (e) {
+      const message = errorText(e);
+      console.error('[nimbus] session rebuild on wake failed:', message);
+      // A close reason is capped at 123 bytes by the protocol.
+      try { ws.close(1011, `session rebuild after wake failed: ${message}`.slice(0, 123)); } catch { /* closing */ }
+      return false;
+    }
+    return true;
+  }
+  if (self.terminal.ws !== ws) {
+    // `ctx` is `protected` on the DO base class and so cannot sit on this
+    // interface (DEFECT-D1); the scrollback tee is the one thing here that
+    // needs it.
+    const ctx = 'ctx' in self ? self.ctx : undefined;
+    self.terminal.attach(ws, (frame: string) => {
+      try { appendScrollback(ctx, frame, Date.now()); }
+      catch (e) { console.warn("[B'.3] appendScrollback failed:", errorText(e)); }
+    });
+  }
+  return true;
 }
 
 /**
@@ -167,6 +241,9 @@ const FsWatchClientFrameSchema = z.discriminatedUnion('type', [
   }).passthrough(),
 ]);
 
+/** `WebSocket.readyState` for an open socket; the constant name differs between workerd and Node. */
+const WS_READY_STATE_OPEN = 1;
+
 const TerminalMessageSchema = z.object({
   type: z.string(),
   data: z.string().optional(),
@@ -210,7 +287,12 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     // The stamp goes in the attachment because isolate memory does not
     // survive hibernation and the /ws upgrade has to read it afterwards.
     // Rate-limited inside; see src/session/shell-socket.ts.
-    if (attach?.kind === 'shell') noteShellSocketActivity(ws);
+    if (attach?.kind === 'shell') {
+      noteShellSocketActivity(ws);
+      // Before the frame is parsed: a woken instance has no session to
+      // hand ANY shell-socket frame to, the liveness probe included.
+      if (!(await bindShellSocket(self, ws))) return;
+    }
     const data = typeof message === 'string' ? message : dec.decode(message);
     const value: unknown = JSON.parse(data);
     // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE

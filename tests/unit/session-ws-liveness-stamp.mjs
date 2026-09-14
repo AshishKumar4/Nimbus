@@ -37,6 +37,11 @@ function host() {
     ctx: {},
     _w5PersistRing: () => null,
     _w9FlushOnClose: () => {},
+    // A frame on a session-less host rebuilds the session first
+    // (tests/unit/session-ws-wake-rebuild.mjs). Stand in for that here
+    // so the stamp is the only thing under test.
+    _wakeRebuild: null,
+    async initSession(ws) { this.shell = {}; this.kernel = {}; this.terminal = { ws, handleMessage() {} }; },
   };
 }
 

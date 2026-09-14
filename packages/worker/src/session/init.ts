@@ -136,7 +136,27 @@ function quoteShellArgument(value: string): string {
 }
 
 
-export async function initSession(self: InitHost, ws: WebSocket): Promise<void> {
+/**
+ * How the socket being wired came to need a session.
+ *
+ *   - reconnect: a fresh terminal on a fresh /ws upgrade. Its screen is
+ *     empty, so the persisted scrollback is replayed above the live prompt.
+ *   - wake: the socket was accepted by a previous instance and outlived it
+ *     in hibernation; the peer's screen still shows everything up to the
+ *     sleep. Replaying scrollback there duplicates what the peer already
+ *     has, and a driver waiting for a fresh prompt would take the replayed
+ *     one for its answer. Only the resumed-instance notice is written.
+ */
+export interface InitSessionOptions {
+  resume?: 'reconnect' | 'wake';
+}
+
+export async function initSession(
+  self: InitHost,
+  ws: WebSocket,
+  options: InitSessionOptions = {},
+): Promise<void> {
+    const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
     self.ensureFacetManager();
@@ -187,11 +207,13 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
     // same scrollback both times. The cap eviction keeps total bytes
     // bounded.
     if (persisted.hasPersistedState) {
-      try {
-        const replay = loadScrollback(self.ctx);
-        if (replay.length > 0) self.terminal.write(replay);
-      } catch (e: any) {
-        try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
+      if (replayScrollback) {
+        try {
+          const replay = loadScrollback(self.ctx);
+          if (replay.length > 0) self.terminal.write(replay);
+        } catch (e: any) {
+          try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
+        }
       }
       // The scrollback stops mid-command when the previous instance was
       // reset under it — the platform kills the isolate without running a

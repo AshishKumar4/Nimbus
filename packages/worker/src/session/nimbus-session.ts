@@ -109,7 +109,7 @@ import {
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
-import { initSession as _w11InitSession } from './init.js';
+import { initSession as _w11InitSession, type InitSessionOptions } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
 import {
@@ -1663,7 +1663,7 @@ export class NimbusSession extends CloudflareDurableObject {
   // command registrations + boot wiring). The class retains `initSession`
   // as a delegator per plan §IX.4 R1. Visibility relaxed (was `private`)
   // so the SessionInternal interface declares it.
-  initSession(ws: WebSocket): Promise<void> {
+  initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void> {
     // A destroyed session id being legitimately re-initialized (shell WS
     // attach, or SDK ready via ensureProgrammaticReady which routes here)
     // lifts the tombstone so the recreated session's log-janitor can arm
@@ -1672,8 +1672,15 @@ export class NimbusSession extends CloudflareDurableObject {
     // Cast pattern (per plan §IX recommendation 1, used here only because
     // initSession reads this.ctx + this.env extensively; siblings that need
     // ctx/env take them as separate explicit args per DEFECT-D1).
-    return _w11InitSession(this as any, ws);
+    return _w11InitSession(this as any, ws, options);
   }
+
+  /**
+   * The rebuild in flight for a shell socket that woke this instance from
+   * hibernation, so every frame that arrives while it runs awaits the one
+   * build instead of starting its own. See session/ws.ts bindShellSocket.
+   */
+  _wakeRebuild: Promise<void> | null = null;
 
 
   // ── Filesystem seeding ────────────────────────────────────────────────
