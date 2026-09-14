@@ -880,7 +880,7 @@ function convertBundledModuleDeclarations(snippets: string[]): ConvertedModuleDe
       }
       continue;
     }
-    let ast;
+    let ast: ReturnType<typeof parseJavaScriptModule>;
     try {
       ast = parseJavaScriptModule(snippet);
     } catch {

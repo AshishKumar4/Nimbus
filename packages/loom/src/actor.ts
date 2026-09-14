@@ -538,7 +538,8 @@ export class Actor<
 
   /** Leased facets: disposal retires (storage wiped), `detach()` keeps it. */
   get facets(): FacetPool {
-    return (this.#facets ??= facetPool(this.ctx as unknown as FacetPoolContext));
+    this.#facets ??= facetPool(this.ctx as unknown as FacetPoolContext);
+    return this.#facets;
   }
 
   /**
@@ -547,7 +548,8 @@ export class Actor<
    * use.
    */
   get processes(): ProcessFabric {
-    return (this.#processes ??= new ProcessFabric(this.processHost()));
+    this.#processes ??= new ProcessFabric(this.processHost());
+    return this.#processes;
   }
 
   /** The substrate {@link processes} runs on. Override to declare one. */
