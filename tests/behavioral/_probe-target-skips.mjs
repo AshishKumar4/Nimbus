@@ -11,6 +11,7 @@ export const PROBE_TARGET_SKIPS = [
   // demand, with a reason.
   'frameworks/markflow-clickthrough',
   'frameworks/markflow-real',
+  'frameworks/personal-website-real',
   // hosted-demo-only surfaces. `apps/probe` has no demo OAuth and no
   // /api/sdk-smoke, so these fail for the target's shape rather than for
   // anything the change did. Verify them on `nimbus-staging` in a
