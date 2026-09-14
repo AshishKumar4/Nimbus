@@ -326,6 +326,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   await assert.rejects(rpcExposeApp(self, 20721, { name: 'api' }), /already taken/, 'a duplicate name is refused');
   await assert.rejects(rpcExposeApp(self, 20721, { name: '3000' }), /not a valid app name/, 'a numeric name is refused');
   await assert.rejects(rpcExposeApp(self, 20721, { name: 'a--b' }), /not a valid app name/, 'a double-hyphen name is refused');
+  await assert.rejects(rpcExposeApp(self, 20721, { name: 'a'.repeat(24) }), /not a valid app name/, 'a capability-shaped name is refused');
   // Another owner cannot take the port.
   fm.kill(b0.pid);
 

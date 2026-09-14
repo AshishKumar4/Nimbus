@@ -1068,7 +1068,9 @@ user is told (`listened on 3000 but its reservation owns 5173`), and
 ### Names
 
 A reservation may carry one DNS label as its name (`[a-z0-9]([a-z0-9-]*
-[a-z0-9])?`, no `--`, never all digits, never 24 hex), unique per session.
+[a-z0-9])?`, no `--`, never all digits, never 24 lowercase hex), unique per session.
+`--` is forbidden because it separates host labels. A 24-lowercase-hex name
+is forbidden because it is ambiguous with a capability label.
 The preview host gains the name forms — `<name>--<sid>` (scoped) and
 `<cap>--<name>--<sid>` (public): a non-numeric middle label is a name. The
 scoped form is forwarded to the session's name door `/app/<name>/…`, which

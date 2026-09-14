@@ -138,7 +138,8 @@ export function parsePreviewHost(
 
 /**
  * A name label: a DNS label that is neither a port (all digits) nor a
- * capability (24 hex). The same rule the session applies when it stores a
+ * capability (24 lowercase hex), and contains no `--` host-label separator.
+ * The same rule the session applies when it stores a
  * name on a reservation, so every name it accepts is a host it can parse.
  */
 export function isPreviewHostName(label: string): boolean {

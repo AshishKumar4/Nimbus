@@ -60,15 +60,16 @@ export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
 /**
  * The optional name alias a reservation may carry: one DNS label, so it can
  * stand where the port stands in a preview host (`<name>--<sid>`). Never
- * purely numeric — a numeric middle label IS a port — and never 24 hex, the
- * shape a capability label has.
+ * purely numeric — a numeric middle label IS a port. No `--`: that is the
+ * host-label separator. No 24 lowercase hex: that is ambiguous with a
+ * capability label, so parsing could mistake a name for a bearer.
  */
 export const APP_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 export function isValidAppName(name: string): boolean {
   return APP_NAME_RE.test(name) && !name.includes('--')
     && !/^\d+$/.test(name) && !/^[a-f0-9]{24}$/.test(name);
 }
-const AppNameSchema = z.string().refine(isValidAppName, 'app name must be a DNS label that is neither numeric nor 24 hex');
+const AppNameSchema = z.string().refine(isValidAppName, 'app name must be a DNS label: no --, not numeric, not 24 lowercase hex');
 export const PortRecordSchema = z.object({
   kind: z.enum(['explicit', 'derived']).default('explicit'),
   capability: PortCapabilitySchema.nullable(),
