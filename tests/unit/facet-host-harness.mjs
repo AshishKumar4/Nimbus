@@ -156,6 +156,24 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
       async sync() { flush(); },
       /** The reset: everything sync has not flushed dies with the instance. */
       crash() { pending.clear(); },
+      /** One serialized read/write unit: the body sees a private copy and the
+       *  copy commits only on success, the way the real store isolates a
+       *  transaction from interleaved readers. */
+      async transaction(body) {
+        const copy = view();
+        const txn = {
+          get: async (k) => copy.get(k),
+          put: async (k, v) => { copy.set(k, v); },
+          delete: async (k) => copy.delete(k),
+          list: async ({ prefix = '' } = {}) =>
+            new Map([...copy].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1))),
+        };
+        const out = await body(txn);
+        pending.clear();
+        storage.clear();
+        for (const [k, v] of copy) storage.set(k, v);
+        return out;
+      },
     },
   };
 }

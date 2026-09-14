@@ -5352,6 +5352,16 @@ export class FacetManager {
     let record: ResidentLaunchRecord | undefined;
     try {
       if (opts.durable) {
+        // A durable spawn on a declared port starts only when a reservation the
+        // owner already holds is persisted. Validated before the journal row is
+        // written and before the process boots, so a foreign or absent
+        // reservation refuses the launch rather than stealing the exposure.
+        if (opts.port && opts.port > 0 && opts.port < 65536) {
+          const preFlight = await readPortReservation(this.ctx, opts.port);
+          if (preFlight === null || preFlight.owner !== opts.durable.owner) {
+            throw new Error('port reservation conflict: durable worker does not own port ' + opts.port);
+          }
+        }
         // Journalled before the launch's first byte of work, so a row a
         // later instance reads proves this process never ended.
         record = {
@@ -5400,10 +5410,14 @@ export class FacetManager {
         await this.launchJournal.journal({ ...record, attempt: 0, phase: 'running' });
       }
       if (opts.port && opts.port > 0 && opts.port < 65536) {
-        const reservation = opts.durable
-          ? await readPortReservation(this.ctx, opts.port)
-          : null;
-        if (reservation && reservation.owner === opts.durable?.owner) {
+        if (opts.durable) {
+          // Re-read after the boot: a release or reassignment during it wins.
+          // The durable launch registers only under a reservation it still
+          // owns; it never clears or takes a foreign exposure.
+          const reservation = await readPortReservation(this.ctx, opts.port);
+          if (reservation === null || reservation.owner !== opts.durable.owner) {
+            throw new Error('port reservation conflict: durable worker does not own port ' + opts.port);
+          }
           // The owner's hold on the port survives the instance reset that
           // re-drove this launch, and preview URLs minted against it stay
           // valid: the durable capability is re-adopted rather than retired.
