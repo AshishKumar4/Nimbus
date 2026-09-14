@@ -612,8 +612,9 @@ export async function rpcExposeApp(self, target, options = {}) {
         throw new Error(`${describeTarget(target)} has not bound a port yet — expose it once it is listening`);
     }
     if (resolved.owner === null) {
-        throw new Error(`${describeTarget(target)} has no launch record to bind an identity to — `
-            + 'only journalled residents carry one; use ports.expose for a bare port');
+        // Every running process has an identity, so this is only a port nothing
+        // serves and no reservation names.
+        throw new Error(`nothing is serving ${describeTarget(target)} — start the server, then expose it`);
     }
     const exposed = await applyExposure(self, resolved.port, resolved.owner, options);
     const live = self.portRegistry.get(resolved.port);
@@ -791,7 +792,23 @@ export async function rpcRemoveApp(self, target) {
     if (resolved.owner === null) {
         throw new Error(`${describeTarget(target)} names no application — nothing to remove`);
     }
-    return rpcRemoveDurableApp(self, resolved.owner);
+    const owner = resolved.owner;
+    // The manager's removal kills what the journal knows. A server nothing
+    // journalled — the dev servers above all — is found the way every verb
+    // finds it, by the identity of the pid serving a port, and ended through
+    // the session's own kill, which is the one that also stops an in-process
+    // dev server rather than only marking its pid dead.
+    const fm = self.facetManager;
+    let killed = 0;
+    for (const live of self.portRegistry.getAll()) {
+        const identity = await fm.residentIdentity(live.pid);
+        if (identity === null || identity.ephemeral || identity.owner !== owner)
+            continue;
+        if ((await rpcKillProcess(self, live.pid)).ok)
+            killed += 1;
+    }
+    const durable = await rpcRemoveDurableApp(self, owner);
+    return { ...durable, removed: durable.removed || killed > 0 };
 }
 function describeTarget(target) {
     if (typeof target === 'number')
@@ -873,7 +890,7 @@ async function resolveAppTarget(self, target) {
     if ('pid' in target) {
         const asPid = await byPid(Number(target.pid));
         if (asPid === null) {
-            throw new Error(`pid ${target.pid} has no launch record — only journalled residents carry one`);
+            throw new Error(`pid ${target.pid} is not running and has no launch record`);
         }
         return asPid;
     }

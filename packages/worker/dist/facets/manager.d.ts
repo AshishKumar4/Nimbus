@@ -1225,7 +1225,18 @@ export declare class FacetManager {
      * the mismatch, so `apps.list` reports it as failed and the user is told.
      */
     private _registerResidentPort;
-    /** What a pid's journal row says about who it is; null for a pid without one. */
+    /**
+     * Who a pid is. One resolver, in precedence order: the ephemeral-duplicate
+     * mark, the journal row (the owner a launch this manager made was stamped
+     * with — derived from the launch's own cwd+argv, or adopted from an
+     * explicit reservation), and finally the process table. The table knows
+     * cwd and argv for every pid, so a serving process nothing journalled — the
+     * in-process Vite dev server, real-vite, a staged artifact, any wrapper pid
+     * a builtin adopted — has the same derived identity shape as a resident
+     * and answers to the same app verbs. It just cannot be re-driven after a
+     * reset: only a journal row carries a recipe. Null only for a pid that is
+     * neither journalled nor running.
+     */
     residentIdentity(pid: number): Promise<ResidentIdentity | null>;
     /**
      * Every stamped identity — the reservations, and the journal rows that

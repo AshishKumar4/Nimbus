@@ -42,7 +42,7 @@ import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-cont
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
-import { clearPortCapability } from './port-capability.js';
+import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 const WriteBatchInodeSchema = z.object({
@@ -967,18 +967,11 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
 }
 export async function _rpcRegisterPort(self, pid, port) {
     // Port registration stores the facet association — the actual facet stub
-    // is stored by FacetManager separately. Registration goes through the
-    // manager so a pid binding a reserved port inherits the reservation's
-    // durable contract: its journal row is stamped with the port's owner and
-    // the stored capability is re-adopted rather than retired.
-    if (self.facetManager) {
-        await self.facetManager.registerPort(pid, port);
-        return;
-    }
-    // No facet manager yet means nothing resident is running — a bare
-    // registration retires the previous occupant's preview capability.
-    await clearPortCapability(self, port);
-    self.portRegistry.register(port, pid);
+    // is stored by FacetManager separately. The same registration every
+    // serving process uses: through the manager, so the pid's identity —
+    // its journal row, or the process table — decides whether a reservation's
+    // capability is re-adopted or retired.
+    await registerServingPort(self, pid, port);
 }
 export async function _rpcUnregisterPort(self, port) {
     self.portRegistry.unregister(port);

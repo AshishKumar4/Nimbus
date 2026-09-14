@@ -26,6 +26,18 @@ export interface StartRealViteOptions {
     /** Directory the user's vite.config.{ts,js,mjs} is searched in (the shell
      *  cwd at start). Persisted so restore can re-bundle it. */
     configDir: string;
+    /**
+     * The process-table cwd+argv the dev server's pid is given — what the app
+     * verbs derive its identity from. The `vite` builtin passes the wrapper
+     * pid's own (or the argv it was invoked with); restore passes what was
+     * persisted, so the restored server is the same application. Absent for
+     * configs written before identity was persisted: those keep the bare
+     * `[]` at the root, the same across every restore.
+     */
+    identity?: {
+        cwd: string;
+        argv: string[];
+    };
     /** Optional abort signal threaded into the heavy-alloc gate. */
     signal?: AbortSignal;
     /** Called with a human message if vite.config pre-bundling fails (so the
