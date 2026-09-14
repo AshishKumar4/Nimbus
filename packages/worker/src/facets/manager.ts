@@ -37,7 +37,7 @@ import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
-import { TurnBudget, PacedWork, turnChunkMaxBytes } from '@nimbus-sh/fabric/turn-budget.js';
+import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import {
   FencedWork,
@@ -3518,6 +3518,9 @@ export interface LongRunningWorkerSpawnOptions {
 
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 
+/** A port request may wait this long for a durable app's re-drive to boot. */
+const DURABLE_ENSURE_BOOT_BUDGET_MS = 12_000;
+
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
   argv?: string[];
@@ -3656,12 +3659,14 @@ export class FacetManager {
    * prefetch cache above so a profile can only ever seed the bundle it was
    * measured against.
    *
-   * Lifetime is the supervisor incarnation's, same as the cache — a restart
    * costs one more loud failure and then relearns. Persisting it would be a
    * schema and a migration bought with nothing the in-memory form does not
    * already deliver for the case that matters: running the command again.
    */
   private residencyProfiles = new Map<string, Set<string>>();
+
+  /** In-flight request-driven durable-app ensures, single-flight per port. */
+  private ensureInflight = new Map<number, Promise<'started' | 'absent' | 'failed'>>();
   private static readonly RESIDENCY_PROFILE_MAX_ENTRIES = 16;
   /**
    * A program that reads a directory of data files misses once per file, so
@@ -5607,6 +5612,7 @@ export class FacetManager {
     for (const [key, record] of portRows) {
       if (record?.owner === owner) ownedPorts.add(Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length)));
     }
+
     for (const port of ownedPorts) {
       await releasePortReservation(this.ctx, { owner, port });
       this.portRegistry.unregister(port);
@@ -5621,6 +5627,84 @@ export class FacetManager {
       try { deleteFacetStorage(this.ctx, name); } catch { /* already gone */ }
     }
     return name !== null || purged > 0 || ownedPorts.size > 0;
+  }
+  /**
+   * Whether a request addressed to `port` can reach a durable application —
+   * and, when the application is journaled but dead, drive its re-drive and
+   * wait for the boot, bounded.
+   *
+   * The port request is the one surface a reset leaves dark: the alarm pump
+   * re-drives journaled launches eventually, but a URL a user is holding
+   * cannot wait for an alarm that may never fire. 'started' means a live
+   * process owns the port now; 'absent' means nothing durable claims it
+   * (the caller answers 502 as it always has); 'failed' means a re-drive
+   * ran and lost, or outlived its bound — the caller answers 503 and lets
+   * the page re-ask.
+   *
+   * Single-flight per port: parallel requests on a woken page share one
+   * ensure, which shares the journal's per-row drive with recovery — a
+   * request that lands mid-recovery waits on that boot, it never boots a
+   * second process.
+   */
+  ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'> {
+    let inflight = this.ensureInflight.get(port);
+    if (inflight === undefined) {
+      inflight = this._ensureDurableAppOnPort(port);
+      this.ensureInflight.set(port, inflight);
+      inflight.finally(() => {
+        if (this.ensureInflight.get(port) === inflight) this.ensureInflight.delete(port);
+      });
+    }
+    return inflight;
+  }
+
+  private async _ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'> {
+    if (this.portRegistry.has(port)) return 'started';
+    // The reservation says the port means something to someone; the journal
+    // row is what makes it a launch this instance owes. A reservation with
+    // no row (the spawn died before journalling, or the app was removed and
+    // the release already ran) answers absent — nothing here can bring back
+    // an application with no recipe.
+    const reservation = await readPortReservation(this.ctx, port);
+    if (reservation === null || reservation.owner === null) return 'absent';
+    const rows = await this.launchJournal.rows();
+    const entry = [...rows].find(([, record]) =>
+      record.recipe.kind === 'worker'
+        && record.recipe.owner === reservation.owner
+        && record.recipe.port === port);
+    if (entry === undefined) return 'absent';
+    const [rowKey, record] = entry;
+
+    if (record.pid > this.processes.pidBase) {
+      // This instance's own row: the launch is already building — waiting
+      // for its port registration is the entire ask, and driving the row
+      // again would boot a second copy.
+      return (await this._waitForPort(port, DURABLE_ENSURE_BOOT_BUDGET_MS))
+        ? 'started' : 'failed';
+    }
+
+    const { promise: boundHit, resolve: markBound } = withResolvers<true>();
+    setTimeout(() => markBound(true), DURABLE_ENSURE_BOOT_BUDGET_MS);
+    const failed = await Promise.race([
+      this.launchJournal.drive(rowKey, record),
+      boundHit,
+    ]);
+    if (failed) return 'failed';
+    // A settled drive either owns the port or deliberately answered 'gone':
+    // a resolver's null superseded the row, which is absent, not failed.
+    return this.portRegistry.has(port) ? 'started' : 'absent';
+  }
+
+  /** Poll for a port registration the in-flight launch has not made yet. */
+  private async _waitForPort(port: number, budgetMs: number): Promise<boolean> {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      if (this.portRegistry.has(port)) return true;
+      const { promise: tick, resolve: tickDone } = withResolvers();
+      setTimeout(tickDone, 50);
+      await tick;
+    }
+    return this.portRegistry.has(port);
   }
 
   get stats() { return this.processes.stats; }

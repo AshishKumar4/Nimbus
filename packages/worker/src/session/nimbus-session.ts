@@ -918,6 +918,16 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string) {
     return _routes.routeCapabilityPort(this as any, port, capability, request, innerPath);
   }
+
+  /**
+   * The port route's recovery seam: a durable application journalled but
+   * dead is re-driven on demand rather than left for the alarm pump. The
+   * manager decides 'started' | 'absent' | 'failed'; the route maps them.
+   */
+  async ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'> {
+    this.ensureFacetManager();
+    return this.facetManager!.ensureDurableAppOnPort(port);
+  }
   async _rpcDeleteFile(path: string, options?: { recursive?: boolean }) { return _programmatic.rpcDeleteFile(this as any, path, options); }
   async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 

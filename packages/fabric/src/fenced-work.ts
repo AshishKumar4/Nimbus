@@ -133,6 +133,9 @@ export class FencedWork<R extends FencedWorkRecord> {
    * paying a storage delete for pids that never had a row.
    */
   private journalledPids = new Set<number>();
+  /** Re-drives in flight, by journal key — recovery's un-awaited ones and a
+   *  caller-driven one share the same drive for the same row. */
+  private drives = new Map<string, Promise<boolean>>();
   /** Whether this instance has already read the journal a reset leaves behind. */
   private recovered = false;
 
@@ -202,6 +205,47 @@ export class FencedWork<R extends FencedWorkRecord> {
   }
 
   /**
+   * Every journal row, storage-true — the rows this instance wrote and the
+   * ones a previous instance left behind. The one read surface a request-
+   * driven recovery needs to find the durable launch a port belongs to.
+   */
+  async rows(): Promise<Map<string, R>> {
+    return this.storage.list<R>({ prefix: FENCED_WORK_KEY_PREFIX });
+  }
+
+  /**
+   * Re-drive one journal row — the awaited sibling of recovery's un-awaited
+   * re-drives, for a caller that must know whether the launch actually came
+   * back. Single-flight per row: a request-driven drive and recovery's own
+   * never boot the same launch twice. Resolves true only when the re-drive
+   * itself FAILED and the failure was reported; a settled drive supersedes
+   * the row the same way recovery's does.
+   */
+  drive(key: string, record: R): Promise<boolean> {
+    let inflight = this.drives.get(key);
+    if (inflight === undefined) {
+      inflight = (async (): Promise<boolean> => {
+        let failed = false;
+        try {
+          await this.host.redrive(record, record.attempt + 1);
+        } catch (e: unknown) {
+          this.host.onRedriveFailed?.(record, e);
+          failed = true;
+        }
+        // A reported failure is settled business — supersede either way, so
+        // the row never re-surfaces on the next recovery.
+        await this.supersede(key);
+        return failed;
+      })();
+      this.drives.set(key, inflight);
+      inflight.finally(() => {
+        if (this.drives.get(key) === inflight) this.drives.delete(key);
+      });
+    }
+    return inflight;
+  }
+
+  /**
    * Re-drive the launches a previous instance was building when it was reset.
    *
    * Sited on the launch-turn pump because the pump is what an alarm calls, and
@@ -252,14 +296,10 @@ export class FencedWork<R extends FencedWorkRecord> {
       // Not awaited: this call is running inside the alarm that granted the
       // turn, and the launch it starts asks for turns of its own through that
       // same alarm — awaiting it here would be waiting on an alarm that cannot
-      // be scheduled until this one returns.
-      this.host.waitUntil(
-        this.host.redrive(record, record.attempt + 1)
-          .catch((e: unknown) => {
-            this.host.onRedriveFailed?.(record, e);
-          })
-          .then(() => this.supersede(key)),
-      );
+      // be scheduled until this one returns. `drive` single-flights it: a
+      // request that arrives mid-launch waits on this same drive rather than
+      // booting a second process.
+      this.host.waitUntil(this.drive(key, record));
     }
   }
 

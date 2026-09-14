@@ -123,9 +123,10 @@ export class TurnBudget {
   }
 }
 
-function withResolvers(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => { resolve = r; });
+/** `Promise.withResolvers` for the runtime the project targets. */
+export function withResolvers<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
   return { promise, resolve };
 }
 
