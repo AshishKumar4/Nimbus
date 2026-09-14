@@ -126,7 +126,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
       throw new Error(`SupervisorRPC: the workspace host mounts no ${method}(); `
         + 'a host forwards one method to workspace.supervisorOp(op)');
     }
-    return (envelope) => dispatch.call(stub, envelope);
+    // Never `.call(stub, …)` on an RpcStub: the proxy treats `call` as a
+    // property get, which becomes an RPC to a method literally named "call".
+    // `Reflect.apply` reaches the proxied member's apply trap instead, and on
+    // a plain-object host it still invokes the method with the stub as `this`.
+    return (envelope) => Reflect.apply(dispatch as (e: SupervisorOpEnvelope) => Promise<unknown>, stub, [envelope]);
   }
 
   private _op<T>(
