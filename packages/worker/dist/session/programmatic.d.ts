@@ -32,6 +32,10 @@ interface ProgrammaticShellExecuteOptions {
     commandContext?: Record<string, unknown>;
 }
 interface ProgrammaticContext {
+    /** The session DO's own id — the public-directory binding reads its name. */
+    id?: {
+        name?: unknown;
+    };
     getWebSockets?(tag?: string): WebSocket[];
     /** Holds a background process's work open for the life of the process. */
     waitUntil?(promise: Promise<unknown>): void;

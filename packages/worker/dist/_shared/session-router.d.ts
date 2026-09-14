@@ -120,6 +120,21 @@ export interface ForwardOptions {
  * @param opts Tenant scoping. See {@link ForwardOptions}.
  */
 export declare function forwardToSession(request: Request, route: ParsedSessionRoute, env: any, opts: ForwardOptions): Promise<Response>;
+/**
+ * The card every session-facing error/status page shares: dark, centered,
+ * mono title. `metaRefreshSeconds` opts the page into self-refresh — the
+ * "starting" page re-asks on its own timer, the invalid page never does.
+ */
+export declare function renderSessionStatusPage(input: {
+    title: string;
+    heading: string;
+    body: string;
+    action?: {
+        href: string;
+        label: string;
+    };
+    metaRefreshSeconds?: number;
+}): string;
 /** HTML body for the "invalid session ID" 400 page. Tiny, inline-only. */
 export declare function renderInvalidSessionHtml(attemptedId: string): string;
 //# sourceMappingURL=session-router.d.ts.map

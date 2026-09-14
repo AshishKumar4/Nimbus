@@ -88,6 +88,13 @@ export function buildNimbusWranglerConfig(opts) {
             { binding: 'NIMBUS_RUNTIME_CACHE', bucket_name: runtimeCacheBucket },
         ],
     };
+    if (opts.nimbusPublicDirectory) {
+        config.durable_objects.bindings.push({
+            name: 'NIMBUS_PUBLIC_DIRECTORY',
+            class_name: 'NimbusPublicDirectory',
+        });
+        config.migrations.push({ tag: 'nimbus-v2', new_sqlite_classes: ['NimbusPublicDirectory'] });
+    }
     if (opts.placement === 'smart' || opts.placement === undefined) {
         config.placement = { mode: 'smart' };
     }

@@ -86,6 +86,14 @@ export interface BuildWranglerOptions {
      */
     extraAliases?: Record<string, string>;
     /**
+     * Bind `NIMBUS_PUBLIC_DIRECTORY` to the `NimbusPublicDirectory` Durable
+     * Object and emit its migration — required for public capability URLs
+     * (`visibility: 'public'` ports) to resolve outside legacy-public mode.
+     * Default `false`: deployments that never expose a public port need
+     * neither the class nor the migration.
+     */
+    nimbusPublicDirectory?: boolean;
+    /**
      * Optional session Agent configuration. Secrets are intentionally excluded:
      * set `NIMBUS_AGENT_COOKIE_SECRET` and `NIMBUS_CLOUDFLARE_API_TOKEN`
      * with `wrangler secret put`.

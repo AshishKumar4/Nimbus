@@ -1155,6 +1155,8 @@ export declare class FacetManager {
      * than a store nobody can re-drive.
      */
     removeDurableApp(owner: string): Promise<boolean>;
+    /** The session-shaped view the public-directory helpers read env from. */
+    private _publicDirectoryHost;
     /**
      * Whether a request addressed to `port` can reach a durable application —
      * and, when the application is journaled but dead, drive its re-drive and

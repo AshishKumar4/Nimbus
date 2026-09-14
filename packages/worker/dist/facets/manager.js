@@ -24,6 +24,7 @@ import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledge
 import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { clearPortCapability, readPortReservation, releasePortReservation, restoreReservedPortCapability } from '../session/port-capability.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
+import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
@@ -124,6 +125,7 @@ function parseFacetManagerEnv(env) {
         LOADER: loader,
         ASSETS: assets,
         NIMBUS_LAUNCH_CHUNK_BYTES: typeof chunkBytes === 'string' ? chunkBytes : undefined,
+        rawEnv: env,
     };
 }
 /**
@@ -5084,6 +5086,12 @@ export class FacetManager {
         for (const [key, record] of portRows) {
             if (record?.owner === owner)
                 ownedPorts.add(Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length)));
+            // A public capability leaves the routing directory with the row —
+            // before the reservation is released so a mid-removal crash leaves a
+            // dead URL rather than a dangling route to this session.
+            if (record?.owner === owner && record.visibility === 'public' && typeof record.capability === 'string') {
+                await unbindPublicPortCapability(this._publicDirectoryHost(), record.capability);
+            }
         }
         for (const port of ownedPorts) {
             await releasePortReservation(this.ctx, { owner, port });
@@ -5098,6 +5106,10 @@ export class FacetManager {
             catch { /* already gone */ }
         }
         return name !== null || purged > 0 || ownedPorts.size > 0;
+    }
+    /** The session-shaped view the public-directory helpers read env from. */
+    _publicDirectoryHost() {
+        return { env: this.env.rawEnv, ctx: this.ctx };
     }
     /**
      * Whether a request addressed to `port` can reach a durable application —

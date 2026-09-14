@@ -66,6 +66,7 @@ export interface PortReservation {
     readonly capability: string | null;
     readonly visibility: PortVisibility;
 }
+export declare function portRecordKey(port: number): string;
 /** Read the raw per-port record: a reservation, an exposure, or nothing. */
 export declare function readPortReservation(ctx: {
     storage: PortReservationTransaction;

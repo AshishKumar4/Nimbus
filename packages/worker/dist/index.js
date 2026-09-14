@@ -22,6 +22,7 @@
  * runtime and generated assets in one place.
  */
 import { NimbusSession, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from './session/nimbus-session.js';
+import { NimbusPublicDirectory } from './router/public-directory-do.js';
 import { SupervisorRPC } from './session/supervisor-rpc.js';
 import { CirrusHmrRPC } from './facets/real-vite-hmr.js';
 import { createNimbusHandler } from './router/index.js';
@@ -71,7 +72,7 @@ setRegistryEventSink((e) => {
 // Re-export inner-Worker binding shims so wrangler bundles them AND
 // ctx.exports auto-populates Service Bindings for them (via
 // enable_ctx_exports; default at compat date 2026-04-01+).
-export { NimbusSession, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, };
+export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, };
 /**
  * Module-level reference to ctx.exports from the fetch handler.
  * Used by NimbusSession to create loopback bindings for facets.
