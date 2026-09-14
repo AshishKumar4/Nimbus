@@ -190,6 +190,19 @@ import assert from 'node:assert/strict';
 }
 
 {
+  // Astro/Nuxt plugin names are not framework plugins: those projects
+  // are driven by astro.config/nuxt.config, never by a vite.config
+  // `plugins` entry, so a stray entry warns like any unhandled plugin.
+  const config = parseViteConfigSource(`
+    import astro from 'astro';
+    import kit from '@nuxt/kit';
+    export default defineConfig({ plugins: [astro(), kit()] });
+  `);
+  assert.deepEqual(viteBuildBlockingPlugins(config), []);
+  assert.deepEqual(unhandledVitePlugins(config), ['astro', '@nuxt/kit']);
+}
+
+{
   // No plugins at all — nothing to refuse or warn about.
   const config = parseViteConfigSource(`export default { server: { port: 5173 } };`);
   assert.equal(config.plugins, undefined);
