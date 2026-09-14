@@ -28,6 +28,18 @@ export function parseViteConfigSource(source) {
             config.alias = parsedAlias;
         const define = getObjectProperty(configObject, 'define');
         const parsedDefine = define?.type === 'ObjectExpression' ? parseDefine(define) : undefined;
+        const plugins = getObjectProperty(configObject, 'plugins');
+        if (plugins?.type === 'ArrayExpression') {
+            const importSpecifiers = collectImportSpecifiers(ast);
+            const pluginNames = [];
+            for (const element of nodeList(plugins, 'elements')) {
+                for (const name of pluginExpressionNames(element, importSpecifiers)) {
+                    pluginNames.push(name);
+                }
+            }
+            if (pluginNames.length > 0)
+                config.plugins = pluginNames;
+        }
         if (parsedDefine && Object.keys(parsedDefine).length > 0)
             config.define = parsedDefine;
     }
@@ -226,6 +238,97 @@ function importsVitePlugin(ast) {
         }
     }
     return false;
+}
+/** Map every imported local name to its module specifier (`import sveltekit from '@sveltejs/kit/vite'` → `sveltekit → '@sveltejs/kit/vite'`). */
+function collectImportSpecifiers(ast) {
+    const map = new Map();
+    for (const stmt of nodeList(ast, 'body')) {
+        if (stmt.type !== 'ImportDeclaration')
+            continue;
+        const source = nodeProp(stmt, 'source');
+        const specifier = source?.type === 'Literal' ? literalStringValue(source) : undefined;
+        if (!specifier)
+            continue;
+        for (const spec of nodeList(stmt, 'specifiers')) {
+            const local = nodeName(nodeProp(spec, 'local'));
+            if (local)
+                map.set(local, specifier);
+        }
+    }
+    return map;
+}
+/**
+ * Best-effort names for one `plugins: [...]` element. Vite plugin entries
+ * are almost always `identifier()` call expressions on imported factories;
+ * each form is resolved back to its import specifier so the diagnostic
+ * names the package (`@sveltejs/kit/vite`), not the local name.
+ */
+function pluginExpressionNames(node, imports, depth = 0) {
+    if (!node || depth > 4)
+        return ['(unresolved plugin expression)'];
+    switch (node.type) {
+        case 'CallExpression':
+        case 'NewExpression': {
+            const callee = nodeProp(node, 'callee');
+            if (callee?.type === 'Identifier') {
+                const local = stringField(callee, 'name') || '';
+                return [imports.get(local) || `local plugin '${local}'`];
+            }
+            if (callee?.type === 'MemberExpression') {
+                const object = nodeProp(callee, 'object');
+                const local = object?.type === 'Identifier' ? stringField(object, 'name') : undefined;
+                const imported = local ? imports.get(local) : undefined;
+                if (imported)
+                    return [imported];
+            }
+            return ['(unresolved plugin expression)'];
+        }
+        case 'Identifier': {
+            const local = stringField(node, 'name') || '';
+            // Imported factory reference (e.g. `plugins: [vue]`) or a local
+            // function/const used as a plugin — either way it is a plugin.
+            return [imports.get(local) || `local plugin '${local}'`];
+        }
+        case 'ObjectExpression': {
+            // Inline plugin object literal `{ name: 'x', transform() {} }`.
+            const name = literalStringValue(getObjectProperty(node, 'name'));
+            return [name ? `inline plugin '${name}'` : '(inline plugin)'];
+        }
+        case 'SpreadElement':
+            return pluginExpressionNames(nodeProp(node, 'argument'), imports, depth + 1);
+        case 'ConditionalExpression':
+            return [
+                ...pluginExpressionNames(nodeProp(node, 'consequent'), imports, depth + 1),
+                ...pluginExpressionNames(nodeProp(node, 'alternate'), imports, depth + 1),
+            ];
+        case 'LogicalExpression':
+            return pluginExpressionNames(nodeProp(node, 'right'), imports, depth + 1);
+        case 'Literal':
+            return typeof node.value === 'string' ? [`'${node.value}'`] : [];
+        default:
+            return ['(unresolved plugin expression)'];
+    }
+}
+/**
+ * Vite plugin specifiers the built-in (`cirrus`) dev/build path can run
+ * itself: the React plugins are inert under Cirrus because JSX/TSX
+ * transforms (incl. the automatic runtime) are already built in — the
+ * plugin's contribution is fast-refresh, which the shim does not need.
+ */
+const CIRRUS_BUILTIN_VITE_PLUGINS = {
+    '@vitejs/plugin-react': true,
+    '@vitejs/plugin-react-swc': true,
+    '@vitejs/plugin-react-oxc': true,
+};
+/**
+ * Plugin names from a parsed config that the built-in server cannot run —
+ * every entry except the built-in React plugins. Framework scaffolds
+ * (SvelteKit → `@sveltejs/kit/vite`, Vue → `@vitejs/plugin-vue`, Solid,
+ * Astro) land here, as do inline/unresolved plugin expressions: the
+ * built-in path evaluates no plugin at all.
+ */
+export function unsupportedVitePlugins(config) {
+    return (config.plugins || []).filter((name) => !CIRRUS_BUILTIN_VITE_PLUGINS[name]);
 }
 function isJsonStringifyCall(node) {
     const callee = nodeProp(node, 'callee');

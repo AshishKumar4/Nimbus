@@ -22,6 +22,7 @@ import { errorText } from '../_shared/error-text.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, } from './javascript-ast.js';
 import { scanJsSource } from './comment-strip.js';
+import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -924,6 +925,7 @@ export async function loadEsbuild() {
         throw e;
     }
 }
+const __outputDecoder = new TextDecoder();
 async function transformWithEsbuild(esbuildApi, source, options) {
     let code = source;
     const format = options?.format || 'esm';
@@ -1177,7 +1179,10 @@ export class EsbuildService {
     async build(entryPoints, options) {
         await this.ensureInit();
         // VFS plugin reads directly from VFS (synchronous, co-located)
-        const vfsPlugin = this.makeVfsPlugin();
+        const vfsPlugin = this.makeVfsPlugin({
+            viteAssets: options?.viteAssets,
+            vitePublicDir: options?.vitePublicDir,
+        });
         const result = await this._esbuild.build({
             entryPoints: entryPoints.map(ep => ep.startsWith('/') ? ep : '/' + ep),
             bundle: options?.bundle ?? true,
@@ -1195,6 +1200,13 @@ export class EsbuildService {
             tsconfigRaw: options?.tsconfigRaw,
             alias: options?.alias,
             keepNames: options?.keepNames,
+            entryNames: options?.entryNames,
+            chunkNames: options?.chunkNames,
+            assetNames: options?.assetNames,
+            // Always on: it is the only reliable way for callers to tell entry
+            // outputs (and their `cssBundle` sidecars) apart from emitted
+            // `file`-loader assets, which output ordering cannot express.
+            metafile: true,
             // Prefer ESM builds and modern module fields. This matters for packages
             // like zustand that ship both CJS (main) and ESM (module / exports.import).
             // Without these, esbuild falls back to CJS which wraps everything in
@@ -1204,12 +1216,19 @@ export class EsbuildService {
             plugins: [vfsPlugin],
         });
         return {
-            outputFiles: (result.outputFiles || []).map(f => ({
-                path: f.path,
-                contents: f.text,
-            })),
+            outputFiles: (result.outputFiles || []).map((f) => {
+                let text;
+                return {
+                    path: f.path,
+                    bytes: f.contents,
+                    get contents() {
+                        return (text ??= __outputDecoder.decode(f.contents));
+                    },
+                };
+            }),
             errors: result.errors?.map(e => ({ text: e.text, location: e.location })) || [],
             warnings: result.warnings?.map(w => ({ text: w.text, location: w.location })) || [],
+            metafile: result.metafile,
         };
     }
     requireVfs() {
@@ -1220,9 +1239,10 @@ export class EsbuildService {
     /**
      * VFS resolver plugin for esbuild.
      * Reads through the caller's credentialed view (synchronous, no snapshot needed).
-     * Handles: absolute paths, relative paths, bare specifiers (node_modules).
+     * Handles: absolute paths, relative paths, bare specifiers (node_modules),
+     * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */
-    makeVfsPlugin() {
+    makeVfsPlugin(opts) {
         const vfs = this.requireVfs();
         const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
         const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
@@ -1486,43 +1506,34 @@ export class EsbuildService {
                     }
                     return false;
                 };
-                build.onResolve({ filter: /.*/ }, (args) => {
+                const viteAssets = opts?.viteAssets === true;
+                const publicDir = opts?.vitePublicDir
+                    ? '/' + strip(normalize(opts.vitePublicDir))
+                    : null;
+                /**
+                 * Resolve an extension-/`?`-clean specifier through the normal VFS
+                 * chain. `null` falls through to esbuild's default handling, which
+                 * reports a proper "Could not resolve" diagnostic — never silently
+                 * marked external (that would ship a broken import).
+                 */
+                const resolveModulePath = (spec, resolveDir, kind) => {
                     // 1. Subpath imports (#foo) — Node.js package.json `imports` field.
                     // These MUST be resolved against the owning package's package.json,
                     // not node_modules. Used by vfile, unified, and others to switch
                     // between node/browser implementations.
-                    if (args.path.startsWith('#') && args.resolveDir) {
-                        const resolved = resolvePackageImport(args.path, strip(args.resolveDir));
-                        if (resolved)
-                            return { path: resolved, namespace: 'nimbus-vfs' };
-                        // If we can't resolve it, fall through — better to leak a bare
-                        // import that fails loudly than to pretend it's external.
+                    if (spec.startsWith('#') && resolveDir) {
+                        return resolvePackageImport(spec, strip(resolveDir));
                     }
-                    // 2. Bare specifier + external → leave as-is so the browser resolves
-                    // via its own module resolver (which hits /preview/@modules/...).
-                    // This MUST come before any vfs resolution, otherwise we'd embed
-                    // the package into the bundle and break single-instance invariants
-                    // for react/react-dom.
-                    if (!args.path.startsWith('/') && !args.path.startsWith('.') && !args.path.startsWith('#')) {
-                        if (isExternal(args.path))
-                            return { external: true };
+                    // 2. Absolute paths
+                    if (spec.startsWith('/'))
+                        return tryResolve(spec);
+                    // 3. Relative paths
+                    if (spec.startsWith('.') && resolveDir) {
+                        return tryResolve(strip(resolveDir) + '/' + spec);
                     }
-                    // 3. Absolute paths
-                    if (args.path.startsWith('/')) {
-                        const resolved = tryResolve(args.path);
-                        if (resolved)
-                            return { path: resolved, namespace: 'nimbus-vfs' };
-                    }
-                    // 4. Relative paths
-                    if (args.path.startsWith('.') && args.resolveDir) {
-                        const dir = strip(args.resolveDir);
-                        const resolved = tryResolve(dir + '/' + args.path);
-                        if (resolved)
-                            return { path: resolved, namespace: 'nimbus-vfs' };
-                    }
-                    // 5. Bare specifier (npm package)
-                    if (!args.path.startsWith('/') && !args.path.startsWith('.') && !args.path.startsWith('#')) {
-                        const fromDir = args.resolveDir || '/home/user';
+                    // 4. Bare specifier (npm package)
+                    if (!spec.startsWith('/') && !spec.startsWith('.') && !spec.startsWith('#')) {
+                        const fromDir = resolveDir || '/home/user';
                         // Per Node spec: `require()` triggers the 'require' condition,
                         // `import` triggers 'import'. esbuild surfaces this via
                         // args.kind. Without this, packages that ship a dual-export
@@ -1532,36 +1543,117 @@ export class EsbuildService {
                         // to a callsite that expects the function directly — runtime
                         // crash with "<helper>2 is not a function" on the first
                         // route that uses the affected package.
-                        const conditions = args.kind === 'require-call' || args.kind === 'require-resolve'
+                        const conditions = kind === 'require-call' || kind === 'require-resolve'
                             ? CJS_CONDITIONS
                             : ESM_CONDITIONS;
-                        const resolved = resolveBarePkg(args.path, fromDir, conditions);
-                        if (resolved)
-                            return { path: resolved, namespace: 'nimbus-vfs' };
+                        return resolveBarePkg(spec, fromDir, conditions);
+                    }
+                    return null;
+                };
+                build.onResolve({ filter: /.*/ }, (args) => {
+                    let spec = args.path;
+                    let suffix = '';
+                    if (viteAssets) {
+                        const [bare, query] = splitImportQuery(args.path);
+                        spec = bare;
+                        suffix = query.split('&')[0];
+                        // Vite's `?` modifiers we understand select a namespace below.
+                        // Anything else — `?worker`, `?sharedworker`, `?init`,
+                        // `?module` — has no built-in equivalent; fail loudly instead
+                        // of shipping a subtly wrong import.
+                        if (suffix && !VITE_ASSET_QUERY_SUFFIXES[suffix]) {
+                            return {
+                                errors: [{
+                                        text: `Built-in vite build does not support the '?${suffix}' import modifier` +
+                                            ` (imported as '${args.path}'). Supported: ?url, ?raw, ?inline.`,
+                                    }],
+                            };
+                        }
+                    }
+                    // Bare specifier + external → leave as-is so the browser resolves
+                    // via its own module resolver (which hits /preview/@modules/...).
+                    // This MUST come before any vfs resolution, otherwise we'd embed
+                    // the package into the bundle and break single-instance invariants
+                    // for react/react-dom.
+                    if (!spec.startsWith('/') && !spec.startsWith('.') && !spec.startsWith('#')) {
+                        if (isExternal(spec))
+                            return { external: true };
+                    }
+                    let resolved = resolveModulePath(spec, args.resolveDir, args.kind);
+                    let publicImport = false;
+                    // Vite public/ fallback: `import '/vite.svg'` names a file the
+                    // dev server serves verbatim from publicDir — it resolves to the
+                    // literal URL string, never to a hashed emitted file. A user
+                    // `?` modifier still applies to the public FILE's contents.
+                    if (viteAssets && !resolved && publicDir && spec.startsWith('/')) {
+                        const pubPath = publicDir + spec;
+                        if (vfs.exists(strip(pubPath)) && !vfs.isDirectory(strip(pubPath))) {
+                            resolved = pubPath;
+                            publicImport = true;
+                        }
+                    }
+                    if (resolved) {
+                        // The `?` modifier is carried in the NAMESPACE, not the path:
+                        // esbuild keys module identity on (namespace, path) but derives
+                        // emitted-asset names and MIME types from the path — a query
+                        // left on the path would produce `foo-ABCD.txt?url` files and
+                        // text/plain data URLs.
+                        if (publicImport && !suffix) {
+                            return { path: resolved, namespace: 'nimbus-vfs-public' };
+                        }
+                        if (suffix && VITE_ASSET_QUERY_SUFFIXES[suffix]) {
+                            return { path: resolved, namespace: 'nimbus-vfs-' + suffix };
+                        }
+                        return { path: resolved, namespace: 'nimbus-vfs' };
+                    }
+                    if (!viteAssets && !spec.startsWith('/') && !spec.startsWith('.') && !spec.startsWith('#')) {
                         // Mark as external if not found (common for Node built-ins)
                         return { external: true };
                     }
-                    return { external: true };
+                    return null; // esbuild reports "Could not resolve '<spec>'"
                 });
-                build.onLoad({ filter: /.*/, namespace: 'nimbus-vfs' }, (args) => {
-                    const stripped = strip(args.path);
+                const loadVfsFile = (path, loader) => {
+                    const stripped = strip(path);
                     try {
-                        const loader = inferLoader(args.path);
                         const lastSlash = stripped.lastIndexOf('/');
                         const resolveDir = lastSlash > 0 ? '/' + stripped.substring(0, lastSlash) : '/';
-                        // Binary loaders (wasm, native addons) must receive raw bytes.
-                        // TextDecoder would corrupt them with U+FFFD replacement chars.
-                        if (loader === 'binary') {
-                            const bytes = vfs.readFile(stripped);
-                            return { contents: bytes, loader, resolveDir };
+                        // Binary loaders (wasm, native addons) and byte-oriented Vite
+                        // asset loaders (file → emitted bytes, dataurl/base64 → base64
+                        // of the raw bytes) must receive raw bytes. TextDecoder would
+                        // corrupt them with U+FFFD replacement chars.
+                        if (loader === 'binary' || loader === 'file' || loader === 'dataurl' || loader === 'base64') {
+                            return { contents: vfs.readFile(stripped), loader, resolveDir };
                         }
-                        const contents = vfs.readFileString(stripped);
-                        return { contents, loader, resolveDir };
+                        return { contents: vfs.readFileString(stripped), loader, resolveDir };
                     }
                     catch {
-                        return { errors: [{ text: 'File not found in VFS: ' + args.path }] };
+                        return { errors: [{ text: 'File not found in VFS: ' + path }] };
                     }
+                };
+                build.onLoad({ filter: /.*/, namespace: 'nimbus-vfs' }, (args) => {
+                    const loader = viteAssets
+                        ? (viteAssetLoader(args.path) ?? inferLoader(args.path))
+                        : inferLoader(args.path);
+                    return loadVfsFile(args.path, loader);
                 });
+                // public/ verbatim: `export default "<public url>"` — the file is
+                // served as-is, never emitted hashed.
+                build.onLoad({ filter: /.*/, namespace: 'nimbus-vfs-public' }, (args) => ({
+                    contents: `export default ${JSON.stringify(publicDir ? args.path.slice(publicDir.length) : args.path)};`,
+                    loader: 'js',
+                }));
+                // One namespace per `?` modifier. The path is already clean, so
+                // emitted names/MIME types are correct; the namespace alone tells
+                // the modifier apart (and keeps `?raw` vs `?url` on the same file
+                // as distinct modules).
+                const suffixNamespaces = {
+                    url: 'file', raw: 'text', base64: 'base64',
+                };
+                for (const [suffix, loader] of Object.entries(suffixNamespaces)) {
+                    build.onLoad({ filter: /.*/, namespace: 'nimbus-vfs-' + suffix }, (args) => loadVfsFile(args.path, loader));
+                }
+                // ?inline needs the extension (`.css` → text, else dataurl).
+                build.onLoad({ filter: /.*/, namespace: 'nimbus-vfs-inline' }, (args) => loadVfsFile(args.path, viteAssetLoader(args.path + '?inline') ?? 'dataurl'));
             },
         };
     }
