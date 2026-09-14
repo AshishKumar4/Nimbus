@@ -540,6 +540,16 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(env.NIMBUS_SESSION.names.at(-1), `${TENANT}:${SID}`);
   const wrongName = await handler.fetch(new Request(`https://${CAP}--web--${SID}.${SUFFIX}/`), env, ctx);
   assert.equal(wrongName.status, 404, 'a capability under a name it was not bound with is 404');
+  directory.rows.set(CAP, { tenantSegment: TENANT, sid: SID, port: 4174, name: 'renamed' });
+  const renamed = await handler.fetch(new Request(`https://${CAP}--renamed--${SID}.${SUFFIX}/now`), env, ctx);
+  assert.equal(renamed.status, 200, 'rename bypasses the stale positive cache immediately');
+  assert.equal((await renamed.json()).pathname, '/port/4174/now');
+  const wrongPort = await handler.fetch(new Request(`https://${CAP}--9999--${SID}.${SUFFIX}/`), env, ctx);
+  assert.equal(wrongPort.status, 404, 'a capability is bound to the directory port, not the host port');
+  directory.rows.set(CAP, { tenantSegment: TENANT, sid: SID, port: 4175, name: 'renamed' });
+  const moved = await handler.fetch(new Request(`https://${CAP}--4175--${SID}.${SUFFIX}/now`), env, ctx);
+  assert.equal(moved.status, 200, 'port host mismatch re-resolves once too');
+  assert.equal((await moved.json()).pathname, '/port/4175/now');
   const unknownCap = await handler.fetch(new Request(`https://${'0'.repeat(24)}--api--${SID}.${SUFFIX}/`), env, ctx);
   assert.equal(unknownCap.status, 404);
   const scoped = await handler.fetch(new Request(`https://api--${SID}.${SUFFIX}/`), env, ctx);

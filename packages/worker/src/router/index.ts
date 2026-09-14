@@ -99,14 +99,15 @@ interface PublicResolution {
  * bound with, which is what the `<cap>--<name>--<sid>` form resolves and
  * verifies against.
  */
-async function resolvePublicCapability(capability: string, env: unknown): Promise<PublicResolution | null> {
+async function resolvePublicCapability(capability: string, env: unknown, uncached = false): Promise<PublicResolution | null> {
   const cached = publicTenantCache.get(capability);
-  if (cached !== undefined) return cached;
+  if (!uncached && cached !== undefined) return cached;
   const stub = publicDirectoryStub(env);
   if (stub === null) return { tenantSegment: LEGACY_PUBLIC_DO_SEGMENT, port: null, name: null };
   const entry = await stub.resolve(capability).catch(() => null);
   if (entry === null) {
     // An unresolvable capability 404s: no session DO is named for it.
+    publicTenantCache.delete(capability);
     return null;
   }
   const resolved: PublicResolution = {
@@ -304,8 +305,18 @@ export function createNimbusHandler(
         // directory — a positive hit is cached for the life of this
         // isolate, a miss 404s, and a deployment without the binding
         // falls back to the legacy-public DO name.
-        const resolved = await resolvePublicCapability(preview.capability, env);
-        if (resolved === null) {
+        let resolved = await resolvePublicCapability(preview.capability, env);
+        const matchesHost = (entry: PublicResolution | null): boolean => entry !== null && (
+          preview.name !== undefined
+            ? entry.name === preview.name && entry.port !== null
+            : entry.port === null || entry.port === preview.port
+        );
+        // Rename/rebinding can leave a positive isolate cache entry behind.
+        // Verify BOTH host forms, and read through once before refusing.
+        if (resolved !== null && !matchesHost(resolved)) {
+          resolved = await resolvePublicCapability(preview.capability, env, true);
+        }
+        if (resolved === null || !matchesHost(resolved)) {
           return new Response('Not found', { status: 404 });
         }
         // The name form is resolved by capability like the port form, then
