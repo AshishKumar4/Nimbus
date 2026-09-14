@@ -593,6 +593,15 @@ export interface FacetManagerHooks {
      * restarted.
      */
     resolveWorkerLaunch?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
+    /**
+     * The session's own default resolver, reading the durable image store a
+     * self-owned spawn persisted under `.nimbus/images/`. Consulted ONLY when
+     * `resolveWorkerLaunch` is absent — an embedder's hook still overrides
+     * everything. Being the fallback is also what it is *not*: it can never
+     * re-mint a live globalOutbound binding, so a durable spawn carrying one
+     * is refused unless the embedder hook exists.
+     */
+    resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
 export interface LongRunningWorkerSpawnOptions {
     port?: number;
@@ -619,7 +628,7 @@ export interface LongRunningWorkerSpawnOptions {
      */
     durable?: {
         owner: string;
-        image: {
+        image?: {
             runner: string;
             application: string;
         };
@@ -658,10 +667,13 @@ export interface WorkerRecipe {
 }
 /** What the embedder supplies for a re-driven worker launch. */
 export interface ResolvedWorkerLaunch {
-    env: ResidentCodeSpec['env'];
+    /** Null is the absent answer — the same JSON the image blob carries. */
+    env: ResidentCodeSpec['env'] | null;
     globalOutbound: ResidentCodeSpec['globalOutbound'];
     /** Module name → source text, including the `worker.js` main module. */
     modules: Record<string, string>;
+    /** Module name → VFS path of a wasm image, restored with the launch. */
+    vfsWasmModules?: Record<string, string>;
 }
 export declare class FacetManager {
     private ctx;
@@ -740,12 +752,13 @@ export declare class FacetManager {
      * prefetch cache above so a profile can only ever seed the bundle it was
      * measured against.
      *
-     * Lifetime is the supervisor incarnation's, same as the cache — a restart
      * costs one more loud failure and then relearns. Persisting it would be a
      * schema and a migration bought with nothing the in-memory form does not
      * already deliver for the case that matters: running the command again.
      */
     private residencyProfiles;
+    /** In-flight request-driven durable-app ensures, single-flight per port. */
+    private ensureInflight;
     private static readonly RESIDENCY_PROFILE_MAX_ENTRIES;
     /**
      * A program that reads a directory of data files misses once per file, so
@@ -774,6 +787,11 @@ export declare class FacetManager {
      * store itself decides nothing about modes.
      */
     private _imageBlobs;
+    /**
+     * The kernel-scoped VFS the durable image store reads and writes through —
+     * `.nimbus/images/<sha256>` is session kernel data, not user content.
+     */
+    private _imageVfs;
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
      * the ESM→CJS bundle pre-pass. NimbusSession already lazy-creates one
@@ -1099,6 +1117,42 @@ export declare class FacetManager {
     finishProcess(pid: number, exitCode: number, reason?: string): void;
     /** Kill a running process by PID. */
     kill(pid: number): boolean;
+    /**
+     * Remove a durable application: the ONLY path that deletes durable facet
+     * storage. Owner-checked by construction — `freeDurableFacetSlot` answers
+     * only a slot the owner actually holds, and the reservation release refuses
+     * a foreign owner's record — so another owner's name cannot be reached.
+     *
+     * One ordered teardown: the live process is killed first (a released
+     * durable facet only aborts, so nothing else ends it), the port reservation
+     * is released, the journal rows for the owner are purged (nothing is owed a
+     * removed application), the facet's SQLite is deleted, and the slot row is
+     * freed last — so a crash mid-removal leaves a name still claimed rather
+     * than a store nobody can re-drive.
+     */
+    removeDurableApp(owner: string): Promise<boolean>;
+    /**
+     * Whether a request addressed to `port` can reach a durable application —
+     * and, when the application is journaled but dead, drive its re-drive and
+     * wait for the boot, bounded.
+     *
+     * The port request is the one surface a reset leaves dark: the alarm pump
+     * re-drives journaled launches eventually, but a URL a user is holding
+     * cannot wait for an alarm that may never fire. 'started' means a live
+     * process owns the port now; 'absent' means nothing durable claims it
+     * (the caller answers 502 as it always has); 'failed' means a re-drive
+     * ran and lost, or outlived its bound — the caller answers 503 and lets
+     * the page re-ask.
+     *
+     * Single-flight per port: parallel requests on a woken page share one
+     * ensure, which shares the journal's per-row drive with recovery — a
+     * request that lands mid-recovery waits on that boot, it never boots a
+     * second process.
+     */
+    ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'>;
+    private _ensureDurableAppOnPort;
+    /** Poll for a port registration the in-flight launch has not made yet. */
+    private _waitForPort;
     get stats(): {
         total: number;
         running: number;

@@ -98,7 +98,7 @@ export async function cloneStorage(ctx, clone) {
     }
 }
 /**
- * The facet name for a slot. Reused, and that is the entire point.
+ * The facet name for an ephemeral slot. Reused, and that is the entire point.
  *
  * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
  * append-only and are never reclaimed, so the bound is on facets ever CREATED,
@@ -110,10 +110,18 @@ export async function cloneStorage(ctx, clone) {
  * Reusing a NAME costs no new ID. So the name comes from a free list and the
  * pid stays what it always was: the process identity in the ProcessTable. The
  * two were only ever conflated because one of them happened to be handy.
+ *
+ * The book shares the facet-ID space with one other namespace: durable
+ * applications, which mint `app-slot-<n>` names of their own (one ID per app,
+ * ever). The prefixes are disjoint BY CONSTRUCTION, and that disjointness is
+ * load-bearing — a proc-slot name reissued onto a durable app's retained
+ * storage would boot the wrong process into someone else's disk.
  */
 export function residentFacetName(slot) {
     return `proc-slot-${slot}`;
 }
+/** The prefix every durable application's facet name carries. */
+export const DURABLE_FACET_NAME_PREFIX = 'app-slot-';
 /**
  * Slot books, per hosting actor, because the facet index is per Durable
  * Object.
@@ -128,6 +136,11 @@ export function residentFacetName(slot) {
  * VFS epoch, in which case `invalidatedSince` can only answer poison and the
  * whole store is dropped. A process therefore cannot boot onto a previous
  * tenant's filesystem even when release never ran.
+ *
+ * The book names only the `proc-slot-` space. Durable `app-slot-` names are
+ * allocated against DO storage instead (their owner survives a reset), so a
+ * fresh incarnation's `next` starting at 0 can never collide with them even
+ * before the durable ledger is adopted.
  */
 const slotBooks = new WeakMap();
 function slotBook(ctx) {
@@ -162,6 +175,16 @@ function releaseSlot(ctx, pid) {
     book.held.delete(pid);
     book.free.push(slot);
     book.free.sort((a, b) => a - b);
+}
+/**
+ * Drop one facet's SQLite by name — the ONLY call site that may delete facet
+ * storage. `spawnResident` releases ephemeral processes with abort+delete
+ * (storage is slot-reuse hygiene) and durable ones with abort alone (the
+ * storage IS the durable application's state); explicit removal arrives here
+ * through the coordinator's durable-slot book, owner-checked.
+ */
+export function deleteFacetStorage(ctx, name) {
+    facetContainer(ctx).delete(name);
 }
 /**
  * The process surface of one hosting actor: how a resident process comes
@@ -207,8 +230,19 @@ export class Processes {
 }
 function spawnResident(ctx, env, disk, supervisor, params) {
     const facets = facetContainer(ctx);
-    const slot = acquireSlot(ctx, params.pid);
-    const name = residentFacetName(slot);
+    // An explicit name is the durable path: the caller allocated an
+    // `app-slot-<n>` identity out of DO storage and this facet keeps its SQLite
+    // across aborts. Anything else takes the in-memory book — and that book's
+    // `proc-slot-` names must never be minted for it, or an ephemeral release's
+    // delete would wipe the app's storage and a reused slot would land a new
+    // process on someone else's disk.
+    const explicit = params.facet;
+    if (explicit && !explicit.name.startsWith(DURABLE_FACET_NAME_PREFIX)) {
+        throw new Error(`Nimbus: an explicit facet name must carry the '${DURABLE_FACET_NAME_PREFIX}' `
+            + `prefix, got '${explicit.name}'`);
+    }
+    const slot = explicit ? undefined : acquireSlot(ctx, params.pid);
+    const name = explicit ? explicit.name : residentFacetName(slot);
     // The start callback is the ONLY way this facet is ever created, and it
     // fires AT MOST ONCE. Every later use goes through the stub below, so the
     // callback running a second time means the facet was released or died —
@@ -233,7 +267,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         facet = facets.get(name, start);
     }
     catch (error) {
-        releaseSlot(ctx, params.pid);
+        if (slot !== undefined)
+            releaseSlot(ctx, params.pid);
         throw withFacetBudgetNamed(facetNameCount(ctx), error);
     }
     let disposed = false;
@@ -246,13 +281,21 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             facets.abort(name, new Error('Nimbus: resident process released'));
         }
         catch { /* already gone */ }
-        try {
-            facets.delete(name);
+        // The two release classes: an ephemeral facet's SQLite is slot-reuse
+        // hygiene — the name is handed out again, so the store must not be — and
+        // a durable one's is the application itself: abort ends the process, the
+        // data stays for the next boot, and only removeDurableApp's explicit
+        // deleteFacetStorage call ever drops it.
+        if (!explicit?.durable) {
+            try {
+                facets.delete(name);
+            }
+            catch { /* already gone */ }
         }
-        catch { /* already gone */ }
         // Only after the facet is gone. A slot handed out while its previous
         // tenant were still being torn down would have two processes on one name.
-        releaseSlot(ctx, params.pid);
+        if (slot !== undefined)
+            releaseSlot(ctx, params.pid);
     };
     let started;
     try {
@@ -280,6 +323,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         handleHttpRequest: (request) => facet.handleHttpRequest(request),
         handleWebSocketRequest: (request) => facet.fetch(request),
         release,
+        name,
         slot,
     };
 }

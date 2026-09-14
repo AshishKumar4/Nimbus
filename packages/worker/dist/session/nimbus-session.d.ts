@@ -439,12 +439,24 @@ export declare class NimbusSession extends CloudflareDurableObject {
         exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
     }>;
     _rpcListPorts(): Promise<_programmatic.SerializedPort[]>;
-    _rpcExposePort(port: number): Promise<{
+    _rpcExposePort(port: number, options?: {
+        visibility?: 'scoped' | 'public';
+    }): Promise<{
         port: number;
         listening: boolean;
         pid: number | null;
         registeredAt: number | null;
         capability: string | null;
+        visibility: "scoped" | "public";
+    }>;
+    _rpcEnsureDurableApp(input: {
+        owner: string;
+        preferredPort?: number;
+        visibility?: 'scoped' | 'public';
+    }): Promise<{
+        port: number;
+        capability: string | null;
+        visibility: "scoped" | "public";
     }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
@@ -452,6 +464,12 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }>;
     /** Capability-authenticated port route, for an embedder holding the token. */
     _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
+    /**
+     * The port route's recovery seam: a durable application journalled but
+     * dead is re-driven on demand rather than left for the alarm pump. The
+     * manager decides 'started' | 'absent' | 'failed'; the route maps them.
+     */
+    ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
     }): Promise<void>;

@@ -251,12 +251,24 @@ interface NimbusSessionStub {
     }>;
     _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
     _rpcListPorts(): Promise<NimbusPort[]>;
-    _rpcExposePort(port: number): Promise<{
+    _rpcExposePort(port: number, options?: {
+        visibility?: 'scoped' | 'public';
+    }): Promise<{
         port: number;
         listening: boolean;
         pid: number | null;
         registeredAt: number | null;
         capability: string | null;
+        visibility?: 'scoped' | 'public';
+    }>;
+    _rpcEnsureDurableApp(input: {
+        owner: string;
+        preferredPort?: number;
+        visibility?: 'scoped' | 'public';
+    }): Promise<{
+        port: number;
+        capability: string | null;
+        visibility: 'scoped' | 'public';
     }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
@@ -386,19 +398,39 @@ export declare class NimbusSandbox {
     };
     ports: {
         list: () => Promise<NimbusPort[]>;
-        expose: (port: number) => Promise<{
+        expose: (port: number, options?: {
+            visibility?: "scoped" | "public";
+        }) => Promise<{
             url: string | undefined;
             port: number;
             listening: boolean;
             pid: number | null;
             registeredAt: number | null;
             capability: string | null;
+            visibility?: "scoped" | "public";
         }>;
         unexpose: (port: number) => Promise<{
             port: number;
             ok: boolean;
         }>;
-        url: (port: number) => string | undefined;
+        /**
+         * Reserve (or re-answer) a durable application's port: the capability it
+         * answers is minted here and survives every reset, so the URL it builds
+         * is the URL the application keeps.
+         */
+        ensureDurableApp: (input: {
+            owner: string;
+            preferredPort?: number;
+            visibility?: "scoped" | "public";
+        }) => Promise<{
+            port: number;
+            capability: string | null;
+            visibility: "scoped" | "public";
+        }>;
+        url: (port: number, options?: {
+            visibility?: "scoped" | "public";
+            capability?: string;
+        }) => string | undefined;
     };
     tools(options?: {
         namespace?: string;
@@ -506,6 +538,7 @@ export declare class NimbusSandbox {
                     pid: number | null;
                     registeredAt: number | null;
                     capability: string | null;
+                    visibility?: "scoped" | "public";
                 }>;
             };
             unexposePort: {

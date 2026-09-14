@@ -22,13 +22,14 @@ import { FACET_RESIDENT_STORE_SOURCE } from '../vfs/facet-resident-store.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
 import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
-import { clearPortCapability, readPortReservation } from '../session/port-capability.js';
+import { clearPortCapability, readPortReservation, releasePortReservation, restoreReservedPortCapability } from '../session/port-capability.js';
+import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
-import { TurnBudget, PacedWork, turnChunkMaxBytes } from '@nimbus-sh/fabric/turn-budget.js';
+import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { FencedWork, } from '@nimbus-sh/fabric/fenced-work.js';
 import { EsbuildService, rewriteBundledEsmToCjs, } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -37,7 +38,9 @@ import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { ProcessFabric, } from '@nimbus-sh/fabric/process-fabric.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
+import { persistDurableWorkerImage, } from './durable-images.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -3160,6 +3163,8 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     };
 }
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
+/** A port request may wait this long for a durable app's re-drive to boot. */
+const DURABLE_ENSURE_BOOT_BUDGET_MS = 12_000;
 /** 'running' is the measured common case: the platform's reset strikes
  *  seconds after a launch settles, while the resident runs. */
 function residentLaunchDoing(record) {
@@ -3245,12 +3250,13 @@ export class FacetManager {
      * prefetch cache above so a profile can only ever seed the bundle it was
      * measured against.
      *
-     * Lifetime is the supervisor incarnation's, same as the cache — a restart
      * costs one more loud failure and then relearns. Persisting it would be a
      * schema and a migration bought with nothing the in-memory form does not
      * already deliver for the case that matters: running the command again.
      */
     residencyProfiles = new Map();
+    /** In-flight request-driven durable-app ensures, single-flight per port. */
+    ensureInflight = new Map();
     static RESIDENCY_PROFILE_MAX_ENTRIES = 16;
     /**
      * A program that reads a directory of data files misses once per file, so
@@ -3335,6 +3341,17 @@ export class FacetManager {
             list: (dir) => fs.readdir(dir).map((entry) => entry.name),
             unlink: (path) => fs.unlink(path),
         };
+    }
+    /**
+     * The kernel-scoped VFS the durable image store reads and writes through —
+     * `.nimbus/images/<sha256>` is session kernel data, not user content.
+     */
+    _imageVfs() {
+        const vfs = this.vfs;
+        if (!vfs) {
+            throw new Error('Nimbus: a durable spawn needs a session filesystem to persist its launch image');
+        }
+        return vfs;
     }
     /**
      * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
@@ -4433,9 +4450,13 @@ export class FacetManager {
         switch (recipe.kind) {
             case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
             case 'worker': {
-                if (!this.hooks.resolveWorkerLaunch)
+                // The embedder's resolver decides everything; only a self-owned
+                // launch — nobody composed an embedder hook — falls through to the
+                // session's image-store default.
+                const resolve = this.hooks.resolveWorkerLaunch ?? this.hooks.resolveWorkerLaunchFallback;
+                if (!resolve)
                     throw new Error('resident launch journal holds a worker launch but no resolveWorkerLaunch hook is composed');
-                const resolved = await this.hooks.resolveWorkerLaunch(recipe);
+                const resolved = await resolve(recipe);
                 if (resolved === null)
                     return undefined;
                 const { 'worker.js': workerCode, ...modules } = resolved.modules;
@@ -4444,7 +4465,8 @@ export class FacetManager {
                 return this._spawnWorker(workerCode, record.command, recipe.cwd, {
                     port: recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
                     compatibilityFlags: recipe.compatibilityFlags, startArgs: recipe.startArgs,
-                    env: resolved.env, globalOutbound: resolved.globalOutbound,
+                    env: resolved.env ?? undefined, globalOutbound: resolved.globalOutbound,
+                    vfsWasmModules: resolved.vfsWasmModules,
                     durable: { owner: recipe.owner, image: recipe.image },
                 }, attempt);
             }
@@ -4772,6 +4794,7 @@ export class FacetManager {
         let handle;
         let resourcesTracked = false;
         let record;
+        let durableFacetName;
         try {
             if (opts.durable) {
                 // A durable spawn on a declared port starts only when a reservation the
@@ -4784,6 +4807,27 @@ export class FacetManager {
                         throw new Error('port reservation conflict: durable worker does not own port ' + opts.port);
                     }
                 }
+                // A live outbound binding cannot be journalled — a reset would re-drive
+                // the recipe with nothing to stand in for it. Only the EMBEDDER's
+                // resolveWorkerLaunch can re-mint one: the session's fallback reads
+                // the image store, which never carries a binding, so a durable spawn
+                // carrying globalOutbound is refused where no embedder hook exists.
+                if (opts.globalOutbound !== undefined && opts.globalOutbound !== null
+                    && this.hooks.resolveWorkerLaunch === undefined) {
+                    throw new Error('Nimbus: a durable spawn carrying a live globalOutbound binding '
+                        + 'cannot be journalled without an embedder resolveWorkerLaunch hook');
+                }
+                // Self-owned applications persist their launch inputs as image blobs —
+                // a runner blob for worker.js, an application blob for modules + env —
+                // under .nimbus/images/<sha256>, and the journal row names the digests
+                // of what was written, never placeholder strings. An embedder-owned
+                // spawn is given digests by its own bookkeeping instead.
+                const image = opts.durable.image
+                    ?? await persistDurableWorkerImage(this._imageVfs(), workerCode, {
+                        modules: opts.modules ?? {},
+                        ...(opts.env !== undefined ? { env: opts.env } : {}),
+                        vfsWasmModules: opts.vfsWasmModules,
+                    });
                 // Journalled before the launch's first byte of work, so a row a
                 // later instance reads proves this process never ended.
                 record = {
@@ -4794,7 +4838,7 @@ export class FacetManager {
                     recipe: {
                         kind: 'worker',
                         owner: opts.durable.owner,
-                        image: opts.durable.image,
+                        image,
                         port: opts.port ?? 0,
                         cwd,
                         compatibilityDate,
@@ -4802,6 +4846,11 @@ export class FacetManager {
                         startArgs: opts.startArgs,
                     },
                 };
+                // The durable facet name is claimed once, ever, from DO storage — a
+                // re-drive after a reset, an eviction's re-attach and a relaunch all
+                // land on the same `app-slot-<n>`, which is the only thing that keeps
+                // the retained SQLite bound to this application.
+                durableFacetName = await acquireDurableFacetSlot(this.ctx, opts.durable.owner);
                 await this.launchJournal.journal(record);
             }
             handle = await this._startResidentProcess(entry.pid, {
@@ -4809,6 +4858,9 @@ export class FacetManager {
                 // port, or a completed non-server run) and stay resident after it.
                 startContract: 'boot',
                 startArgs: opts.startArgs,
+                ...(durableFacetName !== undefined
+                    ? { facet: { name: durableFacetName, durable: true } }
+                    : {}),
                 boot: {
                     kind: 'code',
                     code: {
@@ -4842,11 +4894,10 @@ export class FacetManager {
                     }
                     // The owner's hold on the port survives the instance reset that
                     // re-drove this launch, and preview URLs minted against it stay
-                    // valid: the durable capability is re-adopted rather than retired.
+                    // valid: the durable capability is re-adopted through the
+                    // reservation's own path, gated on the stored owner.
                     this.portRegistry.register(opts.port, entry.pid);
-                    if (reservation.capability !== null) {
-                        this.portRegistry.restoreCapability(opts.port, reservation.capability);
-                    }
+                    await restoreReservedPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port, opts.durable.owner);
                 }
                 else {
                     // A new process on a port retires the previous occupant's preview
@@ -4913,6 +4964,135 @@ export class FacetManager {
         }
         this._teardownPairedServeFacet(pid);
         return result;
+    }
+    /**
+     * Remove a durable application: the ONLY path that deletes durable facet
+     * storage. Owner-checked by construction — `freeDurableFacetSlot` answers
+     * only a slot the owner actually holds, and the reservation release refuses
+     * a foreign owner's record — so another owner's name cannot be reached.
+     *
+     * One ordered teardown: the live process is killed first (a released
+     * durable facet only aborts, so nothing else ends it), the port reservation
+     * is released, the journal rows for the owner are purged (nothing is owed a
+     * removed application), the facet's SQLite is deleted, and the slot row is
+     * freed last — so a crash mid-removal leaves a name still claimed rather
+     * than a store nobody can re-drive.
+     */
+    async removeDurableApp(owner) {
+        // Kill any live process this owner still has — a durable release aborts
+        // without deleting, so the store outlives the process unless removal
+        // ends it here.
+        const journalRows = await this.ctx.storage.list({ prefix: 'resident-launch:' });
+        const ownedPids = [];
+        const ownedPorts = new Set();
+        for (const [, record] of journalRows) {
+            if (record.recipe.kind !== 'worker' || record.recipe.owner !== owner)
+                continue;
+            ownedPids.push(record.pid);
+            if (record.recipe.port > 0)
+                ownedPorts.add(record.recipe.port);
+        }
+        for (const pid of ownedPids)
+            this.kill(pid);
+        // The reservation may outlive every journal row (spawn never finished
+        // writing one), so scan the port records for the owner too.
+        const portRows = await this.ctx.storage.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
+        for (const [key, record] of portRows) {
+            if (record?.owner === owner)
+                ownedPorts.add(Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length)));
+        }
+        for (const port of ownedPorts) {
+            await releasePortReservation(this.ctx, { owner, port });
+            this.portRegistry.unregister(port);
+        }
+        const purged = await this.launchJournal.purgeWhere((record) => record.recipe.kind === 'worker' && record.recipe.owner === owner);
+        const name = await freeDurableFacetSlot(this.ctx, owner);
+        if (name !== null) {
+            try {
+                deleteFacetStorage(this.ctx, name);
+            }
+            catch { /* already gone */ }
+        }
+        return name !== null || purged > 0 || ownedPorts.size > 0;
+    }
+    /**
+     * Whether a request addressed to `port` can reach a durable application —
+     * and, when the application is journaled but dead, drive its re-drive and
+     * wait for the boot, bounded.
+     *
+     * The port request is the one surface a reset leaves dark: the alarm pump
+     * re-drives journaled launches eventually, but a URL a user is holding
+     * cannot wait for an alarm that may never fire. 'started' means a live
+     * process owns the port now; 'absent' means nothing durable claims it
+     * (the caller answers 502 as it always has); 'failed' means a re-drive
+     * ran and lost, or outlived its bound — the caller answers 503 and lets
+     * the page re-ask.
+     *
+     * Single-flight per port: parallel requests on a woken page share one
+     * ensure, which shares the journal's per-row drive with recovery — a
+     * request that lands mid-recovery waits on that boot, it never boots a
+     * second process.
+     */
+    ensureDurableAppOnPort(port) {
+        let inflight = this.ensureInflight.get(port);
+        if (inflight === undefined) {
+            inflight = this._ensureDurableAppOnPort(port);
+            this.ensureInflight.set(port, inflight);
+            inflight.finally(() => {
+                if (this.ensureInflight.get(port) === inflight)
+                    this.ensureInflight.delete(port);
+            });
+        }
+        return inflight;
+    }
+    async _ensureDurableAppOnPort(port) {
+        if (this.portRegistry.has(port))
+            return 'started';
+        // The reservation says the port means something to someone; the journal
+        // row is what makes it a launch this instance owes. A reservation with
+        // no row (the spawn died before journalling, or the app was removed and
+        // the release already ran) answers absent — nothing here can bring back
+        // an application with no recipe.
+        const reservation = await readPortReservation(this.ctx, port);
+        if (reservation === null || reservation.owner === null)
+            return 'absent';
+        const rows = await this.launchJournal.rows();
+        const entry = [...rows].find(([, record]) => record.recipe.kind === 'worker'
+            && record.recipe.owner === reservation.owner
+            && record.recipe.port === port);
+        if (entry === undefined)
+            return 'absent';
+        const [rowKey, record] = entry;
+        if (record.pid > this.processes.pidBase) {
+            // This instance's own row: the launch is already building — waiting
+            // for its port registration is the entire ask, and driving the row
+            // again would boot a second copy.
+            return (await this._waitForPort(port, DURABLE_ENSURE_BOOT_BUDGET_MS))
+                ? 'started' : 'failed';
+        }
+        const { promise: boundHit, resolve: markBound } = withResolvers();
+        setTimeout(() => markBound(true), DURABLE_ENSURE_BOOT_BUDGET_MS);
+        const failed = await Promise.race([
+            this.launchJournal.drive(rowKey, record),
+            boundHit,
+        ]);
+        if (failed)
+            return 'failed';
+        // A settled drive either owns the port or deliberately answered 'gone':
+        // a resolver's null superseded the row, which is absent, not failed.
+        return this.portRegistry.has(port) ? 'started' : 'absent';
+    }
+    /** Poll for a port registration the in-flight launch has not made yet. */
+    async _waitForPort(port, budgetMs) {
+        const deadline = Date.now() + budgetMs;
+        while (Date.now() < deadline) {
+            if (this.portRegistry.has(port))
+                return true;
+            const { promise: tick, resolve: tickDone } = withResolvers();
+            setTimeout(tickDone, 50);
+            await tick;
+        }
+        return this.portRegistry.has(port);
     }
     get stats() { return this.processes.stats; }
 }

@@ -56,6 +56,9 @@ export class FencedWork {
      * paying a storage delete for pids that never had a row.
      */
     journalledPids = new Set();
+    /** Re-drives in flight, by journal key — recovery's un-awaited ones and a
+     *  caller-driven one share the same drive for the same row. */
+    drives = new Map();
     /** Whether this instance has already read the journal a reset leaves behind. */
     recovered = false;
     constructor(storage, host) {
@@ -101,6 +104,67 @@ export class FencedWork {
             return;
         await this.storage.delete(`${FENCED_WORK_KEY_PREFIX}${pid}`);
         await this.storage.sync();
+    }
+    /**
+     * Drop every row `predicate` claims, live-pid bookkeeping included, synced
+     * like {@link release}. The one bulk delete the journal admits: an owner
+     * that removes its durable application is owed no recovery, however many
+     * generations back its rows were written.
+     */
+    async purgeWhere(predicate) {
+        const rows = await this.storage.list({ prefix: FENCED_WORK_KEY_PREFIX });
+        let purged = 0;
+        for (const [key, record] of rows) {
+            if (!predicate(record))
+                continue;
+            this.journalledPids.delete(record.pid);
+            await this.storage.delete(key);
+            purged += 1;
+        }
+        if (purged > 0)
+            await this.storage.sync();
+        return purged;
+    }
+    /**
+     * Every journal row, storage-true — the rows this instance wrote and the
+     * ones a previous instance left behind. The one read surface a request-
+     * driven recovery needs to find the durable launch a port belongs to.
+     */
+    async rows() {
+        return this.storage.list({ prefix: FENCED_WORK_KEY_PREFIX });
+    }
+    /**
+     * Re-drive one journal row — the awaited sibling of recovery's un-awaited
+     * re-drives, for a caller that must know whether the launch actually came
+     * back. Single-flight per row: a request-driven drive and recovery's own
+     * never boot the same launch twice. Resolves true only when the re-drive
+     * itself FAILED and the failure was reported; a settled drive supersedes
+     * the row the same way recovery's does.
+     */
+    drive(key, record) {
+        let inflight = this.drives.get(key);
+        if (inflight === undefined) {
+            inflight = (async () => {
+                let failed = false;
+                try {
+                    await this.host.redrive(record, record.attempt + 1);
+                }
+                catch (e) {
+                    this.host.onRedriveFailed?.(record, e);
+                    failed = true;
+                }
+                // A reported failure is settled business — supersede either way, so
+                // the row never re-surfaces on the next recovery.
+                await this.supersede(key);
+                return failed;
+            })();
+            this.drives.set(key, inflight);
+            inflight.finally(() => {
+                if (this.drives.get(key) === inflight)
+                    this.drives.delete(key);
+            });
+        }
+        return inflight;
     }
     /**
      * Re-drive the launches a previous instance was building when it was reset.
@@ -158,12 +222,10 @@ export class FencedWork {
             // Not awaited: this call is running inside the alarm that granted the
             // turn, and the launch it starts asks for turns of its own through that
             // same alarm — awaiting it here would be waiting on an alarm that cannot
-            // be scheduled until this one returns.
-            this.host.waitUntil(this.host.redrive(record, record.attempt + 1)
-                .catch((e) => {
-                this.host.onRedriveFailed?.(record, e);
-            })
-                .then(() => this.supersede(key)));
+            // be scheduled until this one returns. `drive` single-flights it: a
+            // request that arrives mid-launch waits on this same drive rather than
+            // booting a second process.
+            this.host.waitUntil(this.drive(key, record));
         }
     }
     /**

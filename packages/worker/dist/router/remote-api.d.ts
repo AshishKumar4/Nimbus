@@ -81,7 +81,14 @@ interface NimbusSessionRpcStub {
         bytes?: number;
     }): Promise<unknown>;
     _rpcListPorts(): Promise<unknown>;
-    _rpcExposePort(port: number): Promise<unknown>;
+    _rpcExposePort(port: number, options?: {
+        visibility?: 'scoped' | 'public';
+    }): Promise<unknown>;
+    _rpcEnsureDurableApp(input: {
+        owner?: string;
+        preferredPort?: number;
+        visibility?: 'scoped' | 'public';
+    }): Promise<unknown>;
     _rpcUnexposePort(port: number): Promise<unknown>;
     _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
 }

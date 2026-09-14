@@ -106,7 +106,8 @@ export class TurnBudget {
         this.chunkEnded = undefined;
     }
 }
-function withResolvers() {
+/** `Promise.withResolvers` for the runtime the project targets. */
+export function withResolvers() {
     let resolve;
     const promise = new Promise((r) => { resolve = r; });
     return { promise, resolve };

@@ -14,9 +14,22 @@
 export interface PreviewHost {
     port: number;
     sid: string;
+    /**
+     * Present only on the public capability form `<cap>--<port>--<sid>`: the
+     * bearer is the capability itself, so the request skips session-attach
+     * auth entirely — the session decides by the port's stored visibility.
+     */
+    capability?: string;
 }
-export declare function isPreviewHostSafeSid(sid: string): boolean;
 export declare function buildPreviewHost(sid: string, port: number, suffix: string): string;
+/**
+ * `<capability>--<port>--<sid>.<suffix>` — the unauthenticated sibling of
+ * `buildPreviewHost`, for applications whose visibility is `public`. The
+ * capability is the bearer: 24 lowercase hex, the same shape the port
+ * registry mints.
+ */
+export declare function buildPublicPreviewHost(sid: string, port: number, capability: string, suffix: string): string;
+export declare function isPreviewHostSafeSid(sid: string): boolean;
 /**
  * Read the configured preview-host suffix out of a bindings env.
  *

@@ -75,7 +75,7 @@ function decodeContentCoding(response, port) {
         headers,
     });
 }
-function createPortCapability() {
+export function createPortCapability() {
     const bytes = crypto.getRandomValues(new Uint8Array(12));
     return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

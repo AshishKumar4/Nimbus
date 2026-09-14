@@ -47,8 +47,8 @@ import { facetIdBudget } from '@nimbus-sh/fabric/budgets.js';
 import { loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
-import { clearPortCapability, persistPortCapability, readPortCapability, restorePortCapability, } from './port-capability.js';
-import { PREVIEW_CAPABILITY_HEADER } from '../_shared/session-router.js';
+import { clearPortCapability, persistPortCapability, readPortCapability, readPortReservation, restorePortCapability, } from './port-capability.js';
+import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -196,8 +196,27 @@ async function restorePersistedDevServer(self, onlyPort) {
  * the untrusted-code boundary and cannot carry it, and a plain user server on
  * any other port is mounted at root and needs no rewriting.
  */
-async function routeToSessionPort(self, port, request, innerPath, mountBase, capability) {
+export async function routeToSessionPort(self, port, request, innerPath, mountBase, capability) {
     await restorePersistedDevServer(self, port);
+    // The durable seam: a request on a port nothing is serving may be a
+    // durable application a reset left dead — the alarm pump would re-drive
+    // it eventually, but a URL in someone's hands cannot wait for eventually.
+    // 'absent' falls through to the honest 502 unchanged; 'started' continues
+    // to normal routing with the port freshly bound; 'failed' is mid-launch
+    // or a lost boot, so the page re-asks on its own timer.
+    if (self.ensureDurableAppOnPort !== undefined) {
+        const durable = await self.ensureDurableAppOnPort(port);
+        if (durable === 'failed') {
+            return new Response(renderPortStartingHtml(port), {
+                status: 503,
+                headers: {
+                    'Content-Type': 'text/html; charset=utf-8',
+                    'Cache-Control': 'no-store',
+                    'Retry-After': '3',
+                },
+            });
+        }
+    }
     if (capability !== undefined) {
         // A rebuilt supervisor holds a capability nobody was handed; the durable
         // one is the value in circulation, so it wins before the check.
@@ -206,6 +225,15 @@ async function routeToSessionPort(self, port, request, innerPath, mountBase, cap
             // 404, not 403: a wrong capability must not confirm that the port is
             // listening at all.
             return new Response('Not found', { status: 404 });
+        }
+        // The public bearer form arrived without a session attach: the
+        // capability is real, but it authorises this route only for a port the
+        // owner deliberately exposed — the stored visibility is the gate.
+        if (request.headers.get(PUBLIC_BEARER_HEADER) !== null) {
+            const reservation = await readPortReservation(self.ctx, port);
+            if (reservation === null || reservation.visibility !== 'public') {
+                return new Response('Not found', { status: 404 });
+            }
         }
     }
     if (port === self._viteShimPort) {
@@ -226,6 +254,29 @@ async function routeToSessionPort(self, port, request, innerPath, mountBase, cap
     if (proxied)
         return proxied;
     return new Response(`No process listening on port ${port}`, { status: 502 });
+}
+/** The "durable application is (re)starting" 503 page — self-refreshing. */
+function renderPortStartingHtml(port) {
+    return `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="3">
+<title>Starting — Nimbus</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{background:#0a0a0a;color:#e6edf3;font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;
+       display:flex;align-items:center;justify-content:center;padding:24px;
+       background-image:radial-gradient(700px 400px at 50% -10%,rgba(100,255,218,0.05),transparent 60%)}
+  .card{max-width:520px;text-align:center}
+  h1{font-size:28px;color:#64ffda;margin-bottom:12px;font-family:ui-monospace,Menlo,monospace}
+  p{color:#8b949e;margin-bottom:24px}
+  code{font-family:ui-monospace,Menlo,monospace;background:#111;padding:2px 8px;border-radius:4px;color:#e6edf3}
+</style></head>
+<body><div class="card">
+<h1>Starting&hellip;</h1>
+<p>The application on port <code>${port}</code> is restarting.<br>This page refreshes itself.</p>
+</div></body></html>`;
 }
 /**
  * Re-adopt a preview capability the embedder already holds, after a restore

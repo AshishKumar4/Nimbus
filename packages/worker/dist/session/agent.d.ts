@@ -15,6 +15,17 @@ interface AgentStorage {
     delete(key: string): Promise<void>;
     deleteAll(): Promise<void>;
     deleteAlarm(): Promise<void>;
+    list<T = unknown>(options: {
+        prefix: string;
+    }): Promise<Map<string, T>>;
+    transaction<T>(body: (txn: {
+        get(key: string): Promise<unknown>;
+        put(key: string, value: unknown): Promise<void>;
+        delete(key: string): Promise<unknown>;
+        list<T2 = unknown>(options: {
+            prefix: string;
+        }): Promise<Map<string, T2>>;
+    }) => Promise<T>): Promise<T>;
 }
 interface Host extends ProgrammaticHost, SessionAiHost {
     ctx: {

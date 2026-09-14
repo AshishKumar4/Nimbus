@@ -52,6 +52,15 @@ export declare const TENANT_HEADER = "X-Nimbus-Tenant";
  */
 export declare const PREVIEW_CAPABILITY_HEADER = "x-nimbus-preview-capability";
 /**
+ * Header the Worker sets when a request arrived on the public capability
+ * host form `<cap>--<port>--<sid>` — the request was never attached to a
+ * session, so the capability in `PREVIEW_CAPABILITY_HEADER` is the only
+ * credential it carries, and the session may honor it ONLY for a port whose
+ * stored visibility is `public`. Any other request answering on that mark
+ * is 404.
+ */
+export declare const PUBLIC_BEARER_HEADER = "x-nimbus-public-bearer";
+/**
  * DO-name segment used when tenant scoping is disabled (legacy-public).
  * Picked so it cannot collide with a verified token's
  * `${tn}:${sub || '_'}` (because `legacy` is never a valid `tn` shape
@@ -85,6 +94,11 @@ export declare function parseSessionRoute(pathname: string): ParsedSessionRoute 
 export interface ForwardOptions {
     /** Verified tenant segment for DO naming. */
     tenantSegment: string;
+    /**
+     * Router-minted headers the DO must see — the preview capability, the
+     * public-bearer mark. Entries arrive only from code that vetted them.
+     */
+    extraHeaders?: Readonly<Record<string, string>>;
 }
 /**
  * Forward a request to the session's DO.

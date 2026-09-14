@@ -56,6 +56,14 @@ export const ATTACH_BOOTSTRAP_JTI_KEY_PREFIX = 'attach-bootstrap-jti:';
  */
 export const PORT_CAPABILITY_KEY_PREFIX = 'nimbus_preview_capability:';
 /**
+ * Prefix for a durable application's facet-slot row, keyed by owner.
+ * `durable-slot:next` and `durable-slot:free` under the same prefix are the
+ * allocator's counter and free list; `durable-slot:<owner>` pins the owner to
+ * its `app-slot-<n>` facet name for the application's whole life. Owned by
+ * `facets/durable-slots.ts`, the only module that reads or writes these rows.
+ */
+export const DURABLE_SLOT_KEY_PREFIX = 'durable-slot:';
+/**
  * Prefix for a named programmatic shell's durable cwd+env, keyed by shell id.
  * One row per id the embedder has actually used; bounded by the embedder's own
  * naming, the way a terminal tab is.

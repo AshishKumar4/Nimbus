@@ -24,6 +24,23 @@
  * (~30 sites). RoutesHost = any pragmatic deviation, like InitHost in S6.
  */
 type RoutesHost = any;
+/**
+ * Route a request to whatever is listening on a session port.
+ *
+ * The one implementation behind every port-addressed surface: `/port/<n>/`,
+ * `/preview/?port=N`, and the `<port>--<sid>` preview hostname, which the
+ * router forwards as `/port/<n>/`. They differ only in how the port and the
+ * inner path are spelled, so they must not differ in what answers.
+ *
+ * `mountBase` is the public URL prefix the served app is mounted at for THIS
+ * request — '' for a root-mounted `<port>--<sid>` host, '/s/<sid>/preview' for
+ * the preview path. The in-process Cirrus dev server rewrites base-relative
+ * URLs (module URLs, <base href>, BASE_URL, router basename), so it is handed
+ * the base directly: the generic port proxy strips the Nimbus base header at
+ * the untrusted-code boundary and cannot carry it, and a plain user server on
+ * any other port is mounted at root and needs no rewriting.
+ */
+export declare function routeToSessionPort(self: RoutesHost, port: number, request: Request, innerPath: string, mountBase: string, capability?: string): Promise<Response>;
 /** Route a capability-authenticated embedder request to a guest HTTP server. */
 export declare function routeCapabilityPort(self: RoutesHost, port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
 export declare function handleFetch(self: RoutesHost, request: Request): Promise<Response>;

@@ -9,6 +9,7 @@ import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { FacetManager } from '../facets/manager.js';
+import { resolveDurableWorkerImage } from '../facets/durable-images.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -770,11 +771,25 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcSignalProcess(pid, signal) { return _programmatic.rpcSignalProcess(this, pid, signal); }
     async _rpcProcessLogs(pid, options) { return _programmatic.rpcProcessLogs(this, pid, options); }
     async _rpcListPorts() { return _programmatic.rpcListPorts(this); }
-    async _rpcExposePort(port) { return _programmatic.rpcExposePort(this, port); }
+    async _rpcExposePort(port, options) {
+        return _programmatic.rpcExposePort(this, port, options);
+    }
+    async _rpcEnsureDurableApp(input) {
+        return _programmatic.rpcEnsureDurableApp(this, input);
+    }
     async _rpcUnexposePort(port) { return _programmatic.rpcUnexposePort(this, port); }
     /** Capability-authenticated port route, for an embedder holding the token. */
     async _rpcRouteCapabilityPort(port, capability, request, innerPath) {
         return _routes.routeCapabilityPort(this, port, capability, request, innerPath);
+    }
+    /**
+     * The port route's recovery seam: a durable application journalled but
+     * dead is re-driven on demand rather than left for the alarm pump. The
+     * manager decides 'started' | 'absent' | 'failed'; the route maps them.
+     */
+    async ensureDurableAppOnPort(port) {
+        this.ensureFacetManager();
+        return this.facetManager.ensureDurableAppOnPort(port);
     }
     async _rpcDeleteFile(path, options) { return _programmatic.rpcDeleteFile(this, path, options); }
     async _rpcDestroy(options) { return _programmatic.rpcDestroy(this, options); }
@@ -928,6 +943,18 @@ export class NimbusSession extends CloudflareDurableObject {
                     notifyTerminalEvent(this.terminal, {
                         type: 'spawn', pid, command, longRunning, attachedTty,
                     });
+                },
+                // The fallback resolver a self-owned durable spawn re-drives
+                // through: read the image blobs the spawn persisted under
+                // `.nimbus/images/<sha256>` and restore the launch's env and
+                // modules from them. An embedder-owned launch answers its own
+                // bookkeeping through resolveWorkerLaunch instead — this hook is
+                // only the fallback for applications nobody else is keeping, and
+                // because it cannot re-mint a live globalOutbound binding the
+                // spawn path refuses such a launch under it.
+                resolveWorkerLaunchFallback: async (recipe) => {
+                    this.ensureSqliteFs();
+                    return resolveDurableWorkerImage(this.sqliteFs, recipe);
                 },
             });
         }

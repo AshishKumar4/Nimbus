@@ -97,6 +97,11 @@ export declare class TurnBudget {
      */
     settle(): void;
 }
+/** `Promise.withResolvers` for the runtime the project targets. */
+export declare function withResolvers<T = void>(): {
+    promise: Promise<T>;
+    resolve: (value: T | PromiseLike<T>) => void;
+};
 /** What {@link PacedWork} needs from the Durable Object hosting it. */
 export interface PacedWorkHost {
     /**

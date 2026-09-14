@@ -131,6 +131,9 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      * paying a storage delete for pids that never had a row.
      */
     private journalledPids;
+    /** Re-drives in flight, by journal key — recovery's un-awaited ones and a
+     *  caller-driven one share the same drive for the same row. */
+    private drives;
     /** Whether this instance has already read the journal a reset leaves behind. */
     private recovered;
     constructor(storage: FencedWorkStorage, host: FencedWorkHost<R>);
@@ -158,6 +161,28 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      * resurrect a process the user watched end.
      */
     release(pid: number): Promise<void>;
+    /**
+     * Drop every row `predicate` claims, live-pid bookkeeping included, synced
+     * like {@link release}. The one bulk delete the journal admits: an owner
+     * that removes its durable application is owed no recovery, however many
+     * generations back its rows were written.
+     */
+    purgeWhere(predicate: (record: R) => boolean): Promise<number>;
+    /**
+     * Every journal row, storage-true — the rows this instance wrote and the
+     * ones a previous instance left behind. The one read surface a request-
+     * driven recovery needs to find the durable launch a port belongs to.
+     */
+    rows(): Promise<Map<string, R>>;
+    /**
+     * Re-drive one journal row — the awaited sibling of recovery's un-awaited
+     * re-drives, for a caller that must know whether the launch actually came
+     * back. Single-flight per row: a request-driven drive and recovery's own
+     * never boot the same launch twice. Resolves true only when the re-drive
+     * itself FAILED and the failure was reported; a settled drive supersedes
+     * the row the same way recovery's does.
+     */
+    drive(key: string, record: R): Promise<boolean>;
     /**
      * Re-drive the launches a previous instance was building when it was reset.
      *

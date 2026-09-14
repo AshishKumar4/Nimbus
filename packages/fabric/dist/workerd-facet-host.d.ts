@@ -111,7 +111,7 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
     populated(name: string): boolean | Promise<boolean>;
 }): Promise<void>;
 /**
- * The facet name for a slot. Reused, and that is the entire point.
+ * The facet name for an ephemeral slot. Reused, and that is the entire point.
  *
  * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
  * append-only and are never reclaimed, so the bound is on facets ever CREATED,
@@ -123,18 +123,36 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
  * Reusing a NAME costs no new ID. So the name comes from a free list and the
  * pid stays what it always was: the process identity in the ProcessTable. The
  * two were only ever conflated because one of them happened to be handy.
+ *
+ * The book shares the facet-ID space with one other namespace: durable
+ * applications, which mint `app-slot-<n>` names of their own (one ID per app,
+ * ever). The prefixes are disjoint BY CONSTRUCTION, and that disjointness is
+ * load-bearing — a proc-slot name reissued onto a durable app's retained
+ * storage would boot the wrong process into someone else's disk.
  */
 export declare function residentFacetName(slot: number): string;
+/** The prefix every durable application's facet name carries. */
+export declare const DURABLE_FACET_NAME_PREFIX = "app-slot-";
+/**
+ * Drop one facet's SQLite by name — the ONLY call site that may delete facet
+ * storage. `spawnResident` releases ephemeral processes with abort+delete
+ * (storage is slot-reuse hygiene) and durable ones with abort alone (the
+ * storage IS the durable application's state); explicit removal arrives here
+ * through the coordinator's durable-slot book, owner-checked.
+ */
+export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
 /**
  * What `processes(ctx, env).spawn` hands back: a running process, minus its placement.
  *
- * `slot` rides along because the caller's `describe` needs the facet's real
- * name and the slot is not derivable from the pid — that indirection is the
- * whole point of the free list. Reading it back out of the book later would
- * also race the release that empties it.
+ * `name` is the facet's real name and `slot` its ephemeral book entry (absent
+ * for a durable spawn, whose name its coordinator allocated out of storage).
+ * Both ride along because the caller's `describe` needs them and neither is
+ * derivable from the pid — reading a slot back out of the book would race the
+ * release that empties it.
  */
 export type ResidentFacet = Omit<HostedProcess, 'describe'> & {
-    slot: number;
+    name: string;
+    slot?: number;
 };
 /**
  * The process surface of one hosting actor: how a resident process comes

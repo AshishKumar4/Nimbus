@@ -67,8 +67,8 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
-import { processes, residentFacetName, } from './workerd-facet-host.js';
 import { BindingError } from './vendor/errors.js';
+import { processes, } from './workerd-facet-host.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
  * decided — the embedder owns the config var that picks it, and refuses an
@@ -114,10 +114,10 @@ class FacetProcessHost {
             pid: params.pid,
             writerId: params.writerId,
         };
-        const { slot, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
+        const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
         return {
             ...facet,
-            describe: () => `facet '${residentFacetName(slot)}' (pid ${params.pid})`
+            describe: () => `facet '${name}' (pid ${params.pid})`
                 + ` of session ${this.coordDoId.slice(-12)}`
                 + `; ${describeImageDelivery(this.imageDelivery)}`,
         };
@@ -235,8 +235,15 @@ class PeerProcessHost {
         return processes(this.ctx, this.env).run({ doId: this.coordDoId, pid: params.pid, writerId: params.writerId }, params, consume);
     }
     async open(params) {
+        if (params.facet) {
+            // A durable application's facet must be a child of the COORDINATOR's
+            // Durable Object — its `app-slot-<n>` row and retained SQLite live in
+            // that DO's storage. A sibling host would own storage the coordinator's
+            // durable-slot book and removeDurableApp cannot reach.
+            throw new Error('Nimbus: a durable spawn must be facet-hosted on its own coordinator; '
+                + 'the peer substrate cannot serve one');
+        }
         const placement = await this._place(params.pid);
-        this.tokensInUse.set(params.pid, placement.isolateToken);
         // Minted per open, held only by this coordinator and the peer that hosts
         // the process. The workerKey is derivable from a pid; this is not.
         const webSocketCapability = crypto.randomUUID();

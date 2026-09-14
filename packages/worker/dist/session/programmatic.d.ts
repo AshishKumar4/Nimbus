@@ -37,10 +37,21 @@ interface ProgrammaticContext {
     waitUntil?(promise: Promise<unknown>): void;
     storage: {
         get(key: string): Promise<unknown>;
+        put(key: string, value: unknown): Promise<void>;
         delete(key: string): Promise<void>;
         deleteAll(): Promise<void>;
         deleteAlarm(): Promise<void>;
-        put(key: string, value: unknown): Promise<void>;
+        list<T = unknown>(options: {
+            prefix: string;
+        }): Promise<Map<string, T>>;
+        transaction<T>(body: (txn: {
+            get(key: string): Promise<unknown>;
+            put(key: string, value: unknown): Promise<void>;
+            delete(key: string): Promise<unknown>;
+            list<T2 = unknown>(options: {
+                prefix: string;
+            }): Promise<Map<string, T2>>;
+        }) => Promise<T>): Promise<T>;
     };
 }
 interface ProgrammaticFacetManager {
@@ -64,8 +75,6 @@ export interface ProgrammaticHost {
     sqliteFs: SqliteVFS | null;
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
-    /** Logical owner supplied by an embedder; null retains ordinary port-scoped exposure. */
-    portCapabilityOwner?(port: number): string | null;
     facetManager: ProgrammaticFacetManager | null;
     viteDevServer: ProgrammaticViteServer | null;
     cirrusReal: ProgrammaticCirrusServer | null;
@@ -251,12 +260,32 @@ export declare function rpcProcessLogs(self: ProgrammaticHost, pid: number, opti
     exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
 }>;
 export declare function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]>;
-export declare function rpcExposePort(self: ProgrammaticHost, port: number): Promise<{
+export declare function rpcExposePort(self: ProgrammaticHost, port: number, options?: {
+    visibility?: 'scoped' | 'public';
+}): Promise<{
     port: number;
     listening: boolean;
     pid: number | null;
     registeredAt: number | null;
     capability: string | null;
+    visibility: "scoped" | "public";
+}>;
+/**
+ * The embedder's durable-application seam: reserve (or re-answer) the port
+ * `owner` holds, minting the capability the application's public URL is
+ * built on — minted HERE, stored on the reservation, so a URL handed out
+ * before the application has ever booted is the one its eventual binding
+ * re-adopts, and the one a reset re-adopts again. Answers the port, the
+ * capability, and the record's visibility.
+ */
+export declare function rpcEnsureDurableApp(self: ProgrammaticHost, input: {
+    owner: string;
+    preferredPort?: number;
+    visibility?: 'scoped' | 'public';
+}): Promise<{
+    port: number;
+    capability: string | null;
+    visibility: 'scoped' | 'public';
 }>;
 export declare function rpcUnexposePort(self: ProgrammaticHost, port: number): Promise<{
     port: number;

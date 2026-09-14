@@ -349,6 +349,7 @@ export class ProcessFabric {
                 boot: spawn.boot,
                 writerId,
                 startArgs: spawn.startArgs,
+                ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
             });
         }
         catch (error) {

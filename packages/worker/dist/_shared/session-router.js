@@ -53,6 +53,15 @@ export const TENANT_HEADER = 'X-Nimbus-Tenant';
  */
 export const PREVIEW_CAPABILITY_HEADER = 'x-nimbus-preview-capability';
 /**
+ * Header the Worker sets when a request arrived on the public capability
+ * host form `<cap>--<port>--<sid>` — the request was never attached to a
+ * session, so the capability in `PREVIEW_CAPABILITY_HEADER` is the only
+ * credential it carries, and the session may honor it ONLY for a port whose
+ * stored visibility is `public`. Any other request answering on that mark
+ * is 404.
+ */
+export const PUBLIC_BEARER_HEADER = 'x-nimbus-public-bearer';
+/**
  * DO-name segment used when tenant scoping is disabled (legacy-public).
  * Picked so it cannot collide with a verified token's
  * `${tn}:${sub || '_'}` (because `legacy` is never a valid `tn` shape
@@ -115,6 +124,10 @@ export function forwardToSession(request, route, env, opts) {
     const headers = new Headers(request.headers);
     headers.set(BASE_PATH_HEADER, route.basePath);
     headers.set(TENANT_HEADER, opts.tenantSegment);
+    if (opts.extraHeaders) {
+        for (const [name, value] of Object.entries(opts.extraHeaders))
+            headers.set(name, value);
+    }
     // Load-bearing, not hygiene: the query is a first-class auth channel
     // (`extractBearerToken` reads it), so anything forwarded with the token
     // still attached would carry a live credential into inner-DO logs, the

@@ -33,7 +33,7 @@
  */
 import { generateSessionId, isValidSessionId, } from '../_shared/session-id.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
-import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, } from '../_shared/session-router.js';
+import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
 import { issueNimbusToken, verifyNimbusToken, verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { handleNimbusRemoteApi, } from './remote-api.js';
@@ -99,6 +99,27 @@ export function createNimbusHandler(options = {}) {
                     headers: {
                         'Content-Type': 'text/html; charset=utf-8',
                         'Cache-Control': 'no-store',
+                    },
+                });
+            }
+            if (preview.capability !== undefined) {
+                // The public capability form carries no attach token and never
+                // asks for one: the capability IS the bearer, so there is no
+                // session:attach exchange and no embedder credential to verify.
+                // Forward with the bearer mark + the capability header; the
+                // session answers only when the port's stored visibility is
+                // `public` and the capability matches, anything else is its 404.
+                // DO naming is the legacy-public segment — there is no tenant to
+                // verify, and the DO-side visibility check is the gate.
+                return forwardToSession(request, {
+                    sessionId: preview.sid,
+                    innerPath: `/port/${preview.port}${url.pathname === '/' ? '/' : url.pathname}`,
+                    basePath: '',
+                }, env, {
+                    tenantSegment: LEGACY_PUBLIC_DO_SEGMENT,
+                    extraHeaders: {
+                        [PREVIEW_CAPABILITY_HEADER]: preview.capability,
+                        [PUBLIC_BEARER_HEADER]: '1',
                     },
                 });
             }

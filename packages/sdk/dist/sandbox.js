@@ -1,7 +1,7 @@
 /**
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
-import { buildPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix, } from '@nimbus-sh/worker/preview-host';
+import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix, } from '@nimbus-sh/worker/preview-host';
 import { z } from 'zod/v4';
 export class NimbusRemoteError extends Error {
     status;
@@ -138,6 +138,12 @@ const ExposedPortSchema = z.object({
     pid: z.number().nullable(),
     registeredAt: z.number().nullable(),
     capability: z.string().nullable(),
+    visibility: z.enum(['scoped', 'public']).optional(),
+});
+const EnsureDurableAppSchema = z.object({
+    port: z.number(),
+    capability: z.string().nullable(),
+    visibility: z.enum(['scoped', 'public']),
 });
 const UnexposedPortSchema = z.object({
     port: z.number(),
@@ -276,7 +282,8 @@ export class NimbusSandbox {
             _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal], ProcessControlResultSchema),
             _rpcProcessLogs: (pid, options) => this.remoteRpc('processLogs', [pid, options], ProcessLogsResultSchema),
             _rpcListPorts: () => this.remoteRpc('listPorts', [], z.array(PortSchema)),
-            _rpcExposePort: (port) => this.remoteRpc('exposePort', [port], ExposedPortSchema),
+            _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options], ExposedPortSchema),
+            _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input], EnsureDurableAppSchema),
             _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port], UnexposedPortSchema),
             _rpcDestroy: (options) => this.remoteRpc('destroy', [options], DestroyResultSchema),
         };
@@ -483,16 +490,31 @@ export class NimbusSandbox {
             await this.ready();
             return this.rpc(this.stub()._rpcListPorts());
         },
-        expose: async (port) => {
+        expose: async (port, options = {}) => {
             await this.ready();
-            const result = await this.rpc(this.stub()._rpcExposePort(port));
-            return { ...result, url: this.portUrl(port) };
+            const result = await this.rpc(this.stub()._rpcExposePort(port, options));
+            return {
+                ...result,
+                url: this.portUrl(port, {
+                    visibility: result.visibility ?? 'scoped',
+                    capability: result.capability ?? undefined,
+                }),
+            };
         },
         unexpose: async (port) => {
             await this.ready();
             return this.rpc(this.stub()._rpcUnexposePort(port));
         },
-        url: (port) => this.portUrl(port),
+        /**
+         * Reserve (or re-answer) a durable application's port: the capability it
+         * answers is minted here and survives every reset, so the URL it builds
+         * is the URL the application keeps.
+         */
+        ensureDurableApp: async (input) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcEnsureDurableApp(input));
+        },
+        url: (port, options = {}) => this.portUrl(port, options),
     };
     tools(options = {}) {
         const namespace = options.namespace ?? this.profile.tools?.namespace ?? 'nimbus';
@@ -613,9 +635,15 @@ export class NimbusSandbox {
      * token for it at `GET /s/<id>/api/preview-url?port=<n>`, which is what the
      * session shell opens and what an embedder should hand to a browser.
      */
-    portUrl(port) {
+    portUrl(port, options = {}) {
         const hostSuffix = this.config.previewHostSuffix;
         if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
+            // The public form names its bearer in the label: a public port with a
+            // capability builds the unauthenticated host, anything else keeps the
+            // session-attached one.
+            if (options.visibility === 'public' && options.capability !== undefined) {
+                return `https://${buildPublicPreviewHost(this.id, port, options.capability, hostSuffix)}/`;
+            }
             return `https://${buildPreviewHost(this.id, port, hostSuffix)}/`;
         }
         const explicit = this.profile.preview?.baseUrl;

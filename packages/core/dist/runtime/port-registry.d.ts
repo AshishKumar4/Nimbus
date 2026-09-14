@@ -45,6 +45,7 @@ export interface PortEntry {
      */
     capability: string;
 }
+export declare function createPortCapability(): string;
 export declare class PortRegistry {
     private ports;
     private facetStubsByPid;
