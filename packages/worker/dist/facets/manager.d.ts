@@ -359,6 +359,24 @@ export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, 
     added: number;
 };
 /**
+ * The packages a computed `require(name)` inside the program can plausibly
+ * name: the project root's own runtime `dependencies`, plus every package
+ * ONE `dependencies` hop from a package that already owns a file in the
+ * static closure. Never devDependencies, never a second hop.
+ *
+ * Unbounded, the greedy oversample read every installed package's main:
+ * for `node -e "import('got')"` in got's repo — a one-file static closure —
+ * that was 1,526 files / 10.9 MB from 706 packages, which every later pass
+ * re-scanned and esbuild-wasm transformed, and the exec path's 20 s bundle
+ * deadline fired on a program that reads none of it. A bound that followed
+ * dependency edges from the project's devDependencies reached all 772 of
+ * them (measured), because a library repo's dev toolchain reaches the whole
+ * tree. Computed requires almost always target a declared runtime
+ * dependency of the package doing the requiring, so the bound is one hop
+ * over `dependencies` only. Directories, sorted for a stable bundle.
+ */
+export declare function speculativePackageDirs(vfs: CredentialedVfs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): string[];
+/**
  * X.5-Z3: scan every JS source already in `bundle` for static
  * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
  * the matched asset files (.css / .html / .htm / .svg / .txt / .json)
@@ -577,6 +595,12 @@ export declare const BUNDLE_PRECOMPILE_LOOP: string;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
+/**
+ * Top-level entries of `cwd/node_modules` (scoped packages counted per
+ * scope member). One readdir per scope: what the deadline scales by, not a
+ * walk of the tree.
+ */
+export declare function countInstalledPackages(vfs: CredentialedVfs, cwd: string): number;
 export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, isolatedTransform?: LargeEsmTransform): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
