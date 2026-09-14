@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { afterReset } from '../behavioral/durable/_reset-window.mjs';
+const reset = new Error('Nimbus remote RPC 500: Application called abort() to reset Durable Object.');
+let calls = 0;
+assert.equal(await afterReset(async () => { if (++calls < 2) throw reset; return 'ready'; }), 'ready');
+assert.equal(calls, 2);
+const unrelated = new Error('Internal server error');
+await assert.rejects(afterReset(async () => { throw unrelated; }), (error) => error === unrelated);
+await assert.rejects(afterReset(async () => { throw reset; }, 0), (error) => error === reset);
+console.log('ok - intentional reset window retries only the platform abort error, bounded');

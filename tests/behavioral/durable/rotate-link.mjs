@@ -81,8 +81,14 @@ http.createServer((req, res) => {
   a.check('rotateLink keeps owner, name, port and visibility',
     rotated.owner === exposed.owner && rotated.name === 'rot' && rotated.port === PORT && rotated.visibility === 'public',
     JSON.stringify(rotated));
-  a.check('rotateLink answers a URL built on the new capability',
-    typeof rotated.url === 'string' && rotated.url.includes(rotated.capability ?? '\u0000'), `url=${rotated.url}`);
+  if (SUFFIX) {
+    a.check('rotateLink answers a host URL built on the new capability',
+      typeof rotated.url === 'string' && rotated.url.includes(rotated.capability ?? '\u0000'), `url=${rotated.url}`);
+  } else {
+    a.check('rotation keeps the scoped path URL, which never carries a capability',
+      rotated.url === exposed.url && rotated.url === `${BASE}/s/${sid}/app/rot/`
+        && !rotated.url.includes(rotated.capability), `url=${rotated.url}`);
+  }
   const CAP2 = rotated.capability ?? '';
 
   const old = await fetchPublic(CAP1, '/');

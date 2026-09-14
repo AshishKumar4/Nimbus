@@ -23,6 +23,7 @@
 //   deployment still proves the reservation + re-drive contract.
 
 import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, fetchPort, sleep } from '../_driver.mjs';
+import { afterReset } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 // The public host form is exercised only when the deployment carries
@@ -143,7 +144,7 @@ const bootBefore = started.output.match(/boot=([^\s]+)/)?.[1] ?? '';
     `before=${bootBefore} after=${bootAfter}`);
 
   // The public host form — only on deployments with wildcard DNS.
-  const exposed = await box.ports.expose(PORT, { visibility: 'public' });
+  const exposed = await afterReset(() => box.ports.expose(PORT, { visibility: 'public' }));
   const hostForm = typeof exposed.url === 'string' && exposed.url.includes(`--${PORT}--`);
   if (!hostForm) {
     console.log(`  - public host form skipped — this deployment answers the path form (url=${exposed.url})`);
@@ -161,7 +162,7 @@ const bootBefore = started.output.match(/boot=([^\s]+)/)?.[1] ?? '';
 
 // Teardown: removeDurableApp ends the contract — kill, purge, release the
 // port, free the slot — before the session itself goes away.
-await box.ports.removeDurableApp('probe-evict').catch(() => {});
+await afterReset(() => box.ports.removeDurableApp('probe-evict'));
 
 await t.close();
 await deleteSession(sid, 'durable-eviction-survival');

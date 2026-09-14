@@ -18,6 +18,7 @@
 //   not merely surviving.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, fetchPort, sleep } from '../_driver.mjs';
+import { afterReset } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -90,14 +91,14 @@ http.createServer((req, res) => {
   // apps.list sees the identity, derived, unnamed, scoped, running.
   const { Nimbus } = await import('../../../packages/sdk/src/index.ts');
   const box = Nimbus.connect({ endpoint: BASE, ...(process.env.NIMBUS_PROBE_TOKEN ? { token: process.env.NIMBUS_PROBE_TOKEN } : {}) }).sandbox(sid);
-  let apps = await box.apps.list();
+  let apps = await afterReset(() => box.apps.list());
   let app = apps.find((row) => row.port === PORT);
   {
     // The re-driven launch settles a beat after its port answers.
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline && app?.status !== 'running') {
       await sleep(500);
-      apps = await box.apps.list();
+      apps = await afterReset(() => box.apps.list());
       app = apps.find((row) => row.port === PORT);
     }
   }
