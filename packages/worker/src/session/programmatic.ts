@@ -1016,6 +1016,7 @@ async function applyExposure(
   }
   const entry = self.portRegistry.get(port);
   if (owner !== null) {
+    await assertServingOwner(self, port, owner);
     const occupied = new Set(self.portRegistry.getAll().map((live) => live.port));
     occupied.delete(port);
     await reservePort(self.ctx, {
@@ -1058,6 +1059,7 @@ async function applyExposure(
   // The live registration must answer the stored capability, or a URL
   // minted before the bind 404s until the next restore.
   if (record?.capability !== null && record?.capability !== undefined) {
+    if (record.owner !== null) await assertServingOwner(self, port, record.owner);
     self.portRegistry.restoreCapability(port, record.capability);
   }
   if (record?.visibility === 'public' && record.capability !== null) {
@@ -1087,6 +1089,7 @@ export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): 
     throw new Error(`${describeTarget(target)} is not exposed — nothing to rotate`);
   }
   const previous = resolved.reservation;
+  if (previous.owner !== null) await assertServingOwner(self, resolved.port, previous.owner);
   if (previous.visibility === 'public' && previous.capability !== null) {
     await unbindPublicPortCapability(self, previous.capability);
   }
@@ -1105,6 +1108,20 @@ export async function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): 
     visibility: previous.visibility,
     url: appUrl(self, { port: resolved.port, name: previous.name, capability, visibility: previous.visibility }),
   };
+}
+
+/** A name or owner identifies a reservation, never whoever happens to occupy its port. */
+async function assertServingOwner(self: ProgrammaticHost, port: number, owner: string): Promise<void> {
+  for (;;) {
+    const live = self.portRegistry.get(port);
+    if (live === undefined) return;
+    const identity = await self.facetManager!.residentIdentity(live.pid);
+    if (self.portRegistry.get(port)?.pid !== live.pid) continue;
+    if (identity?.owner !== owner || identity.ephemeral) {
+      throw new Error(`port ${port} is served by a different process (owner ${identity?.owner ?? 'none'})`);
+    }
+    return;
+  }
 }
 
 /** Every stamped identity, with the URL each is reachable at. */

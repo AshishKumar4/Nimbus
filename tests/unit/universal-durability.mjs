@@ -326,6 +326,17 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   await assert.rejects(rpcExposeApp(self, 20720, { visibility: 'public' }), /held by another owner|already holds/,
     'the unrelated server cannot expose over the identity\'s reservation');
 
+  const foreignOwner = (await rowFor(ctx, other.pid)).owner;
+  const freshLiveCapability = portRegistry.get(20720).capability;
+  for (const target of ['api', { name: 'api' }, { owner }, owner]) {
+    for (const act of [() => rpcExposeApp(self, target, { visibility: 'public' }), () => rpcRotateLink(self, target)]) {
+      await assert.rejects(act, { message: `port 20720 is served by a different process (owner ${foreignOwner})` });
+      assert.equal((await readPortReservation(ctx, 20720)).capability, null, 'refusal does not mint onto the reservation');
+      assert.equal(portRegistry.get(20720).capability, freshLiveCapability, 'refusal never replaces the foreign listener capability');
+      assert.equal(directory.rows.size, 0, 'refusal cannot publish a directory entry');
+    }
+  }
+
   // The original identity is re-exposable.
   fm.kill(other.pid);
   const again = await fm.spawnNode(SERVER, {

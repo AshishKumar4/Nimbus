@@ -92,7 +92,7 @@ try {
   a.check('nothing is reserved before expose', !before.some((app) => app.port === PORT && app.capability !== null),
     JSON.stringify(before));
 
-  const exposed = await box.apps.expose(PORT, { visibility: 'public' });
+  const exposed = await box.apps.expose(PORT, { visibility: 'public', name: 'bound-app' });
   a.check('apps.expose answers the derived owner', /^auto:[a-f0-9]{24}$/.test(exposed.owner), JSON.stringify(exposed));
   a.check('apps.expose mints a 24-hex capability', /^[a-f0-9]{24}$/.test(exposed.capability ?? ''), JSON.stringify(exposed));
   a.check('apps.expose reports public', exposed.visibility === 'public');
@@ -132,6 +132,23 @@ try {
   a.check('the unrelated server cannot expose over the identity\'s reservation',
     conflict !== null && /held by another owner|already holds/.test(String(conflict?.message ?? conflict)),
     String(conflict?.message ?? conflict));
+
+  for (const target of [{ name: 'bound-app' }, { owner: OWNER }]) {
+    for (const [verb, act] of [
+      ['expose', () => box.apps.expose(target, { visibility: 'public' })],
+      ['rotate', () => box.apps.rotateLink(target)],
+    ]) {
+      let refused = null;
+      try { await act(); } catch (error) { refused = error; }
+      a.check(`${verb} ${JSON.stringify(target)} refuses the foreign listener`,
+        String(refused?.message ?? refused).includes(`port ${PORT} is served by a different process (owner ${unrelated?.owner})`),
+        String(refused?.message ?? refused));
+      const after = (await box.apps.list()).find((app) => app.owner === OWNER);
+      a.check('refusal never mints a capability onto the foreign listener', after?.capability === null, JSON.stringify(after));
+      const stillDead = await fetchPublic(CAP1);
+      a.check('the original shared link stays dead after refusal', stillDead.status === 404, `status=${stillDead.status}`);
+    }
+  }
 
   // ── 3. the original identity is re-exposable ──────────────────────────
   await t.run(`kill ${otherPid}`, 15_000);
