@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/config",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Typed wrangler-config helper for Nimbus embedders. Generates a valid wrangler.jsonc from one function call.",
   "keywords": [
     "cloudflare",
