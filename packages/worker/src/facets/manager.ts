@@ -5695,12 +5695,35 @@ export class FacetManager {
         await this._registerResidentPort(entry.pid, opts.port);
       }
     } catch (e: unknown) {
+      // A program classified as long-running that ended on its own during
+      // its boot — `json-server --version` prints and exits 0 — reported its
+      // exit through the supervisor, which released the facet and rejected
+      // the boot handshake with 'resident process released'. That is a
+      // completed run, not a failed launch: the process table already holds
+      // its real exit code, and the caller reports that code.
+      const ended = this.processes.get(entry.pid);
+      if (ended !== undefined && ended.state !== 'running') {
+        this.portRegistry.unregisterByPid(entry.pid);
+        if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
+        return;
+      }
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
       this._failLaunch(entry.pid, 'long-running node boot failed: ' + errorMessage(e));
       throw e;
     }
+  }
+
+  /**
+   * The exit code of a launched process that has already ended, or null
+   * while it runs. What a caller that started a resident reads to tell a
+   * server that is up from a program that finished during its boot.
+   */
+  processExitCode(pid: number): number | null {
+    const entry = this.processes.get(pid);
+    if (entry === undefined || entry.state === 'running') return null;
+    return entry.exitCode ?? 0;
   }
 
   /**
