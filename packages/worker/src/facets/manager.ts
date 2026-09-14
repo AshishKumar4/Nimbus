@@ -40,7 +40,7 @@ import {
   type PortVisibility,
 } from '../session/port-capability.js';
 import { deriveResidentOwner } from './resident-identity.js';
-import { RESIDENT_OWNER_KEY_PREFIX } from '../session/keys.js';
+import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
@@ -90,6 +90,7 @@ import {
 import {
   persistDurableWorkerImage,
   resolveDurableWorkerImage,
+  purgeDurableWorkerImages,
 } from './durable-images.js';
 import {
   SQLITE_WASM_MODULE_NAME,
@@ -5791,6 +5792,13 @@ export class FacetManager {
             ...(opts.env !== undefined ? { env: opts.env } : {}),
             vfsWasmModules: opts.vfsWasmModules,
           });
+        await this.ctx.storage.transaction(async (txn) => {
+          const key = `${DURABLE_IMAGES_KEY_PREFIX}${opts.durable!.owner}`;
+          const images = await txn.get<Array<{ runner: string; application: string }>>(key) ?? [];
+          if (!images.some((held) => held.runner === image.runner && held.application === image.application)) {
+            await txn.put(key, [...images, image]);
+          }
+        });
         // Journalled before the launch's first byte of work, so a row a
         // later instance reads proves this process never ended.
         record = {
@@ -6108,8 +6116,6 @@ export class FacetManager {
       // worker spawn is.
       if (residentOwner(record) !== owner) continue;
       ownedPids.push(record.pid);
-      const rowPort = record.port ?? (record.recipe.kind === 'worker' ? record.recipe.port : 0);
-      if (rowPort > 0) ownedPorts.add(rowPort);
     }
     for (const pid of ownedPids) this.kill(pid);
 
@@ -6127,19 +6133,31 @@ export class FacetManager {
     }
 
     for (const port of ownedPorts) {
+      // A port stamp is not ownership. Release only a reservation that still
+      // belongs to this owner, and never unregister somebody else's listener.
+      if ((await readPortReservation(this.ctx, port))?.owner !== owner) continue;
       await releasePortReservation(this.ctx, { owner, port });
-      this.portRegistry.unregister(port);
+      const live = this.portRegistry.get(port);
+      if (live && ownedPids.includes(live.pid)) this.portRegistry.unregister(port);
     }
+
+    const imageRows = await this.ctx.storage.list<Array<{ runner: string; application: string }>>({ prefix: DURABLE_IMAGES_KEY_PREFIX });
+    const ownedImages = [...(imageRows.get(`${DURABLE_IMAGES_KEY_PREFIX}${owner}`) ?? [])];
+    const retainedImages = [...imageRows].filter(([key]) => key !== `${DURABLE_IMAGES_KEY_PREFIX}${owner}`).flatMap(([, images]) => images);
+    for (const row of journalRows.values()) {
+      if (row.recipe.kind !== 'worker') continue;
+      (residentOwner(row) === owner ? ownedImages : retainedImages).push(row.recipe.image);
+    }
+    const imagesPurged = this.vfs ? purgeDurableWorkerImages(this.vfs, ownedImages, retainedImages) : 0;
+    await this.ctx.storage.delete(`${DURABLE_IMAGES_KEY_PREFIX}${owner}`);
+    await this.ctx.storage.delete(`${RESIDENT_OWNER_KEY_PREFIX}${owner}`);
 
     const purged = await this.launchJournal.purgeWhere(
       (record) => residentOwner(record) === owner,
     );
 
-    const name = await freeDurableFacetSlot(this.ctx, owner);
-    if (name !== null) {
-      try { deleteFacetStorage(this.ctx, name); } catch { /* already gone */ }
-    }
-    return name !== null || purged > 0 || ownedPorts.size > 0;
+    const name = await freeDurableFacetSlot(this.ctx, owner, (slot) => deleteFacetStorage(this.ctx, slot));
+    return name !== null || purged > 0 || ownedPorts.size > 0 || imagesPurged > 0;
   }
 
   /** The session-shaped view the public-directory helpers read env from. */

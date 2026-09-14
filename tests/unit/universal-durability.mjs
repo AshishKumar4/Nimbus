@@ -408,6 +408,33 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
 // ── 8. name host parse matrix + router resolution ───────────────────────────
 {
+  const { fm, ctx, portRegistry, vfs } = setup();
+  await reservePort(ctx, { owner: 'A', preferredPort: 20801, occupiedPorts: NONE, kind: 'derived' });
+  const a = await fm.spawnNode(SERVER, { argv: ['owner-A.js'], port: 20801 });
+  const ownerA = (await rowFor(ctx, a.pid)).owner;
+  const reservationBefore = await readPortReservation(ctx, 20801);
+  await fm.removeDurableApp(ownerA);
+  assert.deepEqual(await readPortReservation(ctx, 20801), reservationBefore, 'removing a foreign occupant never releases the reservation');
+
+  await reservePort(ctx, { owner: 'worker-A', preferredPort: 20802, occupiedPorts: NONE });
+  await reservePort(ctx, { owner: 'worker-B', preferredPort: 20803, occupiedPorts: NONE });
+  const wa = await fm.spawnWorker('export default {}', 'worker-A', '/home/user', { port: 20802, durable: { owner: 'worker-A' }, env: { label: 'A' } });
+  const wb = await fm.spawnWorker('export default {}', 'worker-B', '/home/user', { port: 20803, durable: { owner: 'worker-B' }, env: { label: 'B' } });
+  const ia = (await rowFor(ctx, wa.pid)).recipe.image;
+  const ib = (await rowFor(ctx, wb.pid)).recipe.image;
+  assert.equal(ia.runner, ib.runner, 'shared content-addressed runner');
+  fm.kill(wa.pid);
+  await Promise.all(ctx.waited);
+  await fm.removeDurableApp('worker-A');
+  const kernel = vfs.as(CRED_KERNEL);
+  assert.equal(kernel.exists(`.nimbus/images/${ia.application}`), false, 'stopped owner images purged after its journal row is gone');
+  assert.equal(kernel.exists(`.nimbus/images/${ib.runner}`), true, 'shared runner stays for other owner');
+  assert.equal(portRegistry.get(20803).pid, wb.pid);
+  await fm.removeDurableApp('worker-B');
+  assert.equal(kernel.exists(`.nimbus/images/${ib.runner}`), false);
+  assert.equal(kernel.exists(`.nimbus/images/${ib.application}`), false);
+}
+{
   const { fm, ctx, portRegistry, notices } = setup();
   const cap = 'e'.repeat(24);
   await reservePort(ctx, { owner: 'explicit-app', preferredPort: 20800, occupiedPorts: NONE, capability: cap });

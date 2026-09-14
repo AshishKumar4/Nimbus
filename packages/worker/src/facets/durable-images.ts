@@ -29,6 +29,26 @@ export const DURABLE_IMAGE_DIR = '.nimbus/images';
 
 const imagePath = (digest: string) => `${DURABLE_IMAGE_DIR}/${digest}`;
 
+/** Remove only the owner's blobs that no other retained recipe references. */
+export function purgeDurableWorkerImages(
+  vfs: SqliteVFS,
+  owned: Iterable<{ runner: string; application: string }>,
+  retained: Iterable<{ runner: string; application: string }>,
+): number {
+  const keep = new Set([...retained].flatMap((image) => [image.runner, image.application]));
+  const candidates = new Set([...owned].flatMap((image) => [image.runner, image.application]));
+  const kernel = vfs.as(CRED_KERNEL);
+  let removed = 0;
+  for (const digest of candidates) {
+    if (keep.has(digest) || !/^[a-f0-9]{64}$/.test(digest)) continue;
+    const path = imagePath(digest);
+    if (!kernel.exists(path)) continue;
+    kernel.unlink(path);
+    removed += 1;
+  }
+  return removed;
+}
+
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');

@@ -88,10 +88,12 @@ export async function acquireDurableFacetSlot(
 export async function freeDurableFacetSlot(
   ctx: DurableObjectState,
   owner: string,
+  beforeFree?: (name: string) => void,
 ): Promise<string | null> {
   return ctx.storage.transaction(async (txn) => {
     const held = await txn.get(ownerKey(owner));
     if (typeof held !== 'number') return null;
+    beforeFree?.(durableFacetName(held));
     await txn.delete(ownerKey(owner));
     const free = await txn.get(FREE_KEY);
     const freeList = Array.isArray(free) ? free.filter((n): n is number => typeof n === 'number') : [];
