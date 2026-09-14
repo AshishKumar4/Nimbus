@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcWriteBatchStream } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { attachSupervisorOps, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
 const malformed = new ReadableStream({
   type: 'bytes',

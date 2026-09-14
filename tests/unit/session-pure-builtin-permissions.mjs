@@ -15,6 +15,7 @@ import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/Pr
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { SqliteVFS, SqliteVFSProvider } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-pure-builtin-permissions-'));
 
@@ -117,15 +118,21 @@ try {
   );
 
   let supervisorSpawnRequest;
+  // supervisorOp is the session's own dispatch — the stub re-expresses the
+  // same surface: the shared handler over the real fs + process table, with
+  // cpSpawn recorded by the stub method.
   const sessionStub = {
-    supervisorOp(envelope) {
-      return NimbusSession.prototype.supervisorOp.call(this, envelope);
-    },
+    ensureSqliteFs() {},
+    sqliteFs: rawVfs,
+    processes,
+    _rpcStdout() {},
+    _rpcStderr() {},
     async _rpcCpSpawn(request) {
       supervisorSpawnRequest = request;
       return { childPid: 99 };
     },
   };
+  attachSupervisorOps(sessionStub);
   // Routed the way a facet's binding routes: the entrypoint resolves the
   // session by the doId it was given, once per call.
   const sessionBinding = {

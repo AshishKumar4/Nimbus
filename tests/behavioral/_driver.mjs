@@ -133,7 +133,8 @@ export async function mintSession() {
   // demo endpoint mints a sid-pinned attach token for the session it opens.
   // Anything else — or a probe carrying a credential — is still the loud
   // credential failure, not a silent fallback.
-  const code = await r.json().then((body) => body?.code).catch(() => undefined);
+  const text = await r.text().catch(() => '');
+  const code = (() => { try { return JSON.parse(text)?.code; } catch { return undefined; } })();
   if (r.status === 401 && code === 'E_DEMO_LOGIN_REQUIRED' && !AUTH_TOKEN && !AUTH_COOKIE) {
     const created = await fetch(`${BASE}/api/demo/anon-session`, { method: 'POST' });
     const body = await created.json().catch(() => ({}));
@@ -156,7 +157,7 @@ export async function mintSession() {
     return body.sessionId;
   }
 
-  throw new Error(newSessionFailure(r.status, await r.text().catch(() => '')));
+  throw new Error(newSessionFailure(r.status, text));
 }
 
 /**
