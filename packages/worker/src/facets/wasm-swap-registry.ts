@@ -357,9 +357,14 @@ const SKIP_PACKAGES: ReadonlyArray<string> = [
   'typescript', 'vite', 'webpack', 'parcel',
   'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
   'prettier', 'eslint', 'stylelint',
-  // Native modules / build-time (chokidar = real-vite intercepts;
-  // node-gyp/pre-gyp = build-time only, never run in Workers)
-  'chokidar', 'node-gyp', 'node-pre-gyp',
+  // Build-time only, never run in Workers. `chokidar` used to be here
+  // ("real-vite intercepts") — but real-vite ships its OWN chokidar shim
+  // inside the facet module map (facets/cirrus-real.ts, cirrus-chokidar.js)
+  // and never reads the user's node_modules for it, while every CLI that
+  // depends on chokidar (json-server, nodemon, live-server, …) lost it and
+  // its subtree from the install, then failed at runtime with
+  // "Cannot find module 'chokidar'". chokidar@4/5 is pure JS.
+  'node-gyp', 'node-pre-gyp',
   // Cloudflare dev tools
   '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
   // Other build-only
