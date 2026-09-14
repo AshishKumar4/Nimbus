@@ -60,8 +60,12 @@ export interface NimbusWorkspaceOptions {
    * Every atomic write in the filesystem rests on this being a real
    * transaction. An implementation that merely calls the callback converts
    * each one into a torn write that reports success.
+   *
+   * `NimbusWorkspace.create` is a first-write-wins composition root beside
+   * `worker/index.ts` and `loom/actor.ts`: when `ctxExports` is absent the
+   * host's ctx `exports` bag is adopted as the isolate's.
    */
-  readonly transactions?: TransactionHost;
+  readonly transactions?: TransactionHost & { readonly exports?: CtxExports };
   /**
    * The filesystem already open over `sql`, for a host that has one.
    *
@@ -195,8 +199,7 @@ export class NimbusWorkspace {
 
   static async create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace> {
     if (options.fabric) composeFabric(options.fabric);
-    const exports = options.ctxExports
-      ?? (options.transactions as (TransactionHost & { exports?: CtxExports }) | undefined)?.exports;
+    const exports = options.ctxExports ?? options.transactions?.exports;
     if (exports) adoptCtxExports(exports);
     const vfs = options.vfs ?? openFilesystem(options);
     const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;

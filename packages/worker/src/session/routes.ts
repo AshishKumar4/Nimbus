@@ -48,6 +48,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { startRealVite } from './start-real-vite.js';
+import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { facetIdBudget } from '@nimbus-sh/fabric/budgets.js';
@@ -1446,9 +1447,9 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
       if (!callerScopes.includes('session:admin')) {
         return new Response('forbidden: session:admin scope required', { status: 403 });
       }
-      self.ctx.waitUntil(
-        new Promise((resolve) => setTimeout(resolve, 250)).then(() => self.ctx.abort()),
-      );
+      const { promise: abortDue, resolve: abortReady } = withResolvers<void>();
+      self.ctx.waitUntil(abortDue.then(() => self.ctx.abort()));
+      setTimeout(abortReady, 250);
       return new Response(null, { status: 204 });
     }
     return new Response('Not found', { status: 404 });
