@@ -51,7 +51,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
-import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, } from './helpers.js';
+import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, withLoudTimeout, VITE_BUILD_TIMEOUT_MS, } from './helpers.js';
 import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
 import { registerShellEntrypointCommands } from '@nimbus-sh/core/shell/shell-entrypoints.js';
 import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
@@ -78,7 +78,7 @@ import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability } from './port-capability.js';
+import { registerServingPort } from './serving-port.js';
 function resolveNpmPrefix(prefix, cwd) {
     return prefix.startsWith('/')
         ? normalizeVfsPath(prefix)
@@ -1182,7 +1182,11 @@ export async function initSession(self, ws) {
                 // vite-equivalent output layout: dist/assets/<name>-<hash>.<ext>
                 // for both the entry and every emitted asset — entryNames +
                 // assetNames is what makes esbuild's `file` loader land there.
-                const result = await self.esbuildService.build([entryPoint], {
+                // Bounded (G5): an esbuild stall must surface as a loud timeout
+                // naming the entry, never a silent hang. The existing catch below
+                // renders the timeout as `Build error: …`.
+                ctx.stdout.write('  Bundling ' + entryPoint + ' …\n');
+                const result = await withLoudTimeout(self.esbuildService.build([entryPoint], {
                     bundle: true, format: 'esm', target: 'es2020', platform: 'browser',
                     minify: true, outdir: distDir,
                     entryNames: 'assets/[name]-[hash]',
@@ -1191,7 +1195,7 @@ export async function initSession(self, ws) {
                     external: externals.length > 0 ? externals : undefined,
                     viteAssets: true,
                     vitePublicDir: hasPublic ? publicDir : undefined,
-                });
+                }), VITE_BUILD_TIMEOUT_MS, `vite build of ${entryPoint}`);
                 if (result.errors?.length) {
                     for (const e of result.errors)
                         ctx.stderr.write('  error: ' + e.text + '\n');
@@ -1334,7 +1338,7 @@ export async function initSession(self, ws) {
             // process metadata support: same long-running treatment as the
             // dev path, just on the dist/ directory.
             const previewPort = viteConfig.port || 4173; // vite preview default
-            const previewProcEntry = self.processes.spawn('vite preview (' + distRoot + ')', [], distRoot, { longRunning: true });
+            const previewProcEntry = self.processes.spawn('vite preview (' + distRoot + ')', ['vite', ...args], distRoot, { longRunning: true });
             self.viteDevServer = new ViteDevServer({
                 vfs: self.sqliteFs, esbuild: self.esbuildService, root: distRoot,
                 onHmrMessage: () => { },
@@ -1350,14 +1354,16 @@ export async function initSession(self, ws) {
             try {
                 const previewStub = makeLongRunningPortStub(self.viteDevServer);
                 self.portRegistry.bindFacetStub(previewProcEntry.pid, previewStub);
-                await clearPortCapability(self, previewPort);
-                self.portRegistry.register(previewPort, previewProcEntry.pid);
+                await registerServingPort(self, previewProcEntry.pid, previewPort);
                 self._viteShimPid = previewProcEntry.pid;
                 self._viteShimPort = previewPort;
             }
             catch { }
             try {
-                await self.ctx.storage.put(VITE_CONFIG_KEY, { root: distRoot, basePath: previewBasePath, port: previewPort });
+                await self.ctx.storage.put(VITE_CONFIG_KEY, {
+                    root: distRoot, basePath: previewBasePath, port: previewPort,
+                    identity: { cwd: previewProcEntry.cwd, argv: previewProcEntry.argv },
+                });
             }
             catch { }
             ctx.stdout.write('Serving at ' + previewBasePath + '/ \x1b[2m(pid=' + previewProcEntry.pid + ', port=' + previewPort + ')\x1b[0m\n');
@@ -1455,6 +1461,22 @@ export async function initSession(self, ws) {
         // magic).
         const sessionEnv = (ctx && ctx.env) || {};
         const useReal = shouldUseRealVite({ env: sessionEnv, viteConfig });
+        // Long-running handoff (bin-spawn contract): when invoked from a
+        // wrapper that already allocated a pid (`npm run dev` via
+        // shellExecuteTracked, the npm-bin resolver, the SDK's startProcess),
+        // ADOPT that pid instead of spawning a second one. One pid, one start
+        // banner, no false exit — and one identity: the process table's
+        // cwd+argv for that pid is what the app verbs derive the dev server's
+        // owner from, so it is persisted with the config and given back to
+        // the entry a hibernation restore allocates.
+        const binSpawn = ctx.__nimbusBinSpawn;
+        const adoptedEntry = binSpawn?.skipSpawn && binSpawn.callerPid != null
+            ? self.processes.get(binSpawn.callerPid)
+            : undefined;
+        const handedOff = adoptedEntry != null;
+        const identity = adoptedEntry
+            ? { cwd: adoptedEntry.cwd, argv: adoptedEntry.argv }
+            : { cwd: vfsRoot, argv: expandedArgs };
         if (useReal) {
             const vitePort = resolvedPort;
             const previewBasePath = self.viteBasePath;
@@ -1467,6 +1489,7 @@ export async function initSession(self, ws) {
                 port: vitePort,
                 basePath: previewBasePath,
                 configDir: cwd,
+                identity,
                 signal: ctx.signal,
                 onConfigError: (msg) => {
                     ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + msg + '\n');
@@ -1526,17 +1549,9 @@ export async function initSession(self, ws) {
         // emitted by ViteDevServer flow into the pid's stderr ring,
         // visible in the Process tab.
         //
-        // Long-running handoff (bin-spawn contract): when invoked from a
-        // wrapper that already allocated a pid (`npm run dev` via
-        // shellExecuteTracked, or the npm-bin resolver), ADOPT that pid instead
-        // of spawning a second one. One pid, one start banner, no false exit —
-        // the wrapper stays `running` in /api/processes with this port.
-        const binSpawn = ctx.__nimbusBinSpawn;
-        const adoptedEntry = binSpawn?.skipSpawn && binSpawn.callerPid != null
-            ? self.processes.get(binSpawn.callerPid)
-            : undefined;
-        const handedOff = adoptedEntry != null;
-        const viteProcEntry = adoptedEntry ?? self.processes.spawn('vite (' + vfsRoot + ')', expandedArgs, vfsRoot, { longRunning: true });
+        // The adopted wrapper pid stays `running` in /api/processes with this
+        // port; a fresh spawn carries the identity inputs computed above.
+        const viteProcEntry = adoptedEntry ?? self.processes.spawn('vite (' + vfsRoot + ')', identity.argv, identity.cwd, { longRunning: true });
         if (handedOff)
             self.processes.setLongRunning(viteProcEntry.pid);
         self.viteDevServer = new ViteDevServer({
@@ -1570,6 +1585,7 @@ export async function initSession(self, ws) {
                 root: vfsRoot, aliases: viteConfig.alias, define: viteDefine,
                 injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
                 port: resolvedPort,
+                identity: { cwd: viteProcEntry.cwd, argv: viteProcEntry.argv },
             });
         }
         catch { }
@@ -1579,8 +1595,7 @@ export async function initSession(self, ws) {
         // facet uses (Express, Bun.serve, http.createServer().listen()).
         const viteStub = makeLongRunningPortStub(self.viteDevServer);
         self.portRegistry.bindFacetStub(viteProcEntry.pid, viteStub);
-        await clearPortCapability(self, resolvedPort);
-        self.portRegistry.register(resolvedPort, viteProcEntry.pid);
+        await registerServingPort(self, viteProcEntry.pid, resolvedPort);
         // Track the wiring so `vite stop` and crash-handlers can tear it
         // down without searching the registry.
         self._viteShimPid = viteProcEntry.pid;
