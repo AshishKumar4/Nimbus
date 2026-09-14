@@ -232,14 +232,34 @@ await box.processes.list();
 await box.processes.logs(7);
 await box.processes.kill(7);
 
-const port = await box.ports.expose(3000);
-// port.url => https://my-nimbus.workers.dev/s/<session-or-job-id>/port/3000/
-await box.ports.unexpose(3000);
+box.ports.url(3000);
+// https://my-nimbus.workers.dev/s/<session-or-job-id>/port/3000/   (owner only)
+await box.ports.list();
+
+// Share a running server with anyone who has the link.
+const web = await box.apps.expose(3000, { visibility: 'public', name: 'web' });
+// web.url, web.capability, web.owner, web.port, web.pid
+await box.apps.list();   // adds status and restart policy per app
+await box.apps.rotateLink('web');                    // new link, old one revoked
+await box.apps.expose('web', { visibility: 'scoped' }); // back to owner only
+await box.apps.remove('web');                        // stop it, release the port and its storage
 ```
 
+Every server is durable: its journal row is restarted after a platform reset,
+on the next request to its URL. Identity is derived from the command and its
+working directory, so re-running the same command in the same directory is the
+same app, and a shared link is bound to that program rather than to the port.
+`startProcess(cmd, { restart: 'on-failure' })` also restarts it after a crash;
+the default restarts only after a reset. An app target can be a port, a pid, a
+name, or an owner.
+
 On deployments with a preview host suffix configured (the hosted product sets
-`NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev`), `port.url` takes the hostname
-form `https://<port>--<session-id>.<suffix>/` instead. The
+`NIMBUS_PREVIEW_HOST_SUFFIX=nimbus-os.dev`), URLs take the hostname form:
+`https://<port>--<session-id>.<suffix>/` for the private preview,
+`https://<name>--<session-id>.<suffix>/` for a named app, and
+`https://<capability>--<name>--<session-id>.<suffix>/` for a public link.
+Public links need the `NIMBUS_PUBLIC_DIRECTORY` Durable Object binding, which
+`@nimbus-sh/config` emits with `nimbusPublicDirectory: true`. The
 `/s/<id>/port/<n>/` path route works on every deployment.
 
 Runtime policy comes from the sandbox profile:
@@ -255,8 +275,8 @@ Runtime policy comes from the sandbox profile:
 object, in the shape Proteus's tool provider takes. It carries
 `tools.exec.execute`, `runCode`, `readFile`, `writeFile`,
 `listFiles`/`readdir`, `deleteFile`, `exists`, `startProcess`, `killProcess`,
-`logs`, `exposePort`, `unexposePort`, `listPorts`, `installRuntime`, and
-`listRuntimes`.
+`logs`, `exposePort`, `unexposePort`, `listPorts`, `exposeApp`, `listApps`,
+`installRuntime`, and `listRuntimes`.
 
 `provider.capabilities` reports what Nimbus can do. Nimbus claims shell,
 JavaScript/TypeScript, npm, git, owned filesystem, outbound fetch, inbound

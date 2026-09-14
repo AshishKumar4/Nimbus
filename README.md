@@ -34,6 +34,8 @@ A VM-backed cloud dev environment is slow to start and expensive to idle. A brow
 - **One process, one isolate, 128 MiB each.** Every isolate on Workers is capped at 128 MiB. Nimbus treats processes the way an OS treats them, so a heavy app spans several isolates. Each process gets its own isolate, with its own memory and CPU budget, wired to the others over the session's loopback network. opencode runs this way, as a server process and a TUI process in two isolates.
 - **$0 when idle.** Sessions hibernate. Your filesystem persists. Come back tomorrow, the URL still works, your files are still there.
 - **The URL is the session.** Bookmark it, share it, hand it to a teammate. They join the same filesystem.
+- **Every port gets a private preview URL.** Start a server and `https://<port>--<session>.nimbus-os.dev/` is yours. It outlives the process: after an eviction, the next request restarts the server and waits for it.
+- **Sharing is one command.** `nimbus expose 3000 --public` prints a link anyone can open. The link is bound to that program, not the port, so an unrelated server on the same port never inherits it. Rotate it or remove it when you are done.
 - **10 GB of persistent storage per session**, SQLite-backed, durable across reconnects and DO eviction.
 
 ## What works today
@@ -52,6 +54,7 @@ A behavioral probe suite in `tests/behavioral/` covers this table. Run it agains
 | npm alias dependencies such as `alias: "npm:<pkg>@<version>"` | ✅ |
 | `git clone` over HTTPS — chunked checkout engine; facebook/react (7,300 files) in ~28 s; 84,000-file worktrees materialize via bounded continuation | ✅ |
 | In-session loopback networking — `curl http://127.0.0.1:<port>` reaches servers in other isolates; `node server.js` auto-promotes to a routeable resident process | ✅ |
+| Durable app URLs — a private preview URL per port that restarts the server on the next request after an eviction; `nimbus expose <port> --public` for a shareable link bound to the program; `nimbus app list / url / rotate / remove`; the same verbs in the SDK as `box.apps` | ✅ |
 | Streaming HTTP through the fabric — SSE / chunked bodies flow live (per-chunk) across the isolate boundary, loopback and external preview alike | ✅ |
 | Unix permissions — real uid/gid ownership with `EACCES` enforced on read/write (including inside `bash`), durable `st_mode`, persisted `chmod` (octal + symbolic) + `chown`, exec-bit enforcement: `./binary` runs only if executable (`Permission denied`, exit 126 otherwise), generic `#!` shebang dispatch | ✅ |
 | Multi-isolate processes — client/server apps span facets (opencode runs as a serve + attach pair, each in its own isolate) | Alpha |
@@ -97,6 +100,7 @@ node --version              # workerd nodejs_compat (V8 + Node-API shim)
 git clone https://github.com/AshishKumar4/Markflow   # real git over HTTPS
 cd Markflow && npm install  # real npm against registry.npmjs.org
 npm run dev                  # vite dev server — preview in the iframe
+nimbus expose 3000 --public  # prints a link anyone can open
 ```
 
 The preview pane on the right is tabbed. It keeps Markdown preview, the default
@@ -299,18 +303,37 @@ const box = Nimbus.connect({
 }).sandbox('job-123');
 ```
 
-Useful programmatic calls:
+Clone a project, run it, and hand out a link:
 
 ```ts
-await box.ready();                                      // headless session boot
-await box.files.write('/home/user/example-app/server.js', code);
-await box.runtimes.ensure(['python', 'clang']);         // package-manager backed
-await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
-const proc = await box.startProcess('node --watch /home/user/example-app/server.js');
-                                                        // returns a live pid, does not block
-const port = await box.ports.expose(3000);              // /s/<id>/port/3000/
-const provider = box.tools({ namespace: 'sandbox' });   // Proteus-style tools
+await box.ready();
+
+// node, npm and git are built in. Add real bash, coreutils, python, ruby, clang.
+await box.runtimes.ensure(['bash', 'python']);
+
+// Clone a repo and install its dependencies.
+await box.exec('git clone https://github.com/acme/app');
+await box.exec('npm install', { cwd: 'app' });
+
+// Launch a durable server.
+await box.startProcess('npm run dev -- --host --port 5173', { cwd: 'app' });
+
+// Every port gets a private preview URL.
+box.ports.url(5173);   // https://5173--my-project.nimbus-os.dev/
+
+// A public link anyone can open.
+const web = await box.apps.expose(5173, { visibility: 'public', name: 'web' });
+web.url;               // https://<capability>--web--my-project.nimbus-os.dev/
+
+await box.apps.rotateLink('web');   // new link, old one revoked
+await box.apps.remove('web');       // stop it, release the port
 ```
+
+Other calls on the same handle: `box.runCode(code, { language: 'python' })`,
+`box.files.*`, `box.processes.*`, `box.ports.*`, and
+`box.tools({ namespace: 'sandbox' })` for a Proteus-style tool provider.
+`startProcess` takes `{ restart: 'on-failure' }` when a crashed server should
+come back on its own; by default only a platform reset restarts it.
 
 Use `@nimbus-sh/sdk/flue` when an agent harness speaks Flue's sandbox
 provider contract:

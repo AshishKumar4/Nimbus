@@ -82,25 +82,47 @@ for await (const chunk of attachment) {
 }
 ```
 
-## Ports
+## Ports and apps
 
-Expose an app on its own preview origin.
+Every port gets a private preview URL. A server you start is durable: after a
+platform reset, the next request to its URL restarts it and waits for it.
 
 ```ts
-const port = await box.ports.expose(3000);   // → { …, url: 'https://3000--<id>.<suffix>/' }
+await box.startProcess('npx vite --host --port 5173', { cwd: 'app' });
+box.ports.url(5173);          // https://5173--<id>.<suffix>/   owner only
 await box.ports.list();
-await box.ports.unexpose(3000);
 ```
 
-Each `(session, port)` gets one host, `<port>--<id>.<suffix>`, where the
-suffix is the deployment's `NIMBUS_PREVIEW_HOST_SUFFIX` binding. The app
-mounts at that host's root, so root-absolute paths resolve without
-rewriting. A deployment with no suffix bound falls back to
-`/s/<id>/port/<port>/` on the endpoint.
+Sharing is explicit. `apps.expose` with `visibility: 'public'` mints a link
+anyone can open; the link is bound to the program (its command and working
+directory), not to the port.
 
-The URL carries no credential. Where auth is enforced,
+```ts
+const web = await box.apps.expose(5173, { visibility: 'public', name: 'web' });
+web.url;                      // https://<capability>--web--<id>.<suffix>/
+await box.apps.list();        // owner, name, port, pid, status, visibility, url
+await box.apps.rotateLink('web');                       // new link, old one revoked
+await box.apps.expose('web', { visibility: 'scoped' }); // back to owner only
+await box.apps.remove('web');                           // stop it, release port and storage
+```
+
+A target is a port, a pid, a name, or an owner. `startProcess(cmd, { restart:
+'on-failure' })` also restarts a server after a crash; by default only a reset
+does.
+
+Each `(session, port)` gets one host, `<port>--<id>.<suffix>`, where the
+suffix is the deployment's `NIMBUS_PREVIEW_HOST_SUFFIX` binding; a named app
+also answers at `<name>--<id>.<suffix>`. The app mounts at that host's root,
+so root-absolute paths resolve without rewriting. A deployment with no suffix
+bound falls back to `/s/<id>/port/<port>/` on the endpoint, and public host
+links need the `NIMBUS_PUBLIC_DIRECTORY` binding
+(`nimbusPublicDirectory: true` in `@nimbus-sh/config`).
+
+The private URL carries no credential. Where auth is enforced,
 `GET /s/<id>/api/preview-url?port=<n>` mints a single-use
-`session:preview` token for it ([tokens & auth](/docs/sdk/tokens/)).
+`session:preview` token for it ([tokens & auth](/docs/sdk/tokens/)). A public
+link carries its capability in the hostname; rotating or removing the app
+revokes it.
 
 ## Agent tools
 
@@ -110,7 +132,8 @@ Wrap the sandbox as a Proteus-style tool provider.
 const provider = box.tools({ namespace: 'sandbox' });
 ```
 
-It includes files, exec, processes, ports, and runtimes.
+It includes files, exec, processes, ports, apps (`exposeApp`, `listApps`),
+and runtimes.
 
 ## Errors
 

@@ -35,6 +35,16 @@ Listening ports open and focus preview tabs. The path uses real
 bodies, and `curl` output stay live; <kbd>Ctrl</kbd>+<kbd>C</kbd> cancels.
 Vite HMR measures 302 ms median end to end.
 
+Every port gets a private preview URL, `https://<port>--<session>.<suffix>/`,
+and the server behind it is durable: after a platform reset, the next request
+restarts it and waits for it. Sharing is explicit. `nimbus expose 3000 --public`
+prints a link anyone can open, bound to that program rather than the port, so
+an unrelated server on the same port never inherits it. `nimbus app list`,
+`nimbus app url <name>`, `nimbus app rotate <name>`, and `nimbus app remove
+<name>` manage it from the shell; the SDK has the same verbs as `box.apps`.
+A crashed server stays down unless it was started with
+`nimbus start --restart on-failure node server.js`.
+
 Outbound access is open. `fetch`, Node HTTP clients, npm, pip, gem, and git
 use it. WASI binaries get TCP through `/dev/tcp/<host>/<port>`. Inbound access
 is HTTP(S) through session routes. The platform has no raw public TCP inbound.
