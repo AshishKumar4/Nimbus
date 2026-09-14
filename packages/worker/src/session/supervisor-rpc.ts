@@ -407,7 +407,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
 
   async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
     return this._call(
-      this._fsOp('fsAppendAck', [this._writerId(), moduleId, operationId]),
+      this._op('fsAppendAck', [moduleId, operationId], { pid: this._pid(), writerId: this._writerId() }),
     );
   }
 
@@ -621,8 +621,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * via __pendingIO first).
    */
   async reportExit(code: number, tail?: string): Promise<void> {
-    const pid = (this.ctx as any).props?.pid || 0;
-    return this._call(this._op('reportExit', [code, tail || ''], { pid }));
+    return this._call(this._op('reportExit', [code, tail || ''], { pid: this._reportingPid() }));
   }
 
   // ── Prefetch ──────────────────────────────────────────────────────────

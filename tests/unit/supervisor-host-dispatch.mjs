@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { sessionSupervisorOp } from '../../packages/worker/src/session/supervisor-op.ts';
+import { SUPERVISOR_OPS } from '../../packages/core/src/workspace/supervisor-op.ts';
 
 const build = await Bun.build({
   // A virtual entry re-exports the real entrypoint AND composeFabric, so the
@@ -48,66 +49,91 @@ const entries = [], data = 'output', tail = 'tail', cwd = '/cwd', entryCode = 'e
 const request = new Request('https://loopback.test/'), loader = 'js', req = { parentPid: 999, command: 'cat' };
 const childPid = 42, fd = 1, sinceSeq = 3, signal = 'SIGTERM', kind = 'pure-builtin';
 
-// Expected arguments are the pre-dispatch hosted contract, including identity order.
-const cases = [
-  ['readFile', [path], '_rpcReadFile', [path, pid]],
-  ['readFileBytes', [path], '_rpcReadFileBytes', [path, pid]],
-  ['writeFile', [path, content], '_rpcWriteFile', [path, content, pid]],
-  ['stat', [path], '_rpcStat', [path, pid]],
-  ['lstat', [path], '_rpcLstat', [path, pid]],
-  ['hasLegacySymlinkUnder', [path], '_rpcHasLegacySymlinkUnder', [path, pid]],
-  ['utimes', [path, atimeMs, mtimeMs], '_rpcUtimes', [path, atimeMs, mtimeMs, pid]],
-  ['chmod', [path, mode], '_rpcChmod', [path, mode, pid]],
-  ['access', [path, mode], '_rpcAccess', [path, mode, pid]],
-  ['chown', [path, uid, gid, options], '_rpcChown', [path, uid, gid, pid, options]],
-  ['setUmask', [mask], '_rpcSetUmask', [mask, pid]],
-  ['readdir', [path], '_rpcReaddir', [path, pid]],
-  ['exists', [path], '_rpcExists', [path, pid]],
-  ['mkdir', [path], '_rpcMkdir', [path, pid]],
-  ['rmdir', [path], '_rpcRmdir', [path, pid]],
-  ['rename', [from, to], '_rpcRename', [from, to, pid]],
-  ['unlink', [path], '_rpcUnlink', [path, pid]],
-  ['readlink', [path], '_rpcReadlink', [path, pid]],
-  ['symlink', [target, path], '_rpcSymlink', [target, path, pid]],
-  ['fsAcquire', [epoch, cursor], '_rpcFsAcquire', [epoch, cursor, pid]],
-  ['fsRevision', [path], '_rpcFsRevision', [path, pid]],
-  ['fsList', [after, limit], '_rpcFsList', [after ?? null, limit ?? null, pid]],
-  ['wsOpen', [url, protocols], '_rpcWsOpen', [url, protocols, pid]],
-  ['wsPoll', [id, waitMs], '_rpcWsPoll', [id, waitMs, pid]],
-  ['wsSend', [id, text, bytes], '_rpcWsSend', [id, text, bytes, pid]],
-  ['wsClose', [id, code, reason], '_rpcWsClose', [id, code, reason, pid]],
-  ['fsOpen', [path, flags], '_rpcFsOpen', [path, flags, pid]],
-  ['fsRead', [handleId, offset, length], '_rpcFsRead', [handleId, offset, length, pid]],
-  ['fsWrite', [handleId, offset, bytes], '_rpcFsWrite', [handleId, offset, bytes, pid]],
-  ['fsClose', [handleId], '_rpcFsClose', [handleId, pid]],
-  ['fsReadRange', [path, offset, length], '_rpcFsReadRange', [path, offset, length, pid]],
-  ['fsReadRangeUncached', [path, offset, length], '_rpcFsReadRangeUncached', [path, offset, length, pid]],
-  ['fsReadBatch', [requests], '_rpcFsReadBatch', [requests, pid]],
-  ['fsWriteRange', [path, offset, bytes], '_rpcFsWriteRange', [path, offset, bytes, pid]],
-  ['fsAppend', [path, moduleId, operationId, bytes], '_rpcFsAppend', [path, writerId, moduleId, operationId, bytes, pid]],
-  ['fsAppendAck', [moduleId, operationId], '_rpcFsAppendAck', [writerId, moduleId, operationId, pid]],
-  ['fsTruncate', [path, size], '_rpcFsTruncate', [path, size, pid]],
-  ['writeBatch', [payload], '_rpcWriteBatch', [payload, pid]],
-  ['writeBatchStream', [stream], '_rpcWriteBatchStream', [stream, typeof mutationOwner === 'string' ? mutationOwner : undefined, pid]],
-  ['putRegistryEntries', [entries], '_rpcPutRegistryEntries', [entries]],
-  ['stdout', [data], '_rpcStdout', [pid, data]],
-  ['stderr', [data], '_rpcStderr', [pid, data]],
-  ['reportExit', [code, tail], '_rpcReportExit', [pid, code, tail || '']],
-  ['prefetch', [cwd, entryCode], '_rpcPrefetch', [cwd, entryCode]],
-  ['registerPort', [port], '_rpcRegisterPort', [pid, port]],
-  ['unregisterPort', [port], '_rpcUnregisterPort', [port]],
-  ['routeLoopback', [port, request], '_rpcRouteLoopback', [port, request]],
-  ['transform', [code, loader], '_rpcTransform', [code, loader]],
-  ['cpSpawn', [req], '_rpcCpSpawn', [{ ...req, parentPid: pid }]],
-  ['cpStdinWrite', [childPid, data], '_rpcCpStdinWrite', [childPid, data]],
-  ['cpStdinEnd', [childPid], '_rpcCpStdinEnd', [childPid]],
-  ['cpReadStdin', [childPid, waitMs], '_rpcCpReadStdin', [childPid, waitMs]],
-  ['cpReadOutput', [childPid, fd, sinceSeq, waitMs], '_rpcCpReadOutput', [childPid, fd, sinceSeq, waitMs]],
-  ['cpDrainOutput', [childPid], '_rpcCpDrainOutput', [childPid]],
-  ['cpKill', [childPid, signal], '_rpcCpKill', [childPid, signal]],
-  ['cpWait', [childPid, waitMs], '_rpcCpWait', [childPid, waitMs]],
-  ['cpDispatchInline', [req, kind], '_rpcCpDispatchInline', [req, kind]],
-];
+// Canned inputs keyed by op; expected arguments are the pre-dispatch hosted
+// contract the canonical table derives.
+const INPUTS = {
+  readFile: [path],
+  readFileBytes: [path],
+  writeFile: [path, content],
+  stat: [path],
+  lstat: [path],
+  hasLegacySymlinkUnder: [path],
+  utimes: [path, atimeMs, mtimeMs],
+  chmod: [path, mode],
+  access: [path, mode],
+  chown: [path, uid, gid, options],
+  setUmask: [mask],
+  readdir: [path],
+  exists: [path],
+  mkdir: [path],
+  rmdir: [path],
+  rename: [from, to],
+  unlink: [path],
+  readlink: [path],
+  symlink: [target, path],
+  fsAcquire: [epoch, cursor],
+  fsRevision: [path],
+  fsList: [after, limit],
+  wsOpen: [url, protocols],
+  wsPoll: [id, waitMs],
+  wsSend: [id, text, bytes],
+  wsClose: [id, code, reason],
+  fsOpen: [path, flags],
+  fsRead: [handleId, offset, length],
+  fsWrite: [handleId, offset, bytes],
+  fsClose: [handleId],
+  fsReadRange: [path, offset, length],
+  fsReadRangeUncached: [path, offset, length],
+  fsReadBatch: [requests],
+  fsWriteRange: [path, offset, bytes],
+  fsAppend: [path, moduleId, operationId, bytes],
+  fsAppendAck: [moduleId, operationId],
+  fsTruncate: [path, size],
+  writeBatch: [payload],
+  writeBatchStream: [stream],
+  putRegistryEntries: [entries],
+  stdout: [data],
+  stderr: [data],
+  reportExit: [code, tail],
+  prefetch: [cwd, entryCode],
+  registerPort: [port],
+  unregisterPort: [port],
+  routeLoopback: [port, request],
+  transform: [code, loader],
+  cpSpawn: [req],
+  cpStdinWrite: [childPid, data],
+  cpStdinEnd: [childPid],
+  cpReadStdin: [childPid, waitMs],
+  cpReadOutput: [childPid, fd, sinceSeq, waitMs],
+  cpDrainOutput: [childPid],
+  cpKill: [childPid, signal],
+  cpWait: [childPid, waitMs],
+  cpDispatchInline: [req, kind],
+};
+
+// The props the supervisor binding stamps — the envelope's identity fields
+// every arg spec reads from.
+const PROPS = { pid, writerId, mutationOwner, stream };
+
+// Cases derive from the canonical table: the delegate is route.method, the
+// expected arguments are the mapped envelope slots — the only op whose input
+// isn't its envelope args is cpSpawn (the RPC rewrites parentPid).
+const cases = Object.entries(SUPERVISOR_OPS).map(([op, route]) => {
+  const input = INPUTS[op];
+  // writeBatchStream's stream rides the envelope field, not args.
+  const envelopeArgs = op === 'writeBatchStream' ? [] : (input ?? []);
+  // cpSpawn rewrites parentPid before the envelope is built.
+  const sentArgs = op === 'cpSpawn' ? [{ ...req, parentPid: pid }] : envelopeArgs;
+  const expected = op === 'cpSpawn'
+    ? [{ ...req, parentPid: pid }]
+    : route.args.map((slot) => typeof slot === 'number' ? envelopeArgs[slot] : PROPS[slot]);
+  return [op, input, envelopeArgs, sentArgs, route.method, expected];
+});
+
+// Every fixture names a real op; every real op has a fixture.
+assert.deepEqual(Object.keys(INPUTS).sort(), Object.keys(SUPERVISOR_OPS).sort(),
+  'INPUTS and the canonical table name the same ops');
+
 const supervisor = Object.create(SupervisorRPC.prototype);
 supervisor.ctx = { props: { doId: 'host-id', pid, writerId, mutationOwner } };
 let host, receivedEnvelope;
@@ -124,7 +150,7 @@ supervisor.env = {
     get(value) { assert.equal(value, 'host-id'); return stub; },
   },
 };
-for (const [op, input, delegate, expected] of cases) {
+for (const [op, input, envelopeArgs, sentArgs, delegate, expected] of cases) {
   let disposed = 0;
   const answer = op === 'routeLoopback' ? new Response('streamed body') : { value: 'answer' };
   answer[Symbol.dispose] = () => disposed++;
@@ -137,11 +163,14 @@ for (const [op, input, delegate, expected] of cases) {
   };
   assert.equal(await supervisor[op](...input), answer, op);
   assert.equal(receivedEnvelope.op, op);
+  // The envelope's args must carry the RPC's inputs — the route's numeric
+  // slots are indexes into this array, so a dropped arg is a dropped arg.
+  assert.deepEqual(receivedEnvelope.args, sentArgs, `${op}: envelope args`);
   assert.equal(disposed, op === 'routeLoopback' ? 0 : 1, `${op}: response lifetime`);
   if (op === 'writeBatchStream') assert.equal(receivedEnvelope.stream, stream);
   if (op === 'routeLoopback') assert.equal(await answer.text(), 'streamed body');
 }
-assert.equal(cases.length, 57);
+assert.equal(cases.length, Object.keys(SUPERVISOR_OPS).length);
 for (const op of ['constructor', 'toString', '_rpcInnerDoFetch', 'missing']) {
   await assert.rejects(sessionSupervisorOp({}, { op }), /not served/);
 }
@@ -156,4 +185,4 @@ await assert.rejects(supervisor.readFile('/a'), /missing doId/);
 supervisor.ctx.props.doId = 'host-id';
 supervisor.env = {};
 await assert.rejects(supervisor.readFile('/a'), /not a Durable Object namespace/);
-console.log('supervisor-host-dispatch: 57 routes preserve arguments, identity and response lifetimes');
+console.log(`supervisor-host-dispatch: ${cases.length} routes preserve arguments, identity and response lifetimes`);
