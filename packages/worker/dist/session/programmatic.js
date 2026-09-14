@@ -896,8 +896,7 @@ function resetInMemorySessionState(self) {
     self.nimbusWrangler = null;
     self.npmInstaller = null;
     self.fetchProxyEntrypoint = null;
-    self.runtimeFsBridges?.clear();
-    self.runtimeFsBridges = null;
+    self._supervisorOps = null;
     self._cpRegistry = null;
     self._viteShimPid = null;
     self._viteShimPort = null;

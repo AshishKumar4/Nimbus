@@ -49,7 +49,6 @@ export declare function renderMotdBanner(version: string): string;
 export declare function renderWelcomeMarkdown(version: string): string;
 export declare class NimbusSession extends CloudflareDurableObject {
     sqliteFs: SqliteVFS | null;
-    runtimeFsBridges: Map<number, SqliteRuntimeFsBridge> | null;
     kernel: Kernel | null;
     shell: Shell | null;
     shellProcessPid: number | null;
@@ -250,6 +249,19 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * get/put, so two concurrent exchanges cannot both observe "absent".
      */
     _rpcConsumeAttachBootstrap(jti: string): Promise<boolean>;
+    /**
+     * The one supervisor-op handler this session's bindings, loopback stubs and
+     * `_rpc*` delegates all dispatch through — native filesystem ops against
+     * the shared bridge store, session overrides for the accounting-carrying
+     * reads and the output stream, and the canonical route table for the rest.
+     * Lazy: sqliteFs exists only after ensureSqliteFs().
+     */
+    private _supervisorOps;
+    private supervisorOps;
+    /** The pid-keyed filesystem bridge behind the supervisor ops. */
+    supervisorBridge(pid?: number): SqliteRuntimeFsBridge;
+    /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
+    supervisorForgetBridge(pid: number): void;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     _rpcReadFile(path: string, pid?: number): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null>;

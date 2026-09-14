@@ -1,25 +1,96 @@
-import { SUPERVISOR_OPS } from '@nimbus-sh/core/workspace/supervisor-op.js';
 /**
- * The canonical table in core names every op, its host method, and its
- * argument plan — one source for the worker's dispatch, the in-process
- * workspace's host routing, and the test's case table. This host's own
- * check is that each routed method exists on `NimbusSession` — the
- * `Exclude` below makes that a compile error, not a runtime name guess.
+ * The session's supervisor-op handler — one `createSupervisorOpHandler`
+ * built over this session's own SQLite filesystem, process table and `_rpc*`
+ * surface, so the same code serves process facets, the facet loopback stubs
+ * and the SDK's direct `_rpc*` calls.
+ *
+ * - The native filesystem ops in core's `ops` table run in-process against
+ *   the shared bridge store — the same cache `supervisorBridge` hands the
+ *   handle-based and append RPC bodies.
+ * - `readFile`, `readFileBytes`, `fsReadRange`, `fsReadRangeUncached` and
+ *   `writeBatchStream` are overridden here, not replaced: they are the ops
+ *   that carry this DO's heap accounting (read-allocation leases, the
+ *   write-stream's decode-drain timestamp).
+ * - Every other named op dispatches through `SUPERVISOR_OP_ROUTES` to the
+ *   session's `_rpc*` methods — `host` IS the session — exactly as the
+ *   canonical route table maps them.
  */
-const routes = SUPERVISOR_OPS;
-// Every routed method must exist on this host — a missing name is a compile
-// error here, not a runtime 'missing host method' surprise.
-const _everyRouteResolvesOnThisHost = undefined;
-void _everyRouteResolvesOnThisHost;
-/** Preserve hosted accounting and lifecycle work behind the shared host seam. */
-export async function sessionSupervisorOp(host, envelope) {
-    if (!envelope || typeof envelope.op !== 'string' || !Object.hasOwn(routes, envelope.op)) {
-        throw new Error(`supervisor op: '${envelope?.op}' is not served by this host`);
-    }
-    const route = routes[envelope.op];
-    const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
-    const method = host[route.method];
-    if (typeof method !== 'function')
-        throw new Error(`supervisor op: missing host method ${route.method}`);
-    return Reflect.apply(method, host, args);
+import { createSupervisorOpHandler, createSupervisorBridgeStore, } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { FsReadRangeArgsSchema, rangeReadBytes, withReadAllocation, } from './rpc.js';
+import { dec } from '@nimbus-sh/core/_shared/bytes.js';
+export function buildSessionSupervisorOps(host, store) {
+    host.ensureSqliteFs();
+    store ??= createSupervisorBridgeStore({ vfs: host.sqliteFs, processes: host.processes });
+    const extend = {
+        // The native ops whose session bodies carry accounting the bridge
+        // alone doesn't know: a read lease sized to what the file can return.
+        readFile: async (envelope, tools) => {
+            const path = envelope.args?.[0];
+            const fs = tools.bridge(envelope.pid);
+            const stat = await fs.stat(path);
+            if (!stat)
+                return null;
+            return withReadAllocation(stat.size, async () => {
+                const bytes = await fs.readFile(path);
+                return bytes ? dec.decode(bytes) : null;
+            });
+        },
+        readFileBytes: async (envelope, tools) => {
+            const path = envelope.args?.[0];
+            const fs = tools.bridge(envelope.pid);
+            const stat = await fs.stat(path);
+            if (!stat)
+                return null;
+            return withReadAllocation(stat.size, () => fs.readFile(path));
+        },
+        fsReadRange: async (envelope, tools) => {
+            const args = FsReadRangeArgsSchema.parse({
+                path: envelope.args?.[0],
+                offset: envelope.args?.[1],
+                length: envelope.args?.[2],
+            });
+            const fs = tools.bridge(envelope.pid);
+            return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length));
+        },
+        fsReadRangeUncached: async (envelope, tools) => {
+            const args = FsReadRangeArgsSchema.parse({
+                path: envelope.args?.[0],
+                offset: envelope.args?.[1],
+                length: envelope.args?.[2],
+            });
+            const fs = tools.bridge(envelope.pid);
+            return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length, { cached: false }));
+        },
+        // The write stream's decode-drain timestamp starts when the envelope
+        // arrives, not when the DO first reads it — the same contract
+        // _rpcWriteBatchStream has always had.
+        writeBatchStream: (envelope, tools) => {
+            if (!envelope.stream)
+                throw new Error('supervisor op writeBatchStream: no stream');
+            // Same contract _rpcWriteBatchStream had: a supplied pid must be a
+            // real process pid; only an absent pid is a host call.
+            const pid = envelope.pid;
+            if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
+                throw new Error('filesystem RPC requires a valid process pid');
+            }
+            return tools.vfs.as(tools.cred(pid)).writeStream(envelope.stream, {
+                decodeDrainStartedAt: performance.now(),
+                mutationOwner: envelope.mutationOwner,
+            });
+        },
+        // stdout/stderr are session methods, not bridge ops: mirroring,
+        // log-append and prior-generation filtering all live in _rpcStdout.
+        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, envelope.args?.[0]),
+        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, envelope.args?.[0]),
+    };
+    const dispatch = createSupervisorOpHandler({
+        vfs: host.sqliteFs,
+        processes: host.processes,
+        // The session IS the host — its _rpc* methods are the route table's
+        // targets. The index signature exists on the declared surface only.
+        host: host,
+        bridge: store,
+        extend,
+    });
+    return { dispatch, bridge: store.bridge, forget: store.forget };
 }

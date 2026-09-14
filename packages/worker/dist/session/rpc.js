@@ -21,13 +21,12 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
@@ -40,7 +39,6 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/platform/diag-counters.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
@@ -68,11 +66,6 @@ const WriteBatchPayloadSchema = z.object({
     chunks: z.array(WriteBatchChunkSchema).default([]),
     deletePaths: z.array(z.string()).optional(),
 }).passthrough();
-/**
- * Bridge key for the pid-less (host caller) filesystem view. ProcessTable
- * allocates pids from 1 upwards, so 0 can never collide with a process.
- */
-const HOST_CALLER_KEY = 0;
 function processPid(pid) {
     if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
         throw new Error('filesystem RPC requires a valid process pid');
@@ -92,26 +85,7 @@ function processPid(pid) {
 function callerCred(self, pid) {
     return pid === undefined ? CRED_SESSION_USER : self.processes.cred(processPid(pid));
 }
-function processVfs(self, pid) {
-    self.ensureSqliteFs();
-    return self.sqliteFs.as(callerCred(self, pid));
-}
-function runtimeFs(self, pid) {
-    const key = pid === undefined ? HOST_CALLER_KEY : processPid(pid);
-    const vfs = processVfs(self, pid);
-    if (!self.runtimeFsBridges)
-        self.runtimeFsBridges = new Map();
-    let bridge = self.runtimeFsBridges.get(key);
-    if (!bridge) {
-        bridge = new SqliteRuntimeFsBridge(vfs, self.sqliteFs);
-        self.runtimeFsBridges.set(key, bridge);
-    }
-    else {
-        bridge.updateCredential(vfs);
-    }
-    return bridge;
-}
-function checkedReadPayloadBytes(bytes) {
+export function checkedReadPayloadBytes(bytes) {
     if (!Number.isSafeInteger(bytes) || bytes < 0) {
         throw new RangeError(`filesystem RPC read size must be a non-negative safe integer: ${bytes}`);
     }
@@ -129,13 +103,13 @@ function checkedReadPayloadBytes(bytes) {
  * `stat` here is a local SQLite lookup inside the DO — the same one
  * `_rpcReadFile` makes for the same reason — not a second round trip.
  */
-async function rangeReadBytes(fs, path, offset, length) {
+export async function rangeReadBytes(fs, path, offset, length) {
     const stat = await fs.stat(path);
     if (!stat)
         return 0;
     return Math.max(0, Math.min(length, stat.size - offset));
 }
-async function withReadAllocation(bytes, read) {
+export async function withReadAllocation(bytes, read) {
     const payloadBytes = checkedReadPayloadBytes(bytes);
     if (payloadBytes === 0)
         return read();
@@ -149,15 +123,13 @@ async function withReadAllocation(bytes, read) {
         lease.release();
     }
 }
+/**
+ * `files.readFile` — the read with the supervisor's allocation lease.
+ * The body lives in `buildSessionSupervisorOps`'s `readFile` override so
+ * direct `_rpc*` calls and the supervisor envelope share it.
+ */
 export async function _rpcReadFile(self, path, pid) {
-    const fs = runtimeFs(self, pid);
-    const stat = await fs.stat(path);
-    if (!stat)
-        return null;
-    return withReadAllocation(stat.size, async () => {
-        const bytes = await fs.readFile(path);
-        return bytes ? dec.decode(bytes) : null;
-    });
+    return self.supervisorOp({ op: 'readFile', args: [path], pid });
 }
 /**
  * Read a file as raw bytes (Uint8Array). Used by git network facet for
@@ -165,11 +137,7 @@ export async function _rpcReadFile(self, path, pid) {
  * round-tripping through readFile (string) would corrupt bytes.
  */
 export async function _rpcReadFileBytes(self, path, pid) {
-    const fs = runtimeFs(self, pid);
-    const stat = await fs.stat(path);
-    if (!stat)
-        return null;
-    return withReadAllocation(stat.size, () => fs.readFile(path));
+    return self.supervisorOp({ op: 'readFileBytes', args: [path], pid });
 }
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
@@ -235,13 +203,10 @@ export async function _rpcInnerDoFetch(self, req) {
     }
 }
 export async function _rpcWriteFile(self, path, content, pid) {
-    // binary-fs wave: SqliteVFS.writeFile already accepts string | Uint8Array
-    // (sqlite-vfs.ts:937), so we forward the content shape unchanged. RPC
-    // structured-clone preserves Uint8Array across the boundary; structured-
-    // clone doesn't accept Buffer subclass instances, so fs.writeFileSync on
-    // a Buffer flows through node-shims.ts:writeFileSync which stores it as
-    // a plain Uint8Array on the cell — the shape that arrives here.
-    return runtimeFs(self, pid).writeFile(path, content);
+    // binary-fs wave: the bridge's writeFile already accepts
+    // string | Uint8Array — the shape arrives unchanged across structured
+    // clone.
+    return self.supervisorOp({ op: 'writeFile', args: [path, content], pid });
 }
 /**
  * Write one host-governed file at a session root and let ordinary Unix
@@ -275,53 +240,52 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
     fs.chmod(protectedPath, 0o444);
 }
 export async function _rpcStat(self, path, pid) {
-    return runtimeFs(self, pid).stat(path);
+    return self.supervisorOp({ op: 'stat', args: [path], pid });
 }
 export async function _rpcLstat(self, path, pid) {
-    return runtimeFs(self, pid).stat(path, { followSymlinks: false });
+    return self.supervisorOp({ op: 'lstat', args: [path], pid });
 }
 export async function _rpcHasLegacySymlinkUnder(self, path, pid) {
-    runtimeFs(self, pid);
-    return getSymlinkRegistry(self.sqliteFs).hasAtOrBelow(path);
+    return self.supervisorOp({ op: 'hasLegacySymlinkUnder', args: [path], pid });
 }
 export async function _rpcUtimes(self, path, atimeMs, mtimeMs, pid) {
-    await runtimeFs(self, pid).utimes(path, atimeMs, mtimeMs);
+    await self.supervisorOp({ op: 'utimes', args: [path, atimeMs, mtimeMs], pid });
 }
 export async function _rpcChmod(self, path, mode, pid) {
-    await runtimeFs(self, pid).chmod(path, mode);
+    await self.supervisorOp({ op: 'chmod', args: [path, mode], pid });
 }
 export async function _rpcAccess(self, path, mode, pid) {
-    await runtimeFs(self, pid).access(path, mode);
+    await self.supervisorBridge(pid).access(path, mode);
 }
 export async function _rpcChown(self, path, uid, gid, pid, options) {
-    await runtimeFs(self, pid).chown(path, uid, gid, options);
+    await self.supervisorBridge(pid).chown(path, uid, gid, options);
 }
 export async function _rpcSetUmask(self, mask, pid) {
     return self.processes.setUmask(processPid(pid), mask);
 }
 export async function _rpcReaddir(self, path, pid) {
-    return runtimeFs(self, pid).readdir(path);
+    return self.supervisorOp({ op: 'readdir', args: [path], pid });
 }
 export async function _rpcExists(self, path, pid) {
-    return (await runtimeFs(self, pid).stat(path)) !== null;
+    return self.supervisorOp({ op: 'exists', args: [path], pid });
 }
 export async function _rpcMkdir(self, path, pid) {
-    await runtimeFs(self, pid).mkdir(path, { recursive: true });
+    await self.supervisorOp({ op: 'mkdir', args: [path], pid });
 }
 export async function _rpcRmdir(self, path, pid) {
-    await runtimeFs(self, pid).rmdir(path);
+    await self.supervisorOp({ op: 'rmdir', args: [path], pid });
 }
 export async function _rpcRename(self, from, to, pid) {
-    await runtimeFs(self, pid).rename(from, to);
+    await self.supervisorOp({ op: 'rename', args: [from, to], pid });
 }
 export async function _rpcReadlink(self, path, pid) {
-    return runtimeFs(self, pid).readlink(path);
+    return self.supervisorOp({ op: 'readlink', args: [path], pid });
 }
 export async function _rpcSymlink(self, target, path, pid) {
-    await runtimeFs(self, pid).symlink(target, path);
+    await self.supervisorOp({ op: 'symlink', args: [target, path], pid });
 }
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
-const FsReadRangeArgsSchema = z.object({
+export const FsReadRangeArgsSchema = z.object({
     path: z.string(),
     offset: FsRangeOffsetSchema,
     length: FsRangeOffsetSchema,
@@ -366,7 +330,7 @@ const FsListArgsSchema = z.object({
     limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
 });
 export async function _rpcFsRevision(self, path, pid) {
-    return runtimeFs(self, pid).revision(typeof path === 'string' ? path : undefined);
+    return self.supervisorOp({ op: 'fsRevision', args: [path], pid });
 }
 /**
  * The facet's WebSocket relay. A facet does not open its own sockets: the
@@ -416,23 +380,21 @@ export async function _rpcWsClose(self, id, code, reason, pid) {
  */
 export async function _rpcFsAcquire(self, epoch, cursor, pid) {
     const args = FsAcquireArgsSchema.parse({ epoch, cursor });
-    return runtimeFs(self, pid).acquire(args.epoch, args.cursor);
+    return self.supervisorBridge(pid).acquire(args.epoch, args.cursor);
 }
 /**
  * Enumerate the session filesystem for a process, one bounded page at a time.
  *
- * Goes through `runtimeFs(self, pid)` like every other fs RPC, so the listing
+ * Goes through `self.supervisorBridge(pid)` like every other fs RPC, so the listing
  * is filtered by the calling process's own credential rather than the kernel's
  * — a process must not learn of a path it could not stat.
  */
 export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
-    return runtimeFs(self, pid).list(args.after, args.limit ?? undefined);
+    return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid) {
-    const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    const fs = runtimeFs(self, pid);
-    return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length));
+    return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid });
 }
 /**
  * The same read, through the same process credential and the same bridge, with
@@ -449,9 +411,7 @@ export async function _rpcFsReadRange(self, path, offset, length, pid) {
  * substrate that was supposed to relieve the coordinator damages it instead.
  */
 export async function _rpcFsReadRangeUncached(self, path, offset, length, pid) {
-    const args = FsReadRangeArgsSchema.parse({ path, offset, length });
-    const fs = runtimeFs(self, pid);
-    return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length, { cached: false }));
+    return self.supervisorOp({ op: 'fsReadRangeUncached', args: [path, offset, length], pid });
 }
 /**
  * Read many ranges in ONE round trip.
@@ -481,7 +441,7 @@ export async function _rpcFsReadBatch(self, requests, pid) {
     // Sizing pass. A path this process may not stat contributes nothing and
     // still gets its own entry below — denying one path must not deny the
     // batch, which is what N separate reads would have done.
-    const fs = runtimeFs(self, pid);
+    const fs = self.supervisorBridge(pid);
     let residentBytes = 0;
     for (const request of args) {
         try {
@@ -520,7 +480,7 @@ function readBatchEntryError(error) {
 }
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
-    return runtimeFs(self, pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
+    return self.supervisorBridge(pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
 }
 export async function _rpcFsAppend(self, path, writerId, moduleId, operationId, bytes, pid) {
     const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
@@ -532,7 +492,7 @@ export async function _rpcFsAppend(self, path, writerId, moduleId, operationId, 
     const data = normalizeWriteBatchChunkData(bytes);
     const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
     const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return runtimeFs(self, pid).appendOnce(args.path, processId, args.writerId, args.moduleId, sequence, digest, data);
+    return self.supervisorBridge(pid).appendOnce(args.path, processId, args.writerId, args.moduleId, sequence, digest, data);
 }
 export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid) {
     const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
@@ -541,17 +501,16 @@ export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid
         throw new Error('filesystem append operation exceeds the safe integer range');
     }
     const processId = processPid(pid);
-    await runtimeFs(self, processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
+    await self.supervisorBridge(processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
 }
 export async function _rpcFsTruncate(self, path, size, pid) {
-    const args = FsTruncateArgsSchema.parse({ path, size });
-    await runtimeFs(self, pid).truncate(args.path, args.size);
+    await self.supervisorOp({ op: 'fsTruncate', args: [path, size], pid });
 }
 export async function _rpcFsOpen(self, path, flags, pid) {
-    return runtimeFs(self, pid).open(path, flags || {});
+    return self.supervisorBridge(pid).open(path, flags || {});
 }
 export async function _rpcFsRead(self, handleId, offset, length, pid) {
-    return withReadAllocation(length, () => runtimeFs(self, pid).read(handleId, offset, length));
+    return withReadAllocation(length, () => self.supervisorBridge(pid).read(handleId, offset, length));
 }
 export async function _rpcFsWrite(self, handleId, offset, bytes, pid) {
     let data;
@@ -561,10 +520,10 @@ export async function _rpcFsWrite(self, handleId, offset, bytes, pid) {
         data = new Uint8Array(bytes);
     else
         data = new Uint8Array(bytes || []);
-    return runtimeFs(self, pid).write(handleId, offset, data);
+    return self.supervisorBridge(pid).write(handleId, offset, data);
 }
 export async function _rpcFsClose(self, handleId, pid) {
-    await runtimeFs(self, pid).close(handleId);
+    await self.supervisorBridge(pid).close(handleId);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -577,7 +536,7 @@ export async function _rpcHmrRelay(self, clientId, msg) {
     self.cirrusReal.hmr.relayToBrowser(clientId, msg);
 }
 export async function _rpcUnlink(self, path, pid) {
-    await runtimeFs(self, pid).unlink(path);
+    await self.supervisorOp({ op: 'unlink', args: [path], pid });
 }
 /**
  * Bulk-write files and directories via one transactionSync().
@@ -601,7 +560,7 @@ export async function _rpcWriteBatch(self, payload, pid) {
         chunkId: c.chunkId,
         data: normalizeWriteBatchChunkData(c.data),
     }));
-    return processVfs(self, pid).writeBatch({
+    return self.sqliteFs.as(callerCred(self, pid)).writeBatch({
         inodes,
         chunks,
         deletePaths,
@@ -660,10 +619,8 @@ export async function _rpcWriteBatchStream(self, stream, mutationOwner, pid) {
     // total writeBatchStream RPCs at the coordinator (vs 620+ pre-fix).
     // Workerd's input-gate queue depth on the coordinator stays well
     // under the queue-age threshold without any user-space semaphore.
-    const decodeDrainStartedAt = performance.now();
-    return processVfs(self, pid).writeStream(stream, {
-        decodeDrainStartedAt,
-        mutationOwner,
+    return self.supervisorOp({
+        op: 'writeBatchStream', stream, mutationOwner, pid,
     });
 }
 /**
@@ -789,7 +746,7 @@ export async function _rpcReportExit(self, pid, code, tail) {
         self.webSocketRelay?.closeForPid(pid);
     }
     catch { }
-    self.runtimeFsBridges?.delete(pid);
+    self.supervisorForgetBridge?.(pid);
     if (tail)
         self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -951,7 +908,7 @@ export function _reportExternalExit(self, pid, code, reason) {
         self.webSocketRelay?.closeForPid(pid);
     }
     catch { }
-    self.runtimeFsBridges?.delete(pid);
+    self.supervisorForgetBridge?.(pid);
     if (reason) {
         self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }

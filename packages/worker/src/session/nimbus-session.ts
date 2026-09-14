@@ -120,7 +120,7 @@ import {
 } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
-import { sessionSupervisorOp } from './supervisor-op.js';
+import { buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { processHostFor } from '../loaders/process-host.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
@@ -336,7 +336,6 @@ The editor opens this file in Markdown preview mode by default. Use
 export class NimbusSession extends CloudflareDurableObject {
   // this.ctx and this.env are provided by the DurableObject base class
   sqliteFs: SqliteVFS | null = null;
-  runtimeFsBridges: Map<number, SqliteRuntimeFsBridge> | null = null;
   kernel: Kernel | null = null;
   shell: Shell | null = null;
   shellProcessPid: number | null = null;
@@ -710,9 +709,33 @@ export class NimbusSession extends CloudflareDurableObject {
   // 1-line delegators that pass `this as any` (per plan §IX rec 1 +
   // DEFECT-D1: ctx is protected and not on a public interface).
 
+  /**
+   * The one supervisor-op handler this session's bindings, loopback stubs and
+   * `_rpc*` delegates all dispatch through — native filesystem ops against
+   * the shared bridge store, session overrides for the accounting-carrying
+   * reads and the output stream, and the canonical route table for the rest.
+   * Lazy: sqliteFs exists only after ensureSqliteFs().
+   */
+  private _supervisorOps: SessionSupervisorOps | null = null;
+
+  private supervisorOps(): SessionSupervisorOps {
+    if (!this._supervisorOps) this._supervisorOps = buildSessionSupervisorOps(this);
+    return this._supervisorOps;
+  }
+
+  /** The pid-keyed filesystem bridge behind the supervisor ops. */
+  supervisorBridge(pid?: number): SqliteRuntimeFsBridge {
+    return this.supervisorOps().bridge(pid);
+  }
+
+  /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
+  supervisorForgetBridge(pid: number): void {
+    this._supervisorOps?.forget(pid);
+  }
+
   // Supervisor RPC (file/log/HMR/batch)
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
-    return sessionSupervisorOp(this, envelope);
+    return this.supervisorOps().dispatch(envelope);
   }
 
   async _rpcReadFile(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid); }

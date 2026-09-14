@@ -1,4 +1,28 @@
-/** Shared composition state for core workspaces and the process fabric. */
+/**
+ * composition.ts — the ONE seam an embedder wires the fabric through.
+ *
+ * The fabric mints supervisor bindings and assembles staged boots for the
+ * programs it hosts, but the entrypoint class that answers those bindings
+ * and the artifact sources a stage names both belong to the embedder. The
+ * embedder states them once, in its composition root, with one call:
+ *
+ *   composeFabric({
+ *     supervisorEntrypoint: 'SupervisorRPC',
+ *     stagedBootAssembler: (env, stage) => assembleConfig(env, stage),
+ *   });
+ *
+ * First-write-wins, like every holder in this module: the composition
+ * root's module scope runs once per isolate, before any request.
+ *
+ * `ctx.exports` is runtime state, not composition: workerd mints it per
+ * instance, so the embedder captures it where the platform hands it over —
+ * the first fetch, or the DO constructor — with {@link adoptCtxExports}.
+ *
+ * This module stays a leaf (no fabric imports) so helpers (notably
+ * isolate-pool.ts) can read `ctx.exports` without transitively importing
+ * the Durable Object classes, which is what lets the pool be unit-tested
+ * in a plain Node/Bun process.
+ */
 export type EntrypointLoopbackFactory = <Stub = unknown>(options: {
     props: object;
 }) => Stub;

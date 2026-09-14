@@ -27,7 +27,7 @@
 // performance figure that fails a build is a flake generator.
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -72,7 +72,7 @@ for (const shape of SHAPES) {
     totalBytes += shape.avgBytes;
   }
 
-  const host = { sqliteFs: vfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} };
+  const host = attachSupervisorOps({ sqliteFs: vfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
 
   // ── Enumerate, counting pages ────────────────────────────────────────────
   let listRtt = 0;

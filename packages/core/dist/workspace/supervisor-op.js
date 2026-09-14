@@ -32,21 +32,35 @@ function credFor(deps, pid) {
     return deps.processes ? deps.processes.cred(pid) : CRED_SESSION_USER;
 }
 /**
- * The canonical supervisor op table — every operation the supervisor RPC
- * serves, its host method, and its argument plan. Three consumers read this
- * one source:
+ * The canonical supervisor op set — every operation the supervisor RPC
+ * serves. Three consumers key on these names:
  *
- *   - `sessionSupervisorOp` (worker): the DO's host — dispatches each op to
- *     its `_rpc*` method with hosted accounting and lifecycle work.
+ *   - `sessionSupervisorOp` (worker): the DO's host — `extend` overrides for
+ *     hosted accounting plus the non-filesystem ops it answers itself.
  *   - `createSupervisorOpHandler`: an in-process workspace — filesystem ops
  *     run against the VFS directly; every other op dispatches to
- *     `deps.host`, the embedder's `_rpc*` surface.
+ *     `deps.host` through SUPERVISOR_OP_ROUTES, the embedder's `_rpc*`
+ *     surface.
  *   - `supervisor-host-dispatch`: the test — derives every case's delegate
- *     and expected arguments from this table instead of duplicating it.
+ *     and expected arguments from SUPERVISOR_OP_ROUTES, not a copied list.
  *
  * An op absent here is not served, on any host.
  */
-export const SUPERVISOR_OPS = {
+export const SUPERVISOR_OPS = [
+    'readFile', 'readFileBytes', 'writeFile', 'stat', 'lstat',
+    'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
+    'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink',
+    'symlink', 'fsAcquire', 'fsRevision', 'fsList', 'wsOpen', 'wsPoll',
+    'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
+    'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
+    'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream',
+    'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort',
+    'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
+    'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
+    'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
+];
+/** The host-side argument plan per op — how an envelope becomes an _rpc* call. */
+export const SUPERVISOR_OP_ROUTES = {
     readFile: { method: '_rpcReadFile', args: [0, 'pid'] },
     readFileBytes: { method: '_rpcReadFileBytes', args: [0, 'pid'] },
     writeFile: { method: '_rpcWriteFile', args: [0, 1, 'pid'] },
@@ -105,20 +119,50 @@ export const SUPERVISOR_OPS = {
     cpWait: { method: '_rpcCpWait', args: [0, 1] },
     cpDispatchInline: { method: '_rpcCpDispatchInline', args: [0, 1] },
 };
+/**
+ * The ops `createSupervisorOpHandler` serves natively — one pid-keyed
+ * filesystem bridge, plus the output stream. A session's `extend` overrides
+ * never cover these by accident: `sessionSupervisorOps` builds its delegate
+ * set from this name list, not a hand-copied table.
+ */
+export const SUPERVISOR_NATIVE_OPS = new Set([
+    'readFile', 'readFileBytes', 'stat', 'lstat', 'exists', 'readdir',
+    'readlink', 'fsReadRange', 'fsReadRangeUncached', 'fsRevision',
+    'hasLegacySymlinkUnder', 'writeFile', 'mkdir', 'rmdir', 'unlink',
+    'rename', 'symlink', 'chmod', 'utimes', 'fsTruncate',
+    'writeBatchStream', 'stdout', 'stderr',
+]);
+/**
+ * Exported so the session's `supervisorBridge` — used by RPC bodies the
+ * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
+ * same cache the handler's native ops serve from, never a second one.
+ */
+export function createSupervisorBridgeStore(deps) {
+    const bridges = new Map();
+    return {
+        bridge: (pid) => {
+            const key = pid ?? 0;
+            const credentialed = deps.vfs.as(credFor(deps, pid));
+            const held = bridges.get(key);
+            if (held) {
+                held.updateCredential(credentialed);
+                return held;
+            }
+            const built = new SqliteRuntimeFsBridge(credentialed, deps.vfs);
+            bridges.set(key, built);
+            return built;
+        },
+        forget: (pid) => { bridges.delete(pid); },
+    };
+}
 /** One dispatch method lets any host serve its workspace to process facets. */
 export function createSupervisorOpHandler(deps) {
-    const bridges = new Map();
-    const bridgeFor = (pid) => {
-        const key = pid ?? 0;
-        const credentialed = deps.vfs.as(credFor(deps, pid));
-        const held = bridges.get(key);
-        if (held) {
-            held.updateCredential(credentialed);
-            return held;
-        }
-        const built = new SqliteRuntimeFsBridge(credentialed, deps.vfs);
-        bridges.set(key, built);
-        return built;
+    const bridgeFor = deps.bridge?.bridge ?? createSupervisorBridgeStore(deps).bridge;
+    const tools = {
+        bridge: bridgeFor,
+        vfs: deps.vfs,
+        cred: (pid) => credFor(deps, pid),
+        output: deps.output,
     };
     const ops = {
         readFile: async (e) => {
@@ -163,8 +207,9 @@ export function createSupervisorOpHandler(deps) {
         const handler = Object.hasOwn(extend, envelope.op) ? extend[envelope.op]
             : Object.hasOwn(ops, envelope.op) ? ops[envelope.op] : undefined;
         if (handler)
-            return handler(envelope);
-        const route = Object.hasOwn(SUPERVISOR_OPS, envelope.op) ? SUPERVISOR_OPS[envelope.op] : undefined;
+            return handler(envelope, tools);
+        const route = Object.hasOwn(SUPERVISOR_OP_ROUTES, envelope.op)
+            ? SUPERVISOR_OP_ROUTES[envelope.op] : undefined;
         if (!route)
             throw new Error(`supervisor op: '${envelope.op}' is not served by this host`);
         const host = deps.host;

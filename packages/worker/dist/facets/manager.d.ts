@@ -1074,6 +1074,14 @@ export declare class FacetManager {
     private _warmOpencodeServer;
     /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
     private _processLogTail;
+    /**
+     * A launch that fails before its process is running reports the same way
+     * regardless of which phase failed: the pid is exited, the terminal event
+     * recorded, and the session notified. Callers do their phase-specific
+     * cleanup (ports, tracked RPC resources) first and pass a reason that names
+     * the phase.
+     */
+    private _failLaunch;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
     /** Execution timeout. */

@@ -24,7 +24,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const dec = new TextDecoder();
 
@@ -61,7 +61,7 @@ function loadStore() {
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kfs = rawVfs.as(CRED_KERNEL);
-const host = { sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} };
+const host = attachSupervisorOps({ sqliteFs: rawVfs, processes: new SessionProcessSupervisor(), ensureSqliteFs() {} });
 
 const FILES = 1_200;
 const FILE_BYTES = 2 * 1024;
@@ -230,11 +230,11 @@ assert.ok(
   assert.equal(store.__residentStats().files, FILES + 1);
 
   const restarted = new SqliteVFS(harness.sql, harness.ctx);
-  const restartedHost = {
+  const restartedHost = attachSupervisorOps({
     sqliteFs: restarted,
     processes: new SessionProcessSupervisor(),
     ensureSqliteFs() {},
-  };
+  });
   assert.notEqual(restarted.epoch, rawVfs.epoch, 'the restart really is a new incarnation');
   const supervisor = {
     fsList: (after, limit) => _rpcFsList(restartedHost, after ?? null, limit ?? null),

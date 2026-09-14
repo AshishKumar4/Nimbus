@@ -56,7 +56,7 @@ import { initSession as _w11InitSession } from './init.js';
 import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
-import { sessionSupervisorOp } from './supervisor-op.js';
+import { buildSessionSupervisorOps } from './supervisor-op.js';
 import { processHostFor } from '../loaders/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -245,7 +245,6 @@ The editor opens this file in Markdown preview mode by default. Use
 export class NimbusSession extends CloudflareDurableObject {
     // this.ctx and this.env are provided by the DurableObject base class
     sqliteFs = null;
-    runtimeFsBridges = null;
     kernel = null;
     shell = null;
     shellProcessPid = null;
@@ -605,9 +604,30 @@ export class NimbusSession extends CloudflareDurableObject {
     // dispatches by name from the stub) keeps working. Method bodies are
     // 1-line delegators that pass `this as any` (per plan §IX rec 1 +
     // DEFECT-D1: ctx is protected and not on a public interface).
+    /**
+     * The one supervisor-op handler this session's bindings, loopback stubs and
+     * `_rpc*` delegates all dispatch through — native filesystem ops against
+     * the shared bridge store, session overrides for the accounting-carrying
+     * reads and the output stream, and the canonical route table for the rest.
+     * Lazy: sqliteFs exists only after ensureSqliteFs().
+     */
+    _supervisorOps = null;
+    supervisorOps() {
+        if (!this._supervisorOps)
+            this._supervisorOps = buildSessionSupervisorOps(this);
+        return this._supervisorOps;
+    }
+    /** The pid-keyed filesystem bridge behind the supervisor ops. */
+    supervisorBridge(pid) {
+        return this.supervisorOps().bridge(pid);
+    }
+    /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
+    supervisorForgetBridge(pid) {
+        this._supervisorOps?.forget(pid);
+    }
     // Supervisor RPC (file/log/HMR/batch)
     supervisorOp(envelope) {
-        return sessionSupervisorOp(this, envelope);
+        return this.supervisorOps().dispatch(envelope);
     }
     async _rpcReadFile(path, pid) { return _rpc._rpcReadFile(this, path, pid); }
     async _rpcReadFileBytes(path, pid) { return _rpc._rpcReadFileBytes(this, path, pid); }
@@ -1089,10 +1109,10 @@ export class NimbusSession extends CloudflareDurableObject {
         // construction near line 2058 — registry passed as ctor arg there).
         const cmdRegistryAdapter = {
             // Consult the live shell registry FIRST so dynamically-registered
-            // commands (registerUnixCommands / registerGitCommands / npm /
-            // wrangler etc.) are seen even if they're not in the static
-            // _CP_PURE_BUILTIN allow-list. Falls back to the static
-            // facet-direct table for known facet-only commands. Returns null
+            // commands (registerUnixCommands / git / npm / wrangler etc.) are seen
+            // even if they're not in the static _CP_PURE_BUILTIN allow-list. Falls
+            // back to the static facet-direct table for known facet-only commands.
+            // Returns null
             // (→ exit 127) for everything unknown.
             resolve: (name) => {
                 const commandName = normalizeCpCommandName(name);

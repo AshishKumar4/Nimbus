@@ -28,7 +28,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 
@@ -93,11 +93,11 @@ let fsListCalls = 0;
 let allowFill = true;
 const stdoutChunks = [];
 
-const rpcHost = {
+const rpcHost = attachSupervisorOps({
   sqliteFs: sessionVfs,
   processes: new SessionProcessSupervisor(),
   ensureSqliteFs() {},
-};
+});
 
 function makeSupervisor(props) {
   return {

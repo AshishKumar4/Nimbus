@@ -3,6 +3,8 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcLstat, _rpcUnlink } from '../../packages/worker/src/session/rpc.ts';
+import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
+
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 
 {
@@ -19,14 +21,17 @@ import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
       return { type: 'symlink', size: 6, mode: 0o777, uid: 1000, gid: 1000 };
     },
   };
-  const result = await _rpcLstat({
+  const self = {
     ensureSqliteFs() {},
     processes: { cred: () => CRED_KERNEL },
     sqliteFs: {
       as: () => vfs,
       revision: () => 0,
     },
-  }, '/home/user/link', 1);
+  };
+  const ops = buildSessionSupervisorOps(self);
+  self.supervisorOp = (envelope) => ops.dispatch(envelope);
+  const result = await _rpcLstat(self, '/home/user/link', 1);
   assert.equal(result.type, 'symlink');
   assert.deepEqual(call, {
     path: 'home/user/link',
@@ -35,17 +40,20 @@ import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 }
 
 {
-  await assert.rejects(
-    _rpcUnlink({
-      ensureSqliteFs() {},
-      processes: { cred: () => CRED_KERNEL },
-      sqliteFs: {
-        as: () => ({}),
-        assertMutationAllowed() {
-          throw new Error('EBUSY: clone destination is exclusively locked');
-        },
+  const self = {
+    ensureSqliteFs() {},
+    processes: { cred: () => CRED_KERNEL },
+    sqliteFs: {
+      as: () => ({}),
+      assertMutationAllowed() {
+        throw new Error('EBUSY: clone destination is exclusively locked');
       },
-    }, '/home/user/repo/file', 1),
+    },
+  };
+  const ops2 = buildSessionSupervisorOps(self);
+  self.supervisorOp = (envelope) => ops2.dispatch(envelope);
+  await assert.rejects(
+    _rpcUnlink(self, '/home/user/repo/file', 1),
     /EBUSY/,
     'unlink must not swallow the exclusive-mutation failure',
   );

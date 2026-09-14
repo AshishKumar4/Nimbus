@@ -245,9 +245,6 @@ function getAuthor(ctx) {
     };
 }
 // ── Git subcommand implementations ──────────────────────────────────────
-export function registerGitCommands(registry, vfs, doCtx, doEnv) {
-    registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, doEnv));
-}
 /**
  * The `git` command handler. Split out from registration so it can be
  * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping

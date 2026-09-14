@@ -22,6 +22,7 @@ import {
   _rpcStat,
   _rpcWriteFile,
 } from '../../packages/worker/src/session/rpc.ts';
+import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -42,6 +43,9 @@ const host = {
   processes,
   ensureSqliteFs() {},
 };
+const sessionOps = buildSessionSupervisorOps(host);
+host.supervisorOp = (envelope) => sessionOps.dispatch(envelope);
+host.supervisorBridge = (p) => sessionOps.bridge(p);
 
 // ── the exact call shape @nimbus-sh/sdk uses ─────────────────────────────
 await _rpcWriteFile(host, '/home/user/hello.txt', 'hi');

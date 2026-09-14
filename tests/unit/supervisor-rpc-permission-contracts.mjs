@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
+import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -33,6 +34,11 @@ const host = {
   processes,
   ensureSqliteFs() {},
 };
+
+// _rpcAccess/_rpcChown reach the filesystem through the session's shared
+// supervisor bridge store; the rest of the host's _rpc* surface is unused here.
+const ops = buildSessionSupervisorOps(host);
+host.supervisorBridge = (p) => ops.bridge(p);
 
 await rpc._rpcAccess(host, '/user.txt', 0o4, user.pid);
 await assert.rejects(

@@ -39,7 +39,6 @@ export declare const CLONE_USAGE = "usage: git clone [--depth <n>] [--no-shallow
  * "blobless" clone that was not blobless.
  */
 export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
-export declare function registerGitCommands(registry: any, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any): void;
 /**
  * The `git` command handler. Split out from registration so it can be
  * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping

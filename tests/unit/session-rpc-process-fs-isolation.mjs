@@ -10,7 +10,7 @@ import {
   _rpcFsRead,
 } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -27,6 +27,7 @@ const host = {
   processes,
   ensureSqliteFs() {},
 };
+attachSupervisorOps(host);
 
 const rootSecret = await _rpcFsOpen(host, '/private/root.txt', { read: true }, root.pid);
 assert.equal(

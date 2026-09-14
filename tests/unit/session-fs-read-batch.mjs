@@ -34,6 +34,8 @@ import {
 } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
+import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
 
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES — one ranged read
 const dec = new TextDecoder();
@@ -69,8 +71,11 @@ function makeHost() {
     sqliteFs: rawVfs,
     processes,
     ensureSqliteFs() {},
-    runtimeFsBridges: new Map(),
   };
+  // The session's bridge store, pre-seeded with instrumented bridges — the
+  // same objects the handler serves from, so a read in flight is observable.
+  const store = createSupervisorBridgeStore({ vfs: rawVfs, processes });
+  const bridgeByPid = new Map();
   for (const pid of [user.pid, root.pid]) {
     const bridge = new SqliteRuntimeFsBridge(rawVfs.as(processes.cred(pid)), rawVfs);
     const { stat, readRange } = bridge;
@@ -81,8 +86,15 @@ function makeHost() {
       if (observeInFlight) observeInFlight(readSupervisorAllocationBudget());
       return bytes;
     };
-    host.runtimeFsBridges.set(pid, bridge);
+    bridgeByPid.set(pid, bridge);
   }
+  const injected = {
+    bridge: (p) => bridgeByPid.get(p) ?? store.bridge(p),
+    forget: store.forget,
+  };
+  const ops = buildSessionSupervisorOps(host, injected);
+  host.supervisorOp = (envelope) => ops.dispatch(envelope);
+  host.supervisorBridge = (p) => ops.bridge(p);
   return {
     host,
     calls,

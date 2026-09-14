@@ -31,7 +31,7 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { hostNamespace, hostDispatchMethod } from '@nimbus-sh/platform/composition.js';
-import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
@@ -134,7 +134,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   private _op<T>(
-    op: string,
+    op: SupervisorOpName,
     args: readonly unknown[] = [],
     extra: Omit<SupervisorOpEnvelope, 'op' | 'args'> = {},
   ): Promise<T> {
@@ -142,7 +142,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   /** Stamp filesystem credentials from the binding, not the supplied arguments. */
-  private _fsOp<T>(op: string, args: readonly unknown[] = []): Promise<T> {
+  private _fsOp<T>(op: SupervisorOpName, args: readonly unknown[] = []): Promise<T> {
     return this._op<T>(op, args, { pid: this._pid() });
   }
 

@@ -101,7 +101,9 @@ export interface ProgrammaticHost {
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
     fetchProxyEntrypoint?: unknown;
-    runtimeFsBridges?: Map<number, unknown> | null;
+    _supervisorOps?: {
+        forget(pid: number): void;
+    } | null;
     sessionBasePath?: string;
     sessionBasePathHydrated?: boolean;
     wranglerAliasBannerShown?: boolean;
