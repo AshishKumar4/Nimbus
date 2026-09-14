@@ -149,34 +149,27 @@ export async function bindShellSocket(self: WsHost, ws: WebSocket): Promise<bool
     }
     return true;
   }
-  if (self.terminal.ws !== ws) {
-    // `ctx` is `protected` on the DO base class and so cannot sit on this
-    // interface (DEFECT-D1); the scrollback tee is the one thing here that
-    // needs it.
-    const ctx = 'ctx' in self ? self.ctx : undefined;
-    self.terminal.attach(ws, (frame: string) => {
-      try { appendScrollback(ctx, frame, Date.now()); }
-      catch (e) { console.warn("[B'.3] appendScrollback failed:", errorText(e)); }
-    });
-  }
+  if (self.terminal.ws !== ws) self.terminal.attach(ws, shellTerminalTee(self));
   return true;
 }
+
+/** The shell state each instance last wrote, so an unchanged state costs no SQL. */
+const lastShellSnapshot = new WeakMap<WsHost, { cwd: string | null; envJson: string | null }>();
 
 /**
  * Snapshot the live Shell state and write it through to DO SQLite
  * [Phase 3 B'.1].
  *
- * Called from wsMessage (post-process, every inbound keystroke) and
- * once more in the wsClose / wsError shell-kind branch as a final
- * safety net before the in-memory Shell is torn down.
+ * Called after every inbound frame, from every output flush of the shell
+ * terminal (see shellTerminalTee), and once more in the wsClose / wsError
+ * shell-kind branch as a final safety net before the in-memory Shell is
+ * torn down.
  *
  * Read-only and synchronous (DO storage SQL is sync inside a request
- * context). Cheap: one read of `shell.getCwd()` + `shell.getEnv()`,
- * a JSON.stringify of env, and an INSERT-OR-REPLACE into the small
- * nimbus_session_kv table. Skips the SQL write entirely when nothing
- * has changed since the previous snapshot — the comparison is
- * pointer-equality on cwd plus env reference, since Shell.getEnv()
- * returns a live Record and `cd` mutates `this.cwd` in place.
+ * context). Cheap: one read of `shell.getCwd()` + `shell.getEnv()` and a
+ * JSON.stringify of env; the INSERT-OR-REPLACE into nimbus_session_kv
+ * only runs when either differs from what this instance last wrote, so
+ * the per-flush call during a chatty command costs a string compare.
  *
  * Failure model: persistShellState throws ONLY on env-too-large
  * (the SESSION_ENV_MAX_BYTES gate). We surface that via console.warn
@@ -201,11 +194,43 @@ function snapshotShellState(self: WsHost): void {
     }
   } catch { /* best-effort */ }
   if (!cwd && !env) return;
+  const envJson = env ? JSON.stringify(env) : null;
+  const last = lastShellSnapshot.get(self);
+  if (last && last.cwd === cwd && last.envJson === envJson) return;
   try {
     persistShellState(ctx, { cwd, env });
+    lastShellSnapshot.set(self, { cwd, envJson });
   } catch (e: any) {
     console.warn('[nimbus/B\'.1] persistShellState failed:', e?.message || e);
   }
+}
+
+/**
+ * What every output frame of the shell terminal feeds besides the socket:
+ * the persisted scrollback, and the shell-state snapshot.
+ *
+ * The snapshot runs here and not only after each inbound frame because
+ * commands run asynchronously: the `cd` a line asked for takes effect
+ * after the inbound handler has already snapshotted, and the next frame —
+ * which used to catch the row up — never arrives when the object
+ * hibernates first. Measured 2026-09-14: `cd /tmp && echo one`, ten quiet
+ * seconds, and the woken shell answered `pwd` from /home/user. The prompt
+ * that ends every command is an output frame, so by the time it has
+ * flushed, the state it reflects is what the row records.
+ *
+ * Every socket a shell terminal is built on or handed to goes through
+ * this — initSession, the warm rejoin, and the wake rebuild — so the
+ * three cannot drift.
+ */
+export function shellTerminalTee(self: WsHost): (frame: string) => void {
+  // `ctx` is `protected` on the DO base class and so cannot sit on the
+  // host interface (DEFECT-D1); scrollback is the one thing here needing it.
+  const ctx = 'ctx' in self ? self.ctx : undefined;
+  return (frame: string) => {
+    try { appendScrollback(ctx, frame, Date.now()); }
+    catch (e) { console.warn("[B'.3] appendScrollback failed:", errorText(e)); }
+    snapshotShellState(self);
+  };
 }
 
 /**
