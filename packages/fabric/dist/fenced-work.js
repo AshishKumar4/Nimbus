@@ -145,6 +145,11 @@ export class FencedWork {
         let inflight = this.drives.get(key);
         if (inflight === undefined) {
             inflight = (async () => {
+                if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
+                    this.host.onAbandoned?.(record);
+                    await this.supersede(key);
+                    return true;
+                }
                 let failed = false;
                 try {
                     await this.host.redrive(record, record.attempt + 1);
@@ -235,6 +240,7 @@ export class FencedWork {
      * a previous generation the terminal hook will never fire for.
      */
     async supersede(key) {
+        this.journalledPids.delete(Number(key.slice(FENCED_WORK_KEY_PREFIX.length)));
         await this.storage.delete(key);
         await this.storage.sync();
     }

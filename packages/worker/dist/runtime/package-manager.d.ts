@@ -94,8 +94,49 @@ export declare function ensureRuntimesProgrammatic(deps: {
     force?: boolean;
 }): Promise<RuntimeInstallSummary[]>;
 /**
+ * The session's application verbs, as the shell reaches them — the SAME
+ * session methods the SDK and the Agent call (session/programmatic.ts), so
+ * there is one policy for what an exposure, a rotation or a removal is.
+ */
+export interface NimbusAppVerbs {
+    expose(target: number | string, options: {
+        visibility?: 'scoped' | 'public';
+        name?: string;
+    }): Promise<{
+        owner: string;
+        name: string | null;
+        port: number;
+        capability: string | null;
+        visibility: 'scoped' | 'public';
+        url: string | null;
+    }>;
+    list(): Promise<Array<{
+        owner: string;
+        name: string | null;
+        port: number | null;
+        pid: number | null;
+        status: string;
+        visibility: string;
+        restart: string;
+        diagnostic: string | null;
+        url: string | null;
+    }>>;
+    rotateLink(target: number | string): Promise<{
+        name: string | null;
+        port: number;
+        url: string | null;
+        capability: string | null;
+    }>;
+    remove(target: number | string): Promise<{
+        owner: string;
+        removed: boolean;
+        port: number | null;
+    }>;
+}
+/**
  * Build the shell-command handler that implements `nimbus install …`,
- * `nimbus uninstall …`. Registered under the name `nimbus`.
+ * `nimbus uninstall …`, `nimbus expose …`, `nimbus app …` and
+ * `nimbus start …`. Registered under the name `nimbus`.
  */
 export declare function makeNimbusVerbHandler(deps: {
     env: RuntimeCatalogEnv;
@@ -105,5 +146,7 @@ export declare function makeNimbusVerbHandler(deps: {
      *  caller (init.ts) from the shell env. */
     getHome(): string;
     warmRuntime?: RuntimeWarmHook;
+    /** The application verbs; absent on a host with no session (tests). */
+    apps?: NimbusAppVerbs;
 }): (ctx: any) => Promise<number>;
 //# sourceMappingURL=package-manager.d.ts.map

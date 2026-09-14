@@ -59,6 +59,7 @@ import { parseNpmInstallInvocation } from '../npm/install-args.js';
 import { npmLogEnabled } from '../npm/npm-log.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, } from '../runtime/package-manager.js';
+import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from './programmatic.js';
 import { listInstalledRuntimes, rehydrateInstalledRuntimes, registerRunnerFactory, } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
 // first-use inside their registered handlers — see the registrations below.
@@ -589,6 +590,14 @@ export async function initSession(self, ws) {
             vfs: sqliteFs,
             registry: pkgRegistry,
             getHome: nimbusGetHome,
+            // The application verbs are the session's own (programmatic.ts):
+            // the shell, the SDK and the Agent all reach the same policy.
+            apps: {
+                expose: (target, options) => rpcExposeApp(self, target, options),
+                list: () => rpcListApps(self),
+                rotateLink: (target) => rpcRotateLink(self, target),
+                remove: (target) => rpcRemoveApp(self, target),
+            },
             warmRuntime: async (target, ctx) => {
                 // The runtime name, which is what `nimbus install python` installs
                 // — not the name the user typed. Left as 'python' through the

@@ -391,7 +391,7 @@ export function makeCPythonRunnerFactory(deps) {
                     return 1;
                 }
                 const command = [binName, ...argv].map((part) => (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command });
+                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv] });
                 if (spawnResult.stdout)
                     ctx.stdout.write(spawnResult.stdout);
                 if (spawnResult.stderr)

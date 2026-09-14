@@ -59,6 +59,10 @@ export declare const PORT_CAPABILITY_KEY_PREFIX = "nimbus_preview_capability:";
  * `facets/durable-slots.ts`, the only module that reads or writes these rows.
  */
 export declare const DURABLE_SLOT_KEY_PREFIX = "durable-slot:";
+/** Atomic resident identity claim: owner → winning pid, released at process termination. */
+export declare const RESIDENT_OWNER_KEY_PREFIX = "resident-owner:";
+/** Owner → retained durable image digests, including images of stopped processes. */
+export declare const DURABLE_IMAGES_KEY_PREFIX = "durable-images:";
 /**
  * Prefix for a named programmatic shell's durable cwd+env, keyed by shell id.
  * One row per id the embedder has actually used; bounded by the embedder's own

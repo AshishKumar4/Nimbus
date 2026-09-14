@@ -393,6 +393,13 @@ export class NimbusSession extends CloudflareDurableObject {
     /** Have we attempted to hydrate sessionBasePath from storage yet? */
     sessionBasePathHydrated = false;
     /**
+     * The origin this session was last reached at (`https://host`), remembered
+     * beside the base path so the session can spell a path-form URL for one
+     * of its own applications — `nimbus expose` printing one, `apps.list`
+     * carrying one — on a deployment with no preview-host suffix.
+     */
+    sessionOrigin = '';
+    /**
      * Has the "wrangler is aliased to nimbus-wrangler" banner been shown
      * this session? Reset on WebSocket close/reopen so a reconnecting user
      * sees it once per terminal attach. Purely cosmetic; no persistence.
@@ -544,8 +551,8 @@ export class NimbusSession extends CloudflareDurableObject {
      * it arrives as a new invocation, so the chunk runs against a fresh CPU
      * budget rather than the one the launch has already been spending.
      */
-    _scheduleLaunchTurn() {
-        return timers(this, this.ctx).schedule('resident-launch', Date.now());
+    _scheduleLaunchTurn(notBefore = 0) {
+        return timers(this, this.ctx).schedule('resident-launch', Math.max(Date.now(), notBefore));
     }
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
@@ -571,6 +578,9 @@ export class NimbusSession extends CloudflareDurableObject {
                 const saved = await this.ctx.storage.get('session-base-path');
                 if (typeof saved === 'string')
                     this.sessionBasePath = saved;
+                const origin = await this.ctx.storage.get('session-origin');
+                if (typeof origin === 'string')
+                    this.sessionOrigin = origin;
             }
             catch { /* storage unavailable — stay empty */ }
             this.sessionBasePathHydrated = true;
@@ -582,6 +592,23 @@ export class NimbusSession extends CloudflareDurableObject {
                 await this.ctx.storage.put('session-base-path', fromHeader);
             }
             catch { }
+        }
+        // The router forwards the request under its own origin; a preview host
+        // is not this session's control-plane origin, so only a request that
+        // carried the base path (a /s/<sid>/… door) teaches it.
+        if (fromHeader) {
+            let origin = '';
+            try {
+                origin = new URL(request.url).origin;
+            }
+            catch { /* not an absolute URL — nothing to learn */ }
+            if (origin && origin !== this.sessionOrigin) {
+                this.sessionOrigin = origin;
+                try {
+                    await this.ctx.storage.put('session-origin', origin);
+                }
+                catch { }
+            }
         }
     }
     /**
@@ -794,6 +821,14 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcExposePort(port, options) {
         return _programmatic.rpcExposePort(this, port, options);
     }
+    // The identity-centric application surface: one implementation each in
+    // programmatic.ts, addressed by port, pid, name or owner.
+    async _rpcExposeApp(target, options) {
+        return _programmatic.rpcExposeApp(this, target, options);
+    }
+    async _rpcListApps() { return _programmatic.rpcListApps(this); }
+    async _rpcRotateLink(target) { return _programmatic.rpcRotateLink(this, target); }
+    async _rpcRemoveApp(target) { return _programmatic.rpcRemoveApp(this, target); }
     async _rpcEnsureDurableApp(input) {
         return _programmatic.rpcEnsureDurableApp(this, input);
     }
@@ -811,6 +846,12 @@ export class NimbusSession extends CloudflareDurableObject {
      * manager decides 'started' | 'absent' | 'failed'; the route maps them.
      */
     async ensureDurableAppOnPort(port) {
+        // Stood up the same way the alarm pump stands itself up: a port request
+        // is the first thing to reach a replacement instance as often as an
+        // alarm is, and the launch it re-drives needs a filesystem to be
+        // re-driven onto — measured live (staging 2026-09-14): without it the
+        // re-drive failed with "a resident process needs a session filesystem".
+        this.ensureSqliteFs();
         this.ensureFacetManager();
         return this.facetManager.ensureDurableAppOnPort(port);
     }
@@ -930,7 +971,7 @@ export class NimbusSession extends CloudflareDurableObject {
         if (!this.facetManager) {
             this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, processHostFor, {
                 onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
-                requestLaunchTurn: () => { void this._scheduleLaunchTurn(); },
+                requestLaunchTurn: (notBefore) => { void this._scheduleLaunchTurn(notBefore); },
                 notify: (line) => this._notifySession(line),
                 transformLargeEsm: async (code, options) => {
                     const loader = Reflect.get(this.env, 'LOADER');

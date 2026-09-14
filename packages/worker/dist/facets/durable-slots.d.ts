@@ -41,5 +41,5 @@ export declare function acquireDurableFacetSlot(ctx: DurableObjectState, owner: 
  * step of explicit removal, after the facet's SQLite is already gone. Answers
  * the freed name, or null when the owner held nothing.
  */
-export declare function freeDurableFacetSlot(ctx: DurableObjectState, owner: string): Promise<string | null>;
+export declare function freeDurableFacetSlot(ctx: DurableObjectState, owner: string, beforeFree?: (name: string) => void): Promise<string | null>;
 //# sourceMappingURL=durable-slots.d.ts.map

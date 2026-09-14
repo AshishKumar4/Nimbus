@@ -10,25 +10,36 @@
  * `buildPreviewHost` and `parsePreviewHost` are exact inverses: every
  * `(sid, port)` has exactly ONE valid origin. Without that bijection a cookie
  * set on the canonical host is missing from an equivalent-but-different one.
+ *
+ * The middle label may be a NAME instead of a port — `<name>--<sid>` and
+ * `<cap>--<name>--<sid>` — for an application whose reservation carries a
+ * name alias. A numeric label is a port; anything else that is a DNS label
+ * is a name. The scoped name form is resolved to a port inside the session
+ * (its reservation records); the public name form through the directory.
  */
 export interface PreviewHost {
-    port: number;
+    /** The port, on the port forms. Absent on a name form — the name resolves to it. */
+    port?: number;
+    /** The name alias, on the name forms `<name>--<sid>` / `<cap>--<name>--<sid>`. */
+    name?: string;
     sid: string;
     /**
-     * Present only on the public capability form `<cap>--<port>--<sid>`: the
-     * bearer is the capability itself, so the request skips session-attach
-     * auth entirely — the session decides by the port's stored visibility.
+     * Present only on the public capability forms `<cap>--<port>--<sid>` and
+     * `<cap>--<name>--<sid>`: the bearer is the capability itself, so the
+     * request skips session-attach auth entirely — the session decides by the
+     * port's stored visibility.
      */
     capability?: string;
 }
-export declare function buildPreviewHost(sid: string, port: number, suffix: string): string;
+/** `<port>--<sid>` or `<name>--<sid>`: the middle label is a port number or a name alias. */
+export declare function buildPreviewHost(sid: string, target: number | string, suffix: string): string;
 /**
- * `<capability>--<port>--<sid>.<suffix>` — the unauthenticated sibling of
- * `buildPreviewHost`, for applications whose visibility is `public`. The
+ * `<capability>--<port|name>--<sid>.<suffix>` — the unauthenticated sibling
+ * of `buildPreviewHost`, for applications whose visibility is `public`. The
  * capability is the bearer: 24 lowercase hex, the same shape the port
  * registry mints.
  */
-export declare function buildPublicPreviewHost(sid: string, port: number, capability: string, suffix: string): string;
+export declare function buildPublicPreviewHost(sid: string, target: number | string, capability: string, suffix: string): string;
 export declare function isPreviewHostSafeSid(sid: string): boolean;
 /**
  * Read the configured preview-host suffix out of a bindings env.
@@ -39,6 +50,13 @@ export declare function isPreviewHostSafeSid(sid: string): boolean;
  */
 export declare function readPreviewHostSuffix(env: unknown): string | null;
 export declare function parsePreviewHost(host: string, suffix: string | undefined | null): PreviewHost | null;
+/**
+ * A name label: a DNS label that is neither a port (all digits) nor a
+ * capability (24 lowercase hex), and contains no `--` host-label separator.
+ * The same rule the session applies when it stores a
+ * name on a reservation, so every name it accepts is a host it can parse.
+ */
+export declare function isPreviewHostName(label: string): boolean;
 /**
  * True when `url` addresses a port preview. Embedders MUST test this BEFORE
  * their own route table: a preview host serves untrusted user code at the

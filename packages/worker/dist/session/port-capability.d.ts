@@ -55,24 +55,42 @@ declare const PortVisibilitySchema: z.ZodEnum<{
     public: "public";
 }>;
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
+/**
+ * The optional name alias a reservation may carry: one DNS label, so it can
+ * stand where the port stands in a preview host (`<name>--<sid>`). Never
+ * purely numeric — a numeric middle label IS a port. No `--`: that is the
+ * host-label separator. No 24 lowercase hex: that is ambiguous with a
+ * capability label, so parsing could mistake a name for a bearer.
+ */
+export declare const APP_NAME_RE: RegExp;
+export declare function isValidAppName(name: string): boolean;
 export declare const PortRecordSchema: z.ZodObject<{
+    kind: z.ZodDefault<z.ZodEnum<{
+        explicit: "explicit";
+        derived: "derived";
+    }>>;
     capability: z.ZodNullable<z.ZodString>;
     owner: z.ZodNullable<z.ZodString>;
     visibility: z.ZodOptional<z.ZodEnum<{
         scoped: "scoped";
         public: "public";
     }>>;
+    name: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export interface PortExposure {
     readonly capability: string;
     readonly owner: string | null;
     readonly visibility: PortVisibility;
+    readonly name?: string;
 }
 /** The per-port record as stored: a bare reservation has no capability yet. */
 export interface PortReservation {
+    readonly kind: 'explicit' | 'derived';
     readonly owner: string | null;
     readonly capability: string | null;
     readonly visibility: PortVisibility;
+    /** The reservation's name alias, when one was given at expose time. */
+    readonly name?: string;
 }
 export declare function portRecordKey(port: number): string;
 /** Read the raw per-port record: a reservation, an exposure, or nothing. */
@@ -81,6 +99,24 @@ export declare function readPortReservation(ctx: {
 }, port: number): Promise<PortReservation | null>;
 /** Read retained exposure metadata without starting a session or restoring a listener. */
 export declare function readPortExposure(ctx: PortCapabilityHost['ctx'], port: number): Promise<PortExposure | null>;
+/** Every stored port record, keyed by port — the scan `apps.list` and the name lookups read. */
+export declare function listPortReservations(ctx: {
+    storage: PortReservationTransaction;
+}): Promise<Map<number, PortReservation>>;
+/** The port a name alias resolves to inside this session, or null. */
+export declare function readPortReservationByName(ctx: {
+    storage: PortReservationTransaction;
+}, name: string): Promise<{
+    port: number;
+    reservation: PortReservation;
+} | null>;
+/** The port an owner holds, or null when the owner has no reservation. */
+export declare function readPortReservationByOwner(ctx: {
+    storage: PortReservationTransaction;
+}, owner: string): Promise<{
+    port: number;
+    reservation: PortReservation;
+} | null>;
 /**
  * Hold a port for `owner` across instances. The owner's existing port is
  * answered again; otherwise the preferred port is claimed, or the lowest
@@ -97,9 +133,12 @@ export declare function readPortExposure(ctx: PortCapabilityHost['ctx'], port: n
 export declare function reservePort(ctx: PortReservationHost['ctx'], input: {
     owner: string;
     preferredPort?: number;
+    kind?: 'explicit' | 'derived';
     occupiedPorts: ReadonlySet<number>;
     capability?: string;
     visibility?: PortVisibility;
+    /** A name alias for the reservation — unique per session, DNS-label-safe. */
+    name?: string;
 }): Promise<number>;
 /** End an owner's hold on a port. Another owner's record is left alone and refused. */
 export declare function releasePortReservation(ctx: PortReservationHost['ctx'], input: {
@@ -120,6 +159,13 @@ export declare function restorePortCapability(self: PortCapabilityHost, port: nu
  */
 export declare function restoreReservedPortCapability(self: PortCapabilityHost, port: number, owner: string): Promise<string | null>;
 export declare function persistPortCapability(self: PortCapabilityHost, port: number, capability: string): Promise<void>;
+/**
+ * Replace the port's capability with a freshly minted one, in place: owner,
+ * visibility and name stay, every URL built on the old value stops
+ * resolving. Answers the new capability, or null when no record exists —
+ * there is nothing to rotate on a port nobody has reserved or exposed.
+ */
+export declare function rotatePortCapability(self: PortCapabilityHost, port: number, capability: string): Promise<string | null>;
 /**
  * Retire the durable capability for a port. Called before every registration
  * that is not a restore, so a token handed out for the previous occupant of a

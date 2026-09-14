@@ -220,6 +220,7 @@ export function makeRubyRunnerFactory(deps) {
                     startArgs: toRubyCallArgs(facetArgs),
                     cwd,
                     command: formatRubyCommand(binName, argv),
+                    argv: [binName, ...argv],
                 });
             }
             else {

@@ -22,6 +22,23 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** The directory every durable application's image blobs live under. */
 export const DURABLE_IMAGE_DIR = '.nimbus/images';
 const imagePath = (digest) => `${DURABLE_IMAGE_DIR}/${digest}`;
+/** Remove only the owner's blobs that no other retained recipe references. */
+export function purgeDurableWorkerImages(vfs, owned, retained) {
+    const keep = new Set([...retained].flatMap((image) => [image.runner, image.application]));
+    const candidates = new Set([...owned].flatMap((image) => [image.runner, image.application]));
+    const kernel = vfs.as(CRED_KERNEL);
+    let removed = 0;
+    for (const digest of candidates) {
+        if (keep.has(digest) || !/^[a-f0-9]{64}$/.test(digest))
+            continue;
+        const path = imagePath(digest);
+        if (!kernel.exists(path))
+            continue;
+        kernel.unlink(path);
+        removed += 1;
+    }
+    return removed;
+}
 async function sha256Hex(text) {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
@@ -41,6 +58,7 @@ export async function persistDurableWorkerImage(vfs, workerCode, payload) {
         modules: payload.modules,
         env: payload.env ?? null,
         vfsWasmModules: payload.vfsWasmModules ?? null,
+        ...(payload.startArgs !== undefined ? { startArgs: payload.startArgs } : {}),
     });
     const application = await sha256Hex(applicationPayload);
     kernel.writeFile(imagePath(application), applicationPayload);
@@ -65,11 +83,12 @@ export async function resolveDurableWorkerImage(vfs, recipe) {
         return null;
     }
     const runner = new TextDecoder().decode(runnerBytes);
-    const { modules = {}, env = null, vfsWasmModules = undefined } = JSON.parse(new TextDecoder().decode(applicationBytes));
+    const { modules = {}, env = null, vfsWasmModules = undefined, startArgs } = JSON.parse(new TextDecoder().decode(applicationBytes));
     return {
         env: env ?? null,
         globalOutbound: undefined,
         modules: { 'worker.js': runner, ...modules },
+        ...(startArgs !== undefined ? { startArgs } : {}),
         ...(vfsWasmModules !== null ? { vfsWasmModules } : {}),
     };
 }

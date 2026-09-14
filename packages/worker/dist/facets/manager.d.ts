@@ -19,6 +19,7 @@ import type { ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { type PortVisibility } from '../session/port-capability.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { EsbuildService, type TransformResult } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
@@ -598,7 +599,7 @@ export interface FacetManagerHooks {
      * genuinely re-enters the object: a fresh turn is both a released thread and
      * a fresh CPU budget, and a launch needs each for a different reason.
      */
-    requestLaunchTurn?: () => void;
+    requestLaunchTurn?: (notBefore?: number) => void;
     /**
      * Put a line in front of the user, whether or not a terminal is attached.
      *
@@ -628,6 +629,12 @@ export interface FacetManagerHooks {
     resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
 export interface LongRunningWorkerSpawnOptions {
+    /** Interpreter residents share Node's atomic derived-owner claim. */
+    resident?: {
+        runtime: 'ruby' | 'python';
+        argv: string[];
+    };
+    restart?: ResidentRestartPolicy;
     port?: number;
     /** Inline modules: source text, or small wasm carried by value. */
     modules?: Record<string, string | {
@@ -675,6 +682,7 @@ export interface ResidentSpawnOptions {
 /** The launch inputs a re-drive rebuilds a worker from: content digests and
  *  transport, never env or credentials — the embedder resolves those. */
 export interface WorkerRecipe {
+    resident?: LongRunningWorkerSpawnOptions['resident'];
     kind: 'worker';
     /** The durable application this process belongs to, keyed by the embedder. */
     owner: string;
@@ -687,10 +695,33 @@ export interface WorkerRecipe {
     cwd: string;
     compatibilityDate: string;
     compatibilityFlags: string[];
-    startArgs: unknown;
+    startArgs?: unknown;
+}
+export type ResidentRestartPolicy = 'never' | 'on-failure';
+/** The env var a launch reads its restart policy from — set by startProcess({ restart }) and `nimbus start --restart`. */
+export declare const RESTART_POLICY_ENV = "NIMBUS_RESTART";
+/** One application as `apps.list` reports it — every stamped identity, live or not. */
+export interface ResidentAppSummary {
+    owner: string;
+    name: string | null;
+    port: number | null;
+    pid: number | null;
+    status: 'running' | 'starting' | 'stopped' | 'failed';
+    visibility: PortVisibility;
+    capability: string | null;
+    restart: ResidentRestartPolicy;
+    /** Set with status 'failed': what went wrong, in the user's terms. */
+    diagnostic: string | null;
+}
+/** What a pid's journal row says about who it is. */
+export interface ResidentIdentity {
+    owner: string | undefined;
+    ephemeral: boolean;
+    port: number | undefined;
 }
 /** What the embedder supplies for a re-driven worker launch. */
 export interface ResolvedWorkerLaunch {
+    startArgs?: unknown;
     /** Null is the absent answer — the same JSON the image blob carries. */
     env: ResidentCodeSpec['env'] | null;
     globalOutbound: ResidentCodeSpec['globalOutbound'];
@@ -783,6 +814,15 @@ export declare class FacetManager {
     private residencyProfiles;
     /** In-flight request-driven durable-app ensures, single-flight per port. */
     private ensureInflight;
+    /** Per-pid chain of journal-row amendments; see `_amendRow`. */
+    private rowAmendments;
+    /**
+     * pid → the derived owner it duplicates: the second live instance of an
+     * identity. Not journalled (nothing re-drives it), so this is the only
+     * record of why `expose(pid)` refuses it.
+     */
+    private ephemeralPids;
+    private residentClaims;
     private static readonly RESIDENCY_PROFILE_MAX_ENTRIES;
     /**
      * A program that reads a directory of data files misses once per file, so
@@ -792,6 +832,23 @@ export declare class FacetManager {
      */
     private static readonly RESIDENCY_PROFILE_MAX_PATHS;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
+    /**
+     * The process is over. Every end-of-life passes through here: a clean
+     * exit, a kill, a timeout, a crash. Only one of them owes anything more
+     * than the journal row's release — a crash under 'on-failure' is re-driven
+     * from the row, after a backoff, while the row is still in storage so a
+     * reset inside the backoff window recovers it like any other resident.
+     */
+    private _onResidentTerminal;
+    /** Claim identity AND write its recovery row in one serializable storage transaction. */
+    private _claimResident;
+    private _releaseResidentClaim;
+    /**
+     * Amend one journal row in place — port stamp, owner adoption, settle —
+     * serialized per pid so two amendments in flight on the same row cannot
+     * interleave their read and write and lose one another's fields.
+     */
+    private _amendRow;
     setVfs(vfs: SqliteVFS): void;
     /**
      * The env/ctx pair every loader-backed runtime builds its facet pools
@@ -1145,22 +1202,40 @@ export declare class FacetManager {
     /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
     private _spawnWorker;
     /**
-     * A resident process announcing it bound `port`. When the port is reserved,
-     * the reservation's owner is stamped onto this pid's journal row — the
-     * reservation is what declares which application the port serves, and a
-     * resident that binds it inherits the whole durable contract: the row names
-     * the port `ensureDurableAppOnPort` looks up, the minted capability is
-     * re-adopted rather than retired, and `removeDurableApp` can find the launch
-     * by owner.
+     * A resident process announcing it bound `port`.
      *
-     * A pid with no journal row — a process outside the resident lifecycle —
-     * registering on a reserved port takes it as today: the stored capability
-     * is retired and a fresh one is minted, the reservation stays with the
-     * owner. An accidental port reuse inside one session therefore cannot
-     * inherit the public capability; same-session processes are one trust
-     * domain, so this is hygiene, not a security boundary.
+     * The stamp is unconditional: the pid's journal row gets `{ port }`
+     * whether or not anything reserved it, which is what lets
+     * `ensureDurableAppOnPort` re-drive ANY resident a reset killed — the
+     * scoped URLs need no capability, so this alone makes every server's
+     * preview survive a reset on demand.
+     *
+     * The capability is bound to identity, not to the port. The stored
+     * capability is re-adopted only when the row's owner IS the reservation's
+     * owner; any other occupant — an unrelated server, a pid outside the
+     * resident lifecycle, the ephemeral second instance of an identity —
+     * retires it and mints fresh, so a shared link 404s rather than reaching
+     * a program it was never handed out for. An EXPLICIT reservation (an
+     * embedder's `ensureDurableApp`) is the one exception, and it is the
+     * landed contract: the embedder declared the port, so the row adopts the
+     * reservation's owner and the capability with it.
+     *
+     * Under an injected `$PORT`, a resident that binds a different port is
+     * registered anyway — the server must not break — but the row records
+     * the mismatch, so `apps.list` reports it as failed and the user is told.
      */
     private _registerResidentPort;
+    /** What a pid's journal row says about who it is; null for a pid without one. */
+    residentIdentity(pid: number): Promise<ResidentIdentity | null>;
+    /**
+     * Every stamped identity — the reservations, and the journal rows that
+     * carry an owner — folded one row per owner. A live pid in THIS instance
+     * makes it running (or starting, until its launch settles and its port
+     * is registered); a mismatch diagnostic makes it failed; everything else
+     * is stopped, which for a row a reset left behind means re-drivable on
+     * request.
+     */
+    listResidentApps(): Promise<ResidentAppSummary[]>;
     registerPort(pid: number, port: number): Promise<void>;
     waitForRouteablePorts(pid: number, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;

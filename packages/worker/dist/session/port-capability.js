@@ -28,10 +28,25 @@ import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
 const PortVisibilitySchema = z.enum(['scoped', 'public']);
+/**
+ * The optional name alias a reservation may carry: one DNS label, so it can
+ * stand where the port stands in a preview host (`<name>--<sid>`). Never
+ * purely numeric — a numeric middle label IS a port. No `--`: that is the
+ * host-label separator. No 24 lowercase hex: that is ambiguous with a
+ * capability label, so parsing could mistake a name for a bearer.
+ */
+export const APP_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+export function isValidAppName(name) {
+    return APP_NAME_RE.test(name) && !name.includes('--')
+        && !/^\d+$/.test(name) && !/^[a-f0-9]{24}$/.test(name);
+}
+const AppNameSchema = z.string().refine(isValidAppName, 'app name must be a DNS label: no --, not numeric, not 24 lowercase hex');
 export const PortRecordSchema = z.object({
+    kind: z.enum(['explicit', 'derived']).default('explicit'),
     capability: PortCapabilitySchema.nullable(),
     owner: z.string().nullable(),
     visibility: PortVisibilitySchema.optional(),
+    name: AppNameSchema.optional(),
 });
 const RESERVATION_FIRST_PORT = 20000;
 const RESERVATION_LAST_PORT = 65535;
@@ -52,8 +67,42 @@ export async function readPortReservation(ctx, port) {
 export async function readPortExposure(ctx, port) {
     const stored = await readPortReservation(ctx, port);
     return stored !== null && stored.capability !== null
-        ? { capability: stored.capability, owner: stored.owner, visibility: stored.visibility }
+        ? {
+            capability: stored.capability, owner: stored.owner, visibility: stored.visibility,
+            ...(stored.name !== undefined ? { name: stored.name } : {}),
+        }
         : null;
+}
+/** Every stored port record, keyed by port — the scan `apps.list` and the name lookups read. */
+export async function listPortReservations(ctx) {
+    const rows = await ctx.storage.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
+    const out = new Map();
+    for (const [key, value] of rows) {
+        const port = Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length));
+        const parsed = PortRecordSchema.safeParse(value);
+        if (!Number.isInteger(port) || !parsed.success)
+            continue;
+        out.set(port, { ...parsed.data, visibility: parsed.data.visibility ?? 'scoped' });
+    }
+    return out;
+}
+/** The port a name alias resolves to inside this session, or null. */
+export async function readPortReservationByName(ctx, name) {
+    if (!isValidAppName(name))
+        return null;
+    for (const [port, reservation] of await listPortReservations(ctx)) {
+        if (reservation.name === name)
+            return { port, reservation };
+    }
+    return null;
+}
+/** The port an owner holds, or null when the owner has no reservation. */
+export async function readPortReservationByOwner(ctx, owner) {
+    for (const [port, reservation] of await listPortReservations(ctx)) {
+        if (reservation.owner === owner)
+            return { port, reservation };
+    }
+    return null;
 }
 /**
  * Hold a port for `owner` across instances. The owner's existing port is
@@ -69,6 +118,9 @@ export async function readPortExposure(ctx, port) {
  * capability is never rotated, a URL already handed out stays good.
  */
 export async function reservePort(ctx, input) {
+    if (input.name !== undefined && !isValidAppName(input.name)) {
+        throw conflict(`'${input.name}' is not a valid app name (one DNS label, not numeric, not 24 hex)`);
+    }
     const claim = async (txn) => {
         const records = await txn.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
         const taken = new Set(input.occupiedPorts);
@@ -79,8 +131,13 @@ export async function reservePort(ctx, input) {
                 continue;
             taken.add(port);
             const parsed = PortRecordSchema.safeParse(value);
-            if (parsed.success && parsed.data.owner === input.owner) {
+            if (!parsed.success)
+                continue;
+            if (parsed.data.owner === input.owner) {
                 held = { port, stored: parsed.data };
+            }
+            else if (input.name !== undefined && parsed.data.name === input.name) {
+                throw conflict(`name '${input.name}' is already taken by another app on port ${port}`);
             }
         }
         const preferred = input.preferredPort;
@@ -88,13 +145,18 @@ export async function reservePort(ctx, input) {
             if (preferred !== undefined && preferred !== held.port) {
                 throw conflict(`owner already holds port ${held.port}, cannot reserve ${preferred}`);
             }
-            // Upgrade in place: adopt a caller-supplied capability the row lacks
-            // and/or apply the caller's visibility — never rotate an existing one.
+            // Upgrade in place: adopt a caller-supplied capability the row lacks,
+            // apply the caller's visibility and/or name — never rotate an existing
+            // capability.
             const stored = held.stored;
             const capability = stored?.capability ?? input.capability ?? null;
             const visibility = input.visibility ?? stored?.visibility ?? 'scoped';
-            if (stored === null || capability !== stored.capability || visibility !== (stored.visibility ?? 'scoped')) {
-                await txn.put(portRecordKey(held.port), { owner: input.owner, capability, visibility });
+            const name = input.name ?? stored?.name;
+            if (stored === null || capability !== stored.capability
+                || visibility !== (stored.visibility ?? 'scoped') || name !== stored.name) {
+                await txn.put(portRecordKey(held.port), {
+                    owner: input.owner, kind: stored?.kind ?? input.kind ?? 'explicit', capability, visibility, ...(name !== undefined ? { name } : {}),
+                });
             }
             return held.port;
         }
@@ -116,8 +178,10 @@ export async function reservePort(ctx, input) {
         }
         await txn.put(portRecordKey(port), {
             owner: input.owner,
+            kind: input.kind ?? 'explicit',
             capability: input.capability ?? null,
             visibility: input.visibility ?? 'scoped',
+            ...(input.name !== undefined ? { name: input.name } : {}),
         });
         return port;
     };
@@ -178,11 +242,36 @@ export async function persistPortCapability(self, port, capability) {
         await txn.put(portRecordKey(port), {
             capability: PortCapabilitySchema.parse(capability),
             owner: parsed.success ? parsed.data.owner : null,
+            kind: parsed.success ? parsed.data.kind : 'explicit',
             ...(parsed.success && parsed.data.visibility !== undefined
                 ? { visibility: parsed.data.visibility }
                 : {}),
+            ...(parsed.success && parsed.data.name !== undefined
+                ? { name: parsed.data.name }
+                : {}),
         });
     });
+}
+/**
+ * Replace the port's capability with a freshly minted one, in place: owner,
+ * visibility and name stay, every URL built on the old value stops
+ * resolving. Answers the new capability, or null when no record exists —
+ * there is nothing to rotate on a port nobody has reserved or exposed.
+ */
+export async function rotatePortCapability(self, port, capability) {
+    const rotated = await self.ctx.storage.transaction(async (txn) => {
+        const parsed = PortRecordSchema.safeParse(await txn.get(portRecordKey(port)));
+        if (!parsed.success)
+            return null;
+        await txn.put(portRecordKey(port), {
+            ...parsed.data,
+            capability: PortCapabilitySchema.parse(capability),
+        });
+        return capability;
+    });
+    // Registry adoption belongs to the caller, after a fresh serving-owner
+    // check: the storage await above may have allowed a new listener to bind.
+    return rotated;
 }
 /**
  * Retire the durable capability for a port. Called before every registration
@@ -196,8 +285,10 @@ export async function clearPortCapability(self, port) {
         if (record !== null && record.owner !== null) {
             await txn.put(portRecordKey(port), {
                 owner: record.owner,
+                kind: record.kind,
                 capability: null,
                 ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
+                ...(record.name !== undefined ? { name: record.name } : {}),
             });
             return;
         }

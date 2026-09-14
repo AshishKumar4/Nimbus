@@ -74,6 +74,54 @@ export interface NimbusExecOptions {
      * user, which is what every programmatic exec has always run as.
      */
     cred?: VfsCred;
+    /**
+     * `startProcess` only: what to do when the process exits on its own with
+     * a non-zero code. 'never' (default) leaves it stopped; 'on-failure'
+     * restarts it under the session's restart budget with backoff. A platform
+     * reset re-drives the process either way.
+     */
+    restart?: NimbusRestartPolicy;
+}
+export type NimbusRestartPolicy = 'never' | 'on-failure';
+export type NimbusAppVisibility = 'scoped' | 'public';
+/**
+ * An application target: a port, a pid, a name, or an owner — every
+ * `apps.*` verb takes one. A bare number is a port when something listens
+ * on it or a reservation names it, else a pid; a bare string is a name
+ * first, then an owner. The object forms are unambiguous.
+ */
+export type NimbusAppTarget = number | string | {
+    port: number;
+} | {
+    pid: number;
+} | {
+    name: string;
+} | {
+    owner: string;
+};
+export interface NimbusExposedApp {
+    /** The application's identity: derived (`auto:…`) for an ordinary process, explicit for a durable worker app. */
+    owner: string;
+    name: string | null;
+    port: number;
+    pid: number | null;
+    capability: string | null;
+    visibility: NimbusAppVisibility;
+    /** Browser-facing URL, built the way `ports.url` builds one; undefined when the deployment is not addressable. */
+    url: string | undefined;
+}
+export interface NimbusApp {
+    owner: string;
+    name: string | null;
+    port: number | null;
+    pid: number | null;
+    status: 'running' | 'starting' | 'stopped' | 'failed';
+    visibility: NimbusAppVisibility;
+    capability: string | null;
+    restart: NimbusRestartPolicy;
+    /** With status 'failed': what went wrong, e.g. `listened on 3000, owns 5173`. */
+    diagnostic: string | null;
+    url: string | undefined;
 }
 export interface NimbusExecResult {
     command: string;
@@ -253,6 +301,7 @@ interface NimbusSessionStub {
     _rpcListPorts(): Promise<NimbusPort[]>;
     _rpcExposePort(port: number, options?: {
         visibility?: 'scoped' | 'public';
+        name?: string;
     }): Promise<{
         port: number;
         listening: boolean;
@@ -260,6 +309,25 @@ interface NimbusSessionStub {
         registeredAt: number | null;
         capability: string | null;
         visibility?: 'scoped' | 'public';
+        owner?: string | null;
+        name?: string | null;
+    }>;
+    _rpcExposeApp(target: NimbusAppTarget, options?: {
+        visibility?: 'scoped' | 'public';
+        name?: string;
+    }): Promise<Omit<NimbusExposedApp, 'url'> & {
+        url: string | null;
+    }>;
+    _rpcListApps(): Promise<Array<Omit<NimbusApp, 'url'> & {
+        url: string | null;
+    }>>;
+    _rpcRotateLink(target: NimbusAppTarget): Promise<Omit<NimbusExposedApp, 'url'> & {
+        url: string | null;
+    }>;
+    _rpcRemoveApp(target: NimbusAppTarget): Promise<{
+        owner: string;
+        removed: boolean;
+        port: number | null;
     }>;
     _rpcEnsureDurableApp(input: {
         owner: string;
@@ -403,8 +471,15 @@ export declare class NimbusSandbox {
     };
     ports: {
         list: () => Promise<NimbusPort[]>;
+        /**
+         * Expose a port. When the port's occupant carries an identity (a node
+         * resident, a durable worker app) this is the same lazy reservation
+         * `apps.expose` makes and the result names the owner; a bare port —
+         * a dev server, a python resident — is written port-only as before.
+         */
         expose: (port: number, options?: {
             visibility?: "scoped" | "public";
+            name?: string;
         }) => Promise<{
             url: string | undefined;
             port: number;
@@ -413,6 +488,8 @@ export declare class NimbusSandbox {
             registeredAt: number | null;
             capability: string | null;
             visibility?: "scoped" | "public";
+            owner?: string | null;
+            name?: string | null;
         }>;
         unexpose: (port: number) => Promise<{
             port: number;
@@ -446,8 +523,30 @@ export declare class NimbusSandbox {
         url: (port: number, options?: {
             visibility?: "scoped" | "public";
             capability?: string;
+            name?: string;
         }) => string | undefined;
     };
+    /**
+     * The application surface: every server is durable under its identity
+     * from the moment it is spawned; exposing it reserves its port for that
+     * identity, names it, and (when public) mints the capability its shared
+     * URL is built on. `ports.expose` is the port-addressed alias of
+     * `apps.expose`; the identity-addressed verbs live here.
+     */
+    apps: {
+        list: () => Promise<NimbusApp[]>;
+        expose: (target: NimbusAppTarget, options?: {
+            visibility?: "scoped" | "public";
+            name?: string;
+        }) => Promise<NimbusExposedApp>;
+        rotateLink: (target: NimbusAppTarget) => Promise<NimbusExposedApp>;
+        remove: (target: NimbusAppTarget) => Promise<{
+            owner: string;
+            removed: boolean;
+            port: number | null;
+        }>;
+    };
+    private exposedApp;
     tools(options?: {
         namespace?: string;
         kind?: string;
@@ -555,6 +654,8 @@ export declare class NimbusSandbox {
                     registeredAt: number | null;
                     capability: string | null;
                     visibility?: "scoped" | "public";
+                    owner?: string | null;
+                    name?: string | null;
                 }>;
             };
             unexposePort: {
@@ -567,6 +668,16 @@ export declare class NimbusSandbox {
             };
             listPorts: {
                 execute: () => Promise<NimbusPort[]>;
+            };
+            exposeApp: {
+                execute: (input: NimbusAppTarget | {
+                    target: NimbusAppTarget;
+                    visibility?: "scoped" | "public";
+                    name?: string;
+                }) => Promise<NimbusExposedApp>;
+            };
+            listApps: {
+                execute: () => Promise<NimbusApp[]>;
             };
             installRuntime: {
                 execute: (spec: RuntimeSpec) => Promise<unknown>;

@@ -71,6 +71,7 @@ export interface CPythonFacetResult {
  * that has none does not get a degraded version — it gets none, and says so.
  */
 export type CPythonResidentStart = (spawn: {
+    argv: string[];
     /** VFS path of the interpreter. By path, not by value: it is 10.6 MiB. */
     wasmVfsPath: string;
     startArgs: Record<string, unknown>;

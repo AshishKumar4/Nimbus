@@ -48,7 +48,7 @@ import { facetIdBudget } from '@nimbus-sh/fabric/budgets.js';
 import { loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
-import { clearPortCapability, persistPortCapability, readPortCapability, readPortReservation, restorePortCapability, } from './port-capability.js';
+import { clearPortCapability, persistPortCapability, readPortCapability, readPortReservation, readPortReservationByName, restorePortCapability, } from './port-capability.js';
 import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, CALLER_SCOPES_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
@@ -291,6 +291,22 @@ export function routeCapabilityPort(self, port, capability, request, innerPath) 
 function portRouteMountBase(request, port) {
     const header = request.headers.get(BASE_PATH_HEADER);
     return header ? `${header}/port/${port}` : '';
+}
+/**
+ * The name-addressed door: `/app/<name>/…` — what the scoped `<name>--<sid>`
+ * host is forwarded as, and reachable in path form as `/s/<sid>/app/<name>/`.
+ * The name is a reservation alias only this session's records know, so it
+ * is resolved here and the request continues exactly as the port form would
+ * — same routing, same durable re-drive, same capability gate. A name
+ * nothing holds is a 404, never a guess.
+ */
+export async function routeToSessionApp(self, name, request, innerPath, capability) {
+    const held = await readPortReservationByName(self.ctx, name);
+    if (held === null)
+        return new Response('Not found', { status: 404 });
+    const header = request.headers.get(BASE_PATH_HEADER);
+    const mountBase = header ? `${header}/app/${name}` : '';
+    return routeToSessionPort(self, held.port, request, innerPath, mountBase, capability);
 }
 /** True if `innerPath` targets the cirrus-real HMR socket, under any mount
  *  base — the client opens `<base>/__nimbus_hmr`, and on a `<port>--<sid>` host
@@ -1337,6 +1353,12 @@ export async function handleFetch(self, request) {
         // forwards it here; the guest's Authorization then survives the hop.
         const capability = request.headers.get(PREVIEW_CAPABILITY_HEADER);
         return routeToSessionPort(self, port, request, path, portRouteMountBase(request, port), capability ?? undefined);
+    }
+    // ── App route: the same door, addressed by a reservation's name ──
+    const appMatch = url.pathname.match(/^\/app\/([a-z0-9][a-z0-9-]{0,62})(\/.*)?$/);
+    if (appMatch) {
+        const capability = request.headers.get(PREVIEW_CAPABILITY_HEADER);
+        return routeToSessionApp(self, appMatch[1], request, normalizeForwardedHttpPath(appMatch[2] || '/'), capability ?? undefined);
     }
     // ── /api/_diag/cache — per-tier cache observability ───────────────
     //

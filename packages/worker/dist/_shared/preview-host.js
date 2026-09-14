@@ -10,28 +10,39 @@
  * `buildPreviewHost` and `parsePreviewHost` are exact inverses: every
  * `(sid, port)` has exactly ONE valid origin. Without that bijection a cookie
  * set on the canonical host is missing from an equivalent-but-different one.
+ *
+ * The middle label may be a NAME instead of a port — `<name>--<sid>` and
+ * `<cap>--<name>--<sid>` — for an application whose reservation carries a
+ * name alias. A numeric label is a port; anything else that is a DNS label
+ * is a name. The scoped name form is resolved to a port inside the session
+ * (its reservation records); the public name form through the directory.
  */
 const PREVIEW_HOST_SAFE_SID_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 /** Canonical port form only: no leading zeros, so `03000--x` is not a host. */
 const PREVIEW_HOST_LABEL_RE = /^(0|[1-9]\d*)--(.+)$/;
+/** The scoped name form: a non-numeric DNS label in the port's place. */
+const PREVIEW_NAME_HOST_LABEL_RE = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)--([a-z0-9-]{1,63})$/;
 // The public capability form: the bearer is the capability itself, no
 // attach token and no embedder credential ever crosses this hostname.
 // The label carries everything a request needs — which port, which
 // session, and which token — so it works with no server-side lookup.
 const PREVIEW_CAPABILITY_HOST_LABEL_RE = /^([a-f0-9]{24})--(\d{1,5})--([a-z0-9-]{1,63})$/;
+/** The public name form: the capability names the session in the directory, the name is verified there. */
+const PREVIEW_CAPABILITY_NAME_HOST_LABEL_RE = /^([a-f0-9]{24})--([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)--([a-z0-9-]{1,63})$/;
 /** Binding that carries the deployment's preview-host suffix. */
 const PREVIEW_HOST_SUFFIX_BINDING = 'NIMBUS_PREVIEW_HOST_SUFFIX';
-export function buildPreviewHost(sid, port, suffix) {
-    return `${port}--${sid}.${suffix}`;
+/** `<port>--<sid>` or `<name>--<sid>`: the middle label is a port number or a name alias. */
+export function buildPreviewHost(sid, target, suffix) {
+    return `${target}--${sid}.${suffix}`;
 }
 /**
- * `<capability>--<port>--<sid>.<suffix>` — the unauthenticated sibling of
- * `buildPreviewHost`, for applications whose visibility is `public`. The
+ * `<capability>--<port|name>--<sid>.<suffix>` — the unauthenticated sibling
+ * of `buildPreviewHost`, for applications whose visibility is `public`. The
  * capability is the bearer: 24 lowercase hex, the same shape the port
  * registry mints.
  */
-export function buildPublicPreviewHost(sid, port, capability, suffix) {
-    return `${capability}--${port}--${sid}.${suffix}`;
+export function buildPublicPreviewHost(sid, target, capability, suffix) {
+    return `${capability}--${target}--${sid}.${suffix}`;
 }
 export function isPreviewHostSafeSid(sid) {
     return sid.length <= 56 && PREVIEW_HOST_SAFE_SID_RE.test(sid);
@@ -71,14 +82,43 @@ export function parsePreviewHost(host, suffix) {
             return null;
         return { port, sid, capability };
     }
+    const capabilityNameMatch = label.match(PREVIEW_CAPABILITY_NAME_HOST_LABEL_RE);
+    if (capabilityNameMatch) {
+        const capability = capabilityNameMatch[1];
+        const name = capabilityNameMatch[2];
+        const sid = capabilityNameMatch[4];
+        if (!isPreviewHostName(name) || !isPreviewHostSafeSid(sid))
+            return null;
+        return { name, sid, capability };
+    }
     const match = label.match(PREVIEW_HOST_LABEL_RE);
-    if (!match)
+    if (match) {
+        const port = Number(match[1]);
+        const sid = match[2];
+        if (port < 1 || port > 65535 || !isPreviewHostSafeSid(sid))
+            return null;
+        return { port, sid };
+    }
+    const nameMatch = label.match(PREVIEW_NAME_HOST_LABEL_RE);
+    if (!nameMatch)
         return null;
-    const port = Number(match[1]);
-    const sid = match[2];
-    if (port < 1 || port > 65535 || !isPreviewHostSafeSid(sid))
+    const name = nameMatch[1];
+    const sid = nameMatch[3];
+    if (!isPreviewHostName(name) || !isPreviewHostSafeSid(sid))
         return null;
-    return { port, sid };
+    return { name, sid };
+}
+/**
+ * A name label: a DNS label that is neither a port (all digits) nor a
+ * capability (24 lowercase hex), and contains no `--` host-label separator.
+ * The same rule the session applies when it stores a
+ * name on a reservation, so every name it accepts is a host it can parse.
+ */
+export function isPreviewHostName(label) {
+    return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+        && !label.includes('--')
+        && !/^\d+$/.test(label)
+        && !/^[a-f0-9]{24}$/.test(label);
 }
 /**
  * True when `url` addresses a port preview. Embedders MUST test this BEFORE

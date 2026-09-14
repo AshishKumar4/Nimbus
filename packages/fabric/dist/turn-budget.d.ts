@@ -114,7 +114,7 @@ export interface PacedWorkHost {
      * reason. Without it the pump degrades to a same-context timer — see
      * {@link PacedWork.nextTurn}.
      */
-    requestTurn?: () => void;
+    requestTurn?: (notBefore?: number) => void;
 }
 /**
  * The granting side of {@link TurnScheduler}: parks suspended launches
@@ -149,7 +149,7 @@ export declare class PacedWork implements TurnScheduler {
      * always performed, so a harness or a runtime without alarms loses the
      * responsiveness but keeps the behaviour.
      */
-    nextTurn(chunkEnded: Promise<void>): Promise<void>;
+    nextTurn(chunkEnded: Promise<void>, notBefore?: number): Promise<void>;
     /**
      * Run one chunk of every launch waiting for a turn.
      *

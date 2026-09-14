@@ -139,6 +139,29 @@ const ExposedPortSchema = z.object({
     registeredAt: z.number().nullable(),
     capability: z.string().nullable(),
     visibility: z.enum(['scoped', 'public']).optional(),
+    owner: z.string().nullable().optional(),
+    name: z.string().nullable().optional(),
+});
+const ExposedAppSchema = z.object({
+    owner: z.string(),
+    name: z.string().nullable(),
+    port: z.number(),
+    pid: z.number().nullable(),
+    capability: z.string().nullable(),
+    visibility: z.enum(['scoped', 'public']),
+    url: z.string().nullable(),
+});
+const AppSchema = z.object({
+    owner: z.string(),
+    name: z.string().nullable(),
+    port: z.number().nullable(),
+    pid: z.number().nullable(),
+    status: z.enum(['running', 'starting', 'stopped', 'failed']),
+    visibility: z.enum(['scoped', 'public']),
+    capability: z.string().nullable(),
+    restart: z.enum(['never', 'on-failure']),
+    diagnostic: z.string().nullable(),
+    url: z.string().nullable(),
 });
 const EnsureDurableAppSchema = z.object({
     port: z.number(),
@@ -290,6 +313,10 @@ export class NimbusSandbox {
             _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options], ExposedPortSchema),
             _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input], EnsureDurableAppSchema),
             _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }], RemoveDurableAppSchema),
+            _rpcExposeApp: (target, options) => this.remoteRpc('exposeApp', [target, options], ExposedAppSchema),
+            _rpcListApps: () => this.remoteRpc('listApps', [], z.array(AppSchema)),
+            _rpcRotateLink: (target) => this.remoteRpc('rotateLink', [target], ExposedAppSchema),
+            _rpcRemoveApp: (target) => this.remoteRpc('removeApp', [target], RemoveDurableAppSchema),
             _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port], UnexposedPortSchema),
             _rpcDestroy: (options) => this.remoteRpc('destroy', [options], DestroyResultSchema),
         };
@@ -496,6 +523,12 @@ export class NimbusSandbox {
             await this.ready();
             return this.rpc(this.stub()._rpcListPorts());
         },
+        /**
+         * Expose a port. When the port's occupant carries an identity (a node
+         * resident, a durable worker app) this is the same lazy reservation
+         * `apps.expose` makes and the result names the owner; a bare port —
+         * a dev server, a python resident — is written port-only as before.
+         */
         expose: async (port, options = {}) => {
             await this.ready();
             const result = await this.rpc(this.stub()._rpcExposePort(port, options));
@@ -504,6 +537,7 @@ export class NimbusSandbox {
                 url: this.portUrl(port, {
                     visibility: result.visibility ?? 'scoped',
                     capability: result.capability ?? undefined,
+                    name: result.name ?? undefined,
                 }),
             };
         },
@@ -532,6 +566,51 @@ export class NimbusSandbox {
         },
         url: (port, options = {}) => this.portUrl(port, options),
     };
+    /**
+     * The application surface: every server is durable under its identity
+     * from the moment it is spawned; exposing it reserves its port for that
+     * identity, names it, and (when public) mints the capability its shared
+     * URL is built on. `ports.expose` is the port-addressed alias of
+     * `apps.expose`; the identity-addressed verbs live here.
+     */
+    apps = {
+        list: async () => {
+            await this.ready();
+            const apps = await this.rpc(this.stub()._rpcListApps());
+            return apps.map((app) => ({
+                ...app,
+                url: app.port === null ? undefined : this.portUrl(app.port, {
+                    visibility: app.visibility,
+                    capability: app.capability ?? undefined,
+                    name: app.name ?? undefined,
+                }) ?? app.url ?? undefined,
+            }));
+        },
+        expose: async (target, options = {}) => {
+            await this.ready();
+            const result = await this.rpc(this.stub()._rpcExposeApp(target, options));
+            return this.exposedApp(result);
+        },
+        rotateLink: async (target) => {
+            await this.ready();
+            const result = await this.rpc(this.stub()._rpcRotateLink(target));
+            return this.exposedApp(result);
+        },
+        remove: async (target) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcRemoveApp(target));
+        },
+    };
+    exposedApp(result) {
+        return {
+            ...result,
+            url: this.portUrl(result.port, {
+                visibility: result.visibility,
+                capability: result.capability ?? undefined,
+                name: result.name ?? undefined,
+            }) ?? result.url ?? undefined,
+        };
+    }
     tools(options = {}) {
         const namespace = options.namespace ?? this.profile.tools?.namespace ?? 'nimbus';
         const kind = options.kind ?? this.profile.tools?.kind ?? 'nimbus';
@@ -585,6 +664,10 @@ export class NimbusSandbox {
                 exposePort: { execute: (input) => this.ports.expose(typeof input === 'number' ? input : input.port) },
                 unexposePort: { execute: (input) => this.ports.unexpose(typeof input === 'number' ? input : input.port) },
                 listPorts: { execute: () => this.ports.list() },
+                exposeApp: { execute: (input) => typeof input === 'object' && input !== null && 'target' in input
+                        ? this.apps.expose(input.target, { visibility: input.visibility, name: input.name })
+                        : this.apps.expose(input) },
+                listApps: { execute: () => this.apps.list() },
                 installRuntime: { execute: (spec) => this.runtimes.install(spec) },
                 listRuntimes: { execute: () => this.runtimes.list() },
             },
@@ -654,23 +737,26 @@ export class NimbusSandbox {
     portUrl(port, options = {}) {
         const hostSuffix = this.config.previewHostSuffix;
         if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
-            // The public form names its bearer in the label: a public port with a
+            // The name stands where the port stands when the app has one. The
+            // public form names its bearer in the label: a public port with a
             // capability builds the unauthenticated host, anything else keeps the
             // session-attached one.
+            const label = options.name ?? port;
             if (options.visibility === 'public' && options.capability !== undefined) {
-                return `https://${buildPublicPreviewHost(this.id, port, options.capability, hostSuffix)}/`;
+                return `https://${buildPublicPreviewHost(this.id, label, options.capability, hostSuffix)}/`;
             }
-            return `https://${buildPreviewHost(this.id, port, hostSuffix)}/`;
+            return `https://${buildPreviewHost(this.id, label, hostSuffix)}/`;
         }
+        const door = options.name !== undefined ? `/app/${options.name}/` : `/port/${port}/`;
         const explicit = this.profile.preview?.baseUrl;
         if (explicit) {
             const base = trimTrailingSlashes(explicit.replace('{sessionId}', encodeURIComponent(this.id)));
-            return `${base}/port/${port}/`;
+            return `${base}${door}`;
         }
         const endpoint = this.config.endpoint ? trimTrailingSlashes(this.config.endpoint) : '';
         if (!endpoint)
             return undefined;
-        return `${endpoint}/s/${encodeURIComponent(this.id)}/port/${port}/`;
+        return `${endpoint}/s/${encodeURIComponent(this.id)}${door}`;
     }
     async rpc(promise) {
         const value = await promise;

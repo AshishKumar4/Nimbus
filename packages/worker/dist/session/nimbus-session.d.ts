@@ -180,6 +180,13 @@ export declare class NimbusSession extends CloudflareDurableObject {
     /** Have we attempted to hydrate sessionBasePath from storage yet? */
     sessionBasePathHydrated: boolean;
     /**
+     * The origin this session was last reached at (`https://host`), remembered
+     * beside the base path so the session can spell a path-form URL for one
+     * of its own applications — `nimbus expose` printing one, `apps.list`
+     * carrying one — on a deployment with no preview-host suffix.
+     */
+    sessionOrigin: string;
+    /**
      * Has the "wrangler is aliased to nimbus-wrangler" banner been shown
      * this session? Reset on WebSocket close/reopen so a reconnecting user
      * sees it once per terminal attach. Purely cosmetic; no persistence.
@@ -453,6 +460,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcListPorts(): Promise<_programmatic.SerializedPort[]>;
     _rpcExposePort(port: number, options?: {
         visibility?: 'scoped' | 'public';
+        name?: string;
     }): Promise<{
         port: number;
         listening: boolean;
@@ -460,6 +468,19 @@ export declare class NimbusSession extends CloudflareDurableObject {
         registeredAt: number | null;
         capability: string | null;
         visibility: "scoped" | "public";
+        owner: string | null;
+        name: string | null;
+    }>;
+    _rpcExposeApp(target: _programmatic.AppTarget, options?: {
+        visibility?: 'scoped' | 'public';
+        name?: string;
+    }): Promise<_programmatic.ExposedAppResult>;
+    _rpcListApps(): Promise<_programmatic.ListedApp[]>;
+    _rpcRotateLink(target: _programmatic.AppTarget): Promise<_programmatic.ExposedAppResult>;
+    _rpcRemoveApp(target: _programmatic.AppTarget): Promise<{
+        owner: string;
+        removed: boolean;
+        port: number | null;
     }>;
     _rpcEnsureDurableApp(input: {
         owner: string;

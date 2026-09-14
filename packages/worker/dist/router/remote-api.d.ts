@@ -83,6 +83,7 @@ interface NimbusSessionRpcStub {
     _rpcListPorts(): Promise<unknown>;
     _rpcExposePort(port: number, options?: {
         visibility?: 'scoped' | 'public';
+        name?: string;
     }): Promise<unknown>;
     _rpcEnsureDurableApp(input: {
         owner?: string;
@@ -90,9 +91,26 @@ interface NimbusSessionRpcStub {
         visibility?: 'scoped' | 'public';
     }): Promise<unknown>;
     _rpcRemoveDurableApp(owner: string): Promise<unknown>;
+    _rpcExposeApp(target: RemoteAppTarget, options?: {
+        visibility?: 'scoped' | 'public';
+        name?: string;
+    }): Promise<unknown>;
+    _rpcListApps(): Promise<unknown>;
+    _rpcRotateLink(target: RemoteAppTarget): Promise<unknown>;
+    _rpcRemoveApp(target: RemoteAppTarget): Promise<unknown>;
     _rpcUnexposePort(port: number): Promise<unknown>;
     _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
 }
+/** An app target on the wire: a port, a pid, a name/owner, or the explicit object forms. */
+type RemoteAppTarget = number | string | {
+    port: number;
+} | {
+    pid: number;
+} | {
+    name: string;
+} | {
+    owner: string;
+};
 interface NimbusSessionNamespace {
     idFromName(name: string): DurableObjectId;
     get(id: DurableObjectId): NimbusSessionRpcStub;

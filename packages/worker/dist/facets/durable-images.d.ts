@@ -23,6 +23,14 @@ import type { ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 /** The directory every durable application's image blobs live under. */
 export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
+/** Remove only the owner's blobs that no other retained recipe references. */
+export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable<{
+    runner: string;
+    application: string;
+}>, retained: Iterable<{
+    runner: string;
+    application: string;
+}>): number;
 /**
  * Persist a launch's image blobs, minting their digests, for a self-owned
  * durable spawn. Reads and writes as CRED_KERNEL: the directory is session
@@ -35,6 +43,7 @@ export declare function persistDurableWorkerImage(vfs: SqliteVFS, workerCode: st
     }>;
     env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
+    startArgs?: unknown;
 }): Promise<{
     runner: string;
     application: string;

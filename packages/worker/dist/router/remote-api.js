@@ -223,11 +223,18 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcListPorts();
         case 'exposePort': {
             const options = args[1] === undefined ? undefined : objectArg(args[1]);
-            return ctx.stub._rpcExposePort(numberArg(args[0], 'port'), options === undefined ? undefined : {
-                visibility: options.visibility === undefined ? undefined
-                    : options.visibility === 'public' ? 'public' : 'scoped',
-            });
+            return ctx.stub._rpcExposePort(numberArg(args[0], 'port'), options === undefined ? undefined : exposeOptions(options));
         }
+        case 'exposeApp': {
+            const options = args[1] === undefined ? undefined : objectArg(args[1]);
+            return ctx.stub._rpcExposeApp(appTargetArg(args[0]), options === undefined ? undefined : exposeOptions(options));
+        }
+        case 'listApps':
+            return ctx.stub._rpcListApps();
+        case 'rotateLink':
+            return ctx.stub._rpcRotateLink(appTargetArg(args[0]));
+        case 'removeApp':
+            return ctx.stub._rpcRemoveApp(appTargetArg(args[0]));
         case 'ensureDurableApp': {
             const input = objectArg(args[0]);
             return ctx.stub._rpcEnsureDurableApp({
@@ -248,6 +255,28 @@ async function dispatchRemoteRpc(ctx) {
         default:
             throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
     }
+}
+function exposeOptions(options) {
+    return {
+        ...(options.visibility === undefined ? {} : { visibility: options.visibility === 'public' ? 'public' : 'scoped' }),
+        ...(options.name === undefined ? {} : { name: stringArg(options.name, 'name') }),
+    };
+}
+function appTargetArg(value) {
+    if (typeof value === 'number')
+        return numberArg(value, 'target');
+    if (typeof value === 'string')
+        return stringArg(value, 'target');
+    const target = objectArg(value);
+    if (target.port !== undefined)
+        return { port: numberArg(target.port, 'port') };
+    if (target.pid !== undefined)
+        return { pid: numberArg(target.pid, 'pid') };
+    if (target.name !== undefined)
+        return { name: stringArg(target.name, 'name') };
+    if (target.owner !== undefined)
+        return { owner: stringArg(target.owner, 'owner') };
+    throw apiError('Nimbus app target must be a port, a pid, a name, or { port | pid | name | owner }', 'E_ARG_SHAPE', 400);
 }
 function requireAnyScope(ctx, scopes) {
     const explicit = ctx.verified?.claims.scopes;

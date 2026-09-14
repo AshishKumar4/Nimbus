@@ -31,10 +31,14 @@ export class PublicDirectoryStore {
             || !Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535) {
             throw new Error('NimbusPublicDirectory.bind: entry needs tenantSegment, sid, and a real port');
         }
+        if (entry.name !== undefined && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(entry.name)) {
+            throw new Error('NimbusPublicDirectory.bind: name must be one DNS label');
+        }
         await this.ctx.storage.put(rowKey(capability), {
             tenantSegment: entry.tenantSegment,
             sid: entry.sid,
             port: entry.port,
+            ...(entry.name !== undefined ? { name: entry.name } : {}),
         });
     }
     async unbind(capability) {
@@ -87,7 +91,7 @@ function sessionIdentity(host) {
  * on a non-legacy deployment is a loud error: the exposure would be half-
  * public — stored as public, unroutable in practice.
  */
-export async function bindPublicPortCapability(host, capability, port) {
+export async function bindPublicPortCapability(host, capability, port, name) {
     const identity = sessionIdentity(host);
     if (identity === null)
         return;
@@ -99,7 +103,10 @@ export async function bindPublicPortCapability(host, capability, port) {
             + '— without it the capability URL cannot resolve to this session. '
             + 'Add the binding and the NimbusPublicDirectory migration to wrangler.jsonc.');
     }
-    await stub.bind(capability, { tenantSegment: identity.tenantSegment, sid: identity.sid, port });
+    await stub.bind(capability, {
+        tenantSegment: identity.tenantSegment, sid: identity.sid, port,
+        ...(name !== undefined ? { name } : {}),
+    });
 }
 /** Retire a public port's capability from the routing directory. */
 export async function unbindPublicPortCapability(host, capability) {

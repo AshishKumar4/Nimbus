@@ -148,14 +148,14 @@ export class PacedWork {
      * always performed, so a harness or a runtime without alarms loses the
      * responsiveness but keeps the behaviour.
      */
-    nextTurn(chunkEnded) {
+    nextTurn(chunkEnded, notBefore = 0) {
         return new Promise((resume) => {
-            this.waiters.push({ resume, chunkEnded });
+            this.waiters.push({ resume, chunkEnded, notBefore });
             if (this.host.requestTurn) {
-                this.host.requestTurn();
+                this.host.requestTurn(notBefore);
                 return;
             }
-            setTimeout(() => { void this.pump(); }, 0);
+            setTimeout(() => { void this.pump(); }, Math.max(0, notBefore - Date.now()));
         });
     }
     /**
@@ -172,10 +172,13 @@ export class PacedWork {
         // is what an alarm calls, and the first turn after a reset is the
         // re-delivered alarm of a launch the reset interrupted.
         await runColdStart(this.ctx);
-        const waiting = this.waiters;
+        const now = Date.now();
+        const waiting = this.waiters.filter((waiter) => waiter.notBefore <= now);
+        this.waiters = this.waiters.filter((waiter) => waiter.notBefore > now);
+        if (this.waiters.length > 0)
+            this.host.requestTurn?.(Math.min(...this.waiters.map((waiter) => waiter.notBefore)));
         if (waiting.length === 0)
             return;
-        this.waiters = [];
         for (const waiter of waiting)
             waiter.resume();
         await Promise.all(waiting.map((waiter) => waiter.chunkEnded));

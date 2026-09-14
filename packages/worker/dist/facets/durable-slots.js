@@ -78,11 +78,12 @@ export async function acquireDurableFacetSlot(ctx, owner) {
  * step of explicit removal, after the facet's SQLite is already gone. Answers
  * the freed name, or null when the owner held nothing.
  */
-export async function freeDurableFacetSlot(ctx, owner) {
+export async function freeDurableFacetSlot(ctx, owner, beforeFree) {
     return ctx.storage.transaction(async (txn) => {
         const held = await txn.get(ownerKey(owner));
         if (typeof held !== 'number')
             return null;
+        beforeFree?.(durableFacetName(held));
         await txn.delete(ownerKey(owner));
         const free = await txn.get(FREE_KEY);
         const freeList = Array.isArray(free) ? free.filter((n) => typeof n === 'number') : [];

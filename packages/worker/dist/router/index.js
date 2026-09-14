@@ -50,21 +50,30 @@ const publicTenantCache = new Map();
  * The tenant segment a public capability URL forwards under. The directory
  * is consulted first; a deployment without the binding falls back to the
  * legacy-public DO name, which is where legacy-mode sessions already live.
+ * The directory row also carries the port and name the capability was
+ * bound with, which is what the `<cap>--<name>--<sid>` form resolves and
+ * verifies against.
  */
-async function resolvePublicTenantSegment(capability, env) {
+async function resolvePublicCapability(capability, env, uncached = false) {
     const cached = publicTenantCache.get(capability);
-    if (cached !== undefined)
+    if (!uncached && cached !== undefined)
         return cached;
     const stub = publicDirectoryStub(env);
     if (stub === null)
-        return LEGACY_PUBLIC_DO_SEGMENT;
+        return { tenantSegment: LEGACY_PUBLIC_DO_SEGMENT, port: null, name: null };
     const entry = await stub.resolve(capability).catch(() => null);
     if (entry === null) {
         // An unresolvable capability 404s: no session DO is named for it.
+        publicTenantCache.delete(capability);
         return null;
     }
-    publicTenantCache.set(capability, entry.tenantSegment);
-    return entry.tenantSegment;
+    const resolved = {
+        tenantSegment: entry.tenantSegment,
+        port: entry.port,
+        name: entry.name ?? null,
+    };
+    publicTenantCache.set(capability, resolved);
+    return resolved;
 }
 /**
  * Build a Nimbus default-export handler. The returned object is exactly
@@ -138,16 +147,38 @@ export function createNimbusHandler(options = {}) {
                 // directory — a positive hit is cached for the life of this
                 // isolate, a miss 404s, and a deployment without the binding
                 // falls back to the legacy-public DO name.
-                const tenantSegment = await resolvePublicTenantSegment(preview.capability, env);
-                if (tenantSegment === null) {
+                let resolved = await resolvePublicCapability(preview.capability, env);
+                const matchesHost = (entry) => entry !== null && (preview.name !== undefined
+                    ? entry.name === preview.name && entry.port !== null
+                    : entry.port === null || entry.port === preview.port);
+                // Rename/rebinding can leave a positive isolate cache entry behind.
+                // Verify BOTH host forms, and read through once before refusing.
+                if (resolved !== null && !matchesHost(resolved)) {
+                    resolved = await resolvePublicCapability(preview.capability, env, true);
+                }
+                if (resolved === null || !matchesHost(resolved)) {
                     return new Response('Not found', { status: 404 });
+                }
+                // The name form is resolved by capability like the port form, then
+                // the name is verified against the directory row: a capability
+                // presented under a name it was not bound with is a 404, never a
+                // guess at some other application.
+                let port;
+                if (preview.name !== undefined) {
+                    if (resolved.name !== preview.name || resolved.port === null) {
+                        return new Response('Not found', { status: 404 });
+                    }
+                    port = resolved.port;
+                }
+                else {
+                    port = preview.port;
                 }
                 return forwardToSession(request, {
                     sessionId: preview.sid,
-                    innerPath: `/port/${preview.port}${url.pathname === '/' ? '/' : url.pathname}`,
+                    innerPath: `/port/${port}${url.pathname === '/' ? '/' : url.pathname}`,
                     basePath: '',
                 }, env, {
-                    tenantSegment,
+                    tenantSegment: resolved.tenantSegment,
                     extraHeaders: {
                         [PREVIEW_CAPABILITY_HEADER]: preview.capability,
                         [PUBLIC_BEARER_HEADER]: '1',
@@ -172,9 +203,15 @@ export function createNimbusHandler(options = {}) {
             });
             if (auth instanceof Response)
                 return auth;
+            // The scoped name form is resolved INSIDE the session — the name is
+            // a reservation alias only that session's records know — so it is
+            // forwarded as `/app/<name>/`, the session's own name-addressed door.
+            const scopedInner = preview.name !== undefined
+                ? `/app/${preview.name}`
+                : `/port/${preview.port}`;
             return forwardToSession(request, {
                 sessionId: preview.sid,
-                innerPath: `/port/${preview.port}${url.pathname === '/' ? '/' : url.pathname}`,
+                innerPath: `${scopedInner}${url.pathname === '/' ? '/' : url.pathname}`,
                 basePath: '',
             }, env, { tenantSegment: auth.tenantSegment });
         }

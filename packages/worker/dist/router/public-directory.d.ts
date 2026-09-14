@@ -14,6 +14,9 @@ export interface PublicDirectoryEntry {
     readonly tenantSegment: string;
     readonly sid: string;
     readonly port: number;
+    /** The reservation's name alias, when the capability was bound with one —
+     *  what the `<cap>--<name>--<sid>` host form is verified against. */
+    readonly name?: string;
 }
 /** The DO body, usable with any `{ storage }` the tests hand it. */
 export declare class PublicDirectoryStore {
@@ -29,6 +32,7 @@ export declare class PublicDirectoryStore {
         tenantSegment: string;
         sid: string;
         port: number;
+        name?: string;
     }): Promise<void>;
     unbind(capability: string): Promise<void>;
     resolve(capability: string): Promise<PublicDirectoryEntry | null>;
@@ -60,7 +64,7 @@ export declare function bindPublicPortCapability(host: {
     };
     tenantSegment?: string;
     sessionId?: string;
-}, capability: string, port: number): Promise<void>;
+}, capability: string, port: number, name?: string): Promise<void>;
 /** Retire a public port's capability from the routing directory. */
 export declare function unbindPublicPortCapability(host: {
     env?: unknown;

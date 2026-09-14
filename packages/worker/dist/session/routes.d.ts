@@ -43,6 +43,15 @@ type RoutesHost = any;
 export declare function routeToSessionPort(self: RoutesHost, port: number, request: Request, innerPath: string, mountBase: string, capability?: string): Promise<Response>;
 /** Route a capability-authenticated embedder request to a guest HTTP server. */
 export declare function routeCapabilityPort(self: RoutesHost, port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
+/**
+ * The name-addressed door: `/app/<name>/…` — what the scoped `<name>--<sid>`
+ * host is forwarded as, and reachable in path form as `/s/<sid>/app/<name>/`.
+ * The name is a reservation alias only this session's records know, so it
+ * is resolved here and the request continues exactly as the port form would
+ * — same routing, same durable re-drive, same capability gate. A name
+ * nothing holds is a 404, never a guess.
+ */
+export declare function routeToSessionApp(self: RoutesHost, name: string, request: Request, innerPath: string, capability?: string): Promise<Response>;
 export declare function handleFetch(self: RoutesHost, request: Request): Promise<Response>;
 export {};
 //# sourceMappingURL=routes.d.ts.map

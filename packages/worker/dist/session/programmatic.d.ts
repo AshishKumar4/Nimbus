@@ -13,6 +13,8 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type PortVisibility } from './port-capability.js';
+import type { ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy } from '../facets/manager.js';
 export interface ProgrammaticShell {
     env?: Record<string, string>;
     getEnv(): Record<string, string>;
@@ -62,6 +64,8 @@ interface ProgrammaticFacetManager {
     kill(pid: number): boolean;
     hasResidentProcess(pid: number): boolean;
     removeDurableApp(owner: string): Promise<boolean>;
+    residentIdentity(pid: number): Promise<ResidentIdentity | null>;
+    listResidentApps(): Promise<ResidentAppSummary[]>;
 }
 interface ProgrammaticViteServer {
     isRunning: boolean;
@@ -106,6 +110,8 @@ export interface ProgrammaticHost {
     } | null;
     sessionBasePath?: string;
     sessionBasePathHydrated?: boolean;
+    /** The origin the session was last reached at — what a path-form URL is built on. */
+    sessionOrigin?: string;
     wranglerAliasBannerShown?: boolean;
     _b4Phase?: string | null;
     _w9PersistWired?: boolean;
@@ -138,6 +144,13 @@ export interface ProgrammaticExecOptions extends ProgrammaticReadyOptions {
     shellId?: string;
     /** @internal Initial cwd for a shellId with no durable state yet. */
     shellRoot?: string;
+    /**
+     * What to do when the started process exits on its own with a non-zero
+     * code: 'never' (the default) leaves it stopped; 'on-failure' restarts it
+     * under the restart budget with backoff. A platform reset re-drives it
+     * either way. Carried to the launch as `$NIMBUS_RESTART`.
+     */
+    restart?: ResidentRestartPolicy;
 }
 /**
  * A second Shell over the session's own kernel, filesystem and command
@@ -267,8 +280,55 @@ export declare function rpcProcessLogs(self: ProgrammaticHost, pid: number, opti
     exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
 }>;
 export declare function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]>;
+/** What `apps.expose` / `apps.rotateLink` answer: the application's address, as the caller can reach it. */
+export interface ExposedAppResult {
+    owner: string;
+    name: string | null;
+    port: number;
+    pid: number | null;
+    capability: string | null;
+    visibility: PortVisibility;
+    /** Built from the deployment's preview suffix or the session's last-seen origin; null when neither is known. */
+    url: string | null;
+}
+export interface ListedApp extends ResidentAppSummary {
+    url: string | null;
+}
+/** An app target as every app verb takes it: a port, a pid, or a name/owner. */
+export type AppTarget = number | string | {
+    port: number;
+} | {
+    pid: number;
+} | {
+    name: string;
+} | {
+    owner: string;
+};
+/**
+ * Browser-facing URL for an application, built inside the session: the
+ * host form when the deployment carries a preview suffix (name first, port
+ * otherwise; the public bearer form when public and a capability exists),
+ * else the path form on the origin the session was last reached at. Null
+ * when the session has never been reached over HTTP and has no suffix —
+ * an embedder builds its own from the port and capability in that case.
+ */
+export declare function appUrl(self: ProgrammaticHost, app: {
+    port: number;
+    name?: string | null;
+    capability?: string | null;
+    visibility?: PortVisibility;
+}): string | null;
+/**
+ * The port-centric surface, kept for every caller that has a port and
+ * nothing else — a dev server or a process outside the
+ * resident lifecycle. When the port's occupant carries an identity the
+ * exposure is the same lazy reservation `apps.expose` makes; when it does
+ * not, this compatibility path writes the row port-only, as before. One implementation:
+ * `applyExposure` below.
+ */
 export declare function rpcExposePort(self: ProgrammaticHost, port: number, options?: {
     visibility?: 'scoped' | 'public';
+    name?: string;
 }): Promise<{
     port: number;
     listening: boolean;
@@ -276,6 +336,38 @@ export declare function rpcExposePort(self: ProgrammaticHost, port: number, opti
     registeredAt: number | null;
     capability: string | null;
     visibility: "scoped" | "public";
+    owner: string | null;
+    name: string | null;
+}>;
+/**
+ * The identity-centric surface: the target names a running application —
+ * by port, by pid, or by name — and the exposure is what makes it durable
+ * under its identity: the port is reserved for the owner lazily, the
+ * capability minted when public and bound in the directory, the name
+ * stored on the reservation. Returns the address the caller can reach.
+ */
+export declare function rpcExposeApp(self: ProgrammaticHost, target: AppTarget, options?: {
+    visibility?: 'scoped' | 'public';
+    name?: string;
+}): Promise<ExposedAppResult>;
+/**
+ * Mint a new capability for the application and rebind the directory:
+ * every URL built on the old one stops resolving. The registry adopts the
+ * new value at once if the port is live, so the new URL answers without
+ * waiting for a restore.
+ */
+export declare function rpcRotateLink(self: ProgrammaticHost, target: AppTarget): Promise<ExposedAppResult>;
+/** Every stamped identity, with the URL each is reachable at. */
+export declare function rpcListApps(self: ProgrammaticHost): Promise<ListedApp[]>;
+/**
+ * End an application: kill its live pids, release the reservation, purge
+ * its journal rows, free the durable slot and its storage, unbind the
+ * directory — `removeDurableApp`, addressed by any target.
+ */
+export declare function rpcRemoveApp(self: ProgrammaticHost, target: AppTarget): Promise<{
+    owner: string;
+    removed: boolean;
+    port: number | null;
 }>;
 /**
  * The embedder's durable-application seam: reserve (or re-answer) the port
