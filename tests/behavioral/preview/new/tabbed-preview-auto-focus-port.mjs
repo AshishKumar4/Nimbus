@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // preview/new/tabbed-preview-auto-focus-port — when a process exposes a new
 // HTTP port while Markdown preview is active, the preview pane creates a port
 // tab and focuses it.

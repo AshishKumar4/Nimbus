@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // embed/new/react-embed-ready-event — the session shell posts nimbus:ready
 // to its embedding parent window, with the shape and origin that
 // @nimbus-sh/react's useNimbusSession/<NimbusTerminal> consume

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // agent/new/agent-chat-ui — the built agent-chat island: mount, seeded
 // history rendering (markdown + syntax highlighting + tool cards + copy
 // button), streaming send/stop, pin-to-bottom, error card + retry, and the

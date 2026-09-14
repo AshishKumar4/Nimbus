@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // monaco-polish/regression/existing-monaco-probes-preserved —
 // sample critical assertions from editor/B/file-tree-fix:
 //   - FileTree IIFE intact

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+// @serial — browser probe: launches a real Chrome under the run's shared profile root, which the runner's orphan reaper cannot scope to one probe mid-run
 // preview/new/vite-preview-dedupes-port-tab — Vite's canonical /preview/
 // tab should not be duplicated by its registered /port/<n>/ alias.
 
