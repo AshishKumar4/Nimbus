@@ -554,6 +554,21 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
 // ── 9. $PORT / $NIMBUS_APP injection, and the mismatch diagnostic ───────────
 {
+  const { fm, ctx, world, self } = setup();
+  await reservePort(ctx, { owner: 'worker-env', preferredPort: 20830, occupiedPorts: NONE, name: 'worker-web' });
+  const started = await fm.spawnWorker('export default {}', 'worker-env', '/home/user', {
+    durable: { owner: 'worker-env' }, env: { PORT: '9', NIMBUS_APP: 'wrong', KEEP: 'yes' },
+  });
+  assert.deepEqual(world.boots.at(-1).config.env, { PORT: '20830', NIMBUS_APP: 'worker-web', KEEP: 'yes' });
+  assert.equal((await rowFor(ctx, started.pid)).injectedPort, 20830);
+  await fm.registerPort(started.pid, 20831);
+  const app = (await rpcListApps(self)).find((row) => row.owner === 'worker-env');
+  assert.equal(app.status, 'failed');
+  assert.equal(app.diagnostic, 'listened on 20831, owns 20830');
+  const resolved = await resolveDurableWorkerImage(self.facetManager.vfs, (await rowFor(ctx, started.pid)).recipe);
+  assert.equal(resolved.env.PORT, '9', 'launch overlay was not persisted into the image');
+}
+{
   const { fm, ctx, self, vfs, notices, world } = setup();
   const owner = await deriveResidentOwner('/home/user/app', ['/home/user/app/server.js']);
   // The identity holds a named reservation (a previous expose): the next

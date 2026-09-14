@@ -40,6 +40,7 @@ import {
   type PortVisibility,
 } from '../session/port-capability.js';
 import { deriveResidentOwner } from './resident-identity.js';
+import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
@@ -5746,6 +5747,7 @@ export class FacetManager {
     let resourcesTracked = false;
     let record: ResidentLaunchRecord | undefined;
     let durableFacetName: string | undefined;
+    let launchEnv: Record<string, string> | undefined;
     try {
       if (opts.durable) {
         // A durable spawn on a declared port starts only when a reservation the
@@ -5825,13 +5827,21 @@ export class FacetManager {
         } else if (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner)) {
           durableFacetName = await acquireDurableFacetSlot(this.ctx, opts.durable.owner);
         }
+        if (duplicate === null) {
+          const held = await readPortReservationByOwner(this.ctx, opts.durable.owner);
+          if (held) {
+            launchEnv = { PORT: String(held.port), NIMBUS_APP: held.reservation.name ?? opts.durable.owner };
+            await this._amendRow(entry.pid, (row) => ({ ...row, port: held.port, injectedPort: held.port }));
+          }
+        }
       }
       handle = await this._startResidentProcess(entry.pid, {
         // These runners answer startProcess with a boot payload (listening
         // port, or a completed non-server run) and stay resident after it.
         startContract: 'boot',
         startArgs: opts.resident && opts.startArgs && typeof opts.startArgs === 'object'
-          ? { ...opts.startArgs, supervisorPid: entry.pid }
+          ? { ...opts.startArgs, supervisorPid: entry.pid,
+              ...(launchEnv ? { userEnv: { ...z.record(z.string(), z.unknown()).parse(Reflect.get(opts.startArgs, 'userEnv') ?? {}), ...launchEnv } } : {}) }
           : opts.startArgs,
         ...(durableFacetName !== undefined
           ? { facet: { name: durableFacetName, durable: true } }
@@ -5844,7 +5854,7 @@ export class FacetManager {
             mainModule: 'worker.js',
             modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
             vfsWasmModules: opts.vfsWasmModules,
-            ...(opts.env !== undefined ? { env: opts.env } : {}),
+            ...(opts.env !== undefined || launchEnv !== undefined ? { env: { ...opts.env, ...launchEnv } } : {}),
             ...(opts.globalOutbound !== undefined ? { globalOutbound: opts.globalOutbound } : {}),
           },
         },
