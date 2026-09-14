@@ -4205,6 +4205,106 @@ const __utilMod = {
     }
     return opens + String(text) + closes;
   },
+  // util.parseArgs({ args, options, strict, allowPositionals, allowNegative })
+  // — Node 18.3+. The CLI argument parser modern npm bins reach for instead
+  // of a dependency: json-server's lib/bin.js destructures it at module
+  // init, so its absence crashed the bin at "parseArgs is not a function"
+  // before --version could answer. Node's contract, minus the tokens
+  // debugging output:
+  //   - --name, --name=value, --name value for string options;
+  //   - -s, -s value, -svalue, and grouped booleans -abc for shorts;
+  //   - --no-name sets a boolean false when allowNegative is on;
+  //   - -- ends option parsing, the rest are positionals;
+  //   - strict (default true) throws Node's own error codes for an unknown
+  //     option, a string option with no value, or a positional when they
+  //     are not allowed; lax mode records unknown options as booleans.
+  parseArgs: (config) => {
+    const cfg = config || {};
+    const args = Array.isArray(cfg.args) ? cfg.args.slice() : (__processMod.argv || []).slice(2);
+    const options = cfg.options || {};
+    const strict = cfg.strict !== false;
+    const allowPositionals = cfg.allowPositionals === undefined ? !strict : !!cfg.allowPositionals;
+    const allowNegative = !!cfg.allowNegative;
+    const values = {};
+    const positionals = [];
+    const err = (code, message) => { const e = new TypeError(message); e.code = code; return e; };
+    const shortToLong = {};
+    for (const [name, spec] of Object.entries(options)) {
+      if (!spec || (spec.type !== "string" && spec.type !== "boolean")) {
+        throw err("ERR_INVALID_ARG_TYPE", "The \\"options." + name + ".type\\" property must be one of: 'string', 'boolean'.");
+      }
+      if (spec.short) shortToLong[spec.short] = name;
+      if (spec.default !== undefined) values[name] = spec.default;
+    }
+    const store = (name, value) => {
+      const spec = options[name];
+      if (spec && spec.multiple) {
+        if (!Array.isArray(values[name]) || (spec.default !== undefined && values[name] === spec.default)) values[name] = [];
+        values[name].push(value);
+      } else {
+        values[name] = value;
+      }
+    };
+    const optionValue = (name, inlineValue, next, raw) => {
+      const spec = options[name];
+      if (!spec) {
+        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'." + (allowPositionals ? " To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \\"" + raw + "\\"'." : ""));
+        if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
+        return { value: true, consumed: 0 };
+      }
+      if (spec.type === "boolean") {
+        if (inlineValue !== undefined && strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + "' does not take an argument.");
+        return { value: inlineValue !== undefined ? inlineValue : true, consumed: 0 };
+      }
+      if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
+      if (next === undefined || (strict && next.startsWith("-") && next !== "-")) {
+        if (strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + " <value>' argument missing");
+        return { value: undefined, consumed: 0 };
+      }
+      return { value: next, consumed: 1 };
+    };
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === "--") { positionals.push(...args.slice(i + 1)); break; }
+      if (arg.startsWith("--") && arg.length > 2) {
+        const eq = arg.indexOf("=");
+        let name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+        const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+        if (allowNegative && name.startsWith("no-") && options[name.slice(3)] && options[name.slice(3)].type === "boolean") {
+          store(name.slice(3), false);
+          continue;
+        }
+        const r = optionValue(name, inline, args[i + 1], "--" + name);
+        store(name, r.value);
+        i += r.consumed;
+        continue;
+      }
+      if (arg.startsWith("-") && arg.length > 1 && arg !== "-") {
+        // Short: -s, -s value, -svalue (string) or grouped -abc (booleans).
+        const first = arg[1];
+        const long = shortToLong[first] || first;
+        const spec = options[long];
+        if (spec && spec.type === "string") {
+          const inline = arg.length > 2 ? arg.slice(2) : undefined;
+          const r = optionValue(long, inline, args[i + 1], "-" + first);
+          store(long, r.value);
+          i += r.consumed;
+          continue;
+        }
+        for (const ch of arg.slice(1)) {
+          const l = shortToLong[ch] || ch;
+          const r = optionValue(l, undefined, undefined, "-" + ch);
+          store(l, r.value);
+        }
+        continue;
+      }
+      if (!allowPositionals) {
+        throw err("ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "Unexpected argument '" + arg + "'. This command does not take positional arguments");
+      }
+      positionals.push(arg);
+    }
+    return { values, positionals };
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════
