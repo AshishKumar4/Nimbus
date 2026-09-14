@@ -173,7 +173,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         // @ts-ignore — preamble.
         const __warn = SHOULD_WARN_SKIP_TRANSITIVE(spec.name);
         if (__warn) {
-            messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}`);
+            messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}${__warn.suggest ? ` … try: ${__warn.suggest}` : ''}`);
             events.push({ type: 'transitive-skip', from: __warn.from, reason: __warn.reason });
             return out(null, 0, 'skipped');
         }

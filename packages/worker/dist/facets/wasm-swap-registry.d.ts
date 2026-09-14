@@ -129,8 +129,13 @@ export declare function formatSwapNotice(s: PackageSwapEntry): string;
  */
 export declare function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>, devOnly?: ReadonlySet<string>): string;
 /**
- * Single-line yellow notice emitted for a transitive `[skip]`.
+ * Single-line yellow notice emitted for a `[skip]`.
  *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
+ *
+ * When the entry carries an actionable suggestion it is appended inline
+ * (`… try: <hint>`) — the same line shape for optional-shard skips and
+ * required-package skips, so one grep explains every package the install
+ * left out.
  */
 export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
 /**

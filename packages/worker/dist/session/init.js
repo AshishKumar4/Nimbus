@@ -50,7 +50,7 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
-import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, } from './helpers.js';
+import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, withLoudTimeout, VITE_BUILD_TIMEOUT_MS, } from './helpers.js';
 import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
 import { registerShellEntrypointCommands } from '@nimbus-sh/core/shell/shell-entrypoints.js';
 import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
@@ -1156,12 +1156,15 @@ export async function initSession(self, ws) {
                 }
                 if (viteConfig.alias)
                     externals.push(...Object.keys(viteConfig.alias));
-                // Bundle JS
-                const result = await self.esbuildService.build([entryPoint], {
+                // Bundle JS — bounded (G5): an esbuild stall must surface as a
+                // loud timeout naming the entry, never a silent hang. The
+                // existing catch below renders the timeout as `Build error: …`.
+                ctx.stdout.write('  Bundling ' + entryPoint + ' …\n');
+                const result = await withLoudTimeout(self.esbuildService.build([entryPoint], {
                     bundle: true, format: 'esm', target: 'es2020', platform: 'browser',
                     minify: true, outdir: '/' + distDir + '/assets',
                     external: externals.length > 0 ? externals : undefined,
-                });
+                }), VITE_BUILD_TIMEOUT_MS, `vite build of ${entryPoint}`);
                 if (result.errors?.length) {
                     for (const e of result.errors)
                         ctx.stderr.write('  error: ' + e.text + '\n');

@@ -154,9 +154,16 @@ export declare class NpmInstaller {
     private buildSpecs;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
-     * to a top-level spec map. Emits `[swap]` notices via onProgress; throws
-     * a multi-line error on any reject (with `transitive='warn'` rejects
-     * also failing at top level — they only soften at depth>0).
+     * to a top-level spec map. Emits `[swap]` notices via onProgress.
+     *
+     * G2: rejects never throw. Every refused package is announced with the
+     * same `[skip] <pkg> — <reason> … try: <hint>` line the transitive path
+     * uses, removed from the returned specs, and reported in `rejected`:
+     * `required` is false for `transitive: 'warn'` entries (they soften by
+     * design) and for devDependency-only names (dev-optional), true
+     * otherwise — explicit `npm install <refused>` included. The caller
+     * installs the returned specs and fails the install on required
+     * rejections; swaps always apply either way.
      *
      * Idempotent: running on already-swapped specs is a no-op.
      */
