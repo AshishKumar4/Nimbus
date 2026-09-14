@@ -536,11 +536,25 @@ function startShellJob(
   return { pid, entry, run, abort: () => { try { controller.abort(); } catch {} } };
 }
 
+/**
+ * The shell, process table and VFS all key on absolute POSIX paths. A
+ * relative `cwd` arriving here means a caller skipped its own boundary
+ * normalization (the SDK resolves it); handed to the shell it degrades to
+ * silently wrong cwd semantics and ENOENT writes. Name the field and fail.
+ */
+function assertAbsoluteExecCwd(options: ProgrammaticExecOptions): void {
+  const cwd = options.cwd;
+  if (cwd !== undefined && (typeof cwd !== 'string' || !cwd.startsWith('/'))) {
+    throw new Error(`cwd must be an absolute POSIX path starting with '/', got ${JSON.stringify(cwd)}`);
+  }
+}
+
 export async function rpcExec(
   self: ProgrammaticHost,
   command: string,
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticExecResult> {
+  assertAbsoluteExecCwd(options);
   await ensureProgrammaticReady(self, options);
   return withShellState(self, options, false, (scoped) => execOnShell(self, command, options, scoped));
 }
@@ -645,6 +659,7 @@ export async function rpcStartProcess(
   command: string,
   options: ProgrammaticExecOptions = {},
 ): Promise<ProgrammaticStartResult> {
+  assertAbsoluteExecCwd(options);
   await ensureProgrammaticReady(self, options);
   if (options.restart !== undefined && options.restart !== 'never' && options.restart !== 'on-failure') {
     throw new Error(`startProcess: restart must be 'never' or 'on-failure', got ${String(options.restart)}`);
