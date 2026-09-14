@@ -16,12 +16,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { addBinTargetSiblings } from '../../packages/worker/src/facets/manager.ts';
+import { addBinTargetSiblings, greedyAddMainEntries } from '../../packages/worker/src/facets/manager.ts';
 
 const MiB = 1024 * 1024;
 
 /** Minimal CredentialedVfs stand-in: a flat path -> size map plus a dir tree. */
-function makeVfs(files) {
+function makeVfs(files, contents) {
   const dirs = new Map();
   for (const path of Object.keys(files)) {
     const segs = path.split('/');
@@ -47,7 +47,16 @@ function makeVfs(files) {
     readFile(path) {
       const size = files[path];
       if (size === undefined) throw new Error('ENOENT ' + path);
-      return new TextEncoder().encode('x'.repeat(size));
+      return new TextEncoder().encode(contents?.[path] ?? 'x'.repeat(size));
+    },
+    readFileString(path) {
+      return new TextDecoder().decode(this.readFile(path));
+    },
+    exists(path) {
+      return files[path] !== undefined || dirs.has(path);
+    },
+    isDirectory(path) {
+      return dirs.has(path) && files[path] === undefined;
     },
   };
 }
@@ -178,6 +187,44 @@ const tsFiles = {
   );
   assert.equal(bundle['home/user/node_modules/r/test/fixture.json'], undefined, 'test/ excluded');
   assert.equal(bundle['home/user/node_modules/r/docs/guide.md'], undefined, 'docs/ excluded');
+}
+
+// The main-entry oversample is a guess too, and the same per-file ceiling
+// bounds it. typescript's `main` is the 8.69 MiB `lib/typescript.js`, the
+// alternative bundle beside the `lib/tsc.js` that `tsc` actually runs; the
+// closure carries the latter, and the guess must not carry the former on
+// every invocation. Small main entries — the computed-require safety net the
+// pass exists for — still land.
+{
+  const files = {
+    'home/user/package.json': 64,
+    'home/user/node_modules/typescript/package.json': 128,
+    'home/user/node_modules/typescript/lib/typescript.js': 9 * MiB,
+    'home/user/node_modules/typescript/lib/tsc.js': 4 * 1024,
+    'home/user/node_modules/left-pad/package.json': 96,
+    'home/user/node_modules/left-pad/index.js': 2048,
+  };
+  const contents = {
+    'home/user/node_modules/typescript/package.json': JSON.stringify({ name: 'typescript', main: './lib/typescript.js' }),
+    'home/user/node_modules/left-pad/package.json': JSON.stringify({ name: 'left-pad', main: 'index.js' }),
+  };
+  const bundle = {};
+  const budgetState = { totalBytes: 0, fileCount: 0 };
+  greedyAddMainEntries(makeVfs(files, contents), '/home/user', bundle, budgetState);
+  assert.equal(
+    bundle['home/user/node_modules/typescript/lib/typescript.js'],
+    undefined,
+    'a 9 MiB main entry is not admitted on a guess',
+  );
+  assert.ok(
+    bundle['home/user/node_modules/typescript/package.json'] !== undefined,
+    'the package manifest still lands',
+  );
+  assert.ok(
+    bundle['home/user/node_modules/left-pad/index.js'] !== undefined,
+    'a small main entry still lands',
+  );
+  assert.ok(budgetState.totalBytes < MiB, 'the guess spent nothing on the oversized entry');
 }
 
 console.log('facet-bin-package-residency-policy: ok');

@@ -2080,6 +2080,15 @@ export function greedyAddMainEntries(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+      // This is a guess at what a program might require, and the same
+      // per-file ceiling the entry-package walk applies bounds it: a
+      // multi-MiB main entry is an alternative bundle (typescript's 8.69 MiB
+      // `lib/typescript.js` beside the `lib/tsc.js` that actually runs), and
+      // one guess must not spend a third of the budget — and a third of the
+      // supervisor's headroom — on every invocation that never reads it.
+      // Anything the program really requires arrives through the closure,
+      // which is uncapped.
+      if (vfs.lstat(stripped).size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES) return false;
       // hardening-r5: preserve binary content as Uint8Array.
       const content = _readBundleCell(vfs, stripped);
       const cellLen = _bundleCellLength(content);
@@ -2747,18 +2756,22 @@ const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
 ];
 
 /**
- * Per-file ceiling for the speculative entry-package walk.
+ * Per-file ceiling for the speculative passes over installed packages: the
+ * entry-package walk (`addBinTargetSiblings`) and the main-entry oversample
+ * (`greedyAddMainEntries`).
  *
  * Everything the entry package needs in order to *run* arrives through the
- * require closure, which is uncapped and never evicted. This walk exists only
- * to catch data files the static walker cannot see, and data files are small.
- * Multi-MiB cells in a package tree are overwhelmingly alternative bundles —
- * typescript ships an 8.69 MiB `lib/typescript.js` that is never read — rather
- * than data.
+ * require closure, which is uncapped and never evicted. These passes exist
+ * only to catch what the static walker cannot see — data files, and modules
+ * reached by a computed require — and those are small. Multi-MiB cells in a
+ * package tree are overwhelmingly alternative bundles — typescript ships an
+ * 8.69 MiB `lib/typescript.js` that `tsc` never reads — rather than data.
  *
  * So one speculative guess must not spend the budget every later invocation
  * then carries: the same reasoning as `CWD_SNAPSHOT_MAX_FILE_BYTES`, applied
- * to the package tree.
+ * to the package tree. A miss this causes is loud and self-repairing: the
+ * facet reports the unstaged read and the next build stages it from the
+ * residency ledger, which has no per-file rule.
  */
 const BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES = 4 * 1024 * 1024;
 
