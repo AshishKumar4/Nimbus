@@ -54,7 +54,9 @@ import {
   rpcExec,
   rpcEnsureRuntimes,
   rpcInstallRuntime,
+  rpcExposeApp,
   rpcKillProcess,
+  rpcListApps,
   rpcListPorts,
   rpcListProcesses,
   rpcProcessLogs,
@@ -766,6 +768,20 @@ function createAiSdkTools(self: Host): ToolSet {
       inputSchema: toolSchema({}, []),
       execute: async (args: any) => runTool(self, 'list_ports', args),
     }),
+    expose_app: aiTool({
+      description: 'Expose a running application by port, pid or name: reserves its port under its identity, optionally names it and makes it public, and returns its URL.',
+      inputSchema: toolSchema({
+        target: stringProp('Port number, process id, or app name.'),
+        visibility: stringProp("'scoped' (default) or 'public' — public mints a shareable capability URL."),
+        name: stringProp('Optional DNS-label name for the app, e.g. "api".'),
+      }, ['target']),
+      execute: async (args: any) => runTool(self, 'expose_app', args),
+    }),
+    list_apps: aiTool({
+      description: 'List every application the session knows: owner, name, port, pid, status, visibility, restart policy and URL.',
+      inputSchema: toolSchema({}, []),
+      execute: async (args: any) => runTool(self, 'list_apps', args),
+    }),
   };
 }
 
@@ -973,6 +989,17 @@ async function runTool(self: Host, name: string, args: any): Promise<unknown> {
       });
     }
     if (name === 'list_ports') return rpcListPorts(self);
+    if (name === 'expose_app') {
+      const raw = String(args.target ?? '').trim();
+      if (!raw) return { error: 'target is required' };
+      const visibility = args.visibility === 'public' ? 'public' : args.visibility === 'scoped' ? 'scoped' : undefined;
+      const appName = typeof args.name === 'string' && args.name.trim() ? args.name.trim() : undefined;
+      return rpcExposeApp(self, /^\d+$/.test(raw) ? Number(raw) : raw, {
+        ...(visibility !== undefined ? { visibility } : {}),
+        ...(appName !== undefined ? { name: appName } : {}),
+      });
+    }
+    if (name === 'list_apps') return rpcListApps(self);
     return { error: `unknown tool: ${name}` };
   } catch (e: unknown) {
     return { error: e instanceof Error ? e.message : String(e) };

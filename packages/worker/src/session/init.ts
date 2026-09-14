@@ -80,6 +80,7 @@ import {
   makeNimbusVerbHandler,
   createRuntimeCommandHintResolver,
 } from '../runtime/package-manager.js';
+import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from './programmatic.js';
 import {
   listInstalledRuntimes,
   rehydrateInstalledRuntimes,
@@ -661,6 +662,14 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
           vfs: sqliteFs,
           registry: pkgRegistry,
           getHome: nimbusGetHome,
+          // The application verbs are the session's own (programmatic.ts):
+          // the shell, the SDK and the Agent all reach the same policy.
+          apps: {
+            expose: (target, options) => rpcExposeApp(self as any, target, options),
+            list: () => rpcListApps(self as any),
+            rotateLink: (target) => rpcRotateLink(self as any, target),
+            remove: (target) => rpcRemoveApp(self as any, target),
+          },
           warmRuntime: async (target, ctx) => {
             // The runtime name, which is what `nimbus install python` installs
             // — not the name the user typed. Left as 'python' through the

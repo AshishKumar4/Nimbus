@@ -281,8 +281,34 @@ export async function ensureRuntimesProgrammatic(deps: {
 }
 
 /**
+ * The session's application verbs, as the shell reaches them — the SAME
+ * session methods the SDK and the Agent call (session/programmatic.ts), so
+ * there is one policy for what an exposure, a rotation or a removal is.
+ */
+export interface NimbusAppVerbs {
+  expose(target: number | string, options: { visibility?: 'scoped' | 'public'; name?: string }): Promise<{
+    owner: string; name: string | null; port: number; capability: string | null;
+    visibility: 'scoped' | 'public'; url: string | null;
+  }>;
+  list(): Promise<Array<{
+    owner: string; name: string | null; port: number | null; pid: number | null;
+    status: string; visibility: string; restart: string; diagnostic: string | null; url: string | null;
+  }>>;
+  rotateLink(target: number | string): Promise<{ name: string | null; port: number; url: string | null; capability: string | null }>;
+  remove(target: number | string): Promise<{ owner: string; removed: boolean; port: number | null }>;
+}
+
+const NIMBUS_USAGE = [
+  'usage: nimbus install <name>[@<version>] | nimbus install --list | nimbus install --available | nimbus uninstall <name>',
+  '       nimbus expose <port|pid> [--public] [--name <name>]',
+  '       nimbus app list | url <name|port> | rotate <name|port> | remove <name|port>',
+  '       nimbus start [--restart never|on-failure] <command> [args...]',
+].join('\n');
+
+/**
  * Build the shell-command handler that implements `nimbus install …`,
- * `nimbus uninstall …`. Registered under the name `nimbus`.
+ * `nimbus uninstall …`, `nimbus expose …`, `nimbus app …` and
+ * `nimbus start …`. Registered under the name `nimbus`.
  */
 export function makeNimbusVerbHandler(deps: {
   env: RuntimeCatalogEnv;
@@ -292,8 +318,10 @@ export function makeNimbusVerbHandler(deps: {
    *  caller (init.ts) from the shell env. */
   getHome(): string;
   warmRuntime?: RuntimeWarmHook;
+  /** The application verbs; absent on a host with no session (tests). */
+  apps?: NimbusAppVerbs;
 }): (ctx: any) => Promise<number> {
-  const { env, registry, getHome, warmRuntime } = deps;
+  const { env, registry, getHome, warmRuntime, apps } = deps;
   const vfs = deps.vfs.as(CRED_KERNEL);
 
   return async function nimbus(ctx: ShellCtx): Promise<number> {
@@ -307,12 +335,147 @@ export function makeNimbusVerbHandler(deps: {
     if (verb === 'uninstall') {
       return runUninstall(rest, ctx, { vfs, registry, getHome });
     }
+    if (verb === 'expose' || verb === 'app' || verb === 'start') {
+      if (verb === 'start') return runStart(rest, ctx, registry);
+      if (!apps) {
+        ctx.stderr.write(`nimbus ${verb}: this host has no session to address applications on\n`);
+        return 1;
+      }
+      try {
+        return verb === 'expose' ? await runExpose(rest, ctx, apps) : await runApp(rest, ctx, apps);
+      } catch (e: unknown) {
+        ctx.stderr.write(`nimbus ${verb}: ${e instanceof Error ? e.message : String(e)}\n`);
+        return 1;
+      }
+    }
 
     // Unknown verb.
     ctx.stderr.write(`nimbus: unknown subcommand '${verb || '(none)'}'\n`);
-    ctx.stderr.write(`usage: nimbus install <name>[@<version>] | nimbus install --list | nimbus install --available | nimbus uninstall <name>\n`);
+    ctx.stderr.write(`${NIMBUS_USAGE}\n`);
     return 2;
   };
+}
+
+// ── expose / app / start ─────────────────────────────────────────────
+
+/** `<port|pid|name>` as the verbs take it: digits are a port or pid, anything else a name. */
+function appTargetArg(raw: string): number | string {
+  return /^\d+$/.test(raw) ? Number(raw) : raw;
+}
+
+async function runExpose(args: string[], ctx: ShellCtx, apps: NimbusAppVerbs): Promise<number> {
+  let target: string | undefined;
+  let name: string | undefined;
+  let visibility: 'scoped' | 'public' | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--public') visibility = 'public';
+    else if (arg === '--scoped') visibility = 'scoped';
+    else if (arg === '--name') { name = args[++i]; }
+    else if (arg.startsWith('--name=')) name = arg.slice('--name='.length);
+    else if (arg.startsWith('--')) { ctx.stderr.write(`nimbus expose: unknown flag ${arg}\n`); return 2; }
+    else if (target === undefined) target = arg;
+    else { ctx.stderr.write('nimbus expose: one target only\n'); return 2; }
+  }
+  if (target === undefined) {
+    ctx.stderr.write('usage: nimbus expose <port|pid> [--public] [--name <name>]\n');
+    return 2;
+  }
+  const exposed = await apps.expose(appTargetArg(target), {
+    ...(visibility !== undefined ? { visibility } : {}),
+    ...(name !== undefined ? { name } : {}),
+  });
+  ctx.stdout.write(`${exposed.url ?? `(no URL: port ${exposed.port}, capability ${exposed.capability ?? 'none'})`}\n`);
+  ctx.stdout.write(`  ${exposed.visibility} · ${exposed.name ?? exposed.owner} · port ${exposed.port}\n`);
+  return 0;
+}
+
+async function runApp(args: string[], ctx: ShellCtx, apps: NimbusAppVerbs): Promise<number> {
+  const [sub, target] = args;
+  if (sub === 'list' || sub === 'ls') {
+    const rows = await apps.list();
+    if (rows.length === 0) { ctx.stdout.write('(no applications)\n'); return 0; }
+    for (const app of rows) {
+      const label = app.name ?? app.owner;
+      const where = app.port === null ? '-' : String(app.port);
+      const pid = app.pid === null ? '-' : String(app.pid);
+      const status = app.diagnostic ? `${app.status} (${app.diagnostic})` : app.status;
+      ctx.stdout.write(`${label}\t${where}\t${pid}\t${status}\t${app.visibility}\t${app.restart}\t${app.url ?? '-'}\n`);
+    }
+    return 0;
+  }
+  if (target === undefined || (sub !== 'url' && sub !== 'rotate' && sub !== 'remove')) {
+    ctx.stderr.write('usage: nimbus app list | url <name|port> | rotate <name|port> | remove <name|port>\n');
+    return 2;
+  }
+  const t = appTargetArg(target);
+  if (sub === 'url') {
+    const app = (await apps.list()).find((row) =>
+      row.name === t || row.owner === t || row.port === t || row.pid === t);
+    if (!app) { ctx.stderr.write(`nimbus app url: no application matches ${target}\n`); return 1; }
+    ctx.stdout.write(`${app.url ?? `(no URL: port ${app.port ?? '-'})`}\n`);
+    return 0;
+  }
+  if (sub === 'rotate') {
+    const rotated = await apps.rotateLink(t);
+    ctx.stdout.write(`${rotated.url ?? `(no URL: port ${rotated.port}, capability ${rotated.capability ?? 'none'})`}\n`);
+    return 0;
+  }
+  const removed = await apps.remove(t);
+  ctx.stdout.write(removed.removed
+    ? `removed ${removed.owner}${removed.port !== null ? ` (port ${removed.port} released)` : ''}\n`
+    : `nothing to remove for ${removed.owner}\n`);
+  return removed.removed ? 0 : 1;
+}
+
+/**
+ * `nimbus start [--restart <policy>] <command> [args...]` — run a
+ * registered command with the restart policy in its environment, which is
+ * where the resident it starts reads the policy from (`NIMBUS_RESTART`),
+ * exactly as the SDK's `startProcess({ restart })` carries it.
+ */
+async function runStart(args: string[], ctx: ShellCtx, registry: MinShellRegistry): Promise<number> {
+  let restart: 'never' | 'on-failure' = 'never';
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--restart') {
+      const policy = args[++i];
+      if (policy !== 'never' && policy !== 'on-failure') {
+        ctx.stderr.write(`nimbus start: --restart must be never or on-failure, got ${policy ?? '(none)'}\n`);
+        return 2;
+      }
+      restart = policy;
+    } else if (arg.startsWith('--restart=')) {
+      const policy = arg.slice('--restart='.length);
+      if (policy !== 'never' && policy !== 'on-failure') {
+        ctx.stderr.write(`nimbus start: --restart must be never or on-failure, got ${policy}\n`);
+        return 2;
+      }
+      restart = policy;
+    } else if (arg === '--') { i += 1; break; }
+    else if (arg.startsWith('--')) { ctx.stderr.write(`nimbus start: unknown flag ${arg}\n`); return 2; }
+    else break;
+  }
+  const [command, ...commandArgs] = args.slice(i);
+  if (!command) {
+    ctx.stderr.write('usage: nimbus start [--restart never|on-failure] <command> [args...]\n');
+    return 2;
+  }
+  const handler = registry.resolve ? await registry.resolve(command) : null;
+  if (!handler) {
+    ctx.stderr.write(`nimbus start: ${command}: command not found\n`);
+    return 127;
+  }
+  // The shell hands `nimbus` its full CommandContext; ShellCtx is only the
+  // slice this module reads, so the spread carries everything the command
+  // needs (signal, vfs, stdin, ...) through untouched.
+  const full = ctx as unknown as CommandContext;
+  return handler({
+    ...full,
+    args: commandArgs,
+    env: { ...full.env, NIMBUS_RESTART: restart },
+  });
 }
 
 // ── install ──────────────────────────────────────────────────────────
