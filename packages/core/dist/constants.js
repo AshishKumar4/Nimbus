@@ -105,32 +105,6 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // deepest realistic paths: a node_modules path runs ~200 bytes, so a full
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
-/**
- * How long assembling a process's filesystem bundle may take.
- *
- * Sits under FACET_TIMEOUT_MS because it is paid BEFORE the process starts and
- * the two are sequential: a build that used the whole facet budget would leave
- * the program none. A miss on a large tree measures in low seconds, so this is
- * a bound on a defect rather than on a workload.
- */
-export const BUNDLE_BUILD_DEADLINE_MS = 20_000;
-/**
- * Per installed package, on top of the floor above. Measured on the session
- * DO (2026-09-14): a 752-package tree built its bundle in 14.6 s cold
- * before the one-hop oversample bound — ~20 ms per package, spent in the
- * VFS reads, esbuild-wasm transforms and the manifest walk that scale with
- * the tree. The bound removed most of that cost; this keeps the wedge guard
- * honest for the part that still scales, so a large tree is not reported
- * as a defect at 20 s. Capped at BUNDLE_BUILD_DEADLINE_MAX_MS: past that a
- * build is a defect whatever the tree, and the guard exists to report it.
- */
-export const BUNDLE_BUILD_DEADLINE_PER_PACKAGE_MS = 20;
-export const BUNDLE_BUILD_DEADLINE_MAX_MS = 60_000;
-/** The exec-path bundle deadline for a tree of `installedPackages`. */
-export function bundleBuildDeadlineMs(installedPackages) {
-    const scaled = BUNDLE_BUILD_DEADLINE_MS + Math.max(0, installedPackages) * BUNDLE_BUILD_DEADLINE_PER_PACKAGE_MS;
-    return Math.min(scaled, BUNDLE_BUILD_DEADLINE_MAX_MS);
-}
 // ── Vite Dev Server Constants ───────────────────────────────────────────
 // In-memory transformed-module cache cap. Transformed user modules and
 // /@modules/ bundles are also persisted (SQLite) — this LRU is just the
