@@ -73,8 +73,11 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
         async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
       };
     },
+    // abort ends the process; the store stays. delete is the only call that
+    // drops a facet's SQLite — mirroring workerd's split, which is what the
+    // durable release relies on.
     abort(name) { live.delete(name); },
-    delete(name) { live.delete(name); },
+    delete(name) { live.delete(name); resetProcessFacetStorage(name); },
   };
 
   return {

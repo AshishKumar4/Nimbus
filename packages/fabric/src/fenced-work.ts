@@ -183,6 +183,25 @@ export class FencedWork<R extends FencedWorkRecord> {
   }
 
   /**
+   * Drop every row `predicate` claims, live-pid bookkeeping included, synced
+   * like {@link release}. The one bulk delete the journal admits: an owner
+   * that removes its durable application is owed no recovery, however many
+   * generations back its rows were written.
+   */
+  async purgeWhere(predicate: (record: R) => boolean): Promise<number> {
+    const rows = await this.storage.list<R>({ prefix: FENCED_WORK_KEY_PREFIX });
+    let purged = 0;
+    for (const [key, record] of rows) {
+      if (!predicate(record)) continue;
+      this.journalledPids.delete(record.pid);
+      await this.storage.delete(key);
+      purged += 1;
+    }
+    if (purged > 0) await this.storage.sync();
+    return purged;
+  }
+
+  /**
    * Re-drive the launches a previous instance was building when it was reset.
    *
    * Sited on the launch-turn pump because the pump is what an alarm calls, and

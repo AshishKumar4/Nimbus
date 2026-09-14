@@ -330,6 +330,14 @@ export interface ProcessHostParams {
   writerId: string;
   /** Forwarded verbatim to the runner's startProcess. */
   startArgs: unknown;
+  /**
+   * Set only by the coordinator's durable-application path: an explicit facet
+   * name (`app-slot-<n>`) allocated from DO storage, plus the release split
+   * that keeps its SQLite across aborts. Absent, the host allocates an
+   * ephemeral `proc-slot-<n>` name from its in-memory free list and deletes
+   * the store on release.
+   */
+  facet?: { name: string; durable: boolean };
 }
 
 /**
@@ -632,10 +640,16 @@ export interface ResidentProcessSpawn {
   pid: number;
   /** Keyed dynamic-worker identity (`nimbus-process:${doId}:${pid}`). */
   workerKey: string;
-  /** What the facet boots from. */
+  /** What the process boots from. */
   boot: ResidentBootSpec;
   /** Forwarded verbatim to the runner's startProcess. */
   startArgs?: unknown;
+  /**
+   * A durable application's explicit facet name (`app-slot-<n>`) and the
+   * release split that keeps its SQLite. Coordinator-allocated; absent for an
+   * ephemeral process, which takes a `proc-slot-<n>` name from the book.
+   */
+  facet?: { name: string; durable: boolean };
   /**
    * Called before any concrete host capability can expose this writer.
    * A spawn must not proceed unless the supervisor accepts the authority.
@@ -679,6 +693,7 @@ export class ProcessFabric {
         boot: spawn.boot,
         writerId,
         startArgs: spawn.startArgs,
+        ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
       });
     } catch (error) {
       spawn.onWriterRetired(writerId);

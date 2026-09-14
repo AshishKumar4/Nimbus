@@ -30,7 +30,8 @@ import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledge
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { clearPortCapability, readPortReservation, restoreReservedPortCapability } from '../session/port-capability.js';
+import { clearPortCapability, readPortReservation, releasePortReservation, restoreReservedPortCapability } from '../session/port-capability.js';
+import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
@@ -67,8 +68,13 @@ import {
 import {
   createLoadedWorkerEntrypoint,
   getNimbusCtxExports,
+  deleteFacetStorage,
   type LoadedWorkerEntrypointStub,
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import {
+  acquireDurableFacetSlot,
+  freeDurableFacetSlot,
+} from './durable-slots.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
@@ -4751,6 +4757,7 @@ export class FacetManager {
       startContract: StartContract;
       boot: ResidentBootSpec;
       startArgs?: unknown;
+      facet?: { name: string; durable: boolean };
     },
   ): Promise<ResidentProcessHandle> {
     const handle = await this.processFabric.startResidentProcess({
@@ -5350,6 +5357,7 @@ export class FacetManager {
     let handle: ResidentProcessHandle | undefined;
     let resourcesTracked = false;
     let record: ResidentLaunchRecord | undefined;
+    let durableFacetName: string | undefined;
     try {
       if (opts.durable) {
         // A durable spawn on a declared port starts only when a reservation the
@@ -5380,6 +5388,11 @@ export class FacetManager {
             startArgs: opts.startArgs,
           },
         };
+        // The durable facet name is claimed once, ever, from DO storage — a
+        // re-drive after a reset, an eviction's re-attach and a relaunch all
+        // land on the same `app-slot-<n>`, which is the only thing that keeps
+        // the retained SQLite bound to this application.
+        durableFacetName = await acquireDurableFacetSlot(this.ctx, opts.durable.owner);
         await this.launchJournal.journal(record);
       }
       handle = await this._startResidentProcess(entry.pid, {
@@ -5387,6 +5400,9 @@ export class FacetManager {
         // port, or a completed non-server run) and stay resident after it.
         startContract: 'boot',
         startArgs: opts.startArgs,
+        ...(durableFacetName !== undefined
+          ? { facet: { name: durableFacetName, durable: true } }
+          : {}),
         boot: {
           kind: 'code',
           code: {
@@ -5498,6 +5514,55 @@ export class FacetManager {
     }
     this._teardownPairedServeFacet(pid);
     return result;
+  }
+
+  /**
+   * Remove a durable application: the ONLY path that deletes durable facet
+   * storage. Owner-checked by construction — `freeDurableFacetSlot` answers
+   * only a slot the owner actually holds, and the reservation release refuses
+   * a foreign owner's record — so another owner's name cannot be reached.
+   *
+   * One ordered teardown: the live process is killed first (a released
+   * durable facet only aborts, so nothing else ends it), the port reservation
+   * is released, the journal rows for the owner are purged (nothing is owed a
+   * removed application), the facet's SQLite is deleted, and the slot row is
+   * freed last — so a crash mid-removal leaves a name still claimed rather
+   * than a store nobody can re-drive.
+   */
+  async removeDurableApp(owner: string): Promise<boolean> {
+    // Kill any live process this owner still has — a durable release aborts
+    // without deleting, so the store outlives the process unless removal
+    // ends it here.
+    const journalRows = await this.ctx.storage.list<ResidentLaunchRecord>({ prefix: 'resident-launch:' });
+    const ownedPids: number[] = [];
+    const ownedPorts = new Set<number>();
+    for (const [, record] of journalRows) {
+      if (record.recipe.kind !== 'worker' || record.recipe.owner !== owner) continue;
+      ownedPids.push(record.pid);
+      if (record.recipe.port > 0) ownedPorts.add(record.recipe.port);
+    }
+    for (const pid of ownedPids) this.kill(pid);
+
+    // The reservation may outlive every journal row (spawn never finished
+    // writing one), so scan the port records for the owner too.
+    const portRows = await this.ctx.storage.list<{ owner?: string }>({ prefix: PORT_CAPABILITY_KEY_PREFIX });
+    for (const [key, record] of portRows) {
+      if (record?.owner === owner) ownedPorts.add(Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length)));
+    }
+    for (const port of ownedPorts) {
+      await releasePortReservation(this.ctx, { owner, port });
+      this.portRegistry.unregister(port);
+    }
+
+    const purged = await this.launchJournal.purgeWhere(
+      (record) => record.recipe.kind === 'worker' && record.recipe.owner === owner,
+    );
+
+    const name = await freeDurableFacetSlot(this.ctx, owner);
+    if (name !== null) {
+      try { deleteFacetStorage(this.ctx, name); } catch { /* already gone */ }
+    }
+    return name !== null || purged > 0 || ownedPorts.size > 0;
   }
 
   get stats() { return this.processes.stats; }

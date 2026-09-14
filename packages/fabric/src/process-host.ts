@@ -78,12 +78,11 @@ import {
   type ResidentSupervisorProps,
 } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
+import { BindingError } from './vendor/errors.js';
 import {
   processes,
-  residentFacetName,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
-import { BindingError } from './vendor/errors.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -148,11 +147,11 @@ class FacetProcessHost implements ProcessHost {
       pid: params.pid,
       writerId: params.writerId,
     };
-    const { slot, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
+    const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
     return {
       ...facet,
       describe: () =>
-        `facet '${residentFacetName(slot)}' (pid ${params.pid})`
+        `facet '${name}' (pid ${params.pid})`
         + ` of session ${this.coordDoId.slice(-12)}`
         + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
@@ -340,10 +339,18 @@ class PeerProcessHost implements ProcessHost {
       consume,
     );
   }
-
   async open(params: ProcessHostParams): Promise<HostedProcess> {
+    if (params.facet) {
+      // A durable application's facet must be a child of the COORDINATOR's
+      // Durable Object — its `app-slot-<n>` row and retained SQLite live in
+      // that DO's storage. A sibling host would own storage the coordinator's
+      // durable-slot book and removeDurableApp cannot reach.
+      throw new Error(
+        'Nimbus: a durable spawn must be facet-hosted on its own coordinator; '
+          + 'the peer substrate cannot serve one',
+      );
+    }
     const placement = await this._place(params.pid);
-    this.tokensInUse.set(params.pid, placement.isolateToken);
     // Minted per open, held only by this coordinator and the peer that hosts
     // the process. The workerKey is derivable from a pid; this is not.
     const webSocketCapability = crypto.randomUUID();
