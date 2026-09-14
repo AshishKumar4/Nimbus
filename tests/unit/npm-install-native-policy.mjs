@@ -190,4 +190,148 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  caseD: dev-only sharp skips, install succeeds');
 }
 
+// ── Case E: a refused dep UNDER a root devDependency is non-fatal ──────
+//
+// vite@8 (rolldown-based) declares lightningcss as a required
+// `dependencies` edge; `npm create vite` lists vite in devDependencies,
+// so the refusal used to exit 1. Required is now end-of-walk: lightningcss
+// is only reachable through dev-only vite, so it skips and vite installs.
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
+  // vite's children pad the second layer to the peer-DO width the harness
+  // fakes; the refused name is what this case asserts.
+  const viteDeps = { lightningcss: '^1.30.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
+  const { installer, log, root } = makeInstaller(
+    { name: 'vite-app', dependencies: ok, devDependencies: { vite: '^8.0.0' } },
+    (name) => {
+      if (name === 'vite') return resolvedResult(name, '8.0.0', { dependencies: viteDeps });
+      if (name === 'lightningcss') {
+        return rejectedResult(
+          'lightningcss',
+          'Native Rust CSS parser; ships platform-specific .node bindings plus a wasm32-wasi-only `lightningcss-wasm` package. workerd has no node:wasi, and the package probes libc through child_process.execSync.',
+          'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
+        );
+      }
+      return resolvedResult(name, '1.0.0');
+    },
+  );
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.deepEqual(result.failed, [], `a refusal under a devDependency does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*lightningcss — /.test(output), `the skip line is still logged:\n${output}`);
+  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), `no closing summary without required refusals:\n${output}`);
+  assert.ok(result.installed.some((entry) => entry.startsWith('vite@')), `vite itself installs (installed=${JSON.stringify(result.installed)})`);
+  assert.ok(root.exists(`${NM}/vite/package.json`), 'vite is on disk');
+  assert.ok(/\bDone!/.test(output), 'the install still succeeds');
+  console.log('  caseE: lightningcss under dev-only vite skips, vite installs, exit 0');
+}
+
+// ── Case F: a refused dep UNDER a root dependency fails, summary names it ─
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  const appDeps = { lightningcss: '^1.30.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
+  const { installer, log, root } = makeInstaller(
+    { name: 'needs-lightningcss', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
+    (name) => {
+      if (name === 'some-app-dep') return resolvedResult(name, '1.0.0', { dependencies: appDeps });
+      if (name === 'lightningcss') {
+        return rejectedResult(
+          'lightningcss',
+          'Native Rust CSS parser; ships platform-specific .node bindings plus a wasm32-wasi-only `lightningcss-wasm` package. workerd has no node:wasi, and the package probes libc through child_process.execSync.',
+          'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
+        );
+      }
+      return resolvedResult(name, '1.0.0');
+    },
+  );
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.ok(result.failed.includes('lightningcss'), `a required refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*lightningcss — .*… try:/.test(output), `the skip line carries the hint:\n${output}`);
+  assert.ok(
+    /1 required package is not supported on Nimbus: lightningcss/.test(output),
+    `the closing summary names it:\n${output}`,
+  );
+  assert.ok(root.exists(`${NM}/some-app-dep/package.json`), 'the required parent still installs');
+  assert.ok(!/\bDone!/.test(output), 'no success line on a partial install');
+  console.log('  caseF: lightningcss under a root dependency fails, summary names it');
+}
+
+// ── Case G: dev-first, required-later — end-of-walk required wins ──────
+//
+// lightningcss is reached in an early layer under dev-only vite AND, two
+// layers later, under root-dependency chain a → b. Classification happens
+// after the walk, so the later required edge upgrades the refusal even
+// though the name was already seen under the dev parent.
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  const viteDeps = { lightningcss: '^1.30.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
+  const aDeps = { b: '1.0.0', 'ac-1': '1.0.0', 'ac-2': '1.0.0', 'ac-3': '1.0.0', 'ac-4': '1.0.0' };
+  // b's layer keeps the peer-DO width after lightningcss is filtered as
+  // already-seen.
+  const bDeps = { lightningcss: '^1.30.0', 'bc-1': '1.0.0', 'bc-2': '1.0.0', 'bc-3': '1.0.0', 'bc-4': '1.0.0', 'bc-5': '1.0.0' };
+  const { installer, log } = makeInstaller(
+    { name: 'mixed-app', dependencies: { ...ok, a: '^1.0.0' }, devDependencies: { vite: '^8.0.0' } },
+    (name) => {
+      if (name === 'vite') return resolvedResult(name, '8.0.0', { dependencies: viteDeps });
+      if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: aDeps });
+      if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: bDeps });
+      if (name === 'lightningcss') {
+        return rejectedResult(
+          'lightningcss',
+          'Native Rust CSS parser; ships platform-specific .node bindings plus a wasm32-wasi-only `lightningcss-wasm` package. workerd has no node:wasi, and the package probes libc through child_process.execSync.',
+          'no Workers-compatible target today — postcss + cssnano (pure JS, untested by Nimbus) cover most lightningcss use cases. For CSS minification only: clean-css (pure JS, untested by Nimbus).',
+        );
+      }
+      return resolvedResult(name, '1.0.0');
+    },
+  );
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.ok(result.failed.includes('lightningcss'), `the later required edge upgrades the refusal (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*lightningcss — /.test(output), `the skip line is logged once at refusal time:\n${output}`);
+  assert.ok(
+    /1 required package is not supported on Nimbus: lightningcss/.test(output),
+    `the closing summary names it:\n${output}`,
+  );
+  console.log('  caseG: dev-first sighting, later required edge — end-of-walk required wins');
+}
+
+// ── Case H: a refused dep under an optionalDependencies subtree ────────
+//
+// optionalDependencies are never required edges, so a `dependencies`
+// edge out of an optional package does not propagate requiredness.
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  const optDeps = { y: '^1.0.0', 'xo-1': '1.0.0', 'xo-2': '1.0.0', 'xo-3': '1.0.0', 'xo-4': '1.0.0' };
+  const yDeps = { sharp: '^0.34.0', 'yc-1': '1.0.0', 'yc-2': '1.0.0', 'yc-3': '1.0.0', 'yc-4': '1.0.0' };
+  const { installer, log, root } = makeInstaller(
+    { name: 'opt-subtree', dependencies: { ...ok, x: '^1.0.0' } },
+    (name) => {
+      if (name === 'x') {
+        const r = resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
+        r.optionalDeps = optDeps;
+        return r;
+      }
+      if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: yDeps });
+      if (name === 'sharp') {
+        return rejectedResult('sharp', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+      }
+      return resolvedResult(name, '1.0.0');
+    },
+  );
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.deepEqual(result.failed, [], `a refusal under an optional subtree does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*sharp — /.test(output), `the skip line is logged:\n${output}`);
+  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), `no closing summary without required refusals:\n${output}`);
+  assert.ok(root.exists(`${NM}/y/package.json`), 'the optional package itself installs');
+  assert.ok(/\bDone!/.test(output), 'the install still succeeds');
+  console.log('  caseH: sharp under an optionalDependencies subtree skips, exit 0');
+}
+
 console.log('npm-install-native-policy: all assertions passed');

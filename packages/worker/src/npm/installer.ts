@@ -635,7 +635,11 @@ export class NpmInstaller {
    *   - X.5-G G1 optional-native silent-skip,
    *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
    *   - W6 swap / warn / reject decisions (top-level enforcement; the
-   *     per-package task ALSO checks these for transitive correctness),
+   *     per-package task ALSO checks these for transitive correctness).
+   *     A package is required iff it is reachable from a required root
+   *     (root `dependencies`, explicit specs) through a chain of
+   *     required edges (`dependencies`, required peers); W6 refusals
+   *     are classified at end of walk.
    *   - cache flushing (one batched putRegistryEntries at end).
    *
    * The per-package task (resolveOnePackumentInFacet) owns ONLY the
@@ -659,17 +663,19 @@ export class NpmInstaller {
     // A name lands here at most once: the frontier marks it `seen` before
     // dispatch, so no later parent re-enqueues it.
     const unresolved = new Map<string, string>();
-    // G2: registry-policy refusals, in walk order. Announced as `[skip]`
-    // lines at record time; the caller decides the exit code.
-    const rejected: RejectedPackage[] = [];
+    // G2: registry-policy refusals, name → reason. Announced as `[skip]`
+    // lines at record time; required-vs-optional is classified at end of
+    // walk, when every required edge has been seen.
+    const refusals = new Map<string, string>();
     const seen = new Set<string>();
     const topLevelNames = new Set<string>(Object.keys(specs));
     const optionalNames = new Set<string>();   // X.5-G G1
     const bestEffortNames = new Set<string>(); // X.5-drizzle
-    // G2: names reached through a required edge (top-level specs except
-    // devDependency-only ones, `dependencies`, required peers). A refused
-    // package is required unless it arrived ONLY through optional edges —
-    // that is what makes the exit code honest.
+    // G2: names reachable from a required root (top-level specs except
+    // devDependency-only ones) through a chain of required edges
+    // (`dependencies`, required peers). A refused package fails the
+    // install iff it lands in this set — that is what makes the exit
+    // code honest.
     const requiredNames = new Set<string>();
     for (const name of Object.keys(specs)) {
       if (!opts.devOnly?.has(name)) requiredNames.add(name);
@@ -837,12 +843,10 @@ export class NpmInstaller {
         else if (res.packumentSource === 'network') r2Losses++;
         if (res.packumentBytesDecoded > 0) totalPackumentsDecoded++;
 
-        // W6 reject: a registry-policy refusal. G2 — never abort the
-        // install. Best-effort optional-peer subtrees skip silently;
-        // packages that arrived only through optional edges (or root
-        // devDependencies) skip the same way; anything reached through
-        // a required edge is recorded for the closing "not supported on
-        // Nimbus" summary. The rest of the tree resolves either way.
+        // W6 reject: a registry-policy refusal — never abort the
+        // install. It is announced now and classified required-vs-
+        // optional at end of walk, when the required-edge closure is
+        // final; best-effort optional-peer subtrees still skip silently.
         if (res.error && res.error.type === 'w6-reject') {
           if (bestEffortNames.has(taskName)) {
             // X.5-drizzle: silent-skip inside best-effort optional-peer
@@ -852,16 +856,10 @@ export class NpmInstaller {
             emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
             continue;
           }
-          const optionalEdge =
-            (optionalNames.has(taskName) || opts.devOnly?.has(taskName) === true) &&
-            !requiredNames.has(taskName);
-          const reason = optionalEdge
-            ? `optional dep not supported on Nimbus: ${res.error.reason}`
-            : res.error.reason;
           const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
-          log(`[resolve-fanout] [skip] ${taskName} — ${reason}${hint}`);
-          emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
-          if (!optionalEdge) rejected.push({ name: taskName, required: true });
+          log(`[resolve-fanout] [skip] ${taskName} — ${res.error.reason}${hint}`);
+          emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason: res.error.reason });
+          refusals.set(taskName, res.error.reason);
           continue;
         }
 
@@ -914,11 +912,11 @@ export class NpmInstaller {
         // Edge extraction.
         const inheritBestEffort = bestEffortNames.has(pkg.name);
         for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
+          // G2: a `dependencies` edge out of a required package is
+          // required — before the seen check, so a name first reached
+          // under a dev/optional parent still upgrades here.
+          if (requiredNames.has(pkg.name)) requiredNames.add(depName);
           if (resolved.has(depName) || seen.has(depName)) continue;
-          // G2: a `dependencies` edge is required — a refusal downstream
-          // fails the install (unless the same name also arrived as an
-          // optional edge first; required wins at record time).
-          requiredNames.add(depName);
           if (inheritBestEffort) bestEffortNames.add(depName);
           queue.push([depName, depRange as string]);
         }
@@ -933,11 +931,11 @@ export class NpmInstaller {
         }
         if (pkg.peerDependencies) {
           for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
-            if (resolved.has(peerName) || seen.has(peerName)) continue;
-            topLevelNames.add(peerName);
             // G2: required peers (versionToResolved already filtered
             // optional-in-meta out of this map) are required edges.
-            requiredNames.add(peerName);
+            if (requiredNames.has(pkg.name)) requiredNames.add(peerName);
+            if (resolved.has(peerName) || seen.has(peerName)) continue;
+            topLevelNames.add(peerName);
             if (inheritBestEffort) bestEffortNames.add(peerName);
             queue.push([peerName, peerRange as string]);
           }
@@ -967,6 +965,14 @@ export class NpmInstaller {
       }
 
       layerN++;
+    }
+
+    // End-of-walk: the required-edge closure is final, so a refusal is
+    // required iff its name is reachable from a required root through
+    // required edges.
+    const rejected: RejectedPackage[] = [];
+    for (const [name] of refusals) {
+      rejected.push({ name, required: requiredNames.has(name) });
     }
 
     // End-of-walk: flush all cache writes in one RPC-equivalent call
