@@ -49,6 +49,16 @@ try {
     /carried no package.json/,
   );
   assert.equal(vfs.exists('/incomplete/package.json'), false);
+  // A second manifest in one archive is malformed input, not an overwrite.
+  await assert.rejects(
+    writeTarballStream(
+      new Blob([archive([['package.json', manifest], ['cli.js', 'x'], ['package.json', manifest]])]).stream(),
+      '/dup',
+      target,
+    ),
+    /two package\.json entries/,
+  );
+  assert.equal(vfs.exists('/dup/package.json'), false, 'a rejected duplicate leaves no manifest');
   vfs.writeFile('/blocked', 'not a directory');
   await assert.rejects(writeTarballStream(new Blob([archive(entries)]).stream(), '/blocked', target));
 

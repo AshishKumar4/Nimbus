@@ -35,7 +35,8 @@ const PACKAGE_MANIFEST = 'package.json';
  * Stream a gzipped npm archive into a package directory. Entry names are
  * already canonical and prefix-stripped by streamTarEntries. Hold only the
  * current entry and the manifest; write the manifest last so a failed install
- * is not mistaken for a complete package on retry. Filesystem failures reject.
+ * is not mistaken for a complete package on retry. A second manifest in one
+ * archive is a malformed package, not an overwrite. Filesystem failures reject.
  */
 export async function writeTarballStream(
   body: ReadableStream<Uint8Array>,
@@ -54,6 +55,9 @@ export async function writeTarballStream(
   );
   for await (const entry of entries) {
     if (entry.name === PACKAGE_MANIFEST) {
+      if (manifest !== null) {
+        throw new Error(`tarball for ${targetDir} carried two ${PACKAGE_MANIFEST} entries`);
+      }
       manifest = entry.data;
       continue;
     }

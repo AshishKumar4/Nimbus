@@ -1269,10 +1269,10 @@ export class NimbusSession extends CloudflareDurableObject {
     // construction near line 2058 — registry passed as ctor arg there).
     const cmdRegistryAdapter = {
       // Consult the live shell registry FIRST so dynamically-registered
-      // commands (registerUnixCommands / registerGitCommands / npm /
-      // wrangler etc.) are seen even if they're not in the static
-      // _CP_PURE_BUILTIN allow-list. Falls back to the static
-      // facet-direct table for known facet-only commands. Returns null
+      // commands (registerUnixCommands / git / npm / wrangler etc.) are seen
+      // even if they're not in the static _CP_PURE_BUILTIN allow-list. Falls
+      // back to the static facet-direct table for known facet-only commands.
+      // Returns null
       // (→ exit 127) for everything unknown.
       resolve: (name: string) => {
         const commandName = normalizeCpCommandName(name);

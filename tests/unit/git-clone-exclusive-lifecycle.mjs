@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { registerGitCommands } from '../../packages/worker/src/git/commands.ts';
+import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
 function registerCloneHarness() {
@@ -37,7 +37,9 @@ function registerCloneHarness() {
       waitUntilPromises.push(promise);
     },
   };
-  registerGitCommands(registry, vfs, doCtx, {});
+  // Same registration shape init.ts uses — the module is already loaded here,
+  // so the lazy import init.ts needs is simply the handler itself.
+  registry.register('git', (ctx) => runGitCommand(ctx, vfs, doCtx, {}));
   assert.equal(typeof gitCommand, 'function');
   return {
     gitCommand,
@@ -122,13 +124,15 @@ function commandContext(args) {
       if (name === 'git') registry.gitCommand = command;
     },
   };
-  registerGitCommands(registry, {
+  const branchVfs = {
     as() { return {}; },
     acquireExclusiveMutation(path) {
       return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
     },
     releaseExclusiveMutation() {},
-  }, { id: { toString: () => 'do-branch-test' }, waitUntil() {} }, env);
+  };
+  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {} };
+  registry.register('git', (ctx) => runGitCommand(ctx, branchVfs, branchCtx, env));
   const exitCode = await registry.gitCommand(commandContext([
     'clone',
     '--branch', 'dev',
