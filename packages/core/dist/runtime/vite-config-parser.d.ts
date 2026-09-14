@@ -19,12 +19,10 @@ export interface ParsedViteConfig {
     plugins?: string[];
 }
 export declare function parseViteConfigSource(source: string): ParsedViteConfig;
-/**
- * Plugin names from a parsed config that the built-in server cannot run —
- * every entry except the built-in React plugins. Framework scaffolds
- * (SvelteKit → `@sveltejs/kit/vite`, Vue → `@vitejs/plugin-vue`, Solid,
- * Astro) land here, as do inline/unresolved plugin expressions: the
- * built-in path evaluates no plugin at all.
- */
-export declare function unsupportedVitePlugins(config: ParsedViteConfig): string[];
+/** Plugins a parsed config declares that the built-in build must refuse:
+ *  the framework denylist only — everything else gets a warning and tries. */
+export declare function viteBuildBlockingPlugins(config: ParsedViteConfig): string[];
+/** Plugins a parsed config declares that the built-in server does not
+ *  evaluate but that are not known-handled — the dev/build warning list. */
+export declare function unhandledVitePlugins(config: ParsedViteConfig): string[];
 //# sourceMappingURL=vite-config-parser.d.ts.map

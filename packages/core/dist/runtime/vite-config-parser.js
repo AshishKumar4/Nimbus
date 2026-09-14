@@ -310,25 +310,58 @@ function pluginExpressionNames(node, imports, depth = 0) {
     }
 }
 /**
- * Vite plugin specifiers the built-in (`cirrus`) dev/build path can run
- * itself: the React plugins are inert under Cirrus because JSX/TSX
- * transforms (incl. the automatic runtime) are already built in — the
- * plugin's contribution is fast-refresh, which the shim does not need.
+ * Vite plugins the built-in (`cirrus`) path already handles itself — they
+ * are skipped by every gate below and produce no warning:
+ *
+ *  - `@vitejs/plugin-react*` — inert: the built-in server compiles JSX/TSX
+ *    (incl. the automatic runtime) natively; the plugin's contribution is
+ *    fast-refresh, which the shim does not need.
+ *  - `@cloudflare/vite-plugin` — its whole job is booting a local workerd
+ *    sidecar (miniflare). Inside Nimbus the session already IS workerd, so
+ *    there is nothing to delegate; the SPA the config also serves is plain
+ *    Vite and works as-is. (The plugin package itself is a native-swap at
+ *    install time — facets/wasm-swap-registry.ts — so configs that name it
+ *    still run: the plugin object is simply never evaluated.)
+ *  - `@tailwindcss/vite` — Tailwind v4's CSS-first transform is covered by
+ *    the dev server's Tailwind pipeline (@tailwind stripping, @apply
+ *    expansion, vendored Play CDN inject — vite-dev-server.ts), so the
+ *    plugin is redundant.
  */
-const CIRRUS_BUILTIN_VITE_PLUGINS = {
+const CIRRUS_KNOWN_VITE_PLUGINS = {
     '@vitejs/plugin-react': true,
     '@vitejs/plugin-react-swc': true,
     '@vitejs/plugin-react-oxc': true,
+    '@cloudflare/vite-plugin': true,
+    '@tailwindcss/vite': true,
 };
 /**
- * Plugin names from a parsed config that the built-in server cannot run —
- * every entry except the built-in React plugins. Framework scaffolds
- * (SvelteKit → `@sveltejs/kit/vite`, Vue → `@vitejs/plugin-vue`, Solid,
- * Astro) land here, as do inline/unresolved plugin expressions: the
- * built-in path evaluates no plugin at all.
+ * Framework plugins whose `plugins: [...]` presence means the project is
+ * not a plain-Vite app at all: SvelteKit/Vue/Solid/Nuxt compile `.svelte`/
+ * `.vue`/`src/routes` module graphs the built-in esbuild path cannot
+ * produce. `vite build` refuses these (any other entry layout would die
+ * deep in esbuild on a confusing error); dev only warns.
  */
-export function unsupportedVitePlugins(config) {
-    return (config.plugins || []).filter((name) => !CIRRUS_BUILTIN_VITE_PLUGINS[name]);
+const CIRRUS_FRAMEWORK_VITE_PLUGINS = {
+    '@sveltejs/kit/vite': true,
+    '@sveltejs/vite-plugin-svelte': true,
+    '@vitejs/plugin-vue': true,
+    'vite-plugin-solid': true,
+    'astro': true,
+    'astrojs-compiler-sync': true,
+    '@astrojs/renderer-preact': true,
+};
+function isFrameworkPlugin(name) {
+    return CIRRUS_FRAMEWORK_VITE_PLUGINS[name] === true || name.startsWith('@nuxt/');
+}
+/** Plugins a parsed config declares that the built-in build must refuse:
+ *  the framework denylist only — everything else gets a warning and tries. */
+export function viteBuildBlockingPlugins(config) {
+    return (config.plugins || []).filter(isFrameworkPlugin);
+}
+/** Plugins a parsed config declares that the built-in server does not
+ *  evaluate but that are not known-handled — the dev/build warning list. */
+export function unhandledVitePlugins(config) {
+    return (config.plugins || []).filter((name) => !CIRRUS_KNOWN_VITE_PLUGINS[name] && !isFrameworkPlugin(name));
 }
 function isJsonStringifyCall(node) {
     const callee = nodeProp(node, 'callee');

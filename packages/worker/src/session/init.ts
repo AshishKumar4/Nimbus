@@ -53,7 +53,7 @@ import {
   resolveRuntimeScriptPath,
   type RuntimeSpec,
 } from '@nimbus-sh/core/runtime/runtime-registry.js';
-import { parseViteConfigSource, unsupportedVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
+import { parseViteConfigSource, unhandledVitePlugins, viteBuildBlockingPlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
@@ -1214,20 +1214,29 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
       // ── vite build ──
       if (args[0] === 'build') {
         // Capability gate: the built-in builder is esbuild underneath and
-        // never evaluates vite.config `plugins`. A framework project
-        // (SvelteKit, Vue, Solid, Astro, …) would otherwise die deep in
-        // esbuild on an entry point that does not exist or on framework
-        // syntax the JS loader cannot parse — say what is actually wrong.
-        const needsPlugins = unsupportedVitePlugins(viteConfig);
-        if (needsPlugins.length) {
+        // never evaluates vite.config `plugins`. Only framework plugins
+        // (SvelteKit, Vue, Solid, Nuxt, Astro) mean the project is not a
+        // plain-Vite app — they would die deep in esbuild on an entry point
+        // that does not exist or framework syntax the JS loader cannot
+        // parse, so say what is actually wrong. Every other plugin is a
+        // warning, not a refusal.
+        const blockingPlugins = viteBuildBlockingPlugins(viteConfig);
+        if (blockingPlugins.length) {
           ctx.stderr.write(
             '\x1b[31m✘\x1b[0m vite build: this project needs Vite plugins the built-in build server cannot run' +
-            ' (' + needsPlugins.join(', ') + ').\n' +
+            ' (' + blockingPlugins.join(', ') + ').\n' +
             '  The built-in Vite server supports plain Vite projects (React, JSX/TS, CSS, and asset imports);\n' +
             '  framework projects like SvelteKit, Vue, Solid, or Astro require a real Vite —\n' +
             '  Nimbus does not run one for `vite build` yet.\n'
           );
           return 1;
+        }
+        const buildSkippedPlugins = unhandledVitePlugins(viteConfig);
+        if (buildSkippedPlugins.length) {
+          ctx.stderr.write(
+            '\x1b[33m!\x1b[0m vite build: skipping plugins the built-in build cannot run' +
+            ' (' + buildSkippedPlugins.join(', ') + '); output is the plain-Vite bundle.\n'
+          );
         }
 
         if (!self.esbuildService) self.esbuildService = new EsbuildService(kernelFs);
@@ -1618,21 +1627,21 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
         }
       }
 
-      // Capability gate: the built-in dev server runs no vite.config
-      // `plugins`. A framework project would boot and then serve raw
-      // `.svelte`/`.vue` sources the browser cannot parse — refuse with the
-      // honest diagnostic instead. (Opted-in `nimbusDevServer: 'real'`
-      // sessions already returned above; they run the real vite package.)
-      const devNeedsPlugins = unsupportedVitePlugins(viteConfig);
-      if (devNeedsPlugins.length) {
+      // The built-in dev server evaluates no vite.config `plugins`, but it
+      // never refuses on them: plain-Vite apps routinely declare plugins
+      // the shim covers (react, cloudflare, tailwind) or doesn't need
+      // (watch/reload hooks). One warning line for the plugins it can't
+      // run — frameworks land there too: their pages won't render, but the
+      // server itself still serves, which is the pre-diagnostic behavior.
+      const devSkipped = [
+        ...viteBuildBlockingPlugins(viteConfig),
+        ...unhandledVitePlugins(viteConfig),
+      ];
+      if (devSkipped.length) {
         ctx.stderr.write(
-          '\x1b[31m✘\x1b[0m vite: this project needs Vite plugins the built-in dev server cannot run' +
-          ' (' + devNeedsPlugins.join(', ') + ').\n' +
-          '  The built-in Vite server supports plain Vite projects (React, JSX/TS, CSS, and asset imports);\n' +
-          '  framework projects like SvelteKit, Vue, Solid, or Astro require a real Vite —\n' +
-          '  set nimbusDevServer: \'real\' in vite.config to try the experimental real-vite backend.\n'
+          '\x1b[33m!\x1b[0m vite: plugins are not evaluated by the built-in dev server' +
+          ' (' + devSkipped.join(', ') + '); serving the plain-Vite app.\n'
         );
-        return 1;
       }
 
 
