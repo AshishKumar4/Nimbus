@@ -35,7 +35,8 @@
 // needs: which package could not be run, and that a platform/native
 // constraint is why.
 
-import { mintSession, Terminal, sleep, stripAnsi, deleteSession, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
+import { run } from './_run.mjs';
 
 const DIR = '/home/user/tsc-native-probe';
 /** `tsc` answers in ~3s today. A minute is generous and still bounded. */
@@ -51,28 +52,16 @@ function withDeadline(promise, ms) {
   return Promise.race([promise, new Promise((r) => setTimeout(r, ms))]);
 }
 
-async function run(t, line, timeoutMs) {
-  const startedAt = Date.now();
-  try {
-    const r = await t.run(line, timeoutMs);
-    return { ok: true, elapsed: r.elapsed, output: stripAnsi(r.output) };
-  } catch (e) {
-    return { ok: false, elapsed: Date.now() - startedAt, output: stripAnsi(t.buf), error: e.message };
-  }
-}
-
 const sid = await mintSession();
 console.log(`[bin-tsc-native] sid=${sid} BASE=${BASE}`);
 
-const checks = [];
-const check = (name, ok, detail = '') => checks.push({ name, ok, detail });
-const findings = { sid, base: BASE, steps: {} };
+const a = makeAsserter('bin-tsc-native');
+const check = a.check;
 
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(1_000);
-  await t.waitForPrompt(30_000).catch(() => {});
+  await t.waitForPrompt(30_000);
 
   await run(t, `mkdir -p ${DIR}`, 15_000);
   await run(t, `cd ${DIR}`, 10_000);
@@ -83,7 +72,6 @@ try {
   );
 
   const install = await run(t, 'npm i typescript', 300_000);
-  findings.steps.install = { ok: install.ok, elapsed: install.elapsed, tail: install.output.slice(-400) };
 
   const shim = await run(t, `cat ${DIR}/node_modules/.bin/tsc`, 20_000);
   const shimPresent = shim.ok && /typescript\/bin\/tsc/.test(shim.output);
@@ -97,12 +85,9 @@ try {
     30_000,
   );
   const installed = /INSTALLED-(\d+\.\d+\.\d+[^\s]*)/.exec(ver.output)?.[1] ?? '(unknown)';
-  findings.installedVersion = installed;
 
   // ── the invocation must come back, non-zero, with a reason ───────────
   const invoke = await run(t, 'tsc --version', BIN_TIMEOUT_MS);
-  findings.steps.invoke = { ok: invoke.ok, elapsed: invoke.elapsed, tail: invoke.output.slice(-800) };
-
   check(`\`tsc\` returns within ${BIN_TIMEOUT_MS / 1000}s instead of hanging`, invoke.ok,
     invoke.ok ? `${invoke.elapsed}ms (typescript@${installed})`
       : `no prompt after ${invoke.elapsed}ms — an unrunnable native binary presented as a hang; ` +
@@ -113,7 +98,7 @@ try {
   // so; this one has nothing left to assert.
   const major = Number.parseInt(installed, 10);
   if (Number.isFinite(major) && major < 7) {
-    findings.note = `npm latest is typescript@${installed}, a JavaScript compiler; bin-tsc covers it`;
+    console.log(`  note: npm latest is typescript@${installed}, a JavaScript compiler; bin-tsc covers it`);
   } else if (invoke.ok) {
     const out = invoke.output;
     const nonZero = /exited with code [1-9]/.test(out) || /code=[1-9]/.test(out);
@@ -128,20 +113,12 @@ try {
         : `namesPackage=${namesPackage} namesCause=${namesCause} output=${JSON.stringify(out.slice(-500))}`);
   }
 } catch (e) {
-  if (checks.length === 0) check('probe ran', false, e.message);
-  findings.aborted = e.message;
+  if (a.pass + a.fail === 0) check('probe ran', false, e.message);
 } finally {
   await withDeadline(t.close().catch(() => {}), 10_000);
   await withDeadline(deleteSession(sid).catch(() => {}), 30_000);
 }
 
 clearTimeout(wallClock);
-console.log(JSON.stringify(findings, null, 2));
-
-let pass = 0;
-for (const { name, ok, detail } of checks) {
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `\n          ${detail}` : ''}`);
-  if (ok) pass++;
-}
-console.log(`[bin-tsc-native] ${pass === checks.length && checks.length > 0 ? 'passing' : 'failing'} — ${pass}/${checks.length} checks`);
-process.exit(pass === checks.length && checks.length > 0 ? 0 : 1);
+const { pass, fail } = a.summary();
+process.exit(fail === 0 && pass > 0 ? 0 : 1);

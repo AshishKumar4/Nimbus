@@ -35,7 +35,8 @@
 // the elapsed time, never a hang — that failure mode is the one this
 // probe exists to catch.
 
-import { mintSession, Terminal, sleep, stripAnsi, deleteSession, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
+import { run } from './_run.mjs';
 
 const TS_VERSION = '5.7.3';
 const DIR = '/home/user/tsc-probe';
@@ -52,21 +53,6 @@ function withDeadline(promise, ms, label) {
   ]);
 }
 
-/** Bounded run. Never throws: a timeout is an outcome, not a crash. */
-async function run(t, line, timeoutMs) {
-  const startedAt = Date.now();
-  try {
-    const r = await t.run(line, timeoutMs);
-    return { ok: true, elapsed: r.elapsed, output: stripAnsi(r.output) };
-  } catch (e) {
-    return {
-      ok: false,
-      elapsed: Date.now() - startedAt,
-      output: stripAnsi(t.buf),
-      error: e.message,
-    };
-  }
-}
 
 const PKG_JSON = JSON.stringify({ name: 'tsc-probe', version: '1.0.0', private: true });
 const TSCONFIG = JSON.stringify({
@@ -102,18 +88,13 @@ const wallClock = setTimeout(() => {
 }, WALL_CLOCK_MS);
 
 const sid = await mintSession();
-console.log(`[bin-tsc] sid=${sid} BASE=${BASE}`);
-
-const checks = [];
-const check = (name, ok, detail = '') => checks.push({ name, ok, detail });
-const findings = { sid, base: BASE, tsVersion: TS_VERSION, steps: {} };
+const a = makeAsserter('bin-tsc');
+const check = a.check;
 
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(1_000);
-  await t.waitForPrompt(30_000).catch(() => {});
-
+  await t.waitForPrompt(30_000);
   // ── Setup ────────────────────────────────────────────────────────────
   await run(t, `mkdir -p ${DIR}/src`, 15_000);
   await run(t, `cd ${DIR}`, 10_000);
@@ -131,7 +112,6 @@ try {
   }
 
   const install = await run(t, `npm i typescript@${TS_VERSION}`, 300_000);
-  findings.steps.install = { ok: install.ok, elapsed: install.elapsed, tail: install.output.slice(-400) };
 
   const shim = await run(t, `cat ${DIR}/node_modules/.bin/tsc`, 20_000);
   const shimPresent = shim.ok && /typescript\/bin\/tsc/.test(shim.output);
@@ -144,7 +124,6 @@ try {
 
   // ── 1. the compiler answers at all ───────────────────────────────────
   const version = await run(t, 'tsc --version', 90_000);
-  findings.steps.version = { ok: version.ok, elapsed: version.elapsed, tail: version.output.slice(-400) };
   const versionOk = version.ok && new RegExp(`Version\\s+${TS_VERSION.replace(/\./g, '\\.')}`).test(version.output);
   check('`tsc --version` prints the installed version', versionOk,
     versionOk ? `${version.elapsed}ms`
@@ -152,10 +131,8 @@ try {
 
   // ── 2. the compiler EMITS ────────────────────────────────────────────
   const build = await run(t, 'tsc -p .', 120_000);
-  findings.steps.build = { ok: build.ok, elapsed: build.elapsed, tail: build.output.slice(-600) };
 
   const emitted = await run(t, `cat ${DIR}/dist/index.js`, 30_000);
-  findings.steps.emitted = { ok: emitted.ok, tail: emitted.output.slice(-600) };
   // The marker proves this is compiler output; `exports.greet` proves the
   // CommonJS module target was applied rather than the source copied.
   const emitOk = emitted.ok
@@ -175,27 +152,17 @@ try {
     30_000,
   );
   const diag = await run(t, 'tsc -p . --noEmit', 120_000);
-  findings.steps.diagnostic = { ok: diag.ok, elapsed: diag.elapsed, tail: diag.output.slice(-600) };
   const diagOk = diag.ok && /error TS2322/.test(diag.output);
   check('`tsc --noEmit` reports the real diagnostic for a type error', diagOk,
     diagOk ? `${diag.elapsed}ms`
       : `after ${diag.elapsed}ms: ${diag.error ? `${diag.error}; ` : ''}output=${JSON.stringify(diag.output.slice(-400))}`);
 } catch (e) {
-  if (checks.length === 0) check('probe ran', false, e.message);
-  findings.aborted = e.message;
+  if (a.pass + a.fail === 0) check('probe ran', false, e.message);
 } finally {
   await withDeadline(t.close().catch(() => {}), 10_000, 'close');
   await withDeadline(deleteSession(sid).catch(() => {}), 30_000, 'delete');
 }
 
 clearTimeout(wallClock);
-console.log(JSON.stringify(findings, null, 2));
-
-let pass = 0;
-for (const { name, ok, detail } of checks) {
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `\n          ${detail}` : ''}`);
-  if (ok) pass++;
-}
-const total = checks.length;
-console.log(`[bin-tsc] ${pass === total && total > 0 ? 'passing' : 'failing'} — ${pass}/${total} checks`);
-process.exit(pass === total && total > 0 ? 0 : 1);
+const { pass, fail } = a.summary();
+process.exit(fail === 0 && pass > 0 ? 0 : 1);

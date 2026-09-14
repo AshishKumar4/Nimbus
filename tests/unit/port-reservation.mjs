@@ -18,41 +18,20 @@ import {
   reservePort,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
+import { createFacetCtx } from './facet-host-harness.mjs';
 
+// The store is the harness's facet ctx: serialized transactions over a
+// private snapshot, commits on success only — the same contract the DO
+// storage adapter gives production. `rows` is its backing map.
 const rows = new Map();
+const ctx = createFacetCtx({ facets: undefined }, 'do-test', rows);
 let transactions = 0;
-let queue = Promise.resolve();
-// A serialized transaction: each body runs alone on a private copy of the
-// committed rows, commits that copy only when it resolves, and always frees
-// the queue. get/list outside a transaction answer only committed state.
-const transaction = (body) => {
-  const run = queue.then(() => {
-    transactions += 1;
-    const copy = new Map(rows);
-    const view = {
-      get: async (k) => copy.get(k),
-      put: async (k, v) => { copy.set(k, v); },
-      delete: async (k) => copy.delete(k),
-      list: async ({ prefix }) => new Map([...copy].filter(([k]) => k.startsWith(prefix))),
-    };
-    const result = body(view);
-    return result.then((value) => {
-      rows.clear();
-      for (const [k, v] of copy) rows.set(k, v);
-      return value;
-    });
-  });
-  queue = run.then(() => undefined, () => undefined);
-  return run;
+const baseTransaction = ctx.storage.transaction;
+ctx.storage.transaction = (body) => {
+  transactions += 1;
+  return baseTransaction(body);
 };
-const storage = {
-  get: async (key) => rows.get(key),
-  put: async (key, value) => { rows.set(key, value); },
-  delete: async (key) => rows.delete(key),
-  list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
-  transaction,
-};
-const ctx = { storage };
+const storage = ctx.storage;
 // A store that offers no transaction must be refused, never fallen back into.
 const noTxnStorage = {
   get: async (key) => rows.get(key),
