@@ -124,4 +124,26 @@ const cacheEntry = (name, version) => ({
   console.log('  prerelease pins resolve correctly on the cache and network paths');
 }
 
+// ── 4. the cache fast-path never reduces a range to its base version ────────
+//
+// `^3.0.0` used to be stripped to `3.0.0` and answered by a cached 3.0.0
+// even with 3.0.1 sitting beside it — the second install in a session
+// came back with lower versions than the first (measured: totalist,
+// readdirp, mrmime, milliparsec, dot-prop, eta).
+{
+  const res = await resolveOnePackumentInFacet(
+    spec({ name: 'totalist', range: '^3.0.0', cachedEntries: [cacheEntry('totalist', '3.0.1'), cacheEntry('totalist', '3.0.0'), cacheEntry('totalist', '2.0.0')] }),
+    envReturning({ json: null, source: 'network', status: 500 }),
+  );
+  assert.equal(res.error, undefined, JSON.stringify(res.error));
+  assert.equal(res.pkg?.version, '3.0.1', 'the highest cached version satisfying the range wins');
+  assert.equal(res.packumentSource, 'cache-hit');
+  const exact = await resolveOnePackumentInFacet(
+    spec({ name: 'totalist', range: '3.0.0', cachedEntries: [cacheEntry('totalist', '3.0.1'), cacheEntry('totalist', '3.0.0')] }),
+    envReturning({ json: null, source: 'network', status: 500 }),
+  );
+  assert.equal(exact.pkg?.version, '3.0.0', 'a bare exact version still resolves to itself');
+  console.log('  the cache fast-path picks the highest cached version satisfying the range');
+}
+
 console.log('npm-resolve-transitive-honesty: ok');

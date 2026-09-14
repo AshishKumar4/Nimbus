@@ -363,20 +363,20 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
   }
 
-  // 3. cachedHit fast-path.
+  // 3. cachedHit fast-path. The pick over the cached versions is the same
+  //    RESOLVE_VERSION the packument path uses — a range is never reduced
+  //    to its base version. It used to be: `^3.0.0` was stripped to `3.0.0`
+  //    and answered by a cached 3.0.0 even with 3.0.1 sitting beside it,
+  //    which is how the second install in a session came back with lower
+  //    versions than the first (measured: totalist, readdirp, mrmime,
+  //    milliparsec, dot-prop, eta on json-server@1.0.0-beta.15).
   const cached = (() => {
     const entries = spec.cachedEntries || [];
     if (entries.length === 0) return null;
-    const cleanRange = (request.range || '').replace(/^[~^>=<\s]+/, '');
-    if (/^\d+\.\d+\.\d+$/.test(cleanRange)) {
-      const exact = entries.find((e) => e.name === request.installName && e.version === cleanRange);
-      if (exact) return exact;
-    }
     const candidates = entries.filter((e) => e.name === request.installName);
     if (candidates.length === 0) return null;
-    const versions = candidates.map((e) => e.version);
     // @ts-ignore — preamble.
-    const picked = RESOLVE_VERSION(versions, request.range);
+    const picked = RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
     if (!picked) return null;
     return candidates.find((e) => e.version === picked) || null;
   })();
