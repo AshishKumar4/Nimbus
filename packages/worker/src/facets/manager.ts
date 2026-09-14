@@ -40,6 +40,7 @@ import {
   type PortVisibility,
 } from '../session/port-capability.js';
 import { deriveResidentOwner, isDerivedOwner } from './resident-identity.js';
+import { RESIDENT_OWNER_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
@@ -3849,6 +3850,7 @@ export class FacetManager {
    * record of why `expose(pid)` refuses it.
    */
   private ephemeralPids = new Map<number, string>();
+  private residentClaims = new Map<number, string>();
   private static readonly RESIDENCY_PROFILE_MAX_ENTRIES = 16;
   /**
    * A program that reads a directory of data files misses once per file, so
@@ -3928,6 +3930,7 @@ export class FacetManager {
    */
   private async _onResidentTerminal(pid: number): Promise<void> {
     this.ephemeralPids.delete(pid);
+    await this._releaseResidentClaim(pid);
     if (!this.launchJournal.has(pid)) return;
     const entry = this.processes.get(pid);
     const key = `${FENCED_WORK_KEY_PREFIX}${pid}`;
@@ -3959,6 +3962,39 @@ export class FacetManager {
     // backoff; a row that is gone is owed nothing.
     if (!(await this.launchJournal.rows()).has(key)) return;
     await this.launchJournal.drive(key, { ...row, restarts: restarts + 1 });
+  }
+
+  /** Claim identity AND write its recovery row in one serializable storage transaction. */
+  private async _claimResident(record: ResidentLaunchRecord): Promise<number | null> {
+    const owner = residentOwner(record);
+    if (owner === undefined) throw new Error('resident launch has no owner');
+    const duplicate = await this.ctx.storage.transaction(async (txn) => {
+      const key = `${RESIDENT_OWNER_KEY_PREFIX}${owner}`;
+      const held = await txn.get<number>(key);
+      if (held !== undefined && held !== record.pid && held > this.processes.pidBase
+        && this.processes.get(held)?.state === 'running') return held;
+      await txn.put(key, record.pid);
+      await txn.put(`${FENCED_WORK_KEY_PREFIX}${record.pid}`, record);
+      return null;
+    });
+    if (duplicate === null) {
+      this.residentClaims.set(record.pid, owner);
+      // Adopt into FencedWork's per-instance lifetime bookkeeping and cross
+      // its sync barrier before booting. The winning row already exists.
+      await this.launchJournal.journal(record);
+    }
+    return duplicate;
+  }
+
+  private async _releaseResidentClaim(pid: number): Promise<void> {
+    const owner = this.residentClaims.get(pid);
+    if (owner === undefined) return;
+    this.residentClaims.delete(pid);
+    await this.ctx.storage.transaction(async (txn) => {
+      const key = `${RESIDENT_OWNER_KEY_PREFIX}${owner}`;
+      if (await txn.get(key) === pid) await txn.delete(key);
+    });
+    await this.ctx.storage.sync();
   }
 
   /**
@@ -5415,10 +5451,24 @@ export class FacetManager {
         owner = declared.owner;
       }
     }
-    const duplicateOf = [...(await this.launchJournal.rows()).values()].find((row) =>
-      row.pid !== entry.pid && residentOwner(row) === owner
-      && row.pid > this.processes.pidBase && this.processes.get(row.pid)?.state === 'running');
-    const ephemeral = duplicateOf !== undefined;
+    const initial: ResidentLaunchRecord = {
+      pid: entry.pid, command, attempt, phase: 'starting', owner,
+      recipe: { kind: 'node', code, opts: { ...opts, skipSpawn: undefined, callerPid: undefined } },
+      restart: residentRestartPolicy(opts.env),
+      ...(lineage.restarts !== undefined ? { restarts: lineage.restarts } : {}),
+    };
+    let duplicateOf: number | null;
+    try {
+      duplicateOf = await this._claimResident(initial);
+      this._assertLaunchStillOwned(entry.pid);
+    } catch (e: unknown) {
+      pacer.settle();
+      await this._releaseResidentClaim(entry.pid);
+      await this.launchJournal.release(entry.pid);
+      this._failLaunch(entry.pid, 'long-running node launch failed: ' + errorMessage(e));
+      throw e;
+    }
+    const ephemeral = duplicateOf !== null;
     // The reservation the identity holds, if any: its port is what `$PORT`
     // is set to and what the facet's durable slot is bound for, so the
     // resident's `ctx.storage` persists across resets the way a durable
@@ -5437,7 +5487,7 @@ export class FacetManager {
       this.ephemeralPids.set(entry.pid, owner);
       this.hooks.notify?.(
         `\x1b[2m[nimbus: second instance of "${(opts.argv ?? []).join(' ') || command}" `
-        + `is not the durable one — pid ${duplicateOf.pid} keeps the identity]\x1b[0m\r\n`,
+        + `is not the durable one — pid ${duplicateOf} keeps the identity]\x1b[0m\r\n`,
       );
     }
     const record: ResidentLaunchRecord = {

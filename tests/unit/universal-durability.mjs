@@ -237,6 +237,24 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
 // ── 3. a concurrent duplicate is ephemeral ──────────────────────────────────
 {
+  const { fm, ctx, notices } = setup();
+  const opts = { command: 'node pair.js', argv: ['/home/user/pair.js'], cwd: '/home/user' };
+  const pair = await Promise.all([fm.spawnNode(SERVER, opts), fm.spawnNode(SERVER, opts)]);
+  const rows = await journalRows(ctx);
+  assert.equal(rows.length, 1, 'simultaneous launches cannot both win the owner claim');
+  const owner = await deriveResidentOwner(opts.cwd, opts.argv);
+  assert.equal(await ctx.storage.get(`resident-owner:${owner}`), rows[0].pid);
+  const duplicate = pair.find(({ pid }) => pid !== rows[0].pid);
+  assert.equal((await fm.residentIdentity(duplicate.pid)).ephemeral, true);
+  assert.equal(notices.filter((line) => line.includes('not the durable one')).length, 1);
+  fm.kill(duplicate.pid);
+  await Promise.all(ctx.waited);
+  assert.equal(await ctx.storage.get(`resident-owner:${owner}`), rows[0].pid, 'duplicate terminal cannot release winner');
+  fm.kill(rows[0].pid);
+  await Promise.all(ctx.waited);
+  assert.equal(await ctx.storage.get(`resident-owner:${owner}`), undefined, 'winner terminal releases its claim');
+}
+{
   const { fm, ctx, self, notices } = setup();
   const a1 = await fm.spawnNode(SERVER, {
     command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', port: 20710,
