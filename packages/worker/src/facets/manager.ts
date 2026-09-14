@@ -596,23 +596,10 @@ const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
-for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  // Precompile JS modules AND extensionless CJS entries (bin scripts and
-  // shims). workerd forbids new Function at request time, so anything not
-  // precompiled here surfaces the misleading "file was not pre-bundled".
-  // .json is data; skip it (it loads via JSON.parse, not as a function).
-  const __base = __p.slice(__p.lastIndexOf("/") + 1);
-  const __dot = __base.lastIndexOf(".");
-  const __ext = __dot > 0 ? __base.slice(__dot) : "";
-  if (__ext === ".js" || __ext === ".mjs" || __ext === ".cjs" || __ext === "") {
-    if (typeof __c !== "string") continue;
-    try {
-      __compiledModules.set(__p, __mkCompiledFn(__c));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
-  }
-}
+// Precompile JS modules AND extensionless CJS entries (bin scripts and
+// shims). workerd forbids new Function at request time, so anything not
+// precompiled here surfaces the misleading "file was not pre-bundled".
+${BUNDLE_PRECOMPILE_LOOP}
 
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
@@ -899,15 +886,7 @@ const __compileFailures = new Map();
 // \`new Function\` throws "Code generation from strings disallowed" in the DO
 // constructor and at request time — so the require closure must be compiled
 // here, off the module map. That is why code cannot come from the store.
-for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
-    try {
-      __compiledModules.set(__p, __mkCompiledFn(__c));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
-  }
-}
+${BUNDLE_PRECOMPILE_LOOP}
 
 ${FACET_RESIDENT_STORE_SOURCE}
 
@@ -1612,8 +1591,10 @@ export function encodedBundleSize(bundle: FacetVfsBundle, manifest: Record<strin
 function describeBundleCells(cells: BundleCellSize[], limit = 8): string {
   const shown = [...cells].sort((a, b) => b[1] - a[1]).slice(0, limit);
   const rest = cells.length - shown.length;
-  return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ')
-    + (rest > 0 ? `, +${rest} more` : '');
+  return shown.map(([path, bytes]) => {
+    const source = compiledCellPath(path);
+    return source === null ? `${path} (${bytes} bytes)` : `${source} [compiled] (${bytes} bytes)`;
+  }).join(', ') + (rest > 0 ? `, +${rest} more` : '');
 }
 
 /**
@@ -2017,7 +1998,7 @@ function buildVfsMetadata(
   manifest: Record<string, string[]>,
   bundle: FacetVfsBundle,
 ): Record<string, FacetVfsMetadata> {
-  const paths = new Set(Object.keys(bundle));
+  const paths = new Set(Object.keys(bundle).filter((path) => compiledCellPath(path) === null));
   for (const [directory, children] of Object.entries(manifest)) {
     paths.add(directory);
     for (const child of children) {
@@ -3005,12 +2986,16 @@ function _markBundleEsmAsFailed(
   reason: string,
 ): void {
   for (const path of Object.keys(bundle)) {
+    if (compiledCellPath(path) !== null) continue;
     if (!isBundleModuleCandidate(path)) continue;
     const src = bundle[path];
     if (typeof src !== 'string') continue;
-    if (!looksLikeEsm(src)) continue;
+    // A TypeScript source is never runnable as staged, so it always needs
+    // the emit it cannot get; a JavaScript file only if it is ESM.
+    const typescript = bundleTypescriptLoader(path) !== null;
+    if (!typescript && !looksLikeEsm(src)) continue;
     const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason}`);
-    bundle[path] =
+    bundle[typescript ? compiledCellKey(path) : path] =
       '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
       '(function () { throw new Error(' + escapedReason + '); })();\n';
   }
@@ -3067,6 +3052,70 @@ export function isTypescriptDeclarationFile(path: string): boolean {
 }
 
 /**
+ * Where a bundle carries the EXECUTABLE form of a cell whose staged bytes are
+ * not JavaScript — a TypeScript source.
+ *
+ * A bundle cell is two things to the facet: what `readFileSync` returns for
+ * the path, and what the startup pre-compile loop turns into the function
+ * `require` runs. For a JavaScript file those are the same bytes, so the
+ * ESM→CJS pass rewrites the cell in place and both readers see JavaScript.
+ * For a TypeScript source they are NOT the same: the bytes a program reads
+ * are the source (tsc compiling its project, a test runner, a linter), and
+ * the bytes `require` needs are esbuild's emit. Rewriting the cell in place
+ * handed tsc esbuild's CommonJS rendering of its own `src/index.ts` — it
+ * compiled that, and reported errors on lines the file never had.
+ *
+ * So the source cell stays exactly as staged, and the compiled form travels
+ * under this key: a NUL-framed prefix no filesystem path can contain, in the
+ * same map, so it is sized, split, cached, released and shipped by every
+ * mechanism the bundle already has. The facet's pre-compile loop takes these
+ * cells OFF the map as it compiles them, keyed by the real path, before any
+ * read can see them.
+ */
+const COMPILED_CELL_KEY_PREFIX = '\0compiled\0';
+
+export function compiledCellKey(path: string): string {
+  return COMPILED_CELL_KEY_PREFIX + path;
+}
+
+/** The source path a compiled-cell key stands for, or null for a plain path. */
+export function compiledCellPath(key: string): string | null {
+  return key.startsWith(COMPILED_CELL_KEY_PREFIX) ? key.slice(COMPILED_CELL_KEY_PREFIX.length) : null;
+}
+
+/**
+ * The pre-compile loop both generated facets run at module evaluation, the
+ * only moment workerd lets a string become code. One definition so the two
+ * facets cannot drift on what they compile: every JavaScript-shaped cell
+ * (`.js`, `.mjs`, `.cjs` and the extensionless bin scripts) from its own
+ * bytes, and every TypeScript source from its compiled cell — which is
+ * removed from the bundle here, so a `readFileSync` of the source path
+ * returns the source and a directory listing never shows the key.
+ */
+export const BUNDLE_PRECOMPILE_LOOP = `
+const __NIMBUS_COMPILED_PREFIX = ${JSON.stringify(COMPILED_CELL_KEY_PREFIX)};
+for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
+  let __modulePath = __p;
+  if (__p.startsWith(__NIMBUS_COMPILED_PREFIX)) {
+    __modulePath = __p.slice(__NIMBUS_COMPILED_PREFIX.length);
+    delete __MODULE_VFS_BUNDLE[__p];
+  } else {
+    // .json is data; skip it (it loads via JSON.parse, not as a function).
+    const __base = __p.slice(__p.lastIndexOf("/") + 1);
+    const __dot = __base.lastIndexOf(".");
+    const __ext = __dot > 0 ? __base.slice(__dot) : "";
+    if (__ext !== ".js" && __ext !== ".mjs" && __ext !== ".cjs" && __ext !== "") continue;
+  }
+  if (typeof __c !== "string") continue;
+  try {
+    __compiledModules.set(__modulePath, __mkCompiledFn(__c));
+  } catch (__e) {
+    __compileFailures.set(__modulePath, __e && __e.message ? __e.message : String(__e));
+  }
+}
+`;
+
+/**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
  * Mutates `bundle` in place. Errors are swallowed (the file is left as
  * ESM source); the facet's pre-compile loop will record the SyntaxError
@@ -3074,6 +3123,9 @@ export function isTypescriptDeclarationFile(path: string): boolean {
  *
  * Candidate set is `isBundleModuleCandidate`; within it, files with no
  * top-level import/export are already CJS-shaped and left alone.
+ *
+ * A JavaScript cell is rewritten in place. A TypeScript source keeps its
+ * bytes and gets a compiled cell beside it — see `compiledCellKey`.
  *
  * Returns the count of files transformed (for diagnostics).
  */
@@ -3088,6 +3140,7 @@ async function transformEsmInBundle(
   // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
   const candidates: string[] = [];
   for (const path of Object.keys(bundle)) {
+    if (compiledCellPath(path) !== null) continue;
     if (!isBundleModuleCandidate(path)) continue;
     const src = bundle[path];
     // hardening-r5: binary cells are not ESM. Skip — looksLikeEsm +
@@ -3102,6 +3155,8 @@ async function transformEsmInBundle(
   for (const path of candidates) {
     const src = bundle[path];
     if (typeof src !== 'string') continue;
+    // A TypeScript source keeps its bytes; its emit lands beside it.
+    const target = bundleTypescriptLoader(path) === null ? path : compiledCellKey(path);
     // esbuild-wasm runs inside this isolate, so a transform is computation
     // like any other pass — the await above it yields nothing on its own.
     if (pacer) await pacer.spend(src.length);
@@ -3123,7 +3178,7 @@ async function transformEsmInBundle(
     const key = __cacheKey(src + '\0' + absUrl);
     const cached = __esmTransformCache.get(key);
     if (cached) {
-      bundle[path] = cached;
+      bundle[target] = cached;
       transformed++;
       continue;
     }
@@ -3141,7 +3196,7 @@ async function transformEsmInBundle(
         ? await isolatedTransform(src, transformOptions)
         : await esbuild.transform(src, transformOptions));
       const code = bindImportMetaResolve(t.code, absUrl);
-      bundle[path] = code;
+      bundle[target] = code;
       __esmTransformCache.set(key, code);
       transformed++;
     } catch (e: any) {
@@ -3173,7 +3228,7 @@ async function transformEsmInBundle(
       const diagnosticSrc =
         '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
         '(function () { throw new Error(' + escapedReason + '); })();\n';
-      bundle[path] = diagnosticSrc;
+      bundle[target] = diagnosticSrc;
       __esmTransformCache.set(key, diagnosticSrc);
       failed++;
     }
@@ -3400,8 +3455,9 @@ async function _buildPrefetchBundle(
   //    went are named rather than silently dropped.
   const size = encodedBundleSize(bundle, manifest);
   if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
+    // A compiled cell goes with its source: required when the source is.
     const evictable = Object.keys(bundle)
-      .filter((path) => !requiredPaths.has(path))
+      .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
       .sort((a, b) => _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]));
     const evicted: BundleCellSize[] = [];
     for (const k of evictable) {

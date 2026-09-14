@@ -547,6 +547,19 @@ export declare function isBundleModuleCandidate(path: string): boolean;
 export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
 export declare function isTypescriptDeclarationFile(path: string): boolean;
+export declare function compiledCellKey(path: string): string;
+/** The source path a compiled-cell key stands for, or null for a plain path. */
+export declare function compiledCellPath(key: string): string | null;
+/**
+ * The pre-compile loop both generated facets run at module evaluation, the
+ * only moment workerd lets a string become code. One definition so the two
+ * facets cannot drift on what they compile: every JavaScript-shaped cell
+ * (`.js`, `.mjs`, `.cjs` and the extensionless bin scripts) from its own
+ * bytes, and every TypeScript source from its compiled cell — which is
+ * removed from the bundle here, so a `readFileSync` of the source path
+ * returns the source and a directory listing never shows the key.
+ */
+export declare const BUNDLE_PRECOMPILE_LOOP: string;
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
