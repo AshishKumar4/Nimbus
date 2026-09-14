@@ -29,7 +29,7 @@ import type {
   BatchInodeEntry,
   BatchWritePayload,
 } from '@nimbus-sh/platform/w7-frame.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, type PackageRejectEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
@@ -44,9 +44,8 @@ import {
 } from './npm-log.js';
 import {
   applySwaps, findRejects, lookupSwap, lookupReject,
-  shouldSkipPackage, shouldSkipPackageWithFramework,
   shouldWarnSkipTransitive, isOptionalNativeBinding,
-  formatSwapNotice, formatTransitiveSkip, RegistryRejectError,
+  formatSwapNotice, formatTransitiveSkip,
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
@@ -135,6 +134,25 @@ interface ResolvedTree {
   resolved: Map<string, ResolvedPackage>;
   /** Dependency name → why it could not be resolved. */
   unresolved: Map<string, string>;
+  /**
+   * G2: registry-policy refusals the walk skipped over. Each was already
+   * announced on the log as a `[skip]` line; `required` decides the exit
+   * code — required refusals fail the install with the closing
+   * "not supported on Nimbus" summary, optional-edge refusals do not.
+   */
+  rejected: RejectedPackage[];
+}
+
+/**
+ * G2: one unsupported native package the installer left out without
+ * aborting. `required` is true when the package was explicitly requested
+ * or reached through a required edge (dependencies / required peers);
+ * false when it arrived only through optionalDependencies, optional-peer
+ * (best-effort), or root devDependencies edges.
+ */
+interface RejectedPackage {
+  name: string;
+  required: boolean;
 }
 
 export interface NpmInstallResult {
@@ -253,8 +271,27 @@ export class NpmInstaller {
     let phaseStart = Date.now();
     log('Checking lockfile...');
 
-    const specs = await this.buildSpecs(projDir, opts?.packages, opts?.production);
-    if (Object.keys(specs).length === 0) {
+    const { specs, rejected: topRejected, devOnly } = await this.buildSpecs(projDir, opts?.packages, opts?.production);
+    // G2: unsupported native packages never abort the install. Required
+    // ones fail it — named here and again in the closing "not supported
+    // on Nimbus" summary — while the rest of the tree installs either way.
+    const unsupportedRequired: string[] = [];
+    for (const r of topRejected) {
+      if (r.required && !unsupportedRequired.includes(r.name)) {
+        unsupportedRequired.push(r.name);
+        failed.push(r.name);
+      }
+    }
+    const logUnsupportedSummary = () => {
+      if (unsupportedRequired.length > 0) {
+        const n = unsupportedRequired.length;
+        log(
+          `npm ERR! ${n} required package${n === 1 ? '' : 's'} ` +
+          `${n === 1 ? 'is' : 'are'} not supported on Nimbus: ${unsupportedRequired.join(', ')}`,
+        );
+      }
+    };
+    if (Object.keys(specs).length === 0 && topRejected.length === 0) {
       log('No dependencies to install.');
       return { installed, failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases: {} };
     }
@@ -294,9 +331,20 @@ export class NpmInstaller {
       phaseStart = Date.now();
       setInstallPhase('resolve');
       log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
-      const tree = await this.resolveTreeViaFanout(specs, log, { frameworkAware });
+      const tree = await this.resolveTreeViaFanout(specs, log, { frameworkAware, devOnly });
       resolved = tree.resolved;
       phases['resolve'] = Date.now() - phaseStart;
+
+      // G2: transitive policy refusals. Required ones join `failed` (the
+      // walk already logged each as a `[skip]` line); optional-edge ones
+      // stay out of the outcome lists. Either way the rest of the tree
+      // resolved and installs.
+      for (const r of tree.rejected) {
+        if (r.required && !unsupportedRequired.includes(r.name)) {
+          unsupportedRequired.push(r.name);
+          failed.push(r.name);
+        }
+      }
 
       // A dependency the walk could not resolve is missing from the
       // install and from every subtree beneath it. Name it and its
@@ -311,6 +359,7 @@ export class NpmInstaller {
         for (const name of Object.keys(specs)) {
           if (!tree.unresolved.has(name)) failed.push(name);
         }
+        logUnsupportedSummary();
         return {
           installed, failed,
           totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases,
@@ -531,6 +580,7 @@ export class NpmInstaller {
         `npm ERR! install incomplete — ${installed.length} installed, ` +
         `${failed.length} missing: ${failed.join(', ')}`,
       );
+      logUnsupportedSummary();
     } else {
       log(`Done! ${installed.length} packages, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
       // npm's own summary line, unstyled: the styled one the command site
@@ -597,7 +647,7 @@ export class NpmInstaller {
   private async resolveTreeViaFanout(
     specs: Record<string, string>,
     log: (msg: string) => void,
-    opts: { frameworkAware?: boolean } = {},
+    opts: { frameworkAware?: boolean; devOnly?: ReadonlySet<string> } = {},
   ): Promise<ResolvedTree> {
     const t0 = Date.now();
     const frameworkAware = !!opts.frameworkAware;
@@ -609,10 +659,21 @@ export class NpmInstaller {
     // A name lands here at most once: the frontier marks it `seen` before
     // dispatch, so no later parent re-enqueues it.
     const unresolved = new Map<string, string>();
+    // G2: registry-policy refusals, in walk order. Announced as `[skip]`
+    // lines at record time; the caller decides the exit code.
+    const rejected: RejectedPackage[] = [];
     const seen = new Set<string>();
     const topLevelNames = new Set<string>(Object.keys(specs));
     const optionalNames = new Set<string>();   // X.5-G G1
     const bestEffortNames = new Set<string>(); // X.5-drizzle
+    // G2: names reached through a required edge (top-level specs except
+    // devDependency-only ones, `dependencies`, required peers). A refused
+    // package is required unless it arrived ONLY through optional edges —
+    // that is what makes the exit code honest.
+    const requiredNames = new Set<string>();
+    for (const name of Object.keys(specs)) {
+      if (!opts.devOnly?.has(name)) requiredNames.add(name);
+    }
     let queue: Array<[string, string]> = Object.entries(specs);
     const cacheWritesPending: any[] = [];
     let totalPackumentBytes = 0;
@@ -776,7 +837,12 @@ export class NpmInstaller {
         else if (res.packumentSource === 'network') r2Losses++;
         if (res.packumentBytesDecoded > 0) totalPackumentsDecoded++;
 
-        // W6 reject error handling.
+        // W6 reject: a registry-policy refusal. G2 — never abort the
+        // install. Best-effort optional-peer subtrees skip silently;
+        // packages that arrived only through optional edges (or root
+        // devDependencies) skip the same way; anything reached through
+        // a required edge is recorded for the closing "not supported on
+        // Nimbus" summary. The rest of the tree resolves either way.
         if (res.error && res.error.type === 'w6-reject') {
           if (bestEffortNames.has(taskName)) {
             // X.5-drizzle: silent-skip inside best-effort optional-peer
@@ -786,14 +852,17 @@ export class NpmInstaller {
             emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
             continue;
           }
-          // Real reject: throw RegistryRejectError to abort install.
-          const rejectEntry: any = {
-            from: res.error.from,
-            reason: res.error.reason,
-            suggest: res.error.suggest,
-            transitive: 'fail',
-          };
-          throw new RegistryRejectError([rejectEntry]);
+          const optionalEdge =
+            (optionalNames.has(taskName) || opts.devOnly?.has(taskName) === true) &&
+            !requiredNames.has(taskName);
+          const reason = optionalEdge
+            ? `optional dep not supported on Nimbus: ${res.error.reason}`
+            : res.error.reason;
+          const hint = res.error.suggest ? ` … try: ${res.error.suggest}` : '';
+          log(`[resolve-fanout] [skip] ${taskName} — ${reason}${hint}`);
+          emitRegistryEvent({ type: 'transitive-skip', from: taskName, reason });
+          if (!optionalEdge) rejected.push({ name: taskName, required: true });
+          continue;
         }
 
         // Resolution failure. Optional (X.5-G G1) and best-effort
@@ -846,6 +915,10 @@ export class NpmInstaller {
         const inheritBestEffort = bestEffortNames.has(pkg.name);
         for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
           if (resolved.has(depName) || seen.has(depName)) continue;
+          // G2: a `dependencies` edge is required — a refusal downstream
+          // fails the install (unless the same name also arrived as an
+          // optional edge first; required wins at record time).
+          requiredNames.add(depName);
           if (inheritBestEffort) bestEffortNames.add(depName);
           queue.push([depName, depRange as string]);
         }
@@ -862,6 +935,9 @@ export class NpmInstaller {
           for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
             if (resolved.has(peerName) || seen.has(peerName)) continue;
             topLevelNames.add(peerName);
+            // G2: required peers (versionToResolved already filtered
+            // optional-in-meta out of this map) are required edges.
+            requiredNames.add(peerName);
             if (inheritBestEffort) bestEffortNames.add(peerName);
             queue.push([peerName, peerRange as string]);
           }
@@ -928,7 +1004,7 @@ export class NpmInstaller {
       (unresolved.size > 0 ? `, unresolved=${unresolved.size}` : ''),
     );
 
-    return { resolved, unresolved };
+    return { resolved, unresolved, rejected };
   }
 
   /**
@@ -1219,8 +1295,11 @@ export class NpmInstaller {
     projDir: string,
     explicitPackages?: string[],
     production?: boolean,
-  ): Promise<Record<string, string>> {
+  ): Promise<{ specs: Record<string, string>; rejected: RejectedPackage[]; devOnly: Set<string> }> {
     const specs: Record<string, string> = {};
+    // Which names only a devDependency asked for, so a refusal can say
+    // whether anything this project RUNS actually needs the package.
+    const devOnly = new Set<string>();
 
     if (explicitPackages && explicitPackages.length > 0) {
       // Explicit packages: npm install react react-dom@18.2.0
@@ -1228,50 +1307,54 @@ export class NpmInstaller {
         const parsed = parseExplicitPackageSpec(pkg);
         specs[parsed.name] = parsed.range;
       }
-      return this.applyW6Registry(specs);
+      const applied = this.applyW6Registry(specs);
+      return { specs: applied.specs, rejected: applied.rejected, devOnly };
     }
 
     // Read from package.json
     const pkgJsonPath = projDir + '/package.json';
-    if (!this.vfs.exists(pkgJsonPath)) return specs;
+    if (!this.vfs.exists(pkgJsonPath)) return { specs, rejected: [], devOnly };
 
-    // Which names only a devDependency asked for, so a reject can say whether
-    // anything this project RUNS actually needs the package it refused.
-    const devOnly = new Set<string>();
     try {
       const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
 
-      // Always include dependencies
+      // Every declared dependency is a spec. What cannot run here is
+      // refused by the reject policy below with its reason; nothing a
+      // project declares is quietly left out of node_modules.
       for (const [name, range] of Object.entries(pkgJson.dependencies || {})) {
-        if (!shouldSkipPackage(name)) {
-          specs[name] = range as string;
-        }
+        specs[name] = range as string;
       }
-
-      // Include devDeps unless production mode, skipping build-only
       for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
-        if (shouldSkipPackage(name) || name in specs) continue;
-        if (production) continue;
+        if (name in specs || production) continue;
         specs[name] = range as string;
         devOnly.add(name);
       }
     } catch { /* corrupt package.json */ }
 
-    return this.applyW6Registry(specs, devOnly);
+    const applied = this.applyW6Registry(specs, devOnly, { declared: true });
+    return { specs: applied.specs, rejected: applied.rejected, devOnly };
   }
 
   /**
    * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
-   * to a top-level spec map. Emits `[swap]` notices via onProgress; throws
-   * a multi-line error on any reject (with `transitive='warn'` rejects
-   * also failing at top level — they only soften at depth>0).
+   * to a top-level spec map. Emits `[swap]` notices via onProgress.
+   *
+   * G2: rejects never throw. Every refused package is announced with the
+   * same `[skip] <pkg> — <reason> … try: <hint>` line the transitive path
+   * uses, removed from the returned specs, and reported in `rejected`:
+   * `required` is false for `transitive: 'warn'` entries (they soften by
+   * design) and for devDependency-only names (dev-optional), true
+   * otherwise — explicit `npm install <refused>` included. The caller
+   * installs the returned specs and fails the install on required
+   * rejections; swaps always apply either way.
    *
    * Idempotent: running on already-swapped specs is a no-op.
    */
   private applyW6Registry(
     specs: Record<string, string>,
     devOnly: ReadonlySet<string> = new Set(),
-  ): Record<string, string> {
+    options: { declared?: boolean } = {},
+  ): { specs: Record<string, string>; rejected: RejectedPackage[] } {
     const { specs: swapped, swaps } = applySwaps(specs);
     for (const s of swaps) {
       // onProgress is unguarded everywhere else in this file (rg the
@@ -1281,22 +1364,34 @@ export class NpmInstaller {
       // W6.5: telemetry — fire-and-forget; sink swallows its own errors.
       emitRegistryEvent({ type: 'swap', from: s.from, to: s.to, ctx: 'top' });
     }
-    const rejects = findRejects(swapped, 'top');
-    if (rejects.length > 0) {
-      // W6.5: emit one reject event per offending package BEFORE throwing,
-      // so the telemetry sink sees them even if the install aborts.
-      for (const r of rejects) {
-        emitRegistryEvent({
-          type: 'reject',
-          from: r.from,
-          reason: r.reason,
-          suggest: r.suggest,
-          ctx: 'top',
-        });
+    const rejected: RejectedPackage[] = [];
+    const refuse = (r: PackageRejectEntry, required: boolean) => {
+      this.onProgress?.(formatTransitiveSkip(r));
+      emitRegistryEvent({ type: 'reject', from: r.from, reason: r.reason, suggest: r.suggest, ctx: 'top' });
+      rejected.push({ name: r.from, required });
+    };
+    // A dependency the project DECLARES that the policy refuses with
+    // transitive='warn' (wrangler, node-gyp, parcel — a toolchain that
+    // cannot run here) is left out with its reason on the install log, and
+    // the rest of the project installs: a cloned repo that lists wrangler
+    // in devDependencies still gets everything it runs.
+    if (options.declared) {
+      for (const name of Object.keys(swapped)) {
+        const warn = shouldWarnSkipTransitive(name);
+        if (!warn) continue;
+        refuse(warn, false);
+        delete swapped[name];
       }
-      throw new RegistryRejectError(rejects, devOnly);
     }
-    return swapped;
+    for (const r of findRejects(swapped, 'top')) {
+      // An explicit `npm install <refused>` — the user asked for exactly
+      // that package — and a required declared dependency fail the
+      // install; a devDependency-only name is dev-optional. Either way
+      // the package is left out with its reason and the rest installs.
+      refuse(r, !options.declared || !devOnly.has(r.from));
+      delete swapped[r.from];
+    }
+    return { specs: swapped, rejected };
   }
 
   // ── Lockfile ──────────────────────────────────────────────────────────
@@ -1310,7 +1405,6 @@ export class NpmInstaller {
   ): boolean {
     // Every spec must be in the lockfile
     for (const name of Object.keys(specs)) {
-      if (shouldSkipPackage(name)) continue;
       if (!lockfile.has(name)) return false;
     }
     // X.5-F R2: every locked package's REQUIRED peerDependencies must

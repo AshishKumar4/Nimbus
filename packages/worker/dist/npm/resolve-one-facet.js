@@ -149,9 +149,15 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             suggest: reject.suggest,
         });
     };
-    // 1. SKIP_PACKAGES gate.
+    // 1. SKIP_PACKAGES gate. Loud, like the warn path below: a transitive
+    //    dependency the policy leaves out of node_modules is a fact the
+    //    install log and the registry events must carry, because the program
+    //    that requires it will fail at runtime and nothing else says why.
     // @ts-ignore — preamble.
     if (!spec.topLevel && SHOULD_SKIP_PACKAGE(spec.name, !!spec.frameworkAware)) {
+        const reason = 'build-time or Nimbus-provided package; not installed as a transitive dependency';
+        messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${spec.name} — ${reason}`);
+        events.push({ type: 'transitive-skip', from: spec.name, reason });
         return out(null, 0, 'skipped');
     }
     // 2. Registry policy.
@@ -167,7 +173,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         // @ts-ignore — preamble.
         const __warn = SHOULD_WARN_SKIP_TRANSITIVE(spec.name);
         if (__warn) {
-            messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}`);
+            messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}${__warn.suggest ? ` … try: ${__warn.suggest}` : ''}`);
             events.push({ type: 'transitive-skip', from: __warn.from, reason: __warn.reason });
             return out(null, 0, 'skipped');
         }
@@ -189,23 +195,22 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             });
         }
     }
-    // 3. cachedHit fast-path.
+    // 3. cachedHit fast-path. The pick over the cached versions is the same
+    //    RESOLVE_VERSION the packument path uses — a range is never reduced
+    //    to its base version. It used to be: `^3.0.0` was stripped to `3.0.0`
+    //    and answered by a cached 3.0.0 even with 3.0.1 sitting beside it,
+    //    which is how the second install in a session came back with lower
+    //    versions than the first (measured: totalist, readdirp, mrmime,
+    //    milliparsec, dot-prop, eta on json-server@1.0.0-beta.15).
     const cached = (() => {
         const entries = spec.cachedEntries || [];
         if (entries.length === 0)
             return null;
-        const cleanRange = (request.range || '').replace(/^[~^>=<\s]+/, '');
-        if (/^\d+\.\d+\.\d+$/.test(cleanRange)) {
-            const exact = entries.find((e) => e.name === request.installName && e.version === cleanRange);
-            if (exact)
-                return exact;
-        }
         const candidates = entries.filter((e) => e.name === request.installName);
         if (candidates.length === 0)
             return null;
-        const versions = candidates.map((e) => e.version);
         // @ts-ignore — preamble.
-        const picked = RESOLVE_VERSION(versions, request.range);
+        const picked = RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
         if (!picked)
             return null;
         return candidates.find((e) => e.version === picked) || null;

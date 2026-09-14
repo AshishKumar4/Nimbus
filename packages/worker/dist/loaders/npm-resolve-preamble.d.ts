@@ -14,7 +14,7 @@
  *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
  *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
  *   - IS_OPTIONAL_NATIVE_BINDING(pkg) → boolean
- *   - PARSE_SEMVER(v) → [major, minor, patch] | null
+ *   - PARSE_SEMVER(v) → [major, minor, patch, prerelease[]] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
  *   - RESOLVE_VERSION(versions, range) → string | null
@@ -26,9 +26,8 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with the supervisor module.
  *
- * The semver helpers are pasted from src/npm/resolver.ts and MUST stay
- * byte-equivalent — divergence would mean the facet picks different
- * versions than the in-supervisor path.
+ * The semver helpers are embedded from src/npm/semver.ts the same way, so
+ * the facet picks versions with the supervisor's own implementation.
  *
  * Preamble bytes are part of the loader-cache key for IsolatePool —
  * any edit invalidates the warm slot and forces a re-load on next

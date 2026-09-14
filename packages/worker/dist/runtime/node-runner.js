@@ -143,6 +143,13 @@ export async function runFresh(facetMgr, code, opts) {
             longRunning: true,
         };
     }
+    // A server-shaped program that finished during its boot (`--version`,
+    // `--help`, a one-shot run of a CLI that also serves) is an ordinary
+    // completed command: its own exit code, no "started" notice.
+    const finished = facetMgr.processExitCode?.(spawned.pid) ?? null;
+    if (finished !== null) {
+        return { exitCode: finished, stdout: '', stderr: '', longRunning: false };
+    }
     const noticeLine = opts.skipSpawn
         ? ''
         : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`;

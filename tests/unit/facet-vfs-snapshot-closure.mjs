@@ -159,6 +159,11 @@ assert.deepEqual(
     });
     optionalFiles[`${packageRoot}/index.js`] = 'module.exports = true;';
   }
+  // The oversample follows dependency edges: the project declares them all.
+  optionalFiles[`${cwd}/package.json`] = JSON.stringify({
+    name: 'app',
+    dependencies: Object.fromEntries(Array.from({ length: VFS_BUNDLE_MAX_FILES / 2 + 100 }, (_, index) => [`optional-${index}`, '*'])),
+  });
   const requiredPath = `${globalModules}/required/index.js`;
   const bundle = { [requiredPath]: 'x'.repeat(VFS_BUNDLE_MAX_BYTES + 1) };
   const budget = { totalBytes: 0, fileCount: 0 };
@@ -196,6 +201,10 @@ assert.deepEqual(
     // twice the raw size the greedy pass budgets against.
     optionalFiles[`${packageRoot}/index.js`] = `// ${'\\'.repeat(3 * 1024 * 1024)}`;
   }
+  optionalFiles[`${cwd}/package.json`] = JSON.stringify({
+    name: 'app',
+    dependencies: Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`bulky-${index}`, '*'])),
+  });
   const warnings = [];
   const realWarn = console.warn;
   console.warn = (...args) => { warnings.push(args.join(' ')); };

@@ -462,3 +462,27 @@ export function checkNodeModulesGuard(vfs, projectRoot) {
         return { missing: false, depCount: 0 };
     }
 }
+/**
+ * Bound for the `vite build` esbuild bundle step (init.ts). Demo-app
+ * builds take seconds; anything past this is a stall, not a build.
+ */
+export const VITE_BUILD_TIMEOUT_MS = 120_000;
+/**
+ * G5: race an unbounded await against a loud timeout.
+ *
+ * The timeout does not cancel `work` (there is nothing to cancel an
+ * in-isolate esbuild bundle with) — it stops *waiting* and rejects
+ * with an error that names what was attempted and how long it ran,
+ * so a stalled build surfaces as a timeout error instead of silence.
+ * The timer handle never escapes the executor, so there is nothing
+ * to null-check: settle clears it on every path.
+ */
+export function withLoudTimeout(work, timeoutMs, what) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(`${what} produced no result after ${(timeoutMs / 1000).toFixed(0)}s — ` +
+                'stopped waiting (the work may still finish in the background; re-run to retry).'));
+        }, timeoutMs);
+        work.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+    });
+}

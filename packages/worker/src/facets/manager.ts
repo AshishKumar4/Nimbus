@@ -105,7 +105,7 @@ import {
   type FacetBundleProfile,
 } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
-  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
+  BUNDLE_BUILD_DEADLINE_MS, bundleBuildDeadlineMs, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
@@ -2234,22 +2234,81 @@ export function greedyAddMainEntries(
     }
   }
 
-  try {
-    for (const pkg of vfs.readdir(nmDir)) {
-      if (pkg.type !== 'directory') continue;
-      const pkgDir = nmDir + '/' + pkg.name;
-      if (pkg.name.startsWith('@')) {
-        try {
-          for (const sub of vfs.readdir(pkgDir)) {
-            if (sub.type === 'directory') addPkgEntry(pkgDir + '/' + sub.name);
-          }
-        } catch { /* ignore */ }
-      } else {
-        addPkgEntry(pkgDir);
-      }
-    }
-  } catch { /* ignore */ }
+  for (const pkgDir of speculativePackageDirs(vfs, cwdStripped, bundle)) addPkgEntry(pkgDir);
   return { added };
+}
+
+/**
+ * The packages a computed `require(name)` inside the program can plausibly
+ * name: the project root's own runtime `dependencies`, plus every package
+ * ONE `dependencies` hop from a package that already owns a file in the
+ * static closure. Never devDependencies, never a second hop.
+ *
+ * Unbounded, the greedy oversample read every installed package's main:
+ * for `node -e "import('got')"` in got's repo — a one-file static closure —
+ * that was 1,526 files / 10.9 MB from 706 packages, which every later pass
+ * re-scanned and esbuild-wasm transformed, and the exec path's 20 s bundle
+ * deadline fired on a program that reads none of it. A bound that followed
+ * dependency edges from the project's devDependencies reached all 772 of
+ * them (measured), because a library repo's dev toolchain reaches the whole
+ * tree. Computed requires almost always target a declared runtime
+ * dependency of the package doing the requiring, so the bound is one hop
+ * over `dependencies` only. Directories, sorted for a stable bundle.
+ */
+export function speculativePackageDirs(
+  vfs: CredentialedVfs,
+  cwdStripped: string,
+  bundle: Record<string, string | Uint8Array>,
+): string[] {
+  const runtimeDeps = (pkgJsonPath: string): string[] => {
+    try {
+      const meta = JSON.parse(vfs.readFileString(pkgJsonPath));
+      const names = new Set<string>();
+      for (const field of ['dependencies', 'optionalDependencies']) {
+        const deps = meta?.[field];
+        if (deps && typeof deps === 'object') for (const name of Object.keys(deps)) names.add(name);
+      }
+      return [...names];
+    } catch { return []; }
+  };
+  // The package that owns a bundle file: the last node_modules segment.
+  const ownerOf = (path: string): string | null => {
+    const idx = path.lastIndexOf('/node_modules/');
+    if (idx === -1) return null;
+    const segs = path.slice(idx + '/node_modules/'.length).split('/');
+    const name = segs[0]?.startsWith('@') ? segs.slice(0, 2).join('/') : segs[0];
+    return name ? path.slice(0, idx + '/node_modules/'.length) + name : null;
+  };
+  // Resolve a bare name the way require does from `fromDir`: the nearest
+  // node_modules up the tree that has it.
+  const resolveDir = (name: string, fromDir: string): string | null => {
+    let dir = fromDir;
+    for (;;) {
+      const candidate = dir + '/node_modules/' + name;
+      if (vfs.exists(candidate + '/package.json')) return candidate;
+      const idx = dir.lastIndexOf('/');
+      if (idx <= 0) return null;
+      dir = dir.slice(0, idx);
+    }
+  };
+  const reached = new Set<string>();
+  const hop = (fromDir: string): void => {
+    for (const name of runtimeDeps(fromDir + '/package.json')) {
+      const dir = resolveDir(name, fromDir);
+      if (dir !== null) reached.add(dir);
+    }
+  };
+  hop(cwdStripped);
+  const owners = new Set<string>();
+  for (const path of Object.keys(bundle)) {
+    const owner = ownerOf(path);
+    if (owner !== null) owners.add(owner);
+  }
+  for (const owner of owners) {
+    reached.add(owner);
+    hop(owner);
+  }
+  return [...reached].sort();
 }
 
 /**
@@ -3298,6 +3357,29 @@ async function transformEsmInBundle(
  * behaviour for code paths that don't have esbuild handy).
  *
  */
+/**
+ * Top-level entries of `cwd/node_modules` (scoped packages counted per
+ * scope member). One readdir per scope: what the deadline scales by, not a
+ * walk of the tree.
+ */
+export function countInstalledPackages(vfs: CredentialedVfs, cwd: string): number {
+  const nmDir = cwd.replace(/^\/+/, '') + '/node_modules';
+  try {
+    if (!vfs.isDirectory(nmDir)) return 0;
+    let count = 0;
+    for (const entry of vfs.readdir(nmDir)) {
+      if (entry.type !== 'directory' || entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('@')) {
+        try { count += vfs.readdir(nmDir + '/' + entry.name).filter((sub) => sub.type === 'directory').length; }
+        catch { /* unreadable scope */ }
+      } else {
+        count += 1;
+      }
+    }
+    return count;
+  } catch { return 0; }
+}
+
 export async function buildPrefetchBundle(
   vfs: CredentialedVfs,
   scriptPath: string | undefined,
@@ -4106,6 +4188,7 @@ export class FacetManager {
   private async _withBundleBuildDeadline(
     build: Promise<FacetVfsState>,
     command: string,
+    deadlineMs: number = BUNDLE_BUILD_DEADLINE_MS,
   ): Promise<FacetVfsState> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -4115,11 +4198,11 @@ export class FacetManager {
           timer = setTimeout(
             () => reject(new Error(
               `Nimbus: assembling the filesystem bundle for \`${command}\` exceeded `
-              + `${BUNDLE_BUILD_DEADLINE_MS}ms. The process was not started. This is the `
+              + `${deadlineMs}ms. The process was not started. This is the `
               + 'bundle build, not the program: it runs in the session Durable Object, so '
               + 'it is reported rather than allowed to wedge the session.',
             )),
-            BUNDLE_BUILD_DEADLINE_MS,
+            deadlineMs,
           );
         }),
       ]);
@@ -4439,6 +4522,7 @@ export class FacetManager {
             opts.bundleProfile,
           ),
           command,
+          bundleBuildDeadlineMs(countInstalledPackages(processVfs, opts.cwd || '/home/user')),
         )
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
@@ -5695,12 +5779,35 @@ export class FacetManager {
         await this._registerResidentPort(entry.pid, opts.port);
       }
     } catch (e: unknown) {
+      // A program classified as long-running that ended on its own during
+      // its boot — `json-server --version` prints and exits 0 — reported its
+      // exit through the supervisor, which released the facet and rejected
+      // the boot handshake with 'resident process released'. That is a
+      // completed run, not a failed launch: the process table already holds
+      // its real exit code, and the caller reports that code.
+      const ended = this.processes.get(entry.pid);
+      if (ended !== undefined && ended.state !== 'running') {
+        this.portRegistry.unregisterByPid(entry.pid);
+        if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
+        return;
+      }
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
       this._failLaunch(entry.pid, 'long-running node boot failed: ' + errorMessage(e));
       throw e;
     }
+  }
+
+  /**
+   * The exit code of a launched process that has already ended, or null
+   * while it runs. What a caller that started a resident reads to tell a
+   * server that is up from a program that finished during its boot.
+   */
+  processExitCode(pid: number): number | null {
+    const entry = this.processes.get(pid);
+    if (entry === undefined || entry.state === 'running') return null;
+    return entry.exitCode ?? 0;
   }
 
   /**

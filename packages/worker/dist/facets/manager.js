@@ -48,7 +48,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
+import { BUNDLE_BUILD_DEADLINE_MS, bundleBuildDeadlineMs, CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -1939,27 +1939,87 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState) {
             }
         }
     }
-    try {
-        for (const pkg of vfs.readdir(nmDir)) {
-            if (pkg.type !== 'directory')
-                continue;
-            const pkgDir = nmDir + '/' + pkg.name;
-            if (pkg.name.startsWith('@')) {
-                try {
-                    for (const sub of vfs.readdir(pkgDir)) {
-                        if (sub.type === 'directory')
-                            addPkgEntry(pkgDir + '/' + sub.name);
-                    }
-                }
-                catch { /* ignore */ }
-            }
-            else {
-                addPkgEntry(pkgDir);
-            }
-        }
-    }
-    catch { /* ignore */ }
+    for (const pkgDir of speculativePackageDirs(vfs, cwdStripped, bundle))
+        addPkgEntry(pkgDir);
     return { added };
+}
+/**
+ * The packages a computed `require(name)` inside the program can plausibly
+ * name: the project root's own runtime `dependencies`, plus every package
+ * ONE `dependencies` hop from a package that already owns a file in the
+ * static closure. Never devDependencies, never a second hop.
+ *
+ * Unbounded, the greedy oversample read every installed package's main:
+ * for `node -e "import('got')"` in got's repo — a one-file static closure —
+ * that was 1,526 files / 10.9 MB from 706 packages, which every later pass
+ * re-scanned and esbuild-wasm transformed, and the exec path's 20 s bundle
+ * deadline fired on a program that reads none of it. A bound that followed
+ * dependency edges from the project's devDependencies reached all 772 of
+ * them (measured), because a library repo's dev toolchain reaches the whole
+ * tree. Computed requires almost always target a declared runtime
+ * dependency of the package doing the requiring, so the bound is one hop
+ * over `dependencies` only. Directories, sorted for a stable bundle.
+ */
+export function speculativePackageDirs(vfs, cwdStripped, bundle) {
+    const runtimeDeps = (pkgJsonPath) => {
+        try {
+            const meta = JSON.parse(vfs.readFileString(pkgJsonPath));
+            const names = new Set();
+            for (const field of ['dependencies', 'optionalDependencies']) {
+                const deps = meta?.[field];
+                if (deps && typeof deps === 'object')
+                    for (const name of Object.keys(deps))
+                        names.add(name);
+            }
+            return [...names];
+        }
+        catch {
+            return [];
+        }
+    };
+    // The package that owns a bundle file: the last node_modules segment.
+    const ownerOf = (path) => {
+        const idx = path.lastIndexOf('/node_modules/');
+        if (idx === -1)
+            return null;
+        const segs = path.slice(idx + '/node_modules/'.length).split('/');
+        const name = segs[0]?.startsWith('@') ? segs.slice(0, 2).join('/') : segs[0];
+        return name ? path.slice(0, idx + '/node_modules/'.length) + name : null;
+    };
+    // Resolve a bare name the way require does from `fromDir`: the nearest
+    // node_modules up the tree that has it.
+    const resolveDir = (name, fromDir) => {
+        let dir = fromDir;
+        for (;;) {
+            const candidate = dir + '/node_modules/' + name;
+            if (vfs.exists(candidate + '/package.json'))
+                return candidate;
+            const idx = dir.lastIndexOf('/');
+            if (idx <= 0)
+                return null;
+            dir = dir.slice(0, idx);
+        }
+    };
+    const reached = new Set();
+    const hop = (fromDir) => {
+        for (const name of runtimeDeps(fromDir + '/package.json')) {
+            const dir = resolveDir(name, fromDir);
+            if (dir !== null)
+                reached.add(dir);
+        }
+    };
+    hop(cwdStripped);
+    const owners = new Set();
+    for (const path of Object.keys(bundle)) {
+        const owner = ownerOf(path);
+        if (owner !== null)
+            owners.add(owner);
+    }
+    for (const owner of owners) {
+        reached.add(owner);
+        hop(owner);
+    }
+    return [...reached].sort();
 }
 /**
  * X.5-Z3: scan every JS source already in `bundle` for static
@@ -3039,6 +3099,36 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
+/**
+ * Top-level entries of `cwd/node_modules` (scoped packages counted per
+ * scope member). One readdir per scope: what the deadline scales by, not a
+ * walk of the tree.
+ */
+export function countInstalledPackages(vfs, cwd) {
+    const nmDir = cwd.replace(/^\/+/, '') + '/node_modules';
+    try {
+        if (!vfs.isDirectory(nmDir))
+            return 0;
+        let count = 0;
+        for (const entry of vfs.readdir(nmDir)) {
+            if (entry.type !== 'directory' || entry.name.startsWith('.'))
+                continue;
+            if (entry.name.startsWith('@')) {
+                try {
+                    count += vfs.readdir(nmDir + '/' + entry.name).filter((sub) => sub.type === 'directory').length;
+                }
+                catch { /* unreadable scope */ }
+            }
+            else {
+                count += 1;
+            }
+        }
+        return count;
+    }
+    catch {
+        return 0;
+    }
+}
 export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
@@ -3595,16 +3685,16 @@ export class FacetManager {
      * every interruptible stall from a silent wedge into a loud failure, and
      * makes the remaining class the only one left to explain.
      */
-    async _withBundleBuildDeadline(build, command) {
+    async _withBundleBuildDeadline(build, command, deadlineMs = BUNDLE_BUILD_DEADLINE_MS) {
         let timer;
         try {
             return await Promise.race([
                 build,
                 new Promise((_resolve, reject) => {
                     timer = setTimeout(() => reject(new Error(`Nimbus: assembling the filesystem bundle for \`${command}\` exceeded `
-                        + `${BUNDLE_BUILD_DEADLINE_MS}ms. The process was not started. This is the `
+                        + `${deadlineMs}ms. The process was not started. This is the `
                         + 'bundle build, not the program: it runs in the session Durable Object, so '
-                        + 'it is reported rather than allowed to wedge the session.')), BUNDLE_BUILD_DEADLINE_MS);
+                        + 'it is reported rather than allowed to wedge the session.')), deadlineMs);
                 }),
             ]);
         }
@@ -3863,7 +3953,7 @@ export class FacetManager {
         const processVfs = this.vfs?.as(entry.cred);
         const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
         const vfsState = processVfs
-            ? await this._withBundleBuildDeadline(this._buildPrefetchBundleCached(processVfs, opts.filename, opts.cwd || '/home/user', code, credKey, opts.bundleProfile), command)
+            ? await this._withBundleBuildDeadline(this._buildPrefetchBundleCached(processVfs, opts.filename, opts.cwd || '/home/user', code, credKey, opts.bundleProfile), command, bundleBuildDeadlineMs(countInstalledPackages(processVfs, opts.cwd || '/home/user')))
             : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const diagSink = diagOn
@@ -5035,6 +5125,19 @@ export class FacetManager {
             }
         }
         catch (e) {
+            // A program classified as long-running that ended on its own during
+            // its boot — `json-server --version` prints and exits 0 — reported its
+            // exit through the supervisor, which released the facet and rejected
+            // the boot handshake with 'resident process released'. That is a
+            // completed run, not a failed launch: the process table already holds
+            // its real exit code, and the caller reports that code.
+            const ended = this.processes.get(entry.pid);
+            if (ended !== undefined && ended.state !== 'running') {
+                this.portRegistry.unregisterByPid(entry.pid);
+                if (resourcesTracked)
+                    this.releaseProcessRpcResources(entry.pid);
+                return;
+            }
             this.portRegistry.unregisterByPid(entry.pid);
             if (resourcesTracked)
                 this.releaseProcessRpcResources(entry.pid);
@@ -5043,6 +5146,17 @@ export class FacetManager {
             this._failLaunch(entry.pid, 'long-running node boot failed: ' + errorMessage(e));
             throw e;
         }
+    }
+    /**
+     * The exit code of a launched process that has already ended, or null
+     * while it runs. What a caller that started a resident reads to tell a
+     * server that is up from a program that finished during its boot.
+     */
+    processExitCode(pid) {
+        const entry = this.processes.get(pid);
+        if (entry === undefined || entry.state === 'running')
+            return null;
+        return entry.exitCode ?? 0;
     }
     /**
      * Spawn a long-running dynamic Worker, boot it, and return its boot payload.
