@@ -20,7 +20,11 @@
 //      a name, survives a hibernation: the restored pid derives the same
 //      identity from the persisted cwd+argv, re-adopts the shared link at
 //      registration, and rotates as the same application;
-//   4. a pid that is neither running nor journalled is refused by name.
+//   4. a pid that is neither running nor journalled is refused by name;
+//   5. the SDK's own launch: `startProcess('npx vite …')` allocates the wrapper
+//      pid the builtin adopts and registers the port under — the shell line
+//      returning must not mark that pid exited, or the port is served by a
+//      dead pid nothing can expose (the live failure).
 
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -63,7 +67,7 @@ const build = await Bun.build({
 });
 assert.equal(build.success, true, build.logs.map(String).join('\n'));
 const { routeToSessionPort, handleFetch } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/routes.js')).path).href);
-const { rpcExposeApp, rpcListApps, rpcRotateLink, rpcRemoveApp } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/programmatic.js')).path).href);
+const { rpcExposeApp, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/programmatic.js')).path).href);
 
 const SID = 'nimble-otter-4271';
 const SUFFIX = 'nimbus-os.dev';
@@ -309,5 +313,39 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   await assert.rejects(rpcExposeApp(self, 4242), /nothing listens on port 4242 and no process 4242 exists|nothing is serving/);
 }
 
-console.log('ok - apps identity from the process table (dev-server expose/list/rotate/restart/refuse/remove, bin resident journalled, hibernation keeps identity, dead pid refused)');
+// ── 5. startProcess: the wrapper pid a builtin adopts stays running ─────────
+{
+  const t = setup();
+  const { self, processes, portRegistry, ctx } = t;
+  // The shell the SDK drives: `npx vite` resolves to the builtin, which
+  // adopts the wrapper pid the job allocated (the bin-spawn contract) and
+  // registers the dev server's port under it, then the shell line returns 0.
+  self.shell = {
+    getEnv: () => ({ HOME: '/home/user' }),
+    getCwd: () => '/home/user',
+    async execute(line, options) {
+      const adopted = options.commandContext.__nimbusBinSpawn.callerPid;
+      portRegistry.bindFacetStub(adopted, stub('vite'));
+      await t.fm.registerPort(adopted, 5173);
+      return { exitCode: 0 };
+    },
+  };
+  self._w1SessionDestroyed = false;
+  self.shellProcessPid = null;
+  self.terminal = null;
+  self.initSession = () => { throw new Error('already booted'); };
+  self.ctx.waitUntil = (p) => { ctx.waited.push(Promise.resolve(p).catch(() => {})); };
+  const started = await rpcStartProcess(self, 'npx vite --host --port 5173', { cwd: '/home/user/app' });
+  await Promise.all(ctx.waited);
+  const entry = processes.get(started.pid);
+  assert.equal(entry.state, 'running', 'the line returned, but the pid still serves a port: it stays running');
+  assert.equal(portRegistry.get(5173)?.pid, started.pid);
+  const exposed = await rpcExposeApp(self, 5173, { visibility: 'public', name: 'web' });
+  assert.equal(exposed.owner, await deriveResidentOwner('/home/user/app', ['npx vite --host --port 5173']),
+    'the identity is the wrapper pid\'s cwd and shell line');
+  assert.equal(exposed.pid, started.pid);
+  assert.equal((await rpcListApps(self)).find((app) => app.name === 'web')?.status, 'running');
+}
+
+console.log('ok - apps identity from the process table (dev-server expose/list/rotate/restart/refuse/remove, bin resident journalled, hibernation keeps identity, dead pid refused, startProcess wrapper pid stays running)');
 await rm(outputDir, { recursive: true, force: true });

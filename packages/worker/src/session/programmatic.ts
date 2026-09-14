@@ -714,7 +714,15 @@ function finishBackgroundJob(
   command: string,
   exitCode: number,
 ): void {
-  if (exitCode === 0 && self.facetManager?.hasResidentProcess(pid)) return;
+  // The shell line returned, but the pid may still be serving: a resident
+  // facet the node runner handed off under this pid, or an in-process dev
+  // server a builtin (`vite`) adopted this pid for and registered a port
+  // under. Either way the process is alive — marking it exited would put a
+  // dead pid on a live port, and the app verbs identify a server by the pid
+  // serving its port.
+  const stillServing = self.facetManager?.hasResidentProcess(pid) === true
+    || self.portRegistry.getAll().some((live) => live.pid === pid);
+  if (exitCode === 0 && stillServing) return;
   self.processes.exit(pid, exitCode);
   if (!self.processes.getExit(pid)) self.processes.markExit(pid, exitCode);
   notifyTerminalEvent(self.terminal ?? null, {
