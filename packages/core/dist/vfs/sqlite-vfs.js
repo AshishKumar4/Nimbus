@@ -2514,7 +2514,14 @@ export class SqliteVFS {
     }
     rename(oldPath, newPath, cred) {
         this.assertMutationsAllowed([oldPath, newPath]);
-        this.checkAccess(oldPath, 0, cred, { followLeaf: false });
+        // Resolve private /tmp names to storage keys before reading or mutating.
+        const source = this.checkAccess(oldPath, 0, cred, { followLeaf: false });
+        const inode = source.inode;
+        if (!inode)
+            throw vfsError('ENOENT', oldPath);
+        const target = this.checkAccess(newPath, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+        oldPath = source.path;
+        newPath = target.path;
         this.checkParentAccess(oldPath, cred);
         this.checkParentAccess(newPath, cred);
         if (oldPath === newPath)
@@ -2522,9 +2529,6 @@ export class SqliteVFS {
         if (newPath.startsWith(`${oldPath}/`)) {
             throw new Error(`EINVAL: cannot move ${oldPath} inside itself`);
         }
-        const inode = this.inodes.get(oldPath);
-        if (!inode)
-            throw new Error("ENOENT: " + oldPath);
         this.checkStickyParentMutation(oldPath, inode, cred);
         // W-3 (WASI filesystem WASI): if newPath already exists, unlink it first so the
         // SQL UPDATE doesn't conflict on inodes.path uniqueness. POSIX rename(2)
@@ -2533,7 +2537,7 @@ export class SqliteVFS {
         // a 2nd `make` after a prior successful build throws on UPDATE
         // failure. Pre-unlink covers both file-over-file and file-over-dir
         // (the latter is rare but POSIX permits it for empty dirs).
-        const destInode = this.inodes.get(newPath);
+        const destInode = target.inode;
         if (destInode) {
             this.checkStickyParentMutation(newPath, destInode, cred);
             if (destInode.isDir) {

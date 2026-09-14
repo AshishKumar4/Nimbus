@@ -55,6 +55,7 @@ import { initSession as _w11InitSession } from './init.js';
 import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, } from './ws.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
+import { sessionSupervisorOp } from './supervisor-op.js';
 import { processHostFor } from '../loaders/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -604,6 +605,9 @@ export class NimbusSession extends CloudflareDurableObject {
     // 1-line delegators that pass `this as any` (per plan §IX rec 1 +
     // DEFECT-D1: ctx is protected and not on a public interface).
     // Supervisor RPC (file/log/HMR/batch)
+    supervisorOp(envelope) {
+        return sessionSupervisorOp(this, envelope);
+    }
     async _rpcReadFile(path, pid) { return _rpc._rpcReadFile(this, path, pid); }
     async _rpcReadFileBytes(path, pid) { return _rpc._rpcReadFileBytes(this, path, pid); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }

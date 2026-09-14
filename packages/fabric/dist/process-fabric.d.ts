@@ -75,6 +75,7 @@
  */
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ServiceStub } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -108,6 +109,7 @@ export declare const ResidentCodeSpecSchema: z.ZodObject<{
     vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+    globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
 }, z.core.$strip>;
 export type ResidentCodeSpec = z.infer<typeof ResidentCodeSpecSchema>;
 /**
@@ -134,6 +136,7 @@ export declare function residentBootSpecSchema<Stage extends z.ZodType>(stageSch
         vfsWasmModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         vfsTextModules: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         env: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        globalOutbound: z.ZodOptional<z.ZodNullable<z.ZodCustom<ServiceStub, ServiceStub>>>;
     }, z.core.$strip>;
 }, z.core.$strip>], "kind">;
 export type ResidentBootSpec = {

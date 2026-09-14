@@ -53,16 +53,12 @@ export type SupervisorCacheStatEvent = {
     cacheKind: CacheKind;
 };
 export declare class SupervisorRPC extends WorkerEntrypoint {
-    /**
-     * The supervisor DO stub for RPC routing, found from the doId in ctx.props.
-     *
-     * Minted per call, because that is the only lifetime an instance of this
-     * class has: workerd constructs a NEW WorkerEntrypoint for every RPC call,
-     * not one per facet invocation, so a field cached here is written and
-     * discarded by the same call and never read by another (measured: two calls
-     * on one stub produced instances #3 and #4, each having served one call).
-     */
-    private _getStub;
+    /** Resolve the composed host anew for each WorkerEntrypoint invocation. */
+    private _dispatch;
+    private _op;
+    /** Stamp filesystem credentials from the binding, not the supplied arguments. */
+    private _fsOp;
+    private _reportingPid;
     private _call;
     private _pid;
     private _writerId;
