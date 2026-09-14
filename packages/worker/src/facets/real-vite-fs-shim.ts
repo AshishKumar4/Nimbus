@@ -72,7 +72,7 @@ import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
  *   - Any file > MAX_FILE_BYTES (skipped with a diagnostic).
  *
  * Returns a Record<path, content>. Paths are absolute filesystem paths
- * as seen by Vite (/home/user/app/src/main.tsx).
+ * as seen by Vite (/home/user/example-app/src/main.tsx).
  */
 const MAX_FILE_BYTES = 256 * 1024;           // 256 KB per file
 const MAX_TOTAL_USER_BYTES = 16 * 1024 * 1024; // 16 MB cap on USER project
@@ -1278,7 +1278,7 @@ ${Object.entries(cjsPrebuiltBundles).map(([pathPattern, code]) =>
 ]);
 
 /**
- * Match an fs path like /home/user/app/node_modules/react/index.js
+ * Match an fs path like /home/user/example-app/node_modules/react/index.js
  * against the pre-built bundle table. The keys in the table are
  * SUFFIXES — e.g. "/node_modules/react/index.js" — so a project
  * at any path resolves correctly.

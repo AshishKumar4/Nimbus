@@ -120,9 +120,9 @@ export default {
       subject: 'agent',
     });
 
-    await box.files.write('/home/user/app/main.py', 'print(2 + 2)\n');
+    await box.files.write('/home/user/example-app/main.py', 'print(2 + 2)\n');
     await box.runtimes.ensure('python');
-    const result = await box.exec('python /home/user/app/main.py');
+    const result = await box.exec('python /home/user/example-app/main.py');
 
     return Response.json(result);
   },
@@ -208,20 +208,20 @@ const box = nimbus.sandbox('session-or-job-id', {
 
 await box.ready();
 await box.exec('node -e "console.log(2 + 2)"');
-const proc = await box.startProcess('node --watch /home/user/app/server.js');
+const proc = await box.startProcess('node --watch /home/user/example-app/server.js');
 // returns immediately with proc.pid; poll box.processes.logs(proc.pid) for
 // output and the exit record, or box.processes.kill(proc.pid) to stop it
 await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
 
-await box.files.write('/home/user/app/a.txt', 'hello');
-await box.files.read('/home/user/app/a.txt');
-await box.files.list('/home/user/app');
-await box.files.stat('/home/user/app/a.txt');
-await box.files.lstat('/home/user/app/link');
-await box.files.rename('/home/user/app/a.txt', '/home/user/app/b.txt');
-await box.files.chmod('/home/user/app/b.txt', 0o755);
-await box.files.readRange('/home/user/app/b.txt', 0, 64);
-await box.files.delete('/home/user/app/b.txt');
+await box.files.write('/home/user/example-app/a.txt', 'hello');
+await box.files.read('/home/user/example-app/a.txt');
+await box.files.list('/home/user/example-app');
+await box.files.stat('/home/user/example-app/a.txt');
+await box.files.lstat('/home/user/example-app/link');
+await box.files.rename('/home/user/example-app/a.txt', '/home/user/example-app/b.txt');
+await box.files.chmod('/home/user/example-app/b.txt', 0o755);
+await box.files.readRange('/home/user/example-app/b.txt', 0, 64);
+await box.files.delete('/home/user/example-app/b.txt');
 
 await box.runtimes.available();
 await box.runtimes.installed();

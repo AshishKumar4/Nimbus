@@ -26,7 +26,7 @@ await t.run(heredocCommand('math.c', mathC), 10_000);
 await t.run(heredocCommand('app.c', mainC), 10_000);
 
 // The output must not be named `app`: every session pre-seeds a starter
-// project DIRECTORY at /home/user/app, and POSIX open(2) of an existing
+// project DIRECTORY at /home/user/example-app, and POSIX open(2) of an existing
 // directory for writing is EISDIR — real clang refuses to link onto it.
 // (The legacy VFS silently converted the seeded directory into the
 // output file; the permissions work restored real Unix semantics. The
@@ -47,8 +47,8 @@ const rd = await t.run('clang app.c math.c -o app ; echo CC_EXIT=$?', 240_000);
 const out3 = stripAnsi(rd.output);
 a.check('link onto existing dir exits nonzero', /CC_EXIT=[1-9]/.test(out3), JSON.stringify(out3.slice(-300)));
 a.check('link onto existing dir reports EISDIR', /EISDIR|is a directory|unable to open/i.test(out3), JSON.stringify(out3.slice(-300)));
-const rl = await t.run('test -d /home/user/app && test -f /home/user/app/package.json && echo DIR=intact || echo DIR=lost', 15_000);
-a.check('seeded /home/user/app survives the refused link', /DIR=intact/.test(stripAnsi(rl.output)), JSON.stringify(stripAnsi(rl.output).slice(-200)));
+const rl = await t.run('test -d /home/user/example-app && test -f /home/user/example-app/package.json && echo DIR=intact || echo DIR=lost', 15_000);
+a.check('seeded /home/user/example-app survives the refused link', /DIR=intact/.test(stripAnsi(rl.output)), JSON.stringify(stripAnsi(rl.output).slice(-200)));
 
 await t.close();
 const sum = a.summary();

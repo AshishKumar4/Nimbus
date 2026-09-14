@@ -61,7 +61,7 @@ import type { NpmInstaller } from '../npm/installer.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
-import { seedProject } from '@nimbus-sh/core/vfs/seed-project.js';
+import { seedProject, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
 import { appendScrollback } from './state-store.js';
@@ -259,7 +259,7 @@ Cloud-native development environment on Cloudflare Workers.
 | --- | --- |
 | Run JavaScript | \`node hello.js\` |
 | Install npm packages | \`npm install <pkg>\` |
-| Start the starter app | \`cd app && npm install && npm run dev\` |
+| Start the starter app | \`cd ${SEED_PROJECT_NAME} && npm install && npm run dev\` |
 | Run a Cloudflare Worker locally | \`nimbus-wrangler dev\` |
 
 ## AI Models

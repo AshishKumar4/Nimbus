@@ -12,7 +12,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 {
   const processes = new SessionProcessSupervisor();
   const a = processes.spawn('node a.js', ['a.js'], '/home/user');
-  const b = processes.spawn('vite', [], '/home/user/app', { longRunning: true });
+  const b = processes.spawn('vite', [], '/home/user/example-app', { longRunning: true });
   const c = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
 
   assert.equal(a.pid, 1);
@@ -111,7 +111,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 // ── kill tears down the input channel ────────────────────────────────
 {
   const processes = new SessionProcessSupervisor();
-  const entry = processes.spawn('vite', [], '/home/user/app', { longRunning: true });
+  const entry = processes.spawn('vite', [], '/home/user/example-app', { longRunning: true });
   processes.openInput(entry.pid);
   assert.deepEqual(processes.writeInput(entry.pid, 'x'), { ok: true });
 

@@ -147,37 +147,37 @@ assert.equal(CHUNK_SIZE, 65536, 'tests assume the documented 64 KiB chunk size')
 // ── per-path revisions: subtree watermarks + isolation between paths ──
 {
   const { vfs } = makeVfs();
-  vfs.mkdir('home/user/app', { recursive: true });
+  vfs.mkdir('home/user/example-app', { recursive: true });
   vfs.mkdir('home/other', { recursive: true });
 
   const base = vfs.revision('home/user');
-  vfs.writeFile('home/user/app/a.txt', 'one');
+  vfs.writeFile('home/user/example-app/a.txt', 'one');
   assert.ok(vfs.revision('home/user') > base, 'write under subtree bumps the subtree watermark');
-  assert.equal(vfs.revision('home/user'), vfs.revision('home/user/app/a.txt'));
+  assert.equal(vfs.revision('home/user'), vfs.revision('home/user/example-app/a.txt'));
   assert.equal(vfs.revision(''), vfs.revision(), 'root watermark equals the global clock');
 
   // Isolation: mutations elsewhere must not move this subtree's watermark.
   const userRev = vfs.revision('home/user');
-  const fileRev = vfs.revision('home/user/app/a.txt');
+  const fileRev = vfs.revision('home/user/example-app/a.txt');
   vfs.writeFile('home/other/b.txt', 'two');
   vfs.utimes('home/other/b.txt', 1000, 2000);
   vfs.writeRange('home/other/b.txt', 1, new Uint8Array([7]));
   vfs.truncate('home/other/b.txt', 2);
   vfs.unlink('home/other/b.txt');
   assert.equal(vfs.revision('home/user'), userRev, 'unrelated mutations must not bump the subtree');
-  assert.equal(vfs.revision('home/user/app/a.txt'), fileRev, 'unrelated mutations must not bump the file');
+  assert.equal(vfs.revision('home/user/example-app/a.txt'), fileRev, 'unrelated mutations must not bump the file');
   assert.ok(vfs.revision() > userRev, 'global clock still advances');
 
   // Range ops and truncate bump their own subtree.
-  vfs.writeRange('home/user/app/a.txt', 0, new Uint8Array([1]));
+  vfs.writeRange('home/user/example-app/a.txt', 0, new Uint8Array([1]));
   assert.ok(vfs.revision('home/user') > userRev);
   const afterRange = vfs.revision('home/user');
-  vfs.truncate('home/user/app/a.txt', 1);
+  vfs.truncate('home/user/example-app/a.txt', 1);
   assert.ok(vfs.revision('home/user') > afterRange);
 
   // unlink/rmdir bump ancestors.
   const beforeUnlink = vfs.revision('home/user');
-  vfs.unlink('home/user/app/a.txt');
+  vfs.unlink('home/user/example-app/a.txt');
   assert.ok(vfs.revision('home/user') > beforeUnlink);
 }
 

@@ -6,7 +6,7 @@
  * (react, react-dom, scheduler). Ships as a static Worker asset alongside
  * cirrus-plugin-react.
  * Consumed by src/cirrus-real.ts — injected as LOADER modules, and
- * the Vite resolver's output (e.g. /home/user/app/node_modules/react/index.js)
+ * the Vite resolver's output (e.g. /home/user/example-app/node_modules/react/index.js)
  * is rewritten to point at one of these bundles at request time.
  */
 

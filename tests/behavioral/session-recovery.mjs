@@ -17,7 +17,7 @@ console.log(`SID: ${sid}`);
 const t1 = new Terminal(sid);
 await t1.connect();
 await sleep(2_000);
-await t1.run('mkdir -p /home/user/app && cd /home/user/app', 10_000);
+await t1.run('mkdir -p /home/user/example-app && cd /home/user/example-app', 10_000);
 await t1.run('echo "marker-content-12345" > recovery-marker.txt', 10_000);
 const cwdMarker1 = (await t1.run('pwd', 10_000)).output;
 const cmd1 = (await t1.run('echo "scrollback-line-A"', 10_000)).output;
@@ -39,16 +39,16 @@ await sleep(4_500); // let scrollback replay land
 
 // 1. file persisted.
 {
-  const r = await t2.run('cat /home/user/app/recovery-marker.txt', 10_000);
+  const r = await t2.run('cat /home/user/example-app/recovery-marker.txt', 10_000);
   a.check('marker file persists across WS reconnect',
     /marker-content-12345/.test(r.output), r.output.slice(0, 200));
 }
 
-// 2. cwd persisted (we should still be in /home/user/app, not /home/user).
+// 2. cwd persisted (we should still be in /home/user/example-app, not /home/user).
 {
   const r = await t2.run('pwd', 10_000);
-  a.check('cwd persists across WS reconnect (still /home/user/app)',
-    /\/home\/user\/app/.test(r.output), `marker1=${cwdMarker1.trim().slice(0, 80)} marker2=${r.output.trim().slice(0, 80)}`);
+  a.check('cwd persists across WS reconnect (still /home/user/example-app)',
+    /\/home\/user\/example-app/.test(r.output), `marker1=${cwdMarker1.trim().slice(0, 80)} marker2=${r.output.trim().slice(0, 80)}`);
 }
 
 // 4. long-running process state — spawn a script with the explicit

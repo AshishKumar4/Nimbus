@@ -74,7 +74,7 @@ const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
 const PREVIEW_BASE = `${BASE_PATH}/preview`;
 const VITE_PORT = 5173;
-const ROOT = 'home/user/app';
+const ROOT = 'home/user/example-app';
 
 function makeVfs() {
   // No vite.config.* on disk → start-real-vite skips esbuild bundling entirely.
@@ -129,7 +129,7 @@ function makeWokenSession(storage = {}) {
 const HIBERNATED_REAL = {
   'vite-config': {
     devServer: 'real', root: ROOT, port: VITE_PORT,
-    basePath: PREVIEW_BASE, configDir: 'home/user/app',
+    basePath: PREVIEW_BASE, configDir: 'home/user/example-app',
   },
 };
 

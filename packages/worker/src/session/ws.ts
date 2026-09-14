@@ -260,7 +260,7 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     // Persist Shell state to DO SQLite after the terminal has handled
     // the user's keystroke. The Shell builtin `cd` mutates this.cwd
     // synchronously inside executeLine, so by the time we reach this
-    // line a `cd app\r` has already taken effect and we capture the
+    // line a `cd example-app\r` has already taken effect and we capture the
     // new cwd. Cheap when nothing has changed; SESSION_ENV_MAX_BYTES
     // is the only failure mode and is logged, not thrown.
     snapshotShellState(self);

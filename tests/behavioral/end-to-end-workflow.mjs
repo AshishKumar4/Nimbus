@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// behavioral/end-to-end-workflow — fresh session → cd app → npm install →
+// behavioral/end-to-end-workflow — fresh session → cd example-app → npm install →
 // npm run dev → real Chrome navigates to /preview/?id=<sid> and asserts
 // the seeded Nimbus Starter React app actually mounts.
 //
@@ -10,7 +10,7 @@
 // — that test passes against a static HTML shell even when the React
 // bundle fails to load (the 2026-05-10 false-positive incident class).
 //
-// The seeded /home/user/app starter is a Vite + React + TypeScript +
+// The seeded /home/user/example-app starter is a Vite + React + TypeScript +
 // Tailwind + React Router project whose Home component renders the
 // heading "A dev environment that lives at the edge." We wait for
 // that exact rendered text via real Chrome — if React fails to
@@ -38,8 +38,8 @@ await t.waitForPrompt(60_000);
 
 // Step 1: cd into the seeded app.
 {
-  const r = await t.run('cd /home/user/app && pwd', 10_000);
-  a.check('cd /home/user/app succeeds', /\/home\/user\/app/.test(r.output), r.output.slice(-200));
+  const r = await t.run('cd /home/user/example-app && pwd', 10_000);
+  a.check('cd /home/user/example-app succeeds', /\/home\/user\/example-app/.test(r.output), r.output.slice(-200));
 }
 
 // Step 2: npm install.

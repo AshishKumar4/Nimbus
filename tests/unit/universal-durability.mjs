@@ -181,7 +181,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 {
   const first = setup();
   const spawned = await first.fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app',
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app',
   });
   // A runtime-learned port (the http shim's listen → registerPort): stamped
   // on the row with no reservation in sight.
@@ -195,7 +195,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   // A declared-port resident, also unreserved — the shape the re-drive can
   // re-register on its own (the harness program never calls listen()).
   const declared = await first.fm.spawnNode(SERVER, {
-    command: 'node api.js', argv: ['/home/user/app/api.js', '--port', '20701'], cwd: '/home/user/app', port: 20701,
+    command: 'node api.js', argv: ['/home/user/example-app/api.js', '--port', '20701'], cwd: '/home/user/example-app', port: 20701,
   });
   assert.equal((await rowFor(first.ctx, declared.pid)).port, 20701, 'the declared port is stamped too');
 
@@ -216,18 +216,18 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 {
   const { fm, ctx, processes } = setup();
   const a1 = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', env: { SECRET: 'one' },
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', env: { SECRET: 'one' },
   });
   const owner1 = (await rowFor(ctx, a1.pid)).owner;
-  assert.equal(owner1, await deriveResidentOwner('/home/user/app', ['/home/user/app/server.js']),
+  assert.equal(owner1, await deriveResidentOwner('/home/user/example-app', ['/home/user/example-app/server.js']),
     'the owner is the documented digest of cwd and argv');
   fm.kill(a1.pid);
   const a2 = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', env: { SECRET: 'rotated', PORT: '9' },
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', env: { SECRET: 'rotated', PORT: '9' },
   });
   assert.equal((await rowFor(ctx, a2.pid)).owner, owner1, 'a re-spawn with a different env keeps its identity');
   const b = await fm.spawnNode(SERVER, {
-    command: 'node other.js', argv: ['/home/user/app/other.js'], cwd: '/home/user/app',
+    command: 'node other.js', argv: ['/home/user/example-app/other.js'], cwd: '/home/user/example-app',
   });
   assert.notEqual((await rowFor(ctx, b.pid)).owner, owner1, 'a different argv is a different identity');
   const c = await fm.spawnNode(SERVER, {
@@ -259,10 +259,10 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 {
   const { fm, ctx, self, notices } = setup();
   const a1 = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', port: 20710,
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', port: 20710,
   });
   const a2 = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app',
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app',
   });
   assert.ok(a2.pid > a1.pid);
   assert.equal(await rowFor(ctx, a2.pid), undefined, 'the second instance is not journalled');
@@ -284,7 +284,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   // Once the first instance is gone, the same program is the durable one again.
   fm.kill(a1.pid); fm.kill(a2.pid);
   const a3 = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app',
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app',
   });
   assert.equal((await rowFor(ctx, a3.pid)).owner, (await readPortReservation(ctx, 20710)).owner,
     'a later instance carries the identity');
@@ -295,7 +295,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 {
   const { fm, ctx, self, portRegistry, directory, world } = setup();
   const a = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', port: 20720,
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', port: 20720,
   });
   assert.equal(await readPortReservation(ctx, 20720), null, 'no reservation before expose');
   const owner = (await rowFor(ctx, a.pid)).owner;
@@ -321,7 +321,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
   // A name must be unique per session and DNS-label-safe.
   const b0 = await fm.spawnNode(SERVER, {
-    command: 'node b.js', argv: ['/home/user/app/b.js'], cwd: '/home/user/app', port: 20721,
+    command: 'node b.js', argv: ['/home/user/example-app/b.js'], cwd: '/home/user/example-app', port: 20721,
   });
   await assert.rejects(rpcExposeApp(self, 20721, { name: 'api' }), /already taken/, 'a duplicate name is refused');
   await assert.rejects(rpcExposeApp(self, 20721, { name: '3000' }), /not a valid app name/, 'a numeric name is refused');
@@ -333,7 +333,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   // 5. an unrelated server on the same port after the app stops.
   fm.kill(a.pid);
   const other = await fm.spawnNode(SERVER, {
-    command: 'node other.js', argv: ['/home/user/app/other.js'], cwd: '/home/user/app', port: 20720,
+    command: 'node other.js', argv: ['/home/user/example-app/other.js'], cwd: '/home/user/example-app', port: 20720,
   });
   assert.equal(portRegistry.get(20720)?.pid, other.pid, 'the unrelated server took the port');
   assert.equal(portRegistry.hasCapability(20720, CAP1), false, 'it never sees the app\'s capability');
@@ -342,7 +342,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(directory.rows.has(CAP1), false, 'the directory row went with it');
   assert.equal((await routeToSessionPort(self, 20720, bearer(20720, CAP1), '/', '', CAP1)).status, 404,
     'the shared link 404s');
-  assert.equal((await rowFor(ctx, other.pid)).owner, await deriveResidentOwner('/home/user/app', ['/home/user/app/other.js']),
+  assert.equal((await rowFor(ctx, other.pid)).owner, await deriveResidentOwner('/home/user/example-app', ['/home/user/example-app/other.js']),
     'the unrelated server keeps its own identity — the derived reservation does not claim it');
   await assert.rejects(rpcExposeApp(self, 20720, { visibility: 'public' }), /held by another owner|already holds/,
     'the unrelated server cannot expose over the identity\'s reservation');
@@ -361,7 +361,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   // The original identity is re-exposable.
   fm.kill(other.pid);
   const again = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', port: 20720,
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', port: 20720,
   });
   const reExposed = await rpcExposeApp(self, 'api', { visibility: 'public' });
   assert.equal(reExposed.owner, owner);
@@ -608,13 +608,13 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 }
 {
   const { fm, ctx, self, vfs, notices, world } = setup();
-  const owner = await deriveResidentOwner('/home/user/app', ['/home/user/app/server.js']);
+  const owner = await deriveResidentOwner('/home/user/example-app', ['/home/user/example-app/server.js']);
   // The identity holds a named reservation (a previous expose): the next
   // spawn is launched under it.
   await reservePort(ctx, { owner, preferredPort: 20730, occupiedPorts: NONE, name: 'web' });
   const boots = world.boots.length;
   const a = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', env: { PORT: '3000', TERM: 'xterm' },
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', env: { PORT: '3000', TERM: 'xterm' },
   });
   assert.equal(world.boots.length, boots + 1);
   const row = await rowFor(ctx, a.pid);
@@ -644,7 +644,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   // A resident that ignores $PORT: registered anyway, reported as failed.
   fm.kill(a.pid);
   const b = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app',
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app',
   });
   await fm.registerPort(b.pid, 3000);
   assert.equal(fm.portRegistry?.get?.(3000)?.pid ?? self.portRegistry.get(3000)?.pid, b.pid, 'the server is not broken: 3000 is registered');
@@ -663,7 +663,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const { fm, ctx, self, processes, notices, world } = setup();
   // 'on-failure' rides the env into the row.
   const a = await fm.spawnNode(SERVER, {
-    command: 'node crashy.js', argv: ['/home/user/app/crashy.js'], cwd: '/home/user/app', port: 20740,
+    command: 'node crashy.js', argv: ['/home/user/example-app/crashy.js'], cwd: '/home/user/example-app', port: 20740,
     env: { NIMBUS_RESTART: 'on-failure' },
   });
   assert.equal((await rowFor(ctx, a.pid)).restart, 'on-failure');
@@ -692,7 +692,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
   // 'never' (the default) and a clean exit release the row.
   const b = await fm.spawnNode(SERVER, {
-    command: 'node fine.js', argv: ['/home/user/app/fine.js'], cwd: '/home/user/app', port: 20741,
+    command: 'node fine.js', argv: ['/home/user/example-app/fine.js'], cwd: '/home/user/example-app', port: 20741,
   });
   assert.equal((await rowFor(ctx, b.pid)).restart, 'never');
   const bootsBefore = world.boots.length;
@@ -700,14 +700,14 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   await waitFor(async () => (await rowFor(ctx, b.pid)) === undefined, 5_000);
   assert.equal((await journalRows(ctx)).some((r) => r.command === 'node fine.js'), false, "'never' releases on a crash");
   const c = await fm.spawnNode(SERVER, {
-    command: 'node clean.js', argv: ['/home/user/app/clean.js'], cwd: '/home/user/app', port: 20742,
+    command: 'node clean.js', argv: ['/home/user/example-app/clean.js'], cwd: '/home/user/example-app', port: 20742,
     env: { NIMBUS_RESTART: 'on-failure' },
   });
   fm.finishProcess(c.pid, 0, 'exited');
   await waitFor(async () => (await rowFor(ctx, c.pid)) === undefined, 5_000);
   assert.equal((await journalRows(ctx)).some((r) => r.command === 'node clean.js'), false, 'a clean exit releases under on-failure too');
   const d = await fm.spawnNode(SERVER, {
-    command: 'node killed.js', argv: ['/home/user/app/killed.js'], cwd: '/home/user/app', port: 20743,
+    command: 'node killed.js', argv: ['/home/user/example-app/killed.js'], cwd: '/home/user/example-app', port: 20743,
     env: { NIMBUS_RESTART: 'on-failure' },
   });
   fm.kill(d.pid);
@@ -744,7 +744,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const { fm, ctx, self } = setup();
   await reservePort(ctx, { owner: 'embedder-app', preferredPort: 20750, occupiedPorts: NONE, visibility: 'public', capability: 'f'.repeat(24), name: 'shop' });
   const a = await fm.spawnNode(SERVER, {
-    command: 'node server.js', argv: ['/home/user/app/server.js'], cwd: '/home/user/app', port: 20751,
+    command: 'node server.js', argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app', port: 20751,
   });
   const apps = await rpcListApps(self);
   const reservedOnly = apps.find((app) => app.owner === 'embedder-app');

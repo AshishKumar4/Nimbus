@@ -455,7 +455,7 @@ export class NpmInstaller {
       //   the npm command-handler returns to the shell, the shell
       //   prints its prompt, and THEN the orphan promise's safeProgress
       //   fires — visually corrupting the freshly-rendered prompt
-      //   ("user@nimbus:~/app$ [npm] Pre-bundle complete: ...").
+      //   ("user@nimbus:~/example-app$ [npm] Pre-bundle complete: ...").
       //
       // Fix:
       //   Suppress writes to ctx.stdout once install() has returned.

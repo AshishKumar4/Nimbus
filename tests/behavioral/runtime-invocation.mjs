@@ -63,11 +63,11 @@ srv.listen(${SERVER_PORT}, '0.0.0.0', () => { console.log('LISTENING ${SERVER_PO
 setTimeout(() => { srv.close(); process.exit(0); }, 14_000);
 `.trim();
 
-await t.run('cd /home/user/app', 10_000);
-await t.run(heredocCommand('/home/user/app/server.js', serverJs), 15_000);
+await t.run('cd /home/user/example-app', 10_000);
+await t.run(heredocCommand('/home/user/example-app/server.js', serverJs), 15_000);
 
 t.reset();
-t.cmd('node /home/user/app/server.js');
+t.cmd('node /home/user/example-app/server.js');
 // A long-running fork emits "[started (long-running)…]" notice OR a "LISTENING <port>" line.
 // We accept either. The shell may or may not return immediately depending on impl.
 let serverStarted = false;

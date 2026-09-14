@@ -13,7 +13,7 @@
  * Solution: bundle the common CJS packages at build time into ESM
  * artifacts, emit them as LOADER modules alongside plugin-react,
  * and rewrite the Vite resolver's output so that
- *   /home/user/app/node_modules/react/index.js
+ *   /home/user/example-app/node_modules/react/index.js
  * maps to the pre-bundled
  *   cirrus-npm/react.js
  * at facet load time.
@@ -350,7 +350,7 @@ async function main() {
  * (react, react-dom, scheduler). Ships as a static Worker asset alongside
  * cirrus-plugin-react.
  * Consumed by src/cirrus-real.ts — injected as LOADER modules, and
- * the Vite resolver's output (e.g. /home/user/app/node_modules/react/index.js)
+ * the Vite resolver's output (e.g. /home/user/example-app/node_modules/react/index.js)
  * is rewritten to point at one of these bundles at request time.
  */
 

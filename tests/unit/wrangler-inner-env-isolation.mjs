@@ -29,7 +29,7 @@ const OUTER_ENV = {
 function innerEnvFor(config) {
   const w = new NimbusWrangler({
     vfs: {}, vfsEvents: { on: () => {} }, esbuild: {},
-    env: OUTER_ENV, ctx: {}, root: '/home/user/app',
+    env: OUTER_ENV, ctx: {}, root: '/home/user/example-app',
     onLog: () => {},
   });
   w.config = config;

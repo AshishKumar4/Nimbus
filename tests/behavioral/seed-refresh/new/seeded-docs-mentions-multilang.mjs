@@ -28,7 +28,7 @@ await t.waitForPrompt(60_000);
 
 // Docs.tsx
 {
-  const { output } = await t.run('cat /home/user/app/src/pages/Docs.tsx', 15_000);
+  const { output } = await t.run('cat /home/user/example-app/src/pages/Docs.tsx', 15_000);
   const out = stripAnsi(output);
 
   a.check('Docs.tsx has a "Compile native code" section', /Compile native code/.test(out),
@@ -44,7 +44,7 @@ await t.waitForPrompt(60_000);
 
 // Home.tsx — the landing card grid should now feature multi-language.
 {
-  const { output } = await t.run('cat /home/user/app/src/pages/Home.tsx', 15_000);
+  const { output } = await t.run('cat /home/user/example-app/src/pages/Home.tsx', 15_000);
   const out = stripAnsi(output);
   a.check('Home.tsx hero features a "Multi-language" card', /Multi-language/.test(out),
     out.slice(-500));
@@ -55,7 +55,7 @@ await t.waitForPrompt(60_000);
 
 // README.md — Beyond JS section.
 {
-  const { output } = await t.run('cat /home/user/app/README.md', 15_000);
+  const { output } = await t.run('cat /home/user/example-app/README.md', 15_000);
   const out = stripAnsi(output);
   a.check('starter README has "Beyond JS" section', /## Beyond JS/.test(out), out.slice(-500));
   a.check('starter README shows the clang demo command', /clang ~\/hello\.c -o hello/.test(out),

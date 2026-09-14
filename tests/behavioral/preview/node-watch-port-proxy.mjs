@@ -22,7 +22,7 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(20_000);
 
-await t.run('mkdir -p /home/user/app && cd /home/user/app', 15_000);
+await t.run('mkdir -p /home/user/example-app && cd /home/user/example-app', 15_000);
 
 const serverJs = `
 const http = require('http');

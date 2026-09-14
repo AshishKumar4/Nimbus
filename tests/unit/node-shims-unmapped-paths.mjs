@@ -59,7 +59,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 // The mapped world: the working directory the manifest walk covered.
-const APP = '/home/user/app';
+const APP = '/home/user/example-app';
 vfs.mkdir(APP, { recursive: true });
 vfs.writeFile(`${APP}/entry.js`, enc.encode('module.exports = 1;\n'));
 
@@ -94,13 +94,13 @@ const factory = new Function(
     '\n;return { fs: __fsMod };',
 );
 const { fs } = factory(
-  { 'home/user/app/entry.js': 'module.exports = 1;\n' },
+  { 'home/user/example-app/entry.js': 'module.exports = 1;\n' },
   {
-    'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
-    'home/user/app/entry.js': { type: 'file', size: 19, mode: 0o644, uid: 1000, gid: 1000 },
+    'home/user/example-app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
+    'home/user/example-app/entry.js': { type: 'file', size: 19, mode: 0o644, uid: 1000, gid: 1000 },
   },
   {},
-  { 'home/user/app': ['entry.js'] },
+  { 'home/user/example-app': ['entry.js'] },
   supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   APP,

@@ -4,7 +4,7 @@
 //
 // User flow timed:
 //   1. mint session → connect terminal → wait prompt.
-//   2. `cd app && npm install` for the seeded React project (untimed).
+//   2. `cd example-app && npm install` for the seeded React project (untimed).
 //   3. Fire-and-forget `npm run dev` (the dev server holds the terminal, so
 //      t.cmd() rather than t.run()).
 //   4. Poll GET /s/<sid>/preview/ until the DEV SERVER is what answers.
@@ -67,7 +67,7 @@ try {
   await t.connect();
   await t.waitForPrompt(30_000);
 
-  await t.run('cd app && npm install', 300_000);
+  await t.run('cd example-app && npm install', 300_000);
 
   t.reset();
   const t0 = performance.now();

@@ -88,7 +88,7 @@ export type SliceEntry = SlicedFile | SlicedDir;
 export interface PrebundleSpec {
   /** Bare specifier being bundled, e.g. "framer-motion" or "react/jsx-runtime". */
   specifier: string;
-  /** VFS path of the entry point, e.g. "/home/user/app/node_modules/framer-motion/dist/es/index.mjs". */
+  /** VFS path of the entry point, e.g. "/home/user/example-app/node_modules/framer-motion/dist/es/index.mjs". */
   entryPath: string;
   /** External specifiers (from getSharedRuntimeExternals). */
   externals: string[];
@@ -686,7 +686,7 @@ export const prebundleOne = async function prebundleOne(
     // NOTE: do NOT pass `external: spec.externals` here at the top level.
     // esbuild's top-level external matches by file PATH too — when bundling
     // a subpath like 'react/jsx-runtime', the resolved entry path
-    // /home/user/app/node_modules/react/jsx-runtime.js matches the 'react'
+    // /home/user/example-app/node_modules/react/jsx-runtime.js matches the 'react'
     // external and esbuild errors with
     //   "The entry point '...' cannot be marked as external"
     //

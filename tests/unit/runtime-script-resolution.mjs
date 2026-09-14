@@ -41,55 +41,55 @@ function makeFs(files) {
   };
 }
 
-const CWD = '/home/user/app';
+const CWD = '/home/user/example-app';
 const fs = makeFs({
-  'home/user/app/cli.ts': 'console.log("CLI_TS");',
-  'home/user/app/plain.js': 'console.log("PLAIN_JS");',
-  'home/user/app/tools/index.js': 'console.log("TOOLS_INDEX");',
-  'home/user/app/package.json': '{"main":"plain.js","module":"cli.ts"}',
-  'home/user/app/nested/deep.ts': 'console.log("DEEP");',
+  'home/user/example-app/cli.ts': 'console.log("CLI_TS");',
+  'home/user/example-app/plain.js': 'console.log("PLAIN_JS");',
+  'home/user/example-app/tools/index.js': 'console.log("TOOLS_INDEX");',
+  'home/user/example-app/package.json': '{"main":"plain.js","module":"cli.ts"}',
+  'home/user/example-app/nested/deep.ts': 'console.log("DEEP");',
 });
 
 // ── the resolver, against behaviour measured from real bun ──────────────────
 
 const resolve = (target, opts) => resolveRuntimeScriptPath(fs, CWD, target, opts);
 
-assert.equal(resolve('cli.ts'), 'home/user/app/cli.ts', 'a bare filename resolves verbatim');
-assert.equal(resolve('./cli.ts'), 'home/user/app/cli.ts', './ resolves against cwd');
+assert.equal(resolve('cli.ts'), 'home/user/example-app/cli.ts', 'a bare filename resolves verbatim');
+assert.equal(resolve('./cli.ts'), 'home/user/example-app/cli.ts', './ resolves against cwd');
 assert.equal(
   resolve('nested/deep.ts'),
-  'home/user/app/nested/deep.ts',
+  'home/user/example-app/nested/deep.ts',
   'a relative subpath resolves against cwd',
 );
 assert.equal(
-  resolve('/home/user/app/cli.ts'),
-  'home/user/app/cli.ts',
+  resolve('/home/user/example-app/cli.ts'),
+  'home/user/example-app/cli.ts',
   'an absolute path resolves to the same canonical key as a relative one',
 );
 assert.equal(
-  resolve('../app/cli.ts'),
-  'home/user/app/cli.ts',
+  resolve('../example-app/cli.ts'),
+  'home/user/example-app/cli.ts',
   '.. is collapsed rather than handed to the VFS literally',
 );
 
 // Extension probing: `bun run plain` finds plain.js.
-assert.equal(resolve('plain'), 'home/user/app/plain.js', 'a target without an extension is probed');
+assert.equal(resolve('plain'), 'home/user/example-app/plain.js', 'a target without an extension is probed');
 
 // A directory is never source. Real bun runs tools/index.js for `bun run ./tools`;
 // resolving the directory to itself made readFileString throw and reported the
 // file as missing.
 assert.equal(
   resolve('tools'),
-  'home/user/app/tools/index.js',
+  'home/user/example-app/tools/index.js',
   'a directory resolves to its index, not to itself',
 );
-assert.equal(resolve('./tools'), 'home/user/app/tools/index.js', 'likewise path-shaped');
+assert.equal(resolve('./tools'), 'home/user/example-app/tools/index.js', 'likewise path-shaped');
 
 // `.` is the package entry. bun prefers `module`, node takes `main`.
-assert.equal(resolve('.'), 'home/user/app/plain.js', 'node takes package.json main');
+assert.equal(resolve('.'), 'home/user/example-app/plain.js', 'node takes package.json main');
 assert.equal(
   resolve('.', { preferModuleField: true }),
-  'home/user/app/cli.ts',
+  'home/user/example-app/cli.ts',
   'bun prefers package.json module over main',
 );
 
@@ -181,12 +181,12 @@ const handler = buildRuntimeHandler(spec, {
   assert.ok(ran, 'the runner was reached — the verb did not swallow the path');
   assert.equal(
     ran.opts.filename,
-    '/home/user/app/cli.ts',
+    '/home/user/example-app/cli.ts',
     'the runner receives the resolved file, not the verb',
   );
   assert.deepEqual(
     ran.opts.argv,
-    ['/home/user/app/cli.ts', '--help', 'extra'],
+    ['/home/user/example-app/cli.ts', '--help', 'extra'],
     'user args after the path reach the script — --help is the script\'s, not the runtime\'s',
   );
   assert.ok(
@@ -201,7 +201,7 @@ const handler = buildRuntimeHandler(spec, {
 // otherwise loop forever.
 {
   ran = null;
-  const loopFs = makeFs({ 'home/user/app/run': 'console.log("FILE_NAMED_RUN");' });
+  const loopFs = makeFs({ 'home/user/example-app/run': 'console.log("FILE_NAMED_RUN");' });
   const loopHandler = buildRuntimeHandler(
     { ...spec, subcommands: { run: async (ctx, _r, go) => go(['./run', ...ctx.args.slice(1)]) } },
     {
@@ -231,7 +231,7 @@ const handler = buildRuntimeHandler(spec, {
   );
   const { ctx } = makeCtx(['plain.js']);
   assert.equal(await bare(ctx), 0, 'the plain script path still runs');
-  assert.equal(ran.opts.filename, '/home/user/app/plain.js', 'and resolves the same way');
+  assert.equal(ran.opts.filename, '/home/user/example-app/plain.js', 'and resolves the same way');
 }
 
 console.log('runtime-script-resolution: OK');

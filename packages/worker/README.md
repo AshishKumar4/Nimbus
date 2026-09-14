@@ -216,8 +216,8 @@ config })`. The route requires a valid Nimbus JWT and `sandbox:use` scope.
 For an app server, start the process and expose its virtual port:
 
 ```ts
-await box.files.write('/home/user/app/server.js', serverSource);
-const proc = await box.startProcess('node --watch /home/user/app/server.js');
+await box.files.write('/home/user/example-app/server.js', serverSource);
+const proc = await box.startProcess('node --watch /home/user/example-app/server.js');
 const port = await box.ports.expose(3000);
 // proc.pid is live immediately: box.processes.logs(proc.pid) streams output,
 // box.processes.kill(proc.pid) stops it

@@ -91,7 +91,7 @@ import {
 // Keeping them off the top-level import graph shaves their module-eval cost
 // (zod, embedded socket-kernel/shim sources, wasm loaders) out of the
 // one-time Worker Startup Time paid on every fresh-isolate cold run.
-import { seedProject, hasSeededProject, SEED_PROJECT_DIR } from '@nimbus-sh/core/vfs/seed-project.js';
+import { seedProject, hasSeededProject, SEED_PROJECT_DIR, SEED_PROJECT_NAME, SEED_PROJECT_TILDE } from '@nimbus-sh/core/vfs/seed-project.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
@@ -2807,19 +2807,19 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
 
       // ── Starter-app hint (only if seed sentinel still exists) ──
       // We check the live VFS, not a static file, so that if the user
-      // deletes ~/.nimbus-seeded (or ~/app) the hint stops appearing on
-      // next login.
+      // deletes ~/.nimbus-seeded (or the project dir) the hint stops
+      // appearing on next login.
       try {
         if (hasSeededProject(self.sqliteFs!) && kernelFs.exists(SEED_PROJECT_DIR)) {
           self.terminal.write(
-            '\x1b[2mStarter app ready at \x1b[36m~/app\x1b[0m\x1b[2m — try:\x1b[0m\r\n' +
-            '  \x1b[36mcd app && npm install && npm run dev\x1b[0m\r\n\r\n'
+            `\x1b[2mStarter app ready at \x1b[36m${SEED_PROJECT_TILDE}\x1b[0m\x1b[2m — try:\x1b[0m\r\n` +
+            `  \x1b[36mcd ${SEED_PROJECT_NAME} && npm install && npm run dev\x1b[0m\r\n\r\n`
           );
         }
       } catch {}
 
       // ── W11: framework detection MOTD line ──
-      // If ~/app has a recognizable framework, print one informational line.
+      // If the seeded project dir has a recognizable framework, print one informational line.
       // Purely advisory — does not change boot behaviour. Fire-and-forget
       // because initSession is sync; any failure is silently swallowed.
       void (async () => {

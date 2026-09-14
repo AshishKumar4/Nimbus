@@ -37,7 +37,7 @@ const dirName = 'refreshes-mkdir-' + Math.random().toString(36).slice(2, 8);
 await t.run(`mkdir /home/user/${dirName}`, 10_000);
 
 // Wait for THIS mkdir's event, not for "some frame to arrive". The session
-// seed writes /home/user/app and friends, and that burst can land after the
+// seed writes /home/user/example-app and friends, and that burst can land after the
 // first prompt — a wait that stops on any frame stops on the seed and reads
 // the verdict off it. Measured propagation is 68 ms p50 / 78 ms p90 / 466 ms
 // worst over 40 samples, 20 of them against a target carrying eight other

@@ -37,7 +37,7 @@ const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const dir = '/home/user/app';
+const dir = '/home/user/example-app';
 const resident = `${dir}/resident.json`;
 const staged = `${dir}/lib.data.d.ts`;
 const alsoStaged = `${dir}/second.data`;
@@ -79,18 +79,18 @@ const factory = new Function(
     '\n;return { fs: __fsMod };',
 );
 const { fs } = factory(
-  { 'home/user/app/resident.json': RESIDENT_BODY },
+  { 'home/user/example-app/resident.json': RESIDENT_BODY },
   {
-    'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
-    'home/user/app/resident.json': statOf(resident, RESIDENT_BODY.length),
-    'home/user/app/lib.data.d.ts': statOf(staged, STAGED_BODY.length),
-    'home/user/app/second.data': statOf(alsoStaged, SECOND_BODY.length),
-    'home/user/app/third.data': statOf(asyncOnly, THIRD_BODY.length),
+    'home/user/example-app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
+    'home/user/example-app/resident.json': statOf(resident, RESIDENT_BODY.length),
+    'home/user/example-app/lib.data.d.ts': statOf(staged, STAGED_BODY.length),
+    'home/user/example-app/second.data': statOf(alsoStaged, SECOND_BODY.length),
+    'home/user/example-app/third.data': statOf(asyncOnly, THIRD_BODY.length),
   },
   {},
   {
     'home/user': ['app'],
-    'home/user/app': ['resident.json', 'lib.data.d.ts', 'second.data', 'third.data'],
+    'home/user/example-app': ['resident.json', 'lib.data.d.ts', 'second.data', 'third.data'],
   },
   supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
@@ -131,7 +131,7 @@ assert.ok(
   `the error must name the file it could not read: ${missError.message}`,
 );
 assert.deepEqual(
-  missed(), ['home/user/app/lib.data.d.ts'],
+  missed(), ['home/user/example-app/lib.data.d.ts'],
   'the miss must be recorded so the run can be failed by name instead of ending quietly',
 );
 
@@ -160,7 +160,7 @@ for (let i = 0; i < 3; i++) {
   try { fs.readFileSync(alsoStaged, 'utf8'); } catch { /* the miss under test */ }
 }
 assert.deepEqual(
-  missed(), ['home/user/app/second.data'],
+  missed(), ['home/user/example-app/second.data'],
   'three refused reads of one path are one unanswered path',
 );
 await settle();
@@ -174,7 +174,7 @@ assert.equal(
 // was never handed those bytes. It read three times and got nothing three
 // times, so the run is not honest and must not be allowed to end quietly.
 assert.deepEqual(
-  missed(), ['home/user/app/second.data'],
+  missed(), ['home/user/example-app/second.data'],
   'residency repaired after the fact does not un-answer the reads that failed',
 );
 
@@ -189,12 +189,12 @@ assert.equal(
   'a path the supervisor can see is present, not missing',
 );
 assert.deepEqual(
-  missed(), ['home/user/app/second.data', 'home/user/app/third.data'],
+  missed(), ['home/user/example-app/second.data', 'home/user/example-app/third.data'],
   'each unanswered path is listed once, in the order the program hit them',
 );
 assert.equal(await fs.promises.readFile(asyncOnly, 'utf8'), THIRD_BODY);
 assert.deepEqual(
-  missed(), ['home/user/app/second.data'],
+  missed(), ['home/user/example-app/second.data'],
   'the async form is the documented remedy, so taking it must settle that miss',
 );
 assert.equal(fs.readFileSync(alsoStaged, 'utf8'), SECOND_BODY);

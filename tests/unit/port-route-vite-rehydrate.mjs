@@ -47,7 +47,7 @@ const { handleFetch } = await import(pathToFileURL(entry.path).href);
 const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
 const VITE_PORT = 5173;
-const ROOT = 'home/user/app';
+const ROOT = 'home/user/example-app';
 
 const INDEX_HTML = '<!DOCTYPE html><html><head><title>hibernated app</title></head><body><div id="root"></div></body></html>';
 

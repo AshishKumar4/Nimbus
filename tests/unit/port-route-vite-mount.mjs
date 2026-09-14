@@ -48,7 +48,7 @@ const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
 const PREVIEW_BASE = `${BASE_PATH}/preview`;
 const VITE_PORT = 5173;
-const ROOT = 'home/user/app';
+const ROOT = 'home/user/example-app';
 
 const INDEX_HTML =
   '<!DOCTYPE html><html><head><title>mount app</title>' +

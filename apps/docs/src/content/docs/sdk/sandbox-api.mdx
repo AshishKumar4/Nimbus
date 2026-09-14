@@ -25,7 +25,7 @@ Run one command, run source code, or start a process.
 
 ```ts
 const result = await box.exec('npm test', {
-  cwd: '/home/user/app', env: { CI: 'true' }, timeoutMs: 60_000, stdin: 'y\n',
+  cwd: '/home/user/example-app', env: { CI: 'true' }, timeoutMs: 60_000, stdin: 'y\n',
 });
 // { command, exitCode, success, stdout, stderr, duration, timestamp }
 
@@ -40,8 +40,8 @@ const proc = await box.startProcess('node --watch server.js');
 Read and change files through the sandbox VFS.
 
 ```ts
-await box.files.write('/home/user/app/server.js', code);   // string | Uint8Array
-const text  = await box.files.read('/home/user/app/server.js');
+await box.files.write('/home/user/example-app/server.js', code);   // string | Uint8Array
+const text  = await box.files.read('/home/user/example-app/server.js');
 const bytes = await box.files.readBytes('/home/user/data.bin');
 const list  = await box.files.list('/home/user');          // { name, type }[]
 await box.files.stat(path); await box.files.mkdir(path);

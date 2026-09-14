@@ -33,7 +33,7 @@ const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const cwd = '/home/user/app';
+const cwd = '/home/user/example-app';
 const SRC = '/tpl/hello';
 const TEMPLATE_FILES = ['.editorconfig', '__dot__gitignore', 'package.json', 'wrangler.jsonc', 'vitest.config.js'];
 vfs.mkdir(cwd, { recursive: true });
@@ -78,8 +78,8 @@ const factory = new Function(
 );
 const { fs, runToExit } = factory(
   {},
-  { 'home/user/app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
-  {}, { 'home/user/app': [] }, supervisor,
+  { 'home/user/example-app': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } },
+  {}, { 'home/user/example-app': [] }, supervisor,
   { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, cwd, [], {}, `${cwd}/s.mjs`, cwd,
 );
 

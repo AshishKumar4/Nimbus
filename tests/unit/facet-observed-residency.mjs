@@ -181,18 +181,18 @@ manager.setVfs(rawVfs);
 // A data file too large for the cwd snapshot's per-file bound, reached through
 // a path the program computes — so no static scan of the entry can find it
 // either. That is the residue: a runtime-computed data path.
-const DATA = 'home/user/app/dataset.bin';
+const DATA = 'home/user/example-app/dataset.bin';
 const DATA_BYTES = CWD_SNAPSHOT_MAX_FILE_BYTES + 4096;
-kernel.mkdir('home/user/app', { recursive: true, mode: 0o755 });
+kernel.mkdir('home/user/example-app', { recursive: true, mode: 0o755 });
 kernel.writeFile(DATA, 'D'.repeat(DATA_BYTES), { mode: 0o644 });
 kernel.chown('home/user', 1000, 1000);
-kernel.chown('home/user/app', 1000, 1000);
+kernel.chown('home/user/example-app', 1000, 1000);
 
 // The premise, asserted rather than assumed: nothing already stages it.
 {
   const state = await buildPrefetchBundle(
     rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }),
-    '/home/user/app/entry.js', '/home/user/app', '', undefined,
+    '/home/user/example-app/entry.js', '/home/user/example-app', '', undefined,
   );
   assert.ok(
     !(DATA in state.bundle),
@@ -204,12 +204,12 @@ kernel.chown('home/user/app', 1000, 1000);
 // "the file is not there" and carries on with a default.
 const PROGRAM = `
 const fs = require('fs');
-const target = ['', 'home', 'user', 'app', 'data' + 'set.bin'].join('/');
+const target = ['', 'home', 'user', 'example-app', 'data' + 'set.bin'].join('/');
 let body = 'FALLBACK';
 try { body = fs.readFileSync(target, 'utf8'); } catch (error) { /* looks like ENOENT */ }
 console.log('bytes=' + body.length);
 `;
-const OPTS = { filename: '/home/user/app/entry.js', cwd: '/home/user/app', captureOutput: true };
+const OPTS = { filename: '/home/user/example-app/entry.js', cwd: '/home/user/example-app', captureOutput: true };
 
 const real = { console: globalThis.console, process: globalThis.process, Buffer: globalThis.Buffer };
 const restore = () => {
