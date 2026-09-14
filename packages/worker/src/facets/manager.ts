@@ -39,7 +39,7 @@ import {
   restoreReservedPortCapability,
   type PortVisibility,
 } from '../session/port-capability.js';
-import { deriveResidentOwner, isDerivedOwner } from './resident-identity.js';
+import { deriveResidentOwner } from './resident-identity.js';
 import { RESIDENT_OWNER_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
@@ -5447,7 +5447,7 @@ export class FacetManager {
     let owner = derivedOwner;
     if (opts.port !== undefined && opts.port > 0 && opts.port < 65536) {
       const declared = await readPortReservation(this.ctx, opts.port);
-      if (declared !== null && declared.owner !== null && !isDerivedOwner(declared.owner)) {
+      if (declared !== null && declared.owner !== null && declared.kind === 'explicit') {
         owner = declared.owner;
       }
     }
@@ -5913,10 +5913,14 @@ export class FacetManager {
    */
   private async _registerResidentPort(pid: number, port: number): Promise<void> {
     const reservation = await readPortReservation(this.ctx, port);
-    const claimedBy = reservation !== null && reservation.owner !== null
-      && !isDerivedOwner(reservation.owner) && !this.ephemeralPids.has(pid)
-      ? reservation.owner
-      : undefined;
+    let claimedBy: string | undefined;
+    if (reservation?.owner && reservation.kind === 'explicit' && !this.ephemeralPids.has(pid)) {
+      const owner = reservation.owner;
+      const anotherLive = [...(await this.launchJournal.rows()).values()].some((row) =>
+        row.pid !== pid && residentOwner(row) === owner
+        && row.pid > this.processes.pidBase && this.processes.get(row.pid)?.state === 'running');
+      if (!anotherLive) claimedBy = owner;
+    }
     let newlyMismatched = false;
     const row = await this._amendRow(pid, (current) => {
       const owner = claimedBy ?? residentOwner(current);
@@ -5950,7 +5954,15 @@ export class FacetManager {
       );
     }
     const owner = row === undefined ? undefined : residentOwner(row);
-    if (reservation !== null && reservation.owner !== null && owner === reservation.owner) {
+    if (claimedBy !== undefined && row !== undefined && this.residentClaims.get(pid) !== claimedBy) {
+      await this._releaseResidentClaim(pid);
+      const duplicate = await this._claimResident(row);
+      if (duplicate !== null) {
+        this.ephemeralPids.set(pid, claimedBy);
+        await this.launchJournal.release(pid);
+      }
+    }
+    if (reservation !== null && reservation.owner !== null && owner === reservation.owner && !this.ephemeralPids.has(pid)) {
       this.portRegistry.register(port, pid);
       await restoreReservedPortCapability(
         { ctx: this.ctx, portRegistry: this.portRegistry },
@@ -5962,6 +5974,9 @@ export class FacetManager {
     // Any other occupant retires the previous one's capability — and its
     // directory row, so a public link goes dead rather than dangling — and
     // registers with a fresh one. The owner's reservation survives it.
+    if (reservation?.owner) {
+      this.hooks.notify?.(`\x1b[2m[nimbus: port ${port} belongs to ${reservation.owner}; pid ${pid} registers ephemeral (owner ${owner ?? 'none'})]\x1b[0m\r\n`);
+    }
     if (reservation?.visibility === 'public' && reservation.capability !== null) {
       await unbindPublicPortCapability(this._publicDirectoryHost(), reservation.capability);
     }

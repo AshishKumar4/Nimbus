@@ -1021,6 +1021,7 @@ async function applyExposure(
     occupied.delete(port);
     await reservePort(self.ctx, {
       owner,
+      kind: 'derived',
       preferredPort: port,
       occupiedPorts: occupied,
       ...(entry !== undefined ? { capability: entry.capability } : {}),
@@ -1040,6 +1041,7 @@ async function applyExposure(
         if (visibility === stored.visibility && name === stored.name) return;
         await txn.put(portRecordKey(port), {
           owner: stored.owner,
+          kind: stored.kind,
           capability: stored.capability,
           visibility,
           ...(name !== undefined ? { name } : {}),

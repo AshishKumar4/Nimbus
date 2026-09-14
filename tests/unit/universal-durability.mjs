@@ -308,7 +308,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(exposed.url, `https://${exposed.capability}--api--${SID}.${SUFFIX}/`,
     'the URL is the public name host form');
   const reservation = await readPortReservation(ctx, 20720);
-  assert.deepEqual(reservation, { owner, capability: exposed.capability, visibility: 'public', name: 'api' },
+  assert.deepEqual(reservation, { kind: 'derived', owner, capability: exposed.capability, visibility: 'public', name: 'api' },
     'expose reserved the port for the identity, with the name');
   assert.equal(portRegistry.hasCapability(20720, exposed.capability), true, 'the live registration answers it');
   assert.deepEqual(directory.rows.get(exposed.capability), { tenantSegment: TENANT, sid: SID, port: 20720, name: 'api' },
@@ -407,6 +407,23 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 }
 
 // ── 8. name host parse matrix + router resolution ───────────────────────────
+{
+  const { fm, ctx, portRegistry, notices } = setup();
+  const cap = 'e'.repeat(24);
+  await reservePort(ctx, { owner: 'explicit-app', preferredPort: 20800, occupiedPorts: NONE, capability: cap });
+  assert.equal((await readPortReservation(ctx, 20800)).kind, 'explicit');
+  const first = await fm.spawnNode(SERVER, { argv: ['first.js'] });
+  await fm.registerPort(first.pid, 20800);
+  assert.equal((await rowFor(ctx, first.pid)).owner, 'explicit-app', 'first runtime binder adopts explicit declaration');
+  assert.equal(portRegistry.hasCapability(20800, cap), true);
+  const second = await fm.spawnNode(SERVER, { argv: ['second.js'] });
+  const secondOwner = (await rowFor(ctx, second.pid)).owner;
+  await fm.registerPort(second.pid, 20800);
+  assert.equal((await rowFor(ctx, second.pid)).owner, secondOwner, 'second binder cannot adopt while owner is live');
+  assert.equal(portRegistry.hasCapability(20800, cap), false);
+  assert.ok(notices.some((line) => line.includes(`pid ${second.pid} registers ephemeral`)));
+  assert.equal((await readPortReservation(ctx, 20800)).owner, 'explicit-app');
+}
 {
   const CAP = 'abcdef0123456789abcdef01';
   const cases = [

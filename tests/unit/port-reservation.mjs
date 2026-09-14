@@ -48,9 +48,9 @@ const CONFLICT = /port reservation conflict/;
 // T1: a fresh store hands out the first port of the range as a bare reservation.
 {
   assert.equal(await reservePort(ctx, { owner: 'A', occupiedPorts: none }), 20000);
-  assert.deepEqual(record(20000), { owner: 'A', capability: null, visibility: 'scoped' },);
+  assert.deepEqual(record(20000), { kind: 'explicit', owner: 'A', capability: null, visibility: 'scoped' },);
   assert.equal(await readPortExposure(ctx, 20000), null, 'a bare reservation is not an exposure');
-  assert.deepEqual(await readPortReservation(ctx, 20000), { owner: 'A', capability: null, visibility: 'scoped' });
+  assert.deepEqual(await readPortReservation(ctx, 20000), { kind: 'explicit', owner: 'A', capability: null, visibility: 'scoped' });
 }
 
 // T2: the owner's port is answered again; others get the next free port; live listeners count.
@@ -63,11 +63,11 @@ const CONFLICT = /port reservation conflict/;
 // T3: a preferred port is refused, never moved, when anything else holds it.
 {
   await assert.rejects(reservePort(ctx, { owner: 'B', preferredPort: 20000, occupiedPorts: none }), CONFLICT);
-  assert.deepEqual(record(20000), { owner: 'A', capability: null, visibility: 'scoped' }, 'a refused claim leaves the holder intact');
+  assert.deepEqual(record(20000), { kind: 'explicit', owner: 'A', capability: null, visibility: 'scoped' }, 'a refused claim leaves the holder intact');
   assert.equal(await reservePort(ctx, { owner: 'A', preferredPort: 20000, occupiedPorts: none }), 20000);
   await assert.rejects(reservePort(ctx, { owner: 'D', preferredPort: 20002, occupiedPorts: new Set([20002]) }), CONFLICT);
   await assert.rejects(reservePort(ctx, { owner: 'A', preferredPort: 20005, occupiedPorts: none }), CONFLICT);
-  assert.deepEqual(record(20000), { owner: 'A', capability: null, visibility: 'scoped' },);
+  assert.deepEqual(record(20000), { kind: 'explicit', owner: 'A', capability: null, visibility: 'scoped' },);
   assert.equal(record(20005), undefined, 'a conflicting preference claims nothing');
 }
 
@@ -78,7 +78,7 @@ const CONFLICT = /port reservation conflict/;
   await persistPortCapability(self, 20000, 'a'.repeat(24));
   assert.deepEqual(await readPortExposure(ctx, 20000), { capability: 'a'.repeat(24), owner: 'A', visibility: 'scoped' });
   await clearPortCapability(self, 20000);
-  assert.deepEqual(record(20000), { owner: 'A', capability: null, visibility: 'scoped' }, 'unexpose keeps the owner reservation');
+  assert.deepEqual(record(20000), { kind: 'explicit', owner: 'A', capability: null, visibility: 'scoped' }, 'unexpose keeps the owner reservation');
   assert.equal(await readPortExposure(ctx, 20000), null);
   assert.equal(await readPortCapability(self, 20000), null);
   assert.equal(await reservePort(ctx, { owner: 'A', occupiedPorts: none }), 20000);
@@ -94,7 +94,7 @@ const CONFLICT = /port reservation conflict/;
 // T6: only the owner releases; a released port is free for the next claimant.
 {
   await assert.rejects(releasePortReservation(ctx, { owner: 'B', port: 20000 }), CONFLICT);
-  assert.deepEqual(record(20000), { owner: 'A', capability: null, visibility: 'scoped' },);
+  assert.deepEqual(record(20000), { kind: 'explicit', owner: 'A', capability: null, visibility: 'scoped' },);
   assert.equal(await releasePortReservation(ctx, { owner: 'A', port: 20000 }), true);
   assert.equal(record(20000), undefined);
   assert.equal(await releasePortReservation(ctx, { owner: 'A', port: 20000 }), false);
@@ -141,7 +141,7 @@ const CONFLICT = /port reservation conflict/;
     reservePort(ctx, { owner: 'I', preferredPort: 20040, occupiedPorts: none }),
   ]);
   assert.deepEqual(results, [20040, 20040], 'both answers name the same port');
-  assert.deepEqual(record(20040), { owner: 'I', capability: null, visibility: 'scoped' },);
+  assert.deepEqual(record(20040), { kind: 'explicit', owner: 'I', capability: null, visibility: 'scoped' },);
 }
 
 // T11: a foreign release is refused inside the transaction and the record
@@ -149,7 +149,7 @@ const CONFLICT = /port reservation conflict/;
 {
   const before = transactions;
   await assert.rejects(releasePortReservation(ctx, { owner: 'H', port: 20040 }), CONFLICT);
-  assert.deepEqual(record(20040), { owner: 'I', capability: null, visibility: 'scoped' }, 'a refused foreign release deletes nothing');
+  assert.deepEqual(record(20040), { kind: 'explicit', owner: 'I', capability: null, visibility: 'scoped' }, 'a refused foreign release deletes nothing');
   assert.ok(transactions > before, 'the release ran inside a transaction');
 }
 

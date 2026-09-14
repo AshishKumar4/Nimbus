@@ -70,6 +70,7 @@ export function isValidAppName(name: string): boolean {
 }
 const AppNameSchema = z.string().refine(isValidAppName, 'app name must be a DNS label that is neither numeric nor 24 hex');
 export const PortRecordSchema = z.object({
+  kind: z.enum(['explicit', 'derived']).default('explicit'),
   capability: PortCapabilitySchema.nullable(),
   owner: z.string().nullable(),
   visibility: PortVisibilitySchema.optional(),
@@ -83,6 +84,7 @@ export interface PortExposure {
 }
 /** The per-port record as stored: a bare reservation has no capability yet. */
 export interface PortReservation {
+  readonly kind: 'explicit' | 'derived';
   readonly owner: string | null;
   readonly capability: string | null;
   readonly visibility: PortVisibility;
@@ -172,6 +174,7 @@ export async function reservePort(
   input: {
     owner: string;
     preferredPort?: number;
+    kind?: 'explicit' | 'derived';
     occupiedPorts: ReadonlySet<number>;
     capability?: string;
     visibility?: PortVisibility;
@@ -213,7 +216,7 @@ export async function reservePort(
       if (stored === null || capability !== stored.capability
         || visibility !== (stored.visibility ?? 'scoped') || name !== stored.name) {
         await txn.put(portRecordKey(held.port), {
-          owner: input.owner, capability, visibility, ...(name !== undefined ? { name } : {}),
+          owner: input.owner, kind: stored?.kind ?? input.kind ?? 'explicit', capability, visibility, ...(name !== undefined ? { name } : {}),
         });
       }
       return held.port;
@@ -232,6 +235,7 @@ export async function reservePort(
     }
     await txn.put(portRecordKey(port), {
       owner: input.owner,
+      kind: input.kind ?? 'explicit',
       capability: input.capability ?? null,
       visibility: input.visibility ?? 'scoped',
       ...(input.name !== undefined ? { name: input.name } : {}),
@@ -313,6 +317,7 @@ export async function persistPortCapability(
     await txn.put(portRecordKey(port), {
       capability: PortCapabilitySchema.parse(capability),
       owner: parsed.success ? parsed.data.owner : null,
+      kind: parsed.success ? parsed.data.kind : 'explicit',
       ...(parsed.success && parsed.data.visibility !== undefined
         ? { visibility: parsed.data.visibility }
         : {}),
@@ -359,6 +364,7 @@ export async function clearPortCapability(self: PortCapabilityHost, port: number
     if (record !== null && record.owner !== null) {
       await txn.put(portRecordKey(port), {
         owner: record.owner,
+        kind: record.kind,
         capability: null,
         ...(record.visibility !== undefined ? { visibility: record.visibility } : {}),
         ...(record.name !== undefined ? { name: record.name } : {}),
