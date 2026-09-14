@@ -315,6 +315,7 @@ export class FencedWork<R extends FencedWorkRecord> {
    * a previous generation the terminal hook will never fire for.
    */
   private async supersede(key: string): Promise<void> {
+    this.journalledPids.delete(Number(key.slice(FENCED_WORK_KEY_PREFIX.length)));
     await this.storage.delete(key);
     await this.storage.sync();
   }

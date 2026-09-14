@@ -456,6 +456,14 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const recovered = (await journalRows(next.ctx)).find((candidate) => candidate.pid > PID_GEN_STRIDE);
   assert.equal(recovered.owner, row.owner, 'runtime re-drive preserves derived identity');
   assert.equal(recovered.port, 20820);
+  await reservePort(next.ctx, { owner: 'ruby-explicit', preferredPort: 20821, occupiedPorts: NONE });
+  await next.fm.registerPort(recovered.pid, 20821);
+  assert.equal(await next.ctx.storage.get(`durable-images:${row.owner}`), undefined, 'explicit adoption moves the image ownership index');
+  next.fm.kill(recovered.pid);
+  await Promise.all(next.ctx.waited);
+  await next.fm.removeDurableApp('ruby-explicit');
+  assert.equal(next.vfs.as(CRED_KERNEL).exists(`.nimbus/images/${row.recipe.image.application}`), false,
+    'adopted runtime images are purged even after the process exited');
 }
 {
   const { fm, ctx, portRegistry, vfs } = setup();
@@ -669,6 +677,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   await waitFor(async () => processes.get(redriven.pid)?.state === 'running' && self.portRegistry.get(20740)?.pid === redriven.pid, 5_000);
   assert.equal(world.boots.length, boots + 1, 'one boot for the restart');
   assert.equal(await rowFor(ctx, a.pid), undefined, 'the crashed row is superseded');
+  assert.equal(fm.launchJournal.has(a.pid), false, 'a same-instance restart releases journal lifetime bookkeeping');
   assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(FencedWork attempt 1/.test(line)), JSON.stringify(notices));
 
   // Healthy boot resets the SAME attempt budget. A spent unproven launch

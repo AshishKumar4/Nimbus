@@ -3930,6 +3930,7 @@ export class FacetManager {
    * reset inside the backoff window recovers it like any other resident.
    */
   private async _onResidentTerminal(pid: number): Promise<void> {
+    await this.rowAmendments.get(pid);
     this.ephemeralPids.delete(pid);
     await this._releaseResidentClaim(pid);
     if (!this.launchJournal.has(pid)) return;
@@ -4004,7 +4005,11 @@ export class FacetManager {
       if (amended !== row) await this.launchJournal.journal(amended);
       return amended;
     });
-    this.rowAmendments.set(pid, next.then(() => undefined, () => undefined));
+    const settled = next.then(() => undefined, () => undefined);
+    this.rowAmendments.set(pid, settled);
+    void settled.then(() => {
+      if (this.rowAmendments.get(pid) === settled) this.rowAmendments.delete(pid);
+    });
     return next;
   }
 
@@ -5961,11 +5966,27 @@ export class FacetManager {
     }
     const owner = row === undefined ? undefined : residentOwner(row);
     if (claimedBy !== undefined && row !== undefined && this.residentClaims.get(pid) !== claimedBy) {
+      const previousOwner = this.residentClaims.get(pid);
       await this._releaseResidentClaim(pid);
       const duplicate = await this._claimResident(row);
       if (duplicate !== null) {
         this.ephemeralPids.set(pid, claimedBy);
         await this.launchJournal.release(pid);
+      } else if (previousOwner && row.recipe.kind === 'worker') {
+        // Adoption moves retained images with the identity, including the
+        // index that survives a clean exit after the journal row is released.
+        await this.ctx.storage.transaction(async (txn) => {
+          const previousKey = `${DURABLE_IMAGES_KEY_PREFIX}${previousOwner}`;
+          const nextKey = `${DURABLE_IMAGES_KEY_PREFIX}${claimedBy}`;
+          const previous = await txn.get<Array<{ runner: string; application: string }>>(previousKey) ?? [];
+          const next = await txn.get<Array<{ runner: string; application: string }>>(nextKey) ?? [];
+          const combined = [...next];
+          for (const image of previous) {
+            if (!combined.some((held) => held.runner === image.runner && held.application === image.application)) combined.push(image);
+          }
+          await txn.put(nextKey, combined);
+          await txn.delete(previousKey);
+        });
       }
     }
     if (reservation !== null && reservation.owner !== null && owner === reservation.owner && !this.ephemeralPids.has(pid)) {
