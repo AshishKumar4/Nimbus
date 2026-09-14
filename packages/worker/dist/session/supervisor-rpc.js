@@ -320,7 +320,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this._call(this._op('fsAppend', [path, moduleId, operationId, bytes], { pid: this._pid(), writerId: this._writerId() }));
     }
     async fsAppendAck(moduleId, operationId) {
-        return this._call(this._fsOp('fsAppendAck', [this._writerId(), moduleId, operationId]));
+        return this._call(this._op('fsAppendAck', [moduleId, operationId], { pid: this._pid(), writerId: this._writerId() }));
     }
     async fsTruncate(path, size) {
         return this._call(this._fsOp('fsTruncate', [path, size]));
@@ -513,8 +513,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * via __pendingIO first).
      */
     async reportExit(code, tail) {
-        const pid = this.ctx.props?.pid || 0;
-        return this._call(this._op('reportExit', [code, tail || ''], { pid }));
+        return this._call(this._op('reportExit', [code, tail || ''], { pid: this._reportingPid() }));
     }
     // ── Prefetch ──────────────────────────────────────────────────────────
     async prefetch(cwd, entryCode) {

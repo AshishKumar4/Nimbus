@@ -26,13 +26,20 @@ import assert from 'node:assert/strict';
 import { stripCommentsForImports } from '../../packages/core/src/runtime/comment-strip.ts';
 
 /**
- * The previous implementation, verbatim: the contract every caller was
- * written against. It is the oracle here, never the code under test.
+ * The literal-aware contract, written independently of the scanner under
+ * test: comments blank, literals verbatim, regex literals blank. It is the
+ * oracle here, never the code under test.
  */
+const DIV_AFTER = /[A-Za-z0-9_$\)\]'\"`]/;
 function referenceStrip(src) {
   let out = '';
   let i = 0;
   const N = src.length;
+  let lastNonWs = '';
+  const rec = (ch) => { if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') lastNonWs = ch; };
+  if (src[0] === '#' && src[1] === '!') {
+    while (i < N && src[i] !== '\n') { out += src[i]; rec(src[i]); i++; }
+  }
   while (i < N) {
     const c = src[i];
     if (c === '/' && src[i + 1] === '/') {
@@ -50,7 +57,46 @@ function referenceStrip(src) {
       }
       continue;
     }
+    if (c === '/' && !DIV_AFTER.test(lastNonWs)) {
+      // Regex only when a closer exists on this line.
+      let j = i + 1, closes = false;
+      while (j < N) {
+        const rc = src[j];
+        if (rc === '\\') { j += 2; continue; }
+        if (rc === '[') { j++; while (j < N && src[j] !== ']') { if (src[j] === '\\') { j += 2; continue; } j++; } if (j < N) j++; continue; }
+        if (rc === '/') { closes = true; break; }
+        if (rc === '\n') break;
+        j++;
+      }
+      if (!closes) { out += c; rec(c); i++; continue; }
+      out += ' ';
+      i++;
+      while (i < N) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === '[') { i++; while (i < N && src[i] !== ']') { if (src[i] === '\\') { i += 2; continue; } i++; } if (i < N) i++; continue; }
+        if (src[i] === '/') { i++; break; }
+        if (src[i] === '\n') break;
+        i++;
+      }
+      while (i < N && /[gimsuyd]/.test(src[i])) i++;
+      rec('/');
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c;
+      out += c; rec(c); i++;
+      while (i < N) {
+        const cc = src[i];
+        if (cc === '\\') { out += cc + (src[i + 1] ?? ''); rec(src[i + 1] ?? '\\'); i += 2; continue; }
+        out += cc;
+        rec(cc);
+        if (cc === q) { i++; break; }
+        i++;
+      }
+      continue;
+    }
     out += c;
+    rec(c);
     i++;
   }
   return out;
@@ -79,7 +125,12 @@ const contract = [
   // A CR before the LF is inside the line comment and goes with it.
   ['a\r\n// b\r\nc', 'a\r\n \nc'],
   ['/* a\r\nb */c', '\n c'],
-  ['url = "http://x"; require("./y")', 'url = "http: '],
+  // Literals are kept: `//` inside a string no longer opens a comment, and
+  // the require specifier after it survives — the import-pass fix.
+  ['url = "http://x"; require("./y")', 'url = "http://x"; require("./y")'],
+  ['const s = "a /* b"; import x from "./m.js"', 'const s = "a /* b"; import x from "./m.js"'],
+  // A regex literal is still blanked — its content can look like a comment.
+  ['var re = /a\\/\\/b/; require("./y")', 'var re =  ; require("./y")'],
   ['#!/usr/bin/env node\nrequire("../lib/tsc.js")', '#!/usr/bin/env node\nrequire("../lib/tsc.js")'],
 ];
 for (const [input, expected] of contract) {

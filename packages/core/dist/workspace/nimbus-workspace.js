@@ -86,8 +86,7 @@ export class NimbusWorkspace {
     static async create(options) {
         if (options.fabric)
             composeFabric(options.fabric);
-        const exports = options.ctxExports
-            ?? options.transactions?.exports;
+        const exports = options.ctxExports ?? options.transactions?.exports;
         if (exports)
             adoptCtxExports(exports);
         const vfs = options.vfs ?? openFilesystem(options);

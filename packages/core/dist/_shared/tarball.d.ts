@@ -27,7 +27,8 @@ export interface TarballWriteResult {
  * Stream a gzipped npm archive into a package directory. Entry names are
  * already canonical and prefix-stripped by streamTarEntries. Hold only the
  * current entry and the manifest; write the manifest last so a failed install
- * is not mistaken for a complete package on retry. Filesystem failures reject.
+ * is not mistaken for a complete package on retry. A second manifest in one
+ * archive is a malformed package, not an overwrite. Filesystem failures reject.
  */
 export declare function writeTarballStream(body: ReadableStream<Uint8Array>, targetDir: string, vfs: TarballWriteTarget): Promise<TarballWriteResult>;
 /** Extract every regular file. Gzipped input is decompressed first. */

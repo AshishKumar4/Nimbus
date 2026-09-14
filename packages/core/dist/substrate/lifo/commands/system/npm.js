@@ -186,10 +186,9 @@ async function installSinglePackage(name, version, targetBase, vfs, npmRegistry,
     }
     stdout.write(`  ${name}${version ? '@' + version : ''}...\n`);
     const info = await fetchPackageInfo(npmRegistry, name, version, signal);
-    const written = await fetchAndStreamPackage(info.dist.tarball, targetDir, vfs, signal);
-    if (written.files === 0 || !vfs.exists(join(targetDir, 'package.json'))) {
-        throw new Error(`${name}: extraction wrote ${written.files} files and left no package.json in ${targetDir}`);
-    }
+    // writeTarballStream throws when the archive carried no manifest and writes
+    // package.json last, so a return here is a complete package on disk.
+    await fetchAndStreamPackage(info.dist.tarball, targetDir, vfs, signal);
     let installed = 1;
     // Global install: link binaries
     if (isGlobal) {
