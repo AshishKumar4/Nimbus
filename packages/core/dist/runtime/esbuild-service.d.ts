@@ -112,9 +112,15 @@ export interface TransformResult {
         location?: esbuild.Location | null;
     }[];
 }
+/**
+ * One emitted output. `bytes` is authoritative (UTF-8 fidelity for the
+ * `file`-loader assets `viteAssets` emits); `contents` is the lazy decoded
+ * view, memoized exactly like esbuild's own `OutputFile.text`.
+ */
 export interface BuildOutputFile {
     path: string;
-    contents: string;
+    bytes: Uint8Array;
+    readonly contents: string;
 }
 export interface BuildResult {
     outputFiles: BuildOutputFile[];
@@ -126,6 +132,10 @@ export interface BuildResult {
         text: string;
         location?: esbuild.Location | null;
     }[];
+    /** esbuild metafile — populated because build() always enables it so
+     *  callers can identify entry-point outputs (`entryPoint`, `cssBundle`)
+     *  instead of guessing from output ordering. */
+    metafile?: esbuild.Metafile;
 }
 /** Source needed by the slim Worker Loader transform isolate. */
 export declare function generateEsbuildTransformRuntimeSource(): string;
@@ -226,12 +236,36 @@ export declare class EsbuildService {
         tsconfigRaw?: string;
         alias?: Record<string, string>;
         keepNames?: boolean;
+        entryNames?: string;
+        chunkNames?: string;
+        /** Output-name template for `file`-loader assets, e.g.
+         *  'assets/[name]-[hash]'. Only consulted by the viteAssets path. */
+        assetNames?: string;
+        /**
+         * Vite build semantics for imported assets: `import './x.png'`
+         * yields a URL string for an emitted `[name]-[hash]` file, `?url`
+         * does the same on any extension, `?raw` yields the file text,
+         * `?inline` a data: URL, and `url()` references inside `.css`
+         * modules emit + rewrite the same way (esbuild's `file` loader).
+         * See runtime/vite-assets.ts. Off by default: non-Vite bundling
+         * callers (one-shot node, pre-bundle) keep the generic loaders.
+         */
+        viteAssets?: boolean;
+        /**
+         * Absolute path of the project `public/` directory. With
+         * `viteAssets`, absolute imports like `import '/favicon.svg'`
+         * resolve here first and bundle to the literal public URL
+         * (`export default "/favicon.svg"`), matching Vite's public-dir
+         * semantics — the file is served verbatim, never emitted hashed.
+         */
+        vitePublicDir?: string;
     }): Promise<BuildResult>;
     private requireVfs;
     /**
      * VFS resolver plugin for esbuild.
      * Reads through the caller's credentialed view (synchronous, no snapshot needed).
-     * Handles: absolute paths, relative paths, bare specifiers (node_modules).
+     * Handles: absolute paths, relative paths, bare specifiers (node_modules),
+     * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */
     private makeVfsPlugin;
     get isInitialized(): boolean;

@@ -42,10 +42,11 @@ import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath, } from '@nimbus-sh/core/runtime/runtime-registry.js';
-import { parseViteConfigSource } from '@nimbus-sh/core/runtime/vite-config-parser.js';
+import { parseViteConfigSource, unsupportedVitePlugins } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { startRealVite } from './start-real-vite.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { shouldUseRealVite } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub, resolveLongRunningPort, expandArgvShellDefaults, } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -1118,6 +1119,20 @@ export async function initSession(self, ws) {
         }
         // ── vite build ──
         if (args[0] === 'build') {
+            // Capability gate: the built-in builder is esbuild underneath and
+            // never evaluates vite.config `plugins`. A framework project
+            // (SvelteKit, Vue, Solid, Astro, …) would otherwise die deep in
+            // esbuild on an entry point that does not exist or on framework
+            // syntax the JS loader cannot parse — say what is actually wrong.
+            const needsPlugins = unsupportedVitePlugins(viteConfig);
+            if (needsPlugins.length) {
+                ctx.stderr.write('\x1b[31m✘\x1b[0m vite build: this project needs Vite plugins the built-in build server cannot run' +
+                    ' (' + needsPlugins.join(', ') + ').\n' +
+                    '  The built-in Vite server supports plain Vite projects (React, JSX/TS, CSS, and asset imports);\n' +
+                    '  framework projects like SvelteKit, Vue, Solid, or Astro require a real Vite —\n' +
+                    '  Nimbus does not run one for `vite build` yet.\n');
+                return 1;
+            }
             if (!self.esbuildService)
                 self.esbuildService = new EsbuildService(kernelFs);
             const htmlPath = cwd + '/index.html';
@@ -1136,12 +1151,20 @@ export async function initSession(self, ws) {
                 const alts = [cwd + '/src/main.tsx', cwd + '/src/main.ts', cwd + '/src/index.tsx', cwd + '/src/index.ts'];
                 entryPoint = alts.find(p => kernelFs.exists(p)) || entryPoint;
             }
+            if (!kernelFs.exists(entryPoint)) {
+                ctx.stderr.write('\x1b[31m✘\x1b[0m vite build: no entry point — index.html declares no <script src> and none of\n' +
+                    '  src/main.{tsx,ts} or src/index.{tsx,ts} exists. The built-in build server handles plain\n' +
+                    '  Vite apps; projects with other layouts need a real Vite.\n');
+                return 1;
+            }
             ctx.stdout.write('Building for production...\n');
             ctx.stdout.write('  Entry: ' + entryPoint + '\n');
             const t0 = Date.now();
             try {
                 const outDir = viteConfig.outDir || 'dist';
-                const distDir = cwd + '/' + outDir;
+                const distDir = normalizeVfsPath(cwd + '/' + outDir);
+                const publicDir = cwd + '/public';
+                const hasPublic = kernelFs.exists(publicDir) && kernelFs.isDirectory(publicDir);
                 // Detect which packages are installed vs need CDN
                 const nmDir = cwd + '/node_modules';
                 const externals = [];
@@ -1156,60 +1179,129 @@ export async function initSession(self, ws) {
                 }
                 if (viteConfig.alias)
                     externals.push(...Object.keys(viteConfig.alias));
-                // Bundle JS
+                // vite-equivalent output layout: dist/assets/<name>-<hash>.<ext>
+                // for both the entry and every emitted asset — entryNames +
+                // assetNames is what makes esbuild's `file` loader land there.
                 const result = await self.esbuildService.build([entryPoint], {
                     bundle: true, format: 'esm', target: 'es2020', platform: 'browser',
-                    minify: true, outdir: '/' + distDir + '/assets',
+                    minify: true, outdir: distDir,
+                    entryNames: 'assets/[name]-[hash]',
+                    chunkNames: 'assets/[name]-[hash]',
+                    assetNames: 'assets/[name]-[hash]',
                     external: externals.length > 0 ? externals : undefined,
+                    viteAssets: true,
+                    vitePublicDir: hasPublic ? publicDir : undefined,
                 });
                 if (result.errors?.length) {
                     for (const e of result.errors)
                         ctx.stderr.write('  error: ' + e.text + '\n');
                     return 1;
                 }
-                // Generate content hash for filenames
-                let jsContent = '';
-                for (const f of result.outputFiles || []) {
-                    jsContent = f.contents;
-                }
-                const hashNum = jsContent.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0);
-                const hash = (hashNum >>> 0).toString(36).padStart(6, '0');
-                // Write JS with hashed filename
-                const jsFilename = 'index-' + hash + '.js';
-                const jsPath = distDir + '/assets/' + jsFilename;
-                kernelFs.mkdir(distDir + '/assets', { recursive: true });
-                kernelFs.writeFile(jsPath, jsContent);
-                ctx.stdout.write('  \x1b[2m' + outDir + '/assets/' + jsFilename + '\x1b[0m  ' + (jsContent.length / 1024).toFixed(2) + ' kB\n');
-                // Collect all CSS files from src/
-                let allCss = '';
-                const collectCss = (dir) => {
-                    try {
+                // Vite's emptyOutDir: stale hashed outputs must not accumulate.
+                if (kernelFs.exists(distDir)) {
+                    const rmTree = (dir) => {
                         for (const e of kernelFs.readdir(dir)) {
                             const fp = dir + '/' + e.name;
                             if (e.type === 'directory')
-                                collectCss(fp);
-                            else if (e.name.endsWith('.css')) {
-                                try {
-                                    allCss += kernelFs.readFileString(fp) + '\n';
+                                rmTree(fp);
+                            else
+                                kernelFs.unlink(fp);
+                        }
+                        kernelFs.rmdir(dir);
+                    };
+                    rmTree(distDir);
+                }
+                const entryOutputRel = Object.entries(result.metafile?.outputs || {})
+                    .find(([, o]) => o.entryPoint)?.[0]?.replace(/^\/+/, '');
+                const entryJs = (entryOutputRel
+                    ? result.outputFiles.find(f => f.path.replace(/^\/+/, '') === entryOutputRel)
+                    : undefined) ?? result.outputFiles.find(f => f.path.endsWith('.js'));
+                if (!entryJs) {
+                    ctx.stderr.write('Build error: bundler produced no JS output\n');
+                    return 1;
+                }
+                const jsFilename = entryJs.path.slice(entryJs.path.lastIndexOf('/') + 1);
+                // CSS bundled through the entry imports (and its url() assets)
+                // arrives as the entry's cssBundle sidecar — esbuild already
+                // rewrote every url() to the hashed emitted path.
+                const cssBundlePath = entryOutputRel
+                    ? result.metafile?.outputs?.[entryOutputRel]?.cssBundle
+                    : undefined;
+                let cssFilename = cssBundlePath
+                    ? cssBundlePath.slice(cssBundlePath.lastIndexOf('/') + 1)
+                    : result.outputFiles.find(f => f.path.endsWith('.css'))
+                        ?.path.split('/').pop();
+                // Fallback for HTML-linked stylesheets the bundle never saw
+                // (`<link href="src/site.css">` in index.html): concatenate what
+                // src/ declares, like the pre-asset-pipeline path did.
+                let fallbackCss = '';
+                if (!cssFilename) {
+                    const collectCss = (dir) => {
+                        try {
+                            for (const e of kernelFs.readdir(dir)) {
+                                const fp = dir + '/' + e.name;
+                                if (e.type === 'directory')
+                                    collectCss(fp);
+                                else if (e.name.endsWith('.css')) {
+                                    try {
+                                        fallbackCss += kernelFs.readFileString(fp) + '\n';
+                                    }
+                                    catch { }
                                 }
-                                catch { }
                             }
                         }
+                        catch { }
+                    };
+                    collectCss(cwd + '/src');
+                    if (fallbackCss.trim()) {
+                        const cssHashNum = fallbackCss.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0);
+                        cssFilename = 'index-' + (cssHashNum >>> 0).toString(36).padStart(6, '0') + '.css';
                     }
-                    catch { }
-                };
-                collectCss(cwd + '/src');
-                const cssFilename = 'index-' + hash + '.css';
-                if (allCss.trim()) {
-                    kernelFs.writeFile(distDir + '/assets/' + cssFilename, allCss);
-                    ctx.stdout.write('  \x1b[2m' + outDir + '/assets/' + cssFilename + '\x1b[0m  ' + (allCss.length / 1024).toFixed(2) + ' kB\n');
+                }
+                // Write every emitted output (bytes, not text — `file` assets are
+                // binary), printing vite-style size lines.
+                for (const f of result.outputFiles) {
+                    const outPath = normalizeVfsPath(f.path);
+                    const parent = parentVfsPath(outPath);
+                    if (parent && !kernelFs.exists(parent))
+                        kernelFs.mkdir(parent, { recursive: true });
+                    kernelFs.writeFile(outPath, f.bytes);
+                    const rel = outPath.slice(cwd.length + 1);
+                    ctx.stdout.write('  \x1b[2m' + rel + '\x1b[0m  ' + (f.bytes.length / 1024).toFixed(2) + ' kB\n');
+                }
+                if (fallbackCss.trim() && cssFilename) {
+                    const cssPath = distDir + '/assets/' + cssFilename;
+                    kernelFs.mkdir(distDir + '/assets', { recursive: true });
+                    kernelFs.writeFile(cssPath, fallbackCss);
+                    ctx.stdout.write('  \x1b[2m' + outDir + '/assets/' + cssFilename + '\x1b[0m  ' + (fallbackCss.length / 1024).toFixed(2) + ' kB\n');
+                }
+                // public/ copies verbatim to dist/ (same `vite build` semantics —
+                // the favicon the template references lives there).
+                if (hasPublic) {
+                    const copyTree = (src, dst) => {
+                        for (const e of kernelFs.readdir(src)) {
+                            const s = src + '/' + e.name;
+                            const d = dst + '/' + e.name;
+                            if (e.type === 'directory') {
+                                copyTree(s, d);
+                            }
+                            else {
+                                const parent = parentVfsPath(d);
+                                if (parent && !kernelFs.exists(parent))
+                                    kernelFs.mkdir(parent, { recursive: true });
+                                kernelFs.writeFile(d, kernelFs.readFile(s));
+                            }
+                        }
+                    };
+                    copyTree(publicDir, distDir);
                 }
                 // Generate dist/index.html
                 if (origHtml) {
                     const distHtml = await rewriteViteBuildHtml(origHtml, {
                         jsFilename,
-                        cssFilename: allCss.trim() ? cssFilename : undefined,
+                        cssFilename,
                         removeImportMap: cdnPackages.length === 0,
+                        injectCss: true,
                     });
                     kernelFs.writeFile(distDir + '/index.html', distHtml);
                     ctx.stdout.write('  \x1b[2m' + outDir + '/index.html\x1b[0m  ' + (distHtml.length / 1024).toFixed(2) + ' kB\n');
@@ -1217,11 +1309,11 @@ export async function initSession(self, ws) {
                         ctx.stdout.write('  \x1b[33mNote: ' + cdnPackages.join(', ') + ' loaded from CDN (not bundled)\x1b[0m\n');
                     }
                 }
-                ctx.stdout.write('\n\x1b[32m\u2713 built in ' + ((Date.now() - t0) / 1000).toFixed(2) + 's\x1b[0m\n');
+                ctx.stdout.write('\n\x1b[32m✓ built in ' + ((Date.now() - t0) / 1000).toFixed(2) + 's\x1b[0m\n');
                 return 0;
             }
             catch (e) {
-                ctx.stderr.write('Build error: ' + (e?.message || e) + '\n');
+                ctx.stderr.write('Build error: ' + errorText(e) + '\n');
                 return 1;
             }
         }
@@ -1406,6 +1498,20 @@ export async function initSession(self, ws) {
                 ctx.stdout.write('\n  \x1b[2mRun \x1b[0mvite stop\x1b[2m, or \x1b[0mNIMBUS_REAL_VITE=0 vite\x1b[2m for Cirrus.\x1b[0m\n\n');
                 return 0;
             }
+        }
+        // Capability gate: the built-in dev server runs no vite.config
+        // `plugins`. A framework project would boot and then serve raw
+        // `.svelte`/`.vue` sources the browser cannot parse — refuse with the
+        // honest diagnostic instead. (Opted-in `nimbusDevServer: 'real'`
+        // sessions already returned above; they run the real vite package.)
+        const devNeedsPlugins = unsupportedVitePlugins(viteConfig);
+        if (devNeedsPlugins.length) {
+            ctx.stderr.write('\x1b[31m✘\x1b[0m vite: this project needs Vite plugins the built-in dev server cannot run' +
+                ' (' + devNeedsPlugins.join(', ') + ').\n' +
+                '  The built-in Vite server supports plain Vite projects (React, JSX/TS, CSS, and asset imports);\n' +
+                '  framework projects like SvelteKit, Vue, Solid, or Astro require a real Vite —\n' +
+                '  set nimbusDevServer: \'real\' in vite.config to try the experimental real-vite backend.\n');
+            return 1;
         }
         if (!self.esbuildService)
             self.esbuildService = new EsbuildService(kernelFs);
