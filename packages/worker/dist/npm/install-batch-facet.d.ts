@@ -33,8 +33,9 @@
  * Stability invariants (cloudflare-parallel):
  *   - No `this` references.
  *   - No closure capture other than args + preamble names.
- *   - Preamble symbols (streamTarEntries, readableStreamToAsyncIterable,
- *     MAX_FILE_BYTES) referenced via @ts-ignore.
+ *   - Preamble symbols (streamPackageEntries, streamTarEntries,
+ *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
+ *     @ts-ignore.
  */
 import type { FacetPackageSpec } from './install-facet.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';

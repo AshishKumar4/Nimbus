@@ -78,9 +78,9 @@ export interface ViteDevServerOptions {
  * pre-bundles via the package they belong to).
  */
 interface HashImportCtx {
-    /** VFS path of the importing file (e.g. `home/user/app/src/foo.ts`). */
+    /** VFS path of the importing file (e.g. `home/user/example-app/src/foo.ts`). */
     importerVfsPath: string;
-    /** Project root (e.g. `home/user/app`). Used to clip the resolved
+    /** Project root (e.g. `home/user/example-app`). Used to clip the resolved
      *  target to a /preview-relative URL. */
     root: string;
     /** VFS readers — kept narrow so callers don't have to expose the

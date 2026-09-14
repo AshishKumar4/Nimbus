@@ -71,7 +71,7 @@ export type SliceEntry = SlicedFile | SlicedDir;
 export interface PrebundleSpec {
     /** Bare specifier being bundled, e.g. "framer-motion" or "react/jsx-runtime". */
     specifier: string;
-    /** VFS path of the entry point, e.g. "/home/user/app/node_modules/framer-motion/dist/es/index.mjs". */
+    /** VFS path of the entry point, e.g. "/home/user/example-app/node_modules/framer-motion/dist/es/index.mjs". */
     entryPath: string;
     /** External specifiers (from getSharedRuntimeExternals). */
     externals: string[];

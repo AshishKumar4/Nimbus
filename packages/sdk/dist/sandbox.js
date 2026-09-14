@@ -701,6 +701,13 @@ export class NimbusSandbox {
     }
     execOptions(options) {
         const normalized = { ...options };
+        if (typeof normalized.cwd === 'string') {
+            // The session shell only understands absolute paths; a relative cwd
+            // forwarded verbatim used to reach it anyway — `pwd` echoed the
+            // literal string and every write beneath it landed ENOENT. Resolve
+            // against the sandbox root here, at the SDK boundary.
+            normalized.cwd = resolveSandboxCwd(this.root, normalized.cwd);
+        }
         if (normalized.shellId) {
             // A named shell owns its cwd, so defaulting one here would reset it on
             // every call. The sandbox root is only where a NEW shell starts.
@@ -899,6 +906,30 @@ function trimTrailingSlashes(value) {
     while (end > 0 && value[end - 1] === '/')
         end--;
     return value.slice(0, end);
+}
+/**
+ * Resolve an exec `cwd` to the absolute POSIX path the session shell needs.
+ * Absolute inputs pass through untouched; relative ones resolve against the
+ * sandbox root, collapsing `.`/`..` segments (`rel` → `<root>/rel`,
+ * `../x` → the sibling of root). The session filesystem is always POSIX —
+ * `node:path` is not portable across every SDK host, so this resolves by
+ * segment instead of importing it.
+ */
+function resolveSandboxCwd(root, cwd) {
+    if (cwd.startsWith('/'))
+        return cwd;
+    const segments = [];
+    for (const seg of `${root}/${cwd}`.split('/')) {
+        if (seg === '..') {
+            // A '..' at the filesystem root stays at the root, POSIX-style.
+            if (segments.length > 0)
+                segments.pop();
+        }
+        else if (seg !== '' && seg !== '.') {
+            segments.push(seg);
+        }
+    }
+    return '/' + segments.join('/');
 }
 function disposeSdkRpcResult(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null)

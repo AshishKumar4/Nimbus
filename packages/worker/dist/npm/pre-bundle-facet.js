@@ -598,7 +598,7 @@ export const prebundleOne = async function prebundleOne(spec, _env) {
         // NOTE: do NOT pass `external: spec.externals` here at the top level.
         // esbuild's top-level external matches by file PATH too — when bundling
         // a subpath like 'react/jsx-runtime', the resolved entry path
-        // /home/user/app/node_modules/react/jsx-runtime.js matches the 'react'
+        // /home/user/example-app/node_modules/react/jsx-runtime.js matches the 'react'
         // external and esbuild errors with
         //   "The entry point '...' cannot be marked as external"
         //

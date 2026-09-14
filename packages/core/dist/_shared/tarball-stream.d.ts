@@ -90,4 +90,28 @@ export declare function streamTarEntries(source: AsyncIterable<Uint8Array>, onSk
     name: string;
     data: Uint8Array;
 }, void, undefined>;
+/**
+ * Stream the files of an npm package tarball, package-relative.
+ *
+ * npm wraps every package in ONE top-level directory whose name is the
+ * publisher's choice — registry convention is `package/`, but live
+ * tarballs ship other roots (@types/node@26 carries `node/`). This
+ * learns the prefix from the first entry's top-level component and
+ * strips it from every entry, so `<root>/package.json` yields
+ * `package.json` and an entry named exactly `<root>` yields nothing —
+ * the root directory itself carries no bytes to write.
+ *
+ * An entry under a different top-level component means the archive is
+ * not a single-rooted package (or tries to smuggle a sibling of the
+ * root); the generator throws rather than extract it.
+ *
+ * Only regular-file entries carry the prefix check — directory, link and
+ * metadata records are skipped inside streamTarEntries before they reach
+ * here, so a PaxHeader like `./PaxHeaders/x` can never poison the learned
+ * prefix.
+ */
+export declare function streamPackageEntries(source: AsyncIterable<Uint8Array>, onSkip?: TarSkipCallback): AsyncGenerator<{
+    name: string;
+    data: Uint8Array;
+}, void, undefined>;
 //# sourceMappingURL=tarball-stream.d.ts.map

@@ -1,17 +1,18 @@
 /**
  * seed-project.ts — Materialize a polished Vite + React + TS + Tailwind +
- * React Router starter at /home/user/app on first boot.
+ * React Router starter at /home/user/example-app on first boot.
  *
  * Invariants:
  *   - Idempotent: won't re-seed once the sentinel (~/.nimbus-seeded) exists.
  *   - Atomic-ish: file bodies written in ONE writeBatch(); sentinel written
  *     in a SECOND writeBatch() so a crash between the two re-runs the whole
  *     seed on next boot (writeFile is idempotent, so retry is safe).
- *   - User escape hatch: `rm -rf ~/app ~/.nimbus-seeded` → next session
+ *   - User escape hatch: `rm -rf ~/example-app ~/.nimbus-seeded` → next session
  *     regenerates from factory defaults (hard reset semantics).
  *
  * Design choices (see plan):
- *   - Root: /home/user/app (doesn't pollute the home dir)
+ *   - Root: /home/user/example-app (doesn't pollute the home dir,
+ *     and doesn't collide with `git clone <repo> app`)
  *   - Polished deps: react-router, framer-motion, lucide-react, tailwindcss
  *   - No pre-install of node_modules (~200MB; let the user see install run)
  *   - No auto-start of vite (surprising; README says `npm run dev`)
@@ -21,7 +22,16 @@ import type { SqliteVFS } from './sqlite-vfs.js';
 /** Sentinel: if present, seed never runs again (until user deletes it). */
 export declare const SEED_SENTINEL_PATH = "home/user/.nimbus-seeded";
 /** Project root. Absolute VFS path (no leading slash). */
-export declare const SEED_PROJECT_DIR = "home/user/app";
+export declare const SEED_PROJECT_DIR = "home/user/example-app";
+/**
+ * The project directory's basename — what a user's `cd <name>` lands in and
+ * what UI copy shows. Derived from SEED_PROJECT_DIR so the directory and
+ * every hint that names it can never drift apart. ('app' collided with
+ * `git clone <repo> app`, the most natural first command in a fresh home.)
+ */
+export declare const SEED_PROJECT_NAME: string;
+/** Shell-style display path: `~/example-app`. Only for text the user reads. */
+export declare const SEED_PROJECT_TILDE: string;
 export interface SeedFile {
     /** VFS path, no leading slash. */
     path: string;
@@ -32,7 +42,7 @@ export declare const SEED_FILES: SeedFile[];
  * Should we run the starter-project seed?
  * Returns false if:
  *   - Sentinel exists (already seeded; user can `rm ~/.nimbus-seeded` to opt in again)
- *   - Project dir already exists (user has their own ~/app we must not clobber)
+ *   - Project dir already exists (user has their own ~/example-app we must not clobber)
  */
 export declare function shouldSeedProject(vfs: SqliteVFS): boolean;
 /**

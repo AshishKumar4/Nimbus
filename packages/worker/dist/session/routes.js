@@ -30,6 +30,7 @@ import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, 
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
+import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
@@ -1042,7 +1043,7 @@ export async function handleFetch(self, request) {
             ? {
                 ...(cirrusRealStats || {}),
                 running: true,
-                root: legacyViteStats?.root ?? cirrusRealStats?.root ?? 'home/user/app',
+                root: legacyViteStats?.root ?? cirrusRealStats?.root ?? SEED_PROJECT_DIR,
                 backend: 'real',
             }
             : legacyViteStats;
@@ -1257,15 +1258,15 @@ export async function handleFetch(self, request) {
         const hasSeed = (() => {
             try {
                 const vfs = self.sqliteFs.as(CRED_KERNEL);
-                return vfs.exists('home/user/app') &&
-                    vfs.exists('home/user/app/package.json');
+                return vfs.exists(SEED_PROJECT_DIR) &&
+                    vfs.exists(SEED_PROJECT_DIR + '/package.json');
             }
             catch {
                 return false;
             }
         })();
         const hint = hasSeed
-            ? 'cd app &amp;&amp; npm install &amp;&amp; npm run dev'
+            ? `cd ${SEED_PROJECT_NAME} &amp;&amp; npm install &amp;&amp; npm run dev`
             : 'vite';
         // The placeholder JS polls the session's /api/stats. If this DO was
         // reached directly (no session prefix), fall back to a relative path.

@@ -1,17 +1,18 @@
 /**
  * seed-project.ts — Materialize a polished Vite + React + TS + Tailwind +
- * React Router starter at /home/user/app on first boot.
+ * React Router starter at /home/user/example-app on first boot.
  *
  * Invariants:
  *   - Idempotent: won't re-seed once the sentinel (~/.nimbus-seeded) exists.
  *   - Atomic-ish: file bodies written in ONE writeBatch(); sentinel written
  *     in a SECOND writeBatch() so a crash between the two re-runs the whole
  *     seed on next boot (writeFile is idempotent, so retry is safe).
- *   - User escape hatch: `rm -rf ~/app ~/.nimbus-seeded` → next session
+ *   - User escape hatch: `rm -rf ~/example-app ~/.nimbus-seeded` → next session
  *     regenerates from factory defaults (hard reset semantics).
  *
  * Design choices (see plan):
- *   - Root: /home/user/app (doesn't pollute the home dir)
+ *   - Root: /home/user/example-app (doesn't pollute the home dir,
+ *     and doesn't collide with `git clone <repo> app`)
  *   - Polished deps: react-router, framer-motion, lucide-react, tailwindcss
  *   - No pre-install of node_modules (~200MB; let the user see install run)
  *   - No auto-start of vite (surprising; README says `npm run dev`)
@@ -24,7 +25,16 @@ import { CRED_KERNEL } from '../runtime/os-contracts.js';
 /** Sentinel: if present, seed never runs again (until user deletes it). */
 export const SEED_SENTINEL_PATH = 'home/user/.nimbus-seeded';
 /** Project root. Absolute VFS path (no leading slash). */
-export const SEED_PROJECT_DIR = 'home/user/app';
+export const SEED_PROJECT_DIR = 'home/user/example-app';
+/**
+ * The project directory's basename — what a user's `cd <name>` lands in and
+ * what UI copy shows. Derived from SEED_PROJECT_DIR so the directory and
+ * every hint that names it can never drift apart. ('app' collided with
+ * `git clone <repo> app`, the most natural first command in a fresh home.)
+ */
+export const SEED_PROJECT_NAME = SEED_PROJECT_DIR.slice(SEED_PROJECT_DIR.lastIndexOf('/') + 1);
+/** Shell-style display path: `~/example-app`. Only for text the user reads. */
+export const SEED_PROJECT_TILDE = `~/${SEED_PROJECT_NAME}`;
 // ── File bodies ─────────────────────────────────────────────────────────
 const PACKAGE_JSON = `{
   "name": "nimbus-starter",
@@ -434,7 +444,7 @@ export default function Home() {
               <span className="w-3 h-3 rounded-full bg-amber-500/70"></span>
               <span className="w-3 h-3 rounded-full bg-emerald-500/70"></span>
             </div>
-            <span className="ml-2 text-[11px] text-slate-500 font-mono">~/app</span>
+            <span className="ml-2 text-[11px] text-slate-500 font-mono">~/example-app</span>
           </div>
           <pre className="px-5 py-4 text-[13px] font-mono leading-relaxed overflow-x-auto">
 <span className="text-slate-600">$</span> <span className="text-slate-300">npm install</span>
@@ -798,7 +808,7 @@ pre-seeded on first boot inside a Cloudflare Durable Object.
 
 ## Quickstart
 
-    cd app                      # you're probably already here
+    cd example-app              # you're probably already here
     npm install                 # ~450 packages, ~80 seconds on first run
     npm run dev                 # starts vite; preview opens in the sidebar
 
@@ -831,7 +841,7 @@ To opt out:
 
 ## Start fresh
 
-    rm -rf ~/app ~/.nimbus-seeded
+    rm -rf ~/example-app ~/.nimbus-seeded
 
 Then restart the session. A factory-fresh copy of this starter will be
 regenerated. (The sentinel file \`~/.nimbus-seeded\` is what prevents
@@ -908,7 +918,7 @@ export const SEED_FILES = [
  * Should we run the starter-project seed?
  * Returns false if:
  *   - Sentinel exists (already seeded; user can `rm ~/.nimbus-seeded` to opt in again)
- *   - Project dir already exists (user has their own ~/app we must not clobber)
+ *   - Project dir already exists (user has their own ~/example-app we must not clobber)
  */
 export function shouldSeedProject(vfs) {
     const view = vfs.as(CRED_KERNEL);
@@ -953,7 +963,7 @@ export function seedProject(vfs, opts) {
     if (!shouldSeedProject(vfs)) {
         return { seeded: false, files: 0, reason: 'already-seeded-or-present' };
     }
-    log?.('[seed] materializing starter app at /home/user/app ...');
+    log?.(`[seed] materializing starter app at /${SEED_PROJECT_DIR} ...`);
     const mtime = Date.now();
     const inodes = [];
     const chunks = [];
@@ -1026,9 +1036,9 @@ export function seedProject(vfs, opts) {
         log?.(`[seed] wrote ${SEED_FILES.length} files + ${dirSet.size} dirs (${result.inodes} inodes, ${result.chunks} chunks)`);
         // Phase 2: sentinel in a SECOND batch — only runs if Phase 1 succeeded.
         // A crash between Phase 1 and Phase 2 leaves the project materialized but
-        // no sentinel; next boot sees ~/app already exists → shouldSeedProject()
-        // returns false → we skip harmlessly. (That's why we also check exists(~/app).)
-        const sentinelData = enc.encode(`# Nimbus seed sentinel — delete this file AND ~/app to re-seed.\n` +
+        // no sentinel; next boot sees ~/example-app already exists → shouldSeedProject()
+        // returns false → we skip harmlessly. (That's why we also check exists(~/example-app).)
+        const sentinelData = enc.encode(`# Nimbus seed sentinel — delete this file AND ${SEED_PROJECT_TILDE} to re-seed.\n` +
             `# Seeded at: ${new Date(mtime).toISOString()}\n` +
             `# Files: ${SEED_FILES.length}\n`);
         view.writeBatch({
