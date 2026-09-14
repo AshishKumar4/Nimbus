@@ -154,6 +154,10 @@ a.check('a node server is running on the reserved port', pid > 0, started.output
   }
 }
 
+// Teardown: removeDurableApp ends the contract — kill, purge, release the
+// port, free the slot — before the session itself goes away.
+await box.ports.removeDurableApp('probe-evict').catch(() => {});
+
 await t.close();
 await deleteSession(sid, 'durable-eviction-survival');
 

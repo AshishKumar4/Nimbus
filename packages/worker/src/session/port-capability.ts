@@ -57,7 +57,7 @@ const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
 const PortVisibilitySchema = z.enum(['scoped', 'public']);
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
-const PortRecordSchema = z.object({
+export const PortRecordSchema = z.object({
   capability: PortCapabilitySchema.nullable(),
   owner: z.string().nullable(),
   visibility: PortVisibilitySchema.optional(),

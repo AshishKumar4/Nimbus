@@ -313,5 +313,40 @@ function routeHost(fm, portRegistry) {
     'the durable slot is freed');
 }
 
+// ── 9. removeDurableApp answers through the public RPC surface ─────────────
+{
+  const { ctx, fm, portRegistry } = setup();
+  await reservePort(ctx, {
+    owner: 'app', preferredPort: 20350, occupiedPorts: NONE,
+    capability: 'e'.repeat(24), visibility: 'public',
+  });
+  await fm.spawnNode('const http = require("http");', {
+    command: 'node app.js',
+    port: 20350,
+  });
+
+  const { rpcRemoveDurableApp } = await import('../../packages/worker/src/session/programmatic.ts');
+  // The ProgrammaticHost the public RPC reads: already booted (shell set),
+  // its facet manager ensured.
+  const self = {
+    shell: {},
+    ensureSqliteFs() {},
+    ensureFacetManager() { this.facetManager = fm; },
+    facetManager: fm,
+    ctx,
+    portRegistry,
+  };
+
+  const gone = await rpcRemoveDurableApp(self, 'app');
+  assert.deepEqual(gone, { owner: 'app', removed: true, port: 20350 },
+    'removeDurableApp answers the released durable port');
+  assert.equal(portRegistry.has(20350), false, 'the port is unregistered');
+  assert.equal(await readPortReservation(ctx, 20350), null, 'the reservation released');
+
+  const again = await rpcRemoveDurableApp(self, 'app');
+  assert.deepEqual(again, { owner: 'app', removed: false, port: null },
+    'removing an owner nothing holds is removed:false, port:null');
+}
+
 console.log('ok - durable port recovery (silent port re-drives and routes, absent is 502, failed is 503 self-refreshing, reserved ports are durable across kinds)');
 await rm(outputDir, { recursive: true, force: true });

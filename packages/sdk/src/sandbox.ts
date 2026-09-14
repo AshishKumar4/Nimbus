@@ -261,6 +261,7 @@ interface NimbusSessionStub {
   _rpcListPorts(): Promise<NimbusPort[]>;
   _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null; visibility?: 'scoped' | 'public' }>;
   _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<{ port: number; capability: string | null; visibility: 'scoped' | 'public' }>;
+  _rpcRemoveDurableApp(owner: string): Promise<{ owner: string; removed: boolean; port: number | null }>;
   _rpcUnexposePort(port: number): Promise<{ port: number; ok: boolean }>;
   _rpcDestroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
 }
@@ -445,6 +446,12 @@ const EnsureDurableAppSchema = z.object({
   visibility: z.enum(['scoped', 'public']),
 });
 
+const RemoveDurableAppSchema = z.object({
+  owner: z.string(),
+  removed: z.boolean(),
+  port: z.number().nullable(),
+});
+
 const UnexposedPortSchema = z.object({
   port: z.number(),
   ok: z.boolean(),
@@ -604,6 +611,7 @@ export class NimbusSandbox {
       _rpcListPorts: () => this.remoteRpc('listPorts', [], z.array(PortSchema)),
       _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options], ExposedPortSchema),
       _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input], EnsureDurableAppSchema),
+      _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }], RemoveDurableAppSchema),
       _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port], UnexposedPortSchema),
       _rpcDestroy: (options) => this.remoteRpc('destroy', [options], DestroyResultSchema),
     };
@@ -854,6 +862,16 @@ export class NimbusSandbox {
     ensureDurableApp: async (input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }) => {
       await this.ready();
       return this.rpc(this.stub()._rpcEnsureDurableApp(input));
+    },
+    /**
+     * End a durable application's contract: its launch is killed, the journal
+     * row purged, the reserved port released, the durable slot freed. Answers
+     * the owner, whether anything was removed, and the durable port that was
+     * released — null when no reservation existed.
+     */
+    removeDurableApp: async (owner: string) => {
+      await this.ready();
+      return this.rpc(this.stub()._rpcRemoveDurableApp(owner));
     },
     url: (port: number, options: { visibility?: 'scoped' | 'public'; capability?: string } = {}): string | undefined =>
       this.portUrl(port, options),

@@ -103,6 +103,7 @@ interface NimbusSessionRpcStub {
   _rpcListPorts(): Promise<unknown>;
   _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<unknown>;
   _rpcEnsureDurableApp(input: { owner?: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<unknown>;
+  _rpcRemoveDurableApp(owner: string): Promise<unknown>;
   _rpcUnexposePort(port: number): Promise<unknown>;
   _rpcDestroy(options?: Record<string, unknown>): Promise<unknown>;
 }
@@ -390,6 +391,10 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
         ...(input.preferredPort === undefined ? {} : { preferredPort: numberArg(input.preferredPort, 'preferredPort') }),
         ...(input.visibility === undefined ? {} : { visibility: input.visibility === 'public' ? 'public' : 'scoped' }),
       });
+    }
+    case 'removeDurableApp': {
+      const input = objectArg(args[0]);
+      return ctx.stub._rpcRemoveDurableApp(stringArg(input.owner, 'owner'));
     }
     case 'unexposePort':
       return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));

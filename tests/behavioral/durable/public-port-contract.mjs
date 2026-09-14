@@ -111,5 +111,38 @@ http.createServer((req, res) => {
   await t.close();
 }
 
+// ── 3. removeDurableApp ends the contract; re-ensure mints a new capability ─
+{
+  const ensured = await box.ports.ensureDurableApp({ owner: 'probe-removal', visibility: 'public' });
+  a.check('ensureDurableApp reserves a removal-test port', ensured.port > 0,
+    JSON.stringify(ensured));
+
+  const removed = await box.ports.removeDurableApp('probe-removal');
+  a.check('removeDurableApp reports removal', removed.removed === true,
+    JSON.stringify(removed));
+  a.check('removeDurableApp answers the released port', removed.port === ensured.port,
+    `port=${removed.port} ensured=${ensured.port}`);
+  // The released port is gone from the live surface and — where the public
+  // host form routes — the capability URL no longer resolves.
+  const listed = await box.ports.list();
+  a.check('ports.list no longer reports the released port',
+    !listed.some((p) => p.port === ensured.port), JSON.stringify(listed));
+  if (!process.env.NIMBUS_PREVIEW_HOST_SUFFIX) {
+    console.log('  - capability-404 check skipped — this deployment answers the path form');
+  } else {
+    const gone = await fetchPublicHost(ensured.capability, ensured.port, '/');
+    a.check('the released capability URL is unroutable', gone.status === 404,
+      `status=${gone.status}`);
+  }
+
+  // Re-ensuring is a fresh contract: a new port and a NEW capability — the
+  // old one is retired for good.
+  const re = await box.ports.ensureDurableApp({ owner: 'probe-removal', visibility: 'public' });
+  a.check('re-ensuring answers a port', re.port > 0, JSON.stringify(re));
+  a.check('re-ensuring mints a NEW capability',
+    typeof re.capability === 'string' && re.capability !== ensured.capability,
+    `old=${ensured.capability} new=${re.capability}`);
+}
+
 const s = a.summary();
 process.exit(s.fail === 0 ? 0 : 1);
