@@ -115,11 +115,21 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  declared typescript/@types/eslint install, wrangler is left out with its reason');
 }
 
-// ── an explicit request for a refused package is still refused ─────────────
+// ── an explicit request for a refused package fails without aborting ──────
+//
+// G2: even `npm install wrangler` installs what it can (nothing else was
+// asked for here) and reports the refusal as a failed package with the
+// per-package `[skip]` line — never as an install-level throw. The shell
+// maps the non-empty `failed` list to exit 1.
 {
-  const { installer } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, (name) => resolvedResult(name, '1.0.0'));
-  await assert.rejects(installer.install(PROJ, { packages: ['wrangler'] }), /wrangler/, 'npm install wrangler names the refusal');
-  console.log('  an explicit npm install wrangler is refused with the reason');
+  const { installer, log } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, (name) => resolvedResult(name, '1.0.0'));
+  const result = await installer.install(PROJ, { packages: ['wrangler'] });
+  const output = log.join('\n');
+  assert.ok(result.failed.includes('wrangler'), `the refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*wrangler — .*… try:.*nimbus-wrangler/.test(output), `the log carries the skip line with the hint:\n${output}`);
+  assert.ok(/1 required package is not supported on Nimbus: wrangler/.test(output), `the closing summary names it:\n${output}`);
+  assert.ok(!/\bDone!/.test(output), `no success line on a refused install:\n${output}`);
+  console.log('  an explicit npm install wrangler fails with the reason, nothing aborts');
 }
 
 console.log('npm-install-declared-tooling: ok');

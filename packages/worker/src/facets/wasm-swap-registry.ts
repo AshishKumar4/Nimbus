@@ -642,11 +642,18 @@ export function formatRejectError(
 }
 
 /**
- * Single-line yellow notice emitted for a transitive `[skip]`.
+ * Single-line yellow notice emitted for a `[skip]`.
  *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
+ *
+ * When the entry carries an actionable suggestion it is appended inline
+ * (`… try: <hint>`) — the same line shape for optional-shard skips and
+ * required-package skips, so one grep explains every package the install
+ * left out.
  */
 export function formatTransitiveSkip(r: PackageRejectEntry): string {
-  return `[npm] ${ANSI_YELLOW}[skip]${ANSI_RESET} ${r.from} — ${r.reason}`;
+  const base = `[npm] ${ANSI_YELLOW}[skip]${ANSI_RESET} ${r.from} — ${r.reason}`;
+  if (r.suggest) return `${base} ${ANSI_DIM}… try:${ANSI_RESET} ${r.suggest}`;
+  return base;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
