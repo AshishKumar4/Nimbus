@@ -437,23 +437,10 @@ const __MODULE_VFS_MANIFEST = ${safeManifest};
 const __MODULE_VFS_METADATA = ${safeMetadata};
 const __compiledModules = new Map();
 const __compileFailures = new Map();
-for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  // Precompile JS modules AND extensionless CJS entries (bin scripts and
-  // shims). workerd forbids new Function at request time, so anything not
-  // precompiled here surfaces the misleading "file was not pre-bundled".
-  // .json is data; skip it (it loads via JSON.parse, not as a function).
-  const __base = __p.slice(__p.lastIndexOf("/") + 1);
-  const __dot = __base.lastIndexOf(".");
-  const __ext = __dot > 0 ? __base.slice(__dot) : "";
-  if (__ext === ".js" || __ext === ".mjs" || __ext === ".cjs" || __ext === "") {
-    if (typeof __c !== "string") continue;
-    try {
-      __compiledModules.set(__p, __mkCompiledFn(__c));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
-  }
-}
+// Precompile JS modules AND extensionless CJS entries (bin scripts and
+// shims). workerd forbids new Function at request time, so anything not
+// precompiled here surfaces the misleading "file was not pre-bundled".
+${BUNDLE_PRECOMPILE_LOOP}
 
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
@@ -723,15 +710,7 @@ const __compileFailures = new Map();
 // \`new Function\` throws "Code generation from strings disallowed" in the DO
 // constructor and at request time — so the require closure must be compiled
 // here, off the module map. That is why code cannot come from the store.
-for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
-  if (__p.endsWith(".js") || __p.endsWith(".mjs") || __p.endsWith(".cjs")) {
-    try {
-      __compiledModules.set(__p, __mkCompiledFn(__c));
-    } catch (__e) {
-      __compileFailures.set(__p, __e && __e.message ? __e.message : String(__e));
-    }
-  }
-}
+${BUNDLE_PRECOMPILE_LOOP}
 
 ${FACET_RESIDENT_STORE_SOURCE}
 
@@ -1346,8 +1325,10 @@ export function encodedBundleSize(bundle, manifest) {
 function describeBundleCells(cells, limit = 8) {
     const shown = [...cells].sort((a, b) => b[1] - a[1]).slice(0, limit);
     const rest = cells.length - shown.length;
-    return shown.map(([path, bytes]) => `${path} (${bytes} bytes)`).join(', ')
-        + (rest > 0 ? `, +${rest} more` : '');
+    return shown.map(([path, bytes]) => {
+        const source = compiledCellPath(path);
+        return source === null ? `${path} (${bytes} bytes)` : `${source} [compiled] (${bytes} bytes)`;
+    }).join(', ') + (rest > 0 ? `, +${rest} more` : '');
 }
 /**
  * hardening-r5: emit a JS expression that revives binary cells from base64
@@ -1733,7 +1714,7 @@ function buildManifest(vfs, cwd, scriptPath) {
     return manifest;
 }
 function buildVfsMetadata(vfs, manifest, bundle) {
-    const paths = new Set(Object.keys(bundle));
+    const paths = new Set(Object.keys(bundle).filter((path) => compiledCellPath(path) === null));
     for (const [directory, children] of Object.entries(manifest)) {
         paths.add(directory);
         for (const child of children) {
@@ -1806,6 +1787,16 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState) {
             return false;
         try {
             if (!vfs.exists(stripped) || vfs.isDirectory(stripped))
+                return false;
+            // This is a guess at what a program might require, and the same
+            // per-file ceiling the entry-package walk applies bounds it: a
+            // multi-MiB main entry is an alternative bundle (typescript's 8.69 MiB
+            // `lib/typescript.js` beside the `lib/tsc.js` that actually runs), and
+            // one guess must not spend a third of the budget — and a third of the
+            // supervisor's headroom — on every invocation that never reads it.
+            // Anything the program really requires arrives through the closure,
+            // which is uncapped.
+            if (vfs.lstat(stripped).size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)
                 return false;
             // hardening-r5: preserve binary content as Uint8Array.
             const content = _readBundleCell(vfs, stripped);
@@ -2534,18 +2525,22 @@ const RUNTIME_PACKAGE_EXCLUDED_FILE_SUFFIXES = [
     '.webm',
 ];
 /**
- * Per-file ceiling for the speculative entry-package walk.
+ * Per-file ceiling for the speculative passes over installed packages: the
+ * entry-package walk (`addBinTargetSiblings`) and the main-entry oversample
+ * (`greedyAddMainEntries`).
  *
  * Everything the entry package needs in order to *run* arrives through the
- * require closure, which is uncapped and never evicted. This walk exists only
- * to catch data files the static walker cannot see, and data files are small.
- * Multi-MiB cells in a package tree are overwhelmingly alternative bundles —
- * typescript ships an 8.69 MiB `lib/typescript.js` that is never read — rather
- * than data.
+ * require closure, which is uncapped and never evicted. These passes exist
+ * only to catch what the static walker cannot see — data files, and modules
+ * reached by a computed require — and those are small. Multi-MiB cells in a
+ * package tree are overwhelmingly alternative bundles — typescript ships an
+ * 8.69 MiB `lib/typescript.js` that `tsc` never reads — rather than data.
  *
  * So one speculative guess must not spend the budget every later invocation
  * then carries: the same reasoning as `CWD_SNAPSHOT_MAX_FILE_BYTES`, applied
- * to the package tree.
+ * to the package tree. A miss this causes is loud and self-repairing: the
+ * facet reports the unstaged read and the next build stages it from the
+ * residency ledger, which has no per-file rule.
  */
 const BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES = 4 * 1024 * 1024;
 function shouldIncludeBinPackageFile(pkgRoot, path, bundleProfile) {
@@ -2775,15 +2770,20 @@ function __cacheKey(src) {
  */
 function _markBundleEsmAsFailed(bundle, reason) {
     for (const path of Object.keys(bundle)) {
+        if (compiledCellPath(path) !== null)
+            continue;
         if (!isBundleModuleCandidate(path))
             continue;
         const src = bundle[path];
         if (typeof src !== 'string')
             continue;
-        if (!looksLikeEsm(src))
+        // A TypeScript source is never runnable as staged, so it always needs
+        // the emit it cannot get; a JavaScript file only if it is ESM.
+        const typescript = bundleTypescriptLoader(path) !== null;
+        if (!typescript && !looksLikeEsm(src))
             continue;
         const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason}`);
-        bundle[path] =
+        bundle[typescript ? compiledCellKey(path) : path] =
             '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
                 '(function () { throw new Error(' + escapedReason + '); })();\n';
     }
@@ -2814,13 +2814,89 @@ export function isBundleModuleCandidate(path) {
  * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
  * the right question for a file that is already valid JS either way, and the
  * wrong one for a file that is never valid JS.
+ *
+ * A declaration file (`.d.ts`, `.d.mts`, `.d.cts`) is not a source: it has
+ * no runtime form, nothing `require()`s one, and esbuild's output for it is
+ * empty by definition. It is DATA — read by the program that ships it, which
+ * is exactly typescript: `tsc` reads its own `lib/lib.*.d.ts` with
+ * `readFileSync`, and every declaration it type-checks against comes from
+ * those bytes. Transforming them handed the compiler an 811-byte license
+ * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
+ * gone. So a declaration file is left exactly as it was staged.
  */
 export function bundleTypescriptLoader(path) {
+    if (isTypescriptDeclarationFile(path))
+        return null;
     const ext = vfsPathExtension(path);
     if (ext === '.tsx')
         return 'tsx';
     return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
 }
+/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
+export function isTypescriptDeclarationFile(path) {
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    return /\.d\.[mc]?ts$/.test(base);
+}
+/**
+ * Where a bundle carries the EXECUTABLE form of a cell whose staged bytes are
+ * not JavaScript — a TypeScript source.
+ *
+ * A bundle cell is two things to the facet: what `readFileSync` returns for
+ * the path, and what the startup pre-compile loop turns into the function
+ * `require` runs. For a JavaScript file those are the same bytes, so the
+ * ESM→CJS pass rewrites the cell in place and both readers see JavaScript.
+ * For a TypeScript source they are NOT the same: the bytes a program reads
+ * are the source (tsc compiling its project, a test runner, a linter), and
+ * the bytes `require` needs are esbuild's emit. Rewriting the cell in place
+ * handed tsc esbuild's CommonJS rendering of its own `src/index.ts` — it
+ * compiled that, and reported errors on lines the file never had.
+ *
+ * So the source cell stays exactly as staged, and the compiled form travels
+ * under this key: a NUL-framed prefix no filesystem path can contain, in the
+ * same map, so it is sized, split, cached, released and shipped by every
+ * mechanism the bundle already has. The facet's pre-compile loop takes these
+ * cells OFF the map as it compiles them, keyed by the real path, before any
+ * read can see them.
+ */
+const COMPILED_CELL_KEY_PREFIX = '\0compiled\0';
+export function compiledCellKey(path) {
+    return COMPILED_CELL_KEY_PREFIX + path;
+}
+/** The source path a compiled-cell key stands for, or null for a plain path. */
+export function compiledCellPath(key) {
+    return key.startsWith(COMPILED_CELL_KEY_PREFIX) ? key.slice(COMPILED_CELL_KEY_PREFIX.length) : null;
+}
+/**
+ * The pre-compile loop both generated facets run at module evaluation, the
+ * only moment workerd lets a string become code. One definition so the two
+ * facets cannot drift on what they compile: every JavaScript-shaped cell
+ * (`.js`, `.mjs`, `.cjs` and the extensionless bin scripts) from its own
+ * bytes, and every TypeScript source from its compiled cell — which is
+ * removed from the bundle here, so a `readFileSync` of the source path
+ * returns the source and a directory listing never shows the key.
+ */
+export const BUNDLE_PRECOMPILE_LOOP = `
+const __NIMBUS_COMPILED_PREFIX = ${JSON.stringify(COMPILED_CELL_KEY_PREFIX)};
+for (const [__p, __c] of Object.entries(__MODULE_VFS_BUNDLE)) {
+  let __modulePath = __p;
+  if (__p.startsWith(__NIMBUS_COMPILED_PREFIX)) {
+    __modulePath = __p.slice(__NIMBUS_COMPILED_PREFIX.length);
+    delete __MODULE_VFS_BUNDLE[__p];
+  } else {
+    // .json is data; skip it (it loads via JSON.parse, not as a function).
+    const __base = __p.slice(__p.lastIndexOf("/") + 1);
+    const __dot = __base.lastIndexOf(".");
+    const __ext = __dot > 0 ? __base.slice(__dot) : "";
+    if (__ext !== ".js" && __ext !== ".mjs" && __ext !== ".cjs" && __ext !== "") continue;
+  }
+  if (typeof __c !== "string") continue;
+  try {
+    __compiledModules.set(__modulePath, __mkCompiledFn(__c));
+  } catch (__e) {
+    __compileFailures.set(__modulePath, __e && __e.message ? __e.message : String(__e));
+  }
+}
+`;
 /**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
  * Mutates `bundle` in place. Errors are swallowed (the file is left as
@@ -2830,6 +2906,9 @@ export function bundleTypescriptLoader(path) {
  * Candidate set is `isBundleModuleCandidate`; within it, files with no
  * top-level import/export are already CJS-shaped and left alone.
  *
+ * A JavaScript cell is rewritten in place. A TypeScript source keeps its
+ * bytes and gets a compiled cell beside it — see `compiledCellKey`.
+ *
  * Returns the count of files transformed (for diagnostics).
  */
 async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
@@ -2838,6 +2917,8 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
     // Snapshot the keys first — esbuild calls await; never iterate-and-mutate.
     const candidates = [];
     for (const path of Object.keys(bundle)) {
+        if (compiledCellPath(path) !== null)
+            continue;
         if (!isBundleModuleCandidate(path))
             continue;
         const src = bundle[path];
@@ -2856,6 +2937,8 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
         const src = bundle[path];
         if (typeof src !== 'string')
             continue;
+        // A TypeScript source keeps its bytes; its emit lands beside it.
+        const target = bundleTypescriptLoader(path) === null ? path : compiledCellKey(path);
         // esbuild-wasm runs inside this isolate, so a transform is computation
         // like any other pass — the await above it yields nothing on its own.
         if (pacer)
@@ -2878,7 +2961,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
         const key = __cacheKey(src + '\0' + absUrl);
         const cached = __esmTransformCache.get(key);
         if (cached) {
-            bundle[path] = cached;
+            bundle[target] = cached;
             transformed++;
             continue;
         }
@@ -2896,7 +2979,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
                 ? await isolatedTransform(src, transformOptions)
                 : await esbuild.transform(src, transformOptions));
             const code = bindImportMetaResolve(t.code, absUrl);
-            bundle[path] = code;
+            bundle[target] = code;
             __esmTransformCache.set(key, code);
             transformed++;
         }
@@ -2928,7 +3011,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
             // this so repeated submits don't re-run the same transform.
             const diagnosticSrc = '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
                 '(function () { throw new Error(' + escapedReason + '); })();\n';
-            bundle[path] = diagnosticSrc;
+            bundle[target] = diagnosticSrc;
             __esmTransformCache.set(key, diagnosticSrc);
             failed++;
         }
@@ -3122,8 +3205,9 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    went are named rather than silently dropped.
     const size = encodedBundleSize(bundle, manifest);
     if (size.bytes > BUNDLE_MAX_ENCODED_BYTES) {
+        // A compiled cell goes with its source: required when the source is.
         const evictable = Object.keys(bundle)
-            .filter((path) => !requiredPaths.has(path))
+            .filter((path) => !requiredPaths.has(compiledCellPath(path) ?? path))
             .sort((a, b) => _bundleCellLength(bundle[b]) - _bundleCellLength(bundle[a]));
         const evicted = [];
         for (const k of evictable) {

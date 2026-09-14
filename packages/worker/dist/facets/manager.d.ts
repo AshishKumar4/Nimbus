@@ -534,8 +534,32 @@ export declare function isBundleModuleCandidate(path: string): boolean;
  * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
  * the right question for a file that is already valid JS either way, and the
  * wrong one for a file that is never valid JS.
+ *
+ * A declaration file (`.d.ts`, `.d.mts`, `.d.cts`) is not a source: it has
+ * no runtime form, nothing `require()`s one, and esbuild's output for it is
+ * empty by definition. It is DATA — read by the program that ships it, which
+ * is exactly typescript: `tsc` reads its own `lib/lib.*.d.ts` with
+ * `readFileSync`, and every declaration it type-checks against comes from
+ * those bytes. Transforming them handed the compiler an 811-byte license
+ * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
+ * gone. So a declaration file is left exactly as it was staged.
  */
 export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
+/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
+export declare function isTypescriptDeclarationFile(path: string): boolean;
+export declare function compiledCellKey(path: string): string;
+/** The source path a compiled-cell key stands for, or null for a plain path. */
+export declare function compiledCellPath(key: string): string | null;
+/**
+ * The pre-compile loop both generated facets run at module evaluation, the
+ * only moment workerd lets a string become code. One definition so the two
+ * facets cannot drift on what they compile: every JavaScript-shaped cell
+ * (`.js`, `.mjs`, `.cjs` and the extensionless bin scripts) from its own
+ * bytes, and every TypeScript source from its compiled cell — which is
+ * removed from the bundle here, so a `readFileSync` of the source path
+ * returns the source and a directory listing never shows the key.
+ */
+export declare const BUNDLE_PRECOMPILE_LOOP: string;
 /**
  * W2.6a: build the prefetch bundle for FacetManager.exec.
  *
