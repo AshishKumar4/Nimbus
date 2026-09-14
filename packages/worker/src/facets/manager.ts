@@ -5069,6 +5069,19 @@ export class FacetManager {
     }
   }
 
+  /**
+   * A launch that fails before its process is running reports the same way
+   * regardless of which phase failed: the pid is exited, the terminal event
+   * recorded, and the session notified. Callers do their phase-specific
+   * cleanup (ports, tracked RPC resources) first and pass a reason that names
+   * the phase.
+   */
+  private _failLaunch(pid: number, reason: string): void {
+    this.processes.exit(pid, 1);
+    this._w5RecordTermination(pid, 1, 'facet', reason);
+    try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
+  }
+
   /** Flush files written by the script back to the supervisor's VFS. */
   private _flushVfsWrites(result: FacetExecResult, pid: number) {
     if (!this.vfs || !result.vfsWrites) return;
@@ -5281,10 +5294,7 @@ export class FacetManager {
       // A resident that cannot be journalled does not start; the failure is
       // reported the way a boot failure is.
       pacer.settle();
-      this.processes.exit(entry.pid, 1);
-      const reason = 'long-running node launch failed: ' + errorMessage(e);
-      this._w5RecordTermination(entry.pid, 1, 'facet', reason);
-      try { this.hooks.onExternalExit?.(entry.pid, 1, reason); } catch {}
+      this._failLaunch(entry.pid, 'long-running node launch failed: ' + errorMessage(e));
       throw e;
     }
     try {
@@ -5474,21 +5484,7 @@ export class FacetManager {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
-      this.processes.exit(entry.pid, 1);
-      const reason = 'long-running node boot failed: ' + errorMessage(e);
-      this._w5RecordTermination(
-        entry.pid,
-        1,
-        'facet',
-        reason,
-      );
-      try {
-        this.hooks.onExternalExit?.(
-          entry.pid,
-          1,
-          reason,
-        );
-      } catch {}
+      this._failLaunch(entry.pid, 'long-running node boot failed: ' + errorMessage(e));
       throw e;
     }
   }
@@ -5630,7 +5626,7 @@ export class FacetManager {
       resourcesTracked = true;
       this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
       const boot = await handle.booted();
-      if (opts.durable && this.launchJournal.has(entry.pid) && record) {
+      if (record && this.launchJournal.has(entry.pid)) {
         // Booted and running: the launch proved itself, so the resident
         // starts its running life with a fresh re-drive budget.
         await this.launchJournal.journal({ ...record, attempt: 0, phase: 'running' });
@@ -5666,21 +5662,7 @@ export class FacetManager {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
-      this.processes.exit(entry.pid, 1);
-      const reason = 'long-running worker boot failed: ' + errorMessage(e);
-      this._w5RecordTermination(
-        entry.pid,
-        1,
-        'facet',
-        reason,
-      );
-      try {
-        this.hooks.onExternalExit?.(
-          entry.pid,
-          1,
-          reason,
-        );
-      } catch {}
+      this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
       throw e;
     }
   }
