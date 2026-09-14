@@ -102,6 +102,56 @@ export interface NimbusExecOptions {
    * user, which is what every programmatic exec has always run as.
    */
   cred?: VfsCred;
+  /**
+   * `startProcess` only: what to do when the process exits on its own with
+   * a non-zero code. 'never' (default) leaves it stopped; 'on-failure'
+   * restarts it under the session's restart budget with backoff. A platform
+   * reset re-drives the process either way.
+   */
+  restart?: NimbusRestartPolicy;
+}
+
+export type NimbusRestartPolicy = 'never' | 'on-failure';
+export type NimbusAppVisibility = 'scoped' | 'public';
+
+/**
+ * An application target: a port, a pid, a name, or an owner — every
+ * `apps.*` verb takes one. A bare number is a port when something listens
+ * on it or a reservation names it, else a pid; a bare string is a name
+ * first, then an owner. The object forms are unambiguous.
+ */
+export type NimbusAppTarget =
+  | number
+  | string
+  | { port: number }
+  | { pid: number }
+  | { name: string }
+  | { owner: string };
+
+export interface NimbusExposedApp {
+  /** The application's identity: derived (`auto:…`) for an ordinary process, explicit for a durable worker app. */
+  owner: string;
+  name: string | null;
+  port: number;
+  pid: number | null;
+  capability: string | null;
+  visibility: NimbusAppVisibility;
+  /** Browser-facing URL, built the way `ports.url` builds one; undefined when the deployment is not addressable. */
+  url: string | undefined;
+}
+
+export interface NimbusApp {
+  owner: string;
+  name: string | null;
+  port: number | null;
+  pid: number | null;
+  status: 'running' | 'starting' | 'stopped' | 'failed';
+  visibility: NimbusAppVisibility;
+  capability: string | null;
+  restart: NimbusRestartPolicy;
+  /** With status 'failed': what went wrong, e.g. `listened on 3000, owns 5173`. */
+  diagnostic: string | null;
+  url: string | undefined;
 }
 
 export interface NimbusExecResult {
@@ -259,7 +309,11 @@ interface NimbusSessionStub {
   _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
   _rpcProcessLogs(pid: number, options?: NimbusProcessLogsOptions): Promise<NimbusProcessLogsResult>;
   _rpcListPorts(): Promise<NimbusPort[]>;
-  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null; visibility?: 'scoped' | 'public' }>;
+  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<{ port: number; listening: boolean; pid: number | null; registeredAt: number | null; capability: string | null; visibility?: 'scoped' | 'public'; owner?: string | null; name?: string | null }>;
+  _rpcExposeApp(target: NimbusAppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }): Promise<Omit<NimbusExposedApp, 'url'> & { url: string | null }>;
+  _rpcListApps(): Promise<Array<Omit<NimbusApp, 'url'> & { url: string | null }>>;
+  _rpcRotateLink(target: NimbusAppTarget): Promise<Omit<NimbusExposedApp, 'url'> & { url: string | null }>;
+  _rpcRemoveApp(target: NimbusAppTarget): Promise<{ owner: string; removed: boolean; port: number | null }>;
   _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<{ port: number; capability: string | null; visibility: 'scoped' | 'public' }>;
   _rpcRemoveDurableApp(owner: string): Promise<{ owner: string; removed: boolean; port: number | null }>;
   _rpcUnexposePort(port: number): Promise<{ port: number; ok: boolean }>;
@@ -438,6 +492,31 @@ const ExposedPortSchema = z.object({
   registeredAt: z.number().nullable(),
   capability: z.string().nullable(),
   visibility: z.enum(['scoped', 'public']).optional(),
+  owner: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+});
+
+const ExposedAppSchema = z.object({
+  owner: z.string(),
+  name: z.string().nullable(),
+  port: z.number(),
+  pid: z.number().nullable(),
+  capability: z.string().nullable(),
+  visibility: z.enum(['scoped', 'public']),
+  url: z.string().nullable(),
+});
+
+const AppSchema = z.object({
+  owner: z.string(),
+  name: z.string().nullable(),
+  port: z.number().nullable(),
+  pid: z.number().nullable(),
+  status: z.enum(['running', 'starting', 'stopped', 'failed']),
+  visibility: z.enum(['scoped', 'public']),
+  capability: z.string().nullable(),
+  restart: z.enum(['never', 'on-failure']),
+  diagnostic: z.string().nullable(),
+  url: z.string().nullable(),
 });
 
 const EnsureDurableAppSchema = z.object({
@@ -612,6 +691,10 @@ export class NimbusSandbox {
       _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options], ExposedPortSchema),
       _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input], EnsureDurableAppSchema),
       _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }], RemoveDurableAppSchema),
+      _rpcExposeApp: (target, options) => this.remoteRpc('exposeApp', [target, options], ExposedAppSchema),
+      _rpcListApps: () => this.remoteRpc('listApps', [], z.array(AppSchema)),
+      _rpcRotateLink: (target) => this.remoteRpc('rotateLink', [target], ExposedAppSchema),
+      _rpcRemoveApp: (target) => this.remoteRpc('removeApp', [target], RemoveDurableAppSchema),
       _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port], UnexposedPortSchema),
       _rpcDestroy: (options) => this.remoteRpc('destroy', [options], DestroyResultSchema),
     };
@@ -839,7 +922,13 @@ export class NimbusSandbox {
       await this.ready();
       return this.rpc(this.stub()._rpcListPorts());
     },
-    expose: async (port: number, options: { visibility?: 'scoped' | 'public' } = {}) => {
+    /**
+     * Expose a port. When the port's occupant carries an identity (a node
+     * resident, a durable worker app) this is the same lazy reservation
+     * `apps.expose` makes and the result names the owner; a bare port —
+     * a dev server, a python resident — is written port-only as before.
+     */
+    expose: async (port: number, options: { visibility?: 'scoped' | 'public'; name?: string } = {}) => {
       await this.ready();
       const result = await this.rpc(this.stub()._rpcExposePort(port, options));
       return {
@@ -847,6 +936,7 @@ export class NimbusSandbox {
         url: this.portUrl(port, {
           visibility: result.visibility ?? 'scoped',
           capability: result.capability ?? undefined,
+          name: result.name ?? undefined,
         }),
       };
     },
@@ -873,9 +963,56 @@ export class NimbusSandbox {
       await this.ready();
       return this.rpc(this.stub()._rpcRemoveDurableApp(owner));
     },
-    url: (port: number, options: { visibility?: 'scoped' | 'public'; capability?: string } = {}): string | undefined =>
+    url: (port: number, options: { visibility?: 'scoped' | 'public'; capability?: string; name?: string } = {}): string | undefined =>
       this.portUrl(port, options),
   };
+
+  /**
+   * The application surface: every server is durable under its identity
+   * from the moment it is spawned; exposing it reserves its port for that
+   * identity, names it, and (when public) mints the capability its shared
+   * URL is built on. `ports.expose` is the port-addressed alias of
+   * `apps.expose`; the identity-addressed verbs live here.
+   */
+  apps = {
+    list: async (): Promise<NimbusApp[]> => {
+      await this.ready();
+      const apps = await this.rpc(this.stub()._rpcListApps());
+      return apps.map((app) => ({
+        ...app,
+        url: app.port === null ? undefined : this.portUrl(app.port, {
+          visibility: app.visibility,
+          capability: app.capability ?? undefined,
+          name: app.name ?? undefined,
+        }) ?? app.url ?? undefined,
+      }));
+    },
+    expose: async (target: NimbusAppTarget, options: { visibility?: 'scoped' | 'public'; name?: string } = {}): Promise<NimbusExposedApp> => {
+      await this.ready();
+      const result = await this.rpc(this.stub()._rpcExposeApp(target, options));
+      return this.exposedApp(result);
+    },
+    rotateLink: async (target: NimbusAppTarget): Promise<NimbusExposedApp> => {
+      await this.ready();
+      const result = await this.rpc(this.stub()._rpcRotateLink(target));
+      return this.exposedApp(result);
+    },
+    remove: async (target: NimbusAppTarget) => {
+      await this.ready();
+      return this.rpc(this.stub()._rpcRemoveApp(target));
+    },
+  };
+
+  private exposedApp(result: Omit<NimbusExposedApp, 'url'> & { url: string | null }): NimbusExposedApp {
+    return {
+      ...result,
+      url: this.portUrl(result.port, {
+        visibility: result.visibility,
+        capability: result.capability ?? undefined,
+        name: result.name ?? undefined,
+      }) ?? result.url ?? undefined,
+    };
+  }
 
   tools(options: { namespace?: string; kind?: string; name?: string } = {}) {
     const namespace = options.namespace ?? this.profile.tools?.namespace ?? 'nimbus';
@@ -929,6 +1066,11 @@ export class NimbusSandbox {
         exposePort: { execute: (input: number | { port: number }) => this.ports.expose(typeof input === 'number' ? input : input.port) },
         unexposePort: { execute: (input: number | { port: number }) => this.ports.unexpose(typeof input === 'number' ? input : input.port) },
         listPorts: { execute: () => this.ports.list() },
+        exposeApp: { execute: (input: NimbusAppTarget | { target: NimbusAppTarget; visibility?: 'scoped' | 'public'; name?: string }) =>
+          typeof input === 'object' && input !== null && 'target' in input
+            ? this.apps.expose(input.target, { visibility: input.visibility, name: input.name })
+            : this.apps.expose(input as NimbusAppTarget) },
+        listApps: { execute: () => this.apps.list() },
         installRuntime: { execute: (spec: RuntimeSpec) => this.runtimes.install(spec) },
         listRuntimes: { execute: () => this.runtimes.list() },
       },
@@ -998,26 +1140,29 @@ export class NimbusSandbox {
    */
   private portUrl(
     port: number,
-    options: { visibility?: 'scoped' | 'public'; capability?: string } = {},
+    options: { visibility?: 'scoped' | 'public'; capability?: string; name?: string } = {},
   ): string | undefined {
     const hostSuffix = this.config.previewHostSuffix;
     if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
-      // The public form names its bearer in the label: a public port with a
+      // The name stands where the port stands when the app has one. The
+      // public form names its bearer in the label: a public port with a
       // capability builds the unauthenticated host, anything else keeps the
       // session-attached one.
+      const label = options.name ?? port;
       if (options.visibility === 'public' && options.capability !== undefined) {
-        return `https://${buildPublicPreviewHost(this.id, port, options.capability, hostSuffix)}/`;
+        return `https://${buildPublicPreviewHost(this.id, label, options.capability, hostSuffix)}/`;
       }
-      return `https://${buildPreviewHost(this.id, port, hostSuffix)}/`;
+      return `https://${buildPreviewHost(this.id, label, hostSuffix)}/`;
     }
+    const door = options.name !== undefined ? `/app/${options.name}/` : `/port/${port}/`;
     const explicit = this.profile.preview?.baseUrl;
     if (explicit) {
       const base = trimTrailingSlashes(explicit.replace('{sessionId}', encodeURIComponent(this.id)));
-      return `${base}/port/${port}/`;
+      return `${base}${door}`;
     }
     const endpoint = this.config.endpoint ? trimTrailingSlashes(this.config.endpoint) : '';
     if (!endpoint) return undefined;
-    return `${endpoint}/s/${encodeURIComponent(this.id)}/port/${port}/`;
+    return `${endpoint}/s/${encodeURIComponent(this.id)}${door}`;
   }
 
   private async rpc<T>(promise: Promise<T>): Promise<T> {
