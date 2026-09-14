@@ -76,5 +76,33 @@ assert.ok(
 released({ bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false });
 await new Promise((r) => setTimeout(r, 50));
 
-console.log('facet-bundle-build-deadline: ok');
 console.log(`  reported at ${elapsed}ms against a ${BUNDLE_BUILD_DEADLINE_MS}ms bound`);
+
+// ── The deadline scales with the installed tree, bounded ────────────────────
+//
+// Measured on the session DO (2026-09-14): a 752-package tree built its
+// bundle in 14.6 s cold — ~20 ms per package in the reads, transforms and
+// manifest walk that scale with the tree. A 20 s bound on a defect must not
+// report a large tree as one; past 60 s it is a defect whatever the tree.
+{
+  const { bundleBuildDeadlineMs, BUNDLE_BUILD_DEADLINE_PER_PACKAGE_MS, BUNDLE_BUILD_DEADLINE_MAX_MS } =
+    await import('../../packages/core/src/constants.ts');
+  const { countInstalledPackages } = await import('../../packages/worker/src/facets/manager.ts');
+  assert.equal(bundleBuildDeadlineMs(0), BUNDLE_BUILD_DEADLINE_MS, 'an empty tree keeps the floor');
+  assert.equal(bundleBuildDeadlineMs(752), BUNDLE_BUILD_DEADLINE_MS + 752 * BUNDLE_BUILD_DEADLINE_PER_PACKAGE_MS, 'the measured tree gets its measured budget');
+  assert.equal(bundleBuildDeadlineMs(3000), BUNDLE_BUILD_DEADLINE_MAX_MS, 'a huge tree is capped');
+  assert.equal(bundleBuildDeadlineMs(-5), BUNDLE_BUILD_DEADLINE_MS);
+
+  // The count is one readdir per scope, not a walk.
+  const { CRED_KERNEL } = await import('../../packages/core/src/runtime/os-contracts.ts');
+  const root = vfs.as(CRED_KERNEL);
+  for (const p of ['home/user/proj/node_modules/a', 'home/user/proj/node_modules/b', 'home/user/proj/node_modules/@s/x', 'home/user/proj/node_modules/@s/y', 'home/user/proj/node_modules/.bin']) {
+    root.mkdir(p, { recursive: true });
+  }
+  root.writeFile('home/user/proj/node_modules/.package-lock.json', '{}');
+  assert.equal(countInstalledPackages(root, '/home/user/proj'), 4, 'two plain + two scoped, dotted entries ignored');
+  assert.equal(countInstalledPackages(root, '/home/user/nowhere'), 0);
+  console.log('  deadline scales 20 ms/package from 20 s, capped at 60 s');
+}
+
+console.log('facet-bundle-build-deadline: ok');

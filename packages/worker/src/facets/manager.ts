@@ -105,7 +105,7 @@ import {
   type FacetBundleProfile,
 } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
-  BUNDLE_BUILD_DEADLINE_MS, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
+  BUNDLE_BUILD_DEADLINE_MS, bundleBuildDeadlineMs, CF_COMPAT_DATE, FACET_TIMEOUT_MS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
@@ -3357,6 +3357,29 @@ async function transformEsmInBundle(
  * behaviour for code paths that don't have esbuild handy).
  *
  */
+/**
+ * Top-level entries of `cwd/node_modules` (scoped packages counted per
+ * scope member). One readdir per scope: what the deadline scales by, not a
+ * walk of the tree.
+ */
+export function countInstalledPackages(vfs: CredentialedVfs, cwd: string): number {
+  const nmDir = cwd.replace(/^\/+/, '') + '/node_modules';
+  try {
+    if (!vfs.isDirectory(nmDir)) return 0;
+    let count = 0;
+    for (const entry of vfs.readdir(nmDir)) {
+      if (entry.type !== 'directory' || entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('@')) {
+        try { count += vfs.readdir(nmDir + '/' + entry.name).filter((sub) => sub.type === 'directory').length; }
+        catch { /* unreadable scope */ }
+      } else {
+        count += 1;
+      }
+    }
+    return count;
+  } catch { return 0; }
+}
+
 export async function buildPrefetchBundle(
   vfs: CredentialedVfs,
   scriptPath: string | undefined,
@@ -4165,6 +4188,7 @@ export class FacetManager {
   private async _withBundleBuildDeadline(
     build: Promise<FacetVfsState>,
     command: string,
+    deadlineMs: number = BUNDLE_BUILD_DEADLINE_MS,
   ): Promise<FacetVfsState> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -4174,11 +4198,11 @@ export class FacetManager {
           timer = setTimeout(
             () => reject(new Error(
               `Nimbus: assembling the filesystem bundle for \`${command}\` exceeded `
-              + `${BUNDLE_BUILD_DEADLINE_MS}ms. The process was not started. This is the `
+              + `${deadlineMs}ms. The process was not started. This is the `
               + 'bundle build, not the program: it runs in the session Durable Object, so '
               + 'it is reported rather than allowed to wedge the session.',
             )),
-            BUNDLE_BUILD_DEADLINE_MS,
+            deadlineMs,
           );
         }),
       ]);
@@ -4498,6 +4522,7 @@ export class FacetManager {
             opts.bundleProfile,
           ),
           command,
+          bundleBuildDeadlineMs(countInstalledPackages(processVfs, opts.cwd || '/home/user')),
         )
       : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
