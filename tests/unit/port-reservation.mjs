@@ -21,14 +21,46 @@ import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/ke
 
 const rows = new Map();
 let transactions = 0;
+let queue = Promise.resolve();
+// A serialized transaction: each body runs alone on a private copy of the
+// committed rows, commits that copy only when it resolves, and always frees
+// the queue. get/list outside a transaction answer only committed state.
+const transaction = (body) => {
+  const run = queue.then(() => {
+    transactions += 1;
+    const copy = new Map(rows);
+    const view = {
+      get: async (k) => copy.get(k),
+      put: async (k, v) => { copy.set(k, v); },
+      delete: async (k) => copy.delete(k),
+      list: async ({ prefix }) => new Map([...copy].filter(([k]) => k.startsWith(prefix))),
+    };
+    const result = body(view);
+    return result.then((value) => {
+      rows.clear();
+      for (const [k, v] of copy) rows.set(k, v);
+      return value;
+    });
+  });
+  queue = run.then(() => undefined, () => undefined);
+  return run;
+};
 const storage = {
   get: async (key) => rows.get(key),
   put: async (key, value) => { rows.set(key, value); },
   delete: async (key) => rows.delete(key),
   list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
-  transaction: async (body) => { transactions += 1; return body(storage); },
+  transaction,
 };
 const ctx = { storage };
+// A store that offers no transaction must be refused, never fallen back into.
+const noTxnStorage = {
+  get: async (key) => rows.get(key),
+  put: async (key, value) => { rows.set(key, value); },
+  delete: async (key) => rows.delete(key),
+  list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
+};
+const noTxnCtx = { storage: noTxnStorage };
 const ownerOf = new Map();
 const self = { ctx, portRegistry: { restoreCapability: () => true }, portCapabilityOwner: (port) => ownerOf.get(port) ?? null };
 const record = (port) => rows.get(`${PORT_CAPABILITY_KEY_PREFIX}${port}`);
@@ -99,9 +131,65 @@ const CONFLICT = /port reservation conflict/;
   assert.equal(record(20020), 'junk');
 }
 
-// T8: every claim ran inside the store's transaction.
+// T8: every claim — and every release — ran inside the store's transaction.
+// Twelve reserves and the three releases in T6.
 {
-  assert.equal(transactions, 12);
+  assert.equal(transactions, 15);
+}
+
+// T9: two owners racing one preferred port — one claims, one is refused, the
+// winner's row is intact.
+{
+  const results = await Promise.allSettled([
+    reservePort(ctx, { owner: 'G', preferredPort: 20030, occupiedPorts: none }),
+    reservePort(ctx, { owner: 'H', preferredPort: 20030, occupiedPorts: none }),
+  ]);
+  const claimed = results.filter((r) => r.status === 'fulfilled');
+  const refused = results.filter((r) => r.status === 'rejected' && CONFLICT.test(String(r.reason)));
+  assert.equal(claimed.length, 1, 'exactly one owner claims the port');
+  assert.equal(claimed[0].value, 20030);
+  assert.equal(refused.length, 1, 'the loser sees a conflict');
+  assert.match(record(20030).owner, /^[GH]$/, 'the winner holds the row');
+  assert.equal(record(20030).capability, null);
+}
+
+// T10: an owner racing itself is answered the same port, once.
+{
+  const results = await Promise.all([
+    reservePort(ctx, { owner: 'I', preferredPort: 20040, occupiedPorts: none }),
+    reservePort(ctx, { owner: 'I', preferredPort: 20040, occupiedPorts: none }),
+  ]);
+  assert.deepEqual(results, [20040, 20040], 'both answers name the same port');
+  assert.deepEqual(record(20040), { owner: 'I', capability: null });
+}
+
+// T11: a foreign release is refused inside the transaction and the record
+// survives untouched.
+{
+  const before = transactions;
+  await assert.rejects(releasePortReservation(ctx, { owner: 'H', port: 20040 }), CONFLICT);
+  assert.deepEqual(record(20040), { owner: 'I', capability: null }, 'a refused foreign release deletes nothing');
+  assert.ok(transactions > before, 'the release ran inside a transaction');
+}
+
+// T12: a transaction that fails writes nothing.
+{
+  const before = new Map(rows);
+  const body = async (txn) => {
+    await txn.put(`${PORT_CAPABILITY_KEY_PREFIX}20050`, { owner: 'J', capability: null });
+    throw new Error('commit never runs');
+  };
+  await assert.rejects(storage.transaction(body), /commit never runs/);
+  assert.equal(record(20050), undefined, 'a rejected transaction commits nothing');
+  assert.deepEqual([...rows], [...before], 'committed rows are untouched by the failure');
+}
+
+// T13: a store with no transaction is refused, not fallen back into.
+{
+  const before = rows.size;
+  await assert.rejects(reservePort(noTxnCtx, { owner: 'K', preferredPort: 20060, occupiedPorts: none }));
+  await assert.rejects(releasePortReservation(noTxnCtx, { owner: 'K', port: 20060 }));
+  assert.equal(rows.size, before, 'nothing was allocated without a transaction');
 }
 
 console.log('port-reservation: ok');

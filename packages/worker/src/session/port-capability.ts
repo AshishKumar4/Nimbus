@@ -39,13 +39,17 @@ export interface PortCapabilityHost {
   portCapabilityOwner?(port: number): string | null;
 }
 
-/** The storage slice a reservation needs: a prefix scan, and a transaction when the store offers one. */
-export interface PortReservationStorage {
+/** The transactional view a claim or release runs against: every read and write inside one serializable unit. */
+export interface PortReservationTransaction {
   get(key: string): Promise<unknown>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<unknown>;
   list<T = unknown>(options: { prefix: string }): Promise<Map<string, T>>;
-  transaction?<T>(body: (txn: PortReservationStorage) => Promise<T>): Promise<T>;
+}
+
+/** The storage slice a reservation needs: a prefix scan, and a required atomic transaction. */
+export interface PortReservationStorage extends PortReservationTransaction {
+  transaction<T>(body: (txn: PortReservationTransaction) => Promise<T>): Promise<T>;
 }
 
 export interface PortReservationHost {
@@ -102,7 +106,7 @@ export async function reservePort(
   ctx: PortReservationHost['ctx'],
   input: { owner: string; preferredPort?: number; occupiedPorts: ReadonlySet<number> },
 ): Promise<number> {
-  const claim = async (txn: PortReservationStorage): Promise<number> => {
+  const claim = async (txn: PortReservationTransaction): Promise<number> => {
     const records = await txn.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
     const taken = new Set<number>(input.occupiedPorts);
     let held: number | null = null;
@@ -133,7 +137,7 @@ export async function reservePort(
     await txn.put(key(port), { owner: input.owner, capability: null });
     return port;
   };
-  return ctx.storage.transaction ? ctx.storage.transaction(claim) : claim(ctx.storage);
+  return ctx.storage.transaction(claim);
 }
 
 /** End an owner's hold on a port. Another owner's record is left alone and refused. */
@@ -141,11 +145,15 @@ export async function releasePortReservation(
   ctx: PortReservationHost['ctx'],
   input: { owner: string; port: number },
 ): Promise<boolean> {
-  const stored = await readPortReservation(ctx, input.port);
-  if (stored === null) return false;
-  if (stored.owner !== input.owner) throw conflict(`port ${input.port} is held by another owner`);
-  await ctx.storage.delete(key(input.port));
-  return true;
+  // The read, the owner check and the delete are one transaction: a concurrent
+  // claim or a foreign release cannot interleave between them.
+  return ctx.storage.transaction(async (txn) => {
+    const stored = await readPortReservation({ storage: txn }, input.port);
+    if (stored === null) return false;
+    if (stored.owner !== input.owner) throw conflict(`port ${input.port} is held by another owner`);
+    await txn.delete(key(input.port));
+    return true;
+  });
 }
 
 export async function readPortCapability(
