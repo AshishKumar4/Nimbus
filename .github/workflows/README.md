@@ -2,10 +2,17 @@
 
 ## `behavioral.yml`
 
-Deploys the commit under test to its own throwaway Worker and runs
-`tests/behavioral/run-all.mjs` against it. Probes are discovered
-recursively under `tests/behavioral/` and run sequentially.
+Four jobs. `typecheck`, `unit`, and `dist-integrity` are the fast gates
+and run in parallel; the throwaway deploy + probes job (`behavioral`)
+needs them but still runs when one is red (`if: !cancelled()`), so a red
+fast gate can never silently decide whether the probes execute — each
+job's own status carries its signal.
 
+The `behavioral` job deploys the commit under test to its own throwaway
+Worker and runs `tests/behavioral/run-all.mjs --jobs 4` against it.
+Probes are discovered recursively under `tests/behavioral/` and run in a
+pool of 4 (each probe mints its own session); the `// @serial`-marked
+browser probes run after the pool drains, one at a time.
 ### What is under test
 
 The commit. The job builds `dist` through the build/bundle/build fixpoint
@@ -54,7 +61,7 @@ reach teardown; `bun tests/behavioral/_throwaway-target.mjs list` finds any
 
 ### Reading the output
 
-Each probe logs one line: `[probe-name] ... PASS (3.2s)` or `[probe-name] ... FAIL (45.1s)`. Failed probes' tail lines are echoed inline. Summary line at end: `──── N pass / M fail (X retried) (total Ys)`.
+Each probe logs one line: `[probe-name] ... PASS (3.2s)` or `[probe-name] ... FAIL (45.1s)`, in completion order. Failed probes' tail lines are echoed inline. Summary line at end: `──── N pass / M fail (X retried) (total Ys)`.
 
 Full run log uploaded as an artifact (`behavioral-log-<event>-<run-id>`) on
 every run, retained 90 days.
@@ -92,12 +99,13 @@ throwaway does not have, use staging instead: `bun run staging:deploy` then
 
 ### Required-check setup (one-time, manual)
 
-To make the job block merge:
+To make the workflow block merge:
 
 1. Open [repo Settings → Branches](https://github.com/AshishKumar4/Nimbus/settings/branches).
 2. Add a branch protection rule for `main`.
 3. Under *Require status checks to pass before merging*, enable and add
-   `behavioral` (the job name from `behavioral.yml`).
+   all four jobs from `behavioral.yml`: `typecheck`, `unit`,
+   `dist-integrity`, `behavioral`.
 4. Save.
 
 Until then the job runs and reports status but does not block merge.
@@ -105,6 +113,9 @@ Until then the job runs and reports status but does not block merge.
 ### Maintenance
 
 Adding a probe under `tests/behavioral/` needs no workflow change — the
-runner discovers it recursively. `timeout-minutes: 120` covers a build, a
-deploy and ~380 sequential probes; a large probe-count increase may need a
-bump.
+runner discovers it recursively. `timeout-minutes: 120` on the
+`behavioral` job covers a build, a deploy and ~400 probes at `--jobs 4`
+(plus the `// @serial` browser tail); a large probe-count increase may
+need a bump. A probe that launches a real browser gets a `// @serial`
+first-line marker (shebang dropped — see the runner header for why) so it
+runs after the pool drains.
