@@ -976,7 +976,7 @@ it is spawned, and a reservation is what *exposing* it creates.
 
 ### Identity
 
-- A node resident's identity is **derived** at spawn:
+- Node, Ruby socket and CPython socket residents have **derived** identity at spawn:
   `owner = 'auto:' + sha256(cwd + '\0' + argv.join('\0')).slice(0, 24)`.
   The environment is not an input: a rotated secret, a different `PORT` or
   `TERM` does not turn one application into another. The same `node
@@ -986,22 +986,32 @@ it is spawned, and a reservation is what *exposing* it creates.
   `_runResidentLaunch`).
 - What stays **explicit**: a durable worker spawn
   (`spawnWorker(..., { durable: { owner } })`) and an embedder-owned launch
-  keep the owner they declare. A node resident that declares a port at
-  spawn which an *explicit* reservation holds adopts that reservation's
-  owner instead of deriving one — the landed embedder contract:
+  keep the owner they declare. Reservations persist `kind: 'explicit' |
+  'derived'`; old records parse as `explicit`. `ensureDurableApp` and
+  caller-owned `reservePort` declarations are explicit; lazy `apps.expose`
+  reservations are derived. An explicit reservation is port-scoped:
   `ensureDurableApp({ owner })` declares "whatever binds this port is my
   application", and the port stays the durable address. `ensureDurableApp`
-  and `removeDurableApp` are unchanged for embedders.
+  and `removeDurableApp` retain that embedder contract. The first journalled
+  process on an explicit port adopts its owner only while no other live
+  instance owns that application. A second live binder is ephemeral and
+  notified, never given the first instance's shared capability.
 - **Concurrent duplicate rule.** A second live instance of the same derived
   identity — the same program started again while the first still runs —
-  is ephemeral. It runs, the user is told (`second instance of <argv> is not
+  is ephemeral. A `resident-owner:<owner> → pid` claim and the winning
+  launch row are written in one storage transaction, so simultaneous
+  launches cannot both win. The terminal hook releases only its own pid's
+  claim. It runs, the user is told (`second instance of <argv> is not
   the durable one`), but it is not journalled, takes no durable slot, never
   claims the identity's reservation, and cannot be exposed. A port it binds
   is handled like any unrelated process (below). Once the first instance
   ends, the next spawn of the program is the durable one again.
-- Python and Ruby socket residents carry no identity yet: their launch
-  inputs include a filesystem snapshot and the user environment, neither of
-  which can be journalled. `ports.expose` still works on their port, port-only.
+- Ruby and CPython socket residents use the same journal and duplicate claim.
+  Their large boot arguments (program, environment, filesystem manifest)
+  live in content-addressed durable images; the journal holds digests, not
+  a large DO storage value. The Ruby adapter's identity and reset re-drive
+  are covered by the facet-host harness; this is not a live interpreter
+  restart or a general checkpoint of interpreter heap state.
 
 ### Registration: the stamp is unconditional, the capability is bound to identity
 
@@ -1012,16 +1022,16 @@ it is spawned, and a reservation is what *exposing* it creates.
   re-drives any stamped row whose port matches, reservation or not
   (single-flight per port, shared with the alarm pump's recovery). When more
   than one row names the port, the reservation's owner wins, else the newest.
-- The stored capability is re-adopted on registration only when the row's
+- For a **derived** reservation the stored capability is re-adopted only when the row's
   owner **is** the reservation's owner. Any other occupant — an unrelated
   server, a pid outside the resident lifecycle, the ephemeral duplicate —
   retires the stored capability *and its directory row* and registers with a
   fresh one, so a shared link 404s rather than reaching a program it was
   never handed out for. The reservation itself stays with its owner, and the
   owner's next binding is re-exposable (with a fresh link).
-- Under an *explicit* reservation the row adopts the reservation's owner at
-  registration (the landed rule), so an embedder's `node server.js` on its
-  reserved port inherits the minted capability as before.
+- Under an *explicit* reservation the first live journalled binder may
+  adopt the reservation's owner; a concurrent second instance cannot. The
+  persisted kind, not the spelling of the owner string, chooses this rule.
 
 ### Lazy reservation: expose
 
@@ -1031,6 +1041,9 @@ owner (`session/programmatic.ts`, one implementation behind
 `expose_app`):
 
 - resolves the serving pid's row owner (derived or explicit);
+- for name/owner targets, refuses to mint or restore a capability when the
+  reservation's port is served by a different journal owner (including an
+  ephemeral duplicate): `port N is served by a different process (owner X)`;
 - reserves that port for that owner if unreserved — a conflict if another
   owner holds it, or if the owner already holds a different port;
 - stores the visibility and the optional `name` on the reservation, adopts
@@ -1042,18 +1055,23 @@ owner (`session/programmatic.ts`, one implementation behind
 directory; the old URL 404s from the next request. `remove(target)` is
 `removeDurableApp(owner)` addressed by any target: kill the owner's live
 pids, release the reservation, purge the journal rows, free the durable slot
-and its storage, unbind the directory. `apps.list()` folds every stamped
+and its storage, purge unshared durable images, unbind the directory.
+Removal never releases another owner's reservation or unregisters its live
+listener. Shared content-addressed images remain while another owner needs
+them, including after an ordinary process exit removed its launch row.
+`apps.list()` folds every stamped
 identity — reservations and owner-carrying rows — into
 `{ owner, name, port, pid | null, status, visibility, capability, restart,
 diagnostic, url }` with `status` one of `running | starting | stopped |
 failed`; a row a reset left behind is `stopped` and re-drivable on request.
 
-`ports.expose(port, ...)` on a port whose occupant has no identity (a dev
-server, a python resident) writes the row port-only, as it always did.
+`ports.expose(port, ...)` on a port whose occupant has no journalled identity
+(for example a dev server outside the resident lifecycle) is the port-only
+compatibility path through the same `applyExposure` implementation.
 
 ### Reservation → launch: slot, `$PORT`, `$NIMBUS_APP`
 
-A resident spawned (or re-driven) while its identity holds a reservation
+A Node/runtime resident or durable Worker spawned (or re-driven) while its identity holds a reservation
 binds the owner's `app-slot-<n>` facet — its `ctx.storage` persists across
 resets like a durable worker's — and is launched with `PORT=<reserved port>`
 and `NIMBUS_APP=<name ?? owner>` overlaid on its recipe env. The overlay is
@@ -1078,8 +1096,11 @@ resolves the name to a port from the session's own reservation records and
 continues exactly as the port form; the path form `/s/<sid>/app/<name>/`
 reaches the same door on every deployment. The public form is resolved by
 capability through the directory, whose row now carries the name, and the
-name is verified against it — a capability under a name it was not bound
-with is 404. Port forms are unchanged.
+name/port are verified against it — a capability under a mismatched host is
+404. On a positive-cache mismatch the router performs one uncached directory
+resolve before refusing, so a newly renamed host is not blocked by the old
+name cached in that isolate. Host forms are tested in the router harness;
+live host arms require `NIMBUS_PREVIEW_HOST_SUFFIX` and wildcard routing.
 
 ### Restart policy
 
@@ -1088,9 +1109,13 @@ with is 404. Port forms are unchanged.
 command's environment as `NIMBUS_RESTART` and the resident stamps it on its
 journal row. Default `'never'`. On a non-zero exit of the process itself, the
 terminal hook under `'on-failure'` re-drives the row through the same
-`FencedWork.drive` a reset uses, after a backoff of `1s · 2^n`, up to
-`RESTART_ON_FAILURE_BUDGET = 3` consecutive restarts; a run of 60 s or more
-resets the count. The row stays in storage through the backoff, so a reset
+`FencedWork.drive` a reset uses. There is **one budget**:
+`FENCED_WORK_MAX_ATTEMPT = 1`. A healthy, settled boot sets `attempt = 0`;
+an unproven launch whose attempt is spent is abandoned. Thus repeated
+crashes after healthy boots can restart again; there is no separate
+three-crash cap or 60-second health window. Backoff (`1s · 2^attempt`)
+parks on the existing launch pacer/alarm, not a new process timer. The row
+stays in storage through the backoff, so a reset
 inside that window recovers it like any other resident. A clean exit, a
 kill, or `'never'` releases the row as before. A platform reset re-drives
 regardless of policy, as before.
@@ -1119,8 +1144,11 @@ own reset does while every synced storage row survives.
 - `durable/identity-bound-capability` (behavioral) — expose public → stop →
   an unrelated server on the same port → the shared link 404s → the original
   identity is re-exposable with a fresh link.
-- `durable/rotate-link` (behavioral) — the old link dies at once, the new
-  one answers at once, same process.
+- `durable/rotate-link` (behavioral) — the old capability dies at once, the
+  new one answers, same process. Path-form URLs never contain capabilities
+  and remain scoped addresses; the no-suffix arm explicitly sends bearer
+  headers through the authenticated probe path. It does not prove a public
+  unauthenticated wildcard hostname on workers.dev.
 - `durable/name-host` (behavioral) — the name door on every deployment; the
   host forms where a suffix exists; names unique per session.
 - `durable/restart-on-failure` (behavioral) — a crash under `on-failure`

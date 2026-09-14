@@ -12,10 +12,9 @@
  * `PORT`, a different `TERM` must not turn one application into another.
  *
  * The derived form is namespaced (`auto:`) so it can never collide with an
- * owner an embedder chose, and so the registration path can tell the two
- * apart: an explicit reservation claims whatever binds its port (the landed
- * embedder contract), a derived one is bound to the identity it was exposed
- * for.
+ * ordinary caller-chosen owner. Reservation policy is NOT inferred from
+ * this prefix: the reservation's persisted explicit/derived kind determines
+ * whether its first binder adopts an owner or must already match it.
  */
 
 export const DERIVED_OWNER_PREFIX = 'auto:';
