@@ -8096,37 +8096,72 @@ function __resolveNodeModule(name, fromDir) {
 }
 
 /**
- * Resolve a #name imports-field specifier from the nearest enclosing
- * package.json. Returns the resolved file or null.
+ * Node's "package scope" of a directory: the nearest enclosing package.json,
+ * walking up from fromDir. The FIRST package.json found is the scope, even
+ * when it lacks the field the caller wants — the imports field and the
+ * self-reference rule both belong to the importing module's own package,
+ * never to an ancestor past it. Returns { dir, pkg } (pkg null when the
+ * file is unparseable) or null when no package.json encloses fromDir.
  */
-function __resolveImportsField(name, fromDir) {
-  // Walk up looking for the nearest package.json. Stop at the first one
-  // (Node spec: imports field of the importing module's package).
+function __nearestPackageScope(fromDir) {
   let dir = (fromDir || "").replace(/^\\/+/, "");
   while (true) {
     const pkgJsonPath = (dir ? dir + "/" : "") + "package.json";
     if (__fileExists(pkgJsonPath)) {
-      const pkg = __readPkgJson(dir);
-      if (pkg && pkg.imports) {
-        const target = resolveExports(pkg.imports, name, __NIMBUS_CJS_CONDITIONS);
-        if (target) {
-          // Imports targets are relative to the package root (dir)
-          if (target.startsWith("./")) {
-            return __resolveFile((dir ? dir + "/" : "") + target.slice(2));
-          }
-          if (target.startsWith("/")) {
-            return __resolveFile(target.slice(1));
-          }
-          // Bare specifier — re-resolve as a node_module from this dir
-          return __resolveNodeModule(target, dir);
-        }
-      }
-      return null; // first package.json wins, even if no imports field
+      return { dir, pkg: __readPkgJson(dir) };
     }
     if (!dir) return null;
     const lastSlash = dir.lastIndexOf("/");
     dir = lastSlash > 0 ? dir.substring(0, lastSlash) : "";
   }
+}
+
+/**
+ * Resolve a #name imports-field specifier from the nearest enclosing
+ * package.json. Returns the resolved file or null.
+ */
+function __resolveImportsField(name, fromDir) {
+  // First package.json wins, even if no imports field (Node spec: imports
+  // field of the importing module's package).
+  const scope = __nearestPackageScope(fromDir);
+  if (!scope || !scope.pkg || !scope.pkg.imports) return null;
+  const dir = scope.dir;
+  const target = resolveExports(scope.pkg.imports, name, __NIMBUS_CJS_CONDITIONS);
+  if (!target) return null;
+  // Imports targets are relative to the package root (dir)
+  if (target.startsWith("./")) {
+    return __resolveFile((dir ? dir + "/" : "") + target.slice(2));
+  }
+  if (target.startsWith("/")) {
+    return __resolveFile(target.slice(1));
+  }
+  // Bare specifier — re-resolve as a node_module from this dir
+  return __resolveNodeModule(target, dir);
+}
+
+/**
+ * Node's LOAD_PACKAGE_SELF: a bare specifier naming the enclosing package
+ * itself (\`require('<its-name>')\`, \`require('<its-name>/sub')\`) resolves
+ * through that package's own \`exports\` map — only when the nearest
+ * package.json has \`exports\` AND its \`name\` matches, and only through
+ * \`exports\` (no main/index probing: a subpath the map does not expose is
+ * not exported). Sits between the imports-field branch and the
+ * node_modules walk, where Node puts it. Returns the resolved file or null.
+ *
+ * Conditions are the ones the node_modules walk uses for the same
+ * require: the runtime's CJS set first, the ESM set when the map exposes
+ * the subpath only under \`import\` (dynamic import() is lowered onto this
+ * require chain, see __resolvePkgSubpath).
+ */
+function __resolvePackageSelf(name, fromDir) {
+  const scope = __nearestPackageScope(fromDir);
+  if (!scope || !scope.pkg) return null;
+  const subpath = packageSelfReferenceSubpath(scope.pkg, name);
+  if (subpath === null) return null;
+  let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
+  if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
+  if (entry == null) return null;
+  return __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, ""));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -8344,7 +8379,10 @@ function __resolveFrom(id, fromDir) {
   if (id.startsWith("#")) {
     return __resolveImportsField(id, fromDir);
   }
-  // Bare specifier → node_modules resolution
+  // Bare specifier: the enclosing package's own name resolves through its
+  // exports map (Node's LOAD_PACKAGE_SELF), then node_modules resolution.
+  const self = __resolvePackageSelf(id, fromDir);
+  if (self) return self;
   return __resolveNodeModule(id, fromDir);
 }
 
