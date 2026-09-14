@@ -15,6 +15,8 @@ import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { FacetManager } from '../facets/manager.js';
+import { resolveDurableWorkerImage } from '../facets/durable-images.js';
+import type { WorkerRecipe } from '../facets/manager.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -1095,6 +1097,18 @@ export class NimbusSession extends CloudflareDurableObject {
             notifyTerminalEvent(this.terminal, {
               type: 'spawn', pid, command, longRunning, attachedTty,
             });
+          },
+          // The fallback resolver a self-owned durable spawn re-drives
+          // through: read the image blobs the spawn persisted under
+          // `.nimbus/images/<sha256>` and restore the launch's env and
+          // modules from them. An embedder-owned launch answers its own
+          // bookkeeping through resolveWorkerLaunch instead — this hook is
+          // only the fallback for applications nobody else is keeping, and
+          // because it cannot re-mint a live globalOutbound binding the
+          // spawn path refuses such a launch under it.
+          resolveWorkerLaunchFallback: async (recipe: WorkerRecipe) => {
+            this.ensureSqliteFs();
+            return resolveDurableWorkerImage(this.sqliteFs!, recipe);
           },
         },
       );

@@ -76,6 +76,10 @@ import {
   freeDurableFacetSlot,
 } from './durable-slots.js';
 import {
+  persistDurableWorkerImage,
+  resolveDurableWorkerImage,
+} from './durable-images.js';
+import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerOptions,
   type OpencodeRunnerMode,
@@ -3477,6 +3481,15 @@ export interface FacetManagerHooks {
    * restarted.
    */
   resolveWorkerLaunch?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
+  /**
+   * The session's own default resolver, reading the durable image store a
+   * self-owned spawn persisted under `.nimbus/images/`. Consulted ONLY when
+   * `resolveWorkerLaunch` is absent — an embedder's hook still overrides
+   * everything. Being the fallback is also what it is *not*: it can never
+   * re-mint a live globalOutbound binding, so a durable spawn carrying one
+   * is refused unless the embedder hook exists.
+   */
+  resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
 
 export interface LongRunningWorkerSpawnOptions {
@@ -3500,7 +3513,7 @@ export interface LongRunningWorkerSpawnOptions {
    * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
    * A plain spawnWorker stays unjournaled.
    */
-  durable?: { owner: string; image: { runner: string; application: string } };
+  durable?: { owner: string; image?: { runner: string; application: string } };
 }
 
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
@@ -3538,10 +3551,13 @@ interface NodeRecipe { kind: 'node'; code: string; opts: ResidentSpawnOptions }
 interface ResidentLaunchRecord extends FencedWorkRecord { recipe: NodeRecipe | WorkerRecipe }
 /** What the embedder supplies for a re-driven worker launch. */
 export interface ResolvedWorkerLaunch {
-  env: ResidentCodeSpec['env'];
+  /** Null is the absent answer — the same JSON the image blob carries. */
+  env: ResidentCodeSpec['env'] | null;
   globalOutbound: ResidentCodeSpec['globalOutbound'];
   /** Module name → source text, including the `worker.js` main module. */
   modules: Record<string, string>;
+  /** Module name → VFS path of a wasm image, restored with the launch. */
+  vfsWasmModules?: Record<string, string>;
 }
 
 /** 'running' is the measured common case: the platform's reset strikes
@@ -3752,6 +3768,20 @@ export class FacetManager {
       list: (dir) => fs.readdir(dir).map((entry) => entry.name),
       unlink: (path) => fs.unlink(path),
     };
+  }
+
+  /**
+   * The kernel-scoped VFS the durable image store reads and writes through —
+   * `.nimbus/images/<sha256>` is session kernel data, not user content.
+   */
+  private _imageVfs(): SqliteVFS {
+    const vfs = this.vfs;
+    if (!vfs) {
+      throw new Error(
+        'Nimbus: a durable spawn needs a session filesystem to persist its launch image',
+      );
+    }
+    return vfs;
   }
   /**
    * W3.5 Fix B: hand the FacetManager a pre-warmed EsbuildService for
@@ -4979,15 +5009,20 @@ export class FacetManager {
     switch (recipe.kind) {
       case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
       case 'worker': {
-        if (!this.hooks.resolveWorkerLaunch) throw new Error('resident launch journal holds a worker launch but no resolveWorkerLaunch hook is composed');
-        const resolved = await this.hooks.resolveWorkerLaunch(recipe);
+        // The embedder's resolver decides everything; only a self-owned
+        // launch — nobody composed an embedder hook — falls through to the
+        // session's image-store default.
+        const resolve = this.hooks.resolveWorkerLaunch ?? this.hooks.resolveWorkerLaunchFallback;
+        if (!resolve) throw new Error('resident launch journal holds a worker launch but no resolveWorkerLaunch hook is composed');
+        const resolved = await resolve(recipe);
         if (resolved === null) return undefined;
         const { 'worker.js': workerCode, ...modules } = resolved.modules;
         if (workerCode === undefined) throw new Error('resolved worker launch carries no worker.js module');
         return this._spawnWorker(workerCode, record.command, recipe.cwd, {
           port: recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
           compatibilityFlags: recipe.compatibilityFlags, startArgs: recipe.startArgs,
-          env: resolved.env, globalOutbound: resolved.globalOutbound,
+          env: resolved.env ?? undefined, globalOutbound: resolved.globalOutbound,
+          vfsWasmModules: resolved.vfsWasmModules,
           durable: { owner: recipe.owner, image: recipe.image },
         }, attempt);
       }
@@ -5370,6 +5405,29 @@ export class FacetManager {
             throw new Error('port reservation conflict: durable worker does not own port ' + opts.port);
           }
         }
+        // A live outbound binding cannot be journalled — a reset would re-drive
+        // the recipe with nothing to stand in for it. Only the EMBEDDER's
+        // resolveWorkerLaunch can re-mint one: the session's fallback reads
+        // the image store, which never carries a binding, so a durable spawn
+        // carrying globalOutbound is refused where no embedder hook exists.
+        if (opts.globalOutbound !== undefined && opts.globalOutbound !== null
+          && this.hooks.resolveWorkerLaunch === undefined) {
+          throw new Error(
+            'Nimbus: a durable spawn carrying a live globalOutbound binding '
+              + 'cannot be journalled without an embedder resolveWorkerLaunch hook',
+          );
+        }
+        // Self-owned applications persist their launch inputs as image blobs —
+        // a runner blob for worker.js, an application blob for modules + env —
+        // under .nimbus/images/<sha256>, and the journal row names the digests
+        // of what was written, never placeholder strings. An embedder-owned
+        // spawn is given digests by its own bookkeeping instead.
+        const image = opts.durable.image
+          ?? await persistDurableWorkerImage(this._imageVfs(), workerCode, {
+            modules: opts.modules ?? {},
+            ...(opts.env !== undefined ? { env: opts.env } : {}),
+            vfsWasmModules: opts.vfsWasmModules,
+          });
         // Journalled before the launch's first byte of work, so a row a
         // later instance reads proves this process never ended.
         record = {
@@ -5380,7 +5438,7 @@ export class FacetManager {
           recipe: {
             kind: 'worker',
             owner: opts.durable.owner,
-            image: opts.durable.image,
+            image,
             port: opts.port ?? 0,
             cwd,
             compatibilityDate,
