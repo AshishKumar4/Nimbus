@@ -148,9 +148,12 @@ export class NimbusWorkspace {
      */
     async start() {
         // Sources /etc/profile and the first user rc file it finds, then prompts.
-        this.shell.start();
+        const started = this.shell.start();
         // Nimbus's own rc file, which the shell's list predates.
         await this.shell.sourceFile(`${this.shell.getEnv().HOME ?? DEFAULT_HOME}/.nimbusrc`);
+        // Settled only once the shell has prompted, so a host that awaits this
+        // can hand the shell input that belongs after the prompt.
+        await started;
     }
     /**
      * Files, directories and bytes this workspace occupies.

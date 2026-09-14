@@ -1446,7 +1446,7 @@ export class NimbusSession extends CloudflareDurableObject {
     // command registrations + boot wiring). The class retains `initSession`
     // as a delegator per plan §IX.4 R1. Visibility relaxed (was `private`)
     // so the SessionInternal interface declares it.
-    initSession(ws) {
+    initSession(ws, options) {
         // A destroyed session id being legitimately re-initialized (shell WS
         // attach, or SDK ready via ensureProgrammaticReady which routes here)
         // lifts the tombstone so the recreated session's log-janitor can arm
@@ -1455,8 +1455,14 @@ export class NimbusSession extends CloudflareDurableObject {
         // Cast pattern (per plan §IX recommendation 1, used here only because
         // initSession reads this.ctx + this.env extensively; siblings that need
         // ctx/env take them as separate explicit args per DEFECT-D1).
-        return _w11InitSession(this, ws);
+        return _w11InitSession(this, ws, options);
     }
+    /**
+     * The rebuild in flight for a shell socket that woke this instance from
+     * hibernation, so every frame that arrives while it runs awaits the one
+     * build instead of starting its own. See session/ws.ts bindShellSocket.
+     */
+    _wakeRebuild = null;
     // ── Filesystem seeding ────────────────────────────────────────────────
     ensureGlobalPrefixDirs(prefix) {
         const fs = this.sqliteFs.as(CRED_SESSION_USER);

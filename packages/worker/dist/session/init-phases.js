@@ -91,7 +91,7 @@ export function classifyWsUpgrade(self, sockets, now = Date.now()) {
  * needed here; init-phases.ts shouldn't grow a circular dep on
  * nimbus-session-internal.
  */
-export function joinExistingSession(self, ws, appendScrollback, loadScrollback) {
+export function joinExistingSession(self, ws, tee, loadScrollback) {
     // Phase R — pure SQL reads. No-op on warm rejoin (live state is
     // already correct in self.shell / self.terminal). Recorded in the
     // ring for symmetry with cold init.
@@ -101,17 +101,7 @@ export function joinExistingSession(self, ws, appendScrollback, loadScrollback) 
     // the same WebSocketTerminal instance is preserved (we mutate
     // its internal ws ref via attach()).
     setPhase(self, 'wire', 'warm-rejoin');
-    self.terminal.attach(ws, (frame) => {
-        try {
-            appendScrollback(self.ctx, frame, Date.now());
-        }
-        catch (e) {
-            try {
-                console.warn("[B'.3] appendScrollback failed:", e?.message || e);
-            }
-            catch { }
-        }
-    });
+    self.terminal.attach(ws, tee);
     // Replay scrollback to the new ws so the user sees the prior
     // session's terminal contents. Same shape as cold-init's replay
     // when persisted state exists.

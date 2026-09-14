@@ -47,6 +47,20 @@ type InitHost = SessionInternal & {
     readonly ctx: any;
     readonly env: any;
 };
-export declare function initSession(self: InitHost, ws: WebSocket): Promise<void>;
+/**
+ * How the socket being wired came to need a session.
+ *
+ *   - reconnect: a fresh terminal on a fresh /ws upgrade. Its screen is
+ *     empty, so the persisted scrollback is replayed above the live prompt.
+ *   - wake: the socket was accepted by a previous instance and outlived it
+ *     in hibernation; the peer's screen still shows everything up to the
+ *     sleep. Replaying scrollback there duplicates what the peer already
+ *     has, and a driver waiting for a fresh prompt would take the replayed
+ *     one for its answer. Only the resumed-instance notice is written.
+ */
+export interface InitSessionOptions {
+    resume?: 'reconnect' | 'wake';
+}
+export declare function initSession(self: InitHost, ws: WebSocket, options?: InitSessionOptions): Promise<void>;
 export {};
 //# sourceMappingURL=init.d.ts.map

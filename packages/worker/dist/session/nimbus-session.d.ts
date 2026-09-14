@@ -21,6 +21,7 @@ import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
+import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
@@ -613,7 +614,13 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * private API across modules.
      */
     _envFlagDefaultOn(name: string): boolean;
-    initSession(ws: WebSocket): Promise<void>;
+    initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
+    /**
+     * The rebuild in flight for a shell socket that woke this instance from
+     * hibernation, so every frame that arrives while it runs awaits the one
+     * build instead of starting its own. See session/ws.ts bindShellSocket.
+     */
+    _wakeRebuild: Promise<void> | null;
     ensureGlobalPrefixDirs(prefix: string): void;
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the

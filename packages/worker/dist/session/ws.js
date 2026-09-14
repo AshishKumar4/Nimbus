@@ -33,9 +33,10 @@
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { persistShellState } from './state-store.js';
+import { appendScrollback, persistShellState } from './state-store.js';
 import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose, } from './fs-watch.js';
 import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-routing.js';
@@ -43,20 +44,86 @@ import { z } from 'zod/v4';
 import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 /**
+ * Give the shell socket a frame arrived on a live session to land in.
+ *
+ * The runtime evicts a quiet object from memory while its accepted sockets
+ * stay open (the WebSocket Hibernation API), and the next frame from the
+ * peer wakes a fresh instance whose `shell`, `terminal` and `kernel` are
+ * null: the socket outlived the sleep, the session in memory did not.
+ * Measured 2026-09-14 on a deployed Worker: eight quiet seconds and the
+ * object is still there, ten and it is gone; the frame that wakes it is
+ * delivered and handled without error, and the peer gets nothing back —
+ * no output, no close, no error — because the terminal lookup that follows
+ * found nothing to hand it to. Only a new /ws upgrade rebuilt the session,
+ * and a peer whose socket still reads OPEN has no reason to make one. A
+ * browser tab hides this by probing every few seconds; a driver that
+ * simply waits between commands does not.
+ *
+ * So the rebuild runs here, on the socket that spoke, before the frame is
+ * handled: the cold path the upgrade takes after an eviction (cwd, env,
+ * mounts back from SQLite) minus the scrollback replay the peer already has
+ * on screen. Frames that land while the build runs await the same build —
+ * the input gate does not serialise handlers across a non-storage await, so
+ * without the shared promise two quick keystrokes would build two shells.
+ *
+ * A session that exists but answers to another socket — one an SDK call
+ * built on its headless terminal after the same wake — is handed to this
+ * socket the way the warm rejoin hands it to a new upgrade. The upgrade
+ * refuses a second shell socket while one still has a peer, so the socket
+ * that speaks is the one the peer is on.
+ *
+ * A build that fails closes the socket with a reason and answers false, so
+ * the caller drops the frame. The peer must learn that its shell is gone;
+ * the silence this replaces is the whole defect.
+ *
+ * A socket this side has already closed gets no session either: destroy
+ * closes every accepted socket and nulls the terminal before it wipes
+ * storage, and a frame still in flight on one of them must not rebuild
+ * the session it is tearing down.
+ */
+export async function bindShellSocket(self, ws) {
+    if (ws.readyState !== WS_READY_STATE_OPEN)
+        return false;
+    if (self.shell == null || self.terminal == null || self.kernel == null) {
+        if (!self._wakeRebuild) {
+            self._wakeRebuild = self.initSession(ws, { resume: 'wake' })
+                .finally(() => { self._wakeRebuild = null; });
+        }
+        try {
+            await self._wakeRebuild;
+        }
+        catch (e) {
+            const message = errorText(e);
+            console.error('[nimbus] session rebuild on wake failed:', message);
+            // A close reason is capped at 123 bytes by the protocol.
+            try {
+                ws.close(1011, `session rebuild after wake failed: ${message}`.slice(0, 123));
+            }
+            catch { /* closing */ }
+            return false;
+        }
+        return true;
+    }
+    if (self.terminal.ws !== ws)
+        self.terminal.attach(ws, shellTerminalTee(self));
+    return true;
+}
+/** The shell state each instance last wrote, so an unchanged state costs no SQL. */
+const lastShellSnapshot = new WeakMap();
+/**
  * Snapshot the live Shell state and write it through to DO SQLite
  * [Phase 3 B'.1].
  *
- * Called from wsMessage (post-process, every inbound keystroke) and
- * once more in the wsClose / wsError shell-kind branch as a final
- * safety net before the in-memory Shell is torn down.
+ * Called after every inbound frame, from every output flush of the shell
+ * terminal (see shellTerminalTee), and once more in the wsClose / wsError
+ * shell-kind branch as a final safety net before the in-memory Shell is
+ * torn down.
  *
  * Read-only and synchronous (DO storage SQL is sync inside a request
- * context). Cheap: one read of `shell.getCwd()` + `shell.getEnv()`,
- * a JSON.stringify of env, and an INSERT-OR-REPLACE into the small
- * nimbus_session_kv table. Skips the SQL write entirely when nothing
- * has changed since the previous snapshot — the comparison is
- * pointer-equality on cwd plus env reference, since Shell.getEnv()
- * returns a live Record and `cd` mutates `this.cwd` in place.
+ * context). Cheap: one read of `shell.getCwd()` + `shell.getEnv()` and a
+ * JSON.stringify of env; the INSERT-OR-REPLACE into nimbus_session_kv
+ * only runs when either differs from what this instance last wrote, so
+ * the per-flush call during a chatty command costs a string compare.
  *
  * Failure model: persistShellState throws ONLY on env-too-large
  * (the SESSION_ENV_MAX_BYTES gate). We surface that via console.warn
@@ -88,12 +155,48 @@ function snapshotShellState(self) {
     catch { /* best-effort */ }
     if (!cwd && !env)
         return;
+    const envJson = env ? JSON.stringify(env) : null;
+    const last = lastShellSnapshot.get(self);
+    if (last && last.cwd === cwd && last.envJson === envJson)
+        return;
     try {
         persistShellState(ctx, { cwd, env });
+        lastShellSnapshot.set(self, { cwd, envJson });
     }
     catch (e) {
         console.warn('[nimbus/B\'.1] persistShellState failed:', e?.message || e);
     }
+}
+/**
+ * What every output frame of the shell terminal feeds besides the socket:
+ * the persisted scrollback, and the shell-state snapshot.
+ *
+ * The snapshot runs here and not only after each inbound frame because
+ * commands run asynchronously: the `cd` a line asked for takes effect
+ * after the inbound handler has already snapshotted, and the next frame —
+ * which used to catch the row up — never arrives when the object
+ * hibernates first. Measured 2026-09-14: `cd /tmp && echo one`, ten quiet
+ * seconds, and the woken shell answered `pwd` from /home/user. The prompt
+ * that ends every command is an output frame, so by the time it has
+ * flushed, the state it reflects is what the row records.
+ *
+ * Every socket a shell terminal is built on or handed to goes through
+ * this — initSession, the warm rejoin, and the wake rebuild — so the
+ * three cannot drift.
+ */
+export function shellTerminalTee(self) {
+    // `ctx` is `protected` on the DO base class and so cannot sit on the
+    // host interface (DEFECT-D1); scrollback is the one thing here needing it.
+    const ctx = 'ctx' in self ? self.ctx : undefined;
+    return (frame) => {
+        try {
+            appendScrollback(ctx, frame, Date.now());
+        }
+        catch (e) {
+            console.warn("[B'.3] appendScrollback failed:", errorText(e));
+        }
+        snapshotShellState(self);
+    };
 }
 const WsAttachmentSchema = z.object({
     kind: z.string(),
@@ -112,6 +215,8 @@ const FsWatchClientFrameSchema = z.discriminatedUnion('type', [
         subId: z.string().optional(),
     }).passthrough(),
 ]);
+/** `WebSocket.readyState` for an open socket; the constant name differs between workerd and Node. */
+const WS_READY_STATE_OPEN = 1;
 const TerminalMessageSchema = z.object({
     type: z.string(),
     data: z.string().optional(),
@@ -156,8 +261,13 @@ export async function wsMessage(self, ws, message) {
         // The stamp goes in the attachment because isolate memory does not
         // survive hibernation and the /ws upgrade has to read it afterwards.
         // Rate-limited inside; see src/session/shell-socket.ts.
-        if (attach?.kind === 'shell')
+        if (attach?.kind === 'shell') {
             noteShellSocketActivity(ws);
+            // Before the frame is parsed: a woken instance has no session to
+            // hand ANY shell-socket frame to, the liveness probe included.
+            if (!(await bindShellSocket(self, ws)))
+                return;
+        }
         const data = typeof message === 'string' ? message : dec.decode(message);
         const value = JSON.parse(data);
         // file-tree-watch (2026-05-15): handle fs-watch-* on this WS BEFORE

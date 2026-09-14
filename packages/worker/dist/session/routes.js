@@ -34,8 +34,9 @@ import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-pr
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
-import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, appendScrollback, loadScrollback } from './state-store.js';
+import { loadShellState, loadKernelMounts, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
+import { shellTerminalTee } from './ws.js';
 import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -503,7 +504,7 @@ export async function handleFetch(self, request) {
             // Warm rejoin path. The existing Shell is alive; we just
             // swap the WebSocketTerminal's ws ref + replay scrollback.
             try {
-                joinExistingSession(self, server, appendScrollback, loadScrollback);
+                joinExistingSession(self, server, shellTerminalTee(self), loadScrollback);
             }
             catch (err) {
                 console.error('warm-rejoin error:', err?.message, err?.stack);
