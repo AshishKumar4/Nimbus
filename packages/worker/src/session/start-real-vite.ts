@@ -23,7 +23,7 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability } from './port-capability.js';
+import { registerServingPort } from './serving-port.js';
 
 export interface StartRealViteOptions {
   /** VFS root the dev server serves from. */
@@ -35,6 +35,15 @@ export interface StartRealViteOptions {
   /** Directory the user's vite.config.{ts,js,mjs} is searched in (the shell
    *  cwd at start). Persisted so restore can re-bundle it. */
   configDir: string;
+  /**
+   * The process-table cwd+argv the dev server's pid is given — what the app
+   * verbs derive its identity from. The `vite` builtin passes the wrapper
+   * pid's own (or the argv it was invoked with); restore passes what was
+   * persisted, so the restored server is the same application. Absent for
+   * configs written before identity was persisted: those keep the bare
+   * `[]` at the root, the same across every restore.
+   */
+  identity?: { cwd: string; argv: string[] };
   /** Optional abort signal threaded into the heavy-alloc gate. */
   signal?: AbortSignal;
   /** Called with a human message if vite.config pre-bundling fails (so the
@@ -130,7 +139,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     self.cirrusReal = cirrusReal;
     // Reserve a PID so `ps`/logs show it like any other facet.
     const entry = self.processes.spawn(
-      'vite (real, ' + opts.root + ')', [], opts.root,
+      'vite (real, ' + opts.root + ')', opts.identity?.argv ?? [], opts.identity?.cwd ?? opts.root,
       { longRunning: true },
     );
     // start() is async — it ASSETS-fetches the Vite/plugin-react bundles on
@@ -140,8 +149,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
     // only difference is which handler.handleRequest the stub forwards into.
     const cirrusStub = makeLongRunningPortStub(cirrusReal);
     self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
-    await clearPortCapability(self, opts.port);
-    self.portRegistry.register(opts.port, entry.pid);
+    await registerServingPort(self, entry.pid, opts.port);
     self._viteShimPid = entry.pid;
     self._viteShimPort = opts.port;
 
@@ -155,6 +163,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
         port: opts.port,
         basePath: opts.basePath,
         configDir: opts.configDir,
+        identity: { cwd: entry.cwd, argv: entry.argv },
       });
     } catch { /* persistence is best-effort; the server still serves now */ }
 

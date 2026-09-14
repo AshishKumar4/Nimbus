@@ -22,7 +22,7 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { acquireHeavyAlloc } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability } from './port-capability.js';
+import { registerServingPort } from './serving-port.js';
 /**
  * Boot a cirrus-real dev server on `self`, register its port, and persist the
  * config restore needs. `self` is the session host (RoutesHost/InitHost = any).
@@ -103,7 +103,7 @@ export async function startRealVite(self, opts) {
         });
         self.cirrusReal = cirrusReal;
         // Reserve a PID so `ps`/logs show it like any other facet.
-        const entry = self.processes.spawn('vite (real, ' + opts.root + ')', [], opts.root, { longRunning: true });
+        const entry = self.processes.spawn('vite (real, ' + opts.root + ')', opts.identity?.argv ?? [], opts.identity?.cwd ?? opts.root, { longRunning: true });
         // start() is async — it ASSETS-fetches the Vite/plugin-react bundles on
         // first invocation (cached per-isolate after).
         await cirrusReal.start(self.ctx, entry.pid);
@@ -111,8 +111,7 @@ export async function startRealVite(self, opts) {
         // only difference is which handler.handleRequest the stub forwards into.
         const cirrusStub = makeLongRunningPortStub(cirrusReal);
         self.portRegistry.bindFacetStub(entry.pid, cirrusStub);
-        await clearPortCapability(self, opts.port);
-        self.portRegistry.register(opts.port, entry.pid);
+        await registerServingPort(self, entry.pid, opts.port);
         self._viteShimPid = entry.pid;
         self._viteShimPort = opts.port;
         // Persist so the session recovers after hibernation — same key the shim
@@ -125,6 +124,7 @@ export async function startRealVite(self, opts) {
                 port: opts.port,
                 basePath: opts.basePath,
                 configDir: opts.configDir,
+                identity: { cwd: entry.cwd, argv: entry.argv },
             });
         }
         catch { /* persistence is best-effort; the server still serves now */ }

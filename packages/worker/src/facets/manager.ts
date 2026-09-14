@@ -5737,7 +5737,9 @@ export class FacetManager {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
     this.processes.reap();
-    const entry = this.processes.spawn(command, [], cwd);
+    // The table entry carries the same argv the identity is derived from, so
+    // a runtime resident reads the same way through either path.
+    const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd);
     // Stamp the process-table entry so /api/processes exposes this as a
     // long-running process.
     this.processes.setLongRunning(entry.pid);
@@ -5964,7 +5966,14 @@ export class FacetManager {
         + `${row.portMismatch.reserved} ($PORT) — the app's URL will not reach it]\x1b[0m\r\n`,
       );
     }
-    const owner = row === undefined ? undefined : residentOwner(row);
+    // A pid nothing journalled — the in-process dev servers, a builtin's
+    // adopted wrapper pid — still has an identity: the process table's. It
+    // re-adopts a reservation it owns exactly as a resident does; the one
+    // thing it cannot do is adopt an EXPLICIT owner, because there is no row
+    // to stamp the adoption on, so it registers ephemeral on that port.
+    const owner = row === undefined
+      ? (await this.residentIdentity(pid))?.owner
+      : residentOwner(row);
     if (claimedBy !== undefined && row !== undefined && this.residentClaims.get(pid) !== claimedBy) {
       const previousOwner = this.residentClaims.get(pid);
       await this._releaseResidentClaim(pid);
@@ -6011,13 +6020,30 @@ export class FacetManager {
     this.portRegistry.register(port, pid);
   }
 
-  /** What a pid's journal row says about who it is; null for a pid without one. */
+  /**
+   * Who a pid is. One resolver, in precedence order: the ephemeral-duplicate
+   * mark, the journal row (the owner a launch this manager made was stamped
+   * with — derived from the launch's own cwd+argv, or adopted from an
+   * explicit reservation), and finally the process table. The table knows
+   * cwd and argv for every pid, so a serving process nothing journalled — the
+   * in-process Vite dev server, real-vite, a staged artifact, any wrapper pid
+   * a builtin adopted — has the same derived identity shape as a resident
+   * and answers to the same app verbs. It just cannot be re-driven after a
+   * reset: only a journal row carries a recipe. Null only for a pid that is
+   * neither journalled nor running.
+   */
   async residentIdentity(pid: number): Promise<ResidentIdentity | null> {
     const duplicated = this.ephemeralPids.get(pid);
     if (duplicated !== undefined) return { owner: duplicated, ephemeral: true, port: undefined };
     const row = (await this.launchJournal.rows()).get(`${FENCED_WORK_KEY_PREFIX}${pid}`);
-    if (row === undefined) return null;
-    return { owner: residentOwner(row), ephemeral: false, port: row.port };
+    if (row !== undefined) return { owner: residentOwner(row), ephemeral: false, port: row.port };
+    const entry = this.processes.get(pid);
+    if (entry === undefined || entry.state !== 'running') return null;
+    return {
+      owner: await deriveResidentOwner(entry.cwd, entry.argv),
+      ephemeral: false,
+      port: this.portRegistry.getAll().find((live) => live.pid === pid)?.port,
+    };
   }
 
   /**
@@ -6065,6 +6091,24 @@ export class FacetManager {
         app.diagnostic = `listened on ${row.portMismatch.listened}, owns ${row.portMismatch.reserved}`;
       }
       apps.set(owner, app);
+    }
+    // Every process serving a port is an application whether or not a
+    // journal row backs it — the identity comes from the same resolver the
+    // verbs use, so what `list` shows is what `expose` will bind. A row-backed
+    // app already carries its pid from above; this only adds the servers
+    // nothing journalled (the dev servers, adopted wrapper pids).
+    for (const live of this.portRegistry.getAll()) {
+      const identity = await this.residentIdentity(live.pid);
+      if (identity === null || identity.ephemeral || identity.owner === undefined) continue;
+      const app = apps.get(identity.owner) ?? {
+        owner: identity.owner, name: null, port: null, pid: null, status: 'stopped',
+        visibility: 'scoped', capability: null, restart: 'never', diagnostic: null,
+      };
+      if (app.pid !== null) continue;
+      app.pid = live.pid;
+      if (app.port === null) app.port = live.port;
+      if (app.status === 'stopped') app.status = 'running';
+      apps.set(identity.owner, app);
     }
     return [...apps.values()];
   }

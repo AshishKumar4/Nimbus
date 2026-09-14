@@ -49,7 +49,8 @@ import { facetIdBudget } from '@nimbus-sh/fabric/budgets.js';
 import { loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
-import { clearPortCapability, persistPortCapability, readPortCapability, readPortReservation, readPortReservationByName, restorePortCapability, } from './port-capability.js';
+import { persistPortCapability, readPortCapability, readPortReservation, readPortReservationByName, restorePortCapability, } from './port-capability.js';
+import { registerServingPort } from './serving-port.js';
 import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, CALLER_SCOPES_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
@@ -153,7 +154,12 @@ async function restorePersistedDevServer(self, onlyPort) {
         const basePath = self.viteBasePath || config.basePath;
         // process diagnostics support: re-allocate a PID so log streaming has
         // somewhere to land. Without this, the restored server would be silent.
-        const entry = self.processes.spawn('vite (rehydrated, ' + config.root + ')', [], config.root, { longRunning: true });
+        // The restored server is the same application the persisted config
+        // describes: its pid is given the cwd+argv the original had, so the
+        // identity the app verbs derive from the process table is unchanged
+        // across the hibernation — a reservation exposed under a name re-adopts
+        // its capability at registration below.
+        const entry = self.processes.spawn('vite (rehydrated, ' + config.root + ')', Array.isArray(config.identity?.argv) ? config.identity.argv.map(String) : [], typeof config.identity?.cwd === 'string' ? config.identity.cwd : config.root, { longRunning: true });
         self.viteDevServer = new ViteDevServer({
             vfs: self.sqliteFs, esbuild: self.esbuildService, root: config.root,
             aliases: config.aliases, define: config.define,
@@ -172,8 +178,7 @@ async function restorePersistedDevServer(self, onlyPort) {
         // restored server across hibernation cycles.
         try {
             self.portRegistry.bindFacetStub(entry.pid, makeLongRunningPortStub(self.viteDevServer));
-            await clearPortCapability(self, port);
-            self.portRegistry.register(port, entry.pid);
+            await registerServingPort(self, entry.pid, port);
             await readoptCapability(self, port, persistedCapability);
             self._viteShimPid = entry.pid;
             self._viteShimPort = port;
@@ -1122,7 +1127,7 @@ export async function handleFetch(self, request) {
             // surface still see a real process in `ps` and stream
             // diagnostics into the Process tab.
             const apiVitePort = (typeof body.port === 'number' && body.port > 0) ? body.port : 5173;
-            const apiViteEntry = self.processes.spawn('vite (api/start-vite, ' + root + ')', [], root, { longRunning: true });
+            const apiViteEntry = self.processes.spawn('vite (api/start-vite, ' + root + ')', ['vite', '--port', String(apiVitePort)], root, { longRunning: true });
             self.viteDevServer = new ViteDevServer({
                 vfs: self.sqliteFs, esbuild: self.esbuildService, root,
                 aliases: body.aliases, define: body.define,
@@ -1145,8 +1150,7 @@ export async function handleFetch(self, request) {
             try {
                 const apiViteStub = makeLongRunningPortStub(self.viteDevServer);
                 self.portRegistry.bindFacetStub(apiViteEntry.pid, apiViteStub);
-                await clearPortCapability(self, apiVitePort);
-                self.portRegistry.register(apiVitePort, apiViteEntry.pid);
+                await registerServingPort(self, apiViteEntry.pid, apiVitePort);
                 self._viteShimPid = apiViteEntry.pid;
                 self._viteShimPort = apiVitePort;
             }
@@ -1159,6 +1163,7 @@ export async function handleFetch(self, request) {
             await self.ctx.storage.put(VITE_CONFIG_KEY, {
                 root, aliases: body.aliases, define: body.define,
                 injectBasename: body.injectBasename, basePath, port: apiVitePort,
+                identity: { cwd: apiViteEntry.cwd, argv: apiViteEntry.argv },
             });
             return Response.json({ ok: true, root, running: true });
         }
