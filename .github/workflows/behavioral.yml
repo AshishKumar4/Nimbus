@@ -62,12 +62,94 @@ env:
   TARGET_NAME: ci-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  # The three fast gates run as parallel jobs so a slow one never holds
+  # the others hostage, and a red one is visible as its own check. None
+  # of them deploys anything; the throwaway deploy + probes is the job
+  # that needs them, below.
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # tests/unit/run-all.mjs runs every file in a worker pool and exits
+      # non-zero when any file fails, so this job IS the unit gate — no
+      # record-and-fail-later step needed. Its red status never decides
+      # whether the probes run (see the behavioral job's `if:`).
+      - name: Run unit tests
+        run: bun run test:unit
+
+  dist-integrity:
+    name: dist-integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # scripts/dist-integrity.mjs rebuilds every package (the
+      # build/bundle/build fixpoint) and refuses when the rebuild moved
+      # anything — a commit whose committed dist does not match its src
+      # fails HERE rather than being graded as if it did. A warm
+      # fixpoint record verifies in seconds; a fresh checkout rebuilds
+      # cold. The throwaway deploy runs the same gate again before
+      # deploying, so this job surfaces a stale dist earlier, in
+      # parallel with the other fast gates.
+      - name: Verify dist is the fixpoint of src
+        run: node scripts/dist-integrity.mjs
+
   behavioral:
     name: behavioral
     runs-on: ubuntu-latest
-    # ~380 probes run sequentially, plus a build and a deploy. The old
-    # 20-minute cap was never hit because the job died before the suite
-    # started.
+    needs: [typecheck, unit, dist-integrity]
+    # The probes still run when a fast gate is red. Twice now a single
+    # failing unit test has silently disabled the behavioral gate (once
+    # on stale tests referencing removed APIs, once on a
+    # checkout-scaling assertion that failed roughly one run in three on
+    # a busy machine), and in both cases every push looked green-ish
+    # while ~380 probes had not executed. A red gate must not decide
+    # whether the probes execute: each job's own status carries its
+    # signal, and the probes add theirs. Only a cancelled workflow skips
+    # them.
+    if: ${{ !cancelled() }}
+    # ~400 probes at --jobs 4, plus a build and a deploy.
     timeout-minutes: 120
     steps:
       - name: Checkout
@@ -81,27 +163,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Runs every unit file and records the failures instead of exiting on the
-      # first one, so a unit failure can no longer decide whether the behavioral
-      # suite runs at all. `unit-gate` at the end of the job is what fails the
-      # build, so both signals are always produced.
-      #
-      # This shape is not a style preference. Twice now a single failing unit
-      # test has silently disabled the behavioral gate: once on stale tests
-      # referencing removed APIs, and once on a checkout-scaling assertion that
-      # compared host `performance.now()` and so failed roughly one run in three
-      # on a busy machine. In both cases every push looked green-ish while ~380
-      # probes had not executed, and nobody could tell from the outside.
-      - name: Run unit tests
-        id: unit
-        shell: bash
+      # On the record: which fast gates passed. Informational only — the
+      # `if:` above already decided the probes run regardless.
+      - name: Fast-gate results
         run: |
-          if bun run test:unit; then
-            echo "count=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "count=1" >> "$GITHUB_OUTPUT"
-            echo "Unit failures. The behavioral suite still runs; the unit gate fails this job at the end."
-          fi
+          echo "typecheck: ${{ needs.typecheck.result }} / unit: ${{ needs.unit.result }} / dist-integrity: ${{ needs.dist-integrity.result }}"
 
       - name: Require deploy credentials
         shell: bash
@@ -150,8 +216,11 @@ jobs:
         # Explicit `shell: bash` runs with `-o pipefail`, so the runner's
         # exit code survives the `| tee` pipeline. `| tee` preserves the CI
         # live-log AND saves a file, uploaded below on both PASS and FAIL.
+        # `--jobs 4` is the runner's parallel pool (each probe mints its
+        # own session); the @serial-marked browser probes run after the
+        # pool drains.
         run: |
-          bun tests/behavioral/run-all.mjs \
+          bun tests/behavioral/run-all.mjs --jobs 4 \
             ${{ github.event_name == 'push' && ' ' || '--no-retry' }} | tee behavioral.log
 
       - name: Upload run log
@@ -171,14 +240,3 @@ jobs:
         # API — a 404 on the hostname alone does not mean the script is
         # absent. It exits non-zero when it cannot confirm, so a leak is loud.
         run: bun tests/behavioral/_throwaway-target.mjs down --name "$TARGET_NAME"
-
-      # Fails the job for unit failures the run recorded earlier. It sits after
-      # teardown so the throwaway is always deleted first, and after the suite so
-      # the behavioral result is on the record either way — a red unit test and a
-      # red probe are different facts and the build should report both.
-      - name: unit-gate
-        if: always() && steps.unit.outputs.count != '0'
-        shell: bash
-        run: |
-          echo "::error::${{ steps.unit.outputs.count }} unit test(s) failed — see the 'Run unit tests' step."
-          exit 1

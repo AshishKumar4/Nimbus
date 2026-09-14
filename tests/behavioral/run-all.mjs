@@ -13,6 +13,12 @@
 //   --allow-concurrent
 //                  Run even though another suite already holds this
 //                  machine's run lock. See "Serialization" below.
+//   --jobs N       Run N probes concurrently (default 4,
+//                  NIMBUS_PROBE_JOBS overrides). Each probe mints its own
+//                  session, so probes are independent — except probes
+//                  whose first line is `// @serial`, which run after the
+//                  pool drains, one at a time. `--jobs 1` is the
+//                  historical sequential behavior.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -97,6 +103,32 @@ const NO_RETRY = process.argv.includes('--no-retry')
   || process.env.NIMBUS_RUNNER_NO_RETRY === '1';
 
 const ALLOW_CONCURRENT = process.argv.includes('--allow-concurrent');
+
+// ── Concurrency ────────────────────────────────────────────────────
+
+function flagValue(flag, envName) {
+  const idx = process.argv.indexOf(flag);
+  if (idx >= 0) return process.argv[idx + 1];
+  const inline = process.argv.find((a) => a.startsWith(`${flag}=`));
+  if (inline) return inline.slice(flag.length + 1);
+  return process.env[envName];
+}
+
+function positiveInt(raw, what) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    console.error(`FATAL: ${what} must be a positive integer, got ${JSON.stringify(raw)}`);
+    process.exit(2);
+  }
+  return n;
+}
+
+// Each probe mints its own session, so the pool is the default. The
+// browser-fixture probes opt out with `// @serial` (see below); `--jobs
+// 1` restores the historical one-at-a-time behavior exactly.
+const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
+  ? positiveInt(flagValue('--jobs', 'NIMBUS_PROBE_JOBS'), 'probe worker count')
+  : 4;
 
 // Probes inherit the runner's environment, so exporting the run id is
 // what makes every browser they launch identifiable as this run's.
@@ -237,7 +269,25 @@ const targets = PROBES.filter((p) => {
   return true;
 });
 
-console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive)`);
+// A probe whose first line is `// @serial` opted out of the pool: it
+// drives something the other probes share — the run's browser fixture
+// (one Chrome profile root and one orphan-reaping scope per run) or the
+// deploy target itself. It still runs — after the pool drains, one at a
+// time, so the marker never silences a probe; it only moves it. Only
+// line 1 counts, so the marker is always visible at the top of the file.
+// The marker takes line 1 itself, ahead of any shebang: a shebang
+// anywhere but line 1 is a syntax error, and probe files carry no
+// executable bit — every invocation goes through `bun <file>` — so the
+// vestigial shebang is dropped when the marker is added.
+const SERIAL_RE = /^\/\/\s*@serial\b/;
+function isSerialMarked(relPath) {
+  const firstLine = readFileSync(join(__dirname, relPath), 'utf8').split('\n', 1)[0];
+  return SERIAL_RE.test(firstLine);
+}
+const serialProbes = JOBS > 1 ? targets.filter(isSerialMarked) : [];
+const pooledProbes = JOBS > 1 ? targets.filter((p) => !serialProbes.includes(p)) : targets;
+
+console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive) (jobs ${JOBS}${serialProbes.length > 0 ? `, ${serialProbes.length} marked @serial` : ''})`);
 console.log(`BASE=${process.env.BASE}${NO_RETRY ? '  [--no-retry]' : ''}`);
 console.log('');
 
@@ -321,30 +371,41 @@ function runProbeOnce(probePath) {
   });
 }
 
-const results = [];
-const t0 = Date.now();
-
-for (const probe of targets) {
-  const probePath = join(__dirname, probe);
-  process.stdout.write(`[${probe}] ... `);
-
+/**
+ * Run one probe to a verdict, retrying once on a runtime crash banner
+ * when retries are enabled. `reapBetween` selects the pre-retry reap:
+ * safe only with nothing else in flight (the sequential path and the
+ * serial tail), where the crashed probe's leaked browser is the only
+ * candidate. Inside the pool it stays false — siblings are in flight
+ * and their browsers share this run's profile root, so a reap cannot
+ * tell the crashed probe's Chrome from a live one. The drain-point reap
+ * below collects whatever the pool leaked instead.
+ */
+async function runProbeToVerdict(probePath, reapBetween) {
   let r = await runProbeOnce(probePath);
   let retried = false;
-
   if (!r.ok && !NO_RETRY && isRetryableCrash(r.stderr, r.code)) {
     // First attempt crashed on a known runtime banner. The crash may
-    // have leaked a browser (no `finally` on a hard crash); reap it so
-    // the retry starts from a clean process baseline rather than
-    // inheriting the resource pressure that caused the crash.
-    reapLeakedBrowsers();
-    process.stdout.write(`FLAKE (${(r.elapsedMs/1000).toFixed(1)}s) → retry... `);
+    // have leaked a browser (no `finally` on a hard crash).
+    if (reapBetween) {
+      reapLeakedBrowsers();
+    }
     retried = true;
     r = await runProbeOnce(probePath);
   }
+  return { ...r, retried };
+}
 
+/**
+ * One finished probe, one line, plus the failure tails that explain a
+ * FAIL. Emitted atomically at completion (completion order), so pool
+ * workers never interleave a line. The old runner split the line around
+ * the run (`[probe] ... ` then `PASS`); the finished line reads the
+ * same, only printed whole.
+ */
+function reportProbe(probe, r) {
   const elapsedS = (r.elapsedMs / 1000).toFixed(1);
-  console.log(`${r.ok ? 'PASS' : 'FAIL'} (${elapsedS}s)${retried ? ' [retried]' : ''}`);
-
+  console.log(`[${probe}] ... ${r.ok ? 'PASS' : 'FAIL'} (${elapsedS}s)${r.retried ? ' [retried]' : ''}`);
   if (!r.ok) {
     const lines = r.stdout.split('\n').filter((l) => l.startsWith('  ✗') || l.includes('fail'));
     for (const l of lines.slice(-5)) console.log('    ' + l);
@@ -361,12 +422,44 @@ for (const probe of targets) {
       console.log('    stderr: ' + stderrLines.slice(-4).join(' | '));
     }
   }
+  return { probe, ok: r.ok, elapsed: Number(elapsedS), retried: r.retried };
+}
 
-  results.push({ probe, ok: r.ok, elapsed: Number(elapsedS), retried });
+const results = [];
+const t0 = Date.now();
 
-  // Reap any browser the probe leaked (a hard crash bypasses the probe's
-  // own teardown). Probes run sequentially, so nothing is in flight here.
+if (JOBS === 1) {
+  // The historical behavior: discovery order, one at a time, reaping
+  // between probes. The @serial marker is a parallelism concept and
+  // does not apply — every probe already runs alone.
+  for (const probe of targets) {
+    results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe), true)));
+    // Reap any browser the probe leaked (a hard crash bypasses the probe's
+    // own teardown). Probes run sequentially, so nothing is in flight here.
+    reapLeakedBrowsers();
+  }
+} else {
+  // Worker pool: `queue.shift()` is atomic between awaits, so each probe
+  // is claimed by exactly one worker. No reaping inside the pool (see
+  // runProbeToVerdict): siblings are in flight.
+  const queue = [...pooledProbes];
+  await Promise.all(
+    Array.from({ length: Math.min(JOBS, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const probe = queue.shift();
+        results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe), false)));
+      }
+    }),
+  );
+  // The pool is drained: nothing of this run is in flight, so reaping is
+  // scoped correctly again — the same point the old runner reaped at.
   reapLeakedBrowsers();
+  // The @serial tail: browser-fixture and target-redeploy probes, one at
+  // a time, with nothing else of this suite in flight.
+  for (const probe of serialProbes) {
+    results.push(reportProbe(probe, await runProbeToVerdict(join(__dirname, probe), true)));
+    reapLeakedBrowsers();
+  }
 }
 
 cleanupRunProfiles();

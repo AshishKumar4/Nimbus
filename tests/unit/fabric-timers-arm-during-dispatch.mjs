@@ -84,10 +84,16 @@ async function mustComplete(promise, label) {
   const host = {};
   const now = Date.now();
   await timers(host, ctx).schedule('worker', now - 10);
-
+  // `dispatchedAt` is the dispatch's own clock, not the wall reading above:
+  // under pool load a millisecond can pass between capturing `now` and the
+  // dispatch running, so asserting handler arms (all computed off `n`)
+  // against `now` flakes. The property under test is earliest-deadline
+  // across the handler's own arms, which share `n` as their base.
+  let dispatchedAt = -1;
   await mustComplete(
     timers(host, ctx).dispatch({
       worker: async (n) => {
+        dispatchedAt = n;
         await timers(host, ctx).schedule('late', n + 90_000);
         await timers(host, ctx).schedule('soon', n + 1_000);
         // A second arm for the same reason keeps the sooner deadline.
@@ -100,7 +106,7 @@ async function mustComplete(promise, label) {
   );
   const map = ctx.kv.get(TIMER_REASONS_KEY);
   assert.deepEqual(map.soon !== undefined && map.late !== undefined && map.worker !== undefined, true);
-  assert.equal(map.late, now + 80_000);
+  assert.equal(map.late, dispatchedAt + 80_000);
   assert.equal(ctx.alarms.at(-1), Math.min(...Object.values(map)));
 }
 
