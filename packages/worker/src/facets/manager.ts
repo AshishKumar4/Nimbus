@@ -30,7 +30,7 @@ import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledge
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { clearPortCapability } from '../session/port-capability.js';
+import { clearPortCapability, readPortReservation } from '../session/port-capability.js';
 import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
@@ -60,6 +60,7 @@ import {
   type ProcessHost,
   type ProcessHostFactory,
   type ResidentBootSpec,
+  type ResidentCodeSpec,
   type ResidentDiskReader,
   type StartContract,
 } from '@nimbus-sh/fabric/process-fabric.js';
@@ -3463,6 +3464,13 @@ export interface FacetManagerHooks {
    */
   notify?: (line: string) => void;
   transformLargeEsm?: LargeEsmTransform;
+  /**
+   * Resolve the launch inputs a journalled worker launch needs re-driven with.
+   * Keyed by `recipe.owner`: the embedder's own record of the durable
+   * application decides — `null` means it is stopped or removed, so it is not
+   * restarted.
+   */
+  resolveWorkerLaunch?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
 }
 
 export interface LongRunningWorkerSpawnOptions {
@@ -3476,8 +3484,17 @@ export interface LongRunningWorkerSpawnOptions {
    */
   vfsWasmModules?: Record<string, string>;
   compatibilityFlags?: string[];
+  compatibilityDate?: string;
+  env?: ResidentCodeSpec['env'];
+  globalOutbound?: ResidentCodeSpec['globalOutbound'];
   /** Forwarded verbatim to the runner's startProcess. */
   startArgs?: unknown;
+  /**
+   * Set for a worker a durable application owns: the launch is journalled and
+   * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
+   * A plain spawnWorker stays unjournaled.
+   */
+  durable?: { owner: string; image: { runner: string; application: string } };
 }
 
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
@@ -3497,14 +3514,28 @@ export interface ResidentSpawnOptions {
   bundleProfile?: FacetBundleProfile;
 }
 
-/**
- * This session's journal record: the fabric's base plus the launch's own
- * inputs — the entry code and the spawn options `_spawnResident` re-drives
- * from. The journal never reads them; they ride through it opaquely.
- */
-interface NodeResidentLaunchRecord extends FencedWorkRecord {
-  code: string;
-  opts: ResidentSpawnOptions;
+/** The launch inputs a re-drive rebuilds a worker from: content digests and
+ *  transport, never env or credentials — the embedder resolves those. */
+export interface WorkerRecipe {
+  kind: 'worker';
+  /** The durable application this process belongs to, keyed by the embedder. */
+  owner: string;
+  /** Content digests of the two images the launch was built from. */
+  image: { runner: string; application: string };
+  port: number;
+  cwd: string;
+  compatibilityDate: string;
+  compatibilityFlags: string[];
+  startArgs: unknown;
+}
+interface NodeRecipe { kind: 'node'; code: string; opts: ResidentSpawnOptions }
+interface ResidentLaunchRecord extends FencedWorkRecord { recipe: NodeRecipe | WorkerRecipe }
+/** What the embedder supplies for a re-driven worker launch. */
+export interface ResolvedWorkerLaunch {
+  env: ResidentCodeSpec['env'];
+  globalOutbound: ResidentCodeSpec['globalOutbound'];
+  /** Module name → source text, including the `worker.js` main module. */
+  modules: Record<string, string>;
 }
 
 /** 'running' is the measured common case: the platform's reset strikes
@@ -3549,9 +3580,9 @@ export class FacetManager {
    * The resident-launch journal (fabric's fenced-work.ts): the durable
    * record of every resident this session owes the user, and its recovery
    * after an instance reset. This manager supplies what a launch IS — the
-   * inputs `_spawnResident` re-drives from — and how its loss is reported.
+   * recipe `_redrive` re-drives from — and how its loss is reported.
    */
-  private readonly launchJournal: FencedWork<NodeResidentLaunchRecord>;
+  private readonly launchJournal: FencedWork<ResidentLaunchRecord>;
   /**
    * The granting side of the launch budget (fabric's turn-budget.ts). The
    * session's alarm re-enters the object through `pumpResidentLaunches`;
@@ -3644,10 +3675,10 @@ export class FacetManager {
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
     this.debugEnabled = debugVar === '1' || debugVar === 'true';
-    this.launchJournal = new FencedWork<NodeResidentLaunchRecord>(ctx.storage, {
+    this.launchJournal = new FencedWork<ResidentLaunchRecord>(ctx.storage, {
       generationBase: () => this.processes.pidBase,
       waitUntil: (promise) => this.ctx.waitUntil(promise),
-      redrive: (record, attempt) => this._spawnResident(record.code, record.opts, attempt),
+      redrive: (record, attempt) => this._redrive(record, attempt),
       onRedrive: (record) => this.hooks.notify?.(
         '\x1b[2m[nimbus: the session restarted while '
         + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`,
@@ -4931,6 +4962,32 @@ export class FacetManager {
   }
 
   /**
+   * Re-drive a journalled launch after an instance reset. What the journal
+   * row carries is the recipe and nothing else: env and credentials are never
+   * written to storage, so a worker launch's are re-resolved by the embedder
+   * through `hooks.resolveWorkerLaunch`.
+   */
+  private async _redrive(record: ResidentLaunchRecord, attempt: number): Promise<unknown> {
+    const { recipe } = record;
+    switch (recipe.kind) {
+      case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
+      case 'worker': {
+        if (!this.hooks.resolveWorkerLaunch) throw new Error('resident launch journal holds a worker launch but no resolveWorkerLaunch hook is composed');
+        const resolved = await this.hooks.resolveWorkerLaunch(recipe);
+        if (resolved === null) return undefined;
+        const { 'worker.js': workerCode, ...modules } = resolved.modules;
+        if (workerCode === undefined) throw new Error('resolved worker launch carries no worker.js module');
+        return this._spawnWorker(workerCode, record.command, recipe.cwd, {
+          port: recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
+          compatibilityFlags: recipe.compatibilityFlags, startArgs: recipe.startArgs,
+          env: resolved.env, globalOutbound: resolved.globalOutbound,
+          durable: { owner: recipe.owner, image: recipe.image },
+        }, attempt);
+      }
+    }
+  }
+
+  /**
    * Spawn a long-running Node process with the same shimmed require/fs/http
    * environment used by foreground `node <script>` execution.
    *
@@ -5027,15 +5084,25 @@ export class FacetManager {
     // sessions kept dying. The row is finally released by the supervisor's
     // terminal hook when the process ends. A re-drive owns its own process,
     // so the caller's pid goes with the instance that had it.
-    const record: NodeResidentLaunchRecord = {
+    const record: ResidentLaunchRecord = {
       pid: entry.pid,
       command,
-      code,
-      opts: { ...opts, skipSpawn: undefined, callerPid: undefined },
       attempt,
       phase: 'starting',
+      recipe: { kind: 'node', code, opts: { ...opts, skipSpawn: undefined, callerPid: undefined } },
     };
-    await this.launchJournal.journal(record);
+    try {
+      await this.launchJournal.journal(record);
+    } catch (e: unknown) {
+      // A resident that cannot be journalled does not start; the failure is
+      // reported the way a boot failure is.
+      pacer.settle();
+      this.processes.exit(entry.pid, 1);
+      const reason = 'long-running node launch failed: ' + errorMessage(e);
+      this._w5RecordTermination(entry.pid, 1, 'facet', reason);
+      try { this.hooks.onExternalExit?.(entry.pid, 1, reason); } catch {}
+      throw e;
+    }
     try {
       await this._residentLaunchBody(entry, code, command, cwd, opts, pacer);
     } catch (e: unknown) {
@@ -5257,6 +5324,17 @@ export class FacetManager {
     cwd: string,
     opts: LongRunningWorkerSpawnOptions = {},
   ): Promise<{ pid: number; boot: unknown }> {
+    return this._spawnWorker(workerCode, command, cwd, opts, 0);
+  }
+
+  /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
+  private async _spawnWorker(
+    workerCode: string,
+    command: string,
+    cwd: string,
+    opts: LongRunningWorkerSpawnOptions,
+    attempt: number,
+  ): Promise<{ pid: number; boot: unknown }> {
     this.processes.reap();
     const entry = this.processes.spawn(command, [], cwd);
     // Stamp the process-table entry so /api/processes exposes this as a
@@ -5266,9 +5344,34 @@ export class FacetManager {
     // users want the PID for later `logs`/`kill`.
     try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}
 
+    const compatibilityDate = opts.compatibilityDate ?? CF_COMPAT_DATE;
+    const compatibilityFlags = opts.compatibilityFlags || ['nodejs_compat'];
+
     let handle: ResidentProcessHandle | undefined;
     let resourcesTracked = false;
+    let record: ResidentLaunchRecord | undefined;
     try {
+      if (opts.durable) {
+        // Journalled before the launch's first byte of work, so a row a
+        // later instance reads proves this process never ended.
+        record = {
+          pid: entry.pid,
+          command,
+          attempt,
+          phase: 'starting',
+          recipe: {
+            kind: 'worker',
+            owner: opts.durable.owner,
+            image: opts.durable.image,
+            port: opts.port ?? 0,
+            cwd,
+            compatibilityDate,
+            compatibilityFlags,
+            startArgs: opts.startArgs,
+          },
+        };
+        await this.launchJournal.journal(record);
+      }
       handle = await this._startResidentProcess(entry.pid, {
         // These runners answer startProcess with a boot payload (listening
         // port, or a completed non-server run) and stay resident after it.
@@ -5277,24 +5380,45 @@ export class FacetManager {
         boot: {
           kind: 'code',
           code: {
-            compatibilityDate: CF_COMPAT_DATE,
-            compatibilityFlags: opts.compatibilityFlags || ['nodejs_compat'],
+            compatibilityDate,
+            compatibilityFlags,
             mainModule: 'worker.js',
             modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
             vfsWasmModules: opts.vfsWasmModules,
+            ...(opts.env !== undefined ? { env: opts.env } : {}),
+            ...(opts.globalOutbound !== undefined ? { globalOutbound: opts.globalOutbound } : {}),
           },
         },
       });
       this.trackProcessRpcResources(entry.pid, [handle]);
       resourcesTracked = true;
       this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
-      if (opts.port && opts.port > 0 && opts.port < 65536) {
-        // A new process on a port retires the previous occupant's preview
-        // capability, so a URL handed out for that one cannot reach this one.
-        await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port);
-        this.portRegistry.register(opts.port, entry.pid);
+      const boot = await handle.booted();
+      if (opts.durable && this.launchJournal.has(entry.pid) && record) {
+        // Booted and running: the launch proved itself, so the resident
+        // starts its running life with a fresh re-drive budget.
+        await this.launchJournal.journal({ ...record, attempt: 0, phase: 'running' });
       }
-      return { pid: entry.pid, boot: await handle.booted() };
+      if (opts.port && opts.port > 0 && opts.port < 65536) {
+        const reservation = opts.durable
+          ? await readPortReservation(this.ctx, opts.port)
+          : null;
+        if (reservation && reservation.owner === opts.durable?.owner) {
+          // The owner's hold on the port survives the instance reset that
+          // re-drove this launch, and preview URLs minted against it stay
+          // valid: the durable capability is re-adopted rather than retired.
+          this.portRegistry.register(opts.port, entry.pid);
+          if (reservation.capability !== null) {
+            this.portRegistry.restoreCapability(opts.port, reservation.capability);
+          }
+        } else {
+          // A new process on a port retires the previous occupant's preview
+          // capability, so a URL handed out for that one cannot reach this one.
+          await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port);
+          this.portRegistry.register(opts.port, entry.pid);
+        }
+      }
+      return { pid: entry.pid, boot };
     } catch (e: unknown) {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
