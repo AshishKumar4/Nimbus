@@ -25,7 +25,7 @@ import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
 import { packumentUrl } from './r2-cache.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from './npm-log.js';
-import { applySwaps, findRejects, lookupSwap, lookupReject, shouldSkipPackage, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
+import { applySwaps, findRejects, lookupSwap, lookupReject, shouldWarnSkipTransitive, isOptionalNativeBinding, formatSwapNotice, formatTransitiveSkip, RegistryRejectError, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -1053,24 +1053,21 @@ export class NpmInstaller {
         const devOnly = new Set();
         try {
             const pkgJson = JSON.parse(this.vfs.readFileString(pkgJsonPath));
-            // Always include dependencies
+            // Every declared dependency is a spec. What cannot run here is
+            // refused by the reject policy below with its reason; nothing a
+            // project declares is quietly left out of node_modules.
             for (const [name, range] of Object.entries(pkgJson.dependencies || {})) {
-                if (!shouldSkipPackage(name)) {
-                    specs[name] = range;
-                }
+                specs[name] = range;
             }
-            // Include devDeps unless production mode, skipping build-only
             for (const [name, range] of Object.entries(pkgJson.devDependencies || {})) {
-                if (shouldSkipPackage(name) || name in specs)
-                    continue;
-                if (production)
+                if (name in specs || production)
                     continue;
                 specs[name] = range;
                 devOnly.add(name);
             }
         }
         catch { /* corrupt package.json */ }
-        return this.applyW6Registry(specs, devOnly);
+        return this.applyW6Registry(specs, devOnly, { declared: true });
     }
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
@@ -1080,7 +1077,7 @@ export class NpmInstaller {
      *
      * Idempotent: running on already-swapped specs is a no-op.
      */
-    applyW6Registry(specs, devOnly = new Set()) {
+    applyW6Registry(specs, devOnly = new Set(), options = {}) {
         const { specs: swapped, swaps } = applySwaps(specs);
         for (const s of swaps) {
             // onProgress is unguarded everywhere else in this file (rg the
@@ -1089,6 +1086,24 @@ export class NpmInstaller {
             this.onProgress?.(formatSwapNotice(s));
             // W6.5: telemetry — fire-and-forget; sink swallows its own errors.
             emitRegistryEvent({ type: 'swap', from: s.from, to: s.to, ctx: 'top' });
+        }
+        // A dependency the project DECLARES that the policy refuses with
+        // transitive='warn' (wrangler, node-gyp, parcel — a toolchain that
+        // cannot run here) is left out with its reason on the install log, and
+        // the rest of the project installs: a cloned repo that lists wrangler
+        // in devDependencies still gets everything it runs. An explicit
+        // `npm install wrangler` — the user asked for exactly that package —
+        // still fails with the same reason, and a 'fail' reject aborts at any
+        // depth as before.
+        if (options.declared) {
+            for (const name of Object.keys(swapped)) {
+                const warn = shouldWarnSkipTransitive(name);
+                if (!warn)
+                    continue;
+                this.onProgress?.(formatTransitiveSkip(warn));
+                emitRegistryEvent({ type: 'reject', from: warn.from, reason: warn.reason, suggest: warn.suggest, ctx: 'top' });
+                delete swapped[name];
+            }
         }
         const rejects = findRejects(swapped, 'top');
         if (rejects.length > 0) {
@@ -1114,8 +1129,6 @@ export class NpmInstaller {
     isLockfileValid(lockfile, specs) {
         // Every spec must be in the lockfile
         for (const name of Object.keys(specs)) {
-            if (shouldSkipPackage(name))
-                continue;
             if (!lockfile.has(name))
                 return false;
         }

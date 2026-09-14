@@ -1183,6 +1183,12 @@ export declare class FacetManager {
     private _runResidentLaunch;
     private _residentLaunchBody;
     /**
+     * The exit code of a launched process that has already ended, or null
+     * while it runs. What a caller that started a resident reads to tell a
+     * server that is up from a program that finished during its boot.
+     */
+    processExitCode(pid: number): number | null;
+    /**
      * Spawn a long-running dynamic Worker, boot it, and return its boot payload.
      *
      * The shared primitive for any runtime that serves over

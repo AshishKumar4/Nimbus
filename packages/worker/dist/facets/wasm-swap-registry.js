@@ -197,6 +197,25 @@ const REJECTS = [
         suggest: '@prisma/adapter-d1 (untested by Nimbus), or drizzle-orm + @libsql/client (untested).',
         transitive: 'fail',
     },
+    // ── Toolchains that carry their own native runtime ───────────────────
+    {
+        from: 'wrangler',
+        reason: 'Runs workerd and esbuild as native binaries; neither can execute in Workers.',
+        suggest: 'Nimbus provides `nimbus-wrangler` (also answering `wrangler`) for `wrangler dev`-shaped workflows; the package itself stays out of node_modules.',
+        transitive: 'warn',
+    },
+    {
+        from: '@cloudflare/vite-plugin',
+        reason: 'Boots miniflare, which needs the native workerd binary.',
+        suggest: 'Run the Worker through `nimbus-wrangler dev` instead of the vite plugin; the plugin stays out of node_modules.',
+        transitive: 'warn',
+    },
+    {
+        from: 'parcel',
+        reason: 'Depends on @parcel/watcher and @swc/core, both platform-native shards with no Workers build.',
+        suggest: 'vite (Nimbus bundles it) or webpack (pure JS, untested by Nimbus) for the same job.',
+        transitive: 'warn',
+    },
     // ── Build-time native compilers (always wrong in Workers) ───────────
     {
         from: 'node-gyp',
@@ -277,51 +296,26 @@ const REJECTS = [
         transitive: 'fail',
     },
 ];
-// W6: `esbuild` and `fsevents` were removed from the skip list so the
-// swap/reject policy can own them. `esbuild` is in `swaps`
-// (→ esbuild-wasm); `fsevents` is in `rejects` (transitive='warn').
-// node-gyp / node-pre-gyp remain here for transitive silence (they
-// also appear in `rejects` with transitive='warn' so a top-level
-// `npm install node-gyp` reaches the registry first and emits a clear
-// rejection).
+// SKIP_PACKAGES used to name build tools — typescript, vite, webpack,
+// postcss, tailwindcss, eslint, prettier, husky, @types/* and friends — and
+// the resolver dropped them from every install: transitively, and also
+// from the project's own package.json (buildSpecs filtered declared
+// dependencies through it). A cloned TypeScript project therefore had no
+// node_modules/.bin/tsc, no @types, no eslint, while the install reported
+// Done!. None of those packages is unable to run here: they are JavaScript,
+// and the ones with native shards (parcel, tailwind v4's oxide, TypeScript
+// 7's Go binary) are caught by the native-artifact and reject policies with
+// a stated reason. So the skip list is empty: a declared dependency is
+// installed or refused loudly, never silently left out. What must not be
+// installed is a REJECT with its reason (node-gyp, node-pre-gyp, wrangler,
+// @cloudflare/vite-plugin above); `esbuild`/`rollup` are SWAPS.
 //
-// W11: `vite` was previously unconditionally skipped because the
-// supervisor bundles real-vite. But Astro/Nuxt/Remix/SvelteKit `import`
-// from the user's installed `vite` to call createServer() — so when a
-// framework is detected, `vite` must actually land in node_modules
-// (`frameworkRequiredPackages`).
-//
-// X.5-G: `rollup` removed from the skip list because it's in `swaps`
-// (rollup → @rollup/wasm-node). Skipping would mask the swap at
-// transitive depth.
-const SKIP_PACKAGES = [
-    // Build tools (X.5-G: rollup migrated to swaps)
-    'typescript', 'vite', 'webpack', 'parcel',
-    'postcss', 'autoprefixer', 'tailwindcss', 'cssnano',
-    'prettier', 'eslint', 'stylelint',
-    // Build-time only, never run in Workers. `chokidar` used to be here
-    // ("real-vite intercepts") — but real-vite ships its OWN chokidar shim
-    // inside the facet module map (facets/cirrus-real.ts, cirrus-chokidar.js)
-    // and never reads the user's node_modules for it, while every CLI that
-    // depends on chokidar (json-server, nodemon, live-server, …) lost it and
-    // its subtree from the install, then failed at runtime with
-    // "Cannot find module 'chokidar'". chokidar@4/5 is pure JS.
-    'node-gyp', 'node-pre-gyp',
-    // Cloudflare dev tools
-    '@cloudflare/vite-plugin', '@cloudflare/workers-types', 'wrangler',
-    // Other build-only
-    'husky', 'lint-staged', 'commitlint',
-];
-const SKIP_PREFIXES = [
-    '@types/',
-    '@eslint/',
-    '@typescript-eslint/',
-    'eslint-plugin-',
-    'eslint-config-',
-    // Note: '@vitejs/' used to be skipped because the Cirrus shim
-    // ignored plugins anyway. With real-vite mode those plugins are
-    // required — keep them installable.
-];
+// W11 kept `vite` out of node_modules unless a framework was detected; the
+// builtin `vite` command still shadows the bin in the shell, and the package
+// is installed like any other so `import { createServer } from 'vite'` and
+// plugin resolution work without a framework heuristic.
+const SKIP_PACKAGES = [];
+const SKIP_PREFIXES = [];
 /**
  * The single typed package-ABI policy (see `PackageAbiPolicy` in
  * runtime/os-contracts.ts). Everything the npm resolver/installer needs
