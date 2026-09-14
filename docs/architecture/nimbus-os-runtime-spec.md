@@ -1012,6 +1012,37 @@ it is spawned, and a reservation is what *exposing* it creates.
   a large DO storage value. The Ruby adapter's identity and reset re-drive
   are covered by the facet-host harness; this is not a live interpreter
   restart or a general checkpoint of interpreter heap state.
+- **One resolver, every serving process.** `residentIdentity(pid)` answers
+  in precedence order: the ephemeral-duplicate mark; the journal row (the
+  owner a launch the facet manager made was stamped with); and, for a running
+  pid with no row, the process table's own `cwd` + `argv` through the same
+  `deriveResidentOwner`. Which class reads which way:
+  - *Journalled* — `node`/`bun` residents (a terminal `node server.js`, a
+    bin such as `npx serve`, an SDK `startProcess('node …')`; the npm-bin
+    resolver's wrapper pid is the resident's pid, `skipSpawn`), Ruby and
+    CPython socket residents, durable Worker spawns. The row is written at
+    spawn from the launch's own cwd+argv (the recipe a re-drive rebuilds
+    from), so these re-drive after a reset.
+  - *Process table* — servers the session runs in process and registers
+    itself: the Cirrus Vite dev server (`vite`, `npx vite`, `npm run dev`,
+    `/api/start-vite`), real-vite (`NIMBUS_REAL_VITE=1`), `vite preview`,
+    and any other builtin that adopts a shell wrapper pid. These are not
+    re-driven by the journal; the two Vite servers keep their own restore:
+    the persisted `vite-config` now carries the pid's cwd+argv, and the
+    restored pid is spawned with them, so a woken dev server derives the
+    same identity, re-adopts the reservation it owns at registration, and
+    `readoptCapability` still restores a port-only exposure as before.
+  - Every serving pid registers through one seam
+    (`session/serving-port.ts` → `FacetManager.registerPort`), so the
+    identity check at registration is the same for both classes. An
+    un-journalled pid on an *explicit* reservation's port cannot adopt the
+    owner — there is no row to record it on — and registers ephemeral, as
+    it always did.
+  - A launch surface is part of the identity: the process table records
+    `['npx vite --host --port 5173']` for an SDK `startProcess` line and
+    `['vite', '--port', '5173']` for a terminal bin invocation. Each is
+    stable across its own restarts and hibernation; they are not the same
+    application as each other.
 
 ### Registration: the stamp is unconditional, the capability is bound to identity
 
@@ -1040,7 +1071,7 @@ owner (`session/programmatic.ts`, one implementation behind
 `sandbox.apps.expose`, `sandbox.ports.expose`, `nimbus expose`, and the Agent's
 `expose_app`):
 
-- resolves the serving pid's row owner (derived or explicit);
+- resolves the serving pid's identity (its row, or the process table);
 - for name/owner targets, refuses to mint or restore a capability when the
   reservation's port is served by a different journal owner (including an
   ephemeral duplicate): `port N is served by a different process (owner X)`;
@@ -1056,13 +1087,17 @@ owner (`session/programmatic.ts`, one implementation behind
 `rotateLink(target)` mints a new capability in place and rebinds the
 directory; the old URL 404s from the next request. `remove(target)` is
 `removeDurableApp(owner)` addressed by any target: kill the owner's live
-pids, release the reservation, purge the journal rows, free the durable slot
-and its storage, purge unshared durable images, unbind the directory.
+pids — the journalled ones through the manager, a serving pid nothing
+journalled through the session's own kill, which also stops an in-process
+dev server — release the reservation, purge the journal rows, free the
+durable slot and its storage, purge unshared durable images, unbind the
+directory.
 Removal never releases another owner's reservation or unregisters its live
 listener. Shared content-addressed images remain while another owner needs
 them, including after an ordinary process exit removed its launch row.
 `apps.list()` folds every stamped
-identity — reservations and owner-carrying rows — into
+identity — reservations, owner-carrying rows, and every pid serving a
+registered port — into
 `{ owner, name, port, pid | null, status, visibility, capability, restart,
 diagnostic, url }` with `status` one of `running | starting | stopped |
 failed`; a row a reset left behind is `stopped` and re-drivable on request.
@@ -1157,6 +1192,15 @@ own reset does while every synced storage row survives.
   comes back with a new pid; under the default it stays down.
 - `durable/shell-expose` (behavioral) — `nimbus expose` prints a URL that
   serves the app; `nimbus app list/url/rotate/remove` agree with the SDK.
+- `durable/npx-vite-app` (behavioral) — SDK `startProcess('npx vite --host
+  --port 5173')` → `apps.expose` public under a name → `apps.list` running
+  → `apps.rotateLink` → `apps.remove` ends the live dev server. The
+  un-journalled class, end to end.
+- `apps-identity-from-process-table` (unit) — the dev-server shape through
+  the RPC surface: expose/list/rotate, re-adoption after a same-argv
+  restart, refusal of a different program, removal ending the process; a
+  bin resident's journal row; the Cirrus server exposed under a name keeps
+  its identity and shared link across a hibernation restore.
 - `durable/public-port-contract`, `durable/eviction-survival` (behavioral) —
   the embedder's `ensureDurableApp` contract, unchanged.
 
