@@ -2811,12 +2811,28 @@ export function isBundleModuleCandidate(path) {
  * EXTENSION, where `.js` files transform on their content — `looksLikeEsm` is
  * the right question for a file that is already valid JS either way, and the
  * wrong one for a file that is never valid JS.
+ *
+ * A declaration file (`.d.ts`, `.d.mts`, `.d.cts`) is not a source: it has
+ * no runtime form, nothing `require()`s one, and esbuild's output for it is
+ * empty by definition. It is DATA — read by the program that ships it, which
+ * is exactly typescript: `tsc` reads its own `lib/lib.*.d.ts` with
+ * `readFileSync`, and every declaration it type-checks against comes from
+ * those bytes. Transforming them handed the compiler an 811-byte license
+ * comment where `lib.es5.d.ts` (217 KB) had been, and every global type was
+ * gone. So a declaration file is left exactly as it was staged.
  */
 export function bundleTypescriptLoader(path) {
+    if (isTypescriptDeclarationFile(path))
+        return null;
     const ext = vfsPathExtension(path);
     if (ext === '.tsx')
         return 'tsx';
     return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
+}
+/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
+export function isTypescriptDeclarationFile(path) {
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    return /\.d\.[mc]?ts$/.test(base);
 }
 /**
  * Transform every ESM-shaped file in the bundle to CJS via esbuild.
