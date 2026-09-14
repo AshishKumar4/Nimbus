@@ -114,6 +114,7 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
   const waited = [];
   /** key → { deleted: boolean, value? } — writes awaiting durability. */
   const pending = new Map();
+  let txnQueue = Promise.resolve();
   const flush = () => {
     for (const [key, w] of pending) {
       if (w.deleted) storage.delete(key);
@@ -156,23 +157,30 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
       async sync() { flush(); },
       /** The reset: everything sync has not flushed dies with the instance. */
       crash() { pending.clear(); },
-      /** One serialized read/write unit: the body sees a private copy and the
-       *  copy commits only on success, the way the real store isolates a
-       *  transaction from interleaved readers. */
-      async transaction(body) {
-        const copy = view();
-        const txn = {
-          get: async (k) => copy.get(k),
-          put: async (k, v) => { copy.set(k, v); },
-          delete: async (k) => copy.delete(k),
-          list: async ({ prefix = '' } = {}) =>
-            new Map([...copy].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1))),
-        };
-        const out = await body(txn);
-        pending.clear();
-        storage.clear();
-        for (const [k, v] of copy) storage.set(k, v);
-        return out;
+      /** One serialized read/write unit: a queue lets only one body run at a
+       *  time on a private snapshot, and on success only the keys that body
+       *  touched join the pending layer — an unrelated put's pending write or
+       *  another transaction's copy is never committed or cleared. A rejection
+       *  frees the queue and commits nothing. */
+      transaction(body) {
+        const run = txnQueue.then(() => {
+          const copy = view();
+          const touched = new Map();
+          const txn = {
+            get: async (k) => copy.get(k),
+            put: async (k, v) => { copy.set(k, v); touched.set(k, { deleted: false, value: v }); },
+            delete: async (k) => { copy.delete(k); touched.set(k, { deleted: true }); },
+            list: async ({ prefix = '' } = {}) =>
+              new Map([...copy].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1))),
+          };
+          return Promise.resolve(body(txn)).then((out) => {
+            for (const [k, w] of touched) pending.set(k, w);
+            if (!crashable) flush();
+            return out;
+          });
+        });
+        txnQueue = run.then(() => undefined, () => undefined);
+        return run;
       },
     },
   };

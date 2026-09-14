@@ -28,14 +28,23 @@ import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/ke
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
+const defer = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 // A deferred a test can hold: while it is pending, the spawn's handle.booted()
 // never resolves, so a reservation can be released or reassigned mid-boot.
+// `entered` resolves the moment the runner's startProcess actually runs — the
+// journal row and the facet already exist — so a test knows the launch is
+// genuinely parked at the boot gate, not merely queued behind preflight.
 let bootHold = null;
+let bootEntered = null;
 const world = createFacetWorld(() => {
   const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
   return {
     boot,
-    async startProcess() { return bootHold ? bootHold.promise : { ok: true }; },
+    async startProcess() {
+      if (!bootHold) return { ok: true };
+      bootEntered.resolve();
+      return bootHold.promise;
+    },
     async handleHttpRequest(request) {
       boot.served++;
       return Response.json({ boot: boot.id, served: boot.served });
@@ -109,20 +118,32 @@ const capHost = { ctx, portRegistry, portCapabilityOwner: (port) => ownerOf.get(
   // B holds a fresh port; its durable spawn is held at boot, then the
   // reservation is released and re-claimed by C before the boot resolves.
   await reservePort(ctx, { owner: 'B', preferredPort: 20040, occupiedPorts: none });
-  let release;
-  bootHold = { promise: new Promise((r) => { release = r; }) };
+  ownerOf.set(20040, 'B');
+  const bootsBefore = world.boots.length;
+  bootHold = defer();
+  bootEntered = defer();
   const spawning = fm.spawnWorker('export default {}', 'worker app', '/app', {
     durable: { owner: 'B', image: { runner: 'r', application: 'b-app' } },
     port: 20040,
   });
   const refused = spawning.then(() => 'spawned').catch((e) => e);
-  // Wait a tick so the spawn is parked on handle.booted() before the change.
-  await Promise.resolve();
+  // The launch is really at the boot gate: the runner's startProcess ran, the
+  // program was evaluated, and its journal row is durable — this is not the
+  // preflight rejecting it.
+  await bootEntered.promise;
+  assert.equal(world.boots.length, bootsBefore + 1, "B's program was evaluated before the reassignment");
+  const bRow = [...ctx.storage.rows.entries()]
+    .map(([key, v]) => ({ key, recipe: v?.recipe }))
+    .find((r) => r.recipe && r.recipe.owner === 'B' && r.recipe.image?.application === 'b-app');
+  assert.ok(bRow, "B's launch is journaled while it is parked at the boot gate");
+  // Reassign the reservation while the launch is still parked, then let it boot.
   await releasePortReservation(ctx, { owner: 'B', port: 20040 });
   await reservePort(ctx, { owner: 'C', preferredPort: 20040, occupiedPorts: none });
-  release({ ok: true });
+  ownerOf.set(20040, 'C');
+  bootHold.resolve({ ok: true });
   const outcome = await refused;
   bootHold = null;
+  bootEntered = null;
   assert.ok(outcome instanceof Error && CONFLICT.test(outcome.message),
     `the spawn is refused once the reservation changed hands, got ${outcome}`);
   assert.equal(portRegistry.get(20040), undefined, 'the refused spawn installed no listener');
