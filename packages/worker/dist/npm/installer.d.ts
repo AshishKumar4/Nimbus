@@ -104,7 +104,11 @@ export declare class NpmInstaller {
      *   - X.5-G G1 optional-native silent-skip,
      *   - X.5-drizzle best-effort tagging on optional-peer subtrees,
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
-     *     per-package task ALSO checks these for transitive correctness),
+     *     per-package task ALSO checks these for transitive correctness).
+     *     A package is required iff it is reachable from a required root
+     *     (root `dependencies`, explicit specs) through a chain of
+     *     required edges (`dependencies`, required peers); W6 refusals
+     *     are classified at end of walk.
      *   - cache flushing (one batched putRegistryEntries at end).
      *
      * The per-package task (resolveOnePackumentInFacet) owns ONLY the

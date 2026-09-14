@@ -336,32 +336,28 @@ const CIRRUS_KNOWN_VITE_PLUGINS = {
 };
 /**
  * Framework plugins whose `plugins: [...]` presence means the project is
- * not a plain-Vite app at all: SvelteKit/Vue/Solid/Nuxt compile `.svelte`/
+ * not a plain-Vite app at all: SvelteKit/Vue/Solid compile `.svelte`/
  * `.vue`/`src/routes` module graphs the built-in esbuild path cannot
  * produce. `vite build` refuses these (any other entry layout would die
- * deep in esbuild on a confusing error); dev only warns.
+ * deep in esbuild on a confusing error); dev only warns. Astro and Nuxt
+ * are absent — they are driven by astro.config/nuxt.config, never by a
+ * vite.config `plugins` entry.
  */
 const CIRRUS_FRAMEWORK_VITE_PLUGINS = {
     '@sveltejs/kit/vite': true,
     '@sveltejs/vite-plugin-svelte': true,
     '@vitejs/plugin-vue': true,
     'vite-plugin-solid': true,
-    'astro': true,
-    'astrojs-compiler-sync': true,
-    '@astrojs/renderer-preact': true,
 };
-function isFrameworkPlugin(name) {
-    return CIRRUS_FRAMEWORK_VITE_PLUGINS[name] === true || name.startsWith('@nuxt/');
-}
 /** Plugins a parsed config declares that the built-in build must refuse:
  *  the framework denylist only — everything else gets a warning and tries. */
 export function viteBuildBlockingPlugins(config) {
-    return (config.plugins || []).filter(isFrameworkPlugin);
+    return (config.plugins || []).filter((name) => CIRRUS_FRAMEWORK_VITE_PLUGINS[name] === true);
 }
 /** Plugins a parsed config declares that the built-in server does not
  *  evaluate but that are not known-handled — the dev/build warning list. */
 export function unhandledVitePlugins(config) {
-    return (config.plugins || []).filter((name) => !CIRRUS_KNOWN_VITE_PLUGINS[name] && !isFrameworkPlugin(name));
+    return (config.plugins || []).filter((name) => !CIRRUS_KNOWN_VITE_PLUGINS[name] && CIRRUS_FRAMEWORK_VITE_PLUGINS[name] !== true);
 }
 function isJsonStringifyCall(node) {
     const callee = nodeProp(node, 'callee');
