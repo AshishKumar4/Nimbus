@@ -1136,6 +1136,23 @@ export declare class FacetManager {
     }>;
     /** `attempt` is the journal's re-drive budget, as `_spawnResident` carries it. */
     private _spawnWorker;
+    /**
+     * A resident process announcing it bound `port`. When the port is reserved,
+     * the reservation's owner is stamped onto this pid's journal row — the
+     * reservation is what declares which application the port serves, and a
+     * resident that binds it inherits the whole durable contract: the row names
+     * the port `ensureDurableAppOnPort` looks up, the minted capability is
+     * re-adopted rather than retired, and `removeDurableApp` can find the launch
+     * by owner.
+     *
+     * A pid with no journal row — a process outside the resident lifecycle —
+     * registering on a reserved port takes it as today: the stored capability
+     * is retired and a fresh one is minted, the reservation stays with the
+     * owner. An accidental port reuse inside one session therefore cannot
+     * inherit the public capability; same-session processes are one trust
+     * domain, so this is hygiene, not a security boundary.
+     */
+    private _registerResidentPort;
     registerPort(pid: number, port: number): Promise<void>;
     waitForRouteablePorts(pid: number, timeoutMs?: number): Promise<number[]>;
     finishProcess(pid: number, exitCode: number, reason?: string): void;

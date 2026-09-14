@@ -46,6 +46,7 @@ const routes = {
     prefetch: { method: '_rpcPrefetch', args: [0, 1] },
     registerPort: { method: '_rpcRegisterPort', args: ['pid', 0] },
     ensureDurableApp: { method: '_rpcEnsureDurableApp', args: [0] },
+    removeDurableApp: { method: '_rpcRemoveDurableApp', args: [0] },
     unregisterPort: { method: '_rpcUnregisterPort', args: [0] },
     routeLoopback: { method: '_rpcRouteLoopback', args: [0, 1] },
     transform: { method: '_rpcTransform', args: [0, 1] },

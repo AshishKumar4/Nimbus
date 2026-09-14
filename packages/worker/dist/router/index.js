@@ -333,7 +333,12 @@ export function createNimbusHandler(options = {}) {
                     console.warn('[nimbus] onSessionStart hook threw synchronously:', e);
                 }
             }
-            return forwardToSession(request, route, env, { tenantSegment });
+            return forwardToSession(request, route, env, {
+                tenantSegment,
+                ...(auth.verified?.claims.scopes !== undefined
+                    ? { callerScopes: auth.verified.claims.scopes }
+                    : {}),
+            });
         }
         // ── Back-compat legacy root paths → landing page ────────────────
         if (isLegacyRootPath(url.pathname)) {

@@ -32,7 +32,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { FencedWork, } from '@nimbus-sh/fabric/fenced-work.js';
+import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
 import { EsbuildService, rewriteBundledEsmToCjs, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -3251,6 +3251,14 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 /** A port request may wait this long for a durable app's re-drive to boot. */
 const DURABLE_ENSURE_BOOT_BUDGET_MS = 12_000;
+/**
+ * The durable owner a journal row serves: the row's stamped field for
+ * reservation-claimed residents, falling back to the worker recipe's own
+ * owner for rows written before the stamping rule landed.
+ */
+function residentOwner(record) {
+    return record.owner ?? (record.recipe.kind === 'worker' ? record.recipe.owner : undefined);
+}
 /** 'running' is the measured common case: the platform's reset strikes
  *  seconds after a launch settles, while the resident runs. */
 function residentLaunchDoing(record) {
@@ -4643,12 +4651,32 @@ export class FacetManager {
         // sessions kept dying. The row is finally released by the supervisor's
         // terminal hook when the process ends. A re-drive owns its own process,
         // so the caller's pid goes with the instance that had it.
+        //
+        // Durability is a property of the RESERVATION, not the recipe: a resident
+        // that declares a port at spawn claims the durable contract the port's
+        // reservation declares — the owner's durable slot for a store and the
+        // row's port/owner for `ensureDurableAppOnPort`. A resident whose port is
+        // only learned at listen() gets the same journal+capability durability at
+        // registration (see `registerPort`), but keeps its ephemeral facet name —
+        // the store cannot be re-rooted under a running facet.
+        let durableFacetName;
+        let durablePort;
+        let durableOwner;
+        if (opts.port !== undefined && opts.port > 0 && opts.port < 65536) {
+            const reservation = await readPortReservation(this.ctx, opts.port);
+            if (reservation !== null && reservation.owner !== null) {
+                durableOwner = reservation.owner;
+                durablePort = opts.port;
+                durableFacetName = await acquireDurableFacetSlot(this.ctx, durableOwner);
+            }
+        }
         const record = {
             pid: entry.pid,
             command,
             attempt,
             phase: 'starting',
             recipe: { kind: 'node', code, opts: { ...opts, skipSpawn: undefined, callerPid: undefined } },
+            ...(durablePort !== undefined ? { port: durablePort, owner: durableOwner } : {}),
         };
         try {
             await this.launchJournal.journal(record);
@@ -4667,7 +4695,7 @@ export class FacetManager {
             throw e;
         }
         try {
-            await this._residentLaunchBody(entry, code, command, cwd, opts, pacer);
+            await this._residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName);
         }
         catch (e) {
             await this.launchJournal.release(entry.pid);
@@ -4684,7 +4712,7 @@ export class FacetManager {
             await this.launchJournal.journal({ ...record, attempt: 0, phase: 'running' });
         }
     }
-    async _residentLaunchBody(entry, code, command, cwd, opts, pacer) {
+    async _residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName) {
         if (this.vfs && !this.esbuild) {
             this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
         }
@@ -4751,6 +4779,12 @@ export class FacetManager {
                 // life; the server/watch runner returns once it is up.
                 startContract: opts.attachedTty ? 'lifetime' : 'boot',
                 startArgs: { vfsCursor },
+                // A resident whose declared port is reserved binds the owner's
+                // durable slot — the same store a durable worker spawn takes — so the
+                // reservation's durability reaches this process's storage too.
+                ...(durableFacetName !== undefined
+                    ? { facet: { name: durableFacetName, durable: true } }
+                    : {}),
                 boot: {
                     kind: 'code',
                     code: {
@@ -4824,10 +4858,7 @@ export class FacetManager {
                 await handle.booted();
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
-                // A new process on a port retires the previous occupant's preview
-                // capability, so a URL handed out for that one cannot reach this one.
-                await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, opts.port);
-                this.portRegistry.register(opts.port, entry.pid);
+                await this._registerResidentPort(entry.pid, opts.port);
             }
         }
         catch (e) {
@@ -4931,6 +4962,12 @@ export class FacetManager {
                         compatibilityFlags,
                         startArgs: opts.startArgs,
                     },
+                    // The row-level fields `ensureDurableAppOnPort` reads — same values
+                    // the recipe carries, stamped so port/owner lookup never depends on
+                    // the recipe's kind.
+                    ...(opts.port !== undefined && opts.port > 0
+                        ? { port: opts.port, owner: opts.durable.owner }
+                        : {}),
                 };
                 // The durable facet name is claimed once, ever, from DO storage — a
                 // re-drive after a reset, an eviction's re-attach and a relaunch all
@@ -5010,10 +5047,44 @@ export class FacetManager {
             throw e;
         }
     }
+    /**
+     * A resident process announcing it bound `port`. When the port is reserved,
+     * the reservation's owner is stamped onto this pid's journal row — the
+     * reservation is what declares which application the port serves, and a
+     * resident that binds it inherits the whole durable contract: the row names
+     * the port `ensureDurableAppOnPort` looks up, the minted capability is
+     * re-adopted rather than retired, and `removeDurableApp` can find the launch
+     * by owner.
+     *
+     * A pid with no journal row — a process outside the resident lifecycle —
+     * registering on a reserved port takes it as today: the stored capability
+     * is retired and a fresh one is minted, the reservation stays with the
+     * owner. An accidental port reuse inside one session therefore cannot
+     * inherit the public capability; same-session processes are one trust
+     * domain, so this is hygiene, not a security boundary.
+     */
+    async _registerResidentPort(pid, port) {
+        const reservation = await readPortReservation(this.ctx, port);
+        const rowKey = `${FENCED_WORK_KEY_PREFIX}${pid}`;
+        const rows = await this.launchJournal.rows();
+        const row = rows.get(rowKey);
+        if (reservation !== null && reservation.owner !== null && row !== undefined) {
+            if (row.port !== port || residentOwner(row) !== reservation.owner) {
+                await this.launchJournal.journal({ ...row, port, owner: reservation.owner });
+            }
+            this.portRegistry.register(port, pid);
+            await restoreReservedPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port, reservation.owner);
+            return;
+        }
+        // A new process on an unreserved port — or one the journal does not know —
+        // retires the previous occupant's preview capability, so a URL handed out
+        // for that one cannot reach this one.
+        await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
+        this.portRegistry.register(port, pid);
+    }
     async registerPort(pid, port) {
         if (port > 0 && port < 65536) {
-            await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
-            this.portRegistry.register(port, pid);
+            await this._registerResidentPort(pid, port);
         }
     }
     waitForRouteablePorts(pid, timeoutMs = ROUTEABLE_PORT_ATTACH_TIMEOUT_MS) {
@@ -5072,11 +5143,15 @@ export class FacetManager {
         const ownedPids = [];
         const ownedPorts = new Set();
         for (const [, record] of journalRows) {
-            if (record.recipe.kind !== 'worker' || record.recipe.owner !== owner)
+            // Owner-stamped rows cover every kind the reservation claims — a node
+            // resident that bound the port is as much the application as a durable
+            // worker spawn is.
+            if (residentOwner(record) !== owner)
                 continue;
             ownedPids.push(record.pid);
-            if (record.recipe.port > 0)
-                ownedPorts.add(record.recipe.port);
+            const rowPort = record.port ?? (record.recipe.kind === 'worker' ? record.recipe.port : 0);
+            if (rowPort > 0)
+                ownedPorts.add(rowPort);
         }
         for (const pid of ownedPids)
             this.kill(pid);
@@ -5097,7 +5172,7 @@ export class FacetManager {
             await releasePortReservation(this.ctx, { owner, port });
             this.portRegistry.unregister(port);
         }
-        const purged = await this.launchJournal.purgeWhere((record) => record.recipe.kind === 'worker' && record.recipe.owner === owner);
+        const purged = await this.launchJournal.purgeWhere((record) => residentOwner(record) === owner);
         const name = await freeDurableFacetSlot(this.ctx, owner);
         if (name !== null) {
             try {
@@ -5153,9 +5228,10 @@ export class FacetManager {
         if (reservation === null || reservation.owner === null)
             return 'absent';
         const rows = await this.launchJournal.rows();
-        const entry = [...rows].find(([, record]) => record.recipe.kind === 'worker'
-            && record.recipe.owner === reservation.owner
-            && record.recipe.port === port);
+        // The reservation names the owner; the row's stamped port names which
+        // resident serves it — kind-agnostic, so a node resident that bound the
+        // port re-drives the same way a durable worker launch does.
+        const entry = [...rows].find(([, record]) => record.port === port && residentOwner(record) === reservation.owner);
         if (entry === undefined)
             return 'absent';
         const [rowKey, record] = entry;

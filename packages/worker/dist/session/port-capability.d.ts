@@ -55,6 +55,14 @@ declare const PortVisibilitySchema: z.ZodEnum<{
     public: "public";
 }>;
 export type PortVisibility = z.infer<typeof PortVisibilitySchema>;
+export declare const PortRecordSchema: z.ZodObject<{
+    capability: z.ZodNullable<z.ZodString>;
+    owner: z.ZodNullable<z.ZodString>;
+    visibility: z.ZodOptional<z.ZodEnum<{
+        scoped: "scoped";
+        public: "public";
+    }>>;
+}, z.core.$strip>;
 export interface PortExposure {
     readonly capability: string;
     readonly owner: string | null;

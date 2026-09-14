@@ -48,7 +48,7 @@ import { loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
 import { clearPortCapability, persistPortCapability, readPortCapability, readPortReservation, restorePortCapability, } from './port-capability.js';
-import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
+import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, CALLER_SCOPES_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
 import { renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
@@ -1375,6 +1375,27 @@ export async function handleFetch(self, request) {
             return new Response('not found', { status: 404 });
         const { reset } = await import('@nimbus-sh/core/_shared/cache-stats.js');
         reset();
+        return new Response(null, { status: 204 });
+    }
+    // ── /api/_diag/abort — a real DO isolate reset with storage intact ──
+    //
+    // The eviction probe's deterministic reset: `ctx.abort()` ends this
+    // isolate and its in-flight work the same way the platform's own reset
+    // does, while every synced storage row survives. The abort is deferred
+    // onto waitUntil so the 204 reaches the caller before the isolate
+    // unwinds — answering from inside the throw would tear the response.
+    //
+    // Gated twice, like the other _diag writes: NIMBUS_DEBUG off → 404, and
+    // the caller's verified scopes must carry `session:admin` — a reset is
+    // destructive even in debug mode, and an attach-scope token is not one.
+    if (url.pathname === '/api/_diag/abort' && request.method === 'POST') {
+        if (!self.nimbusDebug)
+            return new Response('not found', { status: 404 });
+        const callerScopes = (request.headers.get(CALLER_SCOPES_HEADER) ?? '').split(' ');
+        if (!callerScopes.includes('session:admin')) {
+            return new Response('forbidden: session:admin scope required', { status: 403 });
+        }
+        self.ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 250)).then(() => self.ctx.abort()));
         return new Response(null, { status: 204 });
     }
     return new Response('Not found', { status: 404 });

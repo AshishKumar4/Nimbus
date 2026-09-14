@@ -236,6 +236,10 @@ async function dispatchRemoteRpc(ctx) {
                 ...(input.visibility === undefined ? {} : { visibility: input.visibility === 'public' ? 'public' : 'scoped' }),
             });
         }
+        case 'removeDurableApp': {
+            const input = objectArg(args[0]);
+            return ctx.stub._rpcRemoveDurableApp(stringArg(input.owner, 'owner'));
+        }
         case 'unexposePort':
             return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
         case 'destroy':

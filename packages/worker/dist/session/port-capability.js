@@ -28,7 +28,7 @@ import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
 const PortVisibilitySchema = z.enum(['scoped', 'public']);
-const PortRecordSchema = z.object({
+export const PortRecordSchema = z.object({
     capability: PortCapabilitySchema.nullable(),
     owner: z.string().nullable(),
     visibility: PortVisibilitySchema.optional(),

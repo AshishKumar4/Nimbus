@@ -777,6 +777,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcEnsureDurableApp(input) {
         return _programmatic.rpcEnsureDurableApp(this, input);
     }
+    async _rpcRemoveDurableApp(owner) {
+        return _programmatic.rpcRemoveDurableApp(this, owner);
+    }
     async _rpcUnexposePort(port) { return _programmatic.rpcUnexposePort(this, port); }
     /** Capability-authenticated port route, for an embedder holding the token. */
     async _rpcRouteCapabilityPort(port, capability, request, innerPath) {

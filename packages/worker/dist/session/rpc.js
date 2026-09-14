@@ -1009,9 +1009,17 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
     return prefetchForRequire(self.sqliteFs, entryCode, cwd).bundle;
 }
 export async function _rpcRegisterPort(self, pid, port) {
-    // Port registration stores the facet association
-    // The actual facet stub is stored by FacetManager separately
-    // A new registration retires the previous occupant's preview capability.
+    // Port registration stores the facet association — the actual facet stub
+    // is stored by FacetManager separately. Registration goes through the
+    // manager so a pid binding a reserved port inherits the reservation's
+    // durable contract: its journal row is stamped with the port's owner and
+    // the stored capability is re-adopted rather than retired.
+    if (self.facetManager) {
+        await self.facetManager.registerPort(pid, port);
+        return;
+    }
+    // No facet manager yet means nothing resident is running — a bare
+    // registration retires the previous occupant's preview capability.
     await clearPortCapability(self, port);
     self.portRegistry.register(port, pid);
 }

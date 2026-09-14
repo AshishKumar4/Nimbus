@@ -270,6 +270,11 @@ interface NimbusSessionStub {
         capability: string | null;
         visibility: 'scoped' | 'public';
     }>;
+    _rpcRemoveDurableApp(owner: string): Promise<{
+        owner: string;
+        removed: boolean;
+        port: number | null;
+    }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
         ok: boolean;
@@ -426,6 +431,17 @@ export declare class NimbusSandbox {
             port: number;
             capability: string | null;
             visibility: "scoped" | "public";
+        }>;
+        /**
+         * End a durable application's contract: its launch is killed, the journal
+         * row purged, the reserved port released, the durable slot freed. Answers
+         * the owner, whether anything was removed, and the durable port that was
+         * released — null when no reservation existed.
+         */
+        removeDurableApp: (owner: string) => Promise<{
+            owner: string;
+            removed: boolean;
+            port: number | null;
         }>;
         url: (port: number, options?: {
             visibility?: "scoped" | "public";

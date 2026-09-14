@@ -61,6 +61,7 @@ interface ProgrammaticContext {
 interface ProgrammaticFacetManager {
     kill(pid: number): boolean;
     hasResidentProcess(pid: number): boolean;
+    removeDurableApp(owner: string): Promise<boolean>;
 }
 interface ProgrammaticViteServer {
     isRunning: boolean;
@@ -294,6 +295,18 @@ export declare function rpcEnsureDurableApp(self: ProgrammaticHost, input: {
 export declare function rpcUnexposePort(self: ProgrammaticHost, port: number): Promise<{
     port: number;
     ok: boolean;
+}>;
+/**
+ * End a durable application's contract. The reservation's port is read first
+ * so the caller learns which durable address was released; the manager then
+ * kills every launch the owner claims, purges its journal rows, releases the
+ * port, and frees the durable slot. `removed` is false only when no durable
+ * application held that owner at all.
+ */
+export declare function rpcRemoveDurableApp(self: ProgrammaticHost, owner: string): Promise<{
+    owner: string;
+    removed: boolean;
+    port: number | null;
 }>;
 /**
  * Route an embedder request that carries a port capability. The embedder has

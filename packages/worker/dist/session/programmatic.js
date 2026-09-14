@@ -15,7 +15,8 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, reservePort, restorePortCapability, } from './port-capability.js';
+import { clearPortCapability, persistPortCapability, PortRecordSchema, portRecordKey, readPortReservation, reservePort, restorePortCapability, } from './port-capability.js';
+import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
@@ -610,6 +611,36 @@ export async function rpcUnexposePort(self, port) {
         await unbindPublicPortCapability(self, record.capability);
     }
     return { port: n, ok: self.portRegistry.unregister(n) };
+}
+/**
+ * End a durable application's contract. The reservation's port is read first
+ * so the caller learns which durable address was released; the manager then
+ * kills every launch the owner claims, purges its journal rows, releases the
+ * port, and frees the durable slot. `removed` is false only when no durable
+ * application held that owner at all.
+ */
+export async function rpcRemoveDurableApp(self, owner) {
+    await ensureProgrammaticReady(self);
+    if (typeof owner !== 'string' || owner.length === 0) {
+        throw new Error('removeDurableApp: owner must be a non-empty string');
+    }
+    // Which durable address is being released — the reservation's row names it
+    // before the manager retires it.
+    const rows = await self.ctx.storage.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
+    let port = null;
+    for (const [key, record] of rows) {
+        const parsed = PortRecordSchema.safeParse(record);
+        if (!parsed.success || parsed.data.owner !== owner)
+            continue;
+        const n = Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length));
+        if (Number.isInteger(n) && n > 0) {
+            port = n;
+            break;
+        }
+    }
+    self.ensureFacetManager();
+    const removed = await self.facetManager.removeDurableApp(owner);
+    return { owner, removed, port };
 }
 /**
  * Route an embedder request that carries a port capability. The embedder has

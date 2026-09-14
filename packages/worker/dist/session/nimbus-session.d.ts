@@ -458,6 +458,11 @@ export declare class NimbusSession extends CloudflareDurableObject {
         capability: string | null;
         visibility: "scoped" | "public";
     }>;
+    _rpcRemoveDurableApp(owner: string): Promise<{
+        owner: string;
+        removed: boolean;
+        port: number | null;
+    }>;
     _rpcUnexposePort(port: number): Promise<{
         port: number;
         ok: boolean;
