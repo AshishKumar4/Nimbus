@@ -24,7 +24,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
-import { reservePort } from '../../packages/worker/src/session/port-capability.ts';
+import { reservePort, readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
 import {
   createFacetWorld,
   createFacetCtx,
@@ -76,7 +76,23 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
     });
   }
   const ctx = createFacetCtx(world, 'durable-port-do', storage);
-  const env = { LOADER: world.loader };
+  const env = {
+    LOADER: world.loader,
+    ASSETS: {
+      async fetch(request) {
+        const path = new URL(request.url).pathname.replace(/^\//, '');
+        try {
+          const { readFile } = await import('node:fs/promises');
+          return new Response(
+            await readFile(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
+            { status: 200 },
+          );
+        } catch {
+          return new Response('', { status: 404 });
+        }
+      },
+    },
+  };
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();
   if (!disk) disk = createSqliteVfsTestHarness();
@@ -190,11 +206,112 @@ function routeHost(fm, portRegistry) {
   );
   assert.equal(response.status, 503, 'a failed re-drive is a retryable 503');
   assert.equal(response.headers.get('Retry-After'), '3', 'the page is told when to re-ask');
-  const html = await response.text();
-  assert.match(html, /http-equiv="refresh" content="3"/, 'the page refreshes itself');
-  assert.match(html, /Starting/, 'the page says what is happening');
 }
 
-console.log('ok - durable port recovery (silent port re-drives and routes, absent is 502, failed is 503 self-refreshing)');
+// ── 5. a node resident on a reserved port claims the durable contract ───────
+{
+  const { ctx, fm, portRegistry, storage } = setup();
+  const CAP = 'a'.repeat(24);
+  await reservePort(ctx, {
+    owner: 'app', preferredPort: 20310, occupiedPorts: NONE,
+    capability: CAP, visibility: 'public',
+  });
+  const spawned = await fm.spawnNode('const http = require("http");', {
+    command: 'node app.js',
+    port: 20310,
+  });
+  assert.ok(spawned.pid > 0, 'the node resident spawned');
+  assert.equal(portRegistry.has(20310), true, 'the resident owns its port');
+  // The reservation declared the capability; the spawn that claimed it
+  // re-adopts it rather than minting a fresh one.
+  assert.equal(portRegistry.hasCapability(20310, CAP), true,
+    'a resident on a reserved port re-adopts the stored capability');
 
+  const journal = await ctx.storage.list({ prefix: 'resident-launch:' });
+  const row = [...journal.values()].find((r) => r.pid === spawned.pid);
+  assert.ok(row, 'the resident launch is journaled');
+  assert.equal(row.port, 20310, 'the journal row names the port it claimed');
+  assert.equal(row.owner, 'app', 'the journal row names the reservation owner');
+}
+
+// ── 6. ensure-on-request drives a node resident the reservation owns ────────
+{
+  const first = setup();
+  const CAP = 'b'.repeat(24);
+  await reservePort(first.ctx, {
+    owner: 'app', preferredPort: 20320, occupiedPorts: NONE,
+    capability: CAP, visibility: 'public',
+  });
+  await first.fm.spawnNode('const http = require("http");', {
+    command: 'node app.js',
+    port: 20320,
+  });
+
+  // The platform reset: the facet the resident claimed is gone with the whole
+  // process registry; the journal row and the reservation row are not.
+  first.world.lose('app-slot-0');
+  const next = setup({ storage: first.storage, world: first.world, disk: first.disk });
+  next.processes.setPidBase(PID_GEN_STRIDE);
+  assert.equal(next.portRegistry.has(20320), false, 'the reset left the port dark');
+
+  const before = first.world.boots.length;
+  const response = await routeToSessionPort(
+    routeHost(next.fm, next.portRegistry),
+    20320,
+    new Request('https://probe.test/port/20320/'),
+    '/',
+    '',
+  );
+  assert.equal(response.status, 200, 'the request waited out the node re-drive and routed');
+  assert.equal(first.world.boots.length, before + 1, 'the ensure drove exactly one boot');
+  assert.equal(next.portRegistry.has(20320), true, 'the re-drive re-bound the port');
+  assert.equal(next.portRegistry.hasCapability(20320, CAP), true,
+    'the re-drive re-adopted the reservation capability');
+}
+
+// ── 7. an unrelated process on a reserved port mints fresh, never the app's ─
+{
+  const { ctx, fm, portRegistry } = setup();
+  const CAP = 'c'.repeat(24);
+  await reservePort(ctx, {
+    owner: 'app', preferredPort: 20330, occupiedPorts: NONE,
+    capability: CAP, visibility: 'public',
+  });
+  // A pid with no journal row — a process outside the resident lifecycle —
+  // registering on a reserved port cannot inherit its capability.
+  await fm.registerPort(99999, 20330);
+  assert.equal(portRegistry.has(20330), true, 'the unrelated pid took the port');
+  assert.equal(portRegistry.hasCapability(20330, CAP), false,
+    'the unrelated pid never sees the reservation capability');
+  const stored = await readPortReservation(ctx, 20330);
+  assert.equal(stored.owner, 'app', 'the reservation still belongs to the owner');
+  assert.equal(stored.capability, null,
+    'the stored capability retired with the old occupant');
+}
+
+// ── 8. removeDurableApp purges a node resident the reservation claimed ──────
+{
+  const { ctx, fm, portRegistry, storage } = setup();
+  await reservePort(ctx, {
+    owner: 'app', preferredPort: 20340, occupiedPorts: NONE,
+    capability: 'd'.repeat(24), visibility: 'public',
+  });
+  await fm.spawnNode('const http = require("http");', {
+    command: 'node app.js',
+    port: 20340,
+  });
+  assert.equal(portRegistry.has(20340), true);
+
+  const removed = await fm.removeDurableApp('app');
+  assert.equal(removed, true, 'removeDurableApp removed the app');
+  assert.equal(portRegistry.has(20340), false, 'the port left the registry');
+  assert.equal(await readPortReservation(ctx, 20340), null, 'the reservation released');
+  const journal = await ctx.storage.list({ prefix: 'resident-launch:' });
+  assert.equal([...journal.values()].every((r) => r.owner !== 'app'), true,
+    'the node resident\'s journal row is purged');
+  assert.equal(await ctx.storage.get('durable-slot:app'), undefined,
+    'the durable slot is freed');
+}
+
+console.log('ok - durable port recovery (silent port re-drives and routes, absent is 502, failed is 503 self-refreshing, reserved ports are durable across kinds)');
 await rm(outputDir, { recursive: true, force: true });

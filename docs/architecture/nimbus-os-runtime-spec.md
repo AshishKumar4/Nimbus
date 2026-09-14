@@ -967,6 +967,69 @@ Language web servers should plug into this model:
 When a new port appears, the browser preview pane should create or focus the
 corresponding tab. The tab model should de-dupe by kind and port.
 
+## Durable Service Contract
+
+A durable service is a *reservation*, not a process kind. `ensureDurableApp`
+creates it: the row binds `owner`, `port`, `capability`, `visibility` in DO
+storage, mints the capability there, and the port is the durable address the
+service answers for its whole life. What makes the service durable is that
+row — which process incarnation currently serves it is incidental.
+
+The claim is a port registration, and the reservation is what declares which
+application the port serves:
+
+- A resident process that binds the reserved port claims it. Its journal row
+  is stamped with the port and the reservation's owner — the fields
+  `ensureDurableAppOnPort` and `removeDurableApp` read — and the minted
+  capability is re-adopted rather than retired. This is the generalized
+  path: a `node server.js` that listens on a reserved port becomes the
+  durable application for it.
+- A durable *worker* spawn (`spawnWorker(..., { durable: { owner } })`)
+  declares both at launch; the journal row carries them from the start.
+- A pid with no journal row — a process outside the resident lifecycle —
+  registering on a reserved port mints a fresh capability: the stored
+  capability retires with the previous occupant, the reservation stays with
+  the owner. Accidental port reuse inside one session cannot inherit the
+  public capability.
+
+The re-drive is reservation-shaped: `ensureDurableAppOnPort` looks up the
+journal row by `port` (and the reservation's `owner`), not by recipe kind —
+a node resident and a durable worker re-drive the same way. On re-drive the
+port is re-adopted, so the capability — and therefore the public URL built
+on it — is *unchanged*: minted once, bound for the app's whole life.
+
+Facet-storage binding is the honest half of the contract: a durable launch
+binds the owner's `app-slot-<n>` facet, so its `ctx.storage` SQLite persists
+across resets — and for a *node* resident, the slot is taken only when the
+spawn declares a port already reserved. A node server that binds a reserved
+port at runtime gets the journal + capability durability but keeps its
+ephemeral `proc-slot` facet name — the store cannot be re-rooted under a
+running facet, so this is documented rather than silently faked.
+
+`removeDurableApp(owner)` ends the contract: it kills every process whose
+journal row carries the owner — worker or node resident — purges the rows,
+releases the port reservations, and frees the durable slot.
+
+The reset an eviction probe needs is a real one: `POST /api/_diag/abort`
+gated by `NIMBUS_DEBUG` and the `session:admin` scope calls `ctx.abort()`,
+which ends the DO isolate the way the platform's own reset does while every
+synced storage row survives. The 204 is deferred through `waitUntil` so it
+reaches the caller before the isolate unwinds.
+
+The probes:
+
+- `durable-port-recovery` — the full chain: reserve → durable spawn →
+  `ports.list`/`expose` → reset → re-drive → release, and the
+  reservation-generalized arms: a node resident claims a reserved port, an
+  unrelated pid mints fresh, `removeDurableApp` purges node rows too.
+- `durable-public-port` — the scoped-vs-public visibility split, the
+  capability mint, `expose`/`unexpose`, and the public-directory
+  `bind`/`unbind`/`resolve` on reservation events.
+- `durable/eviction-survival` (behavioral) — `ensureDurableApp` → a node
+  server on the reserved port → the capability URL answers →
+  `/api/_diag/abort` → the SAME capability URL answers again, new pid, same
+  port, within a bounded poll.
+
 ## Runtime Catalog Plan
 
 The catalog should become the package manager's source of truth:

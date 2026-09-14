@@ -18,6 +18,7 @@ export const PROBE_SCOPES = [
   'session:create',
   'session:attach',
   'session:destroy',
+  'session:admin',
   'sandbox:use',
 ];
 

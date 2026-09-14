@@ -69,6 +69,15 @@ export const PREVIEW_CAPABILITY_HEADER = 'x-nimbus-preview-capability';
 export const PUBLIC_BEARER_HEADER = 'x-nimbus-public-bearer';
 
 /**
+ * Header the Worker sets carrying the caller's verified token scopes, so the
+ * DO can gate routes that need more than session attach (e.g. the _diag
+ * abort). The header is deleted from the caller's own request before the
+ * verified value is set — a forged inbound copy never survives forwarding.
+ * Absent/empty in legacy mode, where no scopes were verified.
+ */
+export const CALLER_SCOPES_HEADER = 'x-nimbus-caller-scopes';
+
+/**
  * DO-name segment used when tenant scoping is disabled (legacy-public).
  * Picked so it cannot collide with a verified token's
  * `${tn}:${sub || '_'}` (because `legacy` is never a valid `tn` shape
@@ -130,8 +139,13 @@ export interface ForwardOptions {
    * public-bearer mark. Entries arrive only from code that vetted them.
    */
   extraHeaders?: Readonly<Record<string, string>>;
+  /**
+   * The caller's verified token scopes. Forwarded as
+   * {@link CALLER_SCOPES_HEADER} so scope-gated routes inside the DO can
+   * check them. Omitted in legacy mode or when the caller was not verified.
+   */
+  callerScopes?: readonly string[];
 }
-
 /**
  * Forward a request to the session's DO.
  *
@@ -166,6 +180,12 @@ export function forwardToSession(
   const headers = new Headers(request.headers);
   headers.set(BASE_PATH_HEADER, route.basePath);
   headers.set(TENANT_HEADER, opts.tenantSegment);
+  // Verified scopes come from the router alone: a caller-supplied copy is
+  // deleted before the real value is set, never appended to.
+  headers.delete(CALLER_SCOPES_HEADER);
+  if (opts.callerScopes !== undefined) {
+    headers.set(CALLER_SCOPES_HEADER, opts.callerScopes.join(' '));
+  }
   if (opts.extraHeaders) {
     for (const [name, value] of Object.entries(opts.extraHeaders)) headers.set(name, value);
   }
