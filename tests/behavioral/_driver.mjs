@@ -15,7 +15,7 @@ import WebSocket from 'ws';
 export const BASE = process.env.BASE || 'http://127.0.0.1:8792';
 export const WS_BASE = BASE.replace(/^http/, 'ws');
 export const AUTH_COOKIE = process.env.NIMBUS_PROBE_COOKIE || process.env.NIMBUS_AUTH_COOKIE || '';
-export const AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
+export let AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -121,11 +121,42 @@ function newSessionFailure(status, body) {
 export async function mintSession() {
   const r = await fetch(`${BASE}/new`, { method: 'POST', redirect: 'manual', headers: requestHeaders() });
   const loc = r.headers.get('location');
-  if (!loc) throw new Error(newSessionFailure(r.status, await r.text().catch(() => '')));
-  const m = loc.match(/\/s\/([^/]+)/);
-  if (!m) throw new Error(`unexpected Location: ${loc}`);
-  sessionAttachPaths.set(m[1], loc);
-  return m[1];
+  if (loc) {
+    const m = loc.match(/\/s\/([^/]+)/);
+    if (!m) throw new Error(`unexpected Location: ${loc}`);
+    sessionAttachPaths.set(m[1], loc);
+    return m[1];
+  }
+
+  // The one target where an unauthenticated POST /new is expected to fail:
+  // production gates it on an interactive login, and the public anonymous
+  // demo endpoint mints a sid-pinned attach token for the session it opens.
+  // Anything else — or a probe carrying a credential — is still the loud
+  // credential failure, not a silent fallback.
+  const code = await r.json().then((body) => body?.code).catch(() => undefined);
+  if (r.status === 401 && code === 'E_DEMO_LOGIN_REQUIRED' && !AUTH_TOKEN && !AUTH_COOKIE) {
+    const created = await fetch(`${BASE}/api/demo/anon-session`, { method: 'POST' });
+    const body = await created.json().catch(() => ({}));
+    if (!created.ok) {
+      throw new Error(
+        `anon session ${created.status}: ${JSON.stringify(body)}`
+        + (created.status === 429 ? ' (per-IP rate limit; retry in a minute)' : '')
+        + (created.status === 503 ? ' (global anon capacity reached)' : ''),
+      );
+    }
+    const token = new URL(body.wsUrl, BASE).searchParams.get('nimbus_token');
+    if (!body.sessionId || !token) {
+      throw new Error(`anon session gave no sid/token: ${JSON.stringify(body)}`);
+    }
+    // Live binding: importers that read AUTH_TOKEN after this call see the
+    // sid-pinned bearer, so requestHeaders()/wsHeaders() pick it up too.
+    AUTH_TOKEN = token;
+    const wsPath = new URL(body.wsUrl, BASE).pathname + new URL(body.wsUrl, BASE).search;
+    sessionAttachPaths.set(body.sessionId, wsPath);
+    return body.sessionId;
+  }
+
+  throw new Error(newSessionFailure(r.status, await r.text().catch(() => '')));
 }
 
 /**

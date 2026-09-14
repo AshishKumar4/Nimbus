@@ -273,12 +273,15 @@ sessions in `finally` via the public cleanup path.
 
 ### Probe targets
 
-`BASE` cannot be `https://nimbus-os.dev`. The hosted demo gates `POST /new`
-and every `/s/<sid>/*` route on an interactive Cloudflare OAuth cookie and
-never reads `Authorization: Bearer`, so a headless run gets
-`401 E_DEMO_LOGIN_REQUIRED`. The bearer-token embedder is `apps/probe`,
+`BASE=https://nimbus-os.dev` works for probes that need no `session:create`
+beyond the anonymous demo session itself: when `POST /new` answers
+`401 E_DEMO_LOGIN_REQUIRED` and no probe credential is configured,
+`mintSession` falls back to `POST /api/demo/anon-session` and adopts the
+sid-pinned attach token it returns. Probes that need broader scopes
+(remote RPC, `sandbox:use`) still need a signed bearer against a target
+whose `JWT_SECRET` is known — the bearer-token embedder is `apps/probe`,
 where the core router's `POST /new` accepts a `session:create` JWT signed
-with that deployment's `JWT_SECRET`.
+with that deployment's secret.
 
 Two kinds exist, for two different jobs.
 
