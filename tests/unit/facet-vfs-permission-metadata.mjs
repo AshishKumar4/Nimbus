@@ -14,6 +14,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const shimsPath = path.resolve(
@@ -61,8 +62,10 @@ const env = {
 adoptCtxExports({ SupervisorRPC: () => ({ [Symbol.dispose]() {} }) });
 
 const processes = new SessionProcessSupervisor();
+// A real session ctx: an exec's bundle build is paged like a resident launch,
+// and a build that crosses a turn resumes off ctx.storage's journal pump.
 const manager = new FacetManager(
-  { id: { toString: () => 'permission-bundle-test' } },
+  createFacetCtx(createFacetWorld(() => ({})), 'permission-bundle-test'),
   env,
   processes,
   new PortRegistry(),

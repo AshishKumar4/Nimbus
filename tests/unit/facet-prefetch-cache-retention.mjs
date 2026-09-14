@@ -2,8 +2,8 @@
 /**
  * The prefetch cache must not retain a bundle and its serialization at once.
  *
- * `_buildPrefetchBundleCached` serializes the bundle, manifest and metadata and
- * then keeps the entry across execs. It used to keep the raw forms too, so every
+ * `_buildProcessBundle` serializes the bundle, manifest and metadata and then
+ * keeps the entry across launches. It used to keep the raw forms too, so every
  * cached entry cost twice what it needed to for its whole lifetime. Measured for
  * pi at 502af77, per entry: raw 17,253,610 + source 18,262,324 + manifest
  * 600,060 + metadata 3,841,244 = 39,957,238 B — and the only thing anything
@@ -14,10 +14,9 @@
  * three times under prefetch-bundle construction.
  *
  * The safety property is the second half and is the one worth guarding: states
- * that were never serialized must come through untouched. `spawnNode` and
- * `_stageOpencodeFacet` build their own uncached states and genuinely re-read
- * the raw cells (`_serializeBundleForFacet`,
- * `assertStagedBundleFitsRpcPayload`), so releasing theirs would break them.
+ * that were never serialized must come through untouched. `_stageOpencodeFacet`
+ * builds its own uncached state and genuinely re-reads the raw cells
+ * (`assertStagedBundleFitsRpcPayload`), so releasing its would break it.
  */
 
 import assert from 'node:assert/strict';

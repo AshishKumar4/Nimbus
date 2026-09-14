@@ -21,6 +21,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
 import {
@@ -53,8 +54,11 @@ const env = {
   },
 };
 
+// A real session ctx: an exec's bundle build is paged like a resident launch,
+// and the bundles built here are large enough to cross a turn, whose pump
+// reconciles the launch journal off ctx.storage before any launch resumes.
 const manager = new FacetManager(
-  { id: { toString: () => 'prefetch-cache-bound' }, waitUntil() {} },
+  createFacetCtx(createFacetWorld(() => ({})), 'prefetch-cache-bound'),
   env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
 const harness = createSqliteVfsTestHarness();
@@ -104,7 +108,7 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
 // exists to prevent, reached by way of the bound.
 {
   const oversized = new FacetManager(
-    { id: { toString: () => 'prefetch-cache-oversized' }, waitUntil() {} },
+    createFacetCtx(createFacetWorld(() => ({})), 'prefetch-cache-oversized'),
     env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
   );
   const oversizedHarness = createSqliteVfsTestHarness();
@@ -133,7 +137,7 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
 // allocates, so the two filesystem graphs never co-reside.
 {
   const stale = new FacetManager(
-    { id: { toString: () => 'prefetch-cache-stale' }, waitUntil() {} },
+    createFacetCtx(createFacetWorld(() => ({})), 'prefetch-cache-stale'),
     env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
   );
   const staleHarness = createSqliteVfsTestHarness();
