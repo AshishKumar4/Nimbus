@@ -12,6 +12,7 @@
  */
 import {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,
