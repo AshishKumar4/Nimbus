@@ -75,7 +75,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -121,6 +121,178 @@ export const OUTPUT_ROOTS = BUILT_PACKAGES.map((pkg) => `packages/${pkg}`);
 
 /** Where a `/_assets/...` path resolves on disk for every deploy target. */
 export const STAGED_ASSETS_DIR = join('packages', 'worker', 'public');
+
+// ── Fixpoint record (warm cache) ───────────────────────────────────────
+//
+// Rebuilding every package to prove dist is the fixpoint of src costs a
+// full build on every run. The record below makes the common case —
+// nothing relevant changed since the last verified build — cost a
+// fingerprint plus a digest walk, without weakening the gate:
+//
+//   - After a successful full fixpoint run (the rebuild moved nothing
+//     AND the staged-asset check passed), the gate writes
+//     dist-fixpoint.json at the repo root: a fingerprint of every build
+//     INPUT plus the sha256 of every build OUTPUT.
+//   - On the next run, if the live inputs fingerprint identically AND
+//     every live output hashes identically, the tree is byte-for-byte a
+//     state this gate already verified. Rebuilding would be a pure
+//     function applied to unchanged inputs, so the rebuild is skipped.
+//   - Any mismatch — a changed src, an edited dist, a new bun or node,
+//     a missing or foreign record — falls through to the full rebuild,
+//     exactly as today. `--no-cache` forces it unconditionally.
+//
+// Why this cannot go stale silently: the record is a tracked file, so a
+// build commit includes it; a tree whose inputs or outputs differ from
+// the record rebuilds (and either throws on drift or writes a fresh
+// record). There is no path where the gate reports "verified" for bytes
+// it did not either just build or previously verify byte-identical.
+//
+// INPUT_ROOTS below names every input the fixpoint build can read: each
+// built package's sources and scripts, the manifests and tsconfigs that
+// configure compilation, the orchestrator itself, the lockfile pinning
+// the toolchain's dependencies, and the root configs the packages
+// extend. A package's src also covers the generated sources the bundlers
+// write back (shim artifact, runtime catalog): when a bundler
+// regenerates one, the fingerprint moves and the next run rebuilds cold.
+// (Kept as line comments: a block comment cannot spell a glob like
+// packages/<name>/src without its star-slash closing the comment.)
+//
+// Deliberately NOT inputs: staged assets and dist output. Those are
+// outputs — digesting them whole before and after is the invariant
+// itself, and the outputs map in the record covers them.
+
+/** Tracked file at the repo root holding the last verified fixpoint. */
+export const FIXPOINT_RECORD = 'dist-fixpoint.json';
+
+/** Format version of the record. Bump when the schema changes. */
+export const FIXPOINT_RECORD_VERSION = 1;
+
+export const INPUT_ROOTS = [
+  ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/src`),
+  ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/scripts`),
+  ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/package.json`),
+  ...BUILT_PACKAGES.map((pkg) => `packages/${pkg}/tsconfig.json`),
+  'tsconfig.base.json',
+  'tsconfig.json',
+  'package.json',
+  'bun.lock',
+  'scripts/dist-integrity.mjs',
+];
+
+/** The toolchain is an input: a new bun or node can change what the same src compiles to. */
+function toolVersions() {
+  let bun = 'unknown';
+  let node = process.version || 'unknown';
+  try {
+    const r = spawnSync('bun', ['--version'], { encoding: 'utf8' });
+    if (r.status === 0 && r.stdout.trim()) bun = r.stdout.trim();
+  } catch {
+    // A missing bun fails the build below, loudly. Unknown here just
+    // means this fingerprint never matches a recorded one.
+  }
+  try {
+    const r = spawnSync('node', ['--version'], { encoding: 'utf8' });
+    if (r.status === 0 && r.stdout.trim()) node = r.stdout.trim();
+  } catch {
+    // process.version stands in.
+  }
+  return { bun, node };
+}
+
+/**
+ * sha256 over (path, content-digest) pairs of every tracked-or-new file
+ * under INPUT_ROOTS, folded with the toolchain versions. Content, never
+ * mtime — same rule as the output snapshot.
+ */
+export function fingerprintBuildInputs({ root = REPO_ROOT } = {}) {
+  const listed = spawnSync(
+    'git',
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...INPUT_ROOTS],
+    { cwd: root, encoding: 'buffer', maxBuffer: 1 << 28 },
+  );
+  if (listed.status !== 0) {
+    throw new Error(`git ls-files failed: ${listed.stderr?.toString() ?? listed.error?.message}`);
+  }
+  const entries = [];
+  for (const rel of listed.stdout.toString('utf8').split('\0')) {
+    if (!rel) continue;
+    let bytes;
+    try {
+      bytes = readFileSync(join(root, rel));
+    } catch {
+      continue;
+    }
+    entries.push([rel, createHash('sha256').update(bytes).digest('hex')]);
+  }
+  entries.sort(([a], [b]) => (a < b ? -1 : 1));
+  const toolchain = toolVersions();
+  const h = createHash('sha256');
+  for (const [rel, digest] of entries) h.update(`${rel}\0${digest}\0`);
+  h.update(`bun:${toolchain.bun}\0node:${toolchain.node}\0`);
+  return { fingerprint: h.digest('hex'), files: entries.length, toolchain };
+}
+
+/**
+ * Parse the committed record, or null when there is nothing usable: the
+ * file is absent (never recorded, fresh clone without it), unreadable,
+ * or written by a newer schema. Null is not an error — the caller
+ * rebuilds, exactly as today.
+ */
+export function readFixpointRecord({ root = REPO_ROOT } = {}) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(join(root, FIXPOINT_RECORD), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!parsed || parsed.version !== FIXPOINT_RECORD_VERSION) return null;
+  if (typeof parsed.fingerprint !== 'string') return null;
+  if (!parsed.outputs || typeof parsed.outputs !== 'object') return null;
+  return parsed;
+}
+
+/**
+ * Is the live tree byte-for-byte a state this gate already verified?
+ * The inputs must fingerprint identically (same src, scripts, configs,
+ * lockfile, toolchain) AND every recorded output must hash identically
+ * (nothing hand-edited, nothing added or removed). Reuses diffSnapshots
+ * so "what moved" reads the same as the rebuild drift.
+ */
+export function verifyFixpointRecord({ root = REPO_ROOT, record, log = () => {} } = {}) {
+  const live = fingerprintBuildInputs({ root });
+  if (live.fingerprint !== record.fingerprint) {
+    return { ok: false, reason: 'build inputs changed since the recorded fixpoint' };
+  }
+  if (JSON.stringify(record.roots) !== JSON.stringify(OUTPUT_ROOTS)) {
+    return { ok: false, reason: 'output root set changed since the recorded fixpoint' };
+  }
+  const drift = diffSnapshots(new Map(Object.entries(record.outputs)), snapshotBuildOutputs({ root }));
+  const n = drift.changed.length + drift.added.length + drift.removed.length;
+  if (n > 0) {
+    const first = [...drift.changed, ...drift.added, ...drift.removed].slice(0, 3).join(', ');
+    return { ok: false, reason: `build outputs changed since the recorded fixpoint (${n} file${n === 1 ? '' : 's'}: ${first}${n > 3 ? ', …' : ''})` };
+  }
+  log(`inputs (${live.files} files) and outputs match the recorded fixpoint`);
+  return { ok: true };
+}
+
+/**
+ * Write the record after a successful full fixpoint run. Serialized with
+ * fixed key order and sorted outputs so an unchanged tree rewrites
+ * byte-identical bytes. Written ONLY on the verified path — never after
+ * drift, never after an asset violation.
+ */
+export function writeFixpointRecord({ root = REPO_ROOT, fingerprint, outputs, log = () => {} } = {}) {
+  const record = {
+    version: FIXPOINT_RECORD_VERSION,
+    fingerprint: fingerprint.fingerprint,
+    toolchain: fingerprint.toolchain,
+    roots: OUTPUT_ROOTS,
+    outputs: Object.fromEntries([...outputs.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+  };
+  writeFileSync(join(root, FIXPOINT_RECORD), `${JSON.stringify(record, null, 2)}\n`);
+  log(`recorded verified fixpoint in ${FIXPOINT_RECORD} (${outputs.size} outputs, ${fingerprint.files} inputs)`);
+}
 
 // ── The invariant ────────────────────────────────────────────────────
 
@@ -363,16 +535,57 @@ export async function checkStagedAssets({ root = REPO_ROOT } = {}) {
  *
  * Every deploy path calls this INSTEAD of building, so there is no
  * separate step to skip: the gate is how the tree gets built.
+ *
+ * `useCache` (default true; `--no-cache` on the CLI) consults the
+ * fixpoint record first: when the live inputs and outputs are
+ * byte-identical to a previously verified state, the rebuild is skipped
+ * and the staged-asset check runs over the recorded bytes. `--no-cache`
+ * forces the rebuild — it distrusts the record, it does not stop the
+ * successful rebuild from refreshing it. Anything else rebuilds exactly
+ * as before. Unit fixtures pass custom roots/steps and bypass the record
+ * entirely — they verify a different tree.
  */
 export async function assertDistMatchesSource({
-  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {},
+  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {}, useCache = true,
 } = {}) {
+  const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
+  if (useCache && defaultScope) {
+    const record = readFixpointRecord({ root });
+    if (record) {
+      const verdict = verifyFixpointRecord({ root, record, log });
+      if (verdict.ok) {
+        log(`fixpoint verified from ${FIXPOINT_RECORD} — inputs and outputs unchanged, skipping rebuild`);
+        const assets = await checkFixpointAssets({ root, log });
+        logUncommittedOutputs({ root, log });
+        return { assets, cached: true };
+      }
+      log(`fixpoint record stale (${verdict.reason}) — rebuilding to verify`);
+    } else {
+      log('no usable fixpoint record — rebuilding to verify');
+    }
+  }
   const drift = rebuildDrift({ root, roots, steps, log });
   if (drift.changed.length + drift.added.length + drift.removed.length > 0) {
     throw new Error(staleDistReason(drift));
   }
   log('rebuilding changed nothing — dist is the fixpoint of src');
 
+  const assets = await checkFixpointAssets({ root, log });
+  if (defaultScope) {
+    writeFixpointRecord({
+      root,
+      fingerprint: fingerprintBuildInputs({ root }),
+      outputs: snapshotBuildOutputs({ root, roots }),
+      log,
+    });
+  }
+  logUncommittedOutputs({ root, log });
+
+  return { assets, cached: false };
+}
+
+/** The staged-asset half of the gate. Throws on violation; shared by both paths. */
+async function checkFixpointAssets({ root = REPO_ROOT, log = () => {} } = {}) {
   const assets = await checkStagedAssets({ root });
   for (const note of assets.verified) log(`asset ok — ${note}`);
   for (const gap of assets.unverified) log(`asset unverified — ${gap}`);
@@ -383,20 +596,23 @@ export async function assertDistMatchesSource({
     );
   }
   log(`staged assets verified: ${assets.verified.length} matched, ${assets.unverified.length} carry no digest`);
+  return assets;
+}
 
+function logUncommittedOutputs({ root = REPO_ROOT, log = () => {} } = {}) {
   // Not a violation. dist is tracked, so a rebuild that legitimately
   // followed an uncommitted src change leaves output that wants
   // committing — but the deploy itself is correct, and refusing a dirty
-  // worktree is how a gate gets turned off.
-  const uncommitted = spawnSync('git', ['status', '--porcelain', '--', ...OUTPUT_ROOTS], {
+  // worktree is how a gate gets turned off. The record is listed too: it
+  // is tracked, so a build commit includes it, and an uncommitted record
+  // is a fixpoint the next checkout cannot verify from.
+  const uncommitted = spawnSync('git', ['status', '--porcelain', '--', ...OUTPUT_ROOTS, FIXPOINT_RECORD], {
     cwd: root, encoding: 'utf8',
   }).stdout.trim();
   if (uncommitted) {
     log('NOTE: build output differs from HEAD — dist is committed, so commit these too:');
     for (const line of uncommitted.split('\n')) log(`  ${line}`);
   }
-
-  return { assets };
 }
 
 function staleDistReason({ changed, added, removed }) {
@@ -421,11 +637,13 @@ function staleDistReason({ changed, added, removed }) {
 
 if (import.meta.main) {
   const log = (message) => console.error(`[dist-integrity] ${message}`);
+  const useCache = !process.argv.includes('--no-cache');
   try {
-    const { assets } = await assertDistMatchesSource({ log });
+    const { assets, cached } = await assertDistMatchesSource({ log, useCache });
     console.log(
       'dist-integrity OK: the build output is the fixpoint of src; ' +
-      `${assets.verified.length} staged assets match what dist points at`,
+      `${assets.verified.length} staged assets match what dist points at` +
+      (cached ? ' (verified from fixpoint record, no rebuild)' : ''),
     );
   } catch (error) {
     console.error(`\n${error.message}\n`);
