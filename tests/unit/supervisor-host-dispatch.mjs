@@ -1,28 +1,40 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { composeFabric } from '../../packages/platform/src/composition.ts';
 import { sessionSupervisorOp } from '../../packages/worker/src/session/supervisor-op.ts';
 
 const build = await Bun.build({
-  entrypoints: [new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url).pathname],
+  // A virtual entry re-exports the real entrypoint AND composeFabric, so the
+  // bundle's composition state is the one the test configures — a data: URL
+  // cannot share module instances with this file.
+  entrypoints: ['supervisor-host-dispatch-entry'],
   target: 'bun',
   plugins: [{
     name: 'supervisor-entrypoint-host',
     setup(builder) {
+      builder.onResolve({ filter: /^supervisor-host-dispatch-entry$/ }, () => ({ path: 'entry', namespace: 'test' }));
+      builder.onLoad({ filter: /.*/, namespace: 'test' }, (args) => args.path === 'entry'
+        ? {
+            contents:
+              'export { SupervisorRPC } from ' +
+              JSON.stringify(new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url).pathname) +
+              '; export { composeFabric } from ' +
+              JSON.stringify(new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname) + ';',
+            loader: 'js',
+          }
+        : { contents: 'export class WorkerEntrypoint {}', loader: 'js' });
       builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'workers', namespace: 'test' }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class WorkerEntrypoint {}', loader: 'js',
-      }));
       builder.onResolve({ filter: /^@nimbus-sh\/platform\/composition\.js$/ }, () => ({
+        // Bundled, not external: a bare specifier inside a data: URL module
+        // has nothing to resolve against.
         path: new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname,
-        external: true,
       }));
     },
   }],
 });
 assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const { SupervisorRPC } = await import('data:text/javascript;base64,' + Buffer.from(await build.outputs[0].text()).toString('base64'));
-composeFabric({ supervisorEntrypoint: 'Supervisor', hostNamespace: 'HOSTS', hostDispatchMethod: 'dispatchWorkspace' });
+const bundle = await import('data:text/javascript;base64,' + Buffer.from(await build.outputs[0].text()).toString('base64'));
+const { SupervisorRPC, composeFabric: bundleComposeFabric } = bundle;
+bundleComposeFabric({ supervisorEntrypoint: 'Supervisor', hostNamespace: 'HOSTS', hostDispatchMethod: 'dispatchWorkspace' });
 const pid = 23, writerId = 'writer', mutationOwner = 'lease';
 const path = '/file', from = '/from', to = '/to', target = '/target';
 const bytes = new Uint8Array([1, 2, 3]), content = bytes;
