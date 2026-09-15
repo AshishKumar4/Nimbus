@@ -45,6 +45,7 @@ function makeFacetMgr() {
       calls.spawnNode.push({ code, opts });
       return { pid: 4242, facetStub: {} };
     },
+    processExitCode: () => null,
   };
 }
 
