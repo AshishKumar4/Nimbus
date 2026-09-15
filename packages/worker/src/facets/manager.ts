@@ -890,6 +890,8 @@ export async function generateLongRunningNodeCode(
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
+    /** Wasm images the generated main module imports and parks in the seam. */
+    wasmImports?: readonly FacetWasmImport[];
   },
   usesSqlite: boolean,
   shims: string,
@@ -915,6 +917,7 @@ ${bundleSource.imports}
 import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
+${facetWasmImportsSource(opts.wasmImports ?? [])}
 const USER_CODE = ${safeCode};
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
@@ -5856,7 +5859,7 @@ export class FacetManager {
     let generatedWorker: GeneratedNodeFacetCode | undefined = await generateLongRunningNodeCode(
       code,
       vfsState,
-      { ...opts, env: processEnv, cred: entry.cred },
+      { ...opts, env: processEnv, cred: entry.cred, wasmImports },
       usesSqlite,
       shims,
       pacer,

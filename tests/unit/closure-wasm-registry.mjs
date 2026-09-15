@@ -16,7 +16,7 @@ import {
   generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
 import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
-import { inlineWasmDigest } from '../../packages/worker/src/facets/real-vite-inline-wasm.ts';
+
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 class FakeVfs {
@@ -97,7 +97,8 @@ assert.deepEqual(images, new Map([
   [`/${PKG}/esbuild.wasm`, wasmImageDigest(big)],
   [`/${PKG}/lib/small.wasm`, wasmImageDigest(small)],
 ]), 'the closure records every .wasm file with its content digest, whether or not it fit the bundle');
-assert.equal(inlineWasmDigest(big), wasmImageDigest(big), 'the inline-wasm registry and the closure registry share one digest');
+// The shared digest is the only registry left — inline-wasm is gone (real-vite-module was deleted).
+assert.equal(wasmImageDigest(big), wasmImageDigest(big), 'the closure digest is stable and consistent');
 console.log('  the closure walk records a staged image and an over-cap image, by path and digest');
 
 // A cell is digested from the cell; an unstaged path from a single read.

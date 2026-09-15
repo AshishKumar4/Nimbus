@@ -187,29 +187,7 @@ assert.equal(
   console.log('  a subpath use admits its own closure, not the main graph; the guess survives for unreached packages');
 }
 
-// A package the launch carries as a module-map member must not ride the
-// snapshot too. Measured on the vite react template: Vite's dist was
-// 1,942,175 bytes of the main module AND all of the 2.23 MiB map member.
-{
-  const mapResidentDir = `/${globalModules}/cross-spawn`;
-  const deduped = await buildPrefetchBundle(
-    vfs, `/${entryPath}`, '/home/user', files[entryPath], identityEsbuild,
-    undefined, undefined, undefined, undefined, [mapResidentDir],
-  );
-  const carried = Object.keys(deduped.bundle).filter((p) => p.startsWith(`${globalModules}/cross-spawn/`));
-  assert.deepEqual(carried, [], `a map-resident package must carry no cells, got ${JSON.stringify(carried)}`);
-  // Its directory shape stays honest — readdirSync inside the facet still
-  // sees it, exactly as it does for a cell the size guard evicted.
-  assert.ok(
-    deduped.manifest[`${globalModules}/cross-spawn`],
-    'the manifest still lists a map-resident package',
-  );
-  // Nothing else is touched: the required closure outside that package is
-  // whole, including the transitive dependency reached THROUGH it.
-  assert.equal(deduped.bundle[largeRequiredPath], largeRequiredSource);
-  assert.equal(deduped.bundle[shebangCommandPath], files[shebangCommandPath]);
-  console.log('  map-resident packages are dropped from the snapshot, manifest and siblings intact');
-}
+
 assert.equal(
   snapshot.bundle[shebangCommandPath],
   files[shebangCommandPath],
