@@ -162,6 +162,30 @@ export function satisfiesRange(version: string, range: string): boolean {
   return false;
 }
 
+/**
+ * Whether `range` is semver-shaped at all — `''`, `*`, `latest`, tags,
+ * comparators, hyphen ranges, `||` groups. False for git:, github:,
+ * URL, file:, and other non-registry specifiers, where a version pin's
+ * presence is all a lockfile can answer.
+ */
+export function isSemverRange(range: string): boolean {
+  const trimmed = String(range).trim();
+  if (trimmed === '' || trimmed === '*' || trimmed === 'x' || trimmed === 'X' || trimmed === 'latest') return true;
+  for (const orPart of trimmed.split(/\s*\|\|\s*/)) {
+    const hyphen = orPart.trim().match(/^(\S+)\s+-\s+(\S+)$/);
+    if (hyphen) {
+      const lo = semverComparators('>=' + hyphen[1]);
+      const hi = semverComparators('<=' + hyphen[2]);
+      if (lo === null || hi === null) return false;
+      continue;
+    }
+    for (const part of orPart.trim().split(/\s+/)) {
+      if (semverComparators(part) === null) return false;
+    }
+  }
+  return true;
+}
+
 /** The highest version satisfying `range`, or null; `latest`/`*` are the caller's dist-tag lookup. */
 export function resolveVersion(versions: readonly string[], range: string): string | null {
   const trimmed = String(range ?? '').trim();

@@ -47,6 +47,13 @@ export declare function semverComparators(part: string): Array<[string, ParsedSe
  * never `1.1.0-rc.1`; `^1.0.0` admits no prerelease at all.
  */
 export declare function satisfiesRange(version: string, range: string): boolean;
+/**
+ * Whether `range` is semver-shaped at all — `''`, `*`, `latest`, tags,
+ * comparators, hyphen ranges, `||` groups. False for git:, github:,
+ * URL, file:, and other non-registry specifiers, where a version pin's
+ * presence is all a lockfile can answer.
+ */
+export declare function isSemverRange(range: string): boolean;
 /** The highest version satisfying `range`, or null; `latest`/`*` are the caller's dist-tag lookup. */
 export declare function resolveVersion(versions: readonly string[], range: string): string | null;
 //# sourceMappingURL=semver.d.ts.map

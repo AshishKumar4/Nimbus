@@ -38,7 +38,7 @@ import {
   type ResolvedPackage, type HoistPlan, type FetchFn,
 } from './resolver.js';
 import { packumentUrl } from './r2-cache.js';
-import { satisfiesRange } from './semver.js';
+import { satisfiesRange, isSemverRange } from './semver.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
   type NpmLogEmitter,
@@ -1371,12 +1371,15 @@ export class NpmInstaller {
     for (const [name, range] of Object.entries(specs)) {
       const entry = lockfile.get(name);
       if (!entry) return false;
-      // An npm: alias answers presence-only — the inner range was
-      // resolved into a pin at install time and the lockfile is the
-      // pin's record; rechecking it against the alias text would
-      // invalidate every aliased entry.
-      if (parseRegistryRequest(name, range).alias) continue;
-      if (!satisfiesRange(entry.resolvedVer, range)) return false;
+      // An npm: alias answers the INNER range — the same parser the
+      // resolver facet uses for alias specs turns `vliw: npm:react@^19`
+      // into range `^19` checked against the pin under `vliw`. A spec
+      // that is not a semver range at all (git:, github:, URL, file:)
+      // answers presence-only: the pin's record is the lockfile's whole
+      // truth for it.
+      const req = parseRegistryRequest(name, range);
+      if (!isSemverRange(req.range)) continue;
+      if (!satisfiesRange(entry.resolvedVer, req.range)) return false;
     }
     // Every locked package's REQUIRED edges — `dependencies` minus the
     // names its optionalDependencies override, plus required peers —

@@ -24,7 +24,7 @@ import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
 import { packumentUrl } from './r2-cache.js';
-import { satisfiesRange } from './semver.js';
+import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from './npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, isOptionalNativeBinding, formatSwapNotice, formatTransitiveSkip, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
@@ -1151,13 +1151,16 @@ export class NpmInstaller {
             const entry = lockfile.get(name);
             if (!entry)
                 return false;
-            // An npm: alias answers presence-only — the inner range was
-            // resolved into a pin at install time and the lockfile is the
-            // pin's record; rechecking it against the alias text would
-            // invalidate every aliased entry.
-            if (parseRegistryRequest(name, range).alias)
+            // An npm: alias answers the INNER range — the same parser the
+            // resolver facet uses for alias specs turns `vliw: npm:react@^19`
+            // into range `^19` checked against the pin under `vliw`. A spec
+            // that is not a semver range at all (git:, github:, URL, file:)
+            // answers presence-only: the pin's record is the lockfile's whole
+            // truth for it.
+            const req = parseRegistryRequest(name, range);
+            if (!isSemverRange(req.range))
                 continue;
-            if (!satisfiesRange(entry.resolvedVer, range))
+            if (!satisfiesRange(entry.resolvedVer, req.range))
                 return false;
         }
         // Every locked package's REQUIRED edges — `dependencies` minus the

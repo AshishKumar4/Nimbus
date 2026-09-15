@@ -355,6 +355,8 @@ export class IsolatePool {
    * before touching it.
    */
   private readonly slotTails = new Map<number, Promise<void>>();
+  /** Set by dispose() — queued dispatches reject instead of running. */
+  private disposed = false;
   private bindings: Record<string, unknown> | undefined;
 
   private readonly preamble: string | undefined;
@@ -691,15 +693,26 @@ export class IsolatePool {
     perCallWasm?: Record<string, ArrayBuffer>,
   ): Promise<unknown> {
     // A warm slot executes one dispatch at a time: queue behind the
-    // previous owner, then record this dispatch as the new tail.
+    // previous owner, then record this dispatch as the new tail. The
+    // tail outlives the caller's outcome: a timeout rejects the
+    // Promise.race while runOnce's RPC is still live on the Worker, so
+    // release waits for every execution the owned body started to
+    // settle — never the caller's settle alone.
     const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
     let release: () => void;
     this.slotTails.set(slotIndex, new Promise<void>((resolve) => { release = resolve; }));
     await previous;
-    try {
-      return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm);
-    } finally {
+    if (this.disposed) {
       release!();
+      throw new BindingError(`IsolatePool(${this.tag}) is disposed`);
+    }
+    const inFlight: Promise<unknown>[] = [];
+    try {
+      return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm, inFlight);
+    } finally {
+      // Do not delay the caller's own outcome — the tail releases when
+      // the RPCs the body launched have actually settled.
+      void Promise.allSettled(inFlight).then(() => release!());
     }
   }
 
@@ -709,7 +722,8 @@ export class IsolatePool {
     slotIndex: number,
     args: unknown[],
     resilience: ResolvedResilience,
-    perCallWasm?: Record<string, ArrayBuffer>,
+    perCallWasm: Record<string, ArrayBuffer> | undefined,
+    inFlight: Promise<unknown>[],
   ): Promise<unknown> {
     // Per-call wasm fingerprint. Mixed into the cache key so two calls
     // with different bytes hit different slots (no cache poisoning).
@@ -800,8 +814,10 @@ export class IsolatePool {
           // See plan in close-plan-2026-04-28.
           let timerId: ReturnType<typeof setTimeout> | undefined;
           try {
+            const attemptPromise = runOnce();
+            inFlight.push(attemptPromise);
             return await Promise.race([
-              runOnce(),
+              attemptPromise,
               new Promise<never>((_, reject) => {
                 timerId = setTimeout(
                   () => reject(new TimeoutError(resilience.timeoutMs)),
@@ -813,7 +829,9 @@ export class IsolatePool {
             if (timerId !== undefined) clearTimeout(timerId);
           }
         }
-        return await runOnce();
+        const attemptPromise = runOnce();
+        inFlight.push(attemptPromise);
+        return await attemptPromise;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         const cause = classifyError(lastError);
@@ -1007,6 +1025,7 @@ export class IsolatePool {
    * Safe to call more than once; idempotent.
    */
   dispose(): void {
+    this.disposed = true;
     if (!this.bindings) return;
     for (const key of Object.keys(this.bindings)) {
       disposeRpcResource(this.bindings[key]);

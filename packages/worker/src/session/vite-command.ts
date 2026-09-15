@@ -7,8 +7,10 @@
  * registration.
  *
  * Subcommands: `vite` (dev server), `vite build`, `vite preview`,
- * `vite stop`. Build honours build.outDir but never outside the project
- * root, and validates the bundle before clearing old output.
+ * `vite stop`. Build honours build.outDir with Vite parity: output
+ * writes to the resolved path, only an outDir strictly inside the
+ * project root is emptied first, and the bundle is validated before
+ * old output is cleared.
  */
 
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
@@ -132,18 +134,20 @@ export function createViteCommand(self: ViteHost) {
       const t0 = Date.now();
 
       try {
-        // Honour build.outDir but never outside the project: an
-        // absolute or `..` path would delete/serve files the project
-        // does not own. resolveVfsPath collapses `..` against cwd, so
-        // a '../x' outDir can no longer walk off the project root.
+        // Vite parity: build writes to the resolved outDir wherever it
+        // lands inside the VFS — the common monorepo layout builds the
+        // frontend into ../server/public. Only the empty step is gated:
+        // an outDir not strictly inside the project root is never
+        // emptied (outDir == root is not inside), and Vite's warning is
+        // printed verbatim.
         const outDir = viteConfig.outDir || 'dist';
         const resolvedOutDir = resolveVfsPath(outDir, cwd);
         const insideRoot = resolvedOutDir.length > cwd.length && resolvedOutDir.startsWith(cwd + '/');
-        const distDir = insideRoot ? resolvedOutDir : normalizeVfsPath(cwd + '/dist');
+        const distDir = resolvedOutDir;
         if (!insideRoot) {
           ctx.stderr.write(
-            `[nimbus] Ignoring build.outDir '${viteConfig.outDir}' — ` +
-            'it resolves outside the project root; writing to ./dist instead.\n',
+            `\x1b[33m(!)\x1b[0m outDir ${resolvedOutDir} is not inside project root and will not be emptied.\n` +
+            'Use --emptyOutDir to override.\n',
           );
         }
         const publicDir = cwd + '/public';
@@ -201,8 +205,8 @@ export function createViteCommand(self: ViteHost) {
         const jsFilename = entryJs.path.slice(entryJs.path.lastIndexOf('/') + 1);
 
         // Vite's emptyOutDir: stale hashed outputs must not accumulate.
-        // The insideRoot guard is what makes recursive removal safe —
-        // it has already clamped distDir inside the project.
+        // Only an outDir strictly inside the project root is emptied —
+        // the warning above covered the rest.
         if (insideRoot && kernelFs.exists(distDir)) {
           kernelFs.removeRecursive(distDir);
         }
@@ -304,10 +308,9 @@ export function createViteCommand(self: ViteHost) {
     // ── vite preview ──
     if (args[0] === 'preview') {
       ctx.stdout.write('Serving dist/ — open ' + self.viteBasePath + '/\n');
-      // Same clamp as build: an outDir outside the project is ignored.
-      const previewOutDir = resolveVfsPath(viteConfig.outDir || 'dist', cwd);
-      const distRoot = previewOutDir.length > cwd.length && previewOutDir.startsWith(cwd + '/')
-        ? previewOutDir : normalizeVfsPath(cwd + '/dist');
+      // Vite parity: preview serves the resolved outDir wherever it
+      // landed — build wrote there, so preview must read there.
+      const distRoot = resolveVfsPath(viteConfig.outDir || 'dist', cwd);
       if (!kernelFs.exists(distRoot)) {
         ctx.stderr.write('dist/ not found. Run vite build first.\n');
         return 1;

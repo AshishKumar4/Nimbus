@@ -3,11 +3,12 @@
 // outside the project root, and must never clear a previously-good
 // dist/ on a failed build.
 //
-// The session's built-in `vite build` honours `build.outDir`, which Vite
-// lets be any path. `resolveVfsPath` resolves it against the project
-// root, and only a path that stays inside the project may be emptied
-// recursively or written to; an escaping entry is ignored with a loud
-// warning and output falls back to ./dist.
+// The session's built-in `vite build` honours `build.outDir` the way
+// Vite does: output writes to the resolved path wherever it lands
+// inside the VFS (the monorepo `../server/public` layout), and only the
+// empty step is gated — an outDir not strictly inside the project root
+// is never emptied, with Vite's warning line printed instead. A failed
+// build still never clears previously-good output.
 //
 // Seam: the real registered command — createViteCommand on a
 // CommandRegistry, against a real SqliteVFS — so the test exercises
@@ -107,23 +108,32 @@ const buildOk = {
   console.log('  inside-root outDir builds into it');
 }
 
-// ── outDir escaping the project is clamped to ./dist ─────────────────────
+// ── outDir outside the project still writes; only emptying is gated ────
+//
+// Vite writes to the resolved outDir wherever it is — the monorepo
+// ../server/public layout — and only refuses to EMPTY a directory that
+// is not inside the root, warning verbatim instead.
 {
   const { registry, ctx, kernelFs, stderr } = makeHostAndCtx({
-    viteConfigSource: 'export default { build: { outDir: "../escape" } }',
+    viteConfigSource: 'export default { build: { outDir: "../sibling" } }',
     buildResult: buildOk,
   });
+  kernelFs.mkdir('/home/sibling', { recursive: true });
+  kernelFs.writeFile('/home/sibling/keep.txt', 'pre-existing');
   const vite = await registry.resolve('vite');
   const code = await vite(ctx);
-  assert.equal(code, 0, `vite build succeeds after the clamp: ${stderr.join('')}`);
-  assert.ok(kernelFs.exists('/home/marker.txt'), 'nothing outside the project was removed');
-  assert.ok(!kernelFs.exists('/home/escape'), 'no directory was created outside the project');
-  assert.ok(kernelFs.exists(`${CWD}/dist/index.html`), 'output falls back to ./dist');
-  assert.ok(stderr.join('').includes('outside the project root'), `the escape is announced: ${stderr.join('')}`);
-  console.log('  ../escape outDir is ignored with a warning, ./dist used');
+  assert.equal(code, 0, `vite build succeeds: ${stderr.join('')}`);
+  assert.ok(kernelFs.exists('/home/sibling/index.html'), 'index.html lands in the resolved outDir');
+  assert.ok(kernelFs.exists('/home/sibling/keep.txt'), 'an outside outDir is never emptied');
+  assert.ok(kernelFs.exists('/home/marker.txt'), 'nothing outside the outDir was touched');
+  assert.ok(
+    stderr.join('').includes('outDir home/sibling is not inside project root and will not be emptied'),
+    `Vite's warning line prints verbatim: ${stderr.join('')}`,
+  );
+  console.log('  ../sibling outDir writes there and is never emptied');
 }
 
-// ── an absolute outDir is clamped the same way ───────────────────────────
+// ── an absolute outDir behaves the same ────────────────────────────────
 {
   const { registry, ctx, kernelFs, stderr } = makeHostAndCtx({
     viteConfigSource: 'export default { build: { outDir: "/home/abs-escape" } }',
@@ -132,10 +142,47 @@ const buildOk = {
   const vite = await registry.resolve('vite');
   const code = await vite(ctx);
   assert.equal(code, 0);
-  assert.ok(!kernelFs.exists('/home/abs-escape'), 'no absolute path outside the project');
-  assert.ok(kernelFs.exists(`${CWD}/dist/index.html`), 'output falls back to ./dist');
-  assert.ok(stderr.join('').includes('outside the project root'), `the escape is announced: ${stderr.join('')}`);
-  console.log('  absolute outDir is ignored with a warning, ./dist used');
+  assert.ok(kernelFs.exists('/home/abs-escape/index.html'), 'output lands in the absolute outDir');
+  assert.ok(
+    stderr.join('').includes('outDir home/abs-escape is not inside project root and will not be emptied'),
+    `Vite's warning line prints verbatim: ${stderr.join('')}`,
+  );
+  console.log('  absolute outDir writes there and is never emptied');
+}
+
+// ── outDir "." writes in place and never empties the root ─────────────
+{
+  const { registry, ctx, kernelFs, stderr } = makeHostAndCtx({
+    viteConfigSource: 'export default { build: { outDir: "." } }',
+    buildResult: buildOk,
+  });
+  const vite = await registry.resolve('vite');
+  const code = await vite(ctx);
+  assert.equal(code, 0);
+  assert.ok(kernelFs.exists(`${CWD}/index.html`), 'index.html written in place');
+  assert.ok(kernelFs.exists(`${CWD}/src/main.tsx`), 'src/ is never emptied');
+  assert.ok(kernelFs.exists(`${CWD}/vite.config.js`), 'package files are never emptied');
+  assert.ok(
+    stderr.join('').includes('is not inside project root and will not be emptied'),
+    `the warning prints for outDir === root too: ${stderr.join('')}`,
+  );
+  console.log('  outDir . writes in place, root never emptied');
+}
+
+// ── an inside-root outDir is emptied of stale outputs ─────────────────
+{
+  const { registry, ctx, kernelFs, stderr } = makeHostAndCtx({
+    viteConfigSource: 'export default { build: { outDir: "public/build" } }',
+    buildResult: buildOk,
+  });
+  kernelFs.mkdir(`${CWD}/public/build/assets`, { recursive: true });
+  kernelFs.writeFile(`${CWD}/public/build/assets/stale-000.js`, 'stale');
+  const vite = await registry.resolve('vite');
+  const code = await vite(ctx);
+  assert.equal(code, 0);
+  assert.ok(!kernelFs.exists(`${CWD}/public/build/assets/stale-000.js`), 'stale hashed outputs are emptied');
+  assert.ok(kernelFs.exists(`${CWD}/public/build/index.html`), 'fresh output lands');
+  console.log('  inside-root outDir is emptied of stale outputs');
 }
 
 // ── a failed build must not clear a previously-good dist/ ────────────────

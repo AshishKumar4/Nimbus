@@ -621,4 +621,88 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  caseQ: an npm: alias reuses its lockfile');
 }
 
+// ── Case R: lockfile validity across spec shapes ────────────────────────
+//
+// A swapped root (esbuild → esbuild-wasm) keeps a semver range and stays
+// valid; `latest` stays valid; a changed range invalidates; a git spec —
+// which is not a semver range at all — answers presence-only.
+{
+  const cw = (name, version) => ({
+    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
+    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
+  });
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+
+  // swapped root — second install trusts the lockfile
+  {
+    const { installer, log } = makeInstaller(
+      { name: 'swap-app', dependencies: { ...ok, esbuild: '^0.20.0' } },
+      (name) => { const v = name === 'esbuild-wasm' ? '0.20.0' : '1.0.0'; const r = resolvedResult(name, v); r.cacheWrites = [cw(name, v)]; return r; },
+    );
+    const first = await installer.install(PROJ);
+    assert.deepEqual(first.failed, []);
+    assert.ok(first.installed.includes('esbuild-wasm@0.20.0'), `the swap target installed (installed=${JSON.stringify(first.installed)})`);
+    log.length = 0;
+    const second = await installer.install(PROJ);
+    assert.ok(/Lockfile valid/.test(log.join('\n')), `a swapped root reuses its lockfile:\n${log.join('\n')}`);
+    console.log('  caseR: swapped root stays valid');
+  }
+
+  // `latest` root — stays valid
+  {
+    const { installer, log } = makeInstaller(
+      { name: 'latest-app', dependencies: { ...ok, latpkg: 'latest' } },
+      (name) => { const v = name === 'latpkg' ? '2.0.0' : '1.0.0'; const r = resolvedResult(name, v); r.cacheWrites = [cw(name, v)]; return r; },
+    );
+    await installer.install(PROJ);
+    log.length = 0;
+    await installer.install(PROJ);
+    assert.ok(/Lockfile valid/.test(log.join('\n')), `a latest root reuses its lockfile:\n${log.join('\n')}`);
+    console.log('  caseR: latest root stays valid');
+  }
+
+  // changed root range — invalidates
+  {
+    const pkgJson = { name: 'chg-app', dependencies: { ...ok, chg: '^1.0.0' } };
+    const { installer, log, root } = makeInstaller(
+      pkgJson,
+      (name) => { const r = resolvedResult(name, name === 'chg' ? '1.4.0' : '1.0.0'); r.cacheWrites = [cw(name, r.pkg.version)]; return r; },
+    );
+    await installer.install(PROJ);
+    pkgJson.dependencies.chg = '^2.0.0';
+    root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
+    log.length = 0;
+    const second = await installer.install(PROJ);
+    assert.ok(/Lockfile outdated/.test(log.join('\n')), `a changed range invalidates the lockfile:\n${log.join('\n')}`);
+    console.log('  caseR: changed range re-resolves');
+  }
+
+  // git root — presence-only
+  {
+    const { installer, log, harness } = makeInstaller(
+      { name: 'git-app', dependencies: { ...ok, gitpkg: 'github:user/repo#v1' } },
+      (name) => resolvedResult(name, '1.0.0'),
+    );
+    // A git spec never reaches the resolver — seed the lockfile and
+    // registry cache the way a real install left them, then confirm a
+    // non-semver range answers presence-only instead of invalidating.
+    const entries = new Map();
+    for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
+      installer.npmCache.putRegistryEntries([cw(name, '1.0.0')]);
+      entries.set(name, { name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
+    }
+    installer.npmCache.putRegistryEntries([cw('gitpkg', '0.0.0-abc123')]);
+    entries.set('gitpkg', {
+      name: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
+      depsJson: '{}', hoistedPath: `${NM}/gitpkg`,
+    });
+    installer.npmCache.writeLockfile(PROJ, entries, { storage: harness.ctx.storage });
+    const result = await installer.install(PROJ);
+    assert.ok(/Lockfile valid/.test(log.join('\n')), `a git root answers presence-only:\n${log.join('\n')}`);
+    assert.deepEqual(result.failed, []);
+    console.log('  caseR: git root stays valid by presence');
+  }
+}
+
 console.log('npm-install-native-policy: all assertions passed');

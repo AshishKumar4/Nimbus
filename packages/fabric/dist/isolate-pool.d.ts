@@ -245,6 +245,8 @@ export declare class IsolatePool {
      * before touching it.
      */
     private readonly slotTails;
+    /** Set by dispose() — queued dispatches reject instead of running. */
+    private disposed;
     private bindings;
     private readonly preamble;
     private readonly preambleHash;

@@ -123,6 +123,8 @@ export class IsolatePool {
      * before touching it.
      */
     slotTails = new Map();
+    /** Set by dispose() — queued dispatches reject instead of running. */
+    disposed = false;
     bindings;
     preamble;
     preambleHash;
@@ -413,19 +415,30 @@ export class IsolatePool {
      */
     async #dispatchSlot(fnSource, fnHash, slotIndex, args, resilience, perCallWasm) {
         // A warm slot executes one dispatch at a time: queue behind the
-        // previous owner, then record this dispatch as the new tail.
+        // previous owner, then record this dispatch as the new tail. The
+        // tail outlives the caller's outcome: a timeout rejects the
+        // Promise.race while runOnce's RPC is still live on the Worker, so
+        // release waits for every execution the owned body started to
+        // settle — never the caller's settle alone.
         const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
         let release;
         this.slotTails.set(slotIndex, new Promise((resolve) => { release = resolve; }));
         await previous;
+        if (this.disposed) {
+            release();
+            throw new BindingError(`IsolatePool(${this.tag}) is disposed`);
+        }
+        const inFlight = [];
         try {
-            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm);
+            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm, inFlight);
         }
         finally {
-            release();
+            // Do not delay the caller's own outcome — the tail releases when
+            // the RPCs the body launched have actually settled.
+            void Promise.allSettled(inFlight).then(() => release());
         }
     }
-    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm) {
+    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm, inFlight) {
         // Per-call wasm fingerprint. Mixed into the cache key so two calls
         // with different bytes hit different slots (no cache poisoning).
         // For the common case (no per-call wasm) the fingerprint is '0',
@@ -515,8 +528,10 @@ export class IsolatePool {
                     // See plan in close-plan-2026-04-28.
                     let timerId;
                     try {
+                        const attemptPromise = runOnce();
+                        inFlight.push(attemptPromise);
                         return await Promise.race([
-                            runOnce(),
+                            attemptPromise,
                             new Promise((_, reject) => {
                                 timerId = setTimeout(() => reject(new TimeoutError(resilience.timeoutMs)), resilience.timeoutMs);
                             }),
@@ -527,7 +542,9 @@ export class IsolatePool {
                             clearTimeout(timerId);
                     }
                 }
-                return await runOnce();
+                const attemptPromise = runOnce();
+                inFlight.push(attemptPromise);
+                return await attemptPromise;
             }
             catch (err) {
                 lastError = err instanceof Error ? err : new Error(String(err));
@@ -681,6 +698,7 @@ export class IsolatePool {
      * Safe to call more than once; idempotent.
      */
     dispose() {
+        this.disposed = true;
         if (!this.bindings)
             return;
         for (const key of Object.keys(this.bindings)) {
