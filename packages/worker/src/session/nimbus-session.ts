@@ -14,9 +14,8 @@ import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { FacetManager } from '../facets/manager.js';
-import { resolveDurableWorkerImage } from '../facets/durable-images.js';
-import type { WorkerRecipe } from '../facets/manager.js';
+import type { FacetManager } from '../facets/manager.js';
+import { composeFacetManager } from '../facets/compose.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -37,12 +36,6 @@ import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import {
-  ESBUILD_TRANSFORM_WORKER_ID,
-  esbuildTransformWorkerCode,
-  type EsbuildTransformFacetRpc,
-} from '../facets/esbuild-transform.js';
-import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
@@ -122,7 +115,6 @@ import {
 import * as _rpc from './rpc.js';
 import { buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { processHostFor } from '../loaders/process-host.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -1123,37 +1115,31 @@ export class NimbusSession extends CloudflareDurableObject {
     return _diag.persistRing(this, this.ctx);
   }
 
+  /**
+   * The session's FacetManager, composed through the one factory every host
+   * uses (`facets/compose.ts`). What is wired here is only what is the
+   * session's: the terminal a spawn is announced on, the scrollback a notice
+   * survives in, the alarm that grants a launch its next turn, and the exit
+   * report that keeps the process table honest. The isolated esbuild
+   * transform and the durable image-store fallback are the factory's.
+   */
   ensureFacetManager() {
     if (!this.facetManager) {
-      this.facetManager = new FacetManager(
-        this.ctx,
-        this.env,
-        this.processes,
-        this.portRegistry,
-        processHostFor,
-        {
+      // The manager is composed over the filesystem, so the filesystem comes
+      // first. Cheap and idempotent; every caller already stood it up or is
+      // about to.
+      this.ensureSqliteFs();
+      this.facetManager = composeFacetManager({
+        ctx: this.ctx,
+        env: this.env,
+        processes: this.processes,
+        portRegistry: this.portRegistry,
+        vfs: this.sqliteFs!,
+        ...(this.esbuildService ? { esbuild: this.esbuildService } : {}),
+        hooks: {
           onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
           requestLaunchTurn: (notBefore) => { void this._scheduleLaunchTurn(notBefore); },
           notify: (line) => this._notifySession(line),
-          transformLargeEsm: async (code, options) => {
-            const loader = Reflect.get(this.env, 'LOADER');
-            if (!loader || typeof loader.get !== 'function') {
-              throw new Error('Nimbus: env.LOADER unavailable for isolated esbuild transform');
-            }
-            const assets = Reflect.get(this.env, 'ASSETS');
-            if (!assets || typeof assets.fetch !== 'function') {
-              throw new Error('Nimbus: env.ASSETS unavailable for isolated esbuild transform');
-            }
-            const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () =>
-              esbuildTransformWorkerCode(await fetchEsbuildWasmBytes({ ASSETS: assets }))
-            );
-            const transformClass = worker.getDurableObjectClass('EsbuildTransformFacet');
-            const facet = this.ctx.facets.get<EsbuildTransformFacetRpc>(
-              `esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`,
-              async () => ({ class: transformClass }),
-            );
-            return facet.transform(code, options);
-          },
           onSpawn: (pid, command, longRunning) => {
             const attachedTty = this.processes.get(pid)?.attachedTty === true;
             if (longRunning) {
@@ -1173,31 +1159,17 @@ export class NimbusSession extends CloudflareDurableObject {
               type: 'spawn', pid, command, longRunning, attachedTty,
             });
           },
-          // The fallback resolver a self-owned durable spawn re-drives
-          // through: read the image blobs the spawn persisted under
-          // `.nimbus/images/<sha256>` and restore the launch's env and
-          // modules from them. An embedder-owned launch answers its own
-          // bookkeeping through resolveWorkerLaunch instead — this hook is
-          // only the fallback for applications nobody else is keeping, and
-          // because it cannot re-mint a live globalOutbound binding the
-          // spawn path refuses such a launch under it.
-          resolveWorkerLaunchFallback: async (recipe: WorkerRecipe) => {
-            this.ensureSqliteFs();
-            return resolveDurableWorkerImage(this.sqliteFs!, recipe);
-          },
         },
-      );
+      }).manager;
     }
-    if (this.facetManager && this.sqliteFs) {
-      this.facetManager.setVfs(this.sqliteFs);
-      // W3.5 Fix B: share the session's lazy esbuildService with the
-      // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
-      // wasm-init twice. If the session hasn't constructed one yet,
-      // FacetManager will lazy-create its own on first exec — same
-      // wasm bytes, same ~10ms init cost, just paid once per surface.
-      if (this.esbuildService) {
-        this.facetManager.setEsbuildService(this.esbuildService);
-      }
+    // W3.5 Fix B: share the session's lazy esbuildService with the
+    // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
+    // wasm-init twice. The session may construct it after the manager
+    // exists, so the share is re-offered on every call; FacetManager
+    // otherwise lazy-creates its own on first exec — same wasm bytes,
+    // same ~10ms init cost, just paid once per surface.
+    if (this.esbuildService) {
+      this.facetManager.setEsbuildService(this.esbuildService);
     }
   }
 
