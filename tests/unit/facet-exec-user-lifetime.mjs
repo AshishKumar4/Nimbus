@@ -124,7 +124,8 @@ function makeManager(label, behave) {
   assert.equal(manager.kill(entry.pid), true);
 
   const result = await running;
-  assert.notEqual(result.exitCode, 0, 'a killed program reported a clean exit');
+  assert.equal(result.exitCode, 130, 'a killed program reports the signal, not a crash');
+  assert.equal(result.stderr, '', 'the abort text is not the program\'s stderr');
   assert.equal(processes.get(entry.pid)?.state, 'killed', 'kill did not reach terminal state');
   assert.equal(processes.get(entry.pid)?.exitCode, 137);
 }

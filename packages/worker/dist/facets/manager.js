@@ -3971,6 +3971,14 @@ export class FacetManager {
             return result;
         }
         catch (err) {
+            // The abort controller firing means this run ended BY a kill — the
+            // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
+            // abort text is not its stderr: mark it killed and hand back 130 (the
+            // shell's signalled status) with nothing for the terminal to print.
+            if (abortController.signal.aborted) {
+                this.processes.kill(entry.pid);
+                return { exitCode: 130, stdout: '', stderr: '' };
+            }
             const exitCode = 1;
             const reason = `runtime worker error: ${errorMessage(err)}`;
             this.processes.exit(entry.pid, exitCode);
