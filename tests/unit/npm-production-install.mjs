@@ -1,93 +1,129 @@
 #!/usr/bin/env bun
-/**
- * `--production` / `--omit=dev` actually omits devDependencies.
- *
- * A real installer stopped on
- *
- *     bun install --frozen-lockfile
- *     → npm install rejected: puppeteer — Bundled Chromium binary (~150 MB).
- *
- * from a *devDependency* of the root package. REFUSING IS CORRECT and stays
- * correct: a sandbox cannot execute a bundled Chromium, and downloading 150 MB
- * to fail later is the same dishonesty as answering `uname -m` with an
- * architecture whose binaries cannot run — the whole point of answering `wasm`
- * is that arch-keyed downloads fail at resolution instead.
- *
- * The defect is that the door out was painted on. Both npm and bun honour
- * `--production`/`--omit=dev`, the installer already took a `production`
- * option, and `omit` was already in the argument spec — but nothing ever read
- * the value, so the flag parsed and did NOTHING. That is the same category as
- * a `find` predicate that is accepted and ignored: the caller said what they
- * wanted, and the tool quietly did something else.
- *
- * Flag spellings measured against bun 1.3.1 (`-p, --production`,
- * `--omit=<val>`) and npm 10 (`--omit <val>`, repeatable).
- */
+// npm-production-install — `npm install --production` (and `--omit=dev`,
+// which resolves to the same flag) must not fetch devDependencies, and a
+// refused package that only a devDependency declares must not fail it.
+//
+// When a refused package IS required, the install fails and the closing
+// summary marks it `(devDependency)` and names the flag that installs the
+// rest — the old per-package reject formatter's contract, now asserted on
+// the public install output.
+//
+// Seam: the peer-DO RPC (`_rpcFanoutExecute`), mirroring
+// tests/unit/npm-install-native-policy.mjs.
 
 import assert from 'node:assert/strict';
-import { parseNpmInstallInvocation } from '../../packages/worker/src/npm/install-args.ts';
-import {
-  formatRejectError,
-  lookupReject,
-} from '../../packages/worker/src/facets/wasm-swap-registry.ts';
+import { Database } from 'bun:sqlite';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-// ── The flag reaches the installer ────────────────────────────────────────
-for (const [args, production] of [
-  [[], false],
-  [['--production'], true],
-  [['-p'], true],
-  [['--omit=dev'], true],
-  [['--omit', 'dev'], true],
-  [['--omit=optional'], false],
-  [['--omit=peer'], false],
-  // npm allows the flag more than once; a generic parser keeps only the last
-  // value, which would miss the one spelling that matters.
-  [['--omit=optional', '--omit=dev'], true],
-  [['--omit=dev', '--omit=optional'], true],
-  [['--frozen-lockfile'], false],
-  // `-P` is npm's --save-prod, not --production. The short map is
-  // case-sensitive and both tools' spellings must land where they belong.
-  [['-P'], false],
-  [['--', '--omit=dev'], false],
-]) {
-  assert.equal(
-    parseNpmInstallInvocation(args).production,
-    production,
-    `production for ${JSON.stringify(args)}`,
+const PROJ = 'app';
+const NM = `${PROJ}/node_modules`;
+
+function resolvedResult(name, version, overrides = {}) {
+  return {
+    pkg: {
+      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
+    },
+    deps: {}, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
+  };
+}
+
+function makeInstaller(pkgJson) {
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  root.mkdir(PROJ, { recursive: true });
+  root.mkdir(NM, { recursive: true });
+  root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
+  const log = [];
+  const env = {
+    LOADER: { get() { return {}; } },
+    NIMBUS_SESSION: {
+      idFromName(name) { return { toString: () => name, name }; },
+      get() {
+        return {
+          async _rpcFanoutExecute(_fnSource, args) {
+            if (args[0] && Array.isArray(args[0].packages)) {
+              return { results: args.map((shard) => ({
+                perPackage: shard.packages.map((p) => {
+                  root.mkdir(`${NM}/${p.name}`, { recursive: true });
+                  root.writeFile(`${NM}/${p.name}/package.json`, JSON.stringify({ name: p.name, version: p.version }));
+                  return { name: p.name, version: p.version, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
+                }),
+                elapsed: 1,
+                facetCounters: { tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1, pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0 },
+                cacheStatEvents: [],
+              })) };
+            }
+            return { results: args.map((spec) => resolvedResult(spec.name, '1.0.0')) };
+          },
+        };
+      },
+    },
+  };
+  const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
+  const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
+  return { installer, log, root };
+}
+
+// ── --omit=dev drops a refused dev root and its subtree ────────────────
+{
+  const { installer, log, root } = makeInstaller({
+    name: 'dev-tool',
+    dependencies: { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' },
+    devDependencies: { puppeteer: '^24.0.0' },
+  });
+  const result = await installer.install(PROJ, { production: true });
+  const output = log.join('\n');
+
+  assert.deepEqual(result.failed, [], `omit=dev excludes the refused dev root (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(!/\[skip\].*puppeteer/.test(output), 'the refused subtree is never walked');
+  assert.ok(/\bDone!/.test(output), 'the production install succeeds');
+  assert.equal(result.installed.length, 5);
+  assert.ok(root.exists(`${NM}/ok-a/package.json`), 'the declared deps are on disk');
+  console.log('  --omit=dev: refused dev root excluded, exit 0');
+}
+
+// ── The same name under dependencies is required and fails ─────────────
+{
+  const { installer, log } = makeInstaller({
+    name: 'prod-tool',
+    dependencies: { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0', puppeteer: '^24.0.0' },
+    devDependencies: { 'dev-x': '1.0.0' },
+  });
+  const result = await installer.install(PROJ, { production: true });
+  const output = log.join('\n');
+
+  assert.ok(result.failed.includes('puppeteer'), `a required refusal fails even under --omit=dev (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/required package is not supported on Nimbus.*puppeteer/.test(output), `the summary names it:\n${output}`);
+  console.log('  --omit=dev: a required refusal still fails');
+}
+
+// ── A refused dev root under a normal install fails with guidance ──────
+{
+  const { installer, log } = makeInstaller({
+    name: 'dev-tool',
+    dependencies: { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' },
+    devDependencies: { puppeteer: '^24.0.0' },
+  });
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.ok(result.failed.includes('puppeteer'), `a dev-only refusal fails honestly (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*puppeteer — /.test(output), `the per-package skip line is logged:\n${output}`);
+  assert.ok(
+    /1 required package is not supported on Nimbus: puppeteer \(devDependency\)/.test(output),
+    `the summary marks it (devDependency):\n${output}`,
   );
+  assert.ok(
+    /--omit=dev/.test(output),
+    `and names the flag that installs the rest:\n${output}`,
+  );
+  console.log('  dev-only refusal fails with (devDependency) + --omit=dev guidance');
 }
 
-// Everything the invocation already carried still parses.
-{
-  const parsed = parseNpmInstallInvocation(['-g', '--prefix', '/usr/local', 'react', '--production']);
-  assert.equal(parsed.global, true);
-  assert.equal(parsed.prefix, '/usr/local');
-  assert.deepEqual(parsed.packages, ['react']);
-  assert.equal(parsed.production, true);
-}
-
-// ── The refusal names the package and the way past it ─────────────────────
-{
-  const puppeteer = lookupReject('puppeteer');
-  assert.ok(puppeteer, 'puppeteer is refused by the registry');
-  assert.match(puppeteer.reason, /Chromium/, 'the refusal says what it is refusing');
-
-  const asDevDep = formatRejectError([puppeteer], new Set(['puppeteer']));
-  assert.match(asDevDep, /puppeteer/);
-  assert.match(asDevDep, /devDependency/, 'the caller is told nothing they run needs it');
-  assert.match(asDevDep, /--omit=dev/, 'and told the flag that installs the rest');
-
-  // A runtime dependency has no such way out, and must not be offered one.
-  const asRuntimeDep = formatRejectError([puppeteer], new Set());
-  assert.doesNotMatch(asRuntimeDep, /--omit=dev/, 'no false escape for a real dependency');
-  assert.doesNotMatch(asRuntimeDep, /devDependency/);
-  assert.match(asRuntimeDep, /puppeteer/);
-
-  // A mixed set is not all-dev, so the footer stays off.
-  const nodePty = lookupReject('node-pty');
-  assert.ok(nodePty);
-  const mixed = formatRejectError([puppeteer, nodePty], new Set(['puppeteer']));
-  assert.doesNotMatch(mixed, /--omit=dev/, 'the flag only helps when every reject is dev-only');
-}
-
-console.log('npm-production-install: ok');
+console.log('npm-production-install: all assertions passed');

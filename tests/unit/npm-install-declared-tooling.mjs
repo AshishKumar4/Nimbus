@@ -91,6 +91,11 @@ function makeInstaller(pkgJson, resultFor) {
 }
 
 // ── a cloned TypeScript project installs its tooling ────────────────────────
+//
+// `wrangler` is a declared devDependency the policy refuses: a dev root
+// is required, so the install fails honestly — the summary marks it
+// (devDependency) and names the flag — while every supportable sibling
+// still installs. Nothing the project declares is silently left out.
 {
   const { installer, log, root, shardsSeen } = makeInstaller(
     {
@@ -109,10 +114,11 @@ function makeInstaller(pkgJson, resultFor) {
   }
   assert.ok(root.exists(`${NM}/.bin/tsc`), 'node_modules/.bin/tsc exists');
   assert.equal(shardsSeen.includes('wrangler'), false, 'wrangler was never dispatched');
-  assert.equal(result.failed.length, 0, `nothing failed: ${JSON.stringify(result.failed)}`);
+  assert.ok(result.failed.includes('wrangler'), `the refused devDependency fails honestly (failed=${JSON.stringify(result.failed)})`);
   assert.ok(/\[skip\].*wrangler — Runs workerd and esbuild as native binaries/.test(output), `the log carries wrangler's reason:\n${output}`);
-  assert.ok(/\bDone!/.test(output), `the rest of the project installs cleanly:\n${output}`);
-  console.log('  declared typescript/@types/eslint install, wrangler is left out with its reason');
+  assert.ok(/wrangler \(devDependency\)/.test(output) && /--omit=dev/.test(output), `the summary gives the devDependency guidance:\n${output}`);
+  assert.ok(!/\bDone!/.test(output), `no success line while a declared package is missing:\n${output}`);
+  console.log('  declared typescript/@types/eslint install, wrangler fails honestly with its reason');
 }
 
 // ── an explicit request for a refused package fails without aborting ──────
