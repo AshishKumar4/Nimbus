@@ -381,7 +381,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcCpSpawn(req: any): Promise<{
         childPid: number;
     }>;
-    _rpcCpStdinWrite(childPid: number, data: string): Promise<{
+    _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
     }>;
     _rpcCpStdinEnd(childPid: number): Promise<void>;

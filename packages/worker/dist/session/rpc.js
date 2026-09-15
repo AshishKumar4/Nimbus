@@ -1030,14 +1030,29 @@ export async function _rpcCpSpawn(self, req) {
     const fpm = self._ensureFacetProcessManager();
     return fpm.spawn(req);
 }
+/**
+ * A child's stdin is bytes: esbuild's service protocol is binary packets,
+ * and so is any pipe carrying an image or an archive. The facet queue and
+ * this contract carry Uint8Array; the interactive input store is a text
+ * channel fed by a terminal, so it decodes at its own edge with a streaming
+ * decoder held per child, which keeps a multibyte character split across two
+ * writes correct.
+ */
+const _cpStdinDecoders = new Map();
 export async function _rpcCpStdinWrite(self, childPid, data) {
     if (self.processes.hasInput(childPid)) {
-        return self.processes.writeInput(childPid, data);
+        let decoder = _cpStdinDecoders.get(childPid);
+        if (!decoder) {
+            decoder = new TextDecoder('utf-8');
+            _cpStdinDecoders.set(childPid, decoder);
+        }
+        return self.processes.writeInput(childPid, decoder.decode(data, { stream: true }));
     }
     const fpm = self._ensureFacetProcessManager();
     return fpm.stdinWrite(childPid, data);
 }
 export async function _rpcCpStdinEnd(self, childPid) {
+    _cpStdinDecoders.delete(childPid);
     if (self.processes.hasInput(childPid)) {
         self.processes.endInput(childPid);
         return;

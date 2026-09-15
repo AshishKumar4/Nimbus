@@ -4742,16 +4742,19 @@ const __childProcessMod = (() => {
 
   /**
    * Create a workerd-Writable backed by cpStdinWrite RPC.
-   * Decodes Uint8Array chunks to UTF-8 strings before pushing to RPC
-   * (workerd's Writable encodes string→bytes internally; we need to
-   * round-trip back to a string for the supervisor's stdin queue).
+   *
+   * A child's stdin is BYTES. esbuild's service protocol is binary packets,
+   * and so is anything piping an image or an archive to a child. The relay
+   * used to decode each chunk to a UTF-8 string here, which turned every
+   * byte sequence that is not valid UTF-8 into U+FFFD — unrecoverable, and
+   * measured at twice the length for a buffer covering all 256 values. The
+   * queue and the RPC carry Uint8Array now; text callers encode at this
+   * edge, which is the only place that knows it had text.
    */
-  function _toUtf8(chunk) {
-    if (typeof chunk === "string") return chunk;
-    if (chunk instanceof Uint8Array) {
-      try { return new TextDecoder("utf-8").decode(chunk); } catch { return String(chunk); }
-    }
-    return String(chunk);
+  function _toBytes(chunk) {
+    if (chunk instanceof Uint8Array) return chunk;
+    if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+    return new TextEncoder().encode(String(chunk));
   }
   function _queueStdinWrite(child, data) {
     if (!child.pid) {
@@ -4783,8 +4786,7 @@ const __childProcessMod = (() => {
   function _makeWritable(child) {
     const w = new __streamMod.Writable({
       write(chunk, enc, cb) {
-        const s = _toUtf8(chunk);
-        _queueStdinWrite(child, s)
+        _queueStdinWrite(child, _toBytes(chunk))
           .then(() => cb())
           .catch((e) => cb(e));
       },
@@ -5523,7 +5525,11 @@ function __makeProcessStdin() {
           throw new __ProcessExit(code);
         }
       }
-      if (packet && packet.data) r.write(packet.data);
+      // The queue hands back bytes; a Readable given a string would encode
+      // it again.
+      if (packet && packet.data && packet.data.length > 0) {
+        r.write(packet.data instanceof Uint8Array ? __BufferMod.from(packet.data) : packet.data);
+      }
       if (packet && packet.ended) {
         r.end();
         break;

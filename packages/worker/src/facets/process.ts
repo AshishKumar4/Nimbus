@@ -73,10 +73,10 @@ interface ChildEntry {
   endedAt: number | null;
 
   // stdin queue (parent → child)
-  stdinChunks: string[];
+  stdinChunks: Uint8Array[];
   stdinClosed: boolean;
   stdinTotalBytes: number;
-  stdinWaiters: Array<(r: { data: string; ended: boolean }) => void>;
+  stdinWaiters: Array<(r: { data: Uint8Array; ended: boolean }) => void>;
 
   // stdout/stderr ring (child → parent)
   // fd 1 = stdout, fd 2 = stderr.
@@ -214,6 +214,7 @@ export const CHILD_PROCESS_MAX_DEPTH = 8;
  * signal (real Node would return false from .write).
  */
 const STDIN_QUEUE_MAX_BYTES = 256 * 1024; // 256 KiB
+const EMPTY_BYTES = new Uint8Array(0);
 const STDIN_ATTACH_WAIT_MS = 500;
 
 /**
@@ -627,7 +628,14 @@ export class FacetProcessManager {
     if (!child.stdinClosed && child.stdinChunks.length > 0) {
       await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
     }
-    return child.stdinChunks.join('');
+    // A pure builtin takes its stdin as text, so the decode happens here,
+    // at the consumer's edge, over the whole queued run at once.
+    let total = 0;
+    for (const c of child.stdinChunks) total += c.byteLength;
+    const joined = new Uint8Array(total);
+    let at = 0;
+    for (const c of child.stdinChunks) { joined.set(c, at); at += c.byteLength; }
+    return new TextDecoder('utf-8').decode(joined);
   }
 
   private _shellPlanFor(req: SpawnReq): ShellSpawnPlan | null {
@@ -721,14 +729,17 @@ export class FacetProcessManager {
 
   // ── stdin queue ─────────────────────────────────────────────────────────
 
-  stdinWrite(childPid: number, data: string): { ok: boolean } {
+  stdinWrite(childPid: number, data: Uint8Array): { ok: boolean } {
     const child = this.children.get(childPid);
     if (!child || child.stdinClosed || child.exitCode !== null) return { ok: false };
-    if (child.stdinTotalBytes + data.length > STDIN_QUEUE_MAX_BYTES) {
+    // The cap counts BYTES. It used to count the string's UTF-16 code units,
+    // which undercounts any multibyte character and overcounts a surrogate
+    // pair, so the queue's own limit did not mean what it said.
+    if (child.stdinTotalBytes + data.byteLength > STDIN_QUEUE_MAX_BYTES) {
       return { ok: false };
     }
     child.stdinChunks.push(data);
-    child.stdinTotalBytes += data.length;
+    child.stdinTotalBytes += data.byteLength;
     // Flush any waiters
     for (const w of child.stdinWaiters.splice(0)) {
       w({ data, ended: false });
@@ -741,7 +752,7 @@ export class FacetProcessManager {
     if (!child) return;
     child.stdinClosed = true;
     for (const w of child.stdinWaiters.splice(0)) {
-      w({ data: '', ended: true });
+      w({ data: EMPTY_BYTES, ended: true });
     }
   }
 
@@ -749,23 +760,23 @@ export class FacetProcessManager {
    * Long-poll: child facet asks the supervisor for its next stdin chunk.
    * Returns immediately if data is already queued OR if stdin is closed.
    */
-  async cpReadStdin(childPid: number, waitMs: number): Promise<{ data: string; ended: boolean }> {
+  async cpReadStdin(childPid: number, waitMs: number): Promise<{ data: Uint8Array; ended: boolean }> {
     const child = this.children.get(childPid);
-    if (!child) return { data: '', ended: true };
+    if (!child) return { data: EMPTY_BYTES, ended: true };
     if (child.stdinChunks.length > 0) {
       const data = child.stdinChunks.shift()!;
-      child.stdinTotalBytes -= data.length;
+      child.stdinTotalBytes -= data.byteLength;
       return { data, ended: false };
     }
-    if (child.stdinClosed) return { data: '', ended: true };
+    if (child.stdinClosed) return { data: EMPTY_BYTES, ended: true };
     // Long-poll
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         const idx = child.stdinWaiters.indexOf(wrapped);
         if (idx >= 0) child.stdinWaiters.splice(idx, 1);
-        resolve({ data: '', ended: false });
+        resolve({ data: EMPTY_BYTES, ended: false });
       }, Math.min(waitMs, 5000));
-      const wrapped = (r: { data: string; ended: boolean }) => {
+      const wrapped = (r: { data: Uint8Array; ended: boolean }) => {
         clearTimeout(timer);
         resolve(r);
       };
@@ -945,7 +956,7 @@ export class FacetProcessManager {
     // Wake stdin waiters with ended=true so a child blocked on cpReadStdin
     // unblocks and exits cleanly.
     for (const w of child.stdinWaiters.splice(0)) {
-      w({ data: '', ended: true });
+      w({ data: EMPTY_BYTES, ended: true });
     }
   }
 

@@ -331,7 +331,7 @@ export declare function _rpcTransform(self: RpcHost, code: string, loader: strin
 export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
     childPid: number;
 }>;
-export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: string): Promise<{
+export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
     ok: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;

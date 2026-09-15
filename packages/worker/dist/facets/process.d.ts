@@ -65,11 +65,11 @@ interface ChildEntry {
     facetName: string;
     startedAt: number;
     endedAt: number | null;
-    stdinChunks: string[];
+    stdinChunks: Uint8Array[];
     stdinClosed: boolean;
     stdinTotalBytes: number;
     stdinWaiters: Array<(r: {
-        data: string;
+        data: Uint8Array;
         ended: boolean;
     }) => void>;
     outputs: {
@@ -240,7 +240,7 @@ export declare class FacetProcessManager {
     private _drainStdinForShell;
     private _shellCommandLineForPlan;
     private _runShellLine;
-    stdinWrite(childPid: number, data: string): {
+    stdinWrite(childPid: number, data: Uint8Array): {
         ok: boolean;
     };
     stdinEnd(childPid: number): void;
@@ -249,7 +249,7 @@ export declare class FacetProcessManager {
      * Returns immediately if data is already queued OR if stdin is closed.
      */
     cpReadStdin(childPid: number, waitMs: number): Promise<{
-        data: string;
+        data: Uint8Array;
         ended: boolean;
     }>;
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */

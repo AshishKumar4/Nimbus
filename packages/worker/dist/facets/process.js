@@ -44,6 +44,7 @@ export const CHILD_PROCESS_MAX_DEPTH = 8;
  * signal (real Node would return false from .write).
  */
 const STDIN_QUEUE_MAX_BYTES = 256 * 1024; // 256 KiB
+const EMPTY_BYTES = new Uint8Array(0);
 const STDIN_ATTACH_WAIT_MS = 500;
 /**
  * How long the parent's cpReadOutput long-poll waits for new chunks
@@ -404,7 +405,18 @@ export class FacetProcessManager {
         if (!child.stdinClosed && child.stdinChunks.length > 0) {
             await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
         }
-        return child.stdinChunks.join('');
+        // A pure builtin takes its stdin as text, so the decode happens here,
+        // at the consumer's edge, over the whole queued run at once.
+        let total = 0;
+        for (const c of child.stdinChunks)
+            total += c.byteLength;
+        const joined = new Uint8Array(total);
+        let at = 0;
+        for (const c of child.stdinChunks) {
+            joined.set(c, at);
+            at += c.byteLength;
+        }
+        return new TextDecoder('utf-8').decode(joined);
     }
     _shellPlanFor(req) {
         const args = Array.isArray(req.args) ? req.args.map(String) : [];
@@ -479,11 +491,14 @@ export class FacetProcessManager {
         const child = this.children.get(childPid);
         if (!child || child.stdinClosed || child.exitCode !== null)
             return { ok: false };
-        if (child.stdinTotalBytes + data.length > STDIN_QUEUE_MAX_BYTES) {
+        // The cap counts BYTES. It used to count the string's UTF-16 code units,
+        // which undercounts any multibyte character and overcounts a surrogate
+        // pair, so the queue's own limit did not mean what it said.
+        if (child.stdinTotalBytes + data.byteLength > STDIN_QUEUE_MAX_BYTES) {
             return { ok: false };
         }
         child.stdinChunks.push(data);
-        child.stdinTotalBytes += data.length;
+        child.stdinTotalBytes += data.byteLength;
         // Flush any waiters
         for (const w of child.stdinWaiters.splice(0)) {
             w({ data, ended: false });
@@ -496,7 +511,7 @@ export class FacetProcessManager {
             return;
         child.stdinClosed = true;
         for (const w of child.stdinWaiters.splice(0)) {
-            w({ data: '', ended: true });
+            w({ data: EMPTY_BYTES, ended: true });
         }
     }
     /**
@@ -506,21 +521,21 @@ export class FacetProcessManager {
     async cpReadStdin(childPid, waitMs) {
         const child = this.children.get(childPid);
         if (!child)
-            return { data: '', ended: true };
+            return { data: EMPTY_BYTES, ended: true };
         if (child.stdinChunks.length > 0) {
             const data = child.stdinChunks.shift();
-            child.stdinTotalBytes -= data.length;
+            child.stdinTotalBytes -= data.byteLength;
             return { data, ended: false };
         }
         if (child.stdinClosed)
-            return { data: '', ended: true };
+            return { data: EMPTY_BYTES, ended: true };
         // Long-poll
         return new Promise((resolve) => {
             const timer = setTimeout(() => {
                 const idx = child.stdinWaiters.indexOf(wrapped);
                 if (idx >= 0)
                     child.stdinWaiters.splice(idx, 1);
-                resolve({ data: '', ended: false });
+                resolve({ data: EMPTY_BYTES, ended: false });
             }, Math.min(waitMs, 5000));
             const wrapped = (r) => {
                 clearTimeout(timer);
@@ -697,7 +712,7 @@ export class FacetProcessManager {
         // Wake stdin waiters with ended=true so a child blocked on cpReadStdin
         // unblocks and exits cleanly.
         for (const w of child.stdinWaiters.splice(0)) {
-            w({ data: '', ended: true });
+            w({ data: EMPTY_BYTES, ended: true });
         }
     }
     /**
