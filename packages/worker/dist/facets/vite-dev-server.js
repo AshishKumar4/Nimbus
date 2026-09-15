@@ -1195,20 +1195,14 @@ export class ViteDevServer {
      */
     pendingBundles = new Map();
     /**
-     * Byte-budget admission gate for the on-demand bundle slow path.
-     * Replaces the former single-slot semaphore: instead of serializing
-     * every cold bundle (which made a fresh-React first load multi-second
-     * because each distinct /@modules/ spec waited for the previous), it
-     * bounds the TOTAL slice BYTES resident in the supervisor at once.
-     *
-     * Many small slices' facet RPC round-trips overlap; a single large
-     * (~28 MiB) slice still serializes the rest. Peak resident slice bytes
-     * never exceed ON_DEMAND_SLICE_CAP_BYTES — the same one-slice envelope
-     * the install-time pre-bundler proved safe on shared DO isolates — so
-     * this is a latency win with no supervisor-heap regression. Coupled
-     * with pendingBundles (same-spec coalescing) as before.
+     * FIFO admission gate for the on-demand bundle slow path. Across
+     * DIFFERENT specs, one cold build runs at a time from slice allocation
+     * through the facet RPC and response construction, so peak resident
+     * slice bytes in the supervisor stay at one ON_DEMAND_SLICE_CAP_BYTES
+     * slice. The on-demand IsolatePool has one slot, so this costs no
+     * execution overlap. Coupled with pendingBundles (same-spec coalescing).
      */
-    onDemandGate = new OnDemandBundleGate(ON_DEMAND_SLICE_CAP_BYTES);
+    onDemandGate = new OnDemandBundleGate();
     /**
      * process diagnostics support: the supervisor's per-PID log store. When set
      * (alongside `pid`), every diagnostic emitted by the dev server is
@@ -1756,39 +1750,36 @@ export class ViteDevServer {
                 });
             }
         }
-        // ── Cold path coalescing + byte-budget admission ──────────────
+        // ── Cold path coalescing + FIFO admission ─────────────────────
         // Multiple parallel browser requests for the same module are
         // common on first preview load; coalesce so exactly ONE bundle
-        // attempt runs per spec. Across DIFFERENT specs, the byte-budget
-        // gate bounds total resident slice bytes so small slices overlap
-        // while peak supervisor memory stays at one slice. See
-        // `pendingBundles` and `onDemandGate` field docs for context.
+        // attempt runs per spec. Across DIFFERENT specs, the gate runs one
+        // cold build at a time so peak supervisor memory stays at one
+        // slice. See `pendingBundles` and `onDemandGate` field docs.
+        //
+        // The shared promise resolves to a Response nobody consumes
+        // directly: a Response body is readable once, so every coalesced
+        // consumer — the initiator included — takes its own clone.
         const inflight = this.pendingBundles.get(cacheKey);
         if (inflight)
-            return inflight;
-        const coldPromise = this.onDemandGate.run((admit) => this.serveModuleCold(specifier, headers, base, barrelInfo, admit));
+            return inflight.then((response) => response.clone());
+        const coldPromise = this.onDemandGate.run(() => this.serveModuleCold(specifier, headers, base, barrelInfo));
         this.pendingBundles.set(cacheKey, coldPromise);
-        coldPromise.finally(() => {
-            // Drop the coalescing entry once settled. Subsequent requests
-            // for the same spec will hit the moduleCache (set inside the
-            // cold path) on the hot path, not re-enter the slow path.
-            this.pendingBundles.delete(cacheKey);
-        });
-        return coldPromise;
+        // Drop the coalescing entry once settled. Subsequent requests
+        // for the same spec will hit the moduleCache (set inside the
+        // cold path) on the hot path, not re-enter the slow path.
+        coldPromise.then(() => this.pendingBundles.delete(cacheKey), () => this.pendingBundles.delete(cacheKey));
+        return coldPromise.then((response) => response.clone());
     }
     /**
      * Cold path of serveModule: package resolution → on-demand facet
      * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
      * NO CDN fallback (100% edge contract). Extracted so the coalescing
      * + gate wrapper in serveModule() reads cleanly. Always runs inside
-     * the on-demand byte-budget gate — see serveModule's wrapper.
-     *
-     * `admit` reserves the built slice's real byte size against the gate's
-     * budget and releases the build lock for the next spec. It is called
-     * exactly once, right after the slice is built and before the facet
-     * submit; bail-out paths that never build a slice simply never call it.
+     * the on-demand FIFO gate — see serveModule's wrapper — so the slice
+     * this body allocates is the only cold slice resident until it returns.
      */
-    async serveModuleCold(specifier, headers, base, knownBarrelInfo = null, admit) {
+    async serveModuleCold(specifier, headers, base, knownBarrelInfo = null) {
         const JS_CT = 'application/javascript; charset=utf-8';
         const cacheKey = this.ck(base, `@modules/${specifier}`);
         // 3. On-demand bundle (cold path — resolve from node_modules, bundle via esbuild)
@@ -1932,18 +1923,13 @@ export class ViteDevServer {
                         slice = buildSliceForSpecifierWithCap(this.vfs, specifier, nmDir, SLICE_CAP_BYTES);
                     }
                     if (slice) {
-                        // Slice is built and its real size is known — reserve that
-                        // many bytes against the gate's budget (blocking if a large
-                        // slice is already in flight) and release the build lock so
-                        // the next spec can build while this one's facet RPC runs.
-                        if (admit)
-                            await admit(slice.totalBytes);
                         // Build the spec, then drop our supervisor-side handle to
                         // the slice array immediately — `spec` is the only thing
                         // that needs to keep it alive until the RPC structured-clone
                         // completes. Mirrors the install-time runSlot pattern (see
-                        // commit 40cfc01) so peak supervisor heap during a flurry of
-                        // /preview/@modules/* requests stays bounded by the gate.
+                        // commit 40cfc01). The gate holds every other cold build
+                        // until this method returns, so this slice is the only one
+                        // resident during a flurry of /preview/@modules/* requests.
                         let spec = {
                             specifier,
                             entryPath: bundleEntryPath,

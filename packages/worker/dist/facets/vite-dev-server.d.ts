@@ -155,18 +155,12 @@ export declare class ViteDevServer {
      */
     private pendingBundles;
     /**
-     * Byte-budget admission gate for the on-demand bundle slow path.
-     * Replaces the former single-slot semaphore: instead of serializing
-     * every cold bundle (which made a fresh-React first load multi-second
-     * because each distinct /@modules/ spec waited for the previous), it
-     * bounds the TOTAL slice BYTES resident in the supervisor at once.
-     *
-     * Many small slices' facet RPC round-trips overlap; a single large
-     * (~28 MiB) slice still serializes the rest. Peak resident slice bytes
-     * never exceed ON_DEMAND_SLICE_CAP_BYTES — the same one-slice envelope
-     * the install-time pre-bundler proved safe on shared DO isolates — so
-     * this is a latency win with no supervisor-heap regression. Coupled
-     * with pendingBundles (same-spec coalescing) as before.
+     * FIFO admission gate for the on-demand bundle slow path. Across
+     * DIFFERENT specs, one cold build runs at a time from slice allocation
+     * through the facet RPC and response construction, so peak resident
+     * slice bytes in the supervisor stay at one ON_DEMAND_SLICE_CAP_BYTES
+     * slice. The on-demand IsolatePool has one slot, so this costs no
+     * execution overlap. Coupled with pendingBundles (same-spec coalescing).
      */
     private onDemandGate;
     /**
@@ -272,12 +266,8 @@ export declare class ViteDevServer {
      * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
      * NO CDN fallback (100% edge contract). Extracted so the coalescing
      * + gate wrapper in serveModule() reads cleanly. Always runs inside
-     * the on-demand byte-budget gate — see serveModule's wrapper.
-     *
-     * `admit` reserves the built slice's real byte size against the gate's
-     * budget and releases the build lock for the next spec. It is called
-     * exactly once, right after the slice is built and before the facet
-     * submit; bail-out paths that never build a slice simply never call it.
+     * the on-demand FIFO gate — see serveModule's wrapper — so the slice
+     * this body allocates is the only cold slice resident until it returns.
      */
     private serveModuleCold;
     /**
