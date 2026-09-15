@@ -43,6 +43,12 @@ export type FacetRegistryEvent = {
     suggest?: string;
     ctx: 'transitive';
 } | {
+    type: 'advisory';
+    from: string;
+    reason: string;
+    suggest?: string;
+    ctx: 'transitive';
+} | {
     type: 'transitive-skip';
     from: string;
     reason: string;

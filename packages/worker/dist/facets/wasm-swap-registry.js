@@ -487,19 +487,19 @@ export function policyIsOptionalNativeBinding(policy, p) {
     return false;
 }
 /**
- * Classify a required package's published artifacts against the Nimbus
- * ABI policy and return a reject entry when the package can only run as
- * a native platform binary. Detection is metadata-driven:
+ * Classify a package's published artifacts against the Nimbus ABI policy.
+ * Two halves, two install outcomes:
  *
- *   - any bin target with a native executable extension
- *     (policy.nativeBinExtensions — .exe Windows executables, .node
- *     N-API binaries, …)
- *   - package.json `os` / `cpu` / `libc` allowlists. A positive
- *     allowlist means the package opts out of cross-platform installs
- *     (npm rejects mismatches with EBADPLATFORM); no allowlisted
- *     platform is executable in Nimbus. Pure negations (`!win32`) do
- *     NOT classify as native — they exclude platforms without
- *     requiring one.
+ *   - policyNativeBinAdvisory — any bin target with a native executable
+ *     extension (.exe, .node N-API binaries, …). Real npm installs
+ *     these: the artifact only fails when invoked, so install keeps the
+ *     package and reports an advisory naming the reason.
+ *   - policyNativePlatformReject — package.json `os` / `cpu` / `libc`
+ *     allowlists. A positive allowlist means the package opts out of
+ *     cross-platform installs (npm rejects mismatches with
+ *     EBADPLATFORM); no allowlisted platform is executable in Nimbus.
+ *     Pure negations (`!win32`) do NOT classify as native — they exclude
+ *     platforms without requiring one.
  *
  * Diagnostics always name the package, the artifact class found
  * (policy.nativeArtifactClass), and the artifact kinds Nimbus accepts
@@ -507,7 +507,7 @@ export function policyIsOptionalNativeBinding(policy, p) {
  *
  * Serialized into facet preambles — self-contained by contract.
  */
-export function policyNativeArtifactReject(policy, pkg) {
+export function policyNativeBinAdvisory(policy, pkg) {
     const fileExtension = (path) => {
         const text = String(path || '');
         const query = text.indexOf('?');
@@ -533,6 +533,19 @@ export function policyNativeArtifactReject(policy, pkg) {
             };
         }
     }
+    return undefined;
+}
+/**
+ * The install-time refusal half: package.json `os` / `cpu` / `libc`
+ * allowlists. A positive allowlist means the package opts out of
+ * cross-platform installs — npm rejects mismatches with EBADPLATFORM,
+ * and no allowlisted platform is executable in Nimbus. Pure negations
+ * (`!win32`) do NOT classify as native — they exclude platforms without
+ * requiring one.
+ *
+ * Serialized into facet preambles — self-contained by contract.
+ */
+export function policyNativePlatformReject(policy, pkg) {
     const allowlisted = (values) => Array.isArray(values)
         ? values.filter((v) => typeof v === 'string' && v.length > 0 && !v.startsWith('!'))
         : [];
@@ -555,6 +568,15 @@ export function policyNativeArtifactReject(policy, pkg) {
         };
     }
     return undefined;
+}
+/**
+ * Union of the two halves above — kept for the optional-native-binding
+ * skip classifier, which treats either native shape as skippable from
+ * an optional edge.
+ */
+export function policyNativeArtifactReject(policy, pkg) {
+    return (policyNativeBinAdvisory(policy, pkg) ??
+        policyNativePlatformReject(policy, pkg));
 }
 // Supervisor wrappers over the serializable policy functions.
 export function isOptionalNativeBinding(p) {

@@ -550,12 +550,9 @@ export async function rpcProcessLogs(self, pid, options = {}) {
 }
 export async function rpcListPorts(self) {
     await ensureProgrammaticReady(self);
-    const entries = self.portRegistry.getAll();
-    // Persisted at the moment the embedder is told the value, not at
-    // registration: a capability nobody has been handed does not need to
-    // survive anything.
-    await Promise.all(entries.map((entry) => persistPortCapability(self, entry.port, entry.capability)));
-    return entries.map(serializePort);
+    // The composed manager's copy is the one implementation — persistence
+    // at tell-time included.
+    return self.ensureFacetManager().apps.listPorts();
 }
 /**
  * Browser-facing URL for an application, built inside the session: the
@@ -937,32 +934,10 @@ async function resolveAppTarget(self, target) {
  */
 export async function rpcEnsureDurableApp(self, input) {
     await ensureProgrammaticReady(self);
-    const owner = input.owner;
-    if (typeof owner !== 'string' || owner.length === 0) {
-        throw new Error('ensureDurableApp: owner must be a non-empty string');
-    }
-    const occupied = new Set(self.portRegistry.getAll().map((entry) => entry.port));
-    const port = await reservePort(self.ctx, {
-        owner,
-        preferredPort: input.preferredPort,
-        occupiedPorts: occupied,
-        // Minted here, not at boot: the URL is built from this capability, and
-        // re-drive re-adopts it out of the same row.
-        capability: createPortCapability(),
-        ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
-    });
-    const record = await readPortReservation(self.ctx, port);
-    if (record?.visibility === 'public' && record.capability !== null) {
-        // The URL is built on this capability before the app has ever run:
-        // publish it to the directory now, loudly refusing a deployment whose
-        // binding is missing rather than minting an unroutable URL.
-        await bindPublicPortCapability(self, record.capability, port);
-    }
-    return {
-        port,
-        capability: record?.capability ?? null,
-        visibility: record?.visibility ?? 'scoped',
-    };
+    // The composed manager owns the durable-app verbs — one implementation,
+    // capability minted there so a URL handed out before boot is the one the
+    // eventual binding re-adopts.
+    return self.ensureFacetManager().apps.ensureDurableApp(input);
 }
 export async function rpcUnexposePort(self, port) {
     await ensureProgrammaticReady(self);

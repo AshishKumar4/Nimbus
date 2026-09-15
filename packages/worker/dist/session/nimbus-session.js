@@ -246,6 +246,7 @@ export class NimbusSession extends CloudflareDurableObject {
     shellProcessPid = null;
     terminal = null;
     facetManager = null;
+    facetManagerComposed = null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
     facetProcessManager = null;
     /**
@@ -976,12 +977,12 @@ export class NimbusSession extends CloudflareDurableObject {
      * transform and the durable image-store fallback are the factory's.
      */
     ensureFacetManager() {
-        if (!this.facetManager) {
+        if (!this.facetManagerComposed && !this.facetManager) {
             // The manager is composed over the filesystem, so the filesystem comes
             // first. Cheap and idempotent; every caller already stood it up or is
             // about to.
             this.ensureSqliteFs();
-            this.facetManager = composeFacetManager({
+            this.facetManagerComposed = composeFacetManager({
                 ctx: this.ctx,
                 env: this.env,
                 processes: this.processes,
@@ -1014,7 +1015,8 @@ export class NimbusSession extends CloudflareDurableObject {
                         });
                     },
                 },
-            }).manager;
+            });
+            this.facetManager = this.facetManagerComposed.manager;
         }
         // W3.5 Fix B: share the session's lazy esbuildService with the
         // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
@@ -1025,6 +1027,9 @@ export class NimbusSession extends CloudflareDurableObject {
         if (this.esbuildService) {
             this.facetManager.setEsbuildService(this.esbuildService);
         }
+        // A host that pre-set `facetManager` (tests) has no composed object;
+        // the callers that dereference `.apps` only run where it was composed.
+        return this.facetManagerComposed;
     }
     /**
      * The supervisor-owned WebSocket relay. Lazy, because most sessions never

@@ -127,8 +127,7 @@ export function createViteCommand(self) {
                 const insideRoot = resolvedOutDir.length > cwd.length && resolvedOutDir.startsWith(cwd + '/');
                 const distDir = resolvedOutDir;
                 if (!insideRoot) {
-                    ctx.stderr.write(`\x1b[33m(!)\x1b[0m outDir ${resolvedOutDir} is not inside project root and will not be emptied.\n` +
-                        'Use --emptyOutDir to override.\n');
+                    ctx.stderr.write(`\x1b[33m(!)\x1b[0m outDir ${resolvedOutDir} is not inside project root and will not be emptied.\n`);
                 }
                 const publicDir = cwd + '/public';
                 const hasPublic = kernelFs.exists(publicDir) && kernelFs.isDirectory(publicDir);

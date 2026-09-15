@@ -125,6 +125,19 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         cacheStatEvents,
         error,
     });
+    // npm parity: a table reject or a native-executable bin is a package
+    // with no Workers-compatible build — real npm still installs it. The
+    // advisory event tells the installer to print one `note:` line per
+    // name and the resolution continues like any package.
+    const emitAdvisory = (entry) => {
+        events.push({
+            type: 'advisory',
+            from: entry.from,
+            reason: entry.reason,
+            suggest: entry.suggest,
+            ctx: 'transitive',
+        });
+    };
     const outNativeExecutableReject = (pkg, bytes, source) => {
         const reject = NATIVE_EXECUTABLE_REJECT(pkg);
         if (!reject)
@@ -138,18 +151,27 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             });
             return out(null, bytes, 'skipped');
         }
+        // Only an os/cpu/libc allowlist fails the install (EBADPLATFORM
+        // parity); a native-executable bin is advisory — the package's JS
+        // tree installs and the reason is reported as an advisory.
+        // @ts-ignore — preamble.
+        const platformReject = NATIVE_PLATFORM_REJECT(pkg);
+        if (!platformReject) {
+            emitAdvisory(reject);
+            return null;
+        }
         events.push({
             type: 'reject',
-            from: reject.from,
-            reason: reject.reason,
-            suggest: reject.suggest,
+            from: platformReject.from,
+            reason: platformReject.reason,
+            suggest: platformReject.suggest,
             ctx: 'transitive',
         });
         return out(null, bytes, source, {
             type: 'w6-reject',
-            from: reject.from,
-            reason: reject.reason,
-            suggest: reject.suggest,
+            from: platformReject.from,
+            reason: platformReject.reason,
+            suggest: platformReject.suggest,
         });
     };
     // 1. Registry policy.
@@ -164,21 +186,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     else {
         // @ts-ignore — preamble.
         const __fail = SHOULD_REJECT_FAIL(spec.name);
-        if (__fail) {
-            events.push({
-                type: 'reject',
-                from: __fail.from,
-                reason: __fail.reason,
-                suggest: __fail.suggest,
-                ctx: 'transitive',
-            });
-            return out(null, 0, 'skipped', {
-                type: 'w6-reject',
-                from: __fail.from,
-                reason: __fail.reason,
-                suggest: __fail.suggest,
-            });
-        }
+        // A listed package resolves and installs — npm parity; the
+        // advisory names the reason it cannot run here.
+        if (__fail)
+            emitAdvisory(__fail);
     }
     // 2. cachedHit fast-path. The pick over the cached versions is the same
     //    RESOLVE_VERSION the packument path uses — a range is never reduced

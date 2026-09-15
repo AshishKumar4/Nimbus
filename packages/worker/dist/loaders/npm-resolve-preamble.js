@@ -31,7 +31,7 @@
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */
-import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeArtifactReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
+import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeBinAdvisory, policyNativePlatformReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
 import { compareSemver, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
 import { parseRegistryRequest } from '../npm/resolve-one-facet.js';
 export const NPM_RESOLVE_PREAMBLE = `
@@ -41,10 +41,11 @@ export const NPM_RESOLVE_PREAMBLE = `
 const __NIMBUS_PACKAGE_ABI_POLICY = ${JSON.stringify(PACKAGE_ABI_POLICY)};
 const __policyLookupSwap = ${policyLookupSwap.toString()};
 const __policyLookupReject = ${policyLookupReject.toString()};
-const __policyNativeArtifactReject = ${policyNativeArtifactReject.toString()};
-const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
+const __policyNativePlatformReject = ${policyNativePlatformReject.toString()};
+const __policyNativeBinAdvisory = ${policyNativeBinAdvisory.toString()};
 const __policyLookupStagedArtifact = ${policyLookupStagedArtifact.toString()};
 const __policyApplyStagedArtifact = ${policyApplyStagedArtifact.toString()};
+const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
 function SHOULD_SWAP(name) {
   return __policyLookupSwap(__NIMBUS_PACKAGE_ABI_POLICY, name);
 }
@@ -54,7 +55,14 @@ function SHOULD_REJECT_FAIL(name) {
   return undefined;
 }
 function NATIVE_EXECUTABLE_REJECT(pkg) {
-  return __policyNativeArtifactReject(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
+  return __policyNativeBinAdvisory(__NIMBUS_PACKAGE_ABI_POLICY, pkg)
+      ?? __policyNativePlatformReject(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
+}
+function NATIVE_PLATFORM_REJECT(pkg) {
+  return __policyNativePlatformReject(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
+}
+function NATIVE_BIN_ADVISORY(pkg) {
+  return __policyNativeBinAdvisory(__NIMBUS_PACKAGE_ABI_POLICY, pkg);
 }
 function IS_OPTIONAL_NATIVE_BINDING(pkg) {
   return __policyIsOptionalNativeBinding(__NIMBUS_PACKAGE_ABI_POLICY, pkg);

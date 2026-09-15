@@ -23,7 +23,30 @@
  * Per DEFECT-D1: route handlers read self.ctx + self.env extensively
  * (~30 sites). RoutesHost = any pragmatic deviation, like InitHost in S6.
  */
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 type RoutesHost = any;
+/**
+ * The host surface `routeToSessionPort` actually reads — deliberately the
+ * narrowest shape that serves every port-addressed route, so non-session
+ * hosts (the composed facet manager's `apps.routeCapabilityPort`) can call
+ * the one implementation instead of carrying a copy. The session
+ * satisfies every field; a compose host supplies `ctx`/`portRegistry`/
+ * `ensureDurableAppOnPort` and the dev-server/HMR fields stay absent —
+ * `restorePersistedDevServer` and the vite-shim branch no-op on it.
+ */
+interface SessionPortHost {
+    ctx: DurableObjectState;
+    portRegistry: PortRegistry;
+    ensureDurableAppOnPort?: (port: number) => Promise<'absent' | 'started' | 'failed'>;
+    _viteShimPort?: number | null;
+    viteDevServer?: {
+        isRunning: boolean;
+        handleRequest(request: Request, innerPath: string, mountBase: string): Promise<Response>;
+    } | null;
+    cirrusReal?: {
+        isRunning: boolean;
+    } | null;
+}
 /**
  * Route a request to whatever is listening on a session port.
  *
@@ -40,9 +63,9 @@ type RoutesHost = any;
  * the untrusted-code boundary and cannot carry it, and a plain user server on
  * any other port is mounted at root and needs no rewriting.
  */
-export declare function routeToSessionPort(self: RoutesHost, port: number, request: Request, innerPath: string, mountBase: string, capability?: string): Promise<Response>;
+export declare function routeToSessionPort(self: SessionPortHost, port: number, request: Request, innerPath: string, mountBase: string, capability?: string): Promise<Response>;
 /** Route a capability-authenticated embedder request to a guest HTTP server. */
-export declare function routeCapabilityPort(self: RoutesHost, port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
+export declare function routeCapabilityPort(self: SessionPortHost, port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
 /**
  * The name-addressed door: `/app/<name>/…` — what the scoped `<name>--<sid>`
  * host is forwarded as, and reachable in path form as `/s/<sid>/app/<name>/`.

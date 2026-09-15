@@ -36,8 +36,9 @@ import { createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { FacetManager } from './manager.js';
 import { processHostFor } from '../loaders/process-host.js';
 import { resolveDurableWorkerImage } from './durable-images.js';
-import { persistPortCapability, readPortReservation, readPortReservationByOwner, reservePort, restorePortCapability, } from '../session/port-capability.js';
+import { persistPortCapability, readPortReservation, readPortReservationByOwner, reservePort, } from '../session/port-capability.js';
 import { bindPublicPortCapability } from '../router/public-directory.js';
+import { routeCapabilityPort } from '../session/routes.js';
 import { ESBUILD_TRANSFORM_WORKER_ID, esbuildTransformWorkerCode, } from './esbuild-transform.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 export { FacetManager, DEFAULT_WORKER_MAIN_MODULE } from './manager.js';
@@ -112,21 +113,12 @@ export function composeFacetManager(deps) {
                     capability: String(entry.capability),
                 }));
             },
-            async routeCapabilityPort(port, capability, request, innerPath) {
-                const n = Number(port);
-                const durable = await manager.ensureDurableAppOnPort(n);
-                if (durable === 'failed') {
-                    return new Response(`The application on port ${n} is restarting`, {
-                        status: 503,
-                        headers: { 'Cache-Control': 'no-store', 'Retry-After': '3' },
-                    });
-                }
-                await restorePortCapability(capabilityHost, n);
-                if (!portRegistry.hasCapability(n, String(capability))) {
-                    return new Response('Not found', { status: 404 });
-                }
-                const routed = await portRegistry.routeCapabilityRequest(n, String(capability), request, innerPath);
-                return routed ?? new Response(`No process listening on port ${n}`, { status: 502 });
+            routeCapabilityPort(port, capability, request, innerPath) {
+                // The session's routeToSessionPort is the one implementation —
+                // the capability gate AND the public-bearer visibility gate live
+                // there; a copy here dropped the latter. Session-only concerns
+                // (dev-server restore, the vite-shim branch) no-op on this host.
+                return routeCapabilityPort({ ctx, portRegistry, ensureDurableAppOnPort: (p) => manager.ensureDurableAppOnPort(p) }, port, capability, request, innerPath);
             },
         },
     };

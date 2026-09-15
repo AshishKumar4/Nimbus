@@ -9,6 +9,7 @@ import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtime
 import type { ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -120,7 +121,7 @@ export interface ProgrammaticHost {
     _w9SchemaInit?: boolean;
     _w9WireProcessLogPersist?(): void;
     ensureSqliteFs(): void;
-    ensureFacetManager(): void;
+    ensureFacetManager(): ComposedFacetManager;
     initSession(ws: WebSocket): Promise<void>;
 }
 export interface ProgrammaticReadyOptions {
@@ -382,6 +383,7 @@ export declare function rpcEnsureDurableApp(self: ProgrammaticHost, input: {
     owner: string;
     preferredPort?: number;
     visibility?: 'scoped' | 'public';
+    name?: string;
 }): Promise<{
     port: number;
     capability: string | null;

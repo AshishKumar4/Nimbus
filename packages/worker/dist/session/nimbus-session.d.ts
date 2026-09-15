@@ -10,6 +10,7 @@ import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
+import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import { type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -55,6 +56,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     shellProcessPid: number | null;
     terminal: WebSocketTerminal | null;
     facetManager: FacetManager | null;
+    facetManagerComposed: ComposedFacetManager | null;
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
     facetProcessManager: any;
     /**
@@ -487,6 +489,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         owner: string;
         preferredPort?: number;
         visibility?: 'scoped' | 'public';
+        name?: string;
     }): Promise<{
         port: number;
         capability: string | null;
@@ -583,7 +586,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * report that keeps the process table honest. The isolated esbuild
      * transform and the durable image-store fallback are the factory's.
      */
-    ensureFacetManager(): void;
+    ensureFacetManager(): ComposedFacetManager;
     /**
      * The supervisor-owned WebSocket relay. Lazy, because most sessions never
      * open a socket and the sockets it holds are live objects that must not

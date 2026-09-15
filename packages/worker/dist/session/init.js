@@ -43,6 +43,7 @@ import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath, } from '@nimbus-sh/core/runtime/runtime-registry.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, } from './helpers.js';
 import { createViteCommand } from './vite-command.js';

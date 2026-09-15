@@ -150,15 +150,13 @@ export declare class NpmInstaller {
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
      * to a top-level spec map. Emits `[swap]` notices via onProgress.
      *
-     * G2: rejects never throw. Every refused package is announced with the
-     * same `[skip] <pkg> — <reason> … try: <hint>` line the transitive path
-     * uses, removed from the returned specs, and reported in `rejected`:
-     * `required` is false only for `optionalDependencies` roots, true for
-     * every other selected spec — dependencies AND devDependencies are
-     * required roots unless `--omit=dev`/`--production` removed them at
-     * spec selection, and explicit `npm install <refused>` is required.
-     * The caller installs the returned specs and fails the install on
-     * required rejections; swaps always apply either way.
+     * G2: rejects are advisories — a listed package stays in the spec map
+     * and installs like any other (npm parity: it cannot run here, but
+     * install is the wrong place to say so). Each gets one `[npm] note:`
+     * line per install and an `advisory` registry event; the require-side
+     * refusal carries the reason when the artifact is invoked.
+     * `advised` dedupes across the top-level pass and the walk (the
+     * package still resolves and can surface transitively).
      *
      * Idempotent: running on already-swapped specs is a no-op.
      */
