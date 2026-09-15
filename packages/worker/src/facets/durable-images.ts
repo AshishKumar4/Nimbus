@@ -12,11 +12,12 @@
  * durable spawn exists to survive. Durable images are kept for the
  * application's life and released only by explicit removal.
  *
- * Two blobs per launch: `runner` is the worker.js source text, `application`
- * is a JSON payload of `{ modules, env, vfsWasmModules }`. The digests in the
- * journal's `recipe.image` are sha256 hashes of those two payloads, and a
- * self-owned spawn mints them at spawn time; an embedder-owned spawn is given
- * them by its own bookkeeping instead.
+ * Two blobs per launch: `runner` is the main module's source text,
+ * `application` is a JSON payload of `{ modules, env, vfsWasmModules }` plus,
+ * when the launch set them, `vfsTextModules`, `mainModule` and `startArgs`.
+ * The digests in the journal's `recipe.image` are sha256 hashes of those two
+ * payloads, and a self-owned spawn mints them at spawn time; an
+ * embedder-owned spawn is given them by its own bookkeeping instead.
  */
 
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -67,6 +68,9 @@ export async function persistDurableWorkerImage(
     modules: Record<string, string | { wasm: ArrayBuffer }>;
     env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
+    vfsTextModules?: Record<string, string>;
+    /** Recorded only when the launch named one; absent means `worker.js`. */
+    mainModule?: string;
     startArgs?: unknown;
   },
 ): Promise<{ runner: string; application: string }> {
@@ -74,10 +78,14 @@ export async function persistDurableWorkerImage(
   kernel.mkdir(DURABLE_IMAGE_DIR, { recursive: true });
   const runner = await sha256Hex(workerCode);
   kernel.writeFile(imagePath(runner), workerCode);
+  // Optional members are omitted rather than written null so an unchanged
+  // launch keeps the digest it had before the member existed.
   const applicationPayload = JSON.stringify({
     modules: payload.modules,
     env: payload.env ?? null,
     vfsWasmModules: payload.vfsWasmModules ?? null,
+    ...(payload.vfsTextModules !== undefined ? { vfsTextModules: payload.vfsTextModules } : {}),
+    ...(payload.mainModule !== undefined ? { mainModule: payload.mainModule } : {}),
     ...(payload.startArgs !== undefined ? { startArgs: payload.startArgs } : {}),
   });
   const application = await sha256Hex(applicationPayload);
@@ -106,19 +114,26 @@ export async function resolveDurableWorkerImage(
     return null;
   }
   const runner = new TextDecoder().decode(runnerBytes);
-  const { modules = {}, env = null, vfsWasmModules = undefined, startArgs } = JSON.parse(
-    new TextDecoder().decode(applicationBytes),
-  ) as {
+  const {
+    modules = {}, env = null, vfsWasmModules = undefined, vfsTextModules, mainModule, startArgs,
+  } = JSON.parse(new TextDecoder().decode(applicationBytes)) as {
     modules?: Record<string, string>;
     env?: ResidentCodeSpec['env'] | null;
     vfsWasmModules?: Record<string, string> | null;
+    vfsTextModules?: Record<string, string>;
+    mainModule?: string;
     startArgs?: unknown;
   };
+  // The recipe's own record of the main module wins when the blob predates
+  // the member; both say the same thing for any launch written since.
+  const main = mainModule ?? recipe.mainModule ?? 'worker.js';
   return {
     env: env ?? null,
     globalOutbound: undefined,
-    modules: { 'worker.js': runner, ...modules },
+    modules: { ...modules, [main]: runner },
+    mainModule: main,
     ...(startArgs !== undefined ? { startArgs } : {}),
     ...(vfsWasmModules !== null ? { vfsWasmModules } : {}),
+    ...(vfsTextModules !== undefined ? { vfsTextModules } : {}),
   };
 }

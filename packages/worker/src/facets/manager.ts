@@ -3694,6 +3694,20 @@ export interface LongRunningWorkerSpawnOptions {
    * 34.3 MiB, past what any single RPC value may carry.
    */
   vfsWasmModules?: Record<string, string>;
+  /**
+   * Module name → VFS path of a content-addressed module SOURCE, read as
+   * UTF-8 when the facet loads — the same by-path posture as
+   * `vfsWasmModules`, through the same kernel image reader, for module text
+   * an embedder keeps in its own content store rather than carrying by value.
+   * Each path must name its own digest (`…/<sha256>.js`, see fabric's
+   * `facetImagePath`); the loader verifies it on read.
+   */
+  vfsTextModules?: Record<string, string>;
+  /**
+   * The module the isolate boots from; `workerCode` is placed under this name
+   * in the module map. Default `'worker.js'`.
+   */
+  mainModule?: string;
   compatibilityFlags?: string[];
   compatibilityDate?: string;
   env?: ResidentCodeSpec['env'];
@@ -3706,6 +3720,32 @@ export interface LongRunningWorkerSpawnOptions {
    * A plain spawnWorker stays unjournaled.
    */
   durable?: { owner: string; image?: { runner: string; application: string } };
+}
+
+/** The main module name a worker launch boots from unless told otherwise. */
+export const DEFAULT_WORKER_MAIN_MODULE = 'worker.js';
+
+/**
+ * The narrow handle `spawnWorker` returns beside the pid: the process's own
+ * inbound surface, bound to the resident handle's route target, for an
+ * embedder that invokes the worker directly rather than through a registered
+ * port. It carries NO release — `kill(pid)` remains the one lifecycle owner,
+ * and this handle is dead once that pid is; nothing here can end, restart or
+ * detach the process.
+ */
+export interface WorkerFacet {
+  /** Inbound HTTP, on the facet's `handleHttpRequest`. */
+  fetch(request: Request): Promise<Response>;
+  /** Inbound WebSocket upgrade, on the facet's `handleWebSocketRequest`. */
+  connect(request: Request): Promise<Response>;
+}
+
+/** What `spawnWorker` answers with. */
+export interface SpawnedWorker {
+  pid: number;
+  /** The runner's startProcess payload. */
+  boot: unknown;
+  facet: WorkerFacet;
 }
 
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
@@ -3731,6 +3771,18 @@ export interface ResidentSpawnOptions {
 /** The launch inputs a re-drive rebuilds a worker from: content digests and
  *  transport, never env or credentials — the embedder resolves those. */
 export interface WorkerRecipe {
+  /**
+   * Set only for an interpreter resident the SESSION launched itself — a
+   * `python`/`ruby` socket server whose image is the runtime the session
+   * installed. It is the runtime and argv of that interpreter, never a
+   * boolean, and it is what routes the recipe's re-drive to the session's own
+   * image-store fallback (`resolveWorkerLaunchFallback`) rather than the
+   * embedder's `resolveWorkerLaunch`: the session owns that image and its
+   * bookkeeping, and no embedder was asked about the launch. A worker recipe
+   * WITHOUT it — every embedder-driven `spawnWorker` — re-drives through the
+   * embedder's resolver, with the fallback consulted only when no embedder
+   * hook is composed.
+   */
   resident?: LongRunningWorkerSpawnOptions['resident'];
   kind: 'worker';
   /** The durable application this process belongs to, keyed by the embedder. */
@@ -3742,6 +3794,12 @@ export interface WorkerRecipe {
   compatibilityDate: string;
   compatibilityFlags: string[];
   startArgs?: unknown;
+  /**
+   * The main module the launch booted from, when it was not the default —
+   * so a re-drive whose resolver answers modules alone still boots the same
+   * one. Rows written before the field existed booted `worker.js`.
+   */
+  mainModule?: string;
 }
 interface NodeRecipe { kind: 'node'; code: string; opts: ResidentSpawnOptions }
 /**
@@ -3815,10 +3873,17 @@ export interface ResolvedWorkerLaunch {
   /** Null is the absent answer — the same JSON the image blob carries. */
   env: ResidentCodeSpec['env'] | null;
   globalOutbound: ResidentCodeSpec['globalOutbound'];
-  /** Module name → source text, including the `worker.js` main module. */
+  /** Module name → source text, including the main module under its name. */
   modules: Record<string, string>;
   /** Module name → VFS path of a wasm image, restored with the launch. */
   vfsWasmModules?: Record<string, string>;
+  /** Module name → VFS path of a content-addressed module source, restored with the launch. */
+  vfsTextModules?: Record<string, string>;
+  /**
+   * The name in `modules` the launch boots from. Absent, the recipe's own
+   * `mainModule` decides, then `'worker.js'`.
+   */
+  mainModule?: string;
 }
 
 /** 'running' is the measured common case: the platform's reset strikes
@@ -5387,23 +5452,32 @@ export class FacetManager {
     switch (recipe.kind) {
       case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt);
       case 'worker': {
-        // The embedder's resolver decides everything; only a self-owned
-        // launch — nobody composed an embedder hook — falls through to the
-        // session's image-store default.
+        // Which resolver a worker recipe re-drives through is decided by
+        // `recipe.resident`, and it is not a flag: it is the interpreter
+        // image (`{ runtime, argv }`) of a python/ruby socket server the
+        // SESSION launched for itself. Only those recipes take the
+        // image-store fallback, because the session persisted that image and
+        // no embedder was ever asked about the launch. Every other worker
+        // recipe — an embedder's `spawnWorker`, durable or not — re-drives
+        // through the embedder's `resolveWorkerLaunch`, and falls back to the
+        // image store only when no embedder hook is composed at all.
         const resolve = recipe.resident
           ? this.hooks.resolveWorkerLaunchFallback
           : this.hooks.resolveWorkerLaunch ?? this.hooks.resolveWorkerLaunchFallback;
         if (!resolve) throw new Error('resident launch journal holds a worker launch but no resolveWorkerLaunch hook is composed');
         const resolved = await resolve(recipe);
         if (resolved === null) return undefined;
-        const { 'worker.js': workerCode, ...modules } = resolved.modules;
-        if (workerCode === undefined) throw new Error('resolved worker launch carries no worker.js module');
+        const mainModule = resolved.mainModule ?? recipe.mainModule ?? DEFAULT_WORKER_MAIN_MODULE;
+        const { [mainModule]: workerCode, ...modules } = resolved.modules;
+        if (workerCode === undefined) throw new Error(`resolved worker launch carries no ${mainModule} main module`);
         return this._spawnWorker(workerCode, record.command, recipe.cwd, {
           port: recipe.resident ? record.port : recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
           compatibilityFlags: recipe.compatibilityFlags, startArgs: resolved.startArgs ?? recipe.startArgs,
           resident: recipe.resident, restart: record.restart,
           env: resolved.env ?? undefined, globalOutbound: resolved.globalOutbound,
           vfsWasmModules: resolved.vfsWasmModules,
+          vfsTextModules: resolved.vfsTextModules,
+          mainModule,
           durable: { owner: residentOwner(record) ?? recipe.owner, image: recipe.image },
         }, attempt);
       }
@@ -5806,10 +5880,15 @@ export class FacetManager {
   }
 
   /**
-   * Spawn a long-running dynamic Worker, boot it, and return its boot payload.
+   * Spawn a long-running dynamic Worker, boot it, and return its boot payload
+   * beside the pid and the process's own inbound facet.
    *
    * The shared primitive for any runtime that serves over
-   * handleHttpRequest(Request) — the python and ruby socket servers today.
+   * handleHttpRequest(Request) — the python and ruby socket servers today —
+   * and for an embedder's own Worker-class program: `workerCode` boots as
+   * `opts.mainModule` (default `worker.js`), `opts.modules` ride inline,
+   * `opts.vfsTextModules` and `opts.vfsWasmModules` are read by path when the
+   * facet loads.
    *
    * The interpreter image it carries is the memory that should not sit in the
    * session's own isolate — ruby's interpreter+stdlib alone is 34.3 MiB — and
@@ -5817,13 +5896,18 @@ export class FacetManager {
    * no readiness coupling back into the session: the runner answers
    * startProcess with its boot payload and the caller waits on that one
    * promise, so nothing polls the port to decide the process is up.
+   *
+   * The returned `facet` is bound to the resident handle's route target — the
+   * same target a registered port routes to — so a port-less process can be
+   * invoked directly. It has no release: `kill(pid)` is the one lifecycle
+   * owner, and the facet is dead once the pid is.
    */
   async spawnWorker(
     workerCode: string,
     command: string,
     cwd: string,
     opts: LongRunningWorkerSpawnOptions = {},
-  ): Promise<{ pid: number; boot: unknown }> {
+  ): Promise<SpawnedWorker> {
     return this._spawnWorker(workerCode, command, cwd, opts, 0);
   }
 
@@ -5834,7 +5918,7 @@ export class FacetManager {
     cwd: string,
     opts: LongRunningWorkerSpawnOptions,
     attempt: number,
-  ): Promise<{ pid: number; boot: unknown }> {
+  ): Promise<SpawnedWorker> {
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
     }
@@ -5851,6 +5935,10 @@ export class FacetManager {
 
     const compatibilityDate = opts.compatibilityDate ?? CF_COMPAT_DATE;
     const compatibilityFlags = opts.compatibilityFlags || ['nodejs_compat'];
+    const mainModule = opts.mainModule ?? DEFAULT_WORKER_MAIN_MODULE;
+    if (opts.modules && Object.hasOwn(opts.modules, mainModule)) {
+      throw new Error(`Nimbus: spawnWorker main module '${mainModule}' is also an inline module; workerCode is the main module`);
+    }
 
     let handle: ResidentProcessHandle | undefined;
     let resourcesTracked = false;
@@ -5891,6 +5979,8 @@ export class FacetManager {
             modules: opts.modules ?? {},
             ...(opts.env !== undefined ? { env: opts.env } : {}),
             vfsWasmModules: opts.vfsWasmModules,
+            vfsTextModules: opts.vfsTextModules,
+            ...(opts.mainModule !== undefined ? { mainModule: opts.mainModule } : {}),
             startArgs: opts.startArgs,
           });
         await this.ctx.storage.transaction(async (txn) => {
@@ -5917,6 +6007,7 @@ export class FacetManager {
             compatibilityFlags,
             ...(opts.durable.image && !opts.resident ? { startArgs: opts.startArgs } : {}),
             ...(opts.resident ? { resident: opts.resident } : {}),
+            ...(opts.mainModule !== undefined ? { mainModule: opts.mainModule } : {}),
           },
           // The row-level fields `ensureDurableAppOnPort` reads — same values
           // the recipe carries, stamped so port/owner lookup never depends on
@@ -5960,9 +6051,10 @@ export class FacetManager {
           code: {
             compatibilityDate,
             compatibilityFlags,
-            mainModule: 'worker.js',
-            modules: { 'worker.js': workerCode, ...(opts.modules || {}) },
+            mainModule,
+            modules: { ...(opts.modules || {}), [mainModule]: workerCode },
             vfsWasmModules: opts.vfsWasmModules,
+            ...(opts.vfsTextModules !== undefined ? { vfsTextModules: opts.vfsTextModules } : {}),
             ...(opts.env !== undefined || launchEnv !== undefined ? { env: { ...opts.env, ...launchEnv } } : {}),
             ...(opts.globalOutbound !== undefined ? { globalOutbound: opts.globalOutbound } : {}),
           },
@@ -5993,7 +6085,20 @@ export class FacetManager {
         }
         await this._registerResidentPort(entry.pid, opts.port);
       }
-      return { pid: entry.pid, boot };
+      const target = handle.routeTarget;
+      return {
+        pid: entry.pid,
+        boot,
+        facet: {
+          fetch: (request) => target.handleHttpRequest(request),
+          connect: async (request) => {
+            if (typeof target.handleWebSocketRequest !== 'function') {
+              throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);
+            }
+            return target.handleWebSocketRequest(request);
+          },
+        },
+      };
     } catch (e: unknown) {
       this.portRegistry.unregisterByPid(entry.pid);
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
