@@ -7,11 +7,12 @@
 // What it checks, honestly: clone → `npm install` exit 0 with npm's
 // `added N packages` line → `npm run dev` (the repo's own script,
 // `vite --host 0.0.0.0 --port ${PORT:-3000}`) binds 3000 → the scoped
-// port URL serves HTML → the dev banner shows no ✘ line. When the repo's
-// declared devDependencies include a policy refusal (today:
-// @cloudflare/vite-plugin — a Workers-only tool with no reason to run
-// inside a sandbox that already IS Workers), the install exits 1 and
-// this probe reports that honestly instead of laundering it.
+// port URL serves HTML → the dev banner shows no ✘ line. The repo's
+// declared devDependencies used to include a policy refusal
+// (@cloudflare/vite-plugin — a Workers-only tool with no reason to run
+// inside a sandbox that already IS Workers); the plugin installs like
+// any plain-JS package now and the cirrus path simply never evaluates
+// it.
 //
 // Run: BASE=... NIMBUS_PROBE_TOKEN=... bun tests/behavioral/frameworks/personal-website-real.mjs
 
@@ -51,7 +52,7 @@ try {
   a.check('git clone exits 0', cl.exit === 0, cl.output.slice(-400));
   if (cl.exit !== 0) throw new Error('clone failed; nothing to install or serve');
 
-  // ── 2. install — report, do not hide, a required refusal ────────────
+  // ── 2. install ──────────────────────────────────────────────────────
   const ins = await run(t, 'cd /home/user/site && npm install', 900_000);
   console.log('[install] exit=' + ins.exit);
   console.log(ins.output.split('\n').filter(l => l.trim()).slice(-15).join('\n'));

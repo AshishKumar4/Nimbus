@@ -530,10 +530,95 @@ function makeInstaller(pkgJson, resultFor) {
   log.length = 0;
   const second = await installer.install(PROJ);
   const output = log.join('\n');
+
   assert.deepEqual(second.failed, []);
   assert.ok(/Lockfile valid/.test(output), `a complete lockfile is trusted:\n${output}`);
   assert.ok(/\bDone!/.test(output), 'the second install succeeds from cache');
   console.log('  caseO: a complete tree reuses its lockfile');
+}
+// ── Case P: retired 'warn' toolchain entries install like plain JS ──────
+//
+// wrangler and @cloudflare/vite-plugin were policy 'warn' entries — a
+// declared one was refused with a reason. They are plain JavaScript; the
+// native shards they pull are refused by the optional-native-binding
+// classifier instead. A project that declares them installs them, on
+// disk, with the shards skipped and the rest of the tree intact.
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  const wranglerOptDeps = { 'workerd-1': '1.0.0', 'workerd-2': '1.0.0' };
+  const pluginDeps = { miniflare: '1.0.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0' };
+  const { installer, log, root } = makeInstaller(
+    { name: 'tooling-app', dependencies: { ...ok, wrangler: '^4.0.0', '@cloudflare/vite-plugin': '^1.0.0' } },
+    (name) => {
+      if (name === 'wrangler') {
+        const r = resolvedResult(name, '4.0.0', {
+          optionalDependencies: wranglerOptDeps,
+          bin: { wrangler: 'bin/wrangler.js' },
+        });
+        r.optionalDeps = wranglerOptDeps;
+        return r;
+      }
+      if (name === '@cloudflare/vite-plugin') {
+        return resolvedResult(name, '1.0.0', { dependencies: pluginDeps });
+      }
+      if (name === 'workerd-1' || name === 'workerd-2') {
+        // The optional native shards wrangler pulls: platform-pinned
+        // packages whose only artifact is a native binary. The
+        // optional-native-binding classifier refuses them and the parent
+        // lives without them.
+        return resolvedResult(name, '1.0.0', { os: ['linux'], cpu: ['x64'] });
+      }
+      return resolvedResult(name, '1.0.0');
+    },
+  );
+  const result = await installer.install(PROJ);
+  const output = log.join('\n');
+
+  assert.deepEqual(result.failed, [], `the toolchain installs clean (failed=${JSON.stringify(result.failed)})`);
+  for (const name of ['wrangler', '@cloudflare/vite-plugin', 'miniflare']) {
+    assert.ok(result.installed.some((entry) => entry.startsWith(`${name}@`)), `${name} installed (installed=${JSON.stringify(result.installed)})`);
+    assert.ok(root.exists(`${NM}/${name}/package.json`), `${name} is on disk`);
+  }
+  for (const name of ['workerd-1', 'workerd-2']) {
+    assert.ok(!root.exists(`${NM}/${name}/package.json`), `the native shard ${name} is skipped, not installed`);
+    assert.ok(/\[skip\].*workerd/.test(output), `the shard skip is logged:\n${output}`);
+  }
+  assert.ok(/\bDone!/.test(output), `the install succeeds:\n${output}`);
+  console.log('  caseP: wrangler + @cloudflare/vite-plugin install; native shards skipped');
+}
+
+// ── Case Q: an npm: alias does not invalidate its own lockfile ─────────
+//
+// `vliw: npm:react@^19` pins `vliw` to the resolved react version. The
+// lockfile answers the alias by presence — re-running satisfiesRange
+// against the alias text ("npm:react@^19" parses to nothing) invalidated
+// every aliased entry and forced a full re-resolve on every second
+// install. The second install must come back "Lockfile valid".
+{
+  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
+  const cw = (name, version) => ({
+    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
+    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
+    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
+  });
+  const { installer, log } = makeInstaller(
+    { name: 'alias-app', dependencies: { ...ok, vliw: 'npm:react@^19.0.0' } },
+    (name) => {
+      const r = resolvedResult(name, name === 'vliw' ? '19.1.0' : '1.0.0');
+      r.cacheWrites = [cw(name, name === 'vliw' ? '19.1.0' : '1.0.0')];
+      return r;
+    },
+  );
+  const first = await installer.install(PROJ);
+  assert.deepEqual(first.failed, []);
+  assert.ok(first.installed.includes('vliw@19.1.0'), `the alias installs under its name (installed=${JSON.stringify(first.installed)})`);
+  log.length = 0;
+  const second = await installer.install(PROJ);
+  const output = log.join('\n');
+  assert.deepEqual(second.failed, []);
+  assert.ok(/Lockfile valid/.test(output), `an aliased spec reuses its lockfile:\n${output}`);
+  assert.ok(/\bDone!/.test(output), 'the second install succeeds from cache');
+  console.log('  caseQ: an npm: alias reuses its lockfile');
 }
 
 console.log('npm-install-native-policy: all assertions passed');

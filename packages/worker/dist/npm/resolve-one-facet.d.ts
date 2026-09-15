@@ -20,7 +20,6 @@
  *     accessed via bare identifiers from the preamble:
  *
  *       SHOULD_SWAP(name) → { from, to } | null
- *       SHOULD_WARN_SKIP_TRANSITIVE(name) → { from, reason } | null
  *       SHOULD_REJECT_FAIL(name) → { from, reason, suggest? } | null
  *       NATIVE_EXECUTABLE_REJECT(pkg) → { from, reason, suggest? } | null
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
@@ -40,7 +39,7 @@
  *
  * What the task DOES do
  * ─────────────────────
- *   1. Apply swap / warn-skip / reject-fail registry policy.
+ *   1. Apply swap / reject-fail registry policy.
  *   2. Try in-task cache from `cachedHit` (one entry shipped from
  *      supervisor's NpmCache).
  *   3. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
@@ -166,6 +165,20 @@ export interface ResolveOneResult {
         reason: string;
     };
 }
+/**
+ * Parse an npm spec into install-name / registry-name / range. `npm:`
+ * aliases redirect the registry lookup to a different package while the
+ * dep records the alias as the install name; everything else is the
+ * identity. Shared with the installer's lockfile check (which reads the
+ * inner range out of an alias spec) and re-declared in the loader
+ * preamble so the facet's serialized body sees the same implementation.
+ */
+export declare function parseRegistryRequest(name: string, range: string): {
+    installName: string;
+    registryName: string;
+    range: string;
+    alias: boolean;
+};
 /**
  * Per-package fanout task body. Serialised via fn.toString() and
  * dispatched by Fanout.submitMany — see installer.ts

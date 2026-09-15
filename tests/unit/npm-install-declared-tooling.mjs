@@ -6,10 +6,12 @@
 // project's OWN package.json through it: `git clone <ts project> && npm
 // install` reported Done! with no node_modules/.bin/tsc, no @types, no
 // eslint. None of those can't run here — they are JavaScript. The list is
-// empty now; what truly cannot run (wrangler, @cloudflare/vite-plugin,
-// node-gyp, parcel) is a REJECT with a stated reason: a declared one is
-// left out with that reason on the log and the rest installs, an explicit
-// `npm install wrangler` still fails with it.
+// empty now; what truly cannot run (node-pty, sharp, canvas) is a REJECT
+// with a stated reason: a declared one is left out with that reason on
+// the log and the rest installs, an explicit `npm install sharp` still
+// fails with it. The retired 'warn' toolchain entries — wrangler,
+// @cloudflare/vite-plugin, parcel, node-gyp — are plain JS and install
+// like anything else.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -80,22 +82,21 @@ function makeInstaller(pkgJson, resultFor) {
 {
   assert.deepEqual(PACKAGE_ABI_POLICY.skipPackages, [], 'nothing is silently skipped');
   assert.deepEqual(PACKAGE_ABI_POLICY.skipPrefixes, []);
+  assert.ok(
+    !PACKAGE_ABI_POLICY.rejects.some((r) => r.transitive === 'warn'),
+    'no warn-transitive entries remain',
+  );
   for (const name of ['wrangler', '@cloudflare/vite-plugin', 'parcel', 'node-gyp', 'node-pre-gyp']) {
-    const r = lookupReject(name);
-    assert.ok(r && r.reason.length > 20, `${name} is a REJECT with a stated reason`);
-    assert.equal(r.transitive, 'warn', `${name} is left out, never aborts a project that merely declares it`);
+    assert.equal(lookupReject(name), undefined, `${name} has no reject entry`);
   }
-  assert.match(lookupReject('wrangler').suggest, /nimbus-wrangler/);
-  assert.match(lookupReject('@cloudflare/vite-plugin').suggest, /nimbus-wrangler/);
-  console.log('  policy: empty skip list, four rejects with reasons');
+  console.log('  policy: empty skip list, no warn rejects');
 }
 
 // ── a cloned TypeScript project installs its tooling ────────────────────────
 //
-// `wrangler` is a declared devDependency the policy refuses: a dev root
-// is required, so the install fails honestly — the summary marks it
-// (devDependency) and names the flag — while every supportable sibling
-// still installs. Nothing the project declares is silently left out.
+// `wrangler` is a declared devDependency the policy no longer refuses:
+// it is plain JS, so it installs with the rest and lands on disk.
+// Nothing the project declares is silently left out.
 {
   const { installer, log, root, shardsSeen } = makeInstaller(
     {
@@ -108,34 +109,32 @@ function makeInstaller(pkgJson, resultFor) {
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
-  for (const name of ['react', 'react-dom', 'typescript', '@types/node', 'eslint', 'prettier']) {
+  for (const name of ['react', 'react-dom', 'typescript', '@types/node', 'eslint', 'prettier', 'wrangler']) {
     assert.ok(result.installed.some((entry) => entry.startsWith(`${name}@`)), `${name} installed (installed=${JSON.stringify(result.installed)})`);
     assert.ok(root.exists(`${NM}/${name}/package.json`), `${name} is on disk`);
   }
   assert.ok(root.exists(`${NM}/.bin/tsc`), 'node_modules/.bin/tsc exists');
-  assert.equal(shardsSeen.includes('wrangler'), false, 'wrangler was never dispatched');
-  assert.ok(result.failed.includes('wrangler'), `the refused devDependency fails honestly (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*wrangler — Runs workerd and esbuild as native binaries/.test(output), `the log carries wrangler's reason:\n${output}`);
-  assert.ok(/wrangler \(devDependency\)/.test(output) && /--omit=dev/.test(output), `the summary gives the devDependency guidance:\n${output}`);
-  assert.ok(!/\bDone!/.test(output), `no success line while a declared package is missing:\n${output}`);
-  console.log('  declared typescript/@types/eslint install, wrangler fails honestly with its reason');
+  assert.equal(result.failed.length, 0, `nothing failed (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(shardsSeen.includes('wrangler'), 'wrangler was dispatched like any package');
+  console.log('  declared typescript/@types/eslint/wrangler all install');
 }
 
 // ── an explicit request for a refused package fails without aborting ──────
 //
-// G2: even `npm install wrangler` installs what it can (nothing else was
+// G2: even `npm install sharp` installs what it can (nothing else was
 // asked for here) and reports the refusal as a failed package with the
 // per-package `[skip]` line — never as an install-level throw. The shell
 // maps the non-empty `failed` list to exit 1.
 {
   const { installer, log } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, (name) => resolvedResult(name, '1.0.0'));
-  const result = await installer.install(PROJ, { packages: ['wrangler'] });
+  const result = await installer.install(PROJ, { packages: ['sharp'] });
   const output = log.join('\n');
-  assert.ok(result.failed.includes('wrangler'), `the refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*wrangler — .*… try:.*nimbus-wrangler/.test(output), `the log carries the skip line with the hint:\n${output}`);
-  assert.ok(/1 required package is not supported on Nimbus: wrangler/.test(output), `the closing summary names it:\n${output}`);
+  assert.ok(result.failed.includes('sharp'), `the refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*sharp — /.test(output), `the log carries the skip line:\n${output}`);
+  assert.ok(/1 required package is not supported on Nimbus: sharp/.test(output), `the closing summary names it:\n${output}`);
   assert.ok(!/\bDone!/.test(output), `no success line on a refused install:\n${output}`);
-  console.log('  an explicit npm install wrangler fails with the reason, nothing aborts');
+  console.log('  an explicit npm install sharp fails with the reason, nothing aborts');
 }
+
 
 console.log('npm-install-declared-tooling: ok');

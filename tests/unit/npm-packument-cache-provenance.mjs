@@ -22,7 +22,7 @@ import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-reso
 // injected by the loader preamble. Evaluate the real preamble so this test
 // exercises the real decisions.
 const PREAMBLE_SYMBOLS = [
-  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
+  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
   'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];

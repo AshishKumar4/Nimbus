@@ -20,7 +20,6 @@
  *     accessed via bare identifiers from the preamble:
  *
  *       SHOULD_SWAP(name) → { from, to } | null
- *       SHOULD_WARN_SKIP_TRANSITIVE(name) → { from, reason } | null
  *       SHOULD_REJECT_FAIL(name) → { from, reason, suggest? } | null
  *       NATIVE_EXECUTABLE_REJECT(pkg) → { from, reason, suggest? } | null
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
@@ -40,7 +39,7 @@
  *
  * What the task DOES do
  * ─────────────────────
- *   1. Apply swap / warn-skip / reject-fail registry policy.
+ *   1. Apply swap / reject-fail registry policy.
  *   2. Try in-task cache from `cachedHit` (one entry shipped from
  *      supervisor's NpmCache).
  *   3. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
@@ -55,6 +54,40 @@
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
  */
+/**
+ * Parse an npm spec into install-name / registry-name / range. `npm:`
+ * aliases redirect the registry lookup to a different package while the
+ * dep records the alias as the install name; everything else is the
+ * identity. Shared with the installer's lockfile check (which reads the
+ * inner range out of an alias spec) and re-declared in the loader
+ * preamble so the facet's serialized body sees the same implementation.
+ */
+export function parseRegistryRequest(name, range) {
+    const text = String(range || 'latest');
+    if (!text.startsWith('npm:')) {
+        return { installName: name, registryName: name, range: text, alias: false };
+    }
+    const target = text.slice(4);
+    const findSeparator = (specText) => {
+        if (!specText)
+            return -1;
+        if (specText[0] !== '@')
+            return specText.indexOf('@');
+        const slash = specText.indexOf('/');
+        if (slash < 0)
+            return -1;
+        return specText.indexOf('@', slash + 1);
+    };
+    const splitAt = findSeparator(target);
+    const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
+    const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
+    return {
+        installName: name,
+        registryName: registryName || name,
+        range: targetRange || 'latest',
+        alias: true,
+    };
+}
 /**
  * Per-package fanout task body. Serialised via fn.toString() and
  * dispatched by Fanout.submitMany — see installer.ts
@@ -71,32 +104,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const messages = [];
     const events = [];
     const cacheWrites = [];
-    const parseRegistryRequest = (name, range) => {
-        const text = String(range || 'latest');
-        if (!text.startsWith('npm:')) {
-            return { installName: name, registryName: name, range: text, alias: false };
-        }
-        const target = text.slice(4);
-        const findSeparator = (specText) => {
-            if (!specText)
-                return -1;
-            if (specText[0] !== '@')
-                return specText.indexOf('@');
-            const slash = specText.indexOf('/');
-            if (slash < 0)
-                return -1;
-            return specText.indexOf('@', slash + 1);
-        };
-        const splitAt = findSeparator(target);
-        const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
-        const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
-        return {
-            installName: name,
-            registryName: registryName || name,
-            range: targetRange || 'latest',
-            alias: true,
-        };
-    };
     const request = parseRegistryRequest(spec.name, spec.range);
     // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
     // (spliced from supervisor RPC return.events) and the L4 path
@@ -155,13 +162,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         effName = __swap.to;
     }
     else {
-        // @ts-ignore — preamble.
-        const __warn = SHOULD_WARN_SKIP_TRANSITIVE(spec.name);
-        if (__warn) {
-            messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${__warn.from} — ${__warn.reason}${__warn.suggest ? ` … try: ${__warn.suggest}` : ''}`);
-            events.push({ type: 'transitive-skip', from: __warn.from, reason: __warn.reason });
-            return out(null, 0, 'skipped');
-        }
         // @ts-ignore — preamble.
         const __fail = SHOULD_REJECT_FAIL(spec.name);
         if (__fail) {

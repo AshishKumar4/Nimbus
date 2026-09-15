@@ -10,7 +10,6 @@
  * The resolver facets reference the following preamble symbols:
  *   - SHOULD_SWAP(name)         → swap entry | undefined
  *   - SHOULD_REJECT_FAIL(name)  → reject entry | undefined
- *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
  *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
  *   - IS_OPTIONAL_NATIVE_BINDING(pkg) → boolean
  *   - PARSE_SEMVER(v) → [major, minor, patch, prerelease[]] | null

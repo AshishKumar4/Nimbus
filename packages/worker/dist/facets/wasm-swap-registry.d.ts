@@ -11,12 +11,11 @@
  *              `npm:` aliases. They live in `rejects` with a
  *              code-change suggestion.
  *
- *   - rejects: deny list with helpful messages. Each entry has a
- *              per-entry `transitive` policy:
- *                'fail' = hard-fail at any depth (top + transitive).
- *                'warn' = top-level fails; transitive logs `[skip]`
- *                         and continues (matches the existing
- *                         `shouldSkipPackage` UX for build-only).
+ *   - rejects: deny list with helpful messages. Every entry is
+ *              `transitive: 'fail'` — hard-fail at any depth (top +
+ *              transitive). The 'warn' classification is retired:
+ *              plain-JS tooling installs, and native shards are caught
+ *              by the optional-native-binding classifier instead.
  *
  * IMPORTANT: `PACKAGE_ABI_POLICY` is the single source of truth for the
  * whole npm policy — supervisor AND facets. Generated dynamic-Worker
@@ -86,20 +85,10 @@ export declare function applySwaps(specs: Record<string, string>): {
     swaps: PackageSwapEntry[];
 };
 /**
- * Return rejects whose policy applies at this depth.
- *   ctx='top'        → all matching rejects (any policy).
- *   ctx='transitive' → only `transitive: 'fail'` rejects (the 'warn'
- *                      policy is handled by the caller as a `[skip]`
- *                      log + continue).
+ * Return rejects whose policy applies at this depth. Only 'fail'
+ * entries exist, so 'top' and 'transitive' are the same set.
  */
 export declare function findRejects(specs: Record<string, string>, ctx: 'top' | 'transitive'): PackageRejectEntry[];
-/**
- * Lookup that the resolver uses at depth>0 to decide between throw and
- * `[skip]`+continue. Returns the entry only when its policy is 'warn'
- * (i.e., this is a transitive-skip case). 'fail' entries return undefined
- * here; the caller handles those via findRejects/throw.
- */
-export declare function shouldWarnSkipTransitive(name: string): PackageRejectEntry | undefined;
 /**
  * Single-line yellow notice emitted to onProgress when a swap fires.
  *   `[npm] [swap] esbuild → esbuild-wasm (Native esbuild not available …)`
@@ -126,8 +115,9 @@ export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
  *                         actionable `suggest`). At `ctx='top'` an error is
  *                         thrown; at `ctx='transitive'` the throw happens
  *                         when the entry's policy is `'fail'`.
- *   - `transitive-skip` — `from` (with `transitive: 'warn'` policy) was
- *                         dropped silently from the resolved tree at depth>0.
+ *   - `transitive-skip` — `from` was dropped silently from the resolved
+ *                         tree at depth>0 (policy refusal, optional peer
+ *                         in REJECT_INSTALL, or optional native binding).
  */
 export type RegistryEvent = {
     type: 'swap';

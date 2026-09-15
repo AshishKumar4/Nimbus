@@ -45,7 +45,7 @@ import {
 } from './npm-log.js';
 import {
   applySwaps, findRejects, lookupSwap, lookupReject,
-  shouldWarnSkipTransitive, isOptionalNativeBinding,
+  isOptionalNativeBinding,
   formatSwapNotice, formatTransitiveSkip,
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
@@ -72,6 +72,7 @@ import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
   resolveOnePackumentInFacet,
+  parseRegistryRequest,
   type ResolveOneSpec,
   type ResolveOneResult,
 } from './resolve-one-facet.js';
@@ -931,9 +932,7 @@ export class NpmInstaller {
           if (allPeers) {
             for (const [peerName, peerRange] of Object.entries(allPeers)) {
               if (resolved.has(peerName) || seen.has(peerName)) continue;
-              const peerFail = lookupReject(peerName);
-              const peerWarn = shouldWarnSkipTransitive(peerName);
-              const peerReject = peerFail || peerWarn;
+              const peerReject = lookupReject(peerName);
               if (peerReject) {
                 const reason = `optional peer in REJECT_INSTALL: ${peerName} — ${peerReject.reason}`;
                 log(`[resolve-fanout] [skip] ${peerName} — ${reason}`);
@@ -1350,14 +1349,6 @@ export class NpmInstaller {
     // put it in optionalDependencies — the only honest "install me if
     // you can" a package.json can express. The refusal still gets its
     // [skip] line and the rest of the tree installs either way.
-    if (options.declared) {
-      for (const name of Object.keys(swapped)) {
-        const warn = shouldWarnSkipTransitive(name);
-        if (!warn) continue;
-        refuse(warn, !optionalRoots.has(name));
-        delete swapped[name];
-      }
-    }
     for (const r of findRejects(swapped, 'top')) {
       refuse(r, !options.declared || !optionalRoots.has(r.from));
       delete swapped[r.from];
@@ -1379,7 +1370,13 @@ export class NpmInstaller {
     // answered by yesterday's pin.
     for (const [name, range] of Object.entries(specs)) {
       const entry = lockfile.get(name);
-      if (!entry || !satisfiesRange(entry.resolvedVer, range)) return false;
+      if (!entry) return false;
+      // An npm: alias answers presence-only — the inner range was
+      // resolved into a pin at install time and the lockfile is the
+      // pin's record; rechecking it against the alias text would
+      // invalidate every aliased entry.
+      if (parseRegistryRequest(name, range).alias) continue;
+      if (!satisfiesRange(entry.resolvedVer, range)) return false;
     }
     // Every locked package's REQUIRED edges — `dependencies` minus the
     // names its optionalDependencies override, plus required peers —

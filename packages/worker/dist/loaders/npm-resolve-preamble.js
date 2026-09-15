@@ -10,7 +10,6 @@
  * The resolver facets reference the following preamble symbols:
  *   - SHOULD_SWAP(name)         → swap entry | undefined
  *   - SHOULD_REJECT_FAIL(name)  → reject entry | undefined
- *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
  *   - NATIVE_EXECUTABLE_REJECT(pkg) → reject entry | undefined
  *   - IS_OPTIONAL_NATIVE_BINDING(pkg) → boolean
  *   - PARSE_SEMVER(v) → [major, minor, patch, prerelease[]] | null
@@ -34,6 +33,7 @@
  */
 import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeArtifactReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
 import { compareSemver, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
+import { parseRegistryRequest } from '../npm/resolve-one-facet.js';
 export const NPM_RESOLVE_PREAMBLE = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
@@ -51,11 +51,6 @@ function SHOULD_SWAP(name) {
 function SHOULD_REJECT_FAIL(name) {
   const r = __policyLookupReject(__NIMBUS_PACKAGE_ABI_POLICY, name);
   if (r && r.transitive === 'fail') return r;
-  return undefined;
-}
-function SHOULD_WARN_SKIP_TRANSITIVE(name) {
-  const r = __policyLookupReject(__NIMBUS_PACKAGE_ABI_POLICY, name);
-  if (r && r.transitive === 'warn') return r;
   return undefined;
 }
 function NATIVE_EXECUTABLE_REJECT(pkg) {
@@ -105,6 +100,10 @@ ${compareSemver.toString()}
 ${semverComparators.toString()}
 ${satisfiesRange.toString()}
 ${resolveVersion.toString()}
+// ── Spec parsing (embedded from src/npm/resolve-one-facet.ts) ───────────
+// Generated the same way — the facet body references the bare
+// parseRegistryRequest binding.
+${parseRegistryRequest.toString()}
 function PARSE_SEMVER(v) { return parseSemver(v); }
 function COMPARE_SEMVER(a, b) { return compareSemver(a, b); }
 function SATISFIES_RANGE(version, range) { return satisfiesRange(version, range); }

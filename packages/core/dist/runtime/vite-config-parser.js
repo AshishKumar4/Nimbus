@@ -319,9 +319,7 @@ function pluginExpressionNames(node, imports, depth = 0) {
  *  - `@cloudflare/vite-plugin` — its whole job is booting a local workerd
  *    sidecar (miniflare). Inside Nimbus the session already IS workerd, so
  *    there is nothing to delegate; the SPA the config also serves is plain
- *    Vite and works as-is. (The plugin package itself is a native-swap at
- *    install time — facets/wasm-swap-registry.ts — so configs that name it
- *    still run: the plugin object is simply never evaluated.)
+    Vite and works as-is.
  *  - `@tailwindcss/vite` — Tailwind v4's CSS-first transform is covered by
  *    the dev server's Tailwind pipeline (@tailwind stripping, @apply
  *    expansion, vendored Play CDN inject — vite-dev-server.ts), so the

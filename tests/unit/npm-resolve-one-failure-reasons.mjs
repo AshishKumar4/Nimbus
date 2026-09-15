@@ -14,7 +14,7 @@ import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolv
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 
 const PREAMBLE_SYMBOLS = [
-  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
+  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
   'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
@@ -105,19 +105,29 @@ const packument = (versions, distTags = {}) => JSON.stringify({
 
 // ── A deliberate policy skip is NOT a failure ────────────────────────────
 //
-// `node-gyp` is a warn-reject: at transitive depth the resolver drops it on
-// purpose, saying so. That must stay distinguishable from the failures
-// above, or every install with a build-time native toolchain somewhere in
-// its tree would go red.
+// An optional native binding shard is dropped on purpose — the resolved
+// package carries platform metadata, the classifier names it native, and
+// the `isOptional` task flag says the parent can live without it. That
+// must stay distinguishable from the failures above, or every install
+// with a platform shard somewhere in its tree would go red.
 {
   const res = await resolveOnePackumentInFacet(
-    spec({ name: 'node-gyp', range: '^10.0.0' }),
-    envReturning({ json: null, source: 'network', status: 404 }),
+    spec({ name: '@esbuild/linux-x64', range: '0.21.5', isOptional: true }),
+    envReturning({
+      json: packument({
+        '0.21.5': {
+          name: '@esbuild/linux-x64', version: '0.21.5',
+          os: ['linux'], cpu: ['x64'],
+          dist: { tarball: 'https://registry.invalid/esb-0.21.5.tgz', integrity: 'sha512-AAAA' },
+        },
+      }, { latest: '0.21.5' }),
+      source: 'network',
+    }),
   );
   assert.equal(res.pkg, null);
   assert.equal(res.error, undefined, 'a policy skip carries no failure');
   assert.equal(res.packumentSource, 'skipped');
-  assert.ok(res.messages.some((m) => /\[skip\].*node-gyp/.test(m)), 'and it says so');
+  assert.ok(res.messages.some((m) => /\[skip\].*esbuild\/linux-x64/.test(m)), 'and it says so');
   console.log('  policy skip → skipped, no error');
 }
 

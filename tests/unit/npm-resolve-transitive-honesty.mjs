@@ -27,7 +27,7 @@ import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-reso
 import { PACKAGE_ABI_POLICY } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 
 const PREAMBLE_SYMBOLS = [
-  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
+  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
   'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
@@ -76,28 +76,30 @@ const cacheEntry = (name, version) => ({
   console.log('  chokidar resolves transitively, with its subtree');
 }
 
-// ── 2. a transitive warn-reject is loud ────────────────────────────────────
+// ── 2. a transitive reject-fail is loud ────────────────────────────────────
 //
-// The skip list is gone — what remains is the registry policy path. A warn
-// entry like node-gyp at transitive depth returns 'skipped' with the [skip]
+// The skip list is gone — what remains is the registry policy path. A
+// 'fail' entry at transitive depth returns 'skipped' with the [skip]
 // line and a transitive-skip event; the required-reachability work moved
-// exit-code classification to the installer's end-of-walk closure, so the
-// task itself only reports.
+// exit-code classification to the installer's end-of-walk closure, so
+// the task itself only reports. (The retired 'warn' entries — node-gyp
+// et al — resolve like any package now; fsevents has no entry at all.)
 {
+  assert.equal(PACKAGE_ABI_POLICY.rejects.some((r) => r.transitive === 'warn'), false, 'no warn-transitive entries remain');
   const res = await resolveOnePackumentInFacet(
-    spec({ name: 'node-gyp', range: '^10.0.0' }),
+    spec({ name: 'sharp', range: '^0.34.0' }),
     envReturning({ json: null, source: 'network', status: 404 }),
   );
   assert.equal(res.pkg, null);
-  assert.equal(res.error, undefined, 'a warn-reject skip is not a resolution failure');
+  assert.ok(res.error, 'a reject-fail is a resolution error the walk records');
+  assert.equal(res.error.type, 'w6-reject');
   assert.equal(res.packumentSource, 'skipped');
-  assert.ok(res.messages.some((m) => /\[skip\].*node-gyp/.test(m)), `the install log names the skip: ${JSON.stringify(res.messages)}`);
   assert.deepEqual(
-    res.events.filter((e) => e.type === 'transitive-skip').map((e) => e.from),
-    ['node-gyp'],
-    'and a transitive-skip event carries it to the registry telemetry',
+    res.events.filter((e) => e.type === 'reject').map((e) => e.from),
+    ['sharp'],
+    'and a reject event carries it to the registry telemetry',
   );
-  console.log('  a transitive warn-reject prints a [skip] line and emits an event');
+  console.log('  a transitive reject-fail reports w6-reject to the walk');
 }
 
 // ── 3. an exact prerelease pin resolves to itself on both paths ────────────

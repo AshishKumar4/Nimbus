@@ -73,4 +73,47 @@ function makeLoader(record) {
   console.log('  different slots still overlap — the tail is per-slot, not global');
 }
 
+// ── a submission on a slot with an in-flight loader.get() waits ─────────
+//
+// The load itself is part of the dispatch tail: loader.get's code-load
+// callback and the entrypoint's execute both run inside the slot lease.
+// A second submission queued behind it must observe no in-flight work
+// on the slot when it is finally dispatched — instrument get() to fail
+// if it is ever called while a load or an execute on the slot is still
+// open.
+{
+  const record = { loading: 0, executing: 0, violations: 0, loads: 0 };
+  const slowLoader = {
+    get(_id, fetchCode) {
+      // The second dispatch must not reach here while the first's
+      // load or execute is still open.
+      if (record.loading > 0 || record.executing > 0) record.violations++;
+      return {
+        getEntrypoint: () => ({
+          async execute(value) {
+            record.loads++;
+            record.loading++;
+            try { await fetchCode(); } finally { record.loading--; }
+            record.executing++;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            record.executing--;
+            return value;
+          },
+        }),
+      };
+    },
+  };
+  const ctx = { id: { toString: () => 'slot-owner-d' } };
+  const pool = new IsolatePool({ LOADER: slowLoader }, ctx, { omitSupervisor: true });
+  await Promise.all([
+    pool.submit((value) => value, 'first'),
+    pool.submit((value) => value, 'second'),
+  ]);
+  assert.equal(record.violations, 0, 'a second dispatch never observed in-flight work on the slot');
+  assert.ok(record.loads >= 1, 'the loader ran');
+  pool.dispose();
+  console.log('  a submission behind an in-flight loader.get() waits for the whole tail');
+}
+
+
 console.log('loader-slot-ownership: all assertions passed');

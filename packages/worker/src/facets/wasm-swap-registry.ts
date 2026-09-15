@@ -11,12 +11,11 @@
  *              `npm:` aliases. They live in `rejects` with a
  *              code-change suggestion.
  *
- *   - rejects: deny list with helpful messages. Each entry has a
- *              per-entry `transitive` policy:
- *                'fail' = hard-fail at any depth (top + transitive).
- *                'warn' = top-level fails; transitive logs `[skip]`
- *                         and continues (matches the existing
- *                         `shouldSkipPackage` UX for build-only).
+ *   - rejects: deny list with helpful messages. Every entry is
+ *              `transitive: 'fail'` — hard-fail at any depth (top +
+ *              transitive). The 'warn' classification is retired:
+ *              plain-JS tooling installs, and native shards are caught
+ *              by the optional-native-binding classifier instead.
  *
  * IMPORTANT: `PACKAGE_ABI_POLICY` is the single source of truth for the
  * whole npm policy — supervisor AND facets. Generated dynamic-Worker
@@ -126,29 +125,6 @@ const REJECTS: ReadonlyArray<PackageRejectEntry> = [
     transitive: 'fail',
   },
   {
-    from: 'fsevents',
-    reason: 'macOS-only filesystem watcher; never runs in Workers.',
-    suggest:
-      'optional dep — chokidar/watchpack work without it (untested by Nimbus). ' +
-      'Move to optionalDependencies in your package.json.',
-    transitive: 'warn',
-  },
-  {
-    from: 'bufferutil',
-    reason: 'Native binding for ws speedups; install requires node-gyp.',
-    suggest:
-      'optional dep — ws works without it (slower frames; untested by Nimbus). ' +
-      'Move to optionalDependencies.',
-    transitive: 'warn',
-  },
-  {
-    from: 'utf-8-validate',
-    reason: 'Native binding for ws speedups; install requires node-gyp.',
-    suggest:
-      'optional dep — ws works without it (untested by Nimbus). Same as bufferutil.',
-    transitive: 'warn',
-  },
-  {
     from: 'node-pty',
     reason: 'PTY syscalls unavailable in workerd.',
     suggest: 'no Workers-compatible target — use the Nimbus built-in shell.',
@@ -223,38 +199,14 @@ const REJECTS: ReadonlyArray<PackageRejectEntry> = [
   },
 
   // ── Toolchains that carry their own native runtime ───────────────────
-  {
-    from: 'wrangler',
-    reason: 'Runs workerd and esbuild as native binaries; neither can execute in Workers.',
-    suggest: 'Nimbus provides `nimbus-wrangler` (also answering `wrangler`) for `wrangler dev`-shaped workflows; the package itself stays out of node_modules.',
-    transitive: 'warn',
-  },
-  {
-    from: '@cloudflare/vite-plugin',
-    reason: 'Boots miniflare, which needs the native workerd binary.',
-    suggest: 'Run the Worker through `nimbus-wrangler dev` instead of the vite plugin; the plugin stays out of node_modules.',
-    transitive: 'warn',
-  },
-  {
-    from: 'parcel',
-    reason: 'Depends on @parcel/watcher and @swc/core, both platform-native shards with no Workers build.',
-    suggest: 'vite (Nimbus bundles it) or webpack (pure JS, untested by Nimbus) for the same job.',
-    transitive: 'warn',
-  },
-  // ── Build-time native compilers (always wrong in Workers) ───────────
-  {
-    from: 'node-gyp',
-    reason: 'Build-time native compiler; never runs in Workers.',
-    suggest:
-      'no Workers-compatible target — remove from dependencies. Nimbus pre-skips build-only tools transitively.',
-    transitive: 'warn',
-  },
-  {
-    from: 'node-pre-gyp',
-    reason: 'Build-time native compiler; never runs in Workers.',
-    suggest: 'no Workers-compatible target — remove from dependencies.',
-    transitive: 'warn',
-  },
+  // (wrangler, @cloudflare/vite-plugin, parcel, node-gyp, node-pre-gyp
+  // were once 'warn' entries here. They are plain JS packages — the
+  // native shards they pull are refused by the optional-native-binding
+  // classifier — so they install like any other package. Only 'fail'
+  // entries exist in this table; the `transitive` union on the public
+  // PackageAbiPolicy type is frozen, so the field stays in the entry
+  // shape.)
+
 
   // ── Bundled-binary giants ──────────────────────────────────────────
   {
@@ -502,11 +454,8 @@ export function applySwaps(
 }
 
 /**
- * Return rejects whose policy applies at this depth.
- *   ctx='top'        → all matching rejects (any policy).
- *   ctx='transitive' → only `transitive: 'fail'` rejects (the 'warn'
- *                      policy is handled by the caller as a `[skip]`
- *                      log + continue).
+ * Return rejects whose policy applies at this depth. Only 'fail'
+ * entries exist, so 'top' and 'transitive' are the same set.
  */
 export function findRejects(
   specs: Record<string, string>,
@@ -522,17 +471,6 @@ export function findRejects(
   return out;
 }
 
-/**
- * Lookup that the resolver uses at depth>0 to decide between throw and
- * `[skip]`+continue. Returns the entry only when its policy is 'warn'
- * (i.e., this is a transitive-skip case). 'fail' entries return undefined
- * here; the caller handles those via findRejects/throw.
- */
-export function shouldWarnSkipTransitive(name: string): PackageRejectEntry | undefined {
-  const r = lookupReject(name);
-  if (r && r.transitive === 'warn') return r;
-  return undefined;
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Formatters
@@ -549,7 +487,6 @@ const ANSI_RESET = '\x1b[0m';
 export function formatSwapNotice(s: PackageSwapEntry): string {
   return `[npm] ${ANSI_YELLOW}[swap]${ANSI_RESET} ${s.from} → ${s.to} (${s.reason})`;
 }
-
 
 /**
  * Single-line yellow notice emitted for a `[skip]`.
@@ -598,8 +535,9 @@ export function formatTransitiveSkip(r: PackageRejectEntry): string {
  *                         actionable `suggest`). At `ctx='top'` an error is
  *                         thrown; at `ctx='transitive'` the throw happens
  *                         when the entry's policy is `'fail'`.
- *   - `transitive-skip` — `from` (with `transitive: 'warn'` policy) was
- *                         dropped silently from the resolved tree at depth>0.
+ *   - `transitive-skip` — `from` was dropped silently from the resolved
+ *                         tree at depth>0 (policy refusal, optional peer
+ *                         in REJECT_INSTALL, or optional native binding).
  */
 export type RegistryEvent =
   | { type: 'swap'; from: string; to: string; ctx: 'top' | 'transitive' }

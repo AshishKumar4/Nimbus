@@ -23,7 +23,6 @@ import {
   findRejects,
   lookupSwap,
   lookupReject,
-  shouldWarnSkipTransitive,
   nativeExecutableReject,
   isOptionalNativeBinding,
   lookupStagedArtifact,
@@ -39,7 +38,6 @@ return {
   POLICY: __NIMBUS_PACKAGE_ABI_POLICY,
   SHOULD_SWAP,
   SHOULD_REJECT_FAIL,
-  SHOULD_WARN_SKIP_TRANSITIVE,
   NATIVE_EXECUTABLE_REJECT,
   IS_OPTIONAL_NATIVE_BINDING,
   STAGED_ARTIFACT,
@@ -71,11 +69,7 @@ for (const name of names) {
     reject && reject.transitive === 'fail' ? reject : undefined,
     `reject-fail parity: ${name}`,
   );
-  assert.deepEqual(
-    facet.SHOULD_WARN_SKIP_TRANSITIVE(name),
-    shouldWarnSkipTransitive(name),
-    `warn-skip parity: ${name}`,
-  );
+
 }
 
 // ── 2. Policy model invariants ──────────────────────────────────────────
@@ -109,10 +103,11 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
   assert.equal(again.swaps.length, 0);
 }
 
-// findRejects depth semantics: 'warn' entries fire only at top level.
+// findRejects: every table entry is 'fail' now, so 'top' and
+// 'transitive' are the same set.
 {
   const specs = { fsevents: '*', sharp: '*', react: '*' };
-  assert.deepEqual(findRejects(specs, 'top').map((r) => r.from).sort(), ['fsevents', 'sharp']);
+  assert.deepEqual(findRejects(specs, 'top').map((r) => r.from), ['sharp']);
   assert.deepEqual(findRejects(specs, 'transitive').map((r) => r.from), ['sharp']);
 }
 
@@ -122,8 +117,9 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
 assert.deepEqual(PACKAGE_ABI_POLICY.skipPackages, []);
 assert.deepEqual(PACKAGE_ABI_POLICY.skipPrefixes, []);
 assert.deepEqual(PACKAGE_ABI_POLICY.frameworkRequiredPackages, []);
-for (const name of ['wrangler', '@cloudflare/vite-plugin', 'parcel', 'node-gyp']) {
-  assert.equal(lookupReject(name)?.transitive, 'warn', `${name} is a warn-reject with a reason`);
+// Retired 'warn' toolchain entries install like any other package.
+for (const name of ['fsevents', 'bufferutil', 'utf-8-validate', 'wrangler', '@cloudflare/vite-plugin', 'parcel', 'node-gyp', 'node-pre-gyp']) {
+  assert.equal(lookupReject(name), undefined, `${name} has no reject entry`);
 }
 
 // ── 3. Metadata-driven native-artifact rejection ────────────────────────
