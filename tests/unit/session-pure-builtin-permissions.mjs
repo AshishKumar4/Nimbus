@@ -91,6 +91,9 @@ try {
   session.sqliteFs = rawVfs;
   session.processes = processes;
   session.facetManager = { setVfs() {} };
+  // ensureFacetManager short-circuits on this — the cp verbs under test
+  // never reach a real composition.
+  session.facetManagerComposed = { manager: session.facetManager, apps: {}, pumpLaunches: async () => {} };
   session.facetProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(registry);

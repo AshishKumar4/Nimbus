@@ -1134,7 +1134,7 @@ export class NimbusSession extends CloudflareDurableObject {
    * transform and the durable image-store fallback are the factory's.
    */
   ensureFacetManager(): ComposedFacetManager {
-    if (!this.facetManagerComposed) {
+    if (!this.facetManagerComposed && !this.facetManager) {
       // The manager is composed over the filesystem, so the filesystem comes
       // first. Cheap and idempotent; every caller already stood it up or is
       // about to.
@@ -1182,7 +1182,9 @@ export class NimbusSession extends CloudflareDurableObject {
     if (this.esbuildService) {
       this.facetManager!.setEsbuildService(this.esbuildService);
     }
-    return this.facetManagerComposed;
+    // A host that pre-set `facetManager` (tests) has no composed object;
+    // the callers that dereference `.apps` only run where it was composed.
+    return this.facetManagerComposed as ComposedFacetManager;
   }
 
   /**
