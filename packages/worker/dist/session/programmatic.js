@@ -15,8 +15,7 @@ import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contract
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability, isValidAppName, persistPortCapability, PortRecordSchema, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, restorePortCapability, rotatePortCapability, } from './port-capability.js';
-import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
+import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, restorePortCapability, rotatePortCapability, } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
@@ -960,26 +959,8 @@ export async function rpcUnexposePort(self, port) {
  */
 export async function rpcRemoveDurableApp(self, owner) {
     await ensureProgrammaticReady(self);
-    if (typeof owner !== 'string' || owner.length === 0) {
-        throw new Error('removeDurableApp: owner must be a non-empty string');
-    }
-    // Which durable address is being released — the reservation's row names it
-    // before the manager retires it.
-    const rows = await self.ctx.storage.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
-    let port = null;
-    for (const [key, record] of rows) {
-        const parsed = PortRecordSchema.safeParse(record);
-        if (!parsed.success || parsed.data.owner !== owner)
-            continue;
-        const n = Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length));
-        if (Number.isInteger(n) && n > 0) {
-            port = n;
-            break;
-        }
-    }
-    self.ensureFacetManager();
-    const removed = await self.facetManager.removeDurableApp(owner);
-    return { owner, removed, port };
+    // The composed manager owns the durable-app verbs — validation included.
+    return self.ensureFacetManager().apps.removeDurableApp(owner);
 }
 /**
  * Route an embedder request that carries a port capability. The embedder has

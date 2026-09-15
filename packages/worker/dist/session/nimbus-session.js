@@ -15,6 +15,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
@@ -59,6 +60,7 @@ import { buildSessionSupervisorOps } from './supervisor-op.js';
 import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
+import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
@@ -245,8 +247,11 @@ export class NimbusSession extends CloudflareDurableObject {
     shell = null;
     shellProcessPid = null;
     terminal = null;
-    facetManager = null;
+    /** The composed manager is the one field; `.manager` is derived. */
     facetManagerComposed = null;
+    get facetManager() {
+        return this.facetManagerComposed?.manager ?? null;
+    }
     /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
     facetProcessManager = null;
     /**
@@ -256,6 +261,12 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     webSocketRelay = null;
     esbuildService = null;
+    /**
+     * The session's single esbuild facet pool, shared by the npm installer's
+     * pre-bundler and the dev server's on-demand /@modules/ path. Lazy; see
+     * ensureBundlePool. Disposed with the installer and dev server.
+     */
+    bundlePool = null;
     viteDevServer = null;
     /**
      * runtime primitive support (P5): PID + port the default-Cirrus vite shim is
@@ -835,7 +846,15 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcUnexposePort(port) { return _programmatic.rpcUnexposePort(this, port); }
     /** Capability-authenticated port route, for an embedder holding the token. */
     async _rpcRouteCapabilityPort(port, capability, request, innerPath) {
-        return _routes.routeCapabilityPort(this, port, capability, request, innerPath);
+        return _portCapability.routeCapabilityPort(this, port, capability, request, innerPath);
+    }
+    /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
+    restorePersistedDevServer(onlyPort) {
+        return _routes.restorePersistedDevServer(this, onlyPort);
+    }
+    /** The port route's in-DO HMR accept, delegated — same reason. */
+    acceptCirrusHmrWs(request) {
+        return _routes.acceptCirrusHmrWs(this, request);
     }
     /**
      * The port route's recovery seam: a durable application journalled but
@@ -968,6 +987,12 @@ export class NimbusSession extends CloudflareDurableObject {
     _w5PersistRing() {
         return _diag.persistRing(this, this.ctx);
     }
+    /** The session's esbuild facet pool provider; constructing it does no work. */
+    ensureBundlePool() {
+        if (!this.bundlePool)
+            this.bundlePool = new EsbuildBundlePool(this.env, this.ctx);
+        return this.bundlePool;
+    }
     /**
      * The session's FacetManager, composed through the one factory every host
      * uses (`facets/compose.ts`). What is wired here is only what is the
@@ -977,7 +1002,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * transform and the durable image-store fallback are the factory's.
      */
     ensureFacetManager() {
-        if (!this.facetManagerComposed && !this.facetManager) {
+        if (!this.facetManagerComposed) {
             // The manager is composed over the filesystem, so the filesystem comes
             // first. Cheap and idempotent; every caller already stood it up or is
             // about to.
@@ -1016,8 +1041,8 @@ export class NimbusSession extends CloudflareDurableObject {
                     },
                 },
             });
-            this.facetManager = this.facetManagerComposed.manager;
         }
+        const composed = this.facetManagerComposed;
         // W3.5 Fix B: share the session's lazy esbuildService with the
         // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
         // wasm-init twice. The session may construct it after the manager
@@ -1025,11 +1050,9 @@ export class NimbusSession extends CloudflareDurableObject {
         // otherwise lazy-creates its own on first exec — same wasm bytes,
         // same ~10ms init cost, just paid once per surface.
         if (this.esbuildService) {
-            this.facetManager.setEsbuildService(this.esbuildService);
+            composed.manager.setEsbuildService(this.esbuildService);
         }
-        // A host that pre-set `facetManager` (tests) has no composed object;
-        // the callers that dereference `.apps` only run where it was composed.
-        return this.facetManagerComposed;
+        return composed;
     }
     /**
      * The supervisor-owned WebSocket relay. Lazy, because most sessions never
@@ -1414,6 +1437,7 @@ export class NimbusSession extends CloudflareDurableObject {
         }
         this.npmInstaller = new NpmInstaller(this.sqliteFs, this.ctx.storage.sql, {
             esbuild: this.esbuildService,
+            bundlePool: this.ensureBundlePool(),
             ctx: this.ctx,
             env: this.env,
             onProgress,

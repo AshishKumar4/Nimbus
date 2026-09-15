@@ -172,5 +172,49 @@ export declare function rotatePortCapability(self: PortCapabilityHost, port: num
  * port cannot reach the next one. An owner's reservation survives it.
  */
 export declare function clearPortCapability(self: PortCapabilityHost, port: number): Promise<void>;
+/** The host surface `routeToSessionPort` actually reads — the narrowest shape that serves every port-addressed route. */
+export interface SessionPortHost {
+    ctx: DurableObjectState;
+    portRegistry: PortRegistry;
+    ensureDurableAppOnPort?: (port: number) => Promise<'absent' | 'started' | 'failed'>;
+    _viteShimPort?: number | null;
+    viteDevServer?: {
+        isRunning: boolean;
+        handleRequest(request: Request, innerPath: string, mountBase: string): Promise<Response>;
+    } | null;
+    cirrusReal?: {
+        isRunning: boolean;
+    } | null;
+    restorePersistedDevServer?: (onlyPort?: number) => Promise<void>;
+    acceptCirrusHmrWs?: (request: Request) => Response;
+}
+export declare function normalizeForwardedHttpPath(path: string): string;
+/** True if `innerPath` targets the cirrus-real HMR socket, under any mount base. */
+export declare function isCirrusHmrPath(innerPath: string): boolean;
+/**
+ * Re-adopt a preview capability the embedder already holds, after a restore
+ * re-registered the port under a freshly minted one.
+ */
+export declare function readoptCapability(self: PortCapabilityHost, port: number, capability: string | null): Promise<void>;
+/**
+ * Route a request to whatever is listening on a session port.
+ *
+ * The one implementation behind every port-addressed surface: `/port/<n>/`,
+ * `/preview/?port=N`, the `<port>--<sid>` preview hostname (which the router
+ * forwards as `/port/<n>/`), and the embedder's capability route. They
+ * differ only in how the port and the inner path are spelled, so they must
+ * not differ in what answers.
+ *
+ * `mountBase` is the public URL prefix the served app is mounted at for THIS
+ * request — '' for a root-mounted `<port>--<sid>` host, '/s/<sid>/preview' for
+ * the preview path. The in-process Cirrus dev server rewrites base-relative
+ * URLs (module URLs, <base href>, BASE_URL, router basename), so it is handed
+ * the base directly: the generic port proxy strips the Nimbus base header at
+ * the untrusted-code boundary and cannot carry it, and a plain user server on
+ * any other port is mounted at root and needs no rewriting.
+ */
+export declare function routeToSessionPort(self: SessionPortHost, port: number, request: Request, innerPath: string, mountBase: string, capability?: string): Promise<Response>;
+/** Route a capability-authenticated embedder request to a guest HTTP server. */
+export declare function routeCapabilityPort(self: SessionPortHost, port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
 export {};
 //# sourceMappingURL=port-capability.d.ts.map

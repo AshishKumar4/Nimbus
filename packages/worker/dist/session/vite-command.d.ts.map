@@ -1,1 +1,1 @@
-{"version":3,"file":"vite-command.d.ts","sourceRoot":"","sources":["../../src/session/vite-command.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;GAaG;AAyBH,KAAK,QAAQ,GAAG,GAAG,CAAC;AAEpB,wBAAgB,iBAAiB,CAAC,IAAI,EAAE,QAAQ,IAChC,KAAK,GAAG,KAAG,OAAO,CAAC,MAAM,CAAC,CA6kBzC"}
+{"version":3,"file":"vite-command.d.ts","sourceRoot":"","sources":["../../src/session/vite-command.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;GAaG;AAyBH,KAAK,QAAQ,GAAG,GAAG,CAAC;AAEpB,wBAAgB,iBAAiB,CAAC,IAAI,EAAE,QAAQ,IAChC,KAAK,GAAG,KAAG,OAAO,CAAC,MAAM,CAAC,CAmlBzC"}
