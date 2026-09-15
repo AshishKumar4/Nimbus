@@ -693,6 +693,7 @@ ${bundleSource.imports}
 import { DurableObject } from "cloudflare:workers";
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
+${facetWasmImportsSource(opts.wasmImports ?? [])}
 const USER_CODE = ${safeCode};
 const __NIMBUS_ARGS = ${safeArgs};
 const __NimbusHostResponse = globalThis.Response;
@@ -5129,7 +5130,7 @@ export class FacetManager {
         ]);
         // Each image is read by path when the facet loads, never by value here.
         const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
-        let generatedWorker = await generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred }, usesSqlite, shims, pacer);
+        let generatedWorker = await generateLongRunningNodeCode(code, vfsState, { ...opts, env: processEnv, cred: entry.cred, wasmImports }, usesSqlite, shims, pacer);
         // Sized here, while the map is still in hand. Reading these after the load
         // would itself be what keeps the map alive, and the whole point of the
         // scoping below is that nothing does.

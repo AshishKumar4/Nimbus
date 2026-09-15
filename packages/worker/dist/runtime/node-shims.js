@@ -124,6 +124,109 @@ async function __nimbusUseRpcResultUnref(promise, use) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  Precompiled wasm ───────────────────────────────────────────────
+// A wasm image can only become a WebAssembly.Module through the Worker
+// Loader's module map; new WebAssembly.Module(bytes) at request time is
+// refused by the runtime. A launch whose closure carries an image (its VFS
+// path, or its content digest for an image inlined as base64) gets it
+// compiled at load and parked here. fs.readFileSync tags the bytes it hands
+// out for such a path, and the WebAssembly seam below answers a compile of
+// tagged or digest-matched bytes with the module the loader already built —
+// so a package's own new WebAssembly.Module(readFileSync(__dirname + '/x.wasm'))
+// works unchanged.
+const __nimbusPrecompiledWasm = globalThis.__nimbusPrecompiledWasm instanceof Map
+  ? globalThis.__nimbusPrecompiledWasm : new Map();
+const __nimbusWasmModuleTag = Symbol.for("nimbus.precompiledWasmModule");
+/**
+ * Precompiled modules keyed by a digest of their BYTES, for an image that
+ * never passes through the filesystem.
+ *
+ * Vite inlines es-module-lexer's parser as a base64 literal in its own source
+ * and compiles it at module top level — from a cell that is request time, and
+ * the runtime refuses it. There is no path to tag, so the launch registers
+ * the image by content instead and the seam recognises the same bytes when
+ * they arrive.
+ */
+const __nimbusPrecompiledWasmByDigest = globalThis.__nimbusPrecompiledWasmByDigest instanceof Map
+  ? globalThis.__nimbusPrecompiledWasmByDigest : new Map();
+/**
+ * A synchronous content key: length and FNV-1a over every byte.
+ *
+ * Synchronous because new WebAssembly.Module(bytes) is, and SubtleCrypto is
+ * not. Collisions do not matter for correctness the way they would in a
+ * security check: the set is the handful of images one launch registered, and
+ * the length is part of the key.
+ */
+function __nimbusWasmDigest(bytes) {
+  const view = bytes instanceof Uint8Array
+    ? bytes
+    : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
+  if (!view) return null;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < view.length; i++) {
+    hash ^= view[i];
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return view.length + ":" + hash.toString(16);
+}
+(() => {
+  const WA = globalThis.WebAssembly;
+  if (!WA || WA.__nimbusPrecompiledSeam) return;
+  const RealModule = WA.Module;
+  const tagged = (bytes) => {
+    if (!bytes || typeof bytes !== "object") return undefined;
+    const byTag = bytes[__nimbusWasmModuleTag];
+    if (byTag !== undefined) return byTag;
+    if (__nimbusPrecompiledWasmByDigest.size === 0) return undefined;
+    const digest = __nimbusWasmDigest(bytes);
+    return digest === null ? undefined : __nimbusPrecompiledWasmByDigest.get(digest);
+  };
+  // The runtime compiles wasm only while the loader stages a module map; a
+  // compile from bytes at any later point is refused with a message that names
+  // neither the module nor the reason it cannot work. Say both: the caller is
+  // an installed package whose image has to travel as a map member (the
+  // closure walk registers it), or be inlined in module text the loader
+  // itself evaluates.
+  const refusal = (e, bytes) => {
+    const size = (bytes && typeof bytes === "object" && typeof bytes.byteLength === "number") ? bytes.byteLength : 0;
+    const where = globalThis.__currentModulePath ? " while loading " + globalThis.__currentModulePath : "";
+    return new Error(
+      "Nimbus: WebAssembly cannot be compiled from bytes here" + where + " (" + size + " bytes): "
+      + ((e && e.message) || String(e))
+      + ". The runtime compiles wasm only when the module loader stages it, so the image must ride in the "
+      + "process's module map — a launch names one via the closure's wasmImages — rather than be compiled at runtime."
+      + " Images this launch does carry: " + (__nimbusPrecompiledWasm.size + __nimbusPrecompiledWasmByDigest.size) + ".",
+    );
+  };
+  const Module = function Module(bytes) {
+    const compiled = tagged(bytes);
+    if (compiled !== undefined) return compiled;
+    try { return new RealModule(bytes); } catch (e) { throw refusal(e, bytes); }
+  };
+  Module.prototype = RealModule.prototype;
+  for (const k of ["exports", "imports", "customSections"]) Module[k] = RealModule[k];
+  Object.defineProperty(WA, "Module", { value: Module, writable: true, configurable: true });
+  const realCompile = WA.compile.bind(WA);
+  WA.compile = (bytes) => {
+    const compiled = tagged(bytes);
+    if (compiled !== undefined) return Promise.resolve(compiled);
+    return realCompile(bytes).catch((e) => { throw refusal(e, bytes); });
+  };
+  const realInstantiate = WA.instantiate.bind(WA);
+  WA.instantiate = (source, imports) => {
+    const compiled = tagged(source);
+    if (compiled !== undefined) {
+      return realInstantiate(compiled, imports).then((instance) => ({ module: compiled, instance }));
+    }
+    // A Module source instantiates; only BYTES are a compile, and only those
+    // can be refused for it.
+    if (source instanceof RealModule) return realInstantiate(source, imports);
+    return realInstantiate(source, imports).catch((e) => { throw refusal(e, source); });
+  };
+  WA.__nimbusPrecompiledSeam = true;
+})();
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  fetch default User-Agent ───────────────────────────────────────
 // workerd's global fetch sends no User-Agent by default, but Node's
 // undici fetch adds \`User-Agent: node\`. Servers that require a UA
@@ -2366,8 +2469,14 @@ const __fsMod = (() => {
       return _asString(content);
     }
     // No encoding requested — produce a Buffer-shaped Uint8Array.
-    if (_isBytes(content)) return __BufferMod.from(content);
-    return __BufferMod.from(content);
+    const bytes = __BufferMod.from(content);
+    // A wasm image the launch compiled through the module map is tagged on
+    // the way out, so the WebAssembly seam below can answer the package's own
+    // new WebAssembly.Module(readFileSync(...)) with the compiled module —
+    // request-time compilation from bytes is refused by the runtime.
+    const precompiled = __nimbusPrecompiledWasm.get(_strip(absPath));
+    if (precompiled !== undefined) bytes[__nimbusWasmModuleTag] = precompiled;
+    return bytes;
   }
 
   // ── writeFileSync ──

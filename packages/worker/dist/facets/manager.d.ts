@@ -160,6 +160,8 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
+    /** Wasm images the generated main module imports and parks in the seam. */
+    wasmImports?: readonly FacetWasmImport[];
 }, usesSqlite: boolean, shims: string, pacer?: TurnBudget): Promise<GeneratedNodeFacetCode>;
 /**
  * Result of preparing facet VFS state.
