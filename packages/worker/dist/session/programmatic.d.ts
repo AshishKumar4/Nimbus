@@ -14,7 +14,7 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortVisibility } from './port-capability.js';
-import type { ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy } from '../facets/manager.js';
+import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
 export interface ProgrammaticShell {
     env?: Record<string, string>;
     getEnv(): Record<string, string>;
@@ -66,6 +66,7 @@ interface ProgrammaticFacetManager {
     removeDurableApp(owner: string): Promise<boolean>;
     residentIdentity(pid: number): Promise<ResidentIdentity | null>;
     listResidentApps(): Promise<ResidentAppSummary[]>;
+    spawnWorker(workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<SpawnedWorker>;
 }
 interface ProgrammaticViteServer {
     isRunning: boolean;
@@ -408,9 +409,26 @@ export declare function rpcRemoveDurableApp(self: ProgrammaticHost, owner: strin
  * so the guest's `Authorization` is preserved through this path and no other.
  */
 export declare function rpcRouteCapabilityPort(self: ProgrammaticHost, port: number, capability: string, request: Request, pathname: string): Promise<Response>;
+/**
+ * `spawnWorker` for a colocated embedder holding the DO stub: boot the
+ * embedder's own Worker-class program — its main module, inline modules and
+ * content-addressed text/wasm modules — as one of this session's resident
+ * processes, and answer with the pid, the runner's boot payload and the
+ * process's facet (`fetch`/`connect`, bound to the resident handle; no
+ * release — `killProcess(pid)` ends it). Deliberately absent from the remote
+ * HTTP dispatcher: the facet is a live handle, and a remote token holder is
+ * not the embedder.
+ */
+export declare function rpcSpawnWorker(self: ProgrammaticHost, workerCode: string, command: string, cwd: string, opts?: LongRunningWorkerSpawnOptions): Promise<SpawnedWorker>;
+/**
+ * `files.delete`. Absent a `cred` this acts as CRED_KERNEL — what it has
+ * always done, and the embedder's trusted surface: only a caller holding the
+ * DO binding reaches it. A `cred` binds the removal to that identity instead,
+ * the same view `SqliteVFS.as(cred)` gives in-process.
+ */
 export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, options?: {
     recursive?: boolean;
-}): Promise<void>;
+}, cred?: VfsCred): Promise<void>;
 export declare function rpcDestroy(self: ProgrammaticHost, options?: ProgrammaticDestroyOptions): Promise<ProgrammaticDestroyResult>;
 export {};
 //# sourceMappingURL=programmatic.d.ts.map

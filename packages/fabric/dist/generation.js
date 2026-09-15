@@ -14,6 +14,12 @@
  * counter, and bumps it once. The embedder reads `generation(ctx)` wherever it
  * needs the incarnation number — one source of truth instead of mirrored host
  * fields.
+ *
+ * This is also the allocator for a workspace's generation: an embedder
+ * composing NimbusWorkspace over its own Durable Object calls
+ * `adoptGeneration(ctx)` once per incarnation and passes `generation(ctx)`
+ * as the workspace's `generation` — the same persisted counter the session
+ * derives its pid generation from, so there is no second counter to keep.
  */
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 /**

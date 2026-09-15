@@ -84,6 +84,30 @@ export interface NimbusExecOptions {
 }
 export type NimbusRestartPolicy = 'never' | 'on-failure';
 export type NimbusAppVisibility = 'scoped' | 'public';
+/** The sandbox file plane; see `NimbusSandbox.files`. */
+export interface NimbusSandboxFiles {
+    /** The same API bound to `cred` — the view `SqliteVFS.as(cred)` gives in-process. */
+    as(cred: VfsCred): NimbusSandboxFiles;
+    read(path: string): Promise<string | null>;
+    readBytes(path: string): Promise<Uint8Array | null>;
+    write(path: string, content: string | Uint8Array): Promise<void>;
+    stat(path: string): Promise<NimbusFileStat | null>;
+    /** stat without following a symlink leaf. */
+    lstat(path: string): Promise<NimbusFileStat | null>;
+    rename(from: string, to: string): Promise<void>;
+    chmod(path: string, mode: number): Promise<void>;
+    /** Read `length` bytes at `offset` without materializing the whole file. */
+    readRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+    list(path?: string): Promise<{
+        name: string;
+        type: string;
+    }[]>;
+    mkdir(path: string): Promise<void>;
+    exists(path: string): Promise<boolean>;
+    delete(path: string, options?: {
+        recursive?: boolean;
+    }): Promise<void>;
+}
 /**
  * An application target: a port, a pid, a name, or an owner — every
  * `apps.*` verb takes one. A bare number is a port when something listens
@@ -249,23 +273,23 @@ interface NimbusSessionStub {
     _rpcExec(command: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
     _rpcStartProcess(command: string, options?: Record<string, unknown>): Promise<NimbusStartResult>;
     _rpcRunCode(code: string, options?: Record<string, unknown>): Promise<NimbusExecResult>;
-    _rpcReadFile(path: string): Promise<string | null>;
-    _rpcReadFileBytes(path: string): Promise<Uint8Array | null>;
-    _rpcWriteFile(path: string, content: string | Uint8Array): Promise<void>;
-    _rpcStat(path: string): Promise<NimbusFileStat | null>;
-    _rpcLstat(path: string): Promise<NimbusFileStat | null>;
-    _rpcReaddir(path: string): Promise<{
+    _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<string | null>;
+    _rpcReadFileBytes(path: string, pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
+    _rpcWriteFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcStat(path: string, pid?: undefined, cred?: VfsCred): Promise<NimbusFileStat | null>;
+    _rpcLstat(path: string, pid?: undefined, cred?: VfsCred): Promise<NimbusFileStat | null>;
+    _rpcReaddir(path: string, pid?: undefined, cred?: VfsCred): Promise<{
         name: string;
         type: string;
     }[]>;
-    _rpcRename(from: string, to: string): Promise<void>;
-    _rpcChmod(path: string, mode: number): Promise<void>;
-    _rpcFsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-    _rpcExists(path: string): Promise<boolean>;
-    _rpcMkdir(path: string): Promise<void>;
+    _rpcRename(from: string, to: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcFsReadRange(path: string, offset: number, length: number, pid?: undefined, cred?: VfsCred): Promise<Uint8Array | null>;
+    _rpcExists(path: string, pid?: undefined, cred?: VfsCred): Promise<boolean>;
+    _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
-    }): Promise<void>;
+    }, cred?: VfsCred): Promise<void>;
     _rpcInstallRuntime(spec: string, options?: {
         force?: boolean;
     }): Promise<unknown>;
@@ -409,27 +433,19 @@ export declare class NimbusSandbox {
         install?: 'never' | 'ifMissing';
     }): Promise<NimbusExecResult>;
     destroy(options?: NimbusDestroyOptions): Promise<NimbusDestroyResult>;
-    files: {
-        read: (path: string) => Promise<string | null>;
-        readBytes: (path: string) => Promise<Uint8Array | null>;
-        write: (path: string, content: string | Uint8Array) => Promise<void>;
-        stat: (path: string) => Promise<NimbusFileStat | null>;
-        /** stat without following a symlink leaf. */
-        lstat: (path: string) => Promise<NimbusFileStat | null>;
-        rename: (from: string, to: string) => Promise<void>;
-        chmod: (path: string, mode: number) => Promise<void>;
-        /** Read `length` bytes at `offset` without materializing the whole file. */
-        readRange: (path: string, offset: number, length: number) => Promise<Uint8Array | null>;
-        list: (path?: string) => Promise<{
-            name: string;
-            type: string;
-        }[]>;
-        mkdir: (path: string) => Promise<void>;
-        exists: (path: string) => Promise<boolean>;
-        delete: (path: string, options?: {
-            recursive?: boolean;
-        }) => Promise<void>;
-    };
+    /**
+     * The session file plane. Every method acts as the session's default
+     * identity for a pid-less caller — the session user for reads, writes,
+     * stat, list, mkdir, rename and chmod; the kernel for `delete` — which is
+     * the embedder's trusted surface, reached only by a caller holding the DO
+     * binding or a remote token. `files.as(cred)` returns the same API bound
+     * to `cred` instead, the view `SqliteVFS.as(cred)` gives in-process: a
+     * file the identity cannot read answers EACCES, one it owns answers.
+     * Over the remote endpoint a `cred` is refused by the dispatcher, as it is
+     * on `exec` — a token authenticates a session, not a user inside it.
+     */
+    files: NimbusSandboxFiles;
+    private filesAs;
     runtimes: {
         available: () => Promise<NimbusAvailableRuntime[]>;
         installed: () => Promise<NimbusRuntimeSummary[]>;

@@ -1,4 +1,4 @@
-import { CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 function stringArg(envelope, index) {
@@ -23,9 +23,15 @@ function contentArg(envelope, index) {
         return new Uint8Array(value);
     throw new Error(`supervisor op ${envelope.op}: argument ${index} must be bytes or text`);
 }
-function credFor(deps, pid) {
-    if (pid === undefined)
-        return CRED_SESSION_USER;
+function credFor(deps, pid, cred) {
+    if (pid === undefined) {
+        // Validated through the one VfsCred validator; a host that names a
+        // credential names a well-formed one or gets nothing.
+        return cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'supervisor op');
+    }
+    if (cred !== undefined) {
+        throw new Error('supervisor op: a process acts as its own credential; cred cannot ride a pid');
+    }
     if (!Number.isInteger(pid) || pid <= 0) {
         throw new Error('supervisor op: filesystem operation requires a valid process pid');
     }
@@ -140,9 +146,12 @@ export const SUPERVISOR_NATIVE_OPS = new Set([
 export function createSupervisorBridgeStore(deps) {
     const bridges = new Map();
     return {
-        bridge: (pid) => {
+        bridge: (pid, cred) => {
+            if (pid === undefined && cred !== undefined) {
+                return new SqliteRuntimeFsBridge(deps.vfs.as(credFor(deps, pid, cred)), deps.vfs);
+            }
             const key = pid ?? 0;
-            const credentialed = deps.vfs.as(credFor(deps, pid));
+            const credentialed = deps.vfs.as(credFor(deps, pid, cred));
             const held = bridges.get(key);
             if (held) {
                 held.updateCredential(credentialed);
@@ -161,37 +170,38 @@ export function createSupervisorOpHandler(deps) {
     const tools = {
         bridge: bridgeFor,
         vfs: deps.vfs,
-        cred: (pid) => credFor(deps, pid),
+        cred: (pid, cred) => credFor(deps, pid, cred),
         output: deps.output,
     };
+    const fs = (e) => bridgeFor(e.pid, e.cred);
     const ops = {
         readFile: async (e) => {
-            const bytes = await bridgeFor(e.pid).readFile(stringArg(e, 0));
+            const bytes = await fs(e).readFile(stringArg(e, 0));
             return bytes === null ? null : new TextDecoder().decode(bytes);
         },
-        readFileBytes: (e) => bridgeFor(e.pid).readFile(stringArg(e, 0)),
-        stat: (e) => bridgeFor(e.pid).stat(stringArg(e, 0)),
-        lstat: (e) => bridgeFor(e.pid).stat(stringArg(e, 0), { followSymlinks: false }),
-        exists: async (e) => (await bridgeFor(e.pid).stat(stringArg(e, 0))) !== null,
-        readdir: (e) => bridgeFor(e.pid).readdir(stringArg(e, 0)),
-        readlink: (e) => bridgeFor(e.pid).readlink(stringArg(e, 0)),
-        fsReadRange: (e) => bridgeFor(e.pid).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
-        fsReadRangeUncached: (e) => bridgeFor(e.pid).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2), { cached: false }),
-        fsRevision: (e) => bridgeFor(e.pid).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
+        readFileBytes: (e) => fs(e).readFile(stringArg(e, 0)),
+        stat: (e) => fs(e).stat(stringArg(e, 0)),
+        lstat: (e) => fs(e).stat(stringArg(e, 0), { followSymlinks: false }),
+        exists: async (e) => (await fs(e).stat(stringArg(e, 0))) !== null,
+        readdir: (e) => fs(e).readdir(stringArg(e, 0)),
+        readlink: (e) => fs(e).readlink(stringArg(e, 0)),
+        fsReadRange: (e) => fs(e).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+        fsReadRangeUncached: (e) => fs(e).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2), { cached: false }),
+        fsRevision: (e) => fs(e).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
         hasLegacySymlinkUnder: (e) => getSymlinkRegistry(deps.vfs).hasAtOrBelow(stringArg(e, 0)),
-        writeFile: (e) => bridgeFor(e.pid).writeFile(stringArg(e, 0), contentArg(e, 1)),
-        mkdir: (e) => bridgeFor(e.pid).mkdir(stringArg(e, 0), { recursive: true }),
-        rmdir: (e) => bridgeFor(e.pid).rmdir(stringArg(e, 0)),
-        unlink: (e) => bridgeFor(e.pid).unlink(stringArg(e, 0)),
-        rename: (e) => bridgeFor(e.pid).rename(stringArg(e, 0), stringArg(e, 1)),
-        symlink: (e) => bridgeFor(e.pid).symlink(stringArg(e, 0), stringArg(e, 1)),
-        chmod: (e) => bridgeFor(e.pid).chmod(stringArg(e, 0), numberArg(e, 1)),
-        utimes: (e) => bridgeFor(e.pid).utimes(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
-        fsTruncate: (e) => bridgeFor(e.pid).truncate(stringArg(e, 0), numberArg(e, 1)),
+        writeFile: (e) => fs(e).writeFile(stringArg(e, 0), contentArg(e, 1)),
+        mkdir: (e) => fs(e).mkdir(stringArg(e, 0), { recursive: true }),
+        rmdir: (e) => fs(e).rmdir(stringArg(e, 0)),
+        unlink: (e) => fs(e).unlink(stringArg(e, 0)),
+        rename: (e) => fs(e).rename(stringArg(e, 0), stringArg(e, 1)),
+        symlink: (e) => fs(e).symlink(stringArg(e, 0), stringArg(e, 1)),
+        chmod: (e) => fs(e).chmod(stringArg(e, 0), numberArg(e, 1)),
+        utimes: (e) => fs(e).utimes(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+        fsTruncate: (e) => fs(e).truncate(stringArg(e, 0), numberArg(e, 1)),
         writeBatchStream: (e) => {
             if (!e.stream)
                 throw new Error('supervisor op writeBatchStream: no stream');
-            return deps.vfs.as(credFor(deps, e.pid)).writeStream(e.stream, { mutationOwner: e.mutationOwner });
+            return deps.vfs.as(credFor(deps, e.pid, e.cred)).writeStream(e.stream, { mutationOwner: e.mutationOwner });
         },
         stdout: (e) => { deps.output?.('stdout', e.pid ?? 0, stringArg(e, 0)); },
         stderr: (e) => { deps.output?.('stderr', e.pid ?? 0, stringArg(e, 0)); },

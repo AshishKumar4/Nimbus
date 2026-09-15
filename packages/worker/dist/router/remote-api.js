@@ -163,30 +163,45 @@ async function dispatchRemoteRpc(ctx) {
             assertRuntimeForLanguage(ctx, language, options.install);
             return ctx.stub._rpcRunCode(stringArg(args[0], 'code'), options);
         }
+        // The file plane. Each op's trailing argument is the SDK's file options
+        // object; `fileOptions` reads it so a `cred` the client put on the wire
+        // is refused loudly rather than dropped — the session-user default is
+        // the only identity a remote token can act as.
         case 'readFile':
+            fileOptions(args[1]);
             return ctx.stub._rpcReadFile(stringArg(args[0], 'path'));
         case 'readFileBytes':
+            fileOptions(args[1]);
             return ctx.stub._rpcReadFileBytes(stringArg(args[0], 'path'));
         case 'writeFile':
+            fileOptions(args[2]);
             return ctx.stub._rpcWriteFile(stringArg(args[0], 'path'), fileContentArg(args[1]));
         case 'stat':
+            fileOptions(args[1]);
             return ctx.stub._rpcStat(stringArg(args[0], 'path'));
         case 'lstat':
+            fileOptions(args[1]);
             return ctx.stub._rpcLstat(stringArg(args[0], 'path'));
         case 'rename':
+            fileOptions(args[2]);
             return ctx.stub._rpcRename(stringArg(args[0], 'from'), stringArg(args[1], 'to'));
         case 'chmod':
+            fileOptions(args[2]);
             return ctx.stub._rpcChmod(stringArg(args[0], 'path'), numberArg(args[1], 'mode'));
         case 'readRange':
+            fileOptions(args[3]);
             return ctx.stub._rpcFsReadRange(stringArg(args[0], 'path'), numberArg(args[1], 'offset'), numberArg(args[2], 'length'));
         case 'readdir':
+            fileOptions(args[1]);
             return ctx.stub._rpcReaddir(stringArg(args[0], 'path'));
         case 'exists':
+            fileOptions(args[1]);
             return ctx.stub._rpcExists(stringArg(args[0], 'path'));
         case 'mkdir':
+            fileOptions(args[1]);
             return ctx.stub._rpcMkdir(stringArg(args[0], 'path'));
         case 'deleteFile':
-            return ctx.stub._rpcDeleteFile(stringArg(args[0], 'path'), objectArg(args[1]));
+            return ctx.stub._rpcDeleteFile(stringArg(args[0], 'path'), fileOptions(args[1]));
         case 'installRuntime': {
             const spec = stringArg(args[0], 'spec');
             assertRuntimeAllowed(ctx, spec, 'onDemand');
@@ -300,6 +315,21 @@ function execOptions(ctx, value) {
         ...options,
         cwd: typeof options.cwd === 'string' ? options.cwd : ctx.root,
     };
+}
+/**
+ * A file op's options object. The same boundary rule as `execOptions`: the
+ * remote token authenticates a SESSION, so a caller does not get to name the
+ * uid its file operation acts as. `files.as(cred)` puts `cred` on the wire
+ * explicitly so this refusal is the answer the caller gets — never a read
+ * that silently ran as somebody else. A colocated embedder holding the DO
+ * stub is trusted with `cred` the same way it is trusted with kernel writes.
+ */
+function fileOptions(value) {
+    const options = value === undefined ? {} : objectArg(value);
+    if (options.cred !== undefined) {
+        throw apiError('cred is not accepted over the remote API', 'E_ARG_SHAPE', 400);
+    }
+    return options;
 }
 function processLogOptions(value) {
     const options = objectArg(value);

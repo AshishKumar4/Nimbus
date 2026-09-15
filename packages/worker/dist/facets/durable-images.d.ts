@@ -12,11 +12,12 @@
  * durable spawn exists to survive. Durable images are kept for the
  * application's life and released only by explicit removal.
  *
- * Two blobs per launch: `runner` is the worker.js source text, `application`
- * is a JSON payload of `{ modules, env, vfsWasmModules }`. The digests in the
- * journal's `recipe.image` are sha256 hashes of those two payloads, and a
- * self-owned spawn mints them at spawn time; an embedder-owned spawn is given
- * them by its own bookkeeping instead.
+ * Two blobs per launch: `runner` is the main module's source text,
+ * `application` is a JSON payload of `{ modules, env, vfsWasmModules }` plus,
+ * when the launch set them, `vfsTextModules`, `mainModule` and `startArgs`.
+ * The digests in the journal's `recipe.image` are sha256 hashes of those two
+ * payloads, and a self-owned spawn mints them at spawn time; an
+ * embedder-owned spawn is given them by its own bookkeeping instead.
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
@@ -43,6 +44,9 @@ export declare function persistDurableWorkerImage(vfs: SqliteVFS, workerCode: st
     }>;
     env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
+    vfsTextModules?: Record<string, string>;
+    /** Recorded only when the launch named one; absent means `worker.js`. */
+    mainModule?: string;
     startArgs?: unknown;
 }): Promise<{
     runner: string;

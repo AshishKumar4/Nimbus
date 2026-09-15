@@ -65,7 +65,7 @@ export function buildSessionSupervisorOps(
     // alone doesn't know: a read lease sized to what the file can return.
     readFile: async (envelope, tools) => {
       const path = envelope.args?.[0] as string;
-      const fs = tools.bridge(envelope.pid);
+      const fs = tools.bridge(envelope.pid, envelope.cred);
       const stat = await fs.stat(path);
       if (!stat) return null;
       return withReadAllocation(stat.size, async () => {
@@ -75,7 +75,7 @@ export function buildSessionSupervisorOps(
     },
     readFileBytes: async (envelope, tools) => {
       const path = envelope.args?.[0] as string;
-      const fs = tools.bridge(envelope.pid);
+      const fs = tools.bridge(envelope.pid, envelope.cred);
       const stat = await fs.stat(path);
       if (!stat) return null;
       return withReadAllocation(stat.size, () => fs.readFile(path));
@@ -86,7 +86,7 @@ export function buildSessionSupervisorOps(
         offset: envelope.args?.[1],
         length: envelope.args?.[2],
       });
-      const fs = tools.bridge(envelope.pid);
+      const fs = tools.bridge(envelope.pid, envelope.cred);
       return withReadAllocation(
         await rangeReadBytes(fs, args.path, args.offset, args.length),
         () => fs.readRange(args.path, args.offset, args.length),
@@ -98,7 +98,7 @@ export function buildSessionSupervisorOps(
         offset: envelope.args?.[1],
         length: envelope.args?.[2],
       });
-      const fs = tools.bridge(envelope.pid);
+      const fs = tools.bridge(envelope.pid, envelope.cred);
       return withReadAllocation(
         await rangeReadBytes(fs, args.path, args.offset, args.length),
         () => fs.readRange(args.path, args.offset, args.length, { cached: false }),
@@ -115,7 +115,7 @@ export function buildSessionSupervisorOps(
       if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
         throw new Error('filesystem RPC requires a valid process pid');
       }
-      return tools.vfs.as(tools.cred(pid)).writeStream(envelope.stream, {
+      return tools.vfs.as(tools.cred(pid, envelope.cred)).writeStream(envelope.stream, {
         decodeDrainStartedAt: performance.now(),
         mutationOwner: envelope.mutationOwner,
       });

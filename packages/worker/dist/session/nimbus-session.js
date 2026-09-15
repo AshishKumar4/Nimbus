@@ -8,8 +8,7 @@
 import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { FacetManager } from '../facets/manager.js';
-import { resolveDurableWorkerImage } from '../facets/durable-images.js';
+import { composeFacetManager } from '../facets/compose.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -17,8 +16,6 @@ import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { ESBUILD_TRANSFORM_WORKER_ID, esbuildTransformWorkerCode, } from '../facets/esbuild-transform.js';
-import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
@@ -57,7 +54,6 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
 import { buildSessionSupervisorOps } from './supervisor-op.js';
-import { processHostFor } from '../loaders/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from './ws-relay.js';
@@ -656,23 +652,23 @@ export class NimbusSession extends CloudflareDurableObject {
     supervisorOp(envelope) {
         return this.supervisorOps().dispatch(envelope);
     }
-    async _rpcReadFile(path, pid) { return _rpc._rpcReadFile(this, path, pid); }
-    async _rpcReadFileBytes(path, pid) { return _rpc._rpcReadFileBytes(this, path, pid); }
+    async _rpcReadFile(path, pid, cred) { return _rpc._rpcReadFile(this, path, pid, cred); }
+    async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
-    async _rpcWriteFile(path, content, pid) { return _rpc._rpcWriteFile(this, path, content, pid); }
+    async _rpcWriteFile(path, content, pid, cred) { return _rpc._rpcWriteFile(this, path, content, pid, cred); }
     async _rpcWriteProtectedRootFile(rootPath, path, content) {
         return _rpc._rpcWriteProtectedRootFile(this, rootPath, path, content);
     }
-    async _rpcStat(path, pid) { return _rpc._rpcStat(this, path, pid); }
-    async _rpcLstat(path, pid) { return _rpc._rpcLstat(this, path, pid); }
+    async _rpcStat(path, pid, cred) { return _rpc._rpcStat(this, path, pid, cred); }
+    async _rpcLstat(path, pid, cred) { return _rpc._rpcLstat(this, path, pid, cred); }
     async _rpcHasLegacySymlinkUnder(path, pid) {
         return _rpc._rpcHasLegacySymlinkUnder(this, path, pid);
     }
     async _rpcUtimes(path, atimeMs, mtimeMs, pid) {
         return _rpc._rpcUtimes(this, path, atimeMs, mtimeMs, pid);
     }
-    async _rpcChmod(path, mode, pid) {
-        return _rpc._rpcChmod(this, path, mode, pid);
+    async _rpcChmod(path, mode, pid, cred) {
+        return _rpc._rpcChmod(this, path, mode, pid, cred);
     }
     async _rpcAccess(path, mode, pid) {
         return _rpc._rpcAccess(this, path, mode, pid);
@@ -683,11 +679,11 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcSetUmask(mask, pid) {
         return _rpc._rpcSetUmask(this, mask, pid);
     }
-    async _rpcReaddir(path, pid) { return _rpc._rpcReaddir(this, path, pid); }
-    async _rpcExists(path, pid) { return _rpc._rpcExists(this, path, pid); }
-    async _rpcMkdir(path, pid) { return _rpc._rpcMkdir(this, path, pid); }
+    async _rpcReaddir(path, pid, cred) { return _rpc._rpcReaddir(this, path, pid, cred); }
+    async _rpcExists(path, pid, cred) { return _rpc._rpcExists(this, path, pid, cred); }
+    async _rpcMkdir(path, pid, cred) { return _rpc._rpcMkdir(this, path, pid, cred); }
     async _rpcRmdir(path, pid) { return _rpc._rpcRmdir(this, path, pid); }
-    async _rpcRename(from, to, pid) { return _rpc._rpcRename(this, from, to, pid); }
+    async _rpcRename(from, to, pid, cred) { return _rpc._rpcRename(this, from, to, pid, cred); }
     async _rpcReadlink(path, pid) { return _rpc._rpcReadlink(this, path, pid); }
     async _rpcSymlink(target, path, pid) { return _rpc._rpcSymlink(this, target, path, pid); }
     async _rpcFsRevision(path, pid) { return _rpc._rpcFsRevision(this, path, pid); }
@@ -717,8 +713,8 @@ export class NimbusSession extends CloudflareDurableObject {
         return _rpc._rpcFsWrite(this, handleId, offset, bytes, pid);
     }
     async _rpcFsClose(handleId, pid) { return _rpc._rpcFsClose(this, handleId, pid); }
-    async _rpcFsReadRange(path, offset, length, pid) {
-        return _rpc._rpcFsReadRange(this, path, offset, length, pid);
+    async _rpcFsReadRange(path, offset, length, pid, cred) {
+        return _rpc._rpcFsReadRange(this, path, offset, length, pid, cred);
     }
     async _rpcFsReadRangeUncached(path, offset, length, pid) {
         return _rpc._rpcFsReadRangeUncached(this, path, offset, length, pid);
@@ -855,7 +851,11 @@ export class NimbusSession extends CloudflareDurableObject {
         this.ensureFacetManager();
         return this.facetManager.ensureDurableAppOnPort(port);
     }
-    async _rpcDeleteFile(path, options) { return _programmatic.rpcDeleteFile(this, path, options); }
+    async _rpcDeleteFile(path, options, cred) { return _programmatic.rpcDeleteFile(this, path, options, cred); }
+    /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
+    async _rpcSpawnWorker(workerCode, command, cwd, opts) {
+        return _programmatic.rpcSpawnWorker(this, workerCode, command, cwd, opts);
+    }
     async _rpcDestroy(options) { return _programmatic.rpcDestroy(this, options); }
     // Legacy VFS (direct method calls)
     vfsReadFile(path) { return _rpc.vfsReadFile(this, path); }
@@ -967,71 +967,63 @@ export class NimbusSession extends CloudflareDurableObject {
     _w5PersistRing() {
         return _diag.persistRing(this, this.ctx);
     }
+    /**
+     * The session's FacetManager, composed through the one factory every host
+     * uses (`facets/compose.ts`). What is wired here is only what is the
+     * session's: the terminal a spawn is announced on, the scrollback a notice
+     * survives in, the alarm that grants a launch its next turn, and the exit
+     * report that keeps the process table honest. The isolated esbuild
+     * transform and the durable image-store fallback are the factory's.
+     */
     ensureFacetManager() {
         if (!this.facetManager) {
-            this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, processHostFor, {
-                onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
-                requestLaunchTurn: (notBefore) => { void this._scheduleLaunchTurn(notBefore); },
-                notify: (line) => this._notifySession(line),
-                transformLargeEsm: async (code, options) => {
-                    const loader = Reflect.get(this.env, 'LOADER');
-                    if (!loader || typeof loader.get !== 'function') {
-                        throw new Error('Nimbus: env.LOADER unavailable for isolated esbuild transform');
-                    }
-                    const assets = Reflect.get(this.env, 'ASSETS');
-                    if (!assets || typeof assets.fetch !== 'function') {
-                        throw new Error('Nimbus: env.ASSETS unavailable for isolated esbuild transform');
-                    }
-                    const worker = await loader.get(ESBUILD_TRANSFORM_WORKER_ID, async () => esbuildTransformWorkerCode(await fetchEsbuildWasmBytes({ ASSETS: assets })));
-                    const transformClass = worker.getDurableObjectClass('EsbuildTransformFacet');
-                    const facet = this.ctx.facets.get(`esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`, async () => ({ class: transformClass }));
-                    return facet.transform(code, options);
-                },
-                onSpawn: (pid, command, longRunning) => {
-                    const attachedTty = this.processes.get(pid)?.attachedTty === true;
-                    if (longRunning) {
-                        try {
-                            this.processes.openInput(pid);
+            // The manager is composed over the filesystem, so the filesystem comes
+            // first. Cheap and idempotent; every caller already stood it up or is
+            // about to.
+            this.ensureSqliteFs();
+            this.facetManager = composeFacetManager({
+                ctx: this.ctx,
+                env: this.env,
+                processes: this.processes,
+                portRegistry: this.portRegistry,
+                vfs: this.sqliteFs,
+                ...(this.esbuildService ? { esbuild: this.esbuildService } : {}),
+                hooks: {
+                    onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
+                    requestLaunchTurn: (notBefore) => { void this._scheduleLaunchTurn(notBefore); },
+                    notify: (line) => this._notifySession(line),
+                    onSpawn: (pid, command, longRunning) => {
+                        const attachedTty = this.processes.get(pid)?.attachedTty === true;
+                        if (longRunning) {
+                            try {
+                                this.processes.openInput(pid);
+                            }
+                            catch { }
                         }
-                        catch { }
-                    }
-                    // Only surface long-running / user-visible spawns to keep
-                    // the terminal uncluttered. Short `node <file>` evals also
-                    // get a line because users want the pid for `logs`/`kill`.
-                    if (!this.terminal)
-                        return;
-                    const label = longRunning ? 'started (long-running)' : 'started';
-                    this.terminal.write(`\x1b[2m[facet ${label}: pid=${pid} cmd="${command}"]\x1b[0m\r\n`);
-                    // Structured event so the tabs UI can auto-open a log tab
-                    // for long-running processes (vite, wrangler dev, etc.).
-                    notifyTerminalEvent(this.terminal, {
-                        type: 'spawn', pid, command, longRunning, attachedTty,
-                    });
+                        // Only surface long-running / user-visible spawns to keep
+                        // the terminal uncluttered. Short `node <file>` evals also
+                        // get a line because users want the pid for `logs`/`kill`.
+                        if (!this.terminal)
+                            return;
+                        const label = longRunning ? 'started (long-running)' : 'started';
+                        this.terminal.write(`\x1b[2m[facet ${label}: pid=${pid} cmd="${command}"]\x1b[0m\r\n`);
+                        // Structured event so the tabs UI can auto-open a log tab
+                        // for long-running processes (vite, wrangler dev, etc.).
+                        notifyTerminalEvent(this.terminal, {
+                            type: 'spawn', pid, command, longRunning, attachedTty,
+                        });
+                    },
                 },
-                // The fallback resolver a self-owned durable spawn re-drives
-                // through: read the image blobs the spawn persisted under
-                // `.nimbus/images/<sha256>` and restore the launch's env and
-                // modules from them. An embedder-owned launch answers its own
-                // bookkeeping through resolveWorkerLaunch instead — this hook is
-                // only the fallback for applications nobody else is keeping, and
-                // because it cannot re-mint a live globalOutbound binding the
-                // spawn path refuses such a launch under it.
-                resolveWorkerLaunchFallback: async (recipe) => {
-                    this.ensureSqliteFs();
-                    return resolveDurableWorkerImage(this.sqliteFs, recipe);
-                },
-            });
+            }).manager;
         }
-        if (this.facetManager && this.sqliteFs) {
-            this.facetManager.setVfs(this.sqliteFs);
-            // W3.5 Fix B: share the session's lazy esbuildService with the
-            // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
-            // wasm-init twice. If the session hasn't constructed one yet,
-            // FacetManager will lazy-create its own on first exec — same
-            // wasm bytes, same ~10ms init cost, just paid once per surface.
-            if (this.esbuildService) {
-                this.facetManager.setEsbuildService(this.esbuildService);
-            }
+        // W3.5 Fix B: share the session's lazy esbuildService with the
+        // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
+        // wasm-init twice. The session may construct it after the manager
+        // exists, so the share is re-offered on every call; FacetManager
+        // otherwise lazy-creates its own on first exec — same wasm bytes,
+        // same ~10ms init cost, just paid once per surface.
+        if (this.esbuildService) {
+            this.facetManager.setEsbuildService(this.esbuildService);
         }
     }
     /**

@@ -62,6 +62,7 @@ import {
 import {
   CRED_KERNEL,
   CRED_SESSION_USER,
+  requireVfsCred,
   type RuntimeOpenFlags,
   type VfsAcquireResult,
   type VfsCred,
@@ -128,9 +129,20 @@ function processPid(pid: unknown): number {
  * binding, the remote `/rpc` dispatcher, the static asset server — and those
  * act as the unprivileged session user, the same identity `exec` runs as.
  * A supplied-but-invalid pid still throws: only an absent pid is a host call.
+ *
+ * A host call may name the credential it acts as (`cred`) — the same
+ * `SqliteVFS.as(cred)` view an in-process caller has, reached over the RPC
+ * surface. That is the embedder's trusted surface: the SDK over the DO
+ * binding hands it through `files.as(cred)`; the remote `/rpc` dispatcher
+ * refuses it, exactly as it refuses `cred` on exec, because a token
+ * authenticates a session and not a user inside it. Absent, every file op
+ * keeps the identity it has always had. A pid and a cred together are
+ * refused, so a process can never widen its own identity.
  */
-function callerCred(self: RpcHost, pid: unknown): VfsCred {
-  return pid === undefined ? CRED_SESSION_USER : self.processes.cred(processPid(pid));
+function callerCred(self: RpcHost, pid: unknown, cred?: VfsCred): VfsCred {
+  if (pid === undefined) return cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'filesystem RPC');
+  if (cred !== undefined) throw new Error('filesystem RPC: a process acts as its own credential; cred cannot ride a pid');
+  return self.processes.cred(processPid(pid));
 }
 
 export function checkedReadPayloadBytes(bytes: number): number {
@@ -186,8 +198,8 @@ export async function withReadAllocation<T>(
  * The body lives in `buildSessionSupervisorOps`'s `readFile` override so
  * direct `_rpc*` calls and the supervisor envelope share it.
  */
-export async function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null> {
-  return self.supervisorOp({ op: 'readFile', args: [path], pid }) as Promise<string | null>;
+export async function _rpcReadFile(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null> {
+  return self.supervisorOp({ op: 'readFile', args: [path], pid, cred }) as Promise<string | null>;
 }
 
 /**
@@ -195,8 +207,8 @@ export async function _rpcReadFile(self: RpcHost, path: string, pid?: number): P
  * binary .git/objects/** and packfile reads, where TextDecoder/TextEncoder
  * round-tripping through readFile (string) would corrupt bytes.
  */
-export async function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number): Promise<Uint8Array | null> {
-  return self.supervisorOp({ op: 'readFileBytes', args: [path], pid }) as Promise<Uint8Array | null>;
+export async function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> {
+  return self.supervisorOp({ op: 'readFileBytes', args: [path], pid, cred }) as Promise<Uint8Array | null>;
 }
 
   /**
@@ -276,11 +288,11 @@ export async function _rpcInnerDoFetch(self: RpcHost, req: {
     }
 }
 
-export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<number> {
+export async function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> {
   // binary-fs wave: the bridge's writeFile already accepts
   // string | Uint8Array — the shape arrives unchanged across structured
   // clone.
-  return self.supervisorOp({ op: 'writeFile', args: [path, content], pid }) as Promise<number>;
+  return self.supervisorOp({ op: 'writeFile', args: [path, content], pid, cred }) as Promise<number>;
 }
 
 /**
@@ -319,12 +331,12 @@ export async function _rpcWriteProtectedRootFile(
   fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
   fs.chmod(protectedPath, 0o444);
 }
-export async function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any> {
-  return self.supervisorOp({ op: 'stat', args: [path], pid });
+export async function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any> {
+  return self.supervisorOp({ op: 'stat', args: [path], pid, cred });
 }
 
-export async function _rpcLstat(self: RpcHost, path: string, pid?: number): Promise<any> {
-  return self.supervisorOp({ op: 'lstat', args: [path], pid });
+export async function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any> {
+  return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
 }
 
 export async function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean> {
@@ -335,8 +347,8 @@ export async function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, m
   await self.supervisorOp({ op: 'utimes', args: [path, atimeMs, mtimeMs], pid });
 }
 
-export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number): Promise<void> {
-  await self.supervisorOp({ op: 'chmod', args: [path, mode], pid });
+export async function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }
 
 export async function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void> {
@@ -358,24 +370,24 @@ export async function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): P
   return self.processes.setUmask(processPid(pid), mask);
 }
 
-export async function _rpcReaddir(self: RpcHost, path: string, pid?: number): Promise<{ name: string; type: string }[]> {
-  return self.supervisorOp({ op: 'readdir', args: [path], pid }) as Promise<{ name: string; type: string }[]>;
+export async function _rpcReaddir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<{ name: string; type: string }[]> {
+  return self.supervisorOp({ op: 'readdir', args: [path], pid, cred }) as Promise<{ name: string; type: string }[]>;
 }
 
-export async function _rpcExists(self: RpcHost, path: string, pid?: number): Promise<boolean> {
-  return self.supervisorOp({ op: 'exists', args: [path], pid }) as Promise<boolean>;
+export async function _rpcExists(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<boolean> {
+  return self.supervisorOp({ op: 'exists', args: [path], pid, cred }) as Promise<boolean>;
 }
 
-export async function _rpcMkdir(self: RpcHost, path: string, pid?: number): Promise<void> {
-  await self.supervisorOp({ op: 'mkdir', args: [path], pid });
+export async function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'mkdir', args: [path], pid, cred });
 }
 
 export async function _rpcRmdir(self: RpcHost, path: string, pid?: number): Promise<void> {
   await self.supervisorOp({ op: 'rmdir', args: [path], pid });
 }
 
-export async function _rpcRename(self: RpcHost, from: string, to: string, pid?: number): Promise<void> {
-  await self.supervisorOp({ op: 'rename', args: [from, to], pid });
+export async function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'rename', args: [from, to], pid, cred });
 }
 
 export async function _rpcReadlink(self: RpcHost, path: string, pid?: number): Promise<string | null> {
@@ -564,8 +576,9 @@ export async function _rpcFsReadRange(
   offset: number,
   length: number,
   pid?: number,
+  cred?: VfsCred,
 ): Promise<Uint8Array | null> {
-  return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid }) as Promise<Uint8Array | null>;
+  return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred }) as Promise<Uint8Array | null>;
 }
 
 /**

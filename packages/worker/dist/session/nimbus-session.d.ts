@@ -9,10 +9,10 @@ import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { FacetManager } from '../facets/manager.js';
+import type { FacetManager } from '../facets/manager.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
-import { type VfsAcquireResult, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -271,29 +271,29 @@ export declare class NimbusSession extends CloudflareDurableObject {
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
-    _rpcReadFile(path: string, pid?: number): Promise<string | null>;
-    _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null>;
+    _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
+    _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcInnerDoFetch(req: any): Promise<any>;
-    _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<number>;
+    _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
     _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
-    _rpcStat(path: string, pid?: number): Promise<any>;
-    _rpcLstat(path: string, pid?: number): Promise<any>;
+    _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
+    _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<any>;
     _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean>;
     _rpcUtimes(path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void>;
-    _rpcChmod(path: string, mode: number, pid?: number): Promise<void>;
+    _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcAccess(path: string, mode: number, pid?: number): Promise<void>;
     _rpcChown(path: string, uid: number, gid: number, pid?: number, options?: {
         followSymlinks?: boolean;
     }): Promise<void>;
     _rpcSetUmask(mask: number, pid?: number): Promise<number>;
-    _rpcReaddir(path: string, pid?: number): Promise<{
+    _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<{
         name: string;
         type: string;
     }[]>;
-    _rpcExists(path: string, pid?: number): Promise<boolean>;
-    _rpcMkdir(path: string, pid?: number): Promise<void>;
+    _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
+    _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcRmdir(path: string, pid?: number): Promise<void>;
-    _rpcRename(from: string, to: string, pid?: number): Promise<void>;
+    _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
     _rpcReadlink(path: string, pid?: number): Promise<string | null>;
     _rpcSymlink(target: string, path: string, pid?: number): Promise<void>;
     _rpcFsRevision(path?: string, pid?: number): Promise<number>;
@@ -307,7 +307,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _rpcFsRead(handleId: number, offset: number | null, length: number, pid?: number): Promise<Uint8Array>;
     _rpcFsWrite(handleId: number, offset: number | null, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
     _rpcFsClose(handleId: number, pid?: number): Promise<void>;
-    _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+    _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcFsReadRangeUncached(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
@@ -511,7 +511,9 @@ export declare class NimbusSession extends CloudflareDurableObject {
     ensureDurableAppOnPort(port: number): Promise<'started' | 'absent' | 'failed'>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
-    }): Promise<void>;
+    }, cred?: VfsCred): Promise<void>;
+    /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
+    _rpcSpawnWorker(workerCode: string, command: string, cwd: string, opts?: import('../facets/manager.js').LongRunningWorkerSpawnOptions): Promise<import("../facets/manager.js").SpawnedWorker>;
     _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions): Promise<_programmatic.ProgrammaticDestroyResult>;
     vfsReadFile(path: string): ArrayBuffer | null;
     vfsReadFileString(path: string): string | null;
@@ -573,6 +575,14 @@ export declare class NimbusSession extends CloudflareDurableObject {
     _w5RehydrateRingFromStorage(): Promise<void>;
     /** Snapshot + persist OOM ring. Delegator → ./nimbus-session-diag.ts (S10). */
     _w5PersistRing(): Promise<void> | null;
+    /**
+     * The session's FacetManager, composed through the one factory every host
+     * uses (`facets/compose.ts`). What is wired here is only what is the
+     * session's: the terminal a spawn is announced on, the scrollback a notice
+     * survives in, the alarm that grants a launch its next turn, and the exit
+     * report that keeps the process table honest. The isolated esbuild
+     * transform and the durable image-store fallback are the factory's.
+     */
     ensureFacetManager(): void;
     /**
      * The supervisor-owned WebSocket relay. Lazy, because most sessions never

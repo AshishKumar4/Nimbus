@@ -110,6 +110,18 @@ export declare class VFS {
     readdirStat(path: string): Array<Dirent & Stat>;
     /**
      * Recursively remove a directory and all its contents.
+     *
+     * Dispatches on the mount table first, like every other mutation here: a
+     * directory that exists through a MountProvider is enumerated with the
+     * provider's `readdir`, each child re-dispatched through this method, and
+     * the provider's own `rmdir` ends it. The in-memory tree never holds such a
+     * path, so resolving it there answered ENOENT for a directory that plainly
+     * existed. A mount point met on the way down — a mixed tree, an in-memory
+     * directory with a mount inside it — has its contents cleared through its
+     * provider but is itself left mounted: a mount is released by `unmount`,
+     * never by removing its root, and the provider's `/` is the mount, not an
+     * entry in it. The in-memory walk itself is unchanged; it only gains that
+     * pass over the mount points it holds.
      */
     rmdirRecursive(path: string): void;
 }

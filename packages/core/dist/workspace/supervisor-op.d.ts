@@ -2,11 +2,20 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
 import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-/** Identity comes from the supervisor binding, never from facet arguments. */
+/**
+ * Identity comes from the supervisor binding, never from facet arguments: a
+ * process's `pid` is stamped by SupervisorRPC from its own props. A HOST call
+ * — no pid — acts as the unprivileged session user unless it names a `cred`,
+ * which only a caller already trusted with the filesystem can do: the SDK over
+ * the DO binding, an embedder composing the workspace. A pid and a cred
+ * together are refused, so a process can never widen its own identity.
+ */
 export interface SupervisorOpEnvelope {
     readonly op: SupervisorOpName;
     readonly args?: readonly unknown[];
     readonly pid?: number;
+    /** A host call's credential. Meaningless — and refused — with a pid. */
+    readonly cred?: VfsCred;
     readonly writerId?: string;
     readonly mutationOwner?: string;
     readonly stream?: ReadableStream<Uint8Array>;
@@ -76,9 +85,9 @@ export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
  * the default handler would have used instead of caching its own.
  */
 export interface SupervisorOpTools {
-    readonly bridge: (pid?: number) => SqliteRuntimeFsBridge;
+    readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
     readonly vfs: SqliteVFS;
-    readonly cred: (pid?: number) => VfsCred;
+    readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
     readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
 }
 /** The host-side argument plan per op — how an envelope becomes an _rpc* call. */
@@ -92,7 +101,14 @@ export declare const SUPERVISOR_OP_ROUTES: Readonly<Record<SupervisorOpName, Sup
 export declare const SUPERVISOR_NATIVE_OPS: ReadonlySet<string>;
 /** The pid-keyed bridge cache behind the native filesystem ops. */
 export interface SupervisorOpBridgeStore {
-    readonly bridge: (pid?: number) => SqliteRuntimeFsBridge;
+    /**
+     * The bridge for a pid (cached per pid; the host's under key 0), or — for
+     * a host call naming a `cred` — a bridge bound to that credential and to
+     * nothing else. Never cached: the host's shared bridge has its credential
+     * swapped on every use, and two credentialed host calls interleaving
+     * across an await would otherwise read as each other.
+     */
+    readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
     /** Drop a pid's bridge — a process exit ends its credential's validity. */
     readonly forget: (pid: number) => void;
 }

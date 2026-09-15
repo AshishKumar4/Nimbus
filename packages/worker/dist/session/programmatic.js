@@ -11,7 +11,7 @@ import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
@@ -1022,10 +1022,34 @@ export async function rpcRouteCapabilityPort(self, port, capability, request, pa
     const routed = await self.portRegistry.routeCapabilityRequest(Number(port), String(capability), request, pathname);
     return routed ?? new Response('Not found', { status: 404 });
 }
-export async function rpcDeleteFile(self, path, options = {}) {
+/**
+ * `spawnWorker` for a colocated embedder holding the DO stub: boot the
+ * embedder's own Worker-class program — its main module, inline modules and
+ * content-addressed text/wasm modules — as one of this session's resident
+ * processes, and answer with the pid, the runner's boot payload and the
+ * process's facet (`fetch`/`connect`, bound to the resident handle; no
+ * release — `killProcess(pid)` ends it). Deliberately absent from the remote
+ * HTTP dispatcher: the facet is a live handle, and a remote token holder is
+ * not the embedder.
+ */
+export async function rpcSpawnWorker(self, workerCode, command, cwd, opts = {}) {
+    await ensureProgrammaticReady(self);
+    if (typeof workerCode !== 'string' || workerCode.length === 0) {
+        throw new Error('spawnWorker: workerCode must be a non-empty string');
+    }
+    self.ensureFacetManager();
+    return self.facetManager.spawnWorker(workerCode, String(command), String(cwd), opts);
+}
+/**
+ * `files.delete`. Absent a `cred` this acts as CRED_KERNEL — what it has
+ * always done, and the embedder's trusted surface: only a caller holding the
+ * DO binding reaches it. A `cred` binds the removal to that identity instead,
+ * the same view `SqliteVFS.as(cred)` gives in-process.
+ */
+export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
     const p = String(path).replace(/^\/+/, '');
-    const vfs = self.sqliteFs.as(CRED_KERNEL);
+    const vfs = self.sqliteFs.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
     if (!vfs.exists(p))
         return;
     if (vfs.isDirectory(p)) {
