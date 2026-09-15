@@ -781,14 +781,47 @@ export class VFS {
 
   /**
    * Recursively remove a directory and all its contents.
+   *
+   * Dispatches on the mount table first, like every other mutation here: a
+   * directory that exists through a MountProvider is enumerated with the
+   * provider's `readdir`, each child re-dispatched through this method, and
+   * the provider's own `rmdir` ends it. The in-memory tree never holds such a
+   * path, so resolving it there answered ENOENT for a directory that plainly
+   * existed. A mount point met on the way down — a mixed tree, an in-memory
+   * directory with a mount inside it — has its contents cleared through its
+   * provider but is itself left mounted: a mount is released by `unmount`,
+   * never by removing its root, and the provider's `/` is the mount, not an
+   * entry in it. The in-memory walk itself is unchanged; it only gains that
+   * pass over the mount points it holds.
    */
   rmdirRecursive(path: string): void {
+    const abs = this.toAbsolute(path);
+    const vp = this.getProvider(path);
+    if (vp) {
+      if (!isMountProvider(vp.provider)) {
+        throw new VFSError(ErrorCode.EINVAL, `'${path}': read-only virtual filesystem`);
+      }
+      // The provider answers ENOENT for a path it does not hold.
+      if (vp.provider.stat(vp.subpath).type !== 'directory') {
+        throw new VFSError(ErrorCode.ENOTDIR, `'${path}': not a directory`);
+      }
+      for (const child of vp.provider.readdir(vp.subpath)) {
+        const childPath = `${abs}/${child.name}`;
+        if (child.type === 'directory') {
+          this.rmdirRecursive(childPath);
+        } else {
+          this.unlink(childPath);
+        }
+      }
+      if (vp.subpath !== '/') this.rmdir(abs);
+      return;
+    }
+
     const node = this.resolveNode(path);
     if (node.type !== 'directory') {
       throw new VFSError(ErrorCode.ENOTDIR, `'${path}': not a directory`);
     }
 
-    const abs = this.toAbsolute(path);
     for (const child of node.children.values()) {
       const childPath = abs === '/' ? `/${child.name}` : `${abs}/${child.name}`;
       if (child.type === 'directory') {
@@ -796,6 +829,13 @@ export class VFS {
       } else {
         this.unlink(childPath);
       }
+    }
+    // Mount points directly under this directory are not tree entries;
+    // `readdir` injects them, so a recursive removal reaches into them too.
+    const prefix = abs === '/' ? '/' : `${abs}/`;
+    for (const mount of [...this.mounts]) {
+      if (!mount.path.startsWith(prefix) || mount.path.slice(prefix.length).includes('/')) continue;
+      this.rmdirRecursive(mount.path);
     }
     this.rmdir(abs);
   }
