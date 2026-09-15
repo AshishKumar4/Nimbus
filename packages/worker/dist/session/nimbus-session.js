@@ -16,6 +16,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_TRANSFORM_WORKER_ID, esbuildTransformWorkerCode, } from '../facets/esbuild-transform.js';
 import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
@@ -259,6 +260,12 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     webSocketRelay = null;
     esbuildService = null;
+    /**
+     * The session's single esbuild facet pool, shared by the npm installer's
+     * pre-bundler and the dev server's on-demand /@modules/ path. Lazy; see
+     * ensureBundlePool. Disposed with the installer and dev server.
+     */
+    bundlePool = null;
     viteDevServer = null;
     /**
      * runtime primitive support (P5): PID + port the default-Cirrus vite shim is
@@ -967,6 +974,12 @@ export class NimbusSession extends CloudflareDurableObject {
     _w5PersistRing() {
         return _diag.persistRing(this, this.ctx);
     }
+    /** The session's esbuild facet pool provider; constructing it does no work. */
+    ensureBundlePool() {
+        if (!this.bundlePool)
+            this.bundlePool = new EsbuildBundlePool(this.env, this.ctx);
+        return this.bundlePool;
+    }
     ensureFacetManager() {
         if (!this.facetManager) {
             this.facetManager = new FacetManager(this.ctx, this.env, this.processes, this.portRegistry, processHostFor, {
@@ -1417,6 +1430,7 @@ export class NimbusSession extends CloudflareDurableObject {
         }
         this.npmInstaller = new NpmInstaller(this.sqliteFs, this.ctx.storage.sql, {
             esbuild: this.esbuildService,
+            bundlePool: this.ensureBundlePool(),
             ctx: this.ctx,
             env: this.env,
             onProgress,

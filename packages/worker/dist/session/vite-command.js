@@ -311,6 +311,7 @@ export function createViteCommand(self) {
                 basePath: previewBasePath,
                 env: self.env,
                 ctx: self.ctx,
+                bundlePool: self.ensureBundlePool(),
                 port: previewPort,
                 pid: previewProcEntry.pid,
                 processes: self.processes,
@@ -537,6 +538,11 @@ export function createViteCommand(self) {
             injectBasename: viteConfig.injectBasename,
             basePath: previewBasePath,
             env: self.env,
+            ctx: self.ctx,
+            // The shared bundle pool puts cold /@modules/ misses on the facet
+            // path. This site never passed it before, so `vite` served every
+            // cold miss through in-supervisor esbuild-wasm.
+            bundlePool: self.ensureBundlePool(),
             // Process diagnostics support: wire dev-server diagnostics into the
             // supervisor's per-PID log store so the Process tab is not silent
             // after the banner.

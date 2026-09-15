@@ -24,6 +24,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { NpmCache } from './cache.js';
 import { type FetchFn } from './resolver.js';
 import { type NpmLogEmitter } from './npm-log.js';
+import type { BundlePoolProvider } from '../facets/esbuild-bundle-pool.js';
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
 export interface InstallProgress {
     phase: InstallPhase;
@@ -49,6 +50,8 @@ export declare class NpmInstaller {
     private readonly vfs;
     private cache;
     private esbuild;
+    /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
+    private bundlePool;
     private ctx;
     private env;
     private onProgress;
@@ -68,6 +71,7 @@ export declare class NpmInstaller {
     private npmLog;
     constructor(vfs: SqliteVFS, sql: SqlStorage, opts?: {
         esbuild?: EsbuildService;
+        bundlePool?: BundlePoolProvider;
         ctx?: DurableObjectState;
         env?: any;
         onProgress?: (msg: string) => void;
