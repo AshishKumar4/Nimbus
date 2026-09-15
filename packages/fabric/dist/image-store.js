@@ -84,32 +84,42 @@ export class ImageStore {
      * Materialize generated module sources in the content-addressed image store
      * and return the module-name → path map naming them.
      *
+     * Takes the images as a SEQUENCE, produced on demand and released as each
+     * one's slices land, so exactly one image's text is resident here. The old
+     * record-shaped parameter held every source for the whole call, and the
+     * caller held its own copy beside it: measured on a real-vite launch, the
+     * second image reported not one slice — ~25 MB of module text as UTF-16 in
+     * two places, plus the first image's just-freed 10.36 MB encode buffer, on a
+     * 128 MiB isolate. Yielding and dropping is what makes the peak one image
+     * instead of all of them; it is not a pacing question, and a fresh turn does
+     * not shrink a live heap.
+     *
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
      */
-    async materialize(pid, modules, pacer) {
+    async materialize(pid, images, pacer) {
         const fs = this.blobs();
-        const images = {};
-        const sources = new Map();
-        for (const [moduleName, source] of Object.entries(modules)) {
-            const path = facetImagePath(await facetImageDigest(source));
-            images[moduleName] = path;
-            sources.set(path, source);
-            await pacer.spend(source.length);
-        }
-        // Register the WHOLE root set here, in one synchronous step, before any
-        // byte of it exists on disk. That ordering is the entire protocol between
-        // a launch and the sweep: an image is rooted from before it is written, so
-        // a sweep can never observe a file this launch has written but not yet
-        // claimed. The old loop achieved it by not awaiting at all, which read as
-        // "the writes must not be interrupted" — they may be. What must not be
-        // interrupted is the gap between writing and rooting, and rooting first
-        // closes it for every write that follows, however many turns they span.
-        this.residentImages.set(pid, [...sources.keys()]);
+        const paths = {};
+        // The root set is this ARRAY, held by the sweep's map from before the
+        // first byte and appended to as each image is named. Rooting an image
+        // before its own first byte is the whole of the protocol: a sweep that
+        // runs while this launch is suspended sees every image already written as
+        // rooted, and an image not yet written is not yet a file. The array
+        // identity is what makes an append visible — do not replace it.
+        const rooted = [];
+        this.residentImages.set(pid, rooted);
         fs.mkdirp(FACET_IMAGE_DIR);
-        for (const [path, source] of sources) {
+        let count = 0;
+        for await (const [moduleName, source] of images) {
+            const path = facetImagePath(await facetImageDigest(source));
+            paths[moduleName] = path;
+            rooted.push(path);
+            count++;
             const stored = path.replace(/^\/+/, '');
             const bytes = new TextEncoder().encode(source);
+            console.log('[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
+                + path.slice(-12) + ' ' + bytes.byteLength + ' bytes, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
+                + ' turns=' + pacer.chunks);
             // An image at its full size is a COMPLETE one: a write only ever grows
             // the file from offset zero, so a write cut short by a reset leaves a
             // strictly shorter file and fails this test. Size is enough of a check
@@ -138,7 +148,8 @@ export class ImageStore {
             } while (offset < bytes.byteLength);
         }
         this.sweep(fs);
-        return images;
+        console.log('[image-store] pid=' + pid + ' materialized ' + count + ' image(s) in ' + pacer.chunks + ' turn(s)');
+        return paths;
     }
     /**
      * Drop every image no running process boots from.

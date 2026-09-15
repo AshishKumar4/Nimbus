@@ -125,13 +125,6 @@ interface GeneratedNodeFacetCode {
  * Generate one-shot runtime code with a plain fetch handler.
  */
 export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, shims: string): Promise<GeneratedNodeFacetCode>;
-/**
- * Generate a long-running Node entrypoint.
- *
- * Same core shim/VFS machinery as foreground node execution, but the
- * compiled user entry is booted once and the exported entrypoint keeps
- * serving HTTP requests from the shimmed http.Server registry.
- */
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
     env?: Record<string, string>;
