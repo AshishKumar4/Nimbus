@@ -6,6 +6,7 @@
   },
   "include": [
     "src/**/*.ts",
-    "../core/src/**/*.d.ts"
+    "../core/src/**/*.d.ts",
+    "../fabric/src/**/*.d.ts"
   ]
 }

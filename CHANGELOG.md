@@ -16,6 +16,81 @@ published independently in the `@nimbus-sh` npm scope.
   committing their SQL rows together with filesystem writes: rollback restores
   the inode/content mirror, and revisions/watch events publish only on commit.
 
+## 2026-09-15
+
+worker 0.7.0, sdk 0.6.0, core 0.9.0, fabric 0.5.0, platform 0.4.0,
+config 0.2.1.
+
+### @nimbus-sh/core (breaking)
+
+- **Bytes, not text, on process output hooks.** `onStdout`/`onStderr` on
+  lifo `Sandbox`'s `CommandOptions`, the shell's `ExecuteOptions`, and the
+  shell-entrypoint/programmatic surfaces now receive `Uint8Array`, not
+  `string`. Migrate with `new TextDecoder().decode(data)` or the exported
+  `textSink` from `@nimbus-sh/core/_shared/bytes.js`. This fixes binary
+  protocols (esbuild's service packets, image/archive pipes) mangling to
+  U+FFFD through the parent→child stdin and child→parent stdout relays.
+- `NpmInstallPort` shape change: `install` takes a spec
+  (`{ projectDir, packages, global, globalBinDir, production, npmLog,
+  onProgress }`) — the arg parsing, prefix derivation, and end-of-install
+  summary moved into the core command; the port owns only the installer
+  and bin materialisation. `registerLocalBins` is gone from the port path.
+- `npm install` parity: policy refusals become advisories, platform gates
+  stay refusals — a package the runtime cannot run is refused with its
+  reason instead of silently skipped; transitive 'warn' rejects retired;
+  toolchain installs like plain JS; devDependencies are required roots;
+  unsupported native packages are skipped without aborting the install.
+- `exec` lifetime: a user-invoked program has no wall-clock lifetime —
+  the 30s internal cap and its deadline machinery are removed; Ctrl-C now
+  wires to the run's abort signal so a kill ends the run as a signal, not
+  a crash.
+
+### @nimbus-sh/worker
+
+- Child stdout/stdin carry `Uint8Array` end to end (see core breaking note):
+  process output hooks, the durability stub, and the terminal/log-ring
+  decoders all consume bytes, decoding at the edge per stream.
+- Cell `import()` resolves through the cell's own require — fixes Vite's
+  dynamic `import("node:http")` returning a server that bound no port.
+- Every wasm image in a program's closure is a module-map entry by digest,
+  and a `WebAssembly.Module`/`compile`/`instantiate` seam answers
+  registered bytes (tagged by path or by content) — so a package's own
+  synchronous wasm compile works instead of being refused at request time.
+- `box.files.as(cred)` — a credential-bound view of the session file plane
+  for embedders.
+- `composeFacetManager` — one facet-manager composition shared by the
+  session and embedders; worker launches carry text modules and a main
+  module and return their facet.
+- Public URL per process: `nimbus expose <port> --public` serves with the
+  capability alone (no Authorization); removal releases it.
+- The durability stub decodes the byte relay before inspecting it; a kill
+  reports exit as a signal; a hibernated object's shell rebuilds on the
+  waking socket; exec bundle builds page across DO turns so `node -e` in
+  a 752-package tree starts without a bundle deadline.
+
+### @nimbus-sh/sdk
+
+- `exec`/`startProcess` resolve a relative `cwd` against the sandbox root
+  before the RPC leaves the client; the session rejects a non-absolute cwd
+  with a field-named error.
+- Command output hooks consume `Uint8Array` (see core breaking note).
+
+### @nimbus-sh/fabric
+
+- `materialize` takes images one at a time (async iterable) instead of all
+  at once — a resident launch no longer holds the whole image set.
+- Loader cache key carries the baked supervisor identity; IsolatePool
+  dispatches serialize per slot.
+
+### @nimbus-sh/platform
+
+- A credit claim that can never be granted is refused, not parked — the
+  FIFO no longer stalls the whole isolate behind one oversized request.
+
+### @nimbus-sh/config
+
+- Patch bump; no user-visible change.
+
 ## 2026-08-11
 
 The first publish since 2026-06-06. Everything on npm until now was built from
