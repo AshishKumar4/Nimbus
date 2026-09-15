@@ -986,6 +986,15 @@ export class NimbusSession extends CloudflareDurableObject {
     return this.facetManager!.ensureDurableAppOnPort(port);
   }
   async _rpcDeleteFile(path: string, options?: { recursive?: boolean }, cred?: VfsCred) { return _programmatic.rpcDeleteFile(this as any, path, options, cred); }
+  /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
+  async _rpcSpawnWorker(
+    workerCode: string,
+    command: string,
+    cwd: string,
+    opts?: import('../facets/manager.js').LongRunningWorkerSpawnOptions,
+  ) {
+    return _programmatic.rpcSpawnWorker(this as any, workerCode, command, cwd, opts);
+  }
   async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 
   // Legacy VFS (direct method calls)

@@ -54,7 +54,13 @@ import {
   isPreviewHostSafeSid,
   readPreviewHostSuffix,
 } from '../_shared/preview-host.js';
-import type { ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy } from '../facets/manager.js';
+import type {
+  LongRunningWorkerSpawnOptions,
+  ResidentAppSummary,
+  ResidentIdentity,
+  ResidentRestartPolicy,
+  SpawnedWorker,
+} from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
@@ -115,6 +121,12 @@ interface ProgrammaticFacetManager {
   removeDurableApp(owner: string): Promise<boolean>;
   residentIdentity(pid: number): Promise<ResidentIdentity | null>;
   listResidentApps(): Promise<ResidentAppSummary[]>;
+  spawnWorker(
+    workerCode: string,
+    command: string,
+    cwd: string,
+    opts?: LongRunningWorkerSpawnOptions,
+  ): Promise<SpawnedWorker>;
 }
 
 interface ProgrammaticViteServer {
@@ -1399,6 +1411,31 @@ export async function rpcRouteCapabilityPort(
     pathname,
   );
   return routed ?? new Response('Not found', { status: 404 });
+}
+
+/**
+ * `spawnWorker` for a colocated embedder holding the DO stub: boot the
+ * embedder's own Worker-class program — its main module, inline modules and
+ * content-addressed text/wasm modules — as one of this session's resident
+ * processes, and answer with the pid, the runner's boot payload and the
+ * process's facet (`fetch`/`connect`, bound to the resident handle; no
+ * release — `killProcess(pid)` ends it). Deliberately absent from the remote
+ * HTTP dispatcher: the facet is a live handle, and a remote token holder is
+ * not the embedder.
+ */
+export async function rpcSpawnWorker(
+  self: ProgrammaticHost,
+  workerCode: string,
+  command: string,
+  cwd: string,
+  opts: LongRunningWorkerSpawnOptions = {},
+): Promise<SpawnedWorker> {
+  await ensureProgrammaticReady(self);
+  if (typeof workerCode !== 'string' || workerCode.length === 0) {
+    throw new Error('spawnWorker: workerCode must be a non-empty string');
+  }
+  self.ensureFacetManager();
+  return self.facetManager!.spawnWorker(workerCode, String(command), String(cwd), opts);
 }
 
 /**
