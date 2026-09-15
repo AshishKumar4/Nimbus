@@ -149,6 +149,7 @@ export interface ProgrammaticHost {
   sqliteFs: SqliteVFS | null;
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
+  facetManagerComposed: ComposedFacetManager | null;
   facetManager: ProgrammaticFacetManager | null;
   viteDevServer: ProgrammaticViteServer | null;
   cirrusReal: ProgrammaticCirrusServer | null;
@@ -1584,7 +1585,7 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.shell = null;
   self.shellProcessPid = null;
   self.terminal = null;
-  self.facetManager = null;
+  self.facetManagerComposed = null;
   self.facetProcessManager = null;
   self.esbuildService = null;
   self.viteDevServer = null;

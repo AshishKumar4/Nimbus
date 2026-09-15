@@ -72,7 +72,8 @@ export interface SessionInternal {
   shell: Shell | null;
   shellProcessPid: number | null;
   terminal: WebSocketTerminal | null;
-  facetManager: FacetManager | null;
+  facetManagerComposed: ComposedFacetManager | null;
+  readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */
   facetProcessManager: any;
   esbuildService: EsbuildService | null;
