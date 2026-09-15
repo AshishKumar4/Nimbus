@@ -37,9 +37,19 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { FacetManager, type FacetManagerHooks, type WorkerRecipe } from './manager.js';
 import { processHostFor } from '../loaders/process-host.js';
 import { resolveDurableWorkerImage } from './durable-images.js';
+import {
+  persistPortCapability,
+  readPortReservation,
+  readPortReservationByOwner,
+  reservePort,
+  restorePortCapability,
+  type PortVisibility,
+} from '../session/port-capability.js';
+import { bindPublicPortCapability } from '../router/public-directory.js';
 import {
   ESBUILD_TRANSFORM_WORKER_ID,
   esbuildTransformWorkerCode,
@@ -103,6 +113,52 @@ export interface ComposedFacetManager {
    * the session calls it once from initSession for exactly that reason.
    */
   pumpLaunches: () => Promise<void>;
+  /**
+   * The durable-application verbs a host answers for its embedder — the
+   * session answers the same four through its `_rpc*` surface. Each is a
+   * short composition of the exported port-capability primitives
+   * (`@nimbus-sh/worker/port-capability`) and the manager's own methods, so
+   * an embedder that wants a different composition has every piece; what is
+   * NOT here is what only the session has (dev-server restore, HMR sockets,
+   * the self-refreshing "starting" page).
+   */
+  apps: {
+    /**
+     * Reserve (or re-answer) the port `owner` holds, minting the capability
+     * its URL is built on — minted here, stored on the reservation, so a URL
+     * handed out before the application has ever booted is the one its
+     * eventual binding re-adopts, and the one a reset re-adopts again.
+     */
+    ensureDurableApp(input: {
+      owner: string;
+      preferredPort?: number;
+      visibility?: PortVisibility;
+      name?: string;
+    }): Promise<{ port: number; capability: string | null; visibility: PortVisibility }>;
+    /**
+     * End a durable application's contract: every launch the owner claims is
+     * killed, its journal rows purged, its port released and its durable slot
+     * freed. `port` is the address that was held; `removed` is false only
+     * when no durable application held that owner at all.
+     */
+    removeDurableApp(owner: string): Promise<{ owner: string; removed: boolean; port: number | null }>;
+    /**
+     * Every registered port with its live capability, persisted at the
+     * moment the embedder is told it — a capability nobody has been handed
+     * does not need to survive anything.
+     */
+    listPorts(): Promise<Array<{ port: number; pid: number; registeredAt: number; capability: string }>>;
+    /**
+     * Route a request carrying a port capability to the process on `port`:
+     * a durable application a reset left dead is re-driven first
+     * (`manager.ensureDurableAppOnPort`), the persisted capability is
+     * re-adopted, and a wrong capability is a 404 — never a 403, which would
+     * confirm the port is listening. 503 with `Retry-After` while a re-drive
+     * is mid-launch; 502 when nothing serves the port. WebSocket upgrades
+     * keep fetch semantics through the registered facet.
+     */
+    routeCapabilityPort(port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
+  };
 }
 
 /**
@@ -125,9 +181,73 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
   const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, hooks);
   manager.setVfs(vfs);
   if (deps.esbuild) manager.setEsbuildService(deps.esbuild);
+  const { portRegistry } = deps;
+  const capabilityHost = { ctx, portRegistry };
   return {
     manager,
     pumpLaunches: () => manager.pumpResidentLaunches(),
+    apps: {
+      async ensureDurableApp(input) {
+        if (typeof input.owner !== 'string' || input.owner.length === 0) {
+          throw new Error('ensureDurableApp: owner must be a non-empty string');
+        }
+        const occupied = new Set(portRegistry.getAll().map((entry) => entry.port));
+        const port = await reservePort(ctx, {
+          owner: input.owner,
+          preferredPort: input.preferredPort,
+          occupiedPorts: occupied,
+          capability: createPortCapability(),
+          ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
+          ...(input.name !== undefined ? { name: input.name } : {}),
+        });
+        const record = await readPortReservation(ctx, port);
+        if (record?.visibility === 'public' && record.capability !== null) {
+          // A no-op for a host whose Durable Object is not a session (the
+          // public directory keys on the session name); loud when it is a
+          // session without the binding.
+          await bindPublicPortCapability({ env, ctx }, record.capability, port, input.name);
+        }
+        return {
+          port,
+          capability: record?.capability ?? null,
+          visibility: record?.visibility ?? 'scoped',
+        };
+      },
+      async removeDurableApp(owner) {
+        if (typeof owner !== 'string' || owner.length === 0) {
+          throw new Error('removeDurableApp: owner must be a non-empty string');
+        }
+        const held = await readPortReservationByOwner(ctx, owner);
+        const removed = await manager.removeDurableApp(owner);
+        return { owner, removed, port: held?.port ?? null };
+      },
+      async listPorts() {
+        const entries: PortEntry[] = portRegistry.getAll();
+        await Promise.all(entries.map((entry) => persistPortCapability(capabilityHost, entry.port, entry.capability)));
+        return entries.map((entry) => ({
+          port: Number(entry.port),
+          pid: Number(entry.pid),
+          registeredAt: Number(entry.registeredAt),
+          capability: String(entry.capability),
+        }));
+      },
+      async routeCapabilityPort(port, capability, request, innerPath) {
+        const n = Number(port);
+        const durable = await manager.ensureDurableAppOnPort(n);
+        if (durable === 'failed') {
+          return new Response(`The application on port ${n} is restarting`, {
+            status: 503,
+            headers: { 'Cache-Control': 'no-store', 'Retry-After': '3' },
+          });
+        }
+        await restorePortCapability(capabilityHost, n);
+        if (!portRegistry.hasCapability(n, String(capability))) {
+          return new Response('Not found', { status: 404 });
+        }
+        const routed = await portRegistry.routeCapabilityRequest(n, String(capability), request, innerPath);
+        return routed ?? new Response(`No process listening on port ${n}`, { status: 502 });
+      },
+    },
   };
 }
 

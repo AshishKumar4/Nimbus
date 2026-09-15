@@ -53,6 +53,26 @@
       "types": "./dist/_shared/preview-host.d.ts",
       "import": "./dist/_shared/preview-host.js"
     },
+    "./workspace-host": {
+      "workspace": "./src/facets/compose.ts",
+      "types": "./dist/facets/compose.d.ts",
+      "import": "./dist/facets/compose.js"
+    },
+    "./port-capability": {
+      "workspace": "./src/session/port-capability.ts",
+      "types": "./dist/session/port-capability.d.ts",
+      "import": "./dist/session/port-capability.js"
+    },
+    "./durable-slots": {
+      "workspace": "./src/facets/durable-slots.ts",
+      "types": "./dist/facets/durable-slots.d.ts",
+      "import": "./dist/facets/durable-slots.js"
+    },
+    "./git": {
+      "workspace": "./src/git/commands.ts",
+      "types": "./dist/git/commands.d.ts",
+      "import": "./dist/git/commands.js"
+    },
     "./runtime-sync-helper": "./scripts/bundle-runtime.mjs",
     "./public/*": "./public/*",
     "./package.json": "./package.json"
