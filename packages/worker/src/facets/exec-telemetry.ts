@@ -58,6 +58,14 @@ export interface ExecTelemetryRecord {
   fsRpcReads: number;
   /** Whether the prefetch bundle was served from cache (no VFS walk). */
   cacheHit: boolean;
+  /**
+   * Durable Object turns the bundle build was paged across — the alarm
+   * round trips `TurnBudget` took before the process could start. 0 when the
+   * whole build fit in the turn that asked for it, which is every cache hit
+   * and every small tree; the count is what says a large tree cost turns
+   * rather than a held thread.
+   */
+  turns: number;
   /** Exit code, for cross-referencing telemetry against failures. */
   exitCode: number;
   /** Wall-clock at record time (supervisor side). */

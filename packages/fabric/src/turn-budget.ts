@@ -63,10 +63,10 @@ export const TURN_CHUNK_MAX_BYTES = 2_000_000;
  * spent.
  *
  * Callers report the work they are about to do or have just done and await
- * the result; a pacer that is not yielding returns without suspending, so the
- * one-shot exec path — which passes no pacer at all — keeps its exact
- * behaviour and cost. Nothing here decides WHAT the launch does, only where it
- * is allowed to stop.
+ * the result; a pacer that is not yielding returns without suspending, so a
+ * build small enough to fit in one chunk — most one-shot execs, every cache
+ * hit — keeps its exact behaviour and cost. Nothing here decides WHAT the
+ * launch does, only where it is allowed to stop.
  */
 export class TurnBudget {
   /** Turn handoffs this launch has taken. Reported with the launch. */

@@ -11,6 +11,10 @@
 // down with no exit frame, which is the dead screen reading
 // "[process terminal closed]".
 //
+// Both launch paths now build through one paced builder, which drops the raw
+// cells the moment they are serialized; what a launch still holds after its
+// map is generated is the serialized forms, and those are what it releases.
+//
 // Three properties:
 //   1. the release is total, and marks the state, so a launch that tried to
 //      generate a second map throws instead of quietly building one with no
@@ -32,8 +36,10 @@ import { readFileSync } from 'node:fs';
 
 import {
   FacetManager,
+  buildFacetVfsBundleSource,
   generateLongRunningNodeCode,
-  releaseResidentLaunchSources,
+  releaseGeneratedSources,
+  releaseSerializedSources,
 } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -57,16 +63,22 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
     reachableCount: 1,
     truncated: false,
   };
+  // The builder's order: serialize, drop the raw cells, then generate.
+  state.bundleSource = await buildFacetVfsBundleSource(state.bundle, false);
+  state.serializedManifest = JSON.stringify(state.manifest);
+  state.serializedMetadata = JSON.stringify(state.metadata);
+  releaseSerializedSources(state);
+  assert.deepEqual(state.bundle, {}, 'the raw cells are gone the moment they are serialized');
 
   // Generating first is the real order: the map is a total encoding of all
   // three, which is what makes releasing them a pure drop.
   const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, '/* shims */');
   assert.ok(generated.code.includes('module.exports = 1;'), 'the map carries the program');
 
-  releaseResidentLaunchSources(state);
-  assert.deepEqual(state.bundle, {}, 'cells released');
-  assert.deepEqual(state.manifest, {}, 'manifest released');
-  assert.deepEqual(state.metadata, {}, 'metadata released');
+  releaseGeneratedSources(state);
+  assert.equal(state.bundleSource, undefined, 'bundle source released');
+  assert.equal(state.serializedManifest, undefined, 'manifest released');
+  assert.equal(state.serializedMetadata, undefined, 'metadata released');
   assert.deepEqual(state.cursor, { epoch: 'e', rev: 7 },
     'the one field the rest of the launch reads survives the release');
 
@@ -86,7 +98,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   assert.ok(start > 0, 'the resident launch body is where a resident process is built');
   const body = source.slice(start, source.indexOf('\n  /**', start + 10));
 
-  const released = body.indexOf('releaseResidentLaunchSources(');
+  const released = body.indexOf('releaseGeneratedSources(');
   assert.ok(
     released > 0,
     'the launch releases the sources its module map was built from; without this the '

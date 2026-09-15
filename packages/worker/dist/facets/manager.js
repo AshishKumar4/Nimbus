@@ -48,7 +48,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { BUNDLE_BUILD_DEADLINE_MS, bundleBuildDeadlineMs, CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -669,8 +669,8 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
         cred: opts.cred,
     });
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-    const safeManifest = JSON.stringify(vfsState.manifest);
-    const safeMetadata = JSON.stringify(vfsState.metadata);
+    const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
+    const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
     return {
         code: `
 ${bundleSource.imports}
@@ -1057,16 +1057,15 @@ export class NimbusProcess extends DurableObject {
  * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
  * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
  * a state carrying both from one carrying only the serialized halves, because
- * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * both facet generators read the serialized halves and nothing else does.
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
- * Only for states on the one-shot cached path, and applied there whether or
- * not the entry turns out small enough to retain: the invocation being served
- * reads the serialized forms too. `spawnNode` and `_stageOpencodeFacet` build
- * their own uncached states and genuinely re-read the raw cells
- * (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`); neither
- * goes through here.
+ * Applied by `_buildProcessBundle` to every state it builds, whether or not
+ * the entry turns out small enough to retain: the launch being served reads
+ * the serialized forms too. `_stageOpencodeFacet` builds its own uncached
+ * state and genuinely re-reads the raw cells
+ * (`assertStagedBundleFitsRpcPayload`); it does not go through here.
  */
 export function releaseSerializedSources(vfsState) {
     if (vfsState.bundleSource)
@@ -1077,43 +1076,25 @@ export function releaseSerializedSources(vfsState) {
         vfsState.metadata = {};
 }
 /**
- * Drop everything a resident launch has finished reading, in place.
- *
- * The one-shot path releases its map at LOADER.load; this is the same policy
- * for the path `spawnNode` takes, which is the path every attached-TTY npm bin
- * takes — how a real agentic CLI starts. The generated source is a total
- * encoding of the cells, the manifest and the metadata, and the only thing the
- * rest of a launch reads off the state is `cursor`. Everything else is a second
- * copy of the largest thing this DO builds — 22.9 MB for pi — held for exactly
- * as long as the facet takes to boot on it.
- *
- * Holding it reset the session isolate with exceededMemory, and an isolate
- * reset tears the terminal WebSocket down with no exit frame: the dead screen
- * reading "[process terminal closed]".
- *
- * An emptied state can still generate a map — it would just generate one with
- * no program in it — so this marks the state instead of trusting callers to
- * stop.
- */
-export function releaseResidentLaunchSources(vfsState) {
-    vfsState.bundle = {};
-    vfsState.manifest = {};
-    vfsState.metadata = {};
-    vfsState.generatedSourcesReleased = true;
-}
-/**
  * Drop the serialized forms once a module map has been generated from them.
  *
  * The generated source is a total encoding of all three: every byte of the
  * bundle expression, the manifest and the metadata is inside it. Holding them
  * afterwards keeps a second copy of the largest thing this DO builds alive for
  * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
- * the isolate was being reset.
+ * the isolate was being reset. For the one-shot path that window is the run;
+ * for a resident launch — the path every attached-TTY npm bin takes, how a
+ * real agentic CLI starts — it is the boot, and holding the copy across it
+ * reset the session isolate with exceededMemory, which tears the terminal
+ * WebSocket down with no exit frame: the dead screen reading "[process
+ * terminal closed]".
  *
  * Only for a state the prefetch cache refused. A retained entry's serialized
- * forms ARE the entry, and a later exec is served from them.
+ * forms ARE the entry, and a later launch is served from them. An emptied
+ * state could still generate a map — one with no program in it — so this
+ * marks the state instead of trusting callers to stop.
  */
-function releaseGeneratedSources(vfsState) {
+export function releaseGeneratedSources(vfsState) {
     vfsState.bundleSource = undefined;
     vfsState.serializedManifest = undefined;
     vfsState.serializedMetadata = undefined;
@@ -3099,36 +3080,6 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-/**
- * Top-level entries of `cwd/node_modules` (scoped packages counted per
- * scope member). One readdir per scope: what the deadline scales by, not a
- * walk of the tree.
- */
-export function countInstalledPackages(vfs, cwd) {
-    const nmDir = cwd.replace(/^\/+/, '') + '/node_modules';
-    try {
-        if (!vfs.isDirectory(nmDir))
-            return 0;
-        let count = 0;
-        for (const entry of vfs.readdir(nmDir)) {
-            if (entry.type !== 'directory' || entry.name.startsWith('.'))
-                continue;
-            if (entry.name.startsWith('@')) {
-                try {
-                    count += vfs.readdir(nmDir + '/' + entry.name).filter((sub) => sub.type === 'directory').length;
-                }
-                catch { /* unreadable scope */ }
-            }
-            else {
-                count += 1;
-            }
-        }
-        return count;
-    }
-    catch {
-        return 0;
-    }
-}
 export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
@@ -3654,61 +3605,67 @@ export class FacetManager {
      */
     setEsbuildService(esbuild) { this.esbuild = esbuild; }
     /**
-     * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
-     * (same key AND the VFS hasn't been mutated since) it returns the memoized
-     * bundle + pre-built facet source, skipping the full VFS walk + esbuild
-     * pass + source construction. See `prefetchBundleCache` for the
-     * correctness argument behind the conservative global-revision watermark.
-     *
-     * The bundle source and manifest are computed once on the miss path and
-     * stored so subsequent hits skip rebuilding them too.
+     * The pacer every launch is built under: the session's alarm-driven turn
+     * pump, the deployment's chunk bound, and the one check a suspended launch
+     * makes when it resumes — that the process it is building for still exists.
      */
-    /**
-     * Bound the prefetch build, so a cache miss cannot be a silent hang.
-     *
-     * The build was awaited entirely OUTSIDE `_execWithTimeout`, which wraps
-     * only `_execViaLoader`. So every timeout in the system — the 30 s facet
-     * bound, the 60 s bin-dispatch bound — sat downstream of a step that could
-     * take arbitrarily long, and a heavy build wedged the Durable Object with
-     * nothing able to report it. Observed as a terminal that goes quiet and
-     * never returns, with no exit record for the process.
-     *
-     * WHAT THIS CAN AND CANNOT CATCH, stated plainly because the difference
-     * decides whether a given hang is fixed by it. The build is asynchronous —
-     * it awaits the VFS walk and the esbuild ESM→CJS pass — so a stall at any
-     * of those points is caught and reported here. A stall inside ONE
-     * synchronous stretch is not: a JS stack that never yields cannot be raced
-     * by anything in the same isolate, so serializing a multi-megabyte bundle
-     * in a single pass still wedges, and the deadline fires only once the stack
-     * finally unwinds. That class needs the work bounded at its INPUT rather
-     * than timed at its edge, which is a separate change; this one converts
-     * every interruptible stall from a silent wedge into a loud failure, and
-     * makes the remaining class the only one left to explain.
-     */
-    async _withBundleBuildDeadline(build, command, deadlineMs = BUNDLE_BUILD_DEADLINE_MS) {
-        let timer;
-        try {
-            return await Promise.race([
-                build,
-                new Promise((_resolve, reject) => {
-                    timer = setTimeout(() => reject(new Error(`Nimbus: assembling the filesystem bundle for \`${command}\` exceeded `
-                        + `${deadlineMs}ms. The process was not started. This is the `
-                        + 'bundle build, not the program: it runs in the session Durable Object, so '
-                        + 'it is reported rather than allowed to wedge the session.')), deadlineMs);
-                }),
-            ]);
-        }
-        finally {
-            if (timer !== undefined)
-                clearTimeout(timer);
-            // The build keeps running after a timeout — nothing here can interrupt
-            // it — so its rejection must not surface later as an unhandled one.
-            build.catch(() => { });
-        }
+    _launchPacer(pid) {
+        return new TurnBudget(this.launchPump, turnChunkMaxBytes(this.env), () => this._assertLaunchStillOwned(pid));
     }
-    async _buildPrefetchBundleCached(vfs, scriptPath, cwd, entryCode, credKey, bundleProfile) {
-        const profile = bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
-        const key = `${profile}\x00${credKey}\x00${cwd}\x00${scriptPath ?? ''}\x00${_fnv1a(entryCode)}`;
+    /**
+     * Assemble the filesystem bundle a process boots on, across as many
+     * Durable Object turns as it takes.
+     *
+     * The one builder for every Node process this manager starts. A one-shot
+     * exec and a resident launch used to own two copies of this: exec's was
+     * memoized behind the prefetch cache and raced a wall-clock deadline in a
+     * single turn; the resident's was paged with a TurnBudget and never cached.
+     * Two paths, one job — and a tree large enough to page on one path hit the
+     * deadline on the other, failing every `node -e` in it with "assembling the
+     * filesystem bundle … exceeded". What the two callers genuinely differ in is
+     * the entry, the working directory and the process they build for; that is
+     * all they supply. Everything else — the revision-keyed cache and its stale
+     * eviction, the residency profile a previous miss learned, the reachable-set
+     * walk and its enrichment passes, the ESM→CJS transform, the manifest and
+     * metadata, the module-map serialization with its side-module split, the
+     * `node:sqlite` answer, and the release of the raw cells once they are
+     * serialized — happens here, once, and yields the turn whenever a chunk's
+     * worth of it has been done.
+     *
+     * There is no deadline. A launch that spans turns costs turns, not a held
+     * thread, so a large tree is not a defect to be reported at N seconds; the
+     * pacer's `stillWanted` check is what ends a build nothing will use — a
+     * process killed while its build was suspended throws from the next resume,
+     * and the caller reports that as it reports any other launch failure.
+     *
+     * The returned state carries its serialized forms (`bundleSource`,
+     * `serializedManifest`, `serializedMetadata`) and has already released the
+     * raw ones: `generateEntrypointCode` and `generateLongRunningNodeCode` read
+     * the serialized forms and nothing else. A state the cache retained belongs
+     * to the cache — a caller must not release its serialized forms either
+     * (`cacheRetained` says which); one the cache refused belongs to the caller
+     * alone, and `releaseGeneratedSources` drops it once a map is generated.
+     *
+     * A session without a filesystem gets an empty state: there is nothing to
+     * stage and nothing to yield for.
+     */
+    async _buildProcessBundle(entry, spec, pacer) {
+        if (!this.vfs) {
+            return { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+        }
+        // W3.5 Fix B: thread an EsbuildService into buildPrefetchBundle so ESM
+        // source files (e.g. tldts/dist/es6/index.js, @remix-run/react,
+        // @tailwindcss/vite, react-remove-scroll, astro) get transformed to CJS
+        // before they hit the facet's `new Function` pre-compile loop. Lazy-create
+        // one if NimbusSession didn't share its own.
+        if (!this.esbuild)
+            this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
+        this.imageStore.ensureDir();
+        const vfs = this.vfs.as(entry.cred);
+        const { cred } = entry;
+        const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
+        const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+        const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
         const revision = vfs.revision();
         // An entry built at an older revision can never be SERVED again — the
         // lookup below requires an exact match — so from the first write after it
@@ -3717,11 +3674,11 @@ export class FacetManager {
         // replaces it allocates, so the stale filesystem graph and the new one
         // never co-reside.
         let evictedStale = false;
-        for (const [staleKey, entry] of this.prefetchBundleCache) {
-            if (entry.revision === revision)
+        for (const [staleKey, stale] of this.prefetchBundleCache) {
+            if (stale.revision === revision)
                 continue;
             this.prefetchBundleCache.delete(staleKey);
-            this.prefetchCacheBytes -= entry.bytes;
+            this.prefetchCacheBytes -= stale.bytes;
             evictedStale = true;
         }
         if (evictedStale)
@@ -3733,24 +3690,26 @@ export class FacetManager {
             this.prefetchBundleCache.set(key, cached);
             return { ...cached.vfsState, cacheHit: true, cacheRetained: true };
         }
-        const vfsState = await buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, this.esbuild || undefined, bundleProfile, this.residencyProfiles.get(key), undefined, this.hooks.transformLargeEsm);
+        const vfsState = await buildPrefetchBundle(vfs, spec.scriptPath, spec.cwd, spec.entryCode, this.esbuild, profile, this.residencyProfiles.get(key), pacer, this.hooks.transformLargeEsm);
         vfsState.bundleKey = key;
-        vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired);
+        vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer);
         vfsState.serializedManifest = JSON.stringify(vfsState.manifest);
         vfsState.serializedMetadata = JSON.stringify(vfsState.metadata);
+        // Two more serializations of the same weight as the passes before them.
+        await pacer.spend(vfsState.serializedManifest.length + vfsState.serializedMetadata.length);
         // The only consumer of the raw cells past this point is a single boolean,
         // so answer it now rather than hold ~17 MB (pi) to answer it later.
-        vfsState.usesNodeSqlite = bundleUsesNodeSqlite(entryCode, vfsState.bundle);
+        vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
         vfsState.cacheHit = false;
         // Serialization is total: bundleSource/serializedManifest/serializedMetadata
-        // carry every byte the raw cells and objects do, and generateEntrypointCode
-        // reads only the serialized forms. Retaining both doubled what an entry
-        // costs for its whole lifetime — measured for pi at 502af77, per entry:
-        // raw 17,253,610 + source 18,262,324 + manifest 600,060 + metadata
-        // 3,841,244 = 39,957,238 B, of which the raw halves are 21,694,914 B held
-        // to answer `usesNodeSqlite`. Dropping them is a pure release: nothing
-        // downstream of this method reads them, and a cache MISS rebuilds from the
-        // VFS rather than from anything discarded here.
+        // carry every byte the raw cells and objects do, and both generators read
+        // only the serialized forms. Retaining both doubled what an entry costs
+        // for its whole lifetime — measured for pi at 502af77, per entry: raw
+        // 17,253,610 + source 18,262,324 + manifest 600,060 + metadata 3,841,244
+        // = 39,957,238 B, of which the raw halves are 21,694,914 B held to answer
+        // `usesNodeSqlite`. Dropping them is a pure release: nothing downstream of
+        // this method reads them, and a cache MISS rebuilds from the VFS rather
+        // than from anything discarded here.
         //
         // Released BEFORE admission so the byte bound prices what the entry costs
         // from here on, not the peak it passed through on the way in.
@@ -3938,23 +3897,32 @@ export class FacetManager {
                 catch { }
             }
         }
-        // W3.5 Fix B: thread an EsbuildService into buildPrefetchBundle so
-        // ESM source files (e.g. tldts/dist/es6/index.js, @remix-run/react,
-        // @tailwindcss/vite, react-remove-scroll, astro) get transformed to
-        // CJS before they hit the facet's `new Function` pre-compile loop.
-        // Lazy-create one if NimbusSession didn't share its own.
-        if (this.vfs && !this.esbuild) {
-            this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
-        }
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
-        if (this.vfs)
-            this.imageStore.ensureDir();
-        const processVfs = this.vfs?.as(entry.cred);
-        const credKey = `${entry.cred.uid}:${entry.cred.gid}:${entry.cred.groups.join(',')}`;
-        const vfsState = processVfs
-            ? await this._withBundleBuildDeadline(this._buildPrefetchBundleCached(processVfs, opts.filename, opts.cwd || '/home/user', code, credKey, opts.bundleProfile), command, bundleBuildDeadlineMs(countInstalledPackages(processVfs, opts.cwd || '/home/user')))
-            : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+        // Paced like a resident launch: a tree too large for one turn costs
+        // turns, and the pacer's stillWanted check ends a build whose process was
+        // killed while it was suspended. The pacer is settled in the finally
+        // below and not before, because the invocation that granted the last
+        // chunk awaits `chunkEnded` (PacedWork.pump) and has to stay the one
+        // that owns the run: settling at the end of the build would release that
+        // turn with the facet still to load and run on it.
+        const pacer = this._launchPacer(entry.pid);
+        let vfsState;
+        try {
+            vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
+        }
+        catch (err) {
+            // A failed build is thrown to the caller exactly as before. What must
+            // not be left behind is the process entry: it was spawned above and
+            // would otherwise sit 'running' forever for a process that never
+            // started. A build ended by a kill finds its entry already exited and
+            // reports nothing twice.
+            pacer.settle();
+            if (this.processes.get(entry.pid)?.state === 'running') {
+                this._failLaunch(entry.pid, `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}`);
+            }
+            throw err;
+        }
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         const diagSink = diagOn
             ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
@@ -3982,6 +3950,7 @@ export class FacetManager {
                     rpcWrites: result.diag?.rpcWrites ?? 0,
                     fsRpcReads: result.diag?.fsRpcReads ?? 0,
                     cacheHit: vfsState.cacheHit ?? false,
+                    turns: pacer.chunks,
                     exitCode: result.exitCode,
                     at: Date.now(),
                 });
@@ -4013,6 +3982,7 @@ export class FacetManager {
             return { exitCode, stdout: '', stderr: errorMessage(err) };
         }
         finally {
+            pacer.settle();
             this.timedOutProcessIds.delete(entry.pid);
         }
     }
@@ -4053,7 +4023,7 @@ export class FacetManager {
     }
     // ── One-shot dynamic Worker entrypoint ────────────────────────────────
     async _execViaLoader(code, opts, entry, vfsState, signal, diagSink) {
-        // Answered by _buildPrefetchBundleCached while the raw cells were still in
+        // Answered by _buildProcessBundle while the raw cells were still in
         // hand; re-deriving it here is what forced them to be retained.
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
         const [sqliteModules, shims] = await Promise.all([
@@ -4530,7 +4500,7 @@ export class FacetManager {
     _assertLaunchStillOwned(pid) {
         if (this.processes.get(pid)?.state === 'running')
             return;
-        throw new Error(`Nimbus: resident launch for pid ${pid} was cancelled while it was suspended`);
+        throw new Error(`Nimbus: the launch for pid ${pid} was cancelled while it was suspended`);
     }
     /**
      * The one way this manager boots a resident process. Every resident process
@@ -4859,7 +4829,7 @@ export class FacetManager {
      */
     async _runResidentLaunch(entry, code, command, opts, attempt) {
         const cwd = opts.cwd || '/home/user';
-        const pacer = new TurnBudget(this.launchPump, turnChunkMaxBytes(this.env), () => this._assertLaunchStillOwned(entry.pid));
+        const pacer = this._launchPacer(entry.pid);
         // Journalled before the first byte of work. A launch that FAILS deletes
         // its row on the way out — its process has already been exited and the
         // user notified, so there is nothing left to owe. A launch that SETTLES
@@ -4971,17 +4941,9 @@ export class FacetManager {
         }
     }
     async _residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv) {
-        if (this.vfs && !this.esbuild) {
-            this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
-        }
-        if (this.vfs)
-            this.imageStore.ensureDir();
         const diagOn = isExecDiagEnabled();
         const __bundleStart = diagOn ? Date.now() : 0;
-        const processVfs = this.vfs?.as(entry.cred);
-        const vfsState = processVfs
-            ? await buildPrefetchBundle(processVfs, opts.filename, cwd, code, this.esbuild || undefined, opts.bundleProfile, undefined, pacer, this.hooks.transformLargeEsm)
-            : { bundle: {}, manifest: {}, metadata: {}, reachableCount: 0, truncated: false };
+        const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
         // rides on top of the recipe's env and is never journalled: it is
@@ -5000,7 +4962,8 @@ export class FacetManager {
                 FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
             }
             : spawnEnv;
-        const usesSqlite = bundleUsesNodeSqlite(code, vfsState.bundle);
+        // Answered by _buildProcessBundle while the raw cells were still in hand.
+        const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
         const [sqliteModules, shims] = await Promise.all([
             this.sqliteModuleEntry(usesSqlite),
             fetchNodeShimsCode(this.env),
@@ -5017,11 +4980,17 @@ export class FacetManager {
             }
             moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
         }
-        const manifestBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.manifest)) : 0;
-        const metadataBytes = diagOn ? _encodedSourceBytes(JSON.stringify(vfsState.metadata)) : 0;
+        const manifestBytes = diagOn ? _encodedSourceBytes(vfsState.serializedManifest ?? '') : 0;
+        const metadataBytes = diagOn ? _encodedSourceBytes(vfsState.serializedMetadata ?? '') : 0;
         const cacheHit = vfsState.cacheHit ?? false;
         const vfsCursor = vfsState.cursor;
-        releaseResidentLaunchSources(vfsState);
+        // The map is generated; the state's only remaining job is its cursor.
+        // Released here, before the boot — releasing afterwards keeps the copy
+        // alive for exactly the window that was resetting the isolate. A state
+        // the cache retained is the cache's to keep, and is served to the next
+        // launch of the same entry.
+        if (!vfsState.cacheRetained)
+            releaseGeneratedSources(vfsState);
         let handle;
         let resourcesTracked = false;
         try {
@@ -5082,6 +5051,7 @@ export class FacetManager {
                     rpcWrites: 0,
                     fsRpcReads: 0,
                     cacheHit,
+                    turns: pacer.chunks,
                     exitCode: 0,
                     at: Date.now(),
                 });

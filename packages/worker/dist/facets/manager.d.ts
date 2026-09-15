@@ -263,38 +263,37 @@ interface FacetVfsState {
  * `bundleSource`, `serializedManifest` and `serializedMetadata` are total
  * encodings of `bundle`, `manifest` and `metadata` — no caller can distinguish
  * a state carrying both from one carrying only the serialized halves, because
- * `generateEntrypointCode` reads the serialized halves and nothing else does.
+ * both facet generators read the serialized halves and nothing else does.
  * Holding both doubles the cost of a cached entry for its whole lifetime, and
  * that lifetime spans execs.
  *
- * Only for states on the one-shot cached path, and applied there whether or
- * not the entry turns out small enough to retain: the invocation being served
- * reads the serialized forms too. `spawnNode` and `_stageOpencodeFacet` build
- * their own uncached states and genuinely re-read the raw cells
- * (`_serializeBundleForFacet`, `assertStagedBundleFitsRpcPayload`); neither
- * goes through here.
+ * Applied by `_buildProcessBundle` to every state it builds, whether or not
+ * the entry turns out small enough to retain: the launch being served reads
+ * the serialized forms too. `_stageOpencodeFacet` builds its own uncached
+ * state and genuinely re-reads the raw cells
+ * (`assertStagedBundleFitsRpcPayload`); it does not go through here.
  */
 export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
 /**
- * Drop everything a resident launch has finished reading, in place.
+ * Drop the serialized forms once a module map has been generated from them.
  *
- * The one-shot path releases its map at LOADER.load; this is the same policy
- * for the path `spawnNode` takes, which is the path every attached-TTY npm bin
- * takes — how a real agentic CLI starts. The generated source is a total
- * encoding of the cells, the manifest and the metadata, and the only thing the
- * rest of a launch reads off the state is `cursor`. Everything else is a second
- * copy of the largest thing this DO builds — 22.9 MB for pi — held for exactly
- * as long as the facet takes to boot on it.
+ * The generated source is a total encoding of all three: every byte of the
+ * bundle expression, the manifest and the metadata is inside it. Holding them
+ * afterwards keeps a second copy of the largest thing this DO builds alive for
+ * as long as the facet runs — for pi, 22.7 MB across the ~20 s window in which
+ * the isolate was being reset. For the one-shot path that window is the run;
+ * for a resident launch — the path every attached-TTY npm bin takes, how a
+ * real agentic CLI starts — it is the boot, and holding the copy across it
+ * reset the session isolate with exceededMemory, which tears the terminal
+ * WebSocket down with no exit frame: the dead screen reading "[process
+ * terminal closed]".
  *
- * Holding it reset the session isolate with exceededMemory, and an isolate
- * reset tears the terminal WebSocket down with no exit frame: the dead screen
- * reading "[process terminal closed]".
- *
- * An emptied state can still generate a map — it would just generate one with
- * no program in it — so this marks the state instead of trusting callers to
- * stop.
+ * Only for a state the prefetch cache refused. A retained entry's serialized
+ * forms ARE the entry, and a later launch is served from them. An emptied
+ * state could still generate a map — one with no program in it — so this
+ * marks the state instead of trusting callers to stop.
  */
-export declare function releaseResidentLaunchSources(vfsState: FacetVfsState): void;
+export declare function releaseGeneratedSources(vfsState: FacetVfsState): void;
 interface FacetVfsBundleSource {
     expression: string;
     imports: string;
@@ -595,12 +594,6 @@ export declare const BUNDLE_PRECOMPILE_LOOP: string;
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-/**
- * Top-level entries of `cwd/node_modules` (scoped packages counted per
- * scope member). One readdir per scope: what the deadline scales by, not a
- * walk of the tree.
- */
-export declare function countInstalledPackages(vfs: CredentialedVfs, cwd: string): number;
 export declare function buildPrefetchBundle(vfs: CredentialedVfs, scriptPath: string | undefined, cwd: string, entryCode: string, esbuild?: EsbuildService, bundleProfile?: FacetBundleProfile, observedReads?: ReadonlySet<string>, pacer?: TurnBudget, isolatedTransform?: LargeEsmTransform): Promise<FacetVfsState>;
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
@@ -904,39 +897,49 @@ export declare class FacetManager {
      */
     setEsbuildService(esbuild: EsbuildService): void;
     /**
-     * buildPrefetchBundle wrapped in a global-revision-keyed cache. On a hit
-     * (same key AND the VFS hasn't been mutated since) it returns the memoized
-     * bundle + pre-built facet source, skipping the full VFS walk + esbuild
-     * pass + source construction. See `prefetchBundleCache` for the
-     * correctness argument behind the conservative global-revision watermark.
-     *
-     * The bundle source and manifest are computed once on the miss path and
-     * stored so subsequent hits skip rebuilding them too.
+     * The pacer every launch is built under: the session's alarm-driven turn
+     * pump, the deployment's chunk bound, and the one check a suspended launch
+     * makes when it resumes — that the process it is building for still exists.
      */
+    private _launchPacer;
     /**
-     * Bound the prefetch build, so a cache miss cannot be a silent hang.
+     * Assemble the filesystem bundle a process boots on, across as many
+     * Durable Object turns as it takes.
      *
-     * The build was awaited entirely OUTSIDE `_execWithTimeout`, which wraps
-     * only `_execViaLoader`. So every timeout in the system — the 30 s facet
-     * bound, the 60 s bin-dispatch bound — sat downstream of a step that could
-     * take arbitrarily long, and a heavy build wedged the Durable Object with
-     * nothing able to report it. Observed as a terminal that goes quiet and
-     * never returns, with no exit record for the process.
+     * The one builder for every Node process this manager starts. A one-shot
+     * exec and a resident launch used to own two copies of this: exec's was
+     * memoized behind the prefetch cache and raced a wall-clock deadline in a
+     * single turn; the resident's was paged with a TurnBudget and never cached.
+     * Two paths, one job — and a tree large enough to page on one path hit the
+     * deadline on the other, failing every `node -e` in it with "assembling the
+     * filesystem bundle … exceeded". What the two callers genuinely differ in is
+     * the entry, the working directory and the process they build for; that is
+     * all they supply. Everything else — the revision-keyed cache and its stale
+     * eviction, the residency profile a previous miss learned, the reachable-set
+     * walk and its enrichment passes, the ESM→CJS transform, the manifest and
+     * metadata, the module-map serialization with its side-module split, the
+     * `node:sqlite` answer, and the release of the raw cells once they are
+     * serialized — happens here, once, and yields the turn whenever a chunk's
+     * worth of it has been done.
      *
-     * WHAT THIS CAN AND CANNOT CATCH, stated plainly because the difference
-     * decides whether a given hang is fixed by it. The build is asynchronous —
-     * it awaits the VFS walk and the esbuild ESM→CJS pass — so a stall at any
-     * of those points is caught and reported here. A stall inside ONE
-     * synchronous stretch is not: a JS stack that never yields cannot be raced
-     * by anything in the same isolate, so serializing a multi-megabyte bundle
-     * in a single pass still wedges, and the deadline fires only once the stack
-     * finally unwinds. That class needs the work bounded at its INPUT rather
-     * than timed at its edge, which is a separate change; this one converts
-     * every interruptible stall from a silent wedge into a loud failure, and
-     * makes the remaining class the only one left to explain.
+     * There is no deadline. A launch that spans turns costs turns, not a held
+     * thread, so a large tree is not a defect to be reported at N seconds; the
+     * pacer's `stillWanted` check is what ends a build nothing will use — a
+     * process killed while its build was suspended throws from the next resume,
+     * and the caller reports that as it reports any other launch failure.
+     *
+     * The returned state carries its serialized forms (`bundleSource`,
+     * `serializedManifest`, `serializedMetadata`) and has already released the
+     * raw ones: `generateEntrypointCode` and `generateLongRunningNodeCode` read
+     * the serialized forms and nothing else. A state the cache retained belongs
+     * to the cache — a caller must not release its serialized forms either
+     * (`cacheRetained` says which); one the cache refused belongs to the caller
+     * alone, and `releaseGeneratedSources` drops it once a map is generated.
+     *
+     * A session without a filesystem gets an empty state: there is nothing to
+     * stage and nothing to yield for.
      */
-    private _withBundleBuildDeadline;
-    private _buildPrefetchBundleCached;
+    private _buildProcessBundle;
     /**
      * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
      * entry count and its byte bound.
