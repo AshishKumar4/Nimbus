@@ -161,6 +161,8 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
     sessionBasePath: `/s/${SID}`,
     sessionOrigin: 'https://probe.test',
     ensureSqliteFs() {},
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     ensureFacetManager() { this.facetManager = fm; },
     cirrusReal: null,
     viteDevServer: null,

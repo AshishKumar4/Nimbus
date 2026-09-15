@@ -31,6 +31,7 @@ import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { OnDemandBundleGate } from './on-demand-bundle-gate.js';
+import type { BundlePool, BundlePoolProvider } from './esbuild-bundle-pool.js';
 import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import {
@@ -76,17 +77,18 @@ export interface ViteDevServerOptions {
    * the `// nimbus-no-basename` comment for per-file opt-out.
    */
   injectBasename?: boolean;
-  /**
-   * Worker bindings env. Required for the on-demand-bundle facet path
-   * (LOADER + ctx.exports). When provided, /preview/@modules/<spec>
-   * misses bundle in a IsolatePool isolate instead of the
-   * supervisor's EsbuildService — same architecture as the
-   * pre-bundle path. Without this option, the supervisor falls back
-   * to in-process esbuild (legacy behaviour).
-   */
+  /** Worker bindings env (ASSETS for vendored bundles). */
   env?: any;
-  /** Durable Object state — needed alongside `env` for the facet pool. */
+  /** Durable Object state. */
   ctx?: DurableObjectState;
+  /**
+   * The session's esbuild facet pool, shared with the install-time
+   * pre-bundler. When provided, /preview/@modules/<spec> misses bundle in
+   * that pool's isolate instead of the supervisor's EsbuildService.
+   * Without it, the supervisor falls back to in-process esbuild (legacy
+   * behaviour used by callers without a LOADER binding).
+   */
+  bundlePool?: BundlePoolProvider;
   /**
    * process diagnostics support: when set, every diagnostic the dev server
    * would otherwise drop into Worker logs (console.warn / console.error)
@@ -1272,15 +1274,10 @@ export class ViteDevServer {
   private npmCache: NpmCache | null = null;
   /** Inject React Router basename into entry files? Default: true. */
   private injectBasename: boolean;
-  /** Worker env (LOADER, ctx.exports) for the on-demand-bundle facet path.
-   *  Null = legacy in-supervisor esbuild fallback. */
   private env: any;
   private ctx: DurableObjectState | null = null;
-  /** Lazily-constructed pool for on-demand bundling. Mirrors the
-   *  pre-bundle pool's wasm-modules-map shape. Created on first
-   *  cold-path /preview/@modules/<spec> request. */
-  private onDemandPool: any = null;
-  private onDemandPoolPromise: Promise<any> | null = null;
+  /** The session's esbuild facet pool; null = legacy in-supervisor esbuild. */
+  private readonly bundlePool: BundlePoolProvider | null;
   /**
    * In-flight on-demand-bundle coalescing map. When the browser fires
    * multiple parallel requests for the same /preview/@modules/<spec>
@@ -1303,8 +1300,8 @@ export class ViteDevServer {
    * DIFFERENT specs, one cold build runs at a time from slice allocation
    * through the facet RPC and response construction, so peak resident
    * slice bytes in the supervisor stay at one ON_DEMAND_SLICE_CAP_BYTES
-   * slice. The on-demand IsolatePool has one slot, so this costs no
-   * execution overlap. Coupled with pendingBundles (same-spec coalescing).
+   * slice. The shared pool has one slot, so this costs no execution
+   * overlap. Coupled with pendingBundles (same-spec coalescing).
    */
   private onDemandGate = new OnDemandBundleGate();
 
@@ -1338,6 +1335,7 @@ export class ViteDevServer {
     this.aliases = opts.aliases || {};
     this.env = opts.env;
     this.ctx = opts.ctx ?? null;
+    this.bundlePool = opts.bundlePool ?? null;
     if (opts.sql) {
       this.npmCache = new NpmCache(opts.sql);
     }
@@ -1363,44 +1361,14 @@ export class ViteDevServer {
   }
 
   /**
-   * Lazily construct the IsolatePool used for on-demand bundling
-   * of /preview/@modules/<spec> requests that miss both the in-memory
-   * and pkg_esm_bundles caches. Mirrors the pre-bundle pool's
-   * configuration: 1 worker, internal pLimit not needed (one bundle
-   * per request), wasm shipped via wasmModules.
-   *
-   * Returns null when env/ctx aren't available (legacy fallback used).
+   * The session's shared esbuild pool for on-demand bundling of
+   * /preview/@modules/<spec> requests that miss both the in-memory and
+   * pkg_esm_bundles caches. Null when no pool was provided (legacy
+   * in-supervisor fallback).
    */
-  private async ensureOnDemandPool(): Promise<any | null> {
-    if (this.onDemandPool) return this.onDemandPool;
-    if (this.onDemandPoolPromise) return this.onDemandPoolPromise;
-    if (!this.env || !this.ctx) return null;
-    this.onDemandPoolPromise = (async () => {
-      const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
-      const { PRE_BUNDLE_PREAMBLE } = await import('../loaders/pre-bundle-preamble.js');
-      const { fetchEsbuildWasmBytes } = await import('../runtime/esbuild-wasm-bytes.js');
-      const wasmBytes = await fetchEsbuildWasmBytes(this.env as any);
-      const pool = new IsolatePool(this.env, this.ctx!, {
-        concurrency: 1,
-        timeoutMs: 60_000,
-        retries: 0,
-        // Use a distinct tag so the on-demand pool's cached worker
-        // doesn't collide with the install-time pre-bundle pool.
-        // Sharing fnHash + preamble + wasm fingerprint between pools
-        // would otherwise alias them in workerd's loader cache.
-        tag: 'on-demand-bundle',
-        preamble: PRE_BUNDLE_PREAMBLE,
-        wasmModules: { 'esbuild.wasm': wasmBytes },
-      });
-      this.onDemandPool = pool;
-      return pool;
-    })();
-    try {
-      return await this.onDemandPoolPromise;
-    } catch (e) {
-      this.onDemandPoolPromise = null;
-      throw e;
-    }
+  private async ensureOnDemandPool(): Promise<BundlePool | null> {
+    if (!this.bundlePool) return null;
+    return this.bundlePool.acquire();
   }
 
   /** Detect TailwindCSS usage in the project */
@@ -1929,12 +1897,13 @@ export class ViteDevServer {
     // supervisor isolate. For large modules (lucide-react, ~18 MiB
     // unpacked) that OOM'd the supervisor and surfaced as CF error
     // 1101 on /preview/@modules/lucide-react, taking down the entire
-    // preview. We now dispatch the bundle work to a IsolatePool
-    // isolate via its own 128 MiB heap — same pattern as install-time
-    // pre-bundling. Supervisor never bundles esbuild for any path.
+    // preview. We now dispatch the bundle work to the session's shared
+    // esbuild IsolatePool — the same pool, isolate and 128 MiB heap the
+    // install-time pre-bundler uses. Supervisor never bundles esbuild
+    // for any path.
     //
-    // Falls back to in-supervisor esbuild ONLY if env/ctx aren't
-    // available (e.g. legacy callers / tests).
+    // Falls back to in-supervisor esbuild ONLY if no bundle pool was
+    // provided (legacy callers / tests).
     const resolved = this.resolvePackage(specifier);
     // Barrel packages (lucide-react, @phosphor-icons/react, react-icons,
     // @mui/icons-material, …) ship hundreds/thousands of tiny re-export
@@ -2121,8 +2090,8 @@ export class ViteDevServer {
           this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
         }
       } else {
-        // Legacy fallback — in-supervisor esbuild. Used only when
-        // env/ctx weren't passed in (no facet pool can be built).
+        // Legacy fallback — in-supervisor esbuild. Used only when no
+        // bundle pool was provided.
         try {
           const result = await this.esbuild.build([bundleEntryPath], {
             bundle: true,

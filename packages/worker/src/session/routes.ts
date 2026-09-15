@@ -190,6 +190,7 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
       basePath,
       env: self.env,
       ctx: self.ctx,
+      bundlePool: self.ensureBundlePool(),
       port,
       pid: entry.pid,
       processes: self.processes,
@@ -1171,13 +1172,14 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
           sql: self.ctx.storage.sql,
           injectBasename: body.injectBasename,
           basePath,
-          // env+ctx enable the on-demand facet bundle path. Without
-          // these, ViteDevServer falls back to in-supervisor esbuild
-          // for /preview/@modules/<spec> cold-path bundles — which OOMs
-          // on large packages (lucide-react). See vite-dev-server.ts:
-          // ensureOnDemandPool / serveModule.
+          // The shared bundle pool enables the on-demand facet bundle
+          // path. Without it, ViteDevServer falls back to in-supervisor
+          // esbuild for /preview/@modules/<spec> cold-path bundles —
+          // which OOMs on large packages (lucide-react). See
+          // vite-dev-server.ts: ensureOnDemandPool / serveModule.
           env: self.env,
           ctx: self.ctx,
+          bundlePool: self.ensureBundlePool(),
           port: apiVitePort,
           pid: apiViteEntry.pid,
           processes: self.processes,

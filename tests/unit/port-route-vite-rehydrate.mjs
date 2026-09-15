@@ -102,6 +102,8 @@ function makeWokenSession(storage = {}) {
     get viteBasePath() { return (this.sessionBasePath || '') + '/preview'; },
     async hydrateSessionBasePath() {},
     ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(); },
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     seedFilesystem() {},
   };
   self.store = store;

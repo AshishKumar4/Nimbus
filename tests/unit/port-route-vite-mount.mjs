@@ -61,18 +61,31 @@ const INDEX_HTML =
 const DEP_JS = 'import confetti from "canvas-confetti";\nexport default confetti;\n';
 
 /**
- * `faults` maps a path to how many times `exists(path)` should throw before
- * answering normally — the one fault the cold module path can be handed
- * from inside the gate (package resolution walks `home/user/node_modules`,
- * which nothing before the gate touches).
+ * A stub VFS over an in-memory file map. Every parent of a file is a
+ * directory, so the package walkers (`readdir`, `isDirectory`) see the same
+ * shape SqliteVFS gives them.
+ *
+ *   `faults` maps a path to how many times `exists(path)` should throw
+ *   before answering normally — the one fault the cold module path can be
+ *   handed from inside its coalesced attempt (package resolution walks
+ *   `home/user/node_modules`, which nothing before it touches).
+ *   `extraFiles` adds fixture files (string or Uint8Array bodies).
+ *   `reads` receives every `readFile` path, in order, when given.
  */
-function makeVfs(faults = new Map()) {
+function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = {}) {
   const files = new Map([
     [`${ROOT}/index.html`, INDEX_HTML],
     [`${ROOT}/src/main.js`, 'console.log("main");\n'],
     [`${ROOT}/src/dep.js`, DEP_JS],
     [`${ROOT}/package.json`, JSON.stringify({ name: 'app', dependencies: {} })],
+    ...extraFiles,
   ]);
+  const dirs = new Set();
+  for (const path of files.keys()) {
+    const parts = path.split('/');
+    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
+  }
+  const encoder = new TextEncoder();
   const view = {
     exists: (p) => {
       const remaining = faults.get(p) ?? 0;
@@ -80,22 +93,55 @@ function makeVfs(faults = new Map()) {
         faults.set(p, remaining - 1);
         throw new Error(`injected vfs fault: ${p}`);
       }
-      return files.has(p);
+      return files.has(p) || dirs.has(p);
     },
-    isDirectory: () => false,
-    readFileString: (p) => files.get(p),
-    readFile: (p) => new TextEncoder().encode(files.get(p) ?? ''),
+    isDirectory: (p) => dirs.has(p),
+    readdir: (dir) => {
+      if (!dirs.has(dir)) throw new Error(`ENOENT: ${dir}`);
+      const names = new Map();
+      for (const path of [...files.keys(), ...dirs]) {
+        if (!path.startsWith(dir + '/')) continue;
+        const name = path.slice(dir.length + 1).split('/')[0];
+        names.set(name, dirs.has(dir + '/' + name) ? 'directory' : 'file');
+      }
+      return [...names].map(([name, type]) => ({ name, type }));
+    },
+    readFileString: (p) => {
+      const body = files.get(p);
+      return body instanceof Uint8Array ? new TextDecoder().decode(body) : body;
+    },
+    readFile: (p) => {
+      reads?.push(p);
+      const body = files.get(p);
+      return body instanceof Uint8Array ? body : encoder.encode(body ?? '');
+    },
   };
   return { as: () => view, events: { on: () => () => {} } };
 }
 
-function makeWokenSession(storage = {}, faults = new Map()) {
+/**
+ * A bundle pool whose facet never runs: every submit is parked until the
+ * test settles it, so the supervisor side of a cold build can be held at
+ * the exact point where its slice is resident.
+ */
+function makeParkedBundlePool() {
+  const submits = [];
+  const pool = {
+    submit: (_fn, spec) => new Promise((resolve, reject) => {
+      submits.push({ specifier: spec.specifier, sliceBytes: spec.slice.reduce((n, e) => n + (e.bytes?.length ?? 0), 0), resolve, reject });
+    }),
+  };
+  return { provider: { acquire: async () => pool }, submits };
+}
+
+function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool = null } = {}) {
   const store = new Map(Object.entries(storage));
   let nextPid = 100;
   const self = {
     env: {},
     sqliteFs: null,
     esbuildService: null,
+    bundlePool,
     viteDevServer: null,
     cirrusReal: null,
     _viteShimPid: null,
@@ -120,7 +166,8 @@ function makeWokenSession(storage = {}, faults = new Map()) {
     get nimbusDebug() { return false; },
     get viteBasePath() { return (this.sessionBasePath || '') + '/preview'; },
     async hydrateSessionBasePath() {},
-    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(faults); },
+    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs({ faults, extraFiles, reads }); },
+    ensureBundlePool() { return this.bundlePool; },
     seedFilesystem() {},
   };
   self.store = store;
@@ -251,7 +298,7 @@ function pathRequest(path) {
 //    module re-enters the cold path instead of inheriting a settled rejection.
 {
   const faults = new Map([['home/user/node_modules/boom-pkg', 1]]);
-  const self = makeWokenSession(HIBERNATED, faults);
+  const self = makeWokenSession(HIBERNATED, { faults });
   const path = `/port/${VITE_PORT}/@modules/boom-pkg`;
   const attempts = [
     handleFetch(self, hostRequest(path)),

@@ -79,6 +79,8 @@ function makeHostAndCtx({ viteConfigSource, buildResult }) {
   };
   const host = {
     ensureSqliteFs() {},
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     sqliteFs,
     esbuildService: { build: async () => buildResult },
   };

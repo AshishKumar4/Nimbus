@@ -331,6 +331,8 @@ function routeHost(fm, portRegistry) {
   const self = {
     shell: {},
     ensureSqliteFs() {},
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     ensureFacetManager() { this.facetManager = fm; },
     facetManager: fm,
     ctx,

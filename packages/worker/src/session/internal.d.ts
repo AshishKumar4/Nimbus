@@ -45,6 +45,7 @@ import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
+import type { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
@@ -73,6 +74,8 @@ export interface SessionInternal {
   /** W8: child_process broker; lazy. */
   facetProcessManager: any;
   esbuildService: EsbuildService | null;
+  /** The session's single esbuild facet pool; lazy via ensureBundlePool. */
+  bundlePool: EsbuildBundlePool | null;
   viteDevServer: ViteDevServer | null;
   /**
    * runtime primitive support: PID + port the default-Cirrus vite shim is registered
@@ -147,6 +150,7 @@ export interface SessionInternal {
   // ── Methods siblings call back into ─────────────────────────────────
   ensureSqliteFs(): void;
   ensureFacetManager(): void;
+  ensureBundlePool(): EsbuildBundlePool;
   _ensureFacetProcessManager(): any;
   ensureFetchProxy(log?: (msg: string) => void): any | null;
   buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;

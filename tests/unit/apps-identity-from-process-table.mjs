@@ -158,6 +158,8 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     get viteBasePath() { return `${BASE_PATH}/preview`; },
     async hydrateSessionBasePath() {},
     ensureSqliteFs() {},
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     seedFilesystem() {},
     ensureFacetManager() { this.facetManager = fm; },
     ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port),

@@ -144,6 +144,7 @@ function makeHost() {
         releaseExclusiveMutation() {},
       };
     },
+    ensureBundlePool() { return null; },
     terminal: null,
     shell: null,
     kernel: null,

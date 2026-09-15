@@ -149,6 +149,8 @@ export interface ProgrammaticHost {
   kernel?: unknown;
   facetProcessManager?: unknown;
   esbuildService?: unknown;
+  /** The session's esbuild facet pool; torn down with the installer and dev server. */
+  bundlePool?: { dispose(): void } | null;
   nimbusWrangler?: unknown;
   npmInstaller?: unknown;
   fetchProxyEntrypoint?: unknown;
@@ -1580,6 +1582,10 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.facetProcessManager = null;
   self.esbuildService = null;
   self.viteDevServer = null;
+  // The installer's pre-bundler and the dev server's on-demand path share
+  // this pool; it goes when both of them go.
+  try { self.bundlePool?.dispose(); } catch {}
+  self.bundlePool = null;
   self.cirrusReal = null;
   self._cirrusHmrWsClients = null;
   self.nimbusWrangler = null;
