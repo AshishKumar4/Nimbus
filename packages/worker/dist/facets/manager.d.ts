@@ -311,11 +311,15 @@ export declare function assertStagedBundleFitsRpcPayload(serialized: string, bun
  * computed-path requires). Bounded to package.json + 1 main-entry file
  * per package — sub-agent §Q3 quantified the worst-case cumulative
  * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
+ *
+ * `requiredPaths` is the static require closure. A package the closure
+ * already reached — but reached only through a SUBPATH — has its main entry
+ * skipped; see `mainIsSpeculative`.
  */
 export declare function greedyAddMainEntries(vfs: CredentialedVfs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
     totalBytes: number;
     fileCount: number;
-}): {
+}, requiredPaths?: ReadonlySet<string>): {
     added: number;
 };
 /**

@@ -1749,12 +1749,16 @@ function addUnreadableDenialCells(vfs, bundle, metadata) {
  * computed-path requires). Bounded to package.json + 1 main-entry file
  * per package — sub-agent §Q3 quantified the worst-case cumulative
  * budget impact (~322 KiB for fastify, ~1.7 MiB for ts-jest).
+ *
+ * `requiredPaths` is the static require closure. A package the closure
+ * already reached — but reached only through a SUBPATH — has its main entry
+ * skipped; see `mainIsSpeculative`.
  */
 // can verify the hash-chunk + shared/ oversample directly. Pre-X.5-C this
 // was a file-local helper. Adding the named export is a pure surface
 // addition — no callers other than buildPrefetchBundle (same file) and
 // the new probe.
-export function greedyAddMainEntries(vfs, cwd, bundle, budgetState) {
+export function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths = new Set()) {
     let added = 0;
     const cwdStripped = cwd.replace(/^\/+/, '');
     const nmDir = cwdStripped + '/node_modules';
@@ -1781,6 +1785,15 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState) {
             // Anything the program really requires arrives through the closure,
             // which is uncapped.
             if (!_bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))
+                return false;
+            // A guess must not be a native binary. Nothing in a Workers isolate can
+            // load a `.node` addon or a `.exe` — the ABI policy classifies them
+            // native-unsupported and the installer says so at install time — so
+            // admitting one spends the budget on bytes no code path can reach.
+            // Measured: freeing 1.3 MiB of rollup let `@napi-rs/lzma-linux-x64-gnu`'s
+            // 1,445,448-byte `.node` in, which the size guard had been evicting.
+            // Only the guess is filtered; a path the closure requires is untouched.
+            if (stripped.endsWith('.node') || stripped.endsWith('.exe'))
                 return false;
             // hardening-r5: preserve binary content as Uint8Array.
             const content = _readBundleCell(vfs, stripped);
@@ -1817,8 +1830,42 @@ export function greedyAddMainEntries(vfs, cwd, bundle, budgetState) {
                 collectExportLeaves(node[k], out);
         }
     }
+    /**
+     * Whether guessing at `pkgDir`'s main entry is still a guess.
+     *
+     * It is, for a package nothing required: that is what this pass exists for,
+     * and a dynamic `require(variable)` leaves no edge to follow. It is NOT for
+     * a package the closure reached only through a subpath export — there the
+     * program has told us exactly which corner of the package it uses, and the
+     * main entry is a different graph that no require reaches. Adding it anyway
+     * is how `rollup/parseAst` (7.9 KB of binding) dragged in rollup's whole
+     * bundler: `dist/shared/rollup.js` at 941 KB and, through the `module`
+     * candidate, `dist/es/shared/node-entry.js` at 951 KB — measured together
+     * as 46.5% of a real-vite snapshot, reached by no require in it.
+     *
+     * A package that loads its own main from a subpath at runtime does so
+     * through a static edge, so it is in the closure and unaffected.
+     */
+    function mainIsSpeculative(pkgDir) {
+        const prefix = pkgDir.replace(/^\/+/, '') + '/';
+        let reached = false;
+        for (const path of requiredPaths) {
+            if (!path.startsWith(prefix))
+                continue;
+            // package.json alone is resolution metadata, not a use of the package.
+            if (path === prefix + 'package.json')
+                continue;
+            reached = true;
+            break;
+        }
+        return !reached;
+    }
     function addPkgEntry(pkgDir) {
         addOne(pkgDir + '/package.json');
+        // A package the closure reached keeps exactly what it reached; only an
+        // unreached one gets the guess below.
+        if (!mainIsSpeculative(pkgDir))
+            return;
         let meta;
         try {
             meta = JSON.parse(vfs.readFileString(pkgDir + '/package.json'));
@@ -3140,7 +3187,7 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
     //    Catches dynamic-require / `bindings()` / plugin-loader cases the
     //    regex prefetch misses. Its budget is independent from the complete
     //    static require closure, which is correctness-critical.
-    const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState);
+    const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths);
     await paceAfterPass();
     // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
     //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:

@@ -128,6 +128,88 @@ assert.equal(
   largeRequiredSource,
   'the encoded-size pass preserves a large required module',
 );
+
+// ── admission: a subpath use does not admit the package's main graph ──────
+//
+// `rollup/parseAst` is 7.9 KB of wasm binding, and guessing at rollup's main
+// beside it dragged in `dist/shared/rollup.js` (941 KB) and — through the
+// `module` candidate's sibling walk — `dist/es/shared/node-entry.js`
+// (951 KB): measured together as 46.5% of a real-vite snapshot, reached by no
+// require in it. The guess is for packages nothing reached, which is what it
+// was always for.
+{
+  const nm = 'home/user/app/node_modules';
+  const files = {
+    // The guess is bounded to the project's declared runtime dependencies
+    // (speculativePackageDirs), so the fixture declares them.
+    'home/user/app/package.json': JSON.stringify({
+      name: 'app',
+      dependencies: { subpathed: '1', mainly: '1', unreached: '1', 'native-shard': '1' },
+    }),
+    'home/user/app/entry.js': "require('subpathed/sub');\nrequire('mainly');",
+    // Reached ONLY through a subpath: its main graph must stay out.
+    [`${nm}/subpathed/package.json`]: JSON.stringify({
+      name: 'subpathed', main: 'dist/main.js', module: 'dist/es/main.js',
+      exports: { '.': './dist/main.js', './sub': './dist/sub.js' },
+    }),
+    [`${nm}/subpathed/dist/main.js`]: `require('./shared/bundler');\nmodule.exports = 1;`,
+    [`${nm}/subpathed/dist/shared/bundler.js`]: `module.exports = "${'B'.repeat(4000)}";`,
+    [`${nm}/subpathed/dist/es/main.js`]: 'export default 1;',
+    [`${nm}/subpathed/dist/sub.js`]: "module.exports = require('./shared/parse');",
+    [`${nm}/subpathed/dist/shared/parse.js`]: 'module.exports = () => "parsed";',
+    // Reached through its OWN main: unchanged.
+    [`${nm}/mainly/package.json`]: JSON.stringify({ name: 'mainly', main: 'index.js' }),
+    [`${nm}/mainly/index.js`]: 'module.exports = "mainly";',
+    // Reached by nothing: the guess still applies — that is the net.
+    [`${nm}/unreached/package.json`]: JSON.stringify({ name: 'unreached', main: 'index.js' }),
+    [`${nm}/unreached/index.js`]: 'module.exports = "unreached";',
+    // Reached by nothing AND native: a guess must never be an unloadable binary.
+    [`${nm}/native-shard/package.json`]: JSON.stringify({ name: 'native-shard', main: 'binding.node' }),
+    [`${nm}/native-shard/binding.node`]: 'not-really-a-binary',
+  };
+  const subVfs = new FakeVfs(files);
+  const snap = await buildPrefetchBundle(
+    subVfs, '/home/user/app/entry.js', '/home/user/app', files['home/user/app/entry.js'],
+    { async transform(code) { return { code }; } },
+  );
+  const has = (p) => Object.hasOwn(snap.bundle, p);
+
+  assert.equal(has(`${nm}/subpathed/dist/sub.js`), true, "the subpath the program requires is present");
+  assert.equal(has(`${nm}/subpathed/dist/shared/parse.js`), true, "the subpath's own closure is present");
+  assert.equal(has(`${nm}/subpathed/package.json`), true, 'the manifest stays: it is how the subpath resolves');
+  assert.equal(has(`${nm}/subpathed/dist/main.js`), false, "a subpath use must not admit the package's main");
+  assert.equal(has(`${nm}/subpathed/dist/shared/bundler.js`), false, "nor the main's graph");
+  assert.equal(has(`${nm}/subpathed/dist/es/main.js`), false, 'nor the module-condition entry beside it');
+
+  assert.equal(has(`${nm}/mainly/index.js`), true, 'a package required through its main keeps it');
+  assert.equal(has(`${nm}/unreached/index.js`), true, 'a package nothing reached still gets the guess');
+  assert.equal(has(`${nm}/native-shard/binding.node`), false, 'a guess is never a native binary');
+  console.log('  a subpath use admits its own closure, not the main graph; the guess survives for unreached packages');
+}
+
+// A package the launch carries as a module-map member must not ride the
+// snapshot too. Measured on the vite react template: Vite's dist was
+// 1,942,175 bytes of the main module AND all of the 2.23 MiB map member.
+{
+  const mapResidentDir = `/${globalModules}/cross-spawn`;
+  const deduped = await buildPrefetchBundle(
+    vfs, `/${entryPath}`, '/home/user', files[entryPath], identityEsbuild,
+    undefined, undefined, undefined, undefined, [mapResidentDir],
+  );
+  const carried = Object.keys(deduped.bundle).filter((p) => p.startsWith(`${globalModules}/cross-spawn/`));
+  assert.deepEqual(carried, [], `a map-resident package must carry no cells, got ${JSON.stringify(carried)}`);
+  // Its directory shape stays honest — readdirSync inside the facet still
+  // sees it, exactly as it does for a cell the size guard evicted.
+  assert.ok(
+    deduped.manifest[`${globalModules}/cross-spawn`],
+    'the manifest still lists a map-resident package',
+  );
+  // Nothing else is touched: the required closure outside that package is
+  // whole, including the transitive dependency reached THROUGH it.
+  assert.equal(deduped.bundle[largeRequiredPath], largeRequiredSource);
+  assert.equal(deduped.bundle[shebangCommandPath], files[shebangCommandPath]);
+  console.log('  map-resident packages are dropped from the snapshot, manifest and siblings intact');
+}
 assert.equal(
   snapshot.bundle[shebangCommandPath],
   files[shebangCommandPath],
