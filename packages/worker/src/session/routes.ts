@@ -81,7 +81,27 @@ import { fetchEsbuildWasmBytes, ESBUILD_WASM_L2_KEY } from '../runtime/esbuild-w
 import { Fanout, IN_DO_THRESHOLD, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
 import { z } from 'zod/v4';
 
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+
 type RoutesHost = any;
+
+/**
+ * The host surface `routeToSessionPort` actually reads — deliberately the
+ * narrowest shape that serves every port-addressed route, so non-session
+ * hosts (the composed facet manager's `apps.routeCapabilityPort`) can call
+ * the one implementation instead of carrying a copy. The session
+ * satisfies every field; a compose host supplies `ctx`/`portRegistry`/
+ * `ensureDurableAppOnPort` and the dev-server/HMR fields stay absent —
+ * `restorePersistedDevServer` and the vite-shim branch no-op on it.
+ */
+interface SessionPortHost {
+  ctx: DurableObjectState;
+  portRegistry: PortRegistry;
+  ensureDurableAppOnPort?: (port: number) => Promise<'absent' | 'started' | 'failed'>;
+  _viteShimPort?: number | null;
+  viteDevServer?: { isRunning: boolean; handleRequest(request: Request, innerPath: string, mountBase: string): Promise<Response> } | null;
+  cirrusReal?: { isRunning: boolean } | null;
+}
 
 const TestSpawnEmitterBodySchema = z.object({
   lines: z.coerce.number().optional(),
@@ -225,7 +245,7 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
  * any other port is mounted at root and needs no rewriting.
  */
 export async function routeToSessionPort(
-  self: RoutesHost,
+  self: SessionPortHost,
   port: number,
   request: Request,
   innerPath: string,
@@ -317,7 +337,7 @@ async function readoptCapability(
 
 /** Route a capability-authenticated embedder request to a guest HTTP server. */
 export function routeCapabilityPort(
-  self: RoutesHost,
+  self: SessionPortHost,
   port: number,
   capability: string,
   request: Request,

@@ -21,20 +21,61 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
-import { composeFacetManager } from '../../packages/worker/src/facets/compose.ts';
+// compose.ts imports session/routes.ts, which reaches `cloudflare:workers`
+// through fabric's bindings — bundle with the standard stub like
+// facet-manager-compose.mjs does so the factory loads in plain Bun.
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { readPortExposure, readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 
-adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
-
 const ROOT = new URL('../../', import.meta.url).pathname;
+
+// compose.ts → session/routes.ts → fabric/bindings.ts → cloudflare:workers.
+// Load the factory from a stubbed bundle — the same pattern
+// facet-manager-compose.mjs and durable-port-recovery.mjs use.
+const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-embedder-test-'));
+let bundle;
+try {
+  const entryPath = join(outputDir, 'entry.ts');
+  await writeFile(entryPath, [
+    `export { composeFacetManager } from '${ROOT}packages/worker/src/facets/compose.ts';`,
+    `export { adoptCtxExports, composeFabric } from '${ROOT}packages/fabric/src/composition.ts';`,
+    '',
+  ].join('\n'));
+  const build = await Bun.build({
+    entrypoints: [entryPath],
+    outdir: join(outputDir, 'out'),
+    target: 'bun',
+    format: 'esm',
+    plugins: [{
+      name: 'cloudflare-workers-test-stub',
+      setup(builder) {
+        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
+        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
+          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
+          loader: 'js',
+        }));
+      },
+    }],
+  });
+  assert.equal(build.success, true, build.logs.map(String).join('\n'));
+  bundle = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
+  bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+  bundle.adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
+} finally {
+  await rm(outputDir, { recursive: true, force: true });
+}
+const { composeFacetManager } = bundle;
+
 const WORKER = `${ROOT}packages/worker/`;
 
 // ── 1. the exports map ────────────────────────────────────────────────────

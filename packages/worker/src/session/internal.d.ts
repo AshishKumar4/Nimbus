@@ -43,6 +43,7 @@ import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-p
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
+import type { ComposedFacetManager } from '../facets/compose.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
@@ -147,7 +148,7 @@ export interface SessionInternal {
 
   // ── Methods siblings call back into ─────────────────────────────────
   ensureSqliteFs(): void;
-  ensureFacetManager(): void;
+  ensureFacetManager(): ComposedFacetManager;
   _ensureFacetProcessManager(): any;
   ensureFetchProxy(log?: (msg: string) => void): any | null;
   buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
@@ -198,7 +199,7 @@ export interface SessionInternal {
   _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<any>;
   _rpcListPorts(): Promise<any>;
   _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<any>;
-  _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }): Promise<any>;
+  _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string }): Promise<any>;
   _rpcUnexposePort(port: number): Promise<any>;
   _rpcDeleteFile(path: string, options?: { recursive?: boolean }): Promise<void>;
 }

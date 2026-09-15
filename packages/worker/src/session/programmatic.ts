@@ -19,6 +19,7 @@ import { PID_GEN_STRIDE, type ProcessEntry } from '@nimbus-sh/core/runtime/proce
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -176,7 +177,7 @@ export interface ProgrammaticHost {
   _w9SchemaInit?: boolean;
   _w9WireProcessLogPersist?(): void;
   ensureSqliteFs(): void;
-  ensureFacetManager(): void;
+  ensureFacetManager(): ComposedFacetManager;
   initSession(ws: WebSocket): Promise<void>;
 }
 
@@ -897,12 +898,9 @@ export async function rpcProcessLogs(
 
 export async function rpcListPorts(self: ProgrammaticHost): Promise<SerializedPort[]> {
   await ensureProgrammaticReady(self);
-  const entries = self.portRegistry.getAll();
-  // Persisted at the moment the embedder is told the value, not at
-  // registration: a capability nobody has been handed does not need to
-  // survive anything.
-  await Promise.all(entries.map((entry) => persistPortCapability(self, entry.port, entry.capability)));
-  return entries.map(serializePort);
+  // The composed manager's copy is the one implementation — persistence
+  // at tell-time included.
+  return self.ensureFacetManager().apps.listPorts();
 }
 
 /** What `apps.expose` / `apps.rotateLink` answer: the application's address, as the caller can reach it. */
@@ -1310,35 +1308,13 @@ async function resolveAppTarget(
  */
 export async function rpcEnsureDurableApp(
   self: ProgrammaticHost,
-  input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' },
+  input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string },
 ): Promise<{ port: number; capability: string | null; visibility: 'scoped' | 'public' }> {
   await ensureProgrammaticReady(self);
-  const owner = input.owner;
-  if (typeof owner !== 'string' || owner.length === 0) {
-    throw new Error('ensureDurableApp: owner must be a non-empty string');
-  }
-  const occupied = new Set(self.portRegistry.getAll().map((entry) => entry.port));
-  const port = await reservePort(self.ctx, {
-    owner,
-    preferredPort: input.preferredPort,
-    occupiedPorts: occupied,
-    // Minted here, not at boot: the URL is built from this capability, and
-    // re-drive re-adopts it out of the same row.
-    capability: createPortCapability(),
-    ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
-  });
-  const record = await readPortReservation(self.ctx, port);
-  if (record?.visibility === 'public' && record.capability !== null) {
-    // The URL is built on this capability before the app has ever run:
-    // publish it to the directory now, loudly refusing a deployment whose
-    // binding is missing rather than minting an unroutable URL.
-    await bindPublicPortCapability(self, record.capability, port);
-  }
-  return {
-    port,
-    capability: record?.capability ?? null,
-    visibility: record?.visibility ?? 'scoped',
-  };
+  // The composed manager owns the durable-app verbs — one implementation,
+  // capability minted there so a URL handed out before boot is the one the
+  // eventual binding re-adopts.
+  return self.ensureFacetManager().apps.ensureDurableApp(input);
 }
 
 export async function rpcUnexposePort(self: ProgrammaticHost, port: number) {

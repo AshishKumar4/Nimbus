@@ -46,10 +46,10 @@ import {
   readPortReservation,
   readPortReservationByOwner,
   reservePort,
-  restorePortCapability,
   type PortVisibility,
 } from '../session/port-capability.js';
 import { bindPublicPortCapability } from '../router/public-directory.js';
+import { routeCapabilityPort } from '../session/routes.js';
 import {
   ESBUILD_TRANSFORM_WORKER_ID,
   esbuildTransformWorkerCode,
@@ -231,21 +231,15 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
           capability: String(entry.capability),
         }));
       },
-      async routeCapabilityPort(port, capability, request, innerPath) {
-        const n = Number(port);
-        const durable = await manager.ensureDurableAppOnPort(n);
-        if (durable === 'failed') {
-          return new Response(`The application on port ${n} is restarting`, {
-            status: 503,
-            headers: { 'Cache-Control': 'no-store', 'Retry-After': '3' },
-          });
-        }
-        await restorePortCapability(capabilityHost, n);
-        if (!portRegistry.hasCapability(n, String(capability))) {
-          return new Response('Not found', { status: 404 });
-        }
-        const routed = await portRegistry.routeCapabilityRequest(n, String(capability), request, innerPath);
-        return routed ?? new Response(`No process listening on port ${n}`, { status: 502 });
+      routeCapabilityPort(port, capability, request, innerPath) {
+        // The session's routeToSessionPort is the one implementation —
+        // the capability gate AND the public-bearer visibility gate live
+        // there; a copy here dropped the latter. Session-only concerns
+        // (dev-server restore, the vite-shim branch) no-op on this host.
+        return routeCapabilityPort(
+          { ctx, portRegistry, ensureDurableAppOnPort: (p) => manager.ensureDurableAppOnPort(p) },
+          port, capability, request, innerPath,
+        );
       },
     },
   };

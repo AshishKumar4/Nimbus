@@ -15,7 +15,7 @@ import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
-import { composeFacetManager } from '../facets/compose.js';
+import { composeFacetManager, type ComposedFacetManager } from '../facets/compose.js';
 import { FacetProcessManager } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -333,6 +333,7 @@ export class NimbusSession extends CloudflareDurableObject {
   shellProcessPid: number | null = null;
   terminal: WebSocketTerminal | null = null;
   facetManager: FacetManager | null = null;
+  facetManagerComposed: ComposedFacetManager | null = null;
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
   facetProcessManager: any = null;
   /**
@@ -958,7 +959,7 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcListApps() { return _programmatic.rpcListApps(this as any); }
   async _rpcRotateLink(target: _programmatic.AppTarget) { return _programmatic.rpcRotateLink(this as any, target); }
   async _rpcRemoveApp(target: _programmatic.AppTarget) { return _programmatic.rpcRemoveApp(this as any, target); }
-  async _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }) {
+  async _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string }) {
     return _programmatic.rpcEnsureDurableApp(this as any, input);
   }
   async _rpcRemoveDurableApp(owner: string) {
@@ -1132,13 +1133,13 @@ export class NimbusSession extends CloudflareDurableObject {
    * report that keeps the process table honest. The isolated esbuild
    * transform and the durable image-store fallback are the factory's.
    */
-  ensureFacetManager() {
-    if (!this.facetManager) {
+  ensureFacetManager(): ComposedFacetManager {
+    if (!this.facetManagerComposed) {
       // The manager is composed over the filesystem, so the filesystem comes
       // first. Cheap and idempotent; every caller already stood it up or is
       // about to.
       this.ensureSqliteFs();
-      this.facetManager = composeFacetManager({
+      this.facetManagerComposed = composeFacetManager({
         ctx: this.ctx,
         env: this.env,
         processes: this.processes,
@@ -1169,7 +1170,8 @@ export class NimbusSession extends CloudflareDurableObject {
             });
           },
         },
-      }).manager;
+      });
+      this.facetManager = this.facetManagerComposed.manager;
     }
     // W3.5 Fix B: share the session's lazy esbuildService with the
     // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
@@ -1178,8 +1180,9 @@ export class NimbusSession extends CloudflareDurableObject {
     // otherwise lazy-creates its own on first exec — same wasm bytes,
     // same ~10ms init cost, just paid once per surface.
     if (this.esbuildService) {
-      this.facetManager.setEsbuildService(this.esbuildService);
+      this.facetManager!.setEsbuildService(this.esbuildService);
     }
+    return this.facetManagerComposed;
   }
 
   /**

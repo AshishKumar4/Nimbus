@@ -69,7 +69,7 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 // routes.ts transitively imports `cloudflare:workers`; bundle it with a stub.
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-universal-durability-'));
 const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/session/programmatic.ts'],
+  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/session/programmatic.ts', './packages/worker/src/facets/compose.ts'],
   outdir: outputDir,
   target: 'bun',
   format: 'esm',
@@ -87,7 +87,9 @@ const build = await Bun.build({
 assert.equal(build.success, true, build.logs.map(String).join('\n'));
 const routesEntry = build.outputs.find((o) => o.path.endsWith('/routes.js'));
 const programmaticEntry = build.outputs.find((o) => o.path.endsWith('/programmatic.js'));
+const composeEntry = build.outputs.find((o) => o.path.endsWith('/compose.js'));
 const { routeToSessionPort, routeToSessionApp } = await import(pathToFileURL(routesEntry.path).href);
+const { composeFacetManager } = await import(pathToFileURL(composeEntry.path).href);
 const {
   rpcExposeApp, rpcExposePort, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess, rpcListPorts,
 } = await import(pathToFileURL(programmaticEntry.path).href);
@@ -161,7 +163,16 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
     sessionBasePath: `/s/${SID}`,
     sessionOrigin: 'https://probe.test',
     ensureSqliteFs() {},
-    ensureFacetManager() { this.facetManager = fm; },
+    ensureFacetManager() {
+      // Same contract as the session: returns the composed manager so the
+      // rpc verbs can reach `.apps`. The fm under test stays the manager.
+      this.facetManagerComposed ??= composeFacetManager({
+        ctx, env, processes, portRegistry, vfs,
+        hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
+      });
+      this.facetManager = this.facetManagerComposed.manager = fm;
+      return this.facetManagerComposed;
+    },
     cirrusReal: null,
     viteDevServer: null,
     _viteShimPort: null,
