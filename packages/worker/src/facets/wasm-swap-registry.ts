@@ -542,6 +542,9 @@ export function formatTransitiveSkip(r: PackageRejectEntry): string {
 export type RegistryEvent =
   | { type: 'swap'; from: string; to: string; ctx: 'top' | 'transitive' }
   | { type: 'reject'; from: string; reason: string; suggest?: string; ctx: 'top' | 'transitive' }
+  // Advisory: the package installed (npm parity — real npm keeps a
+  // package that cannot run here); the note names the reason.
+  | { type: 'advisory'; from: string; reason: string; suggest?: string; ctx: 'top' | 'transitive' }
   | { type: 'transitive-skip'; from: string; reason: string };
 
 export type RegistryEventSink = (e: RegistryEvent) => void;
@@ -681,19 +684,19 @@ export function policyIsOptionalNativeBinding(
 }
 
 /**
- * Classify a required package's published artifacts against the Nimbus
- * ABI policy and return a reject entry when the package can only run as
- * a native platform binary. Detection is metadata-driven:
+ * Classify a package's published artifacts against the Nimbus ABI policy.
+ * Two halves, two install outcomes:
  *
- *   - any bin target with a native executable extension
- *     (policy.nativeBinExtensions — .exe Windows executables, .node
- *     N-API binaries, …)
- *   - package.json `os` / `cpu` / `libc` allowlists. A positive
- *     allowlist means the package opts out of cross-platform installs
- *     (npm rejects mismatches with EBADPLATFORM); no allowlisted
- *     platform is executable in Nimbus. Pure negations (`!win32`) do
- *     NOT classify as native — they exclude platforms without
- *     requiring one.
+ *   - policyNativeBinAdvisory — any bin target with a native executable
+ *     extension (.exe, .node N-API binaries, …). Real npm installs
+ *     these: the artifact only fails when invoked, so install keeps the
+ *     package and reports an advisory naming the reason.
+ *   - policyNativePlatformReject — package.json `os` / `cpu` / `libc`
+ *     allowlists. A positive allowlist means the package opts out of
+ *     cross-platform installs (npm rejects mismatches with
+ *     EBADPLATFORM); no allowlisted platform is executable in Nimbus.
+ *     Pure negations (`!win32`) do NOT classify as native — they exclude
+ *     platforms without requiring one.
  *
  * Diagnostics always name the package, the artifact class found
  * (policy.nativeArtifactClass), and the artifact kinds Nimbus accepts
@@ -701,7 +704,7 @@ export function policyIsOptionalNativeBinding(
  *
  * Serialized into facet preambles — self-contained by contract.
  */
-export function policyNativeArtifactReject(
+export function policyNativeBinAdvisory(
   policy: PackageAbiPolicy,
   pkg: PackageBinManifest,
 ): PackageRejectEntry | undefined {
@@ -731,6 +734,23 @@ export function policyNativeArtifactReject(
       };
     }
   }
+  return undefined;
+}
+
+/**
+ * The install-time refusal half: package.json `os` / `cpu` / `libc`
+ * allowlists. A positive allowlist means the package opts out of
+ * cross-platform installs — npm rejects mismatches with EBADPLATFORM,
+ * and no allowlisted platform is executable in Nimbus. Pure negations
+ * (`!win32`) do NOT classify as native — they exclude platforms without
+ * requiring one.
+ *
+ * Serialized into facet preambles — self-contained by contract.
+ */
+export function policyNativePlatformReject(
+  policy: PackageAbiPolicy,
+  pkg: PackageBinManifest,
+): PackageRejectEntry | undefined {
   const allowlisted = (values?: string[]): string[] =>
     Array.isArray(values)
       ? values.filter((v) => typeof v === 'string' && v.length > 0 && !v.startsWith('!'))
@@ -755,6 +775,21 @@ export function policyNativeArtifactReject(
     };
   }
   return undefined;
+}
+
+/**
+ * Union of the two halves above — kept for the optional-native-binding
+ * skip classifier, which treats either native shape as skippable from
+ * an optional edge.
+ */
+export function policyNativeArtifactReject(
+  policy: PackageAbiPolicy,
+  pkg: PackageBinManifest,
+): PackageRejectEntry | undefined {
+  return (
+    policyNativeBinAdvisory(policy, pkg) ??
+    policyNativePlatformReject(policy, pkg)
+  );
 }
 
 // Supervisor wrappers over the serializable policy functions.

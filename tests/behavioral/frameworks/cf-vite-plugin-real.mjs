@@ -60,24 +60,26 @@ try {
   a.check('base npm install completed (react + vite deps)', installSucceeded,
     stripAnsi(installR.output).split(/\r?\n/).slice(-4).join(' | '));
 
-  // ── Phase 3: install @cloudflare/vite-plugin → native sharp boundary ─
-  console.log('[cf-vite-plugin-real] npm install @cloudflare/vite-plugin (expecting sharp boundary)...');
+  // ── Phase 3: install @cloudflare/vite-plugin → sharp advisory ───────
+  console.log('[cf-vite-plugin-real] npm install @cloudflare/vite-plugin (expecting sharp advisory)...');
   const pluginR = await t.run('npm install @cloudflare/vite-plugin', 300_000);
   const out = stripAnsi(pluginR.output);
 
-  // Honest boundary: install must FAIL with the named-sharp native ABI
-  // diagnostic, NOT silently succeed (which would yield a broken plugin).
-  const rejected = /not supported on Nimbus/i.test(out);
-  const namesSharp = /sharp\b/.test(out);
-  const namesLibvips = /libvips|Native libvips bindings|not portable to Workers/i.test(out);
-  const didNotInstall = !/added\s+\d+\s+packages/i.test(out);
+  // npm parity: the plugin AND its sharp dependency install — real npm
+  // behaviour — and the sharp boundary is announced as an advisory
+  // `note:` naming the reason, since the package has no Workers-compatible build
+  // inside Nimbus, not at install time.
+  const installed = /added\s+\d+\s+packages|installed\s+\d+\s+packages|Done!/i.test(out);
+  const advisory = /note:\s*sharp has no Workers-compatible build/i.test(out);
+  const namesReason = /libvips|not portable to Workers/i.test(out);
+  const notRefused = !/not supported on Nimbus/i.test(out);
 
-  a.check('plugin install is rejected with the Nimbus unsupported-package diagnostic',
-    rejected, JSON.stringify(out.slice(-1400)));
-  a.check('diagnostic names the native culprit: sharp / libvips',
-    namesSharp && namesLibvips, JSON.stringify(out.slice(-1400)));
-  a.check('plugin did NOT silently install a broken native dependency',
-    didNotInstall, JSON.stringify(out.slice(-600)));
+  a.check('plugin install succeeds (npm parity — packages install)',
+    installed, JSON.stringify(out.slice(-1400)));
+  a.check('the sharp boundary is announced as an advisory naming the native culprit',
+    advisory && namesReason, JSON.stringify(out.slice(-1400)));
+  a.check('no install-time refusal summary is printed',
+    notRefused, JSON.stringify(out.slice(-600)));
 } finally {
   await t.close();
   const cleanup = await deleteSession(sid);

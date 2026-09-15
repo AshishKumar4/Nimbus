@@ -38,4 +38,7 @@ export interface FacetCachedEntry {
 export type FacetRegistryEvent =
   | { type: 'swap'; from: string; to: string; ctx: 'transitive' }
   | { type: 'reject'; from: string; reason: string; suggest?: string; ctx: 'transitive' }
+  // Advisory: the package installs (npm parity — it cannot run here);
+  // the require-side refusal names the reason.
+  | { type: 'advisory'; from: string; reason: string; suggest?: string; ctx: 'transitive' }
   | { type: 'transitive-skip'; from: string; reason: string };

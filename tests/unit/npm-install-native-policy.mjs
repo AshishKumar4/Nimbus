@@ -33,6 +33,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
@@ -56,6 +57,15 @@ function rejectedResult(from, reason, suggest) {
   };
 }
 
+// A table-listed package resolves like any other and reports the policy
+// entry as an advisory — install keeps it (npm parity), the `note:` line
+// names the reason.
+function advisedResult(name, version, reason, suggest, overrides = {}) {
+  const r = resolvedResult(name, version, overrides);
+  r.events = [{ type: 'advisory', from: name, reason, suggest, ctx: 'transitive' }];
+  return r;
+}
+
 const LIGHTNINGCSS = {
   reason:
     'Native Rust CSS parser; ships platform-specific .node bindings plus a wasm32-wasi-only `lightningcss-wasm` package. workerd has no node:wasi, and the package probes libc through child_process.execSync.',
@@ -71,69 +81,49 @@ function makeInstaller(pkgJson, resultFor) {
   root.mkdir(NM, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
   const log = [];
-  const env = {
-    LOADER: { get() { return {}; } },
-    NIMBUS_SESSION: {
-      idFromName(name) { return { toString: () => name, name }; },
-      get() {
-        return {
-          async _rpcFanoutExecute(_fnSource, args) {
-            if (args[0] && Array.isArray(args[0].packages)) {
-              return { results: args.map((shard) => ({
-                perPackage: shard.packages.map((p) => {
-                  root.mkdir(`${NM}/${p.name}`, { recursive: true });
-                  root.writeFile(`${NM}/${p.name}/package.json`, JSON.stringify({ name: p.name, version: p.version }));
-                  return { name: p.name, version: p.version, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
-                }),
-                elapsed: 1,
-                facetCounters: { tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1, pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0 },
-                cacheStatEvents: [],
-              })) };
-            }
-            return { results: args.map((spec) => resultFor(spec.name)) };
-          },
-        };
-      },
-    },
-  };
+  const env = makeFanoutEnv({ root, NM, resultFor });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root, harness };
 }
 
-// ── Case A: a REQUIRED refused dep fails the install but installs the rest ─
+// ── Case A: a table-listed root installs with an advisory, exit 0 ──────
+//
+// sharp is a policy 'fail' entry: it has no Workers-compatible build
+// — but real npm installs it, so install keeps it. One `[npm] note:` advisory names the reason; the package is
+// on disk, `failed` is empty, the install succeeds.
 {
-  const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const { installer, log, root } = makeInstaller(
-    { name: 'needs-sharp', dependencies: { ...ok, sharp: '^0.34.0' } },
-    (name) => resolvedResult(name, '1.0.0'),
+    { name: 'x', dependencies: { sharp: '^0.34.0', 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' } },
+    (name) => resolvedResult(name, name === 'sharp' ? '0.34.0' : '1.0.0'),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('sharp'), `required refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
-  assert.equal(result.installed.length, 5, 'the supportable remainder still installs');
-  assert.ok(root.exists(`${NM}/ok-a/package.json`), 'the remainder is on disk');
-  assert.ok(/\[skip\].*sharp — .*… try:/.test(output), `the per-package skip line carries the hint:\n${output}`);
+  assert.deepEqual(result.failed, [], `a table-listed package does not fail (failed=${JSON.stringify(result.failed)})`);
   assert.ok(
-    /1 required package is not supported on Nimbus: sharp/.test(output),
-    `the closing summary names it:\n${output}`,
+    /\[npm\] note: sharp has no Workers-compatible build: .*libvips/.test(output),
+    `the advisory line names the reason:\n${output}`,
   );
-  assert.ok(!/\bDone!/.test(output), 'no success line on a partial install');
-  // Exit-code contract: the shell maps a non-empty `failed` to exit 1.
-  assert.ok(result.failed.length > 0, 'exit-code contract: failed is non-empty');
-  console.log('  caseA: required sharp fails the install, rest installs, summary names it');
+  assert.ok(result.installed.some((entry) => entry.startsWith('sharp@')), 'sharp installs like any package');
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp is on disk');
+  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
+  console.log('  caseA: sharp installs with an advisory note, exit 0');
 }
 
-// ── Case B: an OPTIONAL-only refusal is a skip, exit 0 ───────────────────
+// ── Case B: an OPTIONAL-only table reject installs, advisory noted ──────
 //
-// Five optional edges so the second resolve layer stays on the peer-DO
-// topology the harness fakes (width >= IN_DO_THRESHOLD), like every
-// other layer in this file.
+// optionalDependencies edges keep their silent-skip contract for
+// platform-native bindings, but a table-listed package without os/cpu
+// constraints installs — npm parity — with the advisory note.
+// Five optional edges keep the resolve layer on the peer-DO topology the
+// harness fakes (width >= IN_DO_THRESHOLD), like every other layer in
+// this file.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const optShards = { sharp: '^0.34.0', 'opt-1': '^1.0.0', 'opt-2': '^1.0.0', 'opt-3': '^1.0.0', 'opt-4': '^1.0.0' };
-  const { installer, log } = makeInstaller(
+  const { installer, log, root } = makeInstaller(
     { name: 'opt-sharp', dependencies: ok },
     (name) => {
       if (name === 'ok-a') {
@@ -142,7 +132,7 @@ function makeInstaller(pkgJson, resultFor) {
         return r;
       }
       if (name === 'sharp') {
-        return rejectedResult('sharp', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+        return advisedResult('sharp', '0.34.0', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
       }
       return resolvedResult(name, '1.0.0');
     },
@@ -150,11 +140,12 @@ function makeInstaller(pkgJson, resultFor) {
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.deepEqual(result.failed, [], `an optional-only refusal does not fail (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — .*… try:.*Cloudflare Images/.test(output), `the skip line carries the hint:\n${output}`);
-  assert.ok(/\bDone!/.test(output), 'an install with only optional skips still succeeds');
-  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no closing summary without required refusals');
-  console.log('  caseB: optional-only sharp skips, install succeeds');
+  assert.deepEqual(result.failed, [], `an optional-edge advisory does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: sharp has no Workers-compatible build: .*libvips.*Cloudflare Images/.test(output), `the advisory carries reason + hint:\n${output}`);
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'the package installs');
+  assert.ok(/\bDone!/.test(output), 'an install with only advisories succeeds');
+  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
+  console.log('  caseB: optional-only sharp installs with a note, exit 0');
 }
 
 // ── Case C: swap applies even when the sibling spec is refused ───────────
@@ -171,27 +162,20 @@ function makeInstaller(pkgJson, resultFor) {
   // are what this case asserts.
   const result = await installer.install(PROJ, { packages: ['esbuild', 'sharp', 'pad-a', 'pad-b', 'pad-c', 'pad-d'] });
   const output = log.join('\n');
-
-  assert.ok(/\[swap\].*esbuild → esbuild-wasm/.test(output), `the swap is announced:\n${output}`);
-  assert.ok(
-    result.installed.some((entry) => entry.startsWith('esbuild@')),
-    `the swap target installs under the requested name (installed=${JSON.stringify(result.installed)})`,
-  );
-  assert.ok(root.exists(`${NM}/esbuild/package.json`), 'esbuild is on disk under its own name');
-  assert.ok(result.failed.includes('sharp'), `the refused sibling lands in failed (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — /.test(output), `the sibling gets its skip line:\n${output}`);
+  assert.ok(result.installed.some((entry) => entry.startsWith('sharp@')), `the listed sibling installs too (installed=${JSON.stringify(result.installed)})`);
+  assert.ok(/\[npm\] note: sharp has no Workers-compatible build: /.test(output), `the sibling gets its advisory:\n${output}`);
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp is on disk');
   const pkgJson = JSON.parse(root.readFileString(`${PROJ}/package.json`));
   assert.ok(pkgJson.dependencies?.esbuild, 'package.json records the swapped spec');
-  assert.ok(!pkgJson.dependencies?.sharp, 'package.json does not record the refused spec');
-  console.log('  caseC: esbuild→esbuild-wasm installs while sharp fails');
+  assert.ok(pkgJson.dependencies?.sharp, 'package.json records the listed spec (it installed)');
+  console.log('  caseC: esbuild→esbuild-wasm and sharp both install; sharp gets a note');
 }
 
-// ── Case D: a devDependency refusal is required — exit 1 with guidance ───
+// ── Case D: a devDependency advisory installs, marked dev ──────────────
 //
-// devDependencies are REQUIRED unless omitted: a refused dev tool fails
-// the install honestly (the package is absent; claiming Done! was the
-// pre-train bug), and the summary says it is a devDependency and names
-// the flag that installs the rest. The supported siblings still install.
+// A table-listed devDependency installs like anything else — npm parity
+// — and the advisory line says it was declared in devDependencies. The
+// supported siblings install alongside.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const { installer, log, root } = makeInstaller(
@@ -201,32 +185,30 @@ function makeInstaller(pkgJson, resultFor) {
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('sharp'), `a dev-only refusal still fails (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — /.test(output), `the skip line is still logged:\n${output}`);
+  assert.deepEqual(result.failed, [], `a dev-only listed package installs (failed=${JSON.stringify(result.failed)})`);
   assert.ok(
-    /1 required package is not supported on Nimbus: sharp \(devDependency\)/.test(output),
-    `the summary marks it devDependency:\n${output}`,
+    /\[npm\] note: sharp has no Workers-compatible build \(declared in devDependencies\): /.test(output),
+    `the advisory marks it devDependency:\n${output}`,
   );
-  assert.ok(/--omit=dev/.test(output), `and names the flag that installs the rest:\n${output}`);
-  assert.equal(result.installed.length, 5, 'the supported siblings still install');
-  assert.ok(root.exists(`${NM}/ok-a/package.json`), 'the siblings are on disk');
-  assert.ok(!/\bDone!/.test(output), 'no success line on a refused install');
-  console.log('  caseD: dev-only sharp fails honestly with (devDependency) + --omit=dev guidance');
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp is on disk');
+  assert.equal(result.installed.length, 6, 'siblings + sharp install');
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
+  console.log('  caseD: dev-only sharp installs with a marked advisory, exit 0');
 }
 
-// ── Case E: vite@8 as a devDependency — lightningcss is REQUIRED ────────
+// ── Case E: lightningcss under dev-only vite installs with a note ───────
 //
 // vite@8 (rolldown-based) declares lightningcss as a required
 // `dependencies` edge; `npm create vite` lists vite in devDependencies.
-// Because devDependencies are required roots, the refusal fails the
-// install — the honest outcome until vite8/native support lands.
-// `--omit=dev` is the documented way past it and must exit 0.
+// lightningcss is a policy 'fail' entry — no Workers-compatible build —
+// but npm installs it, so the install keeps it and logs one advisory.
+// `--omit=dev` drops the dev root and its whole subtree either way.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const viteDeps = { lightningcss: '^1.30.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
   const resultFor = (name) => {
     if (name === 'vite') return resolvedResult(name, '8.0.0', { dependencies: viteDeps });
-    if (name === 'lightningcss') return rejectedResult('lightningcss', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
+    if (name === 'lightningcss') return advisedResult('lightningcss', '1.30.0', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
     return resolvedResult(name, '1.0.0');
   };
   const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { vite: '^8.0.0' } };
@@ -234,24 +216,26 @@ function makeInstaller(pkgJson, resultFor) {
   const first = makeInstaller(pkgJson, resultFor);
   const result = await first.installer.install(PROJ);
   const output = first.log.join('\n');
-  assert.ok(result.failed.includes('lightningcss'), `lightningcss under a dev root is required (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*lightningcss — /.test(output), `the skip line is logged:\n${output}`);
-  assert.ok(/required package is not supported on Nimbus.*lightningcss/.test(output), `the summary names it:\n${output}`);
-  assert.ok(result.installed.some((entry) => entry.startsWith('vite@')), 'vite itself still installs');
-  assert.ok(first.root.exists(`${NM}/vite/package.json`), 'vite is on disk');
-  assert.ok(!/\bDone!/.test(output), 'no success line on a partial install');
+  assert.deepEqual(result.failed, [], `lightningcss under a dev root installs (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: lightningcss has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
+  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
+  for (const name of ['vite', 'lightningcss']) {
+    assert.ok(result.installed.some((entry) => entry.startsWith(`${name}@`)), `${name} installed`);
+    assert.ok(first.root.exists(`${NM}/${name}/package.json`), `${name} is on disk`);
+  }
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
 
   // --production / --omit=dev drops the dev root AND its whole subtree.
   const prod = makeInstaller(pkgJson, resultFor);
   const prodResult = await prod.installer.install(PROJ, { production: true });
   const prodOutput = prod.log.join('\n');
   assert.deepEqual(prodResult.failed, [], `--omit=dev installs the rest (failed=${JSON.stringify(prodResult.failed)})`);
-  assert.ok(!/\[skip\].*lightningcss/.test(prodOutput), 'the refused subtree is never walked under --omit=dev');
+  assert.ok(!/lightningcss/.test(prodOutput), 'the listed subtree is never walked under --omit=dev');
+  assert.ok(!prod.root.exists(`${NM}/lightningcss/package.json`), 'lightningcss is absent under --omit=dev');
   assert.ok(/\bDone!/.test(prodOutput), 'production install succeeds');
-  console.log('  caseE: lightningcss under dev-only vite fails honestly; --omit=dev exits 0');
+  console.log('  caseE: lightningcss under dev-only vite installs with a note; --omit=dev drops it');
 }
-
-// ── Case F: a refused dep UNDER a root dependency fails, summary names it ─
+// ── Case F: a table-listed dep under a root dependency installs + note ──
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const appDeps = { lightningcss: '^1.30.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
@@ -259,22 +243,20 @@ function makeInstaller(pkgJson, resultFor) {
     { name: 'needs-lightningcss', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
     (name) => {
       if (name === 'some-app-dep') return resolvedResult(name, '1.0.0', { dependencies: appDeps });
-      if (name === 'lightningcss') return rejectedResult('lightningcss', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
+      if (name === 'lightningcss') return advisedResult('lightningcss', '1.30.0', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
       return resolvedResult(name, '1.0.0');
     },
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('lightningcss'), `a required refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*lightningcss — .*… try:/.test(output), `the skip line carries the hint:\n${output}`);
-  assert.ok(
-    /1 required package is not supported on Nimbus: lightningcss/.test(output),
-    `the closing summary names it:\n${output}`,
-  );
-  assert.ok(root.exists(`${NM}/some-app-dep/package.json`), 'the required parent still installs');
-  assert.ok(!/\bDone!/.test(output), 'no success line on a partial install');
-  console.log('  caseF: lightningcss under a root dependency fails, summary names it');
+  assert.deepEqual(result.failed, [], `a listed package does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: lightningcss has no Workers-compatible build: .*… try:/.test(output), `the advisory carries the hint:\n${output}`);
+  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
+  assert.ok(root.exists(`${NM}/lightningcss/package.json`), 'lightningcss installs');
+  assert.ok(root.exists(`${NM}/some-app-dep/package.json`), 'the parent installs');
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
+  console.log('  caseF: lightningcss under a root dependency installs with a note');
 }
 
 // ── Case G: dev-first ancestor, required edge deeper — end-of-walk wins ─
@@ -291,7 +273,7 @@ function makeInstaller(pkgJson, resultFor) {
   const aDeps = { p1: '1.0.0', 'ac-1': '1.0.0', 'ac-2': '1.0.0', 'ac-3': '1.0.0', 'ac-4': '1.0.0' };
   const p1Deps = { b: '1.0.0', 'pc-1': '1.0.0', 'pc-2': '1.0.0', 'pc-3': '1.0.0', 'pc-4': '1.0.0' };
   const bDeps = { c: '1.0.0', 'bc-1': '1.0.0', 'bc-2': '1.0.0', 'bc-3': '1.0.0', 'bc-4': '1.0.0', 'bc-5': '1.0.0' };
-  const cDeps = { lightningcss: '^1.30.0', 'cc-1': '1.0.0', 'cc-2': '1.0.0', 'cc-3': '1.0.0', 'cc-4': '1.0.0' };
+  const cDeps = { 'native-gate': '^1.0.0', 'cc-1': '1.0.0', 'cc-2': '1.0.0', 'cc-3': '1.0.0', 'cc-4': '1.0.0' };
   const { installer, log } = makeInstaller(
     { name: 'mixed-app', dependencies: { ...ok, a: '^1.0.0' }, devDependencies: { vite: '^8.0.0' } },
     (name) => {
@@ -300,26 +282,26 @@ function makeInstaller(pkgJson, resultFor) {
       if (name === 'p1') return resolvedResult(name, '1.0.0', { dependencies: p1Deps });
       if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: bDeps });
       if (name === 'c') return resolvedResult(name, '1.0.0', { dependencies: cDeps });
-      if (name === 'lightningcss') return rejectedResult('lightningcss', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
+      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
       return resolvedResult(name, '1.0.0');
     },
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('lightningcss'), `the later required chain upgrades the refusal (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*lightningcss — /.test(output), `the skip line is logged once at refusal time:\n${output}`);
-  assert.ok(
-    /1 required package is not supported on Nimbus: lightningcss/.test(output),
-    `the closing summary names it:\n${output}`,
-  );
+  assert.ok(result.failed.includes('native-gate'), `the later required chain upgrades the refusal (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[skip\].*native-gate — /.test(output), `the skip line is logged once at refusal time:\n${output}`);
+  assert.ok(/npm ERR! native-gate: Requires a native binding for linux-x64\./.test(output), `the refusal names the package + reason:\n${output}`);
+  assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it:\n${output}`);
   console.log('  caseG: dev-first ancestor, deeper required chain — end-of-walk closure wins');
 }
 
-// ── Case H: a refused dep under an optionalDependencies subtree ────────
+// ── Case H: a listed dep under an optionalDependencies subtree ─────────
 //
-// optionalDependencies are never required edges, so a `dependencies`
-// edge out of an optional package does not propagate requiredness.
+// optionalDependencies are never required edges — but a table-listed
+// package without os/cpu constraints installs anyway (npm parity); only
+// platform-native bindings skip. The advisory note is logged, the
+// package is on disk.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const optDeps = { y: '^1.0.0', 'xo-1': '1.0.0', 'xo-2': '1.0.0', 'xo-3': '1.0.0', 'xo-4': '1.0.0' };
@@ -334,7 +316,7 @@ function makeInstaller(pkgJson, resultFor) {
       }
       if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: yDeps });
       if (name === 'sharp') {
-        return rejectedResult('sharp', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+        return advisedResult('sharp', '0.34.0', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
       }
       return resolvedResult(name, '1.0.0');
     },
@@ -342,62 +324,64 @@ function makeInstaller(pkgJson, resultFor) {
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.deepEqual(result.failed, [], `a refusal under an optional subtree does not fail (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — /.test(output), `the skip line is logged:\n${output}`);
-  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), `no closing summary without required refusals:\n${output}`);
+  assert.deepEqual(result.failed, [], `an advisory under an optional subtree does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: sharp has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp installs under the optional subtree');
   assert.ok(root.exists(`${NM}/y/package.json`), 'the optional package itself installs');
   assert.ok(/\bDone!/.test(output), 'the install still succeeds');
-  console.log('  caseH: sharp under an optionalDependencies subtree skips, exit 0');
+  console.log('  caseH: sharp under an optionalDependencies subtree installs + note, exit 0');
 }
 
-// ── Case I: a refused optionalDependencies ROOT is non-fatal ───────────
+// ── Case I: a listed optionalDependencies ROOT installs + note ─────────
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
-  const { installer, log } = makeInstaller(
+  const { installer, log, root } = makeInstaller(
     { name: 'opt-root', dependencies: ok, optionalDependencies: { sharp: '^0.34.0' } },
     (name) => resolvedResult(name, '1.0.0'),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.deepEqual(result.failed, [], `a refused optional root does not fail (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — /.test(output), `the skip line is logged:\n${output}`);
-  assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no closing summary for an optional root');
+  assert.deepEqual(result.failed, [], `a listed optional root does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: sharp has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp installs');
   assert.ok(/\bDone!/.test(output), 'the install still succeeds');
-  console.log('  caseI: refused optionalDependencies root skips, exit 0');
+  console.log('  caseI: listed optionalDependencies root installs + note, exit 0');
 }
 
 // ── Case J: optionalDependencies overrides a dependencies entry ────────
 //
-// npm semantics: a name in BOTH maps is optional. sharp under
-// dependencies AND optionalDependencies refuses non-fatally.
+// npm semantics: a name in BOTH maps is optional. sharp installs either
+// way now — the optional entry matters only for platform bindings —
+// and the advisory is logged.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
-  const { installer, log } = makeInstaller(
+  const { installer, log, root } = makeInstaller(
     { name: 'both-maps', dependencies: { ...ok, sharp: '^0.34.0' }, optionalDependencies: { sharp: '^0.34.0' } },
     (name) => resolvedResult(name, '1.0.0'),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.deepEqual(result.failed, [], `the optional entry wins over the dependency (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — /.test(output), `the skip line is logged:\n${output}`);
-  assert.ok(/\bDone!/.test(output), 'the install still succeeds');
-  console.log('  caseJ: name in dependencies+optionalDependencies is optional, exit 0');
+  assert.deepEqual(result.failed, [], `a name in both maps does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: sharp has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp installs');
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
+  console.log('  caseJ: name in dependencies+optionalDependencies installs + note, exit 0');
 }
 
 // ── Case K: optional-first ancestor, required chain deeper — fails ──────
 //
 // `c` resolves under optional root `optional-root` AND under the required
-// chain a→p1→b. sharp sits under c: optional-first ordering must not
-// shield a required reach.
+// chain a→p1→b. A platform-gated dep under c: optional-first ordering
+// must not shield a required reach.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const optDeps = { 'optional-root': '^1.0.0', 'xo-1': '1.0.0', 'xo-2': '1.0.0', 'xo-3': '1.0.0', 'xo-4': '1.0.0' };
   const aDeps = { p1: '1.0.0', 'ac-1': '1.0.0', 'ac-2': '1.0.0', 'ac-3': '1.0.0', 'ac-4': '1.0.0' };
   const p1Deps = { b: '1.0.0', 'pc-1': '1.0.0', 'pc-2': '1.0.0', 'pc-3': '1.0.0', 'pc-4': '1.0.0' };
+  const cDeps = { 'native-gate': '^1.0.0', 'cc-1': '1.0.0', 'cc-2': '1.0.0', 'cc-3': '1.0.0', 'cc-4': '1.0.0' };
   const bDeps = { c: '1.0.0', 'bc-1': '1.0.0', 'bc-2': '1.0.0', 'bc-3': '1.0.0', 'bc-4': '1.0.0', 'bc-5': '1.0.0' };
-  const cDeps = { sharp: '^0.34.0', 'cc-1': '1.0.0', 'cc-2': '1.0.0', 'cc-3': '1.0.0', 'cc-4': '1.0.0' };
   const orDeps = { c: '1.0.0', 'oc-1': '1.0.0', 'oc-2': '1.0.0', 'oc-3': '1.0.0', 'oc-4': '1.0.0' };
   const { installer, log } = makeInstaller(
     { name: 'opt-first', dependencies: { ...ok, a: '^1.0.0', x: '^1.0.0' } },
@@ -410,18 +394,18 @@ function makeInstaller(pkgJson, resultFor) {
       if (name === 'optional-root') return resolvedResult(name, '1.0.0', { dependencies: orDeps });
       if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: aDeps });
       if (name === 'p1') return resolvedResult(name, '1.0.0', { dependencies: p1Deps });
-      if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: bDeps });
       if (name === 'c') return resolvedResult(name, '1.0.0', { dependencies: cDeps });
-      if (name === 'sharp') return rejectedResult('sharp', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+      if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: bDeps });
+      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
       return resolvedResult(name, '1.0.0');
     },
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('sharp'), `the required chain to the shared ancestor wins (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/required package is not supported on Nimbus.*sharp/.test(output), `the summary names it:\n${output}`);
-  console.log('  caseK: optional-first ancestor, deeper required chain — sharp is required');
+  assert.ok(result.failed.includes('native-gate'), `the required chain to the shared ancestor wins (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it:\n${output}`);
+  console.log('  caseK: optional-first ancestor, deeper required chain — native-gate is required');
 }
 
 // ── Case L: cycles in the required graph terminate ─────────────────────
@@ -442,11 +426,16 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  caseL: a→b→a cycle resolves and terminates');
 }
 
-// ── Case M: the SAME refused name shared optional+required fails ────────
+// ── Case M: the SAME gated name shared optional+required fails ──────────
+//
+// `native-gate` is reached under x's optionalDependencies AND under y's
+// required dependencies. Platform refusals classify at end of walk:
+// the required edge makes it required even though the optional edge
+// saw it first.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
-  const optDeps = { sharp: '^0.34.0', 'xo-1': '1.0.0', 'xo-2': '1.0.0', 'xo-3': '1.0.0', 'xo-4': '1.0.0' };
-  const reqDeps = { sharp: '^0.34.0', 'rc-1': '1.0.0', 'rc-2': '1.0.0', 'rc-3': '1.0.0', 'rc-4': '1.0.0' };
+  const optDeps = { 'native-gate': '^1.0.0', 'xo-1': '1.0.0', 'xo-2': '1.0.0', 'xo-3': '1.0.0', 'xo-4': '1.0.0' };
+  const reqDeps = { 'native-gate': '^1.0.0', 'rc-1': '1.0.0', 'rc-2': '1.0.0', 'rc-3': '1.0.0', 'rc-4': '1.0.0' };
   const { installer, log } = makeInstaller(
     { name: 'shared-refusal', dependencies: { ...ok, x: '^1.0.0', y: '^1.0.0' } },
     (name) => {
@@ -456,15 +445,15 @@ function makeInstaller(pkgJson, resultFor) {
         return r;
       }
       if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: reqDeps });
-      if (name === 'sharp') return rejectedResult('sharp', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
       return resolvedResult(name, '1.0.0');
     },
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('sharp'), `a name reached by both edge kinds is required (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/required package is not supported on Nimbus.*sharp/.test(output), `the summary names it:\n${output}`);
+  assert.ok(result.failed.includes('native-gate'), `a name reached by both edge kinds is required (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it:\n${output}`);
   console.log('  caseM: shared optional/required refusal fails');
 }
 
@@ -472,39 +461,40 @@ function makeInstaller(pkgJson, resultFor) {
 //
 // The lockfile written after a partial install must not launder the
 // refusal into `Done!` on the next run: the depsJson closure check
-// invalidates it (lightningcss is absent from the locked tree), the walk
-// re-runs, and the refusal is reported again. Registry-cache writes are
-// populated the way a real walk does so the closure check has its input.
+// invalidates it (the gated package is absent from the locked tree), the
+// walk re-runs, and the refusal is reported again. Registry-cache writes
+// are populated the way a real walk does so the closure check has its
+// input.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
-  const appDeps = { lightningcss: '^1.30.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
+  const appDeps = { 'native-gate': '^1.0.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const cw = (name, version, deps = {}) => ({
     name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
     depsJson: JSON.stringify(deps), peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
     binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
   });
   const { installer, log } = makeInstaller(
-    { name: 'needs-lightningcss', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
+    { name: 'needs-gate', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
     (name) => {
       if (name === 'some-app-dep') {
         const r = resolvedResult(name, '1.0.0', { dependencies: appDeps });
         r.cacheWrites = [cw(name, '1.0.0', appDeps)];
         return r;
       }
-      if (name === 'lightningcss') return rejectedResult('lightningcss', LIGHTNINGCSS.reason, LIGHTNINGCSS.suggest);
+      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
       const r = resolvedResult(name, '1.0.0');
       r.cacheWrites = [cw(name, '1.0.0')];
       return r;
     },
   );
   const first = await installer.install(PROJ);
-  assert.ok(first.failed.includes('lightningcss'), `first install fails on the refusal (failed=${JSON.stringify(first.failed)})`);
+  assert.ok(first.failed.includes('native-gate'), `first install fails on the refusal (failed=${JSON.stringify(first.failed)})`);
   log.length = 0;
   const second = await installer.install(PROJ);
   const output = log.join('\n');
-  assert.ok(second.failed.includes('lightningcss'), `second install reports the same refusal (failed=${JSON.stringify(second.failed)})`);
+  assert.ok(second.failed.includes('native-gate'), `second install reports the same refusal (failed=${JSON.stringify(second.failed)})`);
   assert.ok(/Lockfile outdated\. Re-resolving/.test(output), `the partial lockfile is invalidated, not trusted:\n${output}`);
-  assert.ok(/required package is not supported on Nimbus.*lightningcss/.test(output), `the summary names it again:\n${output}`);
+  assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it again:\n${output}`);
   assert.ok(!/\bDone!/.test(output), 'no success line over a missing required package');
   console.log('  caseN: a partial lockfile re-resolves and re-reports the required refusal');
 }

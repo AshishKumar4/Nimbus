@@ -19,6 +19,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { PACKAGE_ABI_POLICY, lookupReject } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
+import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -43,36 +44,7 @@ function makeInstaller(pkgJson, resultFor) {
   root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
   const log = [];
   const shardsSeen = [];
-  const env = {
-    LOADER: { get() { return {}; } },
-    NIMBUS_SESSION: {
-      idFromName(name) { return { toString: () => name, name }; },
-      get() {
-        return {
-          async _rpcFanoutExecute(_fnSource, args) {
-            if (args[0] && Array.isArray(args[0].packages)) {
-              // The install shard: write each package's package.json so the
-              // tree is real for the on-disk assertions below.
-              return { results: args.map((shard) => {
-                shardsSeen.push(...shard.packages.map((p) => p.name));
-                for (const p of shard.packages) {
-                  root.mkdir(`${NM}/${p.name}`, { recursive: true });
-                  root.writeFile(`${NM}/${p.name}/package.json`, JSON.stringify({ name: p.name, version: p.version }));
-                }
-                return {
-                  perPackage: shard.packages.map((p) => ({ name: p.name, version: p.version, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] })),
-                  elapsed: 1,
-                  facetCounters: { tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1, pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0 },
-                  cacheStatEvents: [],
-                };
-              }) };
-            }
-            return { results: args.map((spec) => resultFor(spec.name)) };
-          },
-        };
-      },
-    },
-  };
+  const env = makeFanoutEnv({ root, NM, resultFor, shardsSeen });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = new NpmInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root, shardsSeen };
@@ -119,21 +91,20 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  declared typescript/@types/eslint/wrangler all install');
 }
 
-// ── an explicit request for a refused package fails without aborting ──────
+// ── an explicit request for a listed package installs with an advisory ──
 //
-// G2: even `npm install sharp` installs what it can (nothing else was
-// asked for here) and reports the refusal as a failed package with the
-// per-package `[skip]` line — never as an install-level throw. The shell
-// maps the non-empty `failed` list to exit 1.
+// G2/npm parity: `npm install sharp` installs sharp like any package —
+// the package has no Workers-compatible build — and prints one advisory note naming
+// the reason. Nothing aborts; the exit stays 0.
 {
-  const { installer, log } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, (name) => resolvedResult(name, '1.0.0'));
+  const { installer, log, root } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, (name) => resolvedResult(name, '1.0.0'));
   const result = await installer.install(PROJ, { packages: ['sharp'] });
   const output = log.join('\n');
-  assert.ok(result.failed.includes('sharp'), `the refusal lands in failed (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*sharp — /.test(output), `the log carries the skip line:\n${output}`);
-  assert.ok(/1 required package is not supported on Nimbus: sharp/.test(output), `the closing summary names it:\n${output}`);
-  assert.ok(!/\bDone!/.test(output), `no success line on a refused install:\n${output}`);
-  console.log('  an explicit npm install sharp fails with the reason, nothing aborts');
+  assert.deepEqual(result.failed, [], `a listed package does not fail (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: sharp has no Workers-compatible build: .*libvips/.test(output), `the log carries the advisory:\n${output}`);
+  assert.ok(root.exists(`${NM}/sharp/package.json`), 'sharp is on disk');
+  assert.ok(/\bDone!/.test(output), `the install succeeds:\n${output}`);
+  console.log('  an explicit npm install sharp installs with the advisory note');
 }
 
 

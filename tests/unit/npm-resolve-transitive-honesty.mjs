@@ -28,7 +28,7 @@ import { PACKAGE_ABI_POLICY } from '../../packages/worker/src/facets/wasm-swap-r
 
 const PREAMBLE_SYMBOLS = [
   'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
-  'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
+  'NATIVE_EXECUTABLE_REJECT', 'NATIVE_PLATFORM_REJECT', 'NATIVE_BIN_ADVISORY', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
 Object.assign(
@@ -76,14 +76,13 @@ const cacheEntry = (name, version) => ({
   console.log('  chokidar resolves transitively, with its subtree');
 }
 
-// ── 2. a transitive reject-fail is loud ────────────────────────────────────
+// ── 2. a transitive reject-fail is an advisory, not a refusal ──────────────
 //
-// The skip list is gone — what remains is the registry policy path. A
-// 'fail' entry at transitive depth returns 'skipped' with the [skip]
-// line and a transitive-skip event; the required-reachability work moved
-// exit-code classification to the installer's end-of-walk closure, so
-// the task itself only reports. (The retired 'warn' entries — node-gyp
-// et al — resolve like any package now; fsevents has no entry at all.)
+// A 'fail' table entry no longer refuses the package at resolve time —
+// npm parity: the package installs and the package has no Workers-compatible build.
+// The task resolves it like any package and reports one `advisory`
+// event; the installer prints the note: line. A 404 packument is still
+// `unresolved`, and the advisory rides beside that error.
 {
   assert.equal(PACKAGE_ABI_POLICY.rejects.some((r) => r.transitive === 'warn'), false, 'no warn-transitive entries remain');
   const res = await resolveOnePackumentInFacet(
@@ -91,15 +90,26 @@ const cacheEntry = (name, version) => ({
     envReturning({ json: null, source: 'network', status: 404 }),
   );
   assert.equal(res.pkg, null);
-  assert.ok(res.error, 'a reject-fail is a resolution error the walk records');
-  assert.equal(res.error.type, 'w6-reject');
-  assert.equal(res.packumentSource, 'skipped');
+  assert.ok(res.error, 'a missing packument is still an error the walk records');
+  assert.equal(res.error.type, 'unresolved', 'a 404 reports unresolved, not a policy refusal');
   assert.deepEqual(
-    res.events.filter((e) => e.type === 'reject').map((e) => e.from),
+    res.events.filter((e) => e.type === 'advisory').map((e) => e.from),
     ['sharp'],
-    'and a reject event carries it to the registry telemetry',
+    'the policy entry is reported as an advisory event',
   );
-  console.log('  a transitive reject-fail reports w6-reject to the walk');
+
+  // And a table entry WITH a packument resolves + installs, advisory noted.
+  const ok = await resolveOnePackumentInFacet(
+    spec({ name: 'sharp', range: '^0.34.0' }),
+    envReturning({
+      json: packument('sharp', { '0.34.5': versionEntry('sharp', '0.34.5') }, { latest: '0.34.5' }),
+      source: 'network',
+    }),
+  );
+  assert.equal(ok.error, undefined, JSON.stringify(ok.error));
+  assert.equal(ok.pkg?.version, '0.34.5', 'a listed package resolves like any other');
+  assert.equal(ok.events.filter((e) => e.type === 'advisory').length, 1, 'the advisory is carried on the resolved result');
+  console.log('  a transitive reject-fail reports an advisory; the package still resolves');
 }
 
 // ── 3. an exact prerelease pin resolves to itself on both paths ────────────

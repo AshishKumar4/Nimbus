@@ -70,7 +70,7 @@ function makeInstaller(pkgJson) {
   return { installer, log, root };
 }
 
-// ── --omit=dev drops a refused dev root and its subtree ────────────────
+// ── --omit=dev drops a listed dev root and its subtree ─────────────────
 {
   const { installer, log, root } = makeInstaller({
     name: 'dev-tool',
@@ -80,17 +80,17 @@ function makeInstaller(pkgJson) {
   const result = await installer.install(PROJ, { production: true });
   const output = log.join('\n');
 
-  assert.deepEqual(result.failed, [], `omit=dev excludes the refused dev root (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(!/\[skip\].*puppeteer/.test(output), 'the refused subtree is never walked');
+  assert.deepEqual(result.failed, [], `omit=dev excludes the listed dev root (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(!/note: puppeteer|\[skip\].*puppeteer/.test(output), 'the listed subtree is never walked');
   assert.ok(/\bDone!/.test(output), 'the production install succeeds');
   assert.equal(result.installed.length, 5);
   assert.ok(root.exists(`${NM}/ok-a/package.json`), 'the declared deps are on disk');
-  console.log('  --omit=dev: refused dev root excluded, exit 0');
+  console.log('  --omit=dev: listed dev root excluded, exit 0');
 }
 
-// ── The same name under dependencies is required and fails ─────────────
+// ── The same name under dependencies installs with an advisory ─────────
 {
-  const { installer, log } = makeInstaller({
+  const { installer, log, root } = makeInstaller({
     name: 'prod-tool',
     dependencies: { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0', puppeteer: '^24.0.0' },
     devDependencies: { 'dev-x': '1.0.0' },
@@ -98,14 +98,16 @@ function makeInstaller(pkgJson) {
   const result = await installer.install(PROJ, { production: true });
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('puppeteer'), `a required refusal fails even under --omit=dev (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/required package is not supported on Nimbus.*puppeteer/.test(output), `the summary names it:\n${output}`);
-  console.log('  --omit=dev: a required refusal still fails');
+  assert.deepEqual(result.failed, [], `a listed package installs even under --omit=dev (failed=${JSON.stringify(result.failed)})`);
+  assert.ok(/\[npm\] note: puppeteer has no Workers-compatible build: .*Chromium/.test(output), `the advisory names it:\n${output}`);
+  assert.ok(root.exists(`${NM}/puppeteer/package.json`), 'puppeteer is on disk');
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
+  console.log('  --omit=dev: a listed required dep installs + note');
 }
 
-// ── A refused dev root under a normal install fails with guidance ──────
+// ── A listed dev root under a normal install installs, marked dev ──────
 {
-  const { installer, log } = makeInstaller({
+  const { installer, log, root } = makeInstaller({
     name: 'dev-tool',
     dependencies: { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' },
     devDependencies: { puppeteer: '^24.0.0' },
@@ -113,17 +115,14 @@ function makeInstaller(pkgJson) {
   const result = await installer.install(PROJ);
   const output = log.join('\n');
 
-  assert.ok(result.failed.includes('puppeteer'), `a dev-only refusal fails honestly (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[skip\].*puppeteer — /.test(output), `the per-package skip line is logged:\n${output}`);
+  assert.deepEqual(result.failed, [], `a dev-only listed package installs (failed=${JSON.stringify(result.failed)})`);
   assert.ok(
-    /1 required package is not supported on Nimbus: puppeteer \(devDependency\)/.test(output),
-    `the summary marks it (devDependency):\n${output}`,
+    /\[npm\] note: puppeteer has no Workers-compatible build \(declared in devDependencies\): /.test(output),
+    `the advisory marks it (devDependency):\n${output}`,
   );
-  assert.ok(
-    /--omit=dev/.test(output),
-    `and names the flag that installs the rest:\n${output}`,
-  );
-  console.log('  dev-only refusal fails with (devDependency) + --omit=dev guidance');
+  assert.ok(root.exists(`${NM}/puppeteer/package.json`), 'puppeteer is on disk');
+  assert.ok(/\bDone!/.test(output), 'the install succeeds');
+  console.log('  dev-only listed package installs with a (devDependencies) advisory');
 }
 
 console.log('npm-production-install: all assertions passed');
