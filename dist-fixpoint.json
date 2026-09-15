@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "55b67ac652b9ad3763f3b7a9ab3b8767624df131d0d719ef462082086d744989",
+  "fingerprint": "6dfe49bd4ff75e7b355d0bbb4007f5dfcac84dd7daa4680b9be1e3c065258342",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1465,8 +1465,8 @@
     "packages/worker/dist/facets/vite-dev-server.d.ts.map": "49ee66a48e1c090e5719179377ee43d161d69990db8bb3a24034c36578923247",
     "packages/worker/dist/facets/vite-dev-server.js": "cfdcec9684a9c7d8cbc58b93d9d5710aa99d430b7122f4de23df89badea6b86c",
     "packages/worker/dist/facets/wasm-swap-registry.d.ts": "691c8ba274c7884b6a493ffa7e66ee49f56b82fe9acfc36e423fcc1e4a8edef4",
-    "packages/worker/dist/facets/wasm-swap-registry.d.ts.map": "cecf49168fd1af3e5ac89d06fbe74f8ac60819679a040eeb2ac0bbcf2e6d446e",
-    "packages/worker/dist/facets/wasm-swap-registry.js": "b013cd462191312b5ddb83901136b159a4aa3c28607bfe20706998b1b710685c",
+    "packages/worker/dist/facets/wasm-swap-registry.d.ts.map": "70353f91ea9737eabb77968e26d87c5491ade96403a19de44dcf73869aa43246",
+    "packages/worker/dist/facets/wasm-swap-registry.js": "32bfd5d209a8ce40bd5b4c758cb20bedf8f80f0c01dc78e632df62e6c7d0fcfa",
     "packages/worker/dist/facets/ws-terminal.d.ts": "e6fa475d6905543fc994abba49ecefa20917432ced3df2fedd261b6f7ca7b1c5",
     "packages/worker/dist/facets/ws-terminal.d.ts.map": "92491829ebdcab34229fe5cf5348336cbecfe8cfbeb77efeea55e4c774e5d754",
     "packages/worker/dist/facets/ws-terminal.js": "da61ebebc9b8fd9617547283288075a56e482c93ad8ff913d32b58e51839da13",
@@ -1865,7 +1865,7 @@
     "packages/worker/src/facets/real-vite-hmr.ts": "63a2b665fafd54bba749a1b2c544a392f692b1417c2f1a2e4a2473b3db891a17",
     "packages/worker/src/facets/resident-identity.ts": "d0fb85b10c870ebc776fcb62bb41cccafe64e7fb10fd4a369354417d458891ee",
     "packages/worker/src/facets/vite-dev-server.ts": "f33d864fa62c88b9ace4af633447b89d0c05f14a658d844069ddb882016fd15e",
-    "packages/worker/src/facets/wasm-swap-registry.ts": "af64526804e6c8f5b831a549ecca5a56728e1c002ec36980a157d38db1ce5943",
+    "packages/worker/src/facets/wasm-swap-registry.ts": "6439157e050a3160af34a632dd8cfd201e61a0f2fcfbc6965ab3aba3e231ebcd",
     "packages/worker/src/facets/ws-terminal.ts": "bacb5cde772eb1ae236102968d00671b2e901dc06ca2cdf91a69fc626ac2109f",
     "packages/worker/src/git-bundle.generated.ts": "4b17c5ed35222880a0081968506e23a830acb73ef0157c002d13eda826ab16db",
     "packages/worker/src/git/commands.ts": "221e10e6f4c9f3b147830c3c9cc71bea832c3003a408cd81209906214436c00d",
