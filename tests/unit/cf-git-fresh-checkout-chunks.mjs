@@ -458,7 +458,8 @@ try {
     error => error?.code === 'ENOENT',
     'completed cold checkout left index fragments behind',
   );
-  assert.equal((await lstat(join(warmRoot, 'dir-0/file-00.txt'))).mode & 0o111, 0o111);
+  // Owner-execute only: umask 0077 legitimately strips group/other bits.
+  assert.equal((await lstat(join(warmRoot, 'dir-0/file-00.txt'))).mode & 0o100, 0o100);
   assert.equal(await readlink(join(warmRoot, 'link')), 'dir-2/file-00.txt');
   assert.ok((await lstat(join(warmRoot, 'submodule'))).isDirectory());
   assert.deepEqual(
