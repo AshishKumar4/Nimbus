@@ -29,7 +29,6 @@ import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from 
 import { applySwaps, findRejects, lookupSwap, isOptionalNativeBinding, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
-import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { Fanout, IN_DO_THRESHOLD } from '@nimbus-sh/fabric/fanout.js';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
@@ -40,9 +39,7 @@ import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { resolveOnePackumentInFacet, parseRegistryRequest, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { prebundleOne, buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
-import { PRE_BUNDLE_PREAMBLE } from '../loaders/pre-bundle-preamble.js';
-import { fetchEsbuildWasmBytes } from '../runtime/esbuild-wasm-bytes.js';
-import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, } from '@nimbus-sh/platform/limits.js';
+import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
@@ -54,6 +51,8 @@ export class NpmInstaller {
     vfs;
     cache;
     esbuild;
+    /** The session's esbuild facet pool, shared with the on-demand dev-server path. */
+    bundlePool;
     ctx;
     env;
     onProgress;
@@ -76,6 +75,7 @@ export class NpmInstaller {
         this.vfs = vfs.as(CRED_KERNEL);
         this.cache = new NpmCache(sql);
         this.esbuild = opts?.esbuild ?? null;
+        this.bundlePool = opts?.bundlePool ?? null;
         this.ctx = opts?.ctx;
         this.env = opts?.env;
         this.onProgress = opts?.onProgress;
@@ -1351,9 +1351,9 @@ export class NpmInstaller {
         //
         // We gate on this.esbuild presence purely as a feature flag: a caller
         // that constructs the installer without esbuild (e.g. minimal
-        // headless test) opts out of pre-bundling entirely. ctx and env must
-        // also be present because the facet pool needs them.
-        if (!this.esbuild || !this.ctx || !this.env)
+        // headless test) opts out of pre-bundling entirely. The session's
+        // bundle pool must also be present because the facets run in it.
+        if (!this.esbuild || !this.bundlePool)
             return;
         const usedSpecifiers = this.scanBareImports(projDir);
         // Vite plugins / postcss plugins / build-time tools NEVER ship to the
@@ -1547,12 +1547,12 @@ export class NpmInstaller {
         // esbuild's WASM linear memory is per-FACET (~30–80 MiB) and lives
         // outside the supervisor. Per-slot try/catch handles failures —
         // /preview/@modules/ on-demand bundling recovers.
-        // Fetch the esbuild-wasm bytes from the static-assets layer.
-        // The supervisor briefly holds the 12 MiB ArrayBuffer between this
-        // line and the LOADER hand-off below; after pool construction
-        // returns, the only reference is inside workerd's loader cache
-        // (where it should live). No supervisor-side caching — see
-        // src/esbuild-wasm-bytes.ts for the full architectural rationale.
+        // The esbuild-wasm bytes ride in the session's shared bundle pool
+        // (facets/esbuild-bundle-pool.ts), constructed once per session and
+        // disposed with the installer and dev server — not per pre-bundle
+        // phase — so the supervisor retains one copy, leased once from the
+        // shared allocation budget. See src/esbuild-wasm-bytes.ts for why
+        // the bytes are never cached supervisor-side beyond that.
         //
         // Bytes are shipped into each facet via IsolatePool's
         // `wasmModules` option which workerd registers in the LOADER
@@ -1578,7 +1578,7 @@ export class NpmInstaller {
         // slots' settled work, and surface in the supervisor as an
         // unhandled rejection. Swallow with a console.error so the
         // pre-bundle phase keeps running. Same pattern is used in the
-        // pool dispose finally block below.
+        // summary finally block below.
         const safeProgress = (msg) => {
             try {
                 this.onProgress?.(msg);
@@ -1590,42 +1590,18 @@ export class NpmInstaller {
                 catch { }
             }
         };
+        // Acquired BEFORE any per-slice lease below: first construction
+        // reserves the full supervisor budget while the wasm bytes are
+        // fetched, so a slice lease taken first would wait on itself.
         let pool;
-        let retainedWasmRelease = null;
-        const setupAllocation = await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
         try {
-            // No fallback: a missing wasm asset is a deploy bug. Surface loudly via
-            // the thrown fetch error so this background phase aborts cleanly.
-            const wasmBytes = await fetchEsbuildWasmBytes(this.env);
-            const maxRetainedWasmBytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES - PRE_BUNDLE_SLICE_CAP_BYTES;
-            if (wasmBytes.byteLength > maxRetainedWasmBytes) {
-                throw new RangeError(`pre-bundle wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`);
-            }
-            // IsolatePool keeps the constructor-time module bytes until
-            // dispose(), so retain their exact credit rather than treating
-            // construction as a handoff that immediately frees the ArrayBuffer.
-            setupAllocation.shrinkTo(wasmBytes.byteLength);
-            try {
-                pool = new IsolatePool(this.env, this.ctx, {
-                    concurrency: PRE_BUNDLE_CONCURRENCY,
-                    timeoutMs: 60_000,
-                    retries: 0,
-                    tag: 'pre-bundle',
-                    preamble: PRE_BUNDLE_PREAMBLE,
-                    wasmModules: { 'esbuild.wasm': wasmBytes },
-                });
-                retainedWasmRelease = setupAllocation.release;
-            }
-            catch (e) {
-                // Pool construction failures remain best-effort pre-bundle failures,
-                // not npm install failures.
-                safeProgress(`Pre-bundle skipped: failed to construct facet pool: ${e?.message || e}`);
-                return;
-            }
+            pool = await this.bundlePool.acquire();
         }
-        finally {
-            if (!retainedWasmRelease)
-                setupAllocation.release();
+        catch (e) {
+            // Pool construction failures remain best-effort pre-bundle failures,
+            // not npm install failures.
+            safeProgress(`Pre-bundle skipped: failed to construct facet pool: ${e?.message || e}`);
+            return;
         }
         const queue = pending.slice(); // copy; will shift
         let okCount = 0;
@@ -1815,10 +1791,11 @@ export class NpmInstaller {
             // failure mode that can throw inside runSlot is caught above
             // (slice walk, externals, pool.submit, putEsmBundle) — but a
             // future regression that adds an unguarded throw to runSlot
-            // would bubble out here. The outer try/finally guarantees
-            // pool.dispose() runs and the diag counters get updated for
-            // whatever partial run completed; the catch below additionally
-            // logs so the failure mode is visible in supervisor logs.
+            // would bubble out here. The outer try/finally guarantees the
+            // diag counters get updated for whatever partial run completed;
+            // the pool itself belongs to the session and outlives this phase.
+            // The catch below additionally logs so the failure mode is visible
+            // in supervisor logs.
             await Promise.all(Array.from({ length: PRE_BUNDLE_CONCURRENCY }, (_, i) => runSlot(i)));
         }
         catch (e) {
@@ -1860,11 +1837,6 @@ export class NpmInstaller {
                 }
                 catch { }
             }
-            try {
-                pool.dispose();
-            }
-            catch { /* best-effort */ }
-            retainedWasmRelease?.();
         }
     }
     /**

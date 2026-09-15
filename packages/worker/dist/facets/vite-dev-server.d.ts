@@ -23,6 +23,7 @@
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { BundlePoolProvider } from './esbuild-bundle-pool.js';
 export interface ViteDevServerOptions {
     vfs: SqliteVFS;
     esbuild: EsbuildService;
@@ -47,17 +48,18 @@ export interface ViteDevServerOptions {
      * the `// nimbus-no-basename` comment for per-file opt-out.
      */
     injectBasename?: boolean;
-    /**
-     * Worker bindings env. Required for the on-demand-bundle facet path
-     * (LOADER + ctx.exports). When provided, /preview/@modules/<spec>
-     * misses bundle in a IsolatePool isolate instead of the
-     * supervisor's EsbuildService — same architecture as the
-     * pre-bundle path. Without this option, the supervisor falls back
-     * to in-process esbuild (legacy behaviour).
-     */
+    /** Worker bindings env (ASSETS for vendored bundles). */
     env?: any;
-    /** Durable Object state — needed alongside `env` for the facet pool. */
+    /** Durable Object state. */
     ctx?: DurableObjectState;
+    /**
+     * The session's esbuild facet pool, shared with the install-time
+     * pre-bundler. When provided, /preview/@modules/<spec> misses bundle in
+     * that pool's isolate instead of the supervisor's EsbuildService.
+     * Without it, the supervisor falls back to in-process esbuild (legacy
+     * behaviour used by callers without a LOADER binding).
+     */
+    bundlePool?: BundlePoolProvider;
     /**
      * process diagnostics support: when set, every diagnostic the dev server
      * would otherwise drop into Worker logs (console.warn / console.error)
@@ -128,15 +130,10 @@ export declare class ViteDevServer {
     private npmCache;
     /** Inject React Router basename into entry files? Default: true. */
     private injectBasename;
-    /** Worker env (LOADER, ctx.exports) for the on-demand-bundle facet path.
-     *  Null = legacy in-supervisor esbuild fallback. */
     private env;
     private ctx;
-    /** Lazily-constructed pool for on-demand bundling. Mirrors the
-     *  pre-bundle pool's wasm-modules-map shape. Created on first
-     *  cold-path /preview/@modules/<spec> request. */
-    private onDemandPool;
-    private onDemandPoolPromise;
+    /** The session's esbuild facet pool; null = legacy in-supervisor esbuild. */
+    private readonly bundlePool;
     /**
      * In-flight on-demand-bundle coalescing map. When the browser fires
      * multiple parallel requests for the same /preview/@modules/<spec>
@@ -155,21 +152,6 @@ export declare class ViteDevServer {
      */
     private pendingBundles;
     /**
-     * Byte-budget admission gate for the on-demand bundle slow path.
-     * Replaces the former single-slot semaphore: instead of serializing
-     * every cold bundle (which made a fresh-React first load multi-second
-     * because each distinct /@modules/ spec waited for the previous), it
-     * bounds the TOTAL slice BYTES resident in the supervisor at once.
-     *
-     * Many small slices' facet RPC round-trips overlap; a single large
-     * (~28 MiB) slice still serializes the rest. Peak resident slice bytes
-     * never exceed ON_DEMAND_SLICE_CAP_BYTES — the same one-slice envelope
-     * the install-time pre-bundler proved safe on shared DO isolates — so
-     * this is a latency win with no supervisor-heap regression. Coupled
-     * with pendingBundles (same-spec coalescing) as before.
-     */
-    private onDemandGate;
-    /**
      * process diagnostics support: the supervisor's per-PID log store. When set
      * (alongside `pid`), every diagnostic emitted by the dev server is
      * appended here on the 'stderr' stream so the Process tab UI shows
@@ -180,13 +162,11 @@ export declare class ViteDevServer {
     private logSink;
     constructor(opts: ViteDevServerOptions);
     /**
-     * Lazily construct the IsolatePool used for on-demand bundling
-     * of /preview/@modules/<spec> requests that miss both the in-memory
-     * and pkg_esm_bundles caches. Mirrors the pre-bundle pool's
-     * configuration: 1 worker, internal pLimit not needed (one bundle
-     * per request), wasm shipped via wasmModules.
-     *
-     * Returns null when env/ctx aren't available (legacy fallback used).
+     * The session's shared esbuild pool for on-demand bundling of
+     * /preview/@modules/<spec> requests that miss both the in-memory and
+     * pkg_esm_bundles caches. Null when no pool was provided (legacy
+     * in-supervisor fallback). Acquired BEFORE the slice lease — see
+     * EsbuildBundlePool.acquire.
      */
     private ensureOnDemandPool;
     /** Detect TailwindCSS usage in the project */
@@ -271,13 +251,11 @@ export declare class ViteDevServer {
      * Cold path of serveModule: package resolution → on-demand facet
      * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
      * NO CDN fallback (100% edge contract). Extracted so the coalescing
-     * + gate wrapper in serveModule() reads cleanly. Always runs inside
-     * the on-demand byte-budget gate — see serveModule's wrapper.
-     *
-     * `admit` reserves the built slice's real byte size against the gate's
-     * budget and releases the build lock for the next spec. It is called
-     * exactly once, right after the slice is built and before the facet
-     * submit; bail-out paths that never build a slice simply never call it.
+     * wrapper in serveModule() reads cleanly. The slice this body builds is
+     * leased from the shared supervisor allocation budget for its worst
+     * case before it is built, shrunk to its real size once built, and
+     * released only after the facet result has been rewritten, cached and
+     * wrapped in the Response — the pre-bundler's per-slice pattern.
      */
     private serveModuleCold;
     /**

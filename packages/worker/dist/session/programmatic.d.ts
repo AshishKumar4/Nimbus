@@ -104,6 +104,10 @@ export interface ProgrammaticHost {
     kernel?: unknown;
     facetProcessManager?: unknown;
     esbuildService?: unknown;
+    /** The session's esbuild facet pool; torn down with the installer and dev server. */
+    bundlePool?: {
+        dispose(): void;
+    } | null;
     nimbusWrangler?: unknown;
     npmInstaller?: unknown;
     fetchProxyEntrypoint?: unknown;

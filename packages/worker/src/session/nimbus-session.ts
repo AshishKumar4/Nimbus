@@ -34,6 +34,7 @@ import {
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
+import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -347,6 +348,12 @@ export class NimbusSession extends CloudflareDurableObject {
    */
   webSocketRelay: WebSocketRelay | null = null;
   esbuildService: EsbuildService | null = null;
+  /**
+   * The session's single esbuild facet pool, shared by the npm installer's
+   * pre-bundler and the dev server's on-demand /@modules/ path. Lazy; see
+   * ensureBundlePool. Disposed with the installer and dev server.
+   */
+  bundlePool: EsbuildBundlePool | null = null;
   viteDevServer: ViteDevServer | null = null;
   /**
    * runtime primitive support (P5): PID + port the default-Cirrus vite shim is
@@ -1138,6 +1145,12 @@ export class NimbusSession extends CloudflareDurableObject {
     return _diag.persistRing(this, this.ctx);
   }
 
+  /** The session's esbuild facet pool provider; constructing it does no work. */
+  ensureBundlePool(): EsbuildBundlePool {
+    if (!this.bundlePool) this.bundlePool = new EsbuildBundlePool(this.env, this.ctx);
+    return this.bundlePool;
+  }
+
   /**
    * The session's FacetManager, composed through the one factory every host
    * uses (`facets/compose.ts`). What is wired here is only what is the
@@ -1629,6 +1642,7 @@ export class NimbusSession extends CloudflareDurableObject {
       this.ctx.storage.sql,
       {
         esbuild: this.esbuildService,
+        bundlePool: this.ensureBundlePool(),
         ctx: this.ctx,
         env: this.env,
         onProgress,

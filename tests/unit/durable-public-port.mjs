@@ -150,7 +150,7 @@ const CAP = 'abcdef0123456789abcdef01';
 {
   const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-public-port-test-'));
   const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/routes.ts'],
+    entrypoints: ['./packages/worker/src/session/port-capability.ts'],
     outdir: outputDir,
     target: 'bun',
     format: 'esm',
@@ -166,7 +166,7 @@ const CAP = 'abcdef0123456789abcdef01';
     }],
   });
   assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  const entry = build.outputs.find((output) => output.path.endsWith('/routes.js'));
+  const entry = build.outputs.find((output) => output.path.endsWith('/port-capability.js'));
   const { routeToSessionPort } = await import(pathToFileURL(entry.path).href);
 
   const boots = [];

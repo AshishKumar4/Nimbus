@@ -50,7 +50,7 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-apps-identity-'));
 const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/session/programmatic.ts'],
+  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/session/port-capability.ts', './packages/worker/src/session/programmatic.ts', './packages/worker/src/facets/compose.ts'],
   outdir: outputDir,
   target: 'bun',
   format: 'esm',
@@ -66,8 +66,10 @@ const build = await Bun.build({
   }],
 });
 assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const { routeToSessionPort, handleFetch } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/routes.js')).path).href);
+const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/routes.js')).path).href);
+const { routeToSessionPort } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/port-capability.js')).path).href);
 const { rpcExposeApp, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/programmatic.js')).path).href);
+const { composeFacetManager } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/compose.js')).path).href);
 
 const SID = 'nimble-otter-4271';
 const SUFFIX = 'nimbus-os.dev';
@@ -134,18 +136,19 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();
   const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, { notify: (line) => notices.push(line) });
-  if (!sessionFs) {
-    const disk = createSqliteVfsTestHarness();
-    fm.setVfs(new SqliteVFS(disk.sql, disk.ctx));
+  const vfsHarness = sessionFs ? null : createSqliteVfsTestHarness();
+  const vfs = sessionFs ?? new SqliteVFS(vfsHarness.sql, vfsHarness.ctx);
+  if (sessionFs === null) {
+    fm.setVfs(vfs);
   }
   const self = {
     shell: {},
     env,
     ctx,
     portRegistry,
-    processes,
-    facetManagerComposed: { manager: fm, apps: {}, pumpLaunches: async () => {} },
+    facetManagerComposed: null,
     facetManager: fm,
+    processes,
     sessionBasePath: BASE_PATH,
     sessionBasePathHydrated: true,
     sessionOrigin: 'https://probe.test',
@@ -159,8 +162,18 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     get viteBasePath() { return `${BASE_PATH}/preview`; },
     async hydrateSessionBasePath() {},
     ensureSqliteFs() {},
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     seedFilesystem() {},
-    ensureFacetManager() { this.facetManager = fm; return this.facetManagerComposed; },
+    ensureFacetManager() {
+      this.facetManagerComposed ??= composeFacetManager({
+        ctx, env, processes, portRegistry, vfs,
+        hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
+      });
+      this.facetManager = fm;
+      return this.facetManagerComposed;
+    },
+    restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
     ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port),
   };
   return { world, ctx, env, fm, processes, portRegistry, storage, self, directory, notices };

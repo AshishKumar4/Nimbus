@@ -37,7 +37,7 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 // the same as the other route tests.
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-durable-port-test-'));
 const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/facets/compose.ts'],
+  entrypoints: ['./packages/worker/src/session/port-capability.ts', './packages/worker/src/facets/compose.ts'],
   outdir: outputDir,
   target: 'bun',
   format: 'esm',
@@ -56,7 +56,7 @@ const build = await Bun.build({
   }],
 });
 assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const entry = build.outputs.find((output) => output.path.endsWith('/routes.js'));
+const entry = build.outputs.find((output) => output.path.endsWith('/port-capability.js'));
 assert.ok(entry, 'the routes bundle was emitted');
 const { routeToSessionPort } = await import(pathToFileURL(entry.path).href);
 const composeEntry = build.outputs.find((output) => output.path.endsWith('/compose.js'));
@@ -331,6 +331,10 @@ function routeHost(fm, portRegistry) {
   // The ProgrammaticHost the public RPC reads: already booted (shell set),
   // its facet manager ensured.
   const self = {
+    shell: {},
+    ensureSqliteFs() {},
+    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
+    ensureBundlePool() { return null; },
     ensureFacetManager() {
       // The delegation contract: returns the composed shape so rpc verbs
       // reach `.apps`. The same fm is under test either way.
