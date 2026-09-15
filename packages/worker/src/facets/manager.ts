@@ -28,7 +28,7 @@ import {
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
 import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
   clearPortCapability,
@@ -113,6 +113,7 @@ import {
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { wasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import {
   prefetchBundleStart,
   prefetchBundleEnd,
@@ -554,6 +555,7 @@ export async function generateEntrypointCode(
   vfsState: FacetVfsState,
   usesSqlite: boolean,
   shims: string,
+  wasmImports: readonly FacetWasmImport[] = [],
 ): Promise<GeneratedNodeFacetCode> {
   const safeCode = JSON.stringify(userCode);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
@@ -564,6 +566,7 @@ export async function generateEntrypointCode(
 ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
+${facetWasmImportsSource(wasmImports)}
 const USER_CODE = ${safeCode};
 const __NimbusHostResponse = globalThis.Response;
 
@@ -818,6 +821,63 @@ function* drainSources(sources: Record<string, string>): Generator<readonly [str
   }
 }
 
+/** One wasm image the generated main module imports from the module map. */
+export interface FacetWasmImport {
+  /** The module-map name the boot spec carries the image under. */
+  moduleName: string;
+  /** The absolute VFS path the program reads the same bytes from. */
+  vfsPath: string;
+  /**
+   * A content key for the same bytes, for an image the program never reads
+   * from the filesystem — one inlined in a package's own source as base64.
+   * The seam recognises the bytes instead of the path.
+   */
+  digest?: string;
+}
+
+/** The module-map name a precompiled wasm image travels under. */
+export function facetWasmModuleName(index: number): string {
+  return `__nimbus_wasm_${index}.wasm`;
+}
+
+/**
+ * The wasm imports one launch stages: the images its options name, then
+ * every image the closure walk recorded (FacetVfsState.wasmImages) that the
+ * options did not already name by path. One member per path; the closure's
+ * record supplies the digest an option without one lacks.
+ */
+export function facetWasmImports(
+  named: readonly { vfsPath: string; digest: string | undefined }[],
+  closure: readonly WasmImageRecord[],
+): FacetWasmImport[] {
+  const byPath = new Map<string, { vfsPath: string; digest: string | undefined }>();
+  for (const image of named) byPath.set(image.vfsPath, image);
+  for (const image of closure) {
+    const seen = byPath.get(image.vfsPath);
+    if (seen === undefined) byPath.set(image.vfsPath, image);
+    else if (seen.digest === undefined) byPath.set(image.vfsPath, { ...seen, digest: image.digest });
+  }
+  return [...byPath.values()].map((image, index) => ({ ...image, moduleName: facetWasmModuleName(index) }));
+}
+
+/**
+ * The static imports that compile a launch's wasm images at module eval and
+ * park them by VFS path for the node-shims WebAssembly seam.
+ */
+function facetWasmImportsSource(wasmImports: readonly FacetWasmImport[]): string {
+  if (wasmImports.length === 0) return '';
+  const lines = wasmImports.map((entry, index) =>
+    `import __nimbusWasm${index} from ${JSON.stringify(entry.moduleName)};`);
+  const entries = wasmImports.map((entry, index) =>
+    `[${JSON.stringify(stripLeadingSlashes(entry.vfsPath))}, __nimbusWasm${index}]`);
+  const byDigest = wasmImports
+    .map((entry, index) => (entry.digest === undefined
+      ? null
+      : `[${JSON.stringify(entry.digest)}, __nimbusWasm${index}]`))
+    .filter((line): line is string => line !== null);
+  return `${lines.join('\n')}\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
+    + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
+}
 export async function generateLongRunningNodeCode(
   userCode: string,
   vfsState: FacetVfsState,
@@ -1300,6 +1360,11 @@ interface FacetVfsState {
   serializedMetadata?: string;
   /** Move the bundle out of the main module when combined state exceeds its ceiling. */
   bundleSideModulesRequired?: boolean;
+  /**
+   * The wasm images the closure holds, by path and content digest — see
+   * `collectClosureWasmImages`. A launch stages each as a wasm map entry.
+   */
+  wasmImages?: readonly WasmImageRecord[];
   /**
    * Memoized `bundleUsesNodeSqlite(entryCode, bundle)`. Answered while the raw
    * cells are still in hand so `releaseSerializedSources` can drop them — it is
@@ -2692,8 +2757,8 @@ export function addBinTargetSiblings(
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
   bundleProfile: FacetBundleProfile,
-): { added: number } {
-  if (!scriptPath) return { added: 0 };
+): { added: number; wasmPaths: string[] } {
+  if (!scriptPath) return { added: 0, wasmPaths: [] };
   const stripped = scriptPath.replace(/^\/+/, '');
   // Find the *innermost* node_modules/<pkg> root. Handles scoped
   // packages (`@org/name`) too.
@@ -2702,10 +2767,10 @@ export function addBinTargetSiblings(
   for (let i = segs.length - 1; i >= 0; i--) {
     if (segs[i] === 'node_modules') { nmIdx = i; break; }
   }
-  if (nmIdx < 0) return { added: 0 };
+  if (nmIdx < 0) return { added: 0, wasmPaths: [] };
   const isScoped = segs[nmIdx + 1]?.startsWith('@');
   const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
-  if (pkgEnd > segs.length) return { added: 0 };
+  if (pkgEnd > segs.length) return { added: 0, wasmPaths: [] };
   const pkgRoot = segs.slice(0, pkgEnd).join('/');
 
   // npm-create-fix wave (2026-05-12): scaffold profile needs this cap
@@ -2733,6 +2798,10 @@ export function addBinTargetSiblings(
   // an unread multi-MiB cell costs a stat rather than a transfer.
   let visited = 0;
   const candidates: { path: string; size: number }[] = [];
+  // Every wasm image under the package, whatever its size: an image rides in
+  // the module map by path and is compiled by the loader, so the bundle's
+  // per-file cap does not apply to it (see FacetVfsState.wasmImages).
+  const wasmPaths: string[] = [];
   const queue: string[] = [pkgRoot];
   while (queue.length > 0 && visited < MAX_PKG_FILES) {
     const dir = queue.shift()!;
@@ -2752,6 +2821,7 @@ export function addBinTargetSiblings(
       // File. Skip if already in bundle (the static walker beat us
       // to it) or outside this profile's package-data policy.
       if (!shouldIncludeBinPackageFile(pkgRoot, child, bundleProfile)) continue;
+      if (child.endsWith('.wasm')) wasmPaths.push(child);
       if (bundle[child] !== undefined) continue;
       let size: number;
       try { size = vfs.lstat(child).size; } catch { continue; }
@@ -2788,7 +2858,38 @@ export function addBinTargetSiblings(
     budgetState.fileCount++;
     added++;
   }
-  return { added };
+  return { added, wasmPaths };
+}
+
+/**
+ * The wasm images a program's closure holds, by path and content digest.
+ *
+ * Two sources, one record: a `.wasm` cell the walk already staged (digested
+ * from the cell, no second read), and a `.wasm` file the bin-package pass
+ * saw but did not stage because it is over the bundle's per-file cap —
+ * esbuild-wasm's 11.9 MiB image is the motivating one. A launch stages each
+ * as a module-map member the loader compiles, registered under both keys,
+ * so the program's own `new WebAssembly.Module(bytes)` is answered from the
+ * map whether it read the bytes by path or carried them inline. A file that
+ * cannot be read is left out; the seam's refusal names the module later.
+ */
+export function collectClosureWasmImages(
+  vfs: Pick<CredentialedVfs, 'readFile'>,
+  bundle: Record<string, string | Uint8Array | FacetVfsDenial>,
+  unstagedPaths: readonly string[],
+): WasmImageRecord[] {
+  const byPath = new Map<string, WasmImageRecord>();
+  for (const [path, cell] of Object.entries(bundle)) {
+    if (!path.endsWith('.wasm') || !(cell instanceof Uint8Array)) continue;
+    byPath.set(path, { vfsPath: '/' + stripLeadingSlashes(path), digest: wasmImageDigest(cell) });
+  }
+  for (const path of unstagedPaths) {
+    if (byPath.has(path)) continue;
+    let bytes: Uint8Array;
+    try { bytes = vfs.readFile(path); } catch { continue; }
+    byPath.set(path, { vfsPath: '/' + stripLeadingSlashes(path), digest: wasmImageDigest(bytes) });
+  }
+  return [...byPath.values()];
 }
 
 /**
@@ -3521,7 +3622,6 @@ async function _buildPrefetchBundle(
   //      as data, etc.) without needing a per-pkg whitelist.
   //      No-op when entry isn't inside node_modules.
   const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile);
-  void binSiblingAdd;
   await paceAfterPass();
 
   // 2.34 project-data snapshot: sync Node fs cannot await the
@@ -3643,6 +3743,8 @@ async function _buildPrefetchBundle(
   // Suppress lint: `greedy.added` is observed only via diagnostics.
   void greedy;
 
+  const wasmImages = collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths);
+
   return {
     bundle,
     manifest,
@@ -3651,6 +3753,7 @@ async function _buildPrefetchBundle(
     reachableCount: fileCount,
     truncated,
     bundleSideModulesRequired,
+    ...(wasmImages.length > 0 ? { wasmImages } : {}),
   };
 }
 
@@ -4293,6 +4396,29 @@ export class FacetManager {
    * A session without a filesystem gets an empty state: there is nothing to
    * stage and nothing to yield for.
    */
+  /**
+   * The closure's wasm images as module-map members for a one-shot facet,
+   * read by path under the process's own credential. An image that cannot
+   * be read is left out; the program's compile then meets the seam's own
+   * refusal, which names the module.
+   */
+  private _wasmModulesByValue(
+    entry: ProcessEntry,
+    wasmImports: readonly FacetWasmImport[],
+  ): Record<string, { wasm: ArrayBuffer }> {
+    const modules: Record<string, { wasm: ArrayBuffer }> = {};
+    if (!this.vfs || wasmImports.length === 0) return modules;
+    const vfs = this.vfs.as(entry.cred);
+    for (const image of wasmImports) {
+      let bytes: Uint8Array;
+      try { bytes = vfs.readFile(stripLeadingSlashes(image.vfsPath)); } catch { continue; }
+      modules[image.moduleName] = {
+        wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      };
+    }
+    return modules;
+  }
+
   private async _buildProcessBundle(
     entry: ProcessEntry,
     spec: ProcessBundleSpec,
@@ -4795,13 +4921,18 @@ export class FacetManager {
           // of the program for the whole run the facet then performs,
           // which is the window the isolate was being reset in.
           code: async () => {
-            const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims);
+            // A one-shot has no disk reader at load, so the closure's wasm
+            // images ride by value: read here, inside the scope that holds
+            // the map, and compiled by the loader like the sqlite sidecar.
+            const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
+            const wasmModules = this._wasmModulesByValue(entry, wasmImports);
+            const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims, wasmImports);
             if (diagSink) {
               diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
               for (const source of Object.values(generatedWorker.modules)) {
                 diagSink.moduleMapBytes += _encodedSourceBytes(source);
               }
-              for (const m of Object.values(sqliteModules)) {
+              for (const m of [...Object.values(sqliteModules), ...Object.values(wasmModules)]) {
                 diagSink.moduleMapBytes += m.wasm.byteLength;
               }
               // Read before the release below, which is the last moment the
@@ -4819,7 +4950,7 @@ export class FacetManager {
               compatibilityDate: CF_COMPAT_DATE,
               compatibilityFlags: ['nodejs_compat', 'nodejs_compat_v2'],
               mainModule: 'runner.js',
-              modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules },
+              modules: { 'runner.js': generatedWorker.code, ...generatedWorker.modules, ...sqliteModules, ...wasmModules },
             };
           },
           request: new Request('http://nimbus-runtime.local/run', {
@@ -5720,6 +5851,8 @@ export class FacetManager {
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeShimsCode(this.env),
     ]);
+    // Each image is read by path when the facet loads, never by value here.
+    const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
     let generatedWorker: GeneratedNodeFacetCode | undefined = await generateLongRunningNodeCode(
       code,
       vfsState,
