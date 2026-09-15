@@ -750,23 +750,23 @@ export class NimbusSession extends CloudflareDurableObject {
     return this.supervisorOps().dispatch(envelope);
   }
 
-  async _rpcReadFile(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid); }
-  async _rpcReadFileBytes(path: string, pid?: number): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid); }
+  async _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid, cred); }
+  async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
-  async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid); }
+  async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid, cred); }
   async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
     return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);
   }
-  async _rpcStat(path: string, pid?: number): Promise<any> { return _rpc._rpcStat(this as any, path, pid); }
-  async _rpcLstat(path: string, pid?: number): Promise<any> { return _rpc._rpcLstat(this as any, path, pid); }
+  async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any> { return _rpc._rpcStat(this as any, path, pid, cred); }
+  async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<any> { return _rpc._rpcLstat(this as any, path, pid, cred); }
   async _rpcHasLegacySymlinkUnder(path: string, pid?: number): Promise<boolean> {
     return _rpc._rpcHasLegacySymlinkUnder(this as any, path, pid);
   }
   async _rpcUtimes(path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void> {
     return _rpc._rpcUtimes(this as any, path, atimeMs, mtimeMs, pid);
   }
-  async _rpcChmod(path: string, mode: number, pid?: number): Promise<void> {
-    return _rpc._rpcChmod(this as any, path, mode, pid);
+  async _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
+    return _rpc._rpcChmod(this as any, path, mode, pid, cred);
   }
   async _rpcAccess(path: string, mode: number, pid?: number): Promise<void> {
     return _rpc._rpcAccess(this as any, path, mode, pid);
@@ -783,11 +783,11 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcSetUmask(mask: number, pid?: number): Promise<number> {
     return _rpc._rpcSetUmask(this as any, mask, pid);
   }
-  async _rpcReaddir(path: string, pid?: number): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path, pid); }
-  async _rpcExists(path: string, pid?: number): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid); }
-  async _rpcMkdir(path: string, pid?: number): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid); }
+  async _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path, pid, cred); }
+  async _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid, cred); }
+  async _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid, cred); }
   async _rpcRmdir(path: string, pid?: number): Promise<void> { return _rpc._rpcRmdir(this as any, path, pid); }
-  async _rpcRename(from: string, to: string, pid?: number): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid); }
+  async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
   async _rpcReadlink(path: string, pid?: number): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid); }
   async _rpcSymlink(target: string, path: string, pid?: number): Promise<void> { return _rpc._rpcSymlink(this as any, target, path, pid); }
   async _rpcFsRevision(path?: string, pid?: number): Promise<number> { return _rpc._rpcFsRevision(this as any, path, pid); }
@@ -817,8 +817,8 @@ export class NimbusSession extends CloudflareDurableObject {
     return _rpc._rpcFsWrite(this as any, handleId, offset, bytes, pid);
   }
   async _rpcFsClose(handleId: number, pid?: number): Promise<void> { return _rpc._rpcFsClose(this as any, handleId, pid); }
-  async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
-    return _rpc._rpcFsReadRange(this as any, path, offset, length, pid);
+  async _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> {
+    return _rpc._rpcFsReadRange(this as any, path, offset, length, pid, cred);
   }
   async _rpcFsReadRangeUncached(path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null> {
     return _rpc._rpcFsReadRangeUncached(this as any, path, offset, length, pid);
@@ -985,7 +985,7 @@ export class NimbusSession extends CloudflareDurableObject {
     this.ensureFacetManager();
     return this.facetManager!.ensureDurableAppOnPort(port);
   }
-  async _rpcDeleteFile(path: string, options?: { recursive?: boolean }) { return _programmatic.rpcDeleteFile(this as any, path, options); }
+  async _rpcDeleteFile(path: string, options?: { recursive?: boolean }, cred?: VfsCred) { return _programmatic.rpcDeleteFile(this as any, path, options, cred); }
   async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 
   // Legacy VFS (direct method calls)

@@ -22,7 +22,7 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   endProcessInput,
   resizeProcess,
@@ -1401,14 +1401,21 @@ export async function rpcRouteCapabilityPort(
   return routed ?? new Response('Not found', { status: 404 });
 }
 
+/**
+ * `files.delete`. Absent a `cred` this acts as CRED_KERNEL — what it has
+ * always done, and the embedder's trusted surface: only a caller holding the
+ * DO binding reaches it. A `cred` binds the removal to that identity instead,
+ * the same view `SqliteVFS.as(cred)` gives in-process.
+ */
 export async function rpcDeleteFile(
   self: ProgrammaticHost,
   path: string,
   options: { recursive?: boolean } = {},
+  cred?: VfsCred,
 ): Promise<void> {
   await ensureProgrammaticReady(self);
   const p = String(path).replace(/^\/+/, '');
-  const vfs = self.sqliteFs!.as(CRED_KERNEL);
+  const vfs = self.sqliteFs!.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
   if (!vfs.exists(p)) return;
   if (vfs.isDirectory(p)) {
     if (!options.recursive) {
