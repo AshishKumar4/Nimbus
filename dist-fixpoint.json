@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4790e3ea11655b4821e4a6a29ff5acfb01c97ff2e2baecbfa1e4887864ca1fe4",
+  "fingerprint": "9418588d337bf8f3af0d994c39cd8d83961601f42ecab36ca81450bba9c1c01d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1444,8 +1444,8 @@
     "packages/worker/dist/facets/exec-telemetry.d.ts.map": "ae7188f86dc873645810a23ef2b37a8a376987ddc2edfce282fb8e12aa500b86",
     "packages/worker/dist/facets/exec-telemetry.js": "ca016fce9d18f6a29cc2db43a71e958c52d39c25f2ca3f0ab12215a29065d0f9",
     "packages/worker/dist/facets/manager.d.ts": "ea16e5f5bdb4b6b4d4320b16669c981b86dd6fb51cedd925b50d4c42e7952c17",
-    "packages/worker/dist/facets/manager.d.ts.map": "6cfa954b0a8196da761edf64ac918b612d3bab2b20cbd4832f1b8f9257caa731",
-    "packages/worker/dist/facets/manager.js": "287f6ac6d7e1c20e2bf7bfb7c14abc5db6cb09a87bf17f7c7397a416b744961f",
+    "packages/worker/dist/facets/manager.d.ts.map": "c6b470f5418b9e32beb86c9136555a6c7986dc5b735d6c30b8e0973dfeeed7c1",
+    "packages/worker/dist/facets/manager.js": "260fb0438aeba21ac687ed2612da702b40bbcd162f879b91c721a803bb124839",
     "packages/worker/dist/facets/opencode-staging.d.ts": "5111ac1a1f4c929ab95b316f4e9e481d64e20ba61cf5486df260368a20b5c239",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "4fce2e1a859a0867ba76c43a3f5085acb98831ba6c816c4a9fb68b7023de9228",
     "packages/worker/dist/facets/opencode-staging.js": "7b466b5f2972009c5421e2bc74867b1703f35675d9af3bfd181f97f970b1507c",
@@ -1858,7 +1858,7 @@
     "packages/worker/src/facets/esbuild-bundle-pool.ts": "f0a2760040b2a1e7bb1bb0b62e31874bf49548a24d0a37e7d9e9942898d28b7c",
     "packages/worker/src/facets/esbuild-transform.ts": "f3818d4148c405ee6516afdcba730296d7e8eaee9b6891707e4f288d5e47e158",
     "packages/worker/src/facets/exec-telemetry.ts": "9675e15f036d39d8a221d7970d97a7cef9dc61012e28f51bea067b7916703ee0",
-    "packages/worker/src/facets/manager.ts": "ede935d660b8ae033cd2dda6140e6451e3dbaeedea3df6ea8d3e515a898799e2",
+    "packages/worker/src/facets/manager.ts": "16dec92d393abeb608932dd1e0f7768e08e51777880532f57467e5f3f8268621",
     "packages/worker/src/facets/opencode-staging.ts": "05e1ad10d6732febf922a6aad48415bfdc4dbd1aa80a74e9e304fbf9197a730a",
     "packages/worker/src/facets/process.ts": "ec95f3d66dceccee3696ab9625d08bd6ca610ec37b6841eb454983f9b92cae84",
     "packages/worker/src/facets/real-vite-fs-shim.ts": "62543eeea667a320a55400a4d4c4f5beb27536b864db47f321ea19b8408c007d",
