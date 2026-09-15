@@ -1,6 +1,7 @@
 import type { Command, CommandContext } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import type { Kernel } from '../../kernel/index.js';
+import { type NpmLogEmitter } from './npm-log.js';
 export declare const NPM_VERSION = "10.0.0";
 interface PackageJson {
     name?: string;
@@ -17,22 +18,33 @@ interface PackageJson {
     };
 }
 export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<number>;
-/** A host may supply a facet-based installer instead of in-process extraction. */
+/**
+ * The host's piece of `npm install`: once the invocation has been parsed
+ * into a spec and the summary output decided, the install itself is
+ * whatever the host's batched installer does. Global installs carry the
+ * resolved bin directory so the host — not this command — owns where
+ * shims land and who exposes them.
+ */
 export interface NpmInstallPort {
-    install(projectDir: string, options: {
-        packages?: string[];
+    install(spec: {
+        projectDir: string;
+        packages: readonly string[];
+        global: boolean;
+        /** Resolved absolute bin directory — present only when `global` is set. */
+        globalBinDir?: string;
         production?: boolean;
-        pid?: number;
+        npmLog?: NpmLogEmitter | null;
+        onProgress?: (line: string) => void;
     }): Promise<{
         installed: string[];
         failed: string[];
-        totalFiles: number;
-        elapsed: number;
-        cachedHits?: number;
+        totalFiles?: number;
+        fromCacheHits?: number;
+        linkedBins?: number;
     }>;
 }
 export interface NpmCommandDeps {
-    readonly installer?: NpmInstallPort;
+    installer?: NpmInstallPort;
 }
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;

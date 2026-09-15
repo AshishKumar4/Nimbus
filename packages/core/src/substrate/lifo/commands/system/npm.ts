@@ -10,6 +10,11 @@ import {
 	RegistryVersionInfoSchema,
 	type RegistryVersionInfo,
 } from './registry-schemas.js';
+import {
+  parseNpmInstallInvocation,
+  type NpmInstallInvocation,
+} from './npm-install-args.js';
+import { npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 const GLOBAL_BIN = '/usr/bin';
@@ -36,24 +41,56 @@ export type ShellExecuteFn = (
 	ctx: CommandContext,
 ) => Promise<number>;
 
-/** A host may supply a facet-based installer instead of in-process extraction. */
+/**
+ * The host's piece of `npm install`: once the invocation has been parsed
+ * into a spec and the summary output decided, the install itself is
+ * whatever the host's batched installer does. Global installs carry the
+ * resolved bin directory so the host — not this command — owns where
+ * shims land and who exposes them.
+ */
 export interface NpmInstallPort {
-	install(
-		projectDir: string,
-		options: { packages?: string[]; production?: boolean; pid?: number },
-	): Promise<{
-		installed: string[];
-		failed: string[];
-		totalFiles: number;
-		elapsed: number;
-		cachedHits?: number;
-	}>;
+  install(spec: {
+    projectDir: string;
+    packages: readonly string[];
+    global: boolean;
+    /** Resolved absolute bin directory — present only when `global` is set. */
+    globalBinDir?: string;
+    production?: boolean;
+    npmLog?: NpmLogEmitter | null;
+    onProgress?: (line: string) => void;
+  }): Promise<{ installed: string[]; failed: string[]; totalFiles?: number; fromCacheHits?: number; linkedBins?: number }>;
 }
 
 export interface NpmCommandDeps {
-	readonly installer?: NpmInstallPort;
+  installer?: NpmInstallPort;
 }
-
+/** The end-of-install report, shared by every install path so a failure
+ *  reads the same regardless of which engine ran it. Byte-identical to
+ *  what the worker's wrapper printed. */
+function writeInstallSummary(
+  ctx: CommandContext,
+  installed: string[],
+  failed: string[],
+  opts: { totalFiles?: number; fromCacheHits?: number; linkedBins?: number; globalBinDir?: string; startedAt: number },
+): void {
+  if (failed.length > 0) {
+    ctx.stderr.write(`\x1b[31mFailed: ${failed.join(', ')}\x1b[0m\n`);
+  }
+  if (installed.length === 0) return;
+  const partial = failed.length > 0;
+  const color = partial ? '\x1b[33m' : '\x1b[32m';
+  const suffix = partial ? ` (${failed.length} failed, see above)` : '';
+  const files = opts.totalFiles !== undefined ? ` (${opts.totalFiles} files)` : '';
+  const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
+  ctx.stdout.write(`\n${color}added ${installed.length} packages${files} in ${secs}s${suffix}\x1b[0m\n`);
+  if (opts.fromCacheHits) {
+    ctx.stdout.write(`\x1b[2m  (${opts.fromCacheHits} from cache)\x1b[0m\n`);
+  }
+  if (opts.linkedBins) {
+    const n = opts.linkedBins;
+    ctx.stdout.write(`\x1b[2m  linked ${n} bin${n === 1 ? '' : 's'} into ${opts.globalBinDir}\x1b[0m\n`);
+  }
+}
 // ─── Helpers ───
 
 function getRegistry(env: Record<string, string>): string {
@@ -273,6 +310,7 @@ async function installSinglePackage(
 	isGlobal: boolean,
 	registry: CommandRegistry,
 	seen: Set<string>,
+	globalBinDir?: string,
 	kernel?: Kernel,
 ): Promise<number> {
 	if (seen.has(name)) return 0;
@@ -295,15 +333,16 @@ async function installSinglePackage(
 
 	let installed = 1;
 
-	// Global install: link binaries
+	// Global install: link binaries into the resolved prefix's bin dir
 	if (isGlobal) {
+		const binDir = globalBinDir ?? GLOBAL_BIN;
 		const binEntries = getBinEntries(info);
 		for (const [binName, binPath] of Object.entries(binEntries)) {
 			const scriptPath = resolve(targetDir, binPath);
 			registerBinCommand(registry, binName, scriptPath, kernel);
-			try { vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
+			try { vfs.mkdir(binDir, { recursive: true }); } catch { /* exists */ }
 			vfs.writeFile(
-				join(GLOBAL_BIN, binName),
+				join(binDir, binName),
 				`#!/usr/bin/env node\nrequire('${scriptPath}');\n`,
 			);
 		}
@@ -316,7 +355,7 @@ async function installSinglePackage(
 			try {
 				installed += await installSinglePackage(
 					depName, depRange, targetBase, vfs, npmRegistry, signal,
-					stdout, stderr, isGlobal, registry, seen, kernel,
+					stdout, stderr, isGlobal, registry, seen, globalBinDir, kernel,
 				);
 			} catch (e) {
 				stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -376,61 +415,86 @@ async function npmInstall(
 	deps?: NpmCommandDeps,
 ): Promise<number> {
 	const args = ctx.args.slice(1);
+	const invocation = parseNpmInstallInvocation(args);
+	const packages = invocation.packages;
 
-	let isGlobal = false;
-	let saveDev = false;
-	const packages: string[] = [];
-
-	for (const arg of args) {
-		if (arg === '-g' || arg === '--global') {
-			isGlobal = true;
-		} else if (arg === '-D' || arg === '--save-dev') {
-			saveDev = true;
-		} else if (arg === '--save' || arg === '-S') {
-			// default, ignore
-		} else if (!arg.startsWith('-')) {
-			packages.push(arg);
+	// ── Pre-checks the host used to do behind a wrapper ────────────────
+	// `npm install -g` needs names (npm says the same); `npm install` needs a
+	// package.json when no names were given. Both fire before any work, and
+	if (invocation.global && packages.length === 0) {
+		ctx.stderr.write('npm ERR! missing package name for global install\n');
+		return 1;
+	}
+	if (!invocation.global && packages.length === 0) {
+		if (!ctx.vfs.exists(join(ctx.cwd, 'package.json'))) {
+			ctx.stderr.write('npm ERR! no package.json found\n');
+			return 1;
 		}
 	}
+
+	// The prefix the install resolves under — `--prefix` wins, then the
+	// env's npm_config_prefix, then /usr/local. Everything a global install
+	// writes derives from it: modules at <prefix>/lib/node_modules, bins at
+	// <prefix>/bin. (In-process paths historically used /usr; the prefix
+	// path is the correct npm semantic and what the worker already prints.)
+	const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
+	const globalBinDir = `${globalPrefix}/bin`;
+	const globalModulesDir = `${globalPrefix}/lib/node_modules`;
 
 	const npmRegistry = getRegistry(ctx.env);
 	const startTime = Date.now();
 	let installed = 0;
 
-	const targetBase = isGlobal ? GLOBAL_MODULES : join(ctx.cwd, 'node_modules');
-
-	// Ensure global dirs exist
-	if (isGlobal) {
-		try { ctx.vfs.mkdir(GLOBAL_MODULES, { recursive: true }); } catch { /* exists */ }
-		try { ctx.vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
-	}
-
+	// ── Host-batched install path ──────────────────────────────────────
+	// The port owns install, prefix dirs, and bin materialisation. This
+	// command owns the summary and the progress channel — per-invocation,
+	// so two terminals' installs can't interleave lines on one installer.
 	if (deps?.installer) {
-		const projectDir = isGlobal ? GLOBAL_MODULES : ctx.cwd;
-		const result = await deps.installer.install(projectDir, {
-			packages: packages.length > 0 ? packages : undefined,
-			production: saveDev ? false : undefined,
-			pid: ctx.pid,
-		});
-		for (const failure of result.failed) ctx.stderr.write(`npm ERR! ${failure}\n`);
-		ctx.stdout.write(
-			`\nadded ${result.installed.length} package${result.installed.length === 1 ? '' : 's'}`
-			+ ` (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s\n`,
-		);
-		registerLocalBins(ctx.vfs, projectDir, registry, kernel);
-		return result.failed.length > 0 ? 1 : 0;
+		const npmLog: NpmLogEmitter | null = invocation.loglevel
+			? (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) ctx.stderr.write(`${line}\n`); }
+			: null;
+		try {
+			const result = await deps.installer.install({
+				projectDir: ctx.cwd,
+				packages,
+				global: invocation.global,
+				globalBinDir: invocation.global ? globalBinDir : undefined,
+				production: invocation.production,
+				npmLog,
+				onProgress: (line) => ctx.stdout.write(`[npm] ${line}\n`),
+			});
+			writeInstallSummary(ctx, result.installed, result.failed, {
+				totalFiles: result.totalFiles,
+				fromCacheHits: result.fromCacheHits,
+				linkedBins: result.linkedBins,
+				globalBinDir,
+				startedAt: startTime,
+			});
+			return result.failed.length > 0 ? 1 : 0;
+		} catch (err) {
+			ctx.stderr.write(`npm ERR! ${err instanceof Error ? err.message : String(err)}\n`);
+			return 1;
+		}
 	}
+
+	// ── In-process fallback ────────────────────────────────────────────
+	// Same parse + same summary; the target tree derives from the resolved
+	// prefix so --prefix and npm_config_prefix do what they say.
+	const targetBase = invocation.global ? globalModulesDir : join(ctx.cwd, 'node_modules');
+
+	if (invocation.global) {
+		for (const dir of [globalModulesDir, globalBinDir]) {
+			try { ctx.vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
+		}
+	}
+
+	const failed: string[] = [];
 
 	if (packages.length === 0) {
 		// Install from package.json
-		if (isGlobal) {
-			ctx.stderr.write('npm: install with no args cannot be used with -g\n');
-			return 1;
-		}
-
 		const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
 		if (!pkg) {
-			ctx.stderr.write('npm ERR! no package.json found in this directory\n');
+			ctx.stderr.write('npm ERR! no package.json found\n');
 			return 1;
 		}
 
@@ -448,9 +512,10 @@ async function npmInstall(
 			try {
 				installed += await installSinglePackage(
 					name, range, targetBase, ctx.vfs, npmRegistry, ctx.signal,
-					ctx.stdout, ctx.stderr, false, registry, seen, kernel,
+					ctx.stdout, ctx.stderr, false, registry, seen, undefined, kernel,
 				);
 			} catch (e) {
+				failed.push(name);
 				ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
 			}
 		}
@@ -463,11 +528,12 @@ async function npmInstall(
 			try {
 				installed += await installSinglePackage(
 					name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal,
-					ctx.stdout, ctx.stderr, isGlobal, registry, seen,
+					ctx.stdout, ctx.stderr, invocation.global, registry, seen,
+					invocation.global ? globalBinDir : undefined,
 				);
 
 				// Update package.json for local installs
-				if (!isGlobal) {
+				if (!invocation.global) {
 					const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
 					if (pkg) {
 						const installedPkgPath = join(targetBase, name, 'package.json');
@@ -477,7 +543,7 @@ async function npmInstall(
 							versionStr = '^' + ipkg.version;
 						} catch { /* ignore */ }
 
-						if (saveDev) {
+						if (invocation.saveDev) {
 							pkg.devDependencies = pkg.devDependencies || {};
 							pkg.devDependencies[name] = versionStr;
 						} else {
@@ -488,6 +554,7 @@ async function npmInstall(
 					}
 				}
 			} catch (e) {
+				failed.push(name);
 				const msg = e instanceof Error ? e.message : String(e);
 				if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
 					ctx.stderr.write(`npm ERR! network error fetching ${name}\n`);
@@ -495,14 +562,26 @@ async function npmInstall(
 				} else {
 					ctx.stderr.write(`npm ERR! ${msg}\n`);
 				}
-				return 1;
 			}
 		}
 	}
 
-	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-	ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
-	return 0;
+	// The in-process fallback reports the count it actually installed;
+	// writeInstallSummary's file/bin/cache decorations don't apply here.
+	writeInstallSummary(
+		ctx,
+		installed > 0 ? new Array<string>(installed).fill('') : [],
+		failed,
+		{ startedAt: startTime },
+	);
+	return failed.length > 0 ? 1 : 0;
+}
+
+/** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
+ *  /usr/local; a relative value resolves against cwd. Absolute result. */
+function resolveNpmPrefixVfs(cwd: string, env: Record<string, string>, explicit: string | null): string {
+	const raw = explicit ?? env['npm_config_prefix'] ?? '/usr/local';
+	return resolve(cwd, raw);
 }
 
 async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Promise<number> {
@@ -1051,13 +1130,16 @@ export async function npmInstallGlobal(
 	const startTime = Date.now();
 	const seen = new Set<string>();
 
-	try { ctx.vfs.mkdir(GLOBAL_MODULES, { recursive: true }); } catch { /* exists */ }
-	try { ctx.vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
+	const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
+	const modulesDir = `${prefix}/lib/node_modules`;
+	const binDir = `${prefix}/bin`;
+	try { ctx.vfs.mkdir(modulesDir, { recursive: true }); } catch { /* exists */ }
+	try { ctx.vfs.mkdir(binDir, { recursive: true }); } catch { /* exists */ }
 
 	try {
 		const installed = await installSinglePackage(
-			packageName, null, GLOBAL_MODULES, ctx.vfs, npmRegistry, ctx.signal,
-			ctx.stdout, ctx.stderr, true, registry, seen, kernel,
+			packageName, null, modulesDir, ctx.vfs, npmRegistry, ctx.signal,
+			ctx.stdout, ctx.stderr, true, registry, seen, binDir, kernel,
 		);
 
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

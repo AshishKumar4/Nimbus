@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { parseNpmInstallInvocation } from '../../packages/worker/src/npm/install-args.ts';
+import { parseNpmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
 
 {
   const parsed = parseNpmInstallInvocation([

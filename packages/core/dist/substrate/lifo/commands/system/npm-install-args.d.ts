@@ -16,6 +16,11 @@ export interface NpmInstallInvocation {
      * already said to skip.
      */
     production: boolean;
+    /**
+     * `-D` / `--save-dev`: record the spec under devDependencies. Read by the
+     * in-process install path, which owns the package.json update itself.
+     */
+    saveDev: boolean;
 }
 export declare function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation;
-//# sourceMappingURL=install-args.d.ts.map
+//# sourceMappingURL=npm-install-args.d.ts.map

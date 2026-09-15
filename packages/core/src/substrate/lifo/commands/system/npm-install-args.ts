@@ -1,4 +1,4 @@
-import { parseArgs } from '@nimbus-sh/core/substrate/lifo/utils/args.js';
+import { parseArgs } from '../../utils/args.js';
 import { parseNpmLogLevel, type NpmLogLevel } from './npm-log.js';
 
 export interface NpmInstallInvocation {
@@ -18,6 +18,11 @@ export interface NpmInstallInvocation {
    * already said to skip.
    */
   production: boolean;
+  /**
+   * `-D` / `--save-dev`: record the spec under devDependencies. Read by the
+   * in-process install path, which owns the package.json update itself.
+   */
+  saveDev: boolean;
 }
 
 const INSTALL_ARG_SPEC = {
@@ -61,6 +66,7 @@ export function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation 
     prefix: stringFlag(parsed.flags.prefix),
     loglevel: parseNpmLogLevel(parsed.flags.loglevel),
     production: parsed.flags.production === true || omittedDependencyTypes(args).has('dev'),
+    saveDev: parsed.flags['save-dev'] === true,
   };
 }
 

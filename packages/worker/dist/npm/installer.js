@@ -25,7 +25,7 @@ import { NpmCache } from './cache.js';
 import { computeHoistPlan, } from './resolver.js';
 import { packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from './semver.js';
-import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from './npm-log.js';
+import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { applySwaps, findRejects, lookupSwap, isOptionalNativeBinding, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
@@ -94,6 +94,11 @@ export class NpmInstaller {
         const start = Date.now();
         const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
         const nmDir = projDir + '/node_modules';
+        // Per-invocation progress wins over whatever the ctor bound — the
+        // installer is shared, the terminal it should speak to is not.
+        const previousProgress = this.onProgress;
+        if (opts?.onProgress !== undefined)
+            this.onProgress = opts.onProgress;
         const log = (msg) => this.onProgress?.(msg);
         this.npmLog = opts?.npmLog ?? (() => { });
         // Reset phase to 'idle' on any exit path so /api/_diag/memory
@@ -106,6 +111,7 @@ export class NpmInstaller {
         finally {
             setInstallPhase('idle');
             this.npmLog = () => { };
+            this.onProgress = previousProgress;
         }
     }
     async _installInner(projDir, nmDir, opts, log, start) {

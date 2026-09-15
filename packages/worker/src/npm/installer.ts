@@ -42,7 +42,7 @@ import { satisfiesRange, isSemverRange } from './semver.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
   type NpmLogEmitter,
-} from './npm-log.js';
+} from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import {
   applySwaps, findRejects, lookupSwap, lookupReject,
   isOptionalNativeBinding,
@@ -232,11 +232,16 @@ export class NpmInstaller {
       production?: boolean;      // skip devDependencies
       pid?: number;              // invoking process pid — authorizes batch-facet writes
       npmLog?: NpmLogEmitter;    // npm-protocol log sink (see --loglevel)
+      onProgress?: (msg: string) => void;  // per-invocation progress — overrides the ctor sink
     },
   ): Promise<NpmInstallResult> {
     const start = Date.now();
     const projDir = projectDir.replace(/^\/+/, '').replace(/\/+$/, '');
     const nmDir = projDir + '/node_modules';
+    // Per-invocation progress wins over whatever the ctor bound — the
+    // installer is shared, the terminal it should speak to is not.
+    const previousProgress = this.onProgress;
+    if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
     const log = (msg: string) => this.onProgress?.(msg);
     this.npmLog = opts?.npmLog ?? (() => {});
 
@@ -248,6 +253,7 @@ export class NpmInstaller {
     finally {
       setInstallPhase('idle');
       this.npmLog = () => {};
+      this.onProgress = previousProgress;
     }
   }
 

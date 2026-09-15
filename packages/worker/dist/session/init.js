@@ -51,9 +51,7 @@ import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/featur
 import { registerShellEntrypointCommands } from '@nimbus-sh/core/shell/shell-entrypoints.js';
 import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
-import { parseNpmInstallInvocation } from '../npm/install-args.js';
-import { npmLogEnabled } from '../npm/npm-log.js';
-import { materializeNpmBinShims } from '../npm/bin-links.js';
+import { createNpmInstallPort } from './npm-install-port.js';
 import { makeNimbusVerbHandler, createRuntimeCommandHintResolver, } from '../runtime/package-manager.js';
 import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from './programmatic.js';
 import { listInstalledRuntimes, rehydrateInstalledRuntimes, registerRunnerFactory, } from '@nimbus-sh/core/runtime/installed-runtimes.js';
@@ -74,11 +72,6 @@ import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { VITE_CONFIG_KEY } from './keys.js';
-function resolveNpmPrefix(prefix, cwd) {
-    return prefix.startsWith('/')
-        ? normalizeVfsPath(prefix)
-        : resolveVfsPath(prefix, cwd || '/home/user');
-}
 function quoteShellArgument(value) {
     return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -1489,8 +1482,11 @@ export async function initSession(self, ws, options = {}) {
             catch { }
         },
     });
-    // Register core npm with enhanced `npm run <script>` support
-    const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel);
+    // Register core npm — the install work itself goes through the port,
+    // which owns the NpmInstaller, prefix dirs and bin materialisation.
+    const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel, {
+        installer: createNpmInstallPort(self),
+    });
     registry.register('npm', async (ctx) => {
         const args = ctx.args || [];
         const sub = args[0];
@@ -1702,85 +1698,6 @@ export async function initSession(self, ws, options = {}) {
             }
             catch { }
             return 0;
-        }
-        // npm install (no args or with packages) — use NpmInstaller v2 (batched writes)
-        if (sub === 'install' || sub === 'i' || sub === 'add') {
-            const installInvocation = parseNpmInstallInvocation(args.slice(1));
-            const explicitPkgs = installInvocation.packages;
-            const globalPrefix = installInvocation.global
-                ? resolveNpmPrefix(installInvocation.prefix ?? String(ctx.env?.npm_config_prefix || '/usr/local'), ctx.cwd || '/home/user')
-                : null;
-            self.ensureSqliteFs();
-            if (globalPrefix)
-                self.ensureGlobalPrefixDirs(globalPrefix);
-            const installCwd = globalPrefix ? `${globalPrefix}/lib` : cwdKey;
-            // Ensure package.json exists for bare `npm install`
-            if (!globalPrefix && explicitPkgs.length === 0) {
-                const pkgJsonPath = installCwd + '/package.json';
-                if (!kernelFs.exists(pkgJsonPath)) {
-                    ctx.stderr.write('npm ERR! no package.json found\n');
-                    return 1;
-                }
-            }
-            if (globalPrefix && explicitPkgs.length === 0) {
-                ctx.stderr.write('npm ERR! missing package name for global install\n');
-                return 1;
-            }
-            const pkgLabel = explicitPkgs.length > 0
-                ? `${explicitPkgs.length} packages`
-                : 'dependencies from package.json';
-            ctx.stdout.write(`\x1b[36mInstalling ${pkgLabel} (npm v2 — batched writes)...\x1b[0m\n`);
-            await self.ensureNpmInstaller((msg) => {
-                ctx.stdout.write('[npm] ' + msg + '\n');
-            });
-            // `--loglevel` selects npm's own log protocol on stderr, where npm
-            // writes it. Tooling that drives npm parses those lines rather than
-            // our prose — pi's installer advances its progress label off them.
-            const npmLogLevel = installInvocation.loglevel;
-            const npmLog = npmLogLevel === null ? undefined : ((level, line) => {
-                if (npmLogEnabled(npmLogLevel, level))
-                    ctx.stderr.write(line + '\n');
-            });
-            try {
-                const result = await self.npmInstaller.install(installCwd, {
-                    packages: explicitPkgs.length > 0 ? explicitPkgs : undefined,
-                    production: installInvocation.production,
-                    pid: ctx.pid,
-                    npmLog,
-                });
-                if (result.failed?.length > 0) {
-                    ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
-                }
-                // [HONEST INSTALL MESSAGE P0a] Yellow + "(N failed, see above)"
-                // when partial. Green only when failed.length === 0.
-                const partial = (result.failed?.length || 0) > 0;
-                const color = partial ? '\x1b[33m' : '\x1b[32m';
-                const suffix = partial ? ` (${result.failed.length} failed, see above)` : '';
-                ctx.stdout.write(`\n${color}added ${result.installed?.length || 0} packages (${result.totalFiles || 0} files) in ${((result.elapsed || 0) / 1000).toFixed(1)}s${suffix}\x1b[0m\n`);
-                if (result.cachedHits > 0) {
-                    ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
-                }
-                if (globalPrefix) {
-                    // Materialize on-PATH bin shims even for partial installs. The
-                    // only writer of shims into ${globalPrefix}/bin used to be gated
-                    // behind zero failures across the whole dependency tree — but a
-                    // global install of a 100+-dep package almost always has at least
-                    // one transitive failure, so /usr/local/bin was ~never created
-                    // and the installed package's bin was unreachable. materialize →
-                    // validateEntry → resolveExistingTarget already skips bins whose
-                    // target file didn't land, so a partial install safely exposes
-                    // exactly the bins that actually installed.
-                    const linked = materializeNpmBinShims(kernelFs, `${installCwd}/node_modules`, `${globalPrefix}/bin`);
-                    if (linked > 0) {
-                        ctx.stdout.write(`\x1b[2m  linked ${linked} bin${linked === 1 ? '' : 's'} into /${globalPrefix}/bin\x1b[0m\n`);
-                    }
-                }
-                return result.failed?.length > 0 ? 1 : 0;
-            }
-            catch (e) {
-                ctx.stderr.write(`\x1b[31mnpm install failed: ${e?.message}\x1b[0m\n`);
-                return 1;
-            }
         }
         // ── npm create <pkg> / npm init <pkg> → npx create-<pkg> ─────────
         //

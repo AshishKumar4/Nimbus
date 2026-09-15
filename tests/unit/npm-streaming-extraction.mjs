@@ -141,21 +141,22 @@ try {
   const calls = [];
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {
     installer: {
-      async install(projectDir, options) {
-        calls.push({ projectDir, options });
-        return { installed: ['example'], failed: ['broken dependency'], totalFiles: 3, elapsed: 1250 };
+      async install(spec) {
+        calls.push(spec);
+        return { installed: ['example'], failed: ['broken dependency'], totalFiles: 3 };
       },
     },
   }));
   const hosted = await ws.exec('npm install -D example');
   assert.equal(hosted.exitCode, 1);
-  assert.match(hosted.stderr, /npm ERR! broken dependency/);
-  assert.match(hosted.stdout, /added 1 package \(3 files\) in 1.3s/);
+  assert.match(hosted.stderr, /Failed: broken dependency/);
+  assert.match(hosted.stdout, /added 1 packages \(3 files\) in \d+\.\ds \(1 failed, see above\)/);
   assert.equal(calls[0].projectDir, '/home/user');
-  assert.deepEqual(calls[0].options.packages, ['example']);
-  assert.equal(calls[0].options.production, false);
-  assert.ok(calls[0].options.pid > 0);
-  assert.ok(ws.registry.has('example'), 'host installs register local package bins');
+  assert.deepEqual(calls[0].packages, ['example']);
+  assert.equal(calls[0].production, false);
+  assert.equal(typeof calls[0].onProgress, 'function');
+  assert.equal(ws.registry.has('example'), false,
+    'the port owns bin exposure — the command does not register local bins');
   console.log('npm-streaming-extraction: streaming, completion, retry and host installer passed');
 } finally {
   globalThis.fetch = originalFetch;

@@ -14,7 +14,7 @@
 // installer; they are the consumer contract, so they are asserted literally.
 
 import assert from 'node:assert/strict';
-import { parseNpmInstallInvocation } from '../../packages/worker/src/npm/install-args.ts';
+import { parseNpmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
 import {
   npmAddedLine,
   npmHttpCacheLine,
@@ -22,7 +22,7 @@ import {
   npmLogEnabled,
   npmTitleLine,
   parseNpmLogLevel,
-} from '../../packages/worker/src/npm/npm-log.ts';
+} from '../../packages/core/src/substrate/lifo/commands/system/npm-log.ts';
 import { packumentUrl } from '../../packages/worker/src/npm/r2-cache.ts';
 
 // pi's `case` arms, in the order it tests them; the first match wins.
