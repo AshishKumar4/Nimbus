@@ -455,11 +455,12 @@ ${VFS_CURSOR_SEED_SOURCE}
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
-    const __queueRpcWrite = (method, s) => {
+    // The relay carries bytes (see "Process output is bytes" in the shims).
+    const __queueRpcWrite = (method, bytes) => {
       __rpcWriteCount++;
       const __task = __rpcWriteChain
-        .then(() => __supervisor[method](s))
-        .catch((e) => __onRpcDrop(s.length, e));
+        .then(() => __supervisor[method](bytes))
+        .catch((e) => __onRpcDrop(bytes.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
     };
@@ -478,13 +479,13 @@ ${RESIDENCY_MISS_REPORT}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
+      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
+      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stdout += s; __queueRpcWrite("stdout", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stderr += s; __queueRpcWrite("stderr", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -515,6 +516,7 @@ ${RESIDENCY_MISS_REPORT}
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
+
       if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
@@ -523,7 +525,7 @@ ${RESIDENCY_MISS_REPORT}
         stderr += trace + "\\n";
         exitCode = 1;
         if (__supervisor && !captureOutput) {
-          try { __pendingIO.push(__supervisor.stderr(trace + "\\n").catch((e2) => __onRpcDrop((trace || "").length + 1, e2))); } catch {}
+          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
         }
       }
     }
@@ -549,7 +551,7 @@ ${RESIDENCY_MISS_REPORT}
     if (__residencyReport) {
       stderr += __residencyReport;
       if (exitCode === 0) exitCode = 1;
-      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __residencyReport);
+      if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __nimbusOutEnc.encode(__residencyReport));
     }
 
     await __drainPendingIO();
@@ -563,7 +565,7 @@ ${RESIDENCY_MISS_REPORT}
         exitCode = 1;
         if (!captureOutput) {
           try {
-            await __supervisor.stderr(trace + "\\n");
+            await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n"));
           } catch {}
         }
       }
@@ -789,11 +791,12 @@ ${VFS_CURSOR_SEED_SOURCE}
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
-    const __queueRpcWrite = (method, s) => {
+    // The relay carries bytes (see "Process output is bytes" in the shims).
+    const __queueRpcWrite = (method, bytes) => {
       __rpcWriteCount++;
       const __task = __rpcWriteChain
-        .then(() => __supervisor[method](s))
-        .catch((e) => __onRpcDrop(s.length, e));
+        .then(() => __supervisor[method](bytes))
+        .catch((e) => __onRpcDrop(bytes.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
     };
@@ -811,13 +814,13 @@ ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
 
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", s); };
-      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", s); };
+      __consoleMod.log = (...a) => { const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
+      __consoleMod.error = (...a) => { const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stdout += s; __queueRpcWrite("stdout", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const s = String(d); stderr += s; __queueRpcWrite("stderr", s); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -871,7 +874,7 @@ ${RESIDENCY_MISS_REPORT}
         stderr += trace + "\\n";
         exitCode = 1;
         if (__supervisor && !captureOutput) {
-          try { __pendingIO.push(__supervisor.stderr(trace + "\\n").catch((e2) => __onRpcDrop((trace || "").length + 1, e2))); } catch {}
+          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
         }
       }
     }
@@ -900,7 +903,7 @@ ${RESIDENCY_MISS_REPORT}
       if (__residencyReport) {
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
-        try { await __supervisor.stderr(__residencyReport); } catch {}
+        try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
       await __supervisor.reportExit(code, reason || "");
       __nimbusProcessExitReported = true;
@@ -909,7 +912,7 @@ ${RESIDENCY_MISS_REPORT}
       const trace = (e && e.stack) || (e && e.message) || String(e);
       stderr += trace + "\\n";
       if (__supervisor) {
-        try { await __supervisor.stderr(trace + "\\n"); } catch {}
+        try { await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")); } catch {}
         await __nimbusReportFinalExit(1, trace + "\\n");
       }
     };
@@ -958,7 +961,7 @@ ${RESIDENCY_MISS_REPORT}
       const tail = "[orphan output: " + __rpcDrops + " dropped RPC write(s), ~" +
         __rpcDropBytes + " bytes lost" +
         (__rpcLastError ? "; last error: " + __rpcLastError : "") + "]\\n";
-      try { await __supervisor.stderr(tail); } catch {}
+      try { await __supervisor.stderr(__nimbusOutEnc.encode(tail)); } catch {}
     }
     if (exitCode !== 0) {
       if (__supervisor && !__nimbusProcessExitReported) {
