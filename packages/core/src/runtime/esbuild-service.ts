@@ -857,6 +857,89 @@ function importMetaEdits(source: string, absoluteUrl: string): SourceEdit[] | nu
  * esbuild-wasm. Returns null for module declarations that are not the compact,
  * semicolon-terminated shapes emitted by current JS bundlers.
  */
+/**
+ * Rewrite every dynamic `import(...)` so it resolves the way `require` does.
+ *
+ * This rewriter only converts top-level STATIC declarations, and left dynamic
+ * import alone by design. In a cell that is wrong: the cell is compiled with
+ * `new Function`, so a surviving `import()` is the RUNTIME's, and the runtime
+ * hands back its own builtin rather than the process's shim. Measured on real
+ * Vite —
+ *
+ *     vite/dist/node/chunks/config.js:14968
+ *     const { createServer } = await import("node:http");
+ *     return createServer(app);
+ *
+ * — which gave Vite the platform's `node:http`, whose `listen()` binds no
+ * port in the shims' registry. Vite printed its URL, nothing was bound, and
+ * the facet exited as a program with no handles left, straight after "ready".
+ *
+ * esbuild's own `format: 'cjs'` transform rewrites a literal dynamic import
+ * to a require, so this keeps the bounded path's output equivalent to the one
+ * it stands in for rather than introducing a behaviour of its own.
+ */
+/**
+ * The source with every string, template and comment blanked to spaces, at
+ * the SAME length — so an offset found here is an offset in the original.
+ *
+ * `stripCommentsAndStrings` removes those spans instead, which is right for
+ * a presence test and wrong for an edit: offsets from it land mid-token. It
+ * put a rewrite two characters into `await import(` and produced
+ * `aw__nimbusCellImport(require, ort(`.
+ */
+function maskLiteralSpans(source: string): string {
+  const out = source.split('');
+  let i = 0;
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to && k < out.length; k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (ch === '/' && next === '/') {
+      const end = source.indexOf('\n', i);
+      blank(i, end === -1 ? source.length : end);
+      i = end === -1 ? source.length : end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      blank(i, end === -1 ? source.length : end + 2);
+      i = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      let k = i + 1;
+      while (k < source.length) {
+        if (source[k] === '\\') { k += 2; continue; }
+        if (source[k] === ch) break;
+        k++;
+      }
+      blank(i, Math.min(k + 1, source.length));
+      i = k + 1;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
+function dynamicImportEdits(source: string): SourceEdit[] {
+  const masked = maskLiteralSpans(source);
+  const edits: SourceEdit[] = [];
+  const pattern = /\bimport\s*\(/g;
+  for (const match of masked.matchAll(pattern)) {
+    const start = match.index;
+    if (start === undefined) continue;
+    // `a.import(` is a member call, and `import.meta` is not a call at all.
+    const before = masked.slice(0, start).trimEnd();
+    if (before.endsWith('.')) continue;
+    const openParen = start + match[0].length - 1;
+    edits.push({ start, end: openParen + 1, text: '__nimbusCellImport(require, ' });
+  }
+  return edits;
+}
+
 export function rewriteBundledEsmToCjs(
   source: string,
   absoluteUrl: string,
@@ -877,6 +960,9 @@ export function rewriteBundledEsmToCjs(
   const edits: SourceEdit[] = [
     ...declarations.map(({ start, end }) => ({ start, end, text: '' })),
     ...metaEdits.filter((edit) =>
+      !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)
+    ),
+    ...dynamicImportEdits(source).filter((edit) =>
       !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)
     ),
   ].sort((a, b) => a.start - b.start);

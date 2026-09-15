@@ -6994,6 +6994,34 @@ builtins["node:util/types"] = builtins["util/types"];
 // skips it via the same FACET_PROVIDED_PACKAGES list.
 builtins.undici = __undiciMod;
 
+/**
+ * A cell's dynamic import() call.
+ *
+ * A cell is compiled with new Function, so an import() left in its body
+ * is the RUNTIME's: it resolves against the module map and hands back the
+ * platform's own builtins, not this process's. Real Vite reaches
+ * node:http that way (config.js:14968), got a server whose listen bound no
+ * port here, and the facet exited with no handles the moment boot returned.
+ *
+ * The ESM→CJS rewriter routes those calls here with the cell's own
+ * require, so resolution is the one the process already has. The result is
+ * shaped as a module namespace, since import() resolves to one and callers
+ * destructure named exports off it.
+ */
+globalThis.__nimbusCellImport = (req, id) => Promise.resolve().then(() => {
+  const loaded = req(id);
+  if (loaded && (loaded.__esModule || loaded[Symbol.toStringTag] === "Module")) return loaded;
+  // A CJS module's exports ARE the namespace's named exports, with the whole
+  // object as the default export — what an ESM importer of a CJS module sees.
+  if (loaded && (typeof loaded === "object" || typeof loaded === "function")) {
+    const ns = Object.create(null);
+    for (const key of Object.keys(loaded)) ns[key] = loaded[key];
+    if (!("default" in ns)) ns.default = loaded;
+    Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
+    return ns;
+  }
+  return { default: loaded };
+});
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════

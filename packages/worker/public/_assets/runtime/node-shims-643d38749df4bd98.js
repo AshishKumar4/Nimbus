@@ -8272,6 +8272,67 @@ builtins["node:util/types"] = builtins["util/types"];
 // skips it via the same FACET_PROVIDED_PACKAGES list.
 builtins.undici = __undiciMod;
 
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-643d38749df4bd98.js
+========
+// ──  nimbus:hmr — the session's preview HMR bridge ───────────────────
+// The browser's HMR WebSocket is accepted by the session (the socket cannot
+// cross the port-registry RPC), which multiplexes every client and every
+// filesystem change onto one event queue a dev server process drains here.
+// Both halves ride the process's own SUPERVISOR binding. Events:
+//   { type: 'connection' | 'message' | 'disconnect', clientId, msg? }
+//   { type: 'vfs', event: 'add'|'change'|'unlink'|'addDir'|'unlinkDir'|'rename', path, oldPath? }
+builtins["nimbus:hmr"] = {
+  nextEvents: (timeoutMs) => __nimbusUseRpcResultUnref(__supervisor.hmrNextEvent(timeoutMs), (events) => events),
+  send: (clientId, msg) => __nimbusUseRpcResult(__supervisor.hmrSend(clientId, msg), () => undefined),
+};
+
+// ──  nimbus:esbuild — the session's esbuild, for a process without one ──
+// A transform is pure, so it crosses the supervisor to the session's one
+// esbuild pool; the dependency optimizer cannot cross (its esbuild context
+// carries JS plugins), so it is a resident of its own the session launches
+// on request. Both keep a dev server's module map free of esbuild's image.
+builtins["nimbus:esbuild"] = {
+  transform: (code, options) => __nimbusUseRpcResult(__supervisor.esbuildTransform(code, options), (result) => result),
+  optimizeDeps: (include) => __nimbusUseRpcResult(__supervisor.optimizeDeps(include), (result) => result),
+};
+
+// ──  Provided packages ───────────────────────────────────────────────
+// Bare specifier → exports, consulted by __requireFrom after the builtins
+// and before node_modules. See the require seam for who registers here.
+const __nimbusProvidedPackages = globalThis.__nimbusProvidedPackages instanceof Map
+  ? globalThis.__nimbusProvidedPackages : new Map();
+builtins.module.__nimbusProvide = (name, exports) => { __nimbusProvidedPackages.set(name, exports); };
+
+/**
+ * A cell's dynamic import() call.
+ *
+ * A cell is compiled with new Function, so an import() left in its body
+ * is the RUNTIME's: it resolves against the module map and hands back the
+ * platform's own builtins, not this process's. Real Vite reaches
+ * node:http that way (config.js:14968), got a server whose listen bound no
+ * port here, and the facet exited with no handles the moment boot returned.
+ *
+ * The ESM→CJS rewriter routes those calls here with the cell's own
+ * require, so resolution is the one the process already has. The result is
+ * shaped as a module namespace, since import() resolves to one and callers
+ * destructure named exports off it.
+ */
+globalThis.__nimbusCellImport = (req, id) => Promise.resolve().then(() => {
+  const loaded = req(id);
+  if (loaded && (loaded.__esModule || loaded[Symbol.toStringTag] === "Module")) return loaded;
+  // A CJS module's exports ARE the namespace's named exports, with the whole
+  // object as the default export — what an ESM importer of a CJS module sees.
+  if (loaded && (typeof loaded === "object" || typeof loaded === "function")) {
+    const ns = Object.create(null);
+    for (const key of Object.keys(loaded)) ns[key] = loaded[key];
+    if (!("default" in ns)) ns.default = loaded;
+    Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
+    return ns;
+  }
+  return { default: loaded };
+});
+
+>>>>>>>> bc950c0e (fix(core): a cell's dynamic import resolves through the cell's require):packages/worker/public/_assets/runtime/node-shims-c94e0865e77cad69.js
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════

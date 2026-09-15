@@ -71,11 +71,6 @@ export declare const BUNDLER_VERSION = "v9";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
-/**
- * Converts bundler-emitted ESM without constructing an AST or loading
- * esbuild-wasm. Returns null for module declarations that are not the compact,
- * semicolon-terminated shapes emitted by current JS bundlers.
- */
 export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /**
