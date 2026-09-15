@@ -1229,8 +1229,9 @@ function request(path = 'first') {
     async writeFile() {},
     async registerPort() {},
     async unregisterPort() {},
-    async stdout(text) {
-      if (text.includes('blocked prior output')) {
+    // The relay carries bytes; a stub that inspects the payload decodes it.
+    async stdout(bytes) {
+      if (cellText(bytes).includes('blocked prior output')) {
         outputStarted();
         await outputGate;
       }
