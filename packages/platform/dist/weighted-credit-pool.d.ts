@@ -9,6 +9,11 @@ export interface WeightedCreditPoolStats {
     readonly current: number;
     readonly peak: number;
     readonly queued: number;
+    /**
+     * Credit held by owners that keep it for their whole lifetime rather than
+     * for one operation — the floor no waiter can ever expect to get back.
+     */
+    readonly resident: number;
 }
 export interface WeightedCreditPoolOptions {
     /**
@@ -56,6 +61,14 @@ export declare class WeightedCreditPool {
     private isSmall;
     tryAcquire(bytes: number): ResizableCreditLease | null;
     acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /**
+     * Take credit that will be held for the owner's whole lifetime rather than
+     * for one operation — the esbuild pool's wasm image is the case.
+     *
+     * Recorded as a floor so a later claim that could never fit around it is
+     * refused with both numbers instead of parking in the FIFO forever.
+     */
+    acquireResident(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
     private validateRequest;
 }
 //# sourceMappingURL=weighted-credit-pool.d.ts.map

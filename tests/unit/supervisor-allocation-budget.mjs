@@ -38,6 +38,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     current: 32,
     peak: 32,
     queued: 8,
+    resident: 0,
   });
 
   releaseAll.resolve();
@@ -107,6 +108,75 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     heap.breakdown.supervisorBaselineBytes + 8,
   );
   held.release();
+}
+
+// ── resident owners, and the claim that can never fit ─────────────────────
+//
+// A resident owner holds its credit for its whole lifetime: the esbuild
+// pool's wasm image, retained until the pool is disposed. A later claim
+// larger than what remains around it can never be satisfied by waiting, and
+// parking it is worse than failing — the FIFO refuses everyone behind a
+// waiter, so one unsatisfiable claim stops the whole isolate with no error
+// and no CPU. Measured on a deployed worker before this: capacity
+// 41,943,040, resident 11,907,565, queued 1 for 222 s.
+{
+  const budget = new SupervisorAllocationBudget(1000);
+  assert.equal(budget.stats.resident, 0);
+
+  const pool = await budget.acquireResidentBytes(400);
+  assert.equal(budget.stats.resident, 400);
+  assert.equal(budget.stats.current, 400);
+
+  // A weighted claim that FITS around the resident owner proceeds.
+  const fits = await budget.acquire(600);
+  assert.equal(budget.stats.current, 1000);
+  assert.equal(budget.stats.queued, 0, 'a claim that fits is granted, not queued');
+  fits.release();
+
+  // One byte too large: refused, with both numbers, and NOT queued.
+  await assert.rejects(
+    budget.acquire(601),
+    (error) => {
+      assert.ok(error instanceof RangeError, `expected RangeError, got ${error}`);
+      assert.match(error.message, /can never be granted/);
+      assert.match(error.message, /capacity is 1000/);
+      assert.match(error.message, /400 bytes are held by resident owners/);
+      assert.match(error.message, /leaving 600/);
+      return true;
+    },
+  );
+  assert.equal(budget.stats.queued, 0, 'a refused claim must not sit in the queue');
+
+  // A claim that merely has to WAIT still waits: this must not turn ordinary
+  // back-pressure into an error.
+  const holder = await budget.acquire(600);
+  let granted = false;
+  const waiting = budget.acquire(100).then((lease) => { granted = true; return lease; });
+  await tick();
+  assert.equal(granted, false, 'a claim that fits but has no room yet queues');
+  assert.equal(budget.stats.queued, 1);
+  holder.release();
+  (await waiting).release();
+  assert.equal(granted, true, 'and is granted once room appears');
+
+  // Releasing the resident owner lifts the ceiling again.
+  pool.release();
+  assert.equal(budget.stats.resident, 0);
+  const full = await budget.acquire(1000);
+  full.release();
+}
+
+// Shrinking a resident lease lowers the floor by what it gave back — how the
+// esbuild pool goes from its setup bound to the bytes it actually keeps.
+{
+  const budget = new SupervisorAllocationBudget(1000);
+  const pool = await budget.acquireResidentBytes(900);
+  await assert.rejects(budget.acquire(200), /can never be granted/);
+  pool.shrinkTo(100);
+  assert.equal(budget.stats.resident, 100);
+  const after = await budget.acquire(900);
+  after.release();
+  pool.release();
 }
 
 console.log('supervisor allocation budget: ok');

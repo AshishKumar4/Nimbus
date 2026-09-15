@@ -13,6 +13,8 @@ export interface SupervisorAllocationBudgetStats {
     readonly current: number;
     readonly peak: number;
     readonly queued: number;
+    /** Credit held for an owner's whole lifetime; see `acquireResident`. */
+    readonly resident: number;
 }
 interface AllocationBudgetLifecycle {
     onActive?: () => void;
@@ -51,6 +53,12 @@ export declare class SupervisorAllocationBudget {
      * stops a large read overlapping a large write.
      */
     acquireWithoutLifecycle(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /**
+     * Reserve bytes an owner holds for its whole lifetime, not for one
+     * operation. Recorded as a floor: a later claim larger than what remains
+     * around it is refused with both numbers rather than parked forever.
+     */
+    acquireResidentBytes(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
     private _acquire;
 }
 /**
@@ -83,6 +91,11 @@ export declare function acquireSupervisorAllocation(bytes: number, signal?: Abor
  * there to fill.
  */
 export declare function acquireSupervisorReadAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+/**
+ * Reserve bytes for the whole life of the owner that takes them — an image
+ * a pool keeps until it is disposed. See `acquireResidentBytes`.
+ */
+export declare function acquireResidentSupervisorAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
 /**
  * Reserve the full budget for an allocation whose retained size is not known
  * accurately enough to overlap safely with other heavy work.

@@ -55,8 +55,18 @@ export class SupervisorAllocationBudget {
     acquireWithoutLifecycle(bytes, signal) {
         return this._acquire(bytes, signal, false);
     }
-    async _acquire(bytes, signal, drivesLifecycle) {
-        const credit = await this.credits.acquire(bytes, signal);
+    /**
+     * Reserve bytes an owner holds for its whole lifetime, not for one
+     * operation. Recorded as a floor: a later claim larger than what remains
+     * around it is refused with both numbers rather than parked forever.
+     */
+    acquireResidentBytes(bytes, signal) {
+        return this._acquire(bytes, signal, true, true);
+    }
+    async _acquire(bytes, signal, drivesLifecycle, resident = false) {
+        const credit = resident
+            ? await this.credits.acquireResident(bytes, signal)
+            : await this.credits.acquire(bytes, signal);
         if (drivesLifecycle) {
             this.lifecycleHolders++;
             if (!this.active) {
@@ -167,6 +177,13 @@ export function acquireSupervisorAllocation(bytes, signal) {
  */
 export function acquireSupervisorReadAllocation(bytes, signal) {
     return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
+}
+/**
+ * Reserve bytes for the whole life of the owner that takes them — an image
+ * a pool keeps until it is disposed. See `acquireResidentBytes`.
+ */
+export function acquireResidentSupervisorAllocation(bytes, signal) {
+    return supervisorAllocationBudget.acquireResidentBytes(bytes, signal);
 }
 /**
  * Reserve the full budget for an allocation whose retained size is not known

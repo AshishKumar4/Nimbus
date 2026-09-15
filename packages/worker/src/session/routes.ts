@@ -31,6 +31,7 @@ import {
   matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest,
 } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
+import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import {
   getFailures, getLastRpcFrame, getLastFacetId,
   getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents,
@@ -732,6 +733,12 @@ export async function handleFetch(self: RoutesHost, request: Request): Promise<R
 
         // ── v3 / C' observability foundation ──────────────────────
         heap,
+        // The shared byte budget every heavy allocator in this isolate
+        // queues on. `queued` is the one number that distinguishes a
+        // launch that is working from a launch that is parked: a claim
+        // larger than what is free waits in the FIFO with no error, no
+        // alarm and no CPU, which reads exactly like a launch that stopped.
+        alloc: readSupervisorAllocationBudget(),
         evictionLabels: WORKERD_EVICTION_LABELS,
         recoveryEvents: getRecoveryEvents(),
 

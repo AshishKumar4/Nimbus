@@ -15,7 +15,7 @@
  * graph of sessions that never bundle.
  */
 import type { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireResidentSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import {
   PRE_BUNDLE_CONCURRENCY,
   PRE_BUNDLE_SLICE_CAP_BYTES,
@@ -88,14 +88,23 @@ export class EsbuildBundlePool implements BundlePoolProvider {
       import('../loaders/pre-bundle-preamble.js'),
       import('../runtime/esbuild-wasm-bytes.js'),
     ]);
-    const setupAllocation = await acquireSupervisorAllocation(
-      SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
-    );
+    // Resident, and sized to what the pool will KEEP — not the whole budget.
+    //
+    // The full-budget claim this used to make is grantable exactly once: the
+    // lease it shrinks to becomes a permanent floor, so a second pool
+    // construction asked for 40 MiB against 28.1 MiB that could ever be free
+    // and parked in the FIFO with no error and no CPU. Measured on a
+    // deployed worker: capacity 41,943,040, resident 11,907,565, queued 1 for
+    // 222 s with the isolate healthy the whole time — and because the queue
+    // refuses everyone behind a waiter, the whole session stopped making
+    // progress. The bound below is the same one the payload is checked
+    // against, so the slice cap stays free for the work the pool exists for.
+    const maxRetainedWasmBytes =
+      SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES - PRE_BUNDLE_SLICE_CAP_BYTES;
+    const setupAllocation = await acquireResidentSupervisorAllocation(maxRetainedWasmBytes);
     let retained = false;
     try {
       const wasmBytes = await fetchEsbuildWasmBytes(env);
-      const maxRetainedWasmBytes =
-        SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES - PRE_BUNDLE_SLICE_CAP_BYTES;
       if (wasmBytes.byteLength > maxRetainedWasmBytes) {
         throw new RangeError(
           `esbuild wasm payload ${wasmBytes.byteLength} exceeds the ${maxRetainedWasmBytes}-byte retained budget`,

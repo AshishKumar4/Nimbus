@@ -28,6 +28,7 @@ import { replicasSuspended as _w12ReplicasSuspended } from '../replica/suspensio
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
+import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
 import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
@@ -702,6 +703,12 @@ export async function handleFetch(self, request) {
             },
             // ── v3 / C' observability foundation ──────────────────────
             heap,
+            // The shared byte budget every heavy allocator in this isolate
+            // queues on. `queued` is the one number that distinguishes a
+            // launch that is working from a launch that is parked: a claim
+            // larger than what is free waits in the FIFO with no error, no
+            // alarm and no CPU, which reads exactly like a launch that stopped.
+            alloc: readSupervisorAllocationBudget(),
             evictionLabels: WORKERD_EVICTION_LABELS,
             recoveryEvents: getRecoveryEvents(),
             // ── W9: hibernation observability ───────────────────────────

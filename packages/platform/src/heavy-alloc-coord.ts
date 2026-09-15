@@ -24,6 +24,8 @@ export interface SupervisorAllocationBudgetStats {
   readonly current: number;
   readonly peak: number;
   readonly queued: number;
+  /** Credit held for an owner's whole lifetime; see `acquireResident`. */
+  readonly resident: number;
 }
 
 interface AllocationBudgetLifecycle {
@@ -82,12 +84,24 @@ export class SupervisorAllocationBudget {
     return this._acquire(bytes, signal, false);
   }
 
+  /**
+   * Reserve bytes an owner holds for its whole lifetime, not for one
+   * operation. Recorded as a floor: a later claim larger than what remains
+   * around it is refused with both numbers rather than parked forever.
+   */
+  acquireResidentBytes(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
+    return this._acquire(bytes, signal, true, true);
+  }
+
   private async _acquire(
     bytes: number,
     signal: AbortSignal | undefined,
     drivesLifecycle: boolean,
+    resident = false,
   ): Promise<ResizableCreditLease> {
-    const credit = await this.credits.acquire(bytes, signal);
+    const credit = resident
+      ? await this.credits.acquireResident(bytes, signal)
+      : await this.credits.acquire(bytes, signal);
     if (drivesLifecycle) {
       this.lifecycleHolders++;
       if (!this.active) {
@@ -222,6 +236,17 @@ export function acquireSupervisorReadAllocation(
   signal?: AbortSignal,
 ): Promise<ResizableCreditLease> {
   return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
+}
+
+/**
+ * Reserve bytes for the whole life of the owner that takes them — an image
+ * a pool keeps until it is disposed. See `acquireResidentBytes`.
+ */
+export function acquireResidentSupervisorAllocation(
+  bytes: number,
+  signal?: AbortSignal,
+): Promise<ResizableCreditLease> {
+  return supervisorAllocationBudget.acquireResidentBytes(bytes, signal);
 }
 
 /**
