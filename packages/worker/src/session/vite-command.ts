@@ -146,8 +146,7 @@ export function createViteCommand(self: ViteHost) {
         const distDir = resolvedOutDir;
         if (!insideRoot) {
           ctx.stderr.write(
-            `\x1b[33m(!)\x1b[0m outDir ${resolvedOutDir} is not inside project root and will not be emptied.\n` +
-            'Use --emptyOutDir to override.\n',
+            `\x1b[33m(!)\x1b[0m outDir ${resolvedOutDir} is not inside project root and will not be emptied.\n`,
           );
         }
         const publicDir = cwd + '/public';
