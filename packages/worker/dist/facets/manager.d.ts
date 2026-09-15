@@ -25,6 +25,7 @@ import { EsbuildService, type TransformResult } from '@nimbus-sh/core/runtime/es
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import { type WasmImageRecord } from './wasm-image-digest.js';
 type EsbuildTransformOptions = NonNullable<Parameters<EsbuildService['transform']>[1]>;
 type LargeEsmTransform = (code: string, options: EsbuildTransformOptions) => Promise<TransformResult>;
 /** Result returned from a facet execution */
@@ -124,7 +125,32 @@ interface GeneratedNodeFacetCode {
 /**
  * Generate one-shot runtime code with a plain fetch handler.
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, shims: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, shims: string, wasmImports?: readonly FacetWasmImport[]): Promise<GeneratedNodeFacetCode>;
+/** One wasm image the generated main module imports from the module map. */
+export interface FacetWasmImport {
+    /** The module-map name the boot spec carries the image under. */
+    moduleName: string;
+    /** The absolute VFS path the program reads the same bytes from. */
+    vfsPath: string;
+    /**
+     * A content key for the same bytes, for an image the program never reads
+     * from the filesystem — one inlined in a package's own source as base64.
+     * The seam recognises the bytes instead of the path.
+     */
+    digest?: string;
+}
+/** The module-map name a precompiled wasm image travels under. */
+export declare function facetWasmModuleName(index: number): string;
+/**
+ * The wasm imports one launch stages: the images its options name, then
+ * every image the closure walk recorded (FacetVfsState.wasmImages) that the
+ * options did not already name by path. One member per path; the closure's
+ * record supplies the digest an option without one lacks.
+ */
+export declare function facetWasmImports(named: readonly {
+    vfsPath: string;
+    digest: string | undefined;
+}[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
     env?: Record<string, string>;
@@ -199,6 +225,11 @@ interface FacetVfsState {
     serializedMetadata?: string;
     /** Move the bundle out of the main module when combined state exceeds its ceiling. */
     bundleSideModulesRequired?: boolean;
+    /**
+     * The wasm images the closure holds, by path and content digest — see
+     * `collectClosureWasmImages`. A launch stages each as a wasm map entry.
+     */
+    wasmImages?: readonly WasmImageRecord[];
     /**
      * Memoized `bundleUsesNodeSqlite(entryCode, bundle)`. Answered while the raw
      * cells are still in hand so `releaseSerializedSources` can drop them — it is
@@ -471,7 +502,21 @@ export declare function addBinTargetSiblings(vfs: CredentialedVfs, scriptPath: s
     fileCount: number;
 }, bundleProfile: FacetBundleProfile): {
     added: number;
+    wasmPaths: string[];
 };
+/**
+ * The wasm images a program's closure holds, by path and content digest.
+ *
+ * Two sources, one record: a `.wasm` cell the walk already staged (digested
+ * from the cell, no second read), and a `.wasm` file the bin-package pass
+ * saw but did not stage because it is over the bundle's per-file cap —
+ * esbuild-wasm's 11.9 MiB image is the motivating one. A launch stages each
+ * as a module-map member the loader compiles, registered under both keys,
+ * so the program's own `new WebAssembly.Module(bytes)` is answered from the
+ * map whether it read the bytes by path or carried them inline. A file that
+ * cannot be read is left out; the seam's refusal names the module later.
+ */
+export declare function collectClosureWasmImages(vfs: Pick<CredentialedVfs, 'readFile'>, bundle: Record<string, string | Uint8Array | FacetVfsDenial>, unstagedPaths: readonly string[]): WasmImageRecord[];
 /**
  * Stage the paths an earlier run of the same entry read synchronously and did
  * not have.
@@ -965,6 +1010,13 @@ export declare class FacetManager {
      * A session without a filesystem gets an empty state: there is nothing to
      * stage and nothing to yield for.
      */
+    /**
+     * The closure's wasm images as module-map members for a one-shot facet,
+     * read by path under the process's own credential. An image that cannot
+     * be read is left out; the program's compile then meets the seam's own
+     * refusal, which names the module.
+     */
+    private _wasmModulesByValue;
     private _buildProcessBundle;
     /**
      * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
