@@ -42,7 +42,7 @@ const build = await Bun.build({
 assert.equal(build.success, true, build.logs.map(String).join('\n'));
 const entry = build.outputs.find((output) => output.path.endsWith('/routes.js'));
 assert.ok(entry, 'the routes bundle was emitted');
-const { handleFetch } = await import(pathToFileURL(entry.path).href);
+const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } = await import(pathToFileURL(entry.path).href);
 
 const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
@@ -169,6 +169,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
     ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs({ faults, extraFiles, reads }); },
     ensureBundlePool() { return this.bundlePool; },
     seedFilesystem() {},
+    restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
   };
   self.store = store;
   return self;
