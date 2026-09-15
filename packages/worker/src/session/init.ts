@@ -69,6 +69,7 @@ import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import {
   filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard,
   detectUnsupportedWranglerConfig, withLoudTimeout, VITE_BUILD_TIMEOUT_MS,
+  refusedNextSubcommand, NEXT_REFUSAL_MESSAGE,
 } from './helpers.js';
 import { createViteCommand } from './vite-command.js';
 import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
@@ -1739,29 +1740,17 @@ export async function initSession(
           // (the only thing the module did was hold these strings) and
           // the file is deleted.
           //
-          // Next.js dev/start still needs a custom http.Server +
-          // child_process.fork with v8-IPC + webpack/Turbopack, none of
-          // which Nimbus ships. We surface a deterministic message
-          // rather than letting the script hang or emit a confusing
-          // crash. The block remains a one-off symbol-detection
-          // guard, NOT a generic per-framework code path. Any future
-          // similar guard belongs alongside this one — not in its own
-          // src/frameworks/<name>.ts file.
-          if (
-            (scriptName === 'dev' || scriptName === 'start') &&
-            (pkg.dependencies?.next || pkg.devDependencies?.next) &&
-            !(scriptArgs.includes('--force') || scriptArgs.includes('--allow-next'))
-          ) {
-            const NEXT_BLOCK_MESSAGE =
-              '\x1b[31m\u2718\x1b[0m \x1b[1mNext.js dev server is not supported in Nimbus.\x1b[0m\n' +
-              '   Specific blockers:\n' +
-              "     1. \x1b[2mchild_process.fork\x1b[0m IPC uses v8-serializer (Nimbus ships JSON projection).\n" +
-              '     2. webpack / Turbopack bundlers are not integrated with the pre-bundle pipeline.\n' +
-              '     3. Custom \x1b[2mhttp.Server\x1b[0m semantics (keep-alive, raw sockets) are facet-incompatible.\n' +
-              '\n' +
-              '   Workaround: deploy with \x1b[36mnext build\x1b[0m + a hosted runtime,\n' +
-              '   or pass \x1b[36m--allow-next\x1b[0m to bypass at your own risk.\n';
-            ctx.stderr.write(NEXT_BLOCK_MESSAGE);
+          // Next.js dev/start/build/export all need the same pipeline —
+          // custom http.Server + child_process.fork with v8-IPC +
+          // webpack/Turbopack — none of which Nimbus ships. We surface a
+          // deterministic refusal rather than letting the script hang or
+          // (build) reset the isolate during spawn. The block remains a
+          // one-off symbol-detection guard, NOT a generic per-framework
+          // code path. Any future similar guard belongs alongside this
+          // one — not in its own src/frameworks/<name>.ts file.
+          const refused = refusedNextSubcommand(scriptName, script, pkg, scriptArgs);
+          if (refused) {
+            ctx.stderr.write(NEXT_REFUSAL_MESSAGE);
             return 127;
           }
 

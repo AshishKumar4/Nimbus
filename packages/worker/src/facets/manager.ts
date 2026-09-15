@@ -1471,6 +1471,29 @@ function _bundleCellLength(cell: string | Uint8Array): number {
   return typeof cell === 'string' ? cell.length : cell.byteLength;
 }
 
+/**
+ * Pre-read admission check for a bundle candidate: refuse BEFORE reading
+ * when the file's on-disk size already exceeds the remaining bundle budget
+ * or the caller's per-file ceiling. Without this every helper read a file
+ * in full, then discarded it when the post-read `cellLen` check tripped —
+ * on trees with several 5–10 MiB artifacts that read alone was the memory
+ * pressure that reset the isolate.
+ *
+ * `perFileCeiling` is the pass's own cap (e.g. CWD_SNAPSHOT_MAX_FILE_BYTES,
+ * BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES); omit it for budget-only checks.
+ */
+function _bundleAdmits(
+  vfs: { lstat(p: string): { size: number } },
+  path: string,
+  budgetState: { totalBytes: number },
+  perFileCeiling?: number,
+): boolean {
+  let size: number;
+  try { size = vfs.lstat(path).size; } catch { return false; }
+  if (perFileCeiling !== undefined && size > perFileCeiling) return false;
+  return budgetState.totalBytes + size <= VFS_BUNDLE_MAX_BYTES;
+}
+
 /** What a bundle currently weighs, and so what one more pass over it costs. */
 function _bundleWeight(bundle: Record<string, string | Uint8Array>): number {
   let weight = 0;
@@ -2114,7 +2137,7 @@ export function greedyAddMainEntries(
       // supervisor's headroom — on every invocation that never reads it.
       // Anything the program really requires arrives through the closure,
       // which is uncapped.
-      if (vfs.lstat(stripped).size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES) return false;
+      if (!_bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)) return false;
       // hardening-r5: preserve binary content as Uint8Array.
       const content = _readBundleCell(vfs, stripped);
       const cellLen = _bundleCellLength(content);
@@ -2374,6 +2397,7 @@ export function addStaticReadFileAssets(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+      if (!_bundleAdmits(vfs, stripped, budgetState)) return false;
       // hardening-r5: preserve binary content as Uint8Array.
       const content = _readBundleCell(vfs, stripped);
       const cellLen = _bundleCellLength(content);
@@ -2544,6 +2568,7 @@ export function addStaticReadFileDotfilesAndCompiled(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+      if (!_bundleAdmits(vfs, stripped, budgetState)) return false;
       // hardening-r5: preserve binary content as Uint8Array.
       const content = _readBundleCell(vfs, stripped);
       const cellLen = _bundleCellLength(content);
@@ -2730,6 +2755,7 @@ export function addBinTargetSiblings(
   for (const candidate of candidates) {
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) break;
+    if (candidate.size > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes) continue;
     // hardening-r5: preserve binary content as Uint8Array.
     let content: string | Uint8Array;
     try { content = _readBundleCell(vfs, candidate.path); } catch { continue; }
@@ -2928,7 +2954,7 @@ function addCwdProjectFiles(
       // Skip an oversized file before reading it: this walk guesses at what
       // the program might read, and one guess must not spend the budget (or
       // the supervisor's headroom) that every later invocation then carries.
-      try { if (vfs.lstat(child).size > CWD_SNAPSHOT_MAX_FILE_BYTES) continue; } catch { continue; }
+      if (!_bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES)) continue;
       let content: string | Uint8Array;
       try { content = _readBundleCell(vfs, child); } catch { continue; }
       const cellLen = _bundleCellLength(content);
@@ -2992,6 +3018,7 @@ function addEntryAbsPathReads(
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return;
     try {
       if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return;
+      if (!_bundleAdmits(vfs, stripped, budgetState)) return;
       // hardening-r5: preserve binary content as Uint8Array.
       const content = _readBundleCell(vfs, stripped);
       const cellLen = _bundleCellLength(content);

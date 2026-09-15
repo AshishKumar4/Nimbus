@@ -431,6 +431,58 @@ export function detectBundlerBin(script) {
     return null;
 }
 /**
+ * Whether `npm run <scriptName>` (or `npm start`/`npm test`) should refuse
+ * before dispatch because the resolved script invokes `next` on a
+ * subcommand Nimbus cannot run: `dev`, `start`, `build`, or `export` all
+ * need the same missing pipeline — webpack/Turbopack bundling,
+ * child_process.fork with v8-IPC, custom http.Server semantics.
+ *
+ * Returns the blocked subcommand ('dev'|'start'|'build'|'export') or null.
+ * `--force` / `--allow-next` in the script args bypasses the refusal.
+ * scriptName 'dev'/'start' on a next-depending package refuses even when
+ * the script body doesn't name `next` (custom dev servers), matching the
+ * pre-extension dev/start-only behavior.
+ */
+export function refusedNextSubcommand(scriptName, script, pkg, scriptArgs) {
+    if (scriptArgs.includes('--force') || scriptArgs.includes('--allow-next'))
+        return null;
+    if (!(pkg.dependencies?.next || pkg.devDependencies?.next))
+        return null;
+    if (scriptName === 'dev' || scriptName === 'start')
+        return scriptName;
+    // For other script names the script body must actually invoke a blocked
+    // next subcommand. Tokens: skip env assignments and cross-env/env/npx.
+    const tokens = (script || '').trim().split(/\s+/);
+    let i = 0;
+    while (i < tokens.length) {
+        const t = tokens[i];
+        if (/^[A-Z_][A-Z0-9_]*=/.test(t) || t === 'cross-env' || t === 'env' || t === 'npx') {
+            i++;
+            continue;
+        }
+        break;
+    }
+    const bin = (tokens[i] || '').replace(/^\.\/node_modules\/\.bin\//, '');
+    if (bin !== 'next' && !bin.startsWith('next.'))
+        return null;
+    const sub = tokens[i + 1];
+    if (sub === 'dev' || sub === 'start' || sub === 'build' || sub === 'export')
+        return sub;
+    return null;
+}
+/**
+ * The refusal message for `refusedNextSubcommand` — identical blockers and
+ * escape hatch for every blocked subcommand.
+ */
+export const NEXT_REFUSAL_MESSAGE = '\x1b[31m✘\x1b[0m \x1b[1mNext.js is not supported in Nimbus.\x1b[0m\n' +
+    '   Specific blockers:\n' +
+    "     1. \x1b[2mchild_process.fork\x1b[0m IPC uses v8-serializer (Nimbus ships JSON projection).\n" +
+    '     2. webpack / Turbopack bundlers are not integrated with the pre-bundle pipeline.\n' +
+    '     3. Custom \x1b[2mhttp.Server\x1b[0m semantics (keep-alive, raw sockets) are facet-incompatible.\n' +
+    '\n' +
+    '   Workaround: run the Next.js project outside Nimbus (or a hosted runtime),\n' +
+    '   or pass \x1b[36m--allow-next\x1b[0m to bypass at your own risk.\n';
+/**
  * Check whether a project directory has installed dependencies.
  *
  * Returns { missing: true, depCount } if package.json declares deps AND

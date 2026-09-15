@@ -358,4 +358,57 @@ assert.deepEqual(
   );
 }
 
+
+// The bundle walk must refuse a candidate on `lstat().size` BEFORE reading
+// it. Pre-fix every helper read the file in full, then discarded it when
+// the post-read cellLen check tripped — on trees with several MiB-scale
+// artifacts the read alone was the memory pressure that reset the isolate.
+// Fixture: the cwd sweep fills the budget with small files until < 3 MiB
+// remains; the entry code names one absolute path (read by the
+// absolute-path literal pass, which has no per-file ceiling). The 3 MiB
+// file must be excluded AND must never reach VFS.readFile.
+{
+  const cwd = 'home/user';
+  const MIB = 1024 * 1024;
+  const bigPath = `${cwd}/big-asset.bin`;
+  const files = { [`${cwd}/index.js`]: `module.exports = "/${bigPath}";` };
+  const observed = new Set();
+  const smallCount = 22; // 22×1 MiB leaves 2 MiB of budget — under the 3 MiB candidate
+  for (let i = 0; i < smallCount; i++) {
+    files[`${cwd}/small-${i}.bin`] = 'S'.repeat(MIB);
+    observed.add(`${cwd}/small-${i}.bin`);
+  }
+  files[bigPath] = 'B'.repeat(3 * MIB);
+
+  class SpyVfs extends FakeVfs {
+    constructor(f) { super(f); this.reads = []; }
+    readFile(p) { this.reads.push(p.replace(/^\/+/, '')); return super.readFile(p); }
+  }
+  const vfs = new SpyVfs(files);
+  const snapshot = await buildPrefetchBundle(
+    vfs,
+    undefined,
+    cwd,
+    files[`${cwd}/index.js`], // entryCode carries the absolute-path literal
+    identityEsbuild,
+    undefined,
+    observed, // the smalls are required cells: they fill the budget and can't be evicted
+  );
+
+  assert.equal(
+    snapshot.bundle[bigPath],
+    undefined,
+    `a candidate past the remaining budget is excluded (bundle keys: ${Object.keys(snapshot.bundle).length})`,
+  );
+  assert.ok(
+    !vfs.reads.includes(bigPath),
+    `the excluded candidate was never read; totalReads=${vfs.reads.length} bigRead=${vfs.reads.includes(bigPath)}`,
+  );
+  // Sanity: the small observed reads did ride along.
+  assert.ok(
+    snapshot.bundle[`${cwd}/small-0.bin`] !== undefined,
+    'files that fit are still admitted',
+  );
+}
+
 console.log('facet VFS snapshot closure: ok');

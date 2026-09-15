@@ -128,6 +128,28 @@ export declare function _classifyCommand(name: string): {
  */
 export declare function detectBundlerBin(script: string): string | null;
 /**
+ * Whether `npm run <scriptName>` (or `npm start`/`npm test`) should refuse
+ * before dispatch because the resolved script invokes `next` on a
+ * subcommand Nimbus cannot run: `dev`, `start`, `build`, or `export` all
+ * need the same missing pipeline — webpack/Turbopack bundling,
+ * child_process.fork with v8-IPC, custom http.Server semantics.
+ *
+ * Returns the blocked subcommand ('dev'|'start'|'build'|'export') or null.
+ * `--force` / `--allow-next` in the script args bypasses the refusal.
+ * scriptName 'dev'/'start' on a next-depending package refuses even when
+ * the script body doesn't name `next` (custom dev servers), matching the
+ * pre-extension dev/start-only behavior.
+ */
+export declare function refusedNextSubcommand(scriptName: string, script: string, pkg: {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+}, scriptArgs: readonly string[]): 'dev' | 'start' | 'build' | 'export' | null;
+/**
+ * The refusal message for `refusedNextSubcommand` — identical blockers and
+ * escape hatch for every blocked subcommand.
+ */
+export declare const NEXT_REFUSAL_MESSAGE: string;
+/**
  * Check whether a project directory has installed dependencies.
  *
  * Returns { missing: true, depCount } if package.json declares deps AND

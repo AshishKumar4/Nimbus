@@ -27,6 +27,8 @@ import {
   detectBundlerBin,
   checkNodeModulesGuard,
   withLoudTimeout,
+  refusedNextSubcommand,
+  NEXT_REFUSAL_MESSAGE,
 } from '../../packages/worker/src/session/helpers.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -120,6 +122,38 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
   const boom = new Error('esbuild crashed');
   await assert.rejects(withLoudTimeout(Promise.reject(boom), 1_000, 'test work'), (e) => e === boom);
   console.log('  withLoudTimeout: passthrough, loud stall, failure preserved');
+}
+
+
+// ── 6. refusedNextSubcommand — dev/start/build/export all refuse ─────────
+{
+  const nextPkg = { dependencies: { next: '^15.0.0', react: '^19.0.0' } };
+  const noNext = { dependencies: { vite: '^6.0.0' } };
+
+  // Script-name refusal for dev/start (pre-extension behavior kept).
+  assert.equal(refusedNextSubcommand('dev', 'next dev', nextPkg, []), 'dev');
+  assert.equal(refusedNextSubcommand('start', 'next start', nextPkg, []), 'start');
+  assert.equal(refusedNextSubcommand('dev', 'node server.js', nextPkg, []), 'dev');
+
+  // The N3 fix: build/export refuse too, via the script body.
+  assert.equal(refusedNextSubcommand('build', 'next build', nextPkg, []), 'build');
+  assert.equal(refusedNextSubcommand('export', 'next export', nextPkg, []), 'export');
+  assert.equal(refusedNextSubcommand('build', 'cross-env NODE_ENV=production next build', nextPkg, []), 'build');
+  assert.equal(refusedNextSubcommand('build', 'next build && echo done', nextPkg, []), 'build');
+
+  // Non-next projects and non-blocked next subcommands pass through.
+  assert.equal(refusedNextSubcommand('build', 'vite build', noNext, []), null);
+  assert.equal(refusedNextSubcommand('build', 'next telemetry', nextPkg, []), null);
+  assert.equal(refusedNextSubcommand('test', 'vitest run', noNext, []), null);
+
+  // Escape hatches.
+  assert.equal(refusedNextSubcommand('dev', 'next dev', nextPkg, ['--allow-next']), null);
+  assert.equal(refusedNextSubcommand('build', 'next build', nextPkg, ['--force']), null);
+  assert.equal(refusedNextSubcommand('build', 'next build', nextPkg, ['--allow-next']), null);
+
+  assert.match(NEXT_REFUSAL_MESSAGE, /Next\.js is not supported/);
+  assert.match(NEXT_REFUSAL_MESSAGE, /--allow-next/);
+  console.log('  refusedNextSubcommand: dev/start/build/export refuse, hatches pass');
 }
 
 console.log('npm-run-build-guards: all assertions passed');
