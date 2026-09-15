@@ -47,7 +47,9 @@ await ws.exec('sh -c \'echo "{\\"name\\":\\"p\\",\\"dependencies\\":{}}" > /proj
   assert.equal(calls.at(-1).projectDir, '/proj');
   assert.deepEqual(calls.at(-1).packages, ['example']);
   assert.equal(calls.at(-1).global, false);
-  assert.equal(calls.at(-1).globalBinDir, undefined);
+  assert.equal(calls.at(-1).globalPrefix, undefined);
+  assert.equal(typeof calls.at(-1).pid, 'number',
+    'the command hands its own pid so the port authorizes under it');
   assert.match(r.stdout, /\[npm\] Resolving 1 dependency/);
   assert.match(r.stdout, /\[npm\] Fetching example/);
   assert.match(r.stdout, /added 1 packages \(4 files\) in \d+\.\ds/);
@@ -62,27 +64,28 @@ await ws.exec('mkdir -p /nopkg');
   assert.equal(calls.length, before, 'pre-check must not reach the port');
   assert.match(r.stderr, /npm ERR! no package\.json found/);
 }
-
 // ── Global install: --prefix is honoured in the spec ────────────────────
 {
   const r = await ws.exec('cd /proj && npm install -g example --prefix /custom');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(calls.at(-1).global, true);
-  assert.equal(calls.at(-1).globalBinDir, '/custom/bin');
+  assert.equal(calls.at(-1).globalPrefix, '/custom');
+  assert.equal(typeof calls.at(-1).pid, 'number',
+    'global installs carry the command pid too');
 }
 
 // npm_config_prefix is the fallback when --prefix is absent.
 {
   const r = await ws.exec('cd /proj && npm_config_prefix=/envpfx npm install -g example');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(calls.at(-1).globalBinDir, '/envpfx/bin');
+  assert.equal(calls.at(-1).globalPrefix, '/envpfx');
 }
 
 // Default prefix.
 {
   const r = await ws.exec('cd /proj && npm install -g example');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(calls.at(-1).globalBinDir, '/usr/local/bin');
+  assert.equal(calls.at(-1).globalPrefix, '/usr/local');
 }
 
 // ── Global install with no name: worker's exact error text ──────────────
@@ -108,6 +111,36 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
   assert.match(r.stderr, /Failed: example/);
   assert.match(r.stdout, /added 1 packages \(2 files\) in \d+\.\ds \(1 failed, see above\)/);
   assert.match(r.stdout, /linked 1 bin into \/usr\/local\/bin/);
+}
+
+// ── Up-to-date: nothing installed, nothing failed → "up to date in S.Ss" ─
+ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {
+  installer: {
+    async install() {
+      return { installed: [], failed: [] };
+    },
+  },
+}));
+{
+  const r = await ws.exec('cd /proj && npm install example');
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.match(r.stdout, /up to date in \d+\.\ds/);
+  assert.doesNotMatch(r.stdout, /added \d+ packages/);
+}
+
+// ── Port throws → the old closing line, not "npm ERR! <msg>" ────────────
+ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {
+  installer: {
+    async install() {
+      throw new Error('registry exploded');
+    },
+  },
+}));
+{
+  const r = await ws.exec('cd /proj && npm install example');
+  assert.equal(r.exitCode, 1);
+  assert.match(r.stderr, /npm install failed: registry exploded/i);
+  assert.doesNotMatch(r.stderr, /npm ERR! registry exploded/);
 }
 
 // ── --loglevel routes npm-protocol lines to stderr ──────────────────────

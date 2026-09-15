@@ -1085,7 +1085,7 @@ export class NimbusSession extends CloudflareDurableObject {
     return _diag.sampleMemory(this);
   }
 
-  ensureSqliteFs() {
+  ensureSqliteFs(): SqliteVFS {
     if (!this.sqliteFs) {
       this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
       // A fresh coordinator generation cannot trust capabilities issued by
@@ -1116,6 +1116,7 @@ export class NimbusSession extends CloudflareDurableObject {
         console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
       });
     }
+    return this.sqliteFs;
   }
 
   // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
@@ -1607,8 +1608,7 @@ export class NimbusSession extends CloudflareDurableObject {
       }));
     };
   }
-
-  async ensureNpmInstaller(onProgress?: (msg: string) => void) {
+  async ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller> {
     this.ensureSqliteFs();
     if (!this.esbuildService) {
       if (!this.sqliteFs) throw new Error('Session VFS is not initialized');
@@ -1649,6 +1649,7 @@ export class NimbusSession extends CloudflareDurableObject {
         fetchFn,
       },
     );
+    return this.npmInstaller;
   }
 
   /**

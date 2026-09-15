@@ -151,13 +151,13 @@ export interface SessionInternal {
   readonly viteBasePath: string;
 
   // ── Methods siblings call back into ─────────────────────────────────
-  ensureSqliteFs(): void;
+  ensureSqliteFs(): SqliteVFS;
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): EsbuildBundlePool;
   _ensureFacetProcessManager(): any;
   ensureFetchProxy(log?: (msg: string) => void): any | null;
   buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
-  ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<void>;
+  ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
   _envFlagDefaultOn(name: string): boolean;
   _setCpRegistry(r: any): void;
   hydrateSessionBasePath(request: Request): Promise<void>;

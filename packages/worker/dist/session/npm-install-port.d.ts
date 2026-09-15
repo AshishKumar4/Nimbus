@@ -5,10 +5,10 @@
  * command must not know: the NpmInstaller, the global prefix's directory
  * shape, and the materialisation of bin shims into <prefix>/bin.
  *
- * `projectDir` is always the shell's cwd; `globalBinDir` (root-relative
- * VFS path, e.g. `usr/local/bin`) is present only for `npm install -g`
- * and says where the shims go — the install root is its sibling
- * `<prefix>/lib`, and node_modules lands under it.
+ * `projectDir` is always the shell's cwd; `globalPrefix` (absolute VFS
+ * path, e.g. `/usr/local`) is present only for `npm install -g` and says
+ * where `<prefix>/lib/node_modules` and `<prefix>/bin` land. `pid` is the
+ * running command's pid — it authorizes the batch-facet writes.
  */
 import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { SessionInternal } from './internal.js';

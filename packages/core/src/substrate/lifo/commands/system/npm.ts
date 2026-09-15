@@ -16,8 +16,6 @@ import {
 } from './npm-install-args.js';
 import { npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
 
-const GLOBAL_MODULES = '/usr/lib/node_modules';
-const GLOBAL_BIN = '/usr/bin';
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
 export const NPM_VERSION = '10.0.0';
 
@@ -45,16 +43,18 @@ export type ShellExecuteFn = (
  * The host's piece of `npm install`: once the invocation has been parsed
  * into a spec and the summary output decided, the install itself is
  * whatever the host's batched installer does. Global installs carry the
- * resolved bin directory so the host — not this command — owns where
- * shims land and who exposes them.
+ * resolved prefix so the host — not this command — owns where
+ * `<prefix>/lib/node_modules` and `<prefix>/bin` land.
  */
 export interface NpmInstallPort {
   install(spec: {
     projectDir: string;
     packages: readonly string[];
     global: boolean;
-    /** Resolved absolute bin directory — present only when `global` is set. */
-    globalBinDir?: string;
+    /** Resolved absolute prefix — present only when `global` is set. */
+    globalPrefix?: string;
+    /** The running command's pid — authorizes the host's batch writes. */
+    pid: number;
     production?: boolean;
     npmLog?: NpmLogEmitter | null;
     onProgress?: (line: string) => void;
@@ -64,6 +64,7 @@ export interface NpmInstallPort {
 export interface NpmCommandDeps {
   installer?: NpmInstallPort;
 }
+
 /** The end-of-install report, shared by every install path so a failure
  *  reads the same regardless of which engine ran it. Byte-identical to
  *  what the worker's wrapper printed. */
@@ -76,12 +77,16 @@ function writeInstallSummary(
   if (failed.length > 0) {
     ctx.stderr.write(`\x1b[31mFailed: ${failed.join(', ')}\x1b[0m\n`);
   }
+  const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
+  if (installed.length === 0 && failed.length === 0) {
+    ctx.stdout.write(`\x1b[32mup to date in ${secs}s\x1b[0m\n`);
+    return;
+  }
   if (installed.length === 0) return;
   const partial = failed.length > 0;
   const color = partial ? '\x1b[33m' : '\x1b[32m';
   const suffix = partial ? ` (${failed.length} failed, see above)` : '';
   const files = opts.totalFiles !== undefined ? ` (${opts.totalFiles} files)` : '';
-  const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
   ctx.stdout.write(`\n${color}added ${installed.length} packages${files} in ${secs}s${suffix}\x1b[0m\n`);
   if (opts.fromCacheHits) {
     ctx.stdout.write(`\x1b[2m  (${opts.fromCacheHits} from cache)\x1b[0m\n`);
@@ -334,15 +339,14 @@ async function installSinglePackage(
 	let installed = 1;
 
 	// Global install: link binaries into the resolved prefix's bin dir
-	if (isGlobal) {
-		const binDir = globalBinDir ?? GLOBAL_BIN;
+	if (isGlobal && globalBinDir) {
 		const binEntries = getBinEntries(info);
 		for (const [binName, binPath] of Object.entries(binEntries)) {
 			const scriptPath = resolve(targetDir, binPath);
 			registerBinCommand(registry, binName, scriptPath, kernel);
-			try { vfs.mkdir(binDir, { recursive: true }); } catch { /* exists */ }
+			try { vfs.mkdir(globalBinDir, { recursive: true }); } catch { /* exists */ }
 			vfs.writeFile(
-				join(binDir, binName),
+				join(globalBinDir, binName),
 				`#!/usr/bin/env node\nrequire('${scriptPath}');\n`,
 			);
 		}
@@ -432,11 +436,9 @@ async function npmInstall(
 		}
 	}
 
-	// The prefix the install resolves under — `--prefix` wins, then the
-	// env's npm_config_prefix, then /usr/local. Everything a global install
-	// writes derives from it: modules at <prefix>/lib/node_modules, bins at
-	// <prefix>/bin. (In-process paths historically used /usr; the prefix
-	// path is the correct npm semantic and what the worker already prints.)
+	// The prefix a global install resolves under — `--prefix` wins, then
+	// the env's npm_config_prefix, then /usr/local. Both sides derive
+	// `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
 	const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
 	const globalBinDir = `${globalPrefix}/bin`;
 	const globalModulesDir = `${globalPrefix}/lib/node_modules`;
@@ -458,7 +460,8 @@ async function npmInstall(
 				projectDir: ctx.cwd,
 				packages,
 				global: invocation.global,
-				globalBinDir: invocation.global ? globalBinDir : undefined,
+				globalPrefix: invocation.global ? globalPrefix : undefined,
+				pid: ctx.pid,
 				production: invocation.production,
 				npmLog,
 				onProgress: (line) => ctx.stdout.write(`[npm] ${line}\n`),
@@ -472,7 +475,7 @@ async function npmInstall(
 			});
 			return result.failed.length > 0 ? 1 : 0;
 		} catch (err) {
-			ctx.stderr.write(`npm ERR! ${err instanceof Error ? err.message : String(err)}\n`);
+			ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
 			return 1;
 		}
 	}
@@ -601,8 +604,9 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 		ctx.stderr.write('npm uninstall requires at least one package name\n');
 		return 1;
 	}
-
-	const targetBase = isGlobal ? GLOBAL_MODULES : join(ctx.cwd, 'node_modules');
+	const globalPrefix = isGlobal ? resolveNpmPrefixVfs(ctx.cwd, ctx.env, null) : null;
+	const targetBase = isGlobal ? `${globalPrefix}/lib/node_modules` : join(ctx.cwd, 'node_modules');
+	const globalBinDir = isGlobal ? `${globalPrefix}/bin` : null;
 
 	for (const name of packages) {
 		const targetDir = join(targetBase, name);
@@ -613,11 +617,11 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 		}
 
 		// Unlink global binaries
-		if (isGlobal) {
+		if (isGlobal && globalBinDir) {
 			try {
 				const pkg: PackageJson = JSON.parse(ctx.vfs.readFileString(join(targetDir, 'package.json')));
 				for (const binName of Object.keys(getBinEntries(pkg))) {
-					try { ctx.vfs.unlink(join(GLOBAL_BIN, binName)); } catch { /* ignore */ }
+					try { ctx.vfs.unlink(join(globalBinDir, binName)); } catch { /* ignore */ }
 				}
 			} catch { /* ignore */ }
 		}
@@ -649,12 +653,11 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 async function npmList(ctx: CommandContext): Promise<number> {
 	const args = ctx.args.slice(1);
 	const isGlobal = args.includes('-g') || args.includes('--global');
-
-	const modulesDir = isGlobal ? GLOBAL_MODULES : join(ctx.cwd, 'node_modules');
+	const globalPrefix = isGlobal ? resolveNpmPrefixVfs(ctx.cwd, ctx.env, null) : null;
+	const modulesDir = isGlobal ? `${globalPrefix}/lib/node_modules` : join(ctx.cwd, 'node_modules');
 	const header = isGlobal
-		? '/usr/lib'
+		? `${globalPrefix}/lib`
 		: (readProjectPackageJson(ctx.vfs, ctx.cwd)?.name || ctx.cwd);
-
 	ctx.stdout.write(`${header}\n`);
 
 	if (!ctx.vfs.exists(modulesDir)) {
@@ -1073,8 +1076,8 @@ export function createNpxCommand(
 
 		// 2. Check global modules
 		if (!scriptPath) {
-			const globalPkgDir = join(GLOBAL_MODULES, parsedName);
-			scriptPath = findBinScript(ctx.vfs, globalPkgDir, binName);
+			const globalModules = `${resolveNpmPrefixVfs(ctx.cwd, ctx.env, null)}/lib/node_modules`;
+			scriptPath = findBinScript(ctx.vfs, join(globalModules, parsedName), binName);
 		}
 
 		// 3. Install to cache

@@ -964,6 +964,7 @@ export class NimbusSession extends CloudflareDurableObject {
                 console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
             });
         }
+        return this.sqliteFs;
     }
     // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
     // Storage key W5_RING_STORAGE_KEY lives in ./nimbus-session-keys.ts (S5).
@@ -1443,6 +1444,7 @@ export class NimbusSession extends CloudflareDurableObject {
             onProgress,
             fetchFn,
         });
+        return this.npmInstaller;
     }
     /**
      * Read an environment flag with default-on semantics. Mirrors the

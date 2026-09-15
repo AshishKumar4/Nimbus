@@ -22,16 +22,18 @@ export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<numbe
  * The host's piece of `npm install`: once the invocation has been parsed
  * into a spec and the summary output decided, the install itself is
  * whatever the host's batched installer does. Global installs carry the
- * resolved bin directory so the host — not this command — owns where
- * shims land and who exposes them.
+ * resolved prefix so the host — not this command — owns where
+ * `<prefix>/lib/node_modules` and `<prefix>/bin` land.
  */
 export interface NpmInstallPort {
     install(spec: {
         projectDir: string;
         packages: readonly string[];
         global: boolean;
-        /** Resolved absolute bin directory — present only when `global` is set. */
-        globalBinDir?: string;
+        /** Resolved absolute prefix — present only when `global` is set. */
+        globalPrefix?: string;
+        /** The running command's pid — authorizes the host's batch writes. */
+        pid: number;
         production?: boolean;
         npmLog?: NpmLogEmitter | null;
         onProgress?: (line: string) => void;

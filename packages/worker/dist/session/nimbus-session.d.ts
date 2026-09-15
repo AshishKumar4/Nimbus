@@ -575,7 +575,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
         usedJSHeapSize: number;
     } | null;
     _diagSampleMemory(): void;
-    ensureSqliteFs(): void;
+    ensureSqliteFs(): SqliteVFS;
     /** Track when we last persisted to avoid redundant writes. */
     _w5LastPersistAt: number;
     /** Track ring size at last persist; skip write if unchanged. */
@@ -632,7 +632,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * All concurrent fetches share ONE worker — no port exhaustion.
      */
     buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
-    ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<void>;
+    ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
     /**
      * Read an environment flag with default-on semantics. Mirrors the
      * shouldUseFacetPool / shouldUseFacetResolver / shouldUseBatchFacet
