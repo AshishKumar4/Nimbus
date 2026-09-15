@@ -345,6 +345,16 @@ export class IsolatePool {
   private readonly defaultRetries: number;
   private readonly tag: string;
   private readonly slotGenerations = new Map<number, number>();
+  /**
+   * Per-slot execution ownership: the tail of each slot's in-flight
+   * dispatch chain. Two dispatches on the same warm isolate at once
+   * interleave on its QueueState — map() callers used to trust the
+   * caller's slot round-robin, which could not prevent submit() (slot
+   * 0) or a second map() landing on a slot a task still occupied. Every
+   * dispatch now waits for the slot's previous execution to settle
+   * before touching it.
+   */
+  private readonly slotTails = new Map<number, Promise<void>>();
   private bindings: Record<string, unknown> | undefined;
 
   private readonly preamble: string | undefined;
@@ -669,8 +679,31 @@ export class IsolatePool {
   /**
    * Dispatch a single task to the slot isolate. `slotIndex` picks which
    * warm isolate services the call; callers round-robin slots themselves.
+   * Serialized per slot: this call waits for the slot's previous
+   * execution to settle before touching the warm isolate.
    */
   async #dispatchSlot(
+    fnSource: string,
+    fnHash: string,
+    slotIndex: number,
+    args: unknown[],
+    resilience: ResolvedResilience,
+    perCallWasm?: Record<string, ArrayBuffer>,
+  ): Promise<unknown> {
+    // A warm slot executes one dispatch at a time: queue behind the
+    // previous owner, then record this dispatch as the new tail.
+    const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
+    let release: () => void;
+    this.slotTails.set(slotIndex, new Promise<void>((resolve) => { release = resolve; }));
+    await previous;
+    try {
+      return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm);
+    } finally {
+      release!();
+    }
+  }
+
+  async #dispatchSlotOwned(
     fnSource: string,
     fnHash: string,
     slotIndex: number,
