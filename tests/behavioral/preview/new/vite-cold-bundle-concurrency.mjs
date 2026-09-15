@@ -4,10 +4,9 @@
 // packages requested CONCURRENTLY (as a fresh app's first load does)
 // without erroring and without crashing the supervisor (CF 1101).
 //
-// O1 replaced the single-slot serialization with a byte-budget gate:
-// small slices' facet RPC round-trips now overlap, so a flurry of cold
-// /@modules/ requests completes faster than strict serialization, while
-// peak supervisor slice memory stays bounded at one slice cap (the gate
+// Cold builds are admitted one at a time, from slice allocation through
+// the facet RPC and response construction, so peak supervisor slice
+// memory stays bounded at one slice cap (the admission-before-allocation
 // invariant is unit-tested in tests/unit/on-demand-bundle-gate.mjs; this
 // probe proves the deployed path serves them all correctly under load).
 //
@@ -124,10 +123,10 @@ try {
       `tail=${JSON.stringify(body.slice(-120))}`);
   }
 
-  // Bounded wall-time: even fully serialized these 5 small bundles
-  // should finish well under a minute; a supervisor reset / hang would
-  // blow this. (Not a tight perf assertion — overlap is proven by the
-  // gate unit test; this guards against a deployed regression hanging.)
+  // Bounded wall-time: fully serialized, these 5 small bundles should
+  // finish well under a minute; a supervisor reset / hang would blow
+  // this. (Not a perf assertion — it guards against a deployed
+  // regression hanging.)
   check('concurrent cold-bundle batch completes under 60s', elapsed < 60_000, `elapsed=${elapsed}ms`);
 } catch (e) {
   console.error('FATAL:', e?.message || e);

@@ -1,114 +1,126 @@
 #!/usr/bin/env bun
-// on-demand-bundle-gate — the byte-budget admission gate for on-demand
-// /@modules/ bundling must (1) never let total resident slice bytes
-// exceed the budget, (2) overlap many small slices, and (3) still admit
-// a single slice larger than the budget (no deadlock).
+// on-demand-bundle-gate — admission is decided BEFORE a job body runs.
+//
+// A cold /@modules/ build allocates its slice as the first thing its body
+// does, before it can know the size. A gate that accounts bytes only after
+// the build (the previous byte-budget design) admits memory that already
+// exists. The regression property is therefore about bytes the job body
+// actually allocates: while one job holds its allocation, no later job's
+// body has started at all, so peak retained bytes never exceed one job.
 
 import assert from 'node:assert/strict';
 import { OnDemandBundleGate } from '../../packages/worker/src/facets/on-demand-bundle-gate.ts';
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-// ── 1. Peak resident bytes never exceeds the budget ──────────────────
+// ── 1. Lead red repro: allocation before any await never overlaps ────
+// Adapted from /tmp/nimbus-gate/on-demand-allocation-repro.mjs to the
+// no-admit signature: with the old gate this printed retainedBytes 120
+// under a 100-byte budget; here the second body must not have started.
 {
-  const BUDGET = 28 * 1024 * 1024;
-  const gate = new OnDemandBundleGate(BUDGET);
-
-  let live = 0;      // currently-admitted bytes (build done, submit running)
+  const gate = new OnDemandBundleGate();
+  const firstStarted = Promise.withResolvers();
+  const releaseFirst = Promise.withResolvers();
+  let retained = 0;
   let peak = 0;
-  let maxConcurrentSubmits = 0;
-  let concurrentSubmits = 0;
+  let secondBodyStarted = false;
 
-  // 20 jobs of mixed sizes; several near the cap, many small.
-  const sizes = [];
-  for (let i = 0; i < 20; i++) {
-    sizes.push(i % 5 === 0 ? 26 * 1024 * 1024 : 200 * 1024);
-  }
-
-  const jobs = sizes.map((bytes) =>
-    gate.run(async (admit) => {
-      // Simulate the synchronous slice build (not yet admitted).
-      await tick();
-      await admit(bytes);
-      // Admitted — bytes are now resident until this job returns.
-      live += bytes;
-      peak = Math.max(peak, live);
-      concurrentSubmits++;
-      maxConcurrentSubmits = Math.max(maxConcurrentSubmits, concurrentSubmits);
-      // Simulate the facet RPC round-trip.
-      await tick();
-      await tick();
-      live -= bytes;
-      concurrentSubmits--;
-      return bytes;
-    }),
-  );
-
-  const results = await Promise.all(jobs);
-  assert.equal(results.length, 20);
-  assert.equal(live, 0, 'all bytes released');
-  assert.ok(peak <= BUDGET, `peak ${peak} must not exceed budget ${BUDGET}`);
-  assert.equal(gate.inFlightBytes, 0, 'gate fully drained');
-  // The small slices (200 KiB) must overlap — a single-slot semaphore
-  // would force maxConcurrentSubmits === 1. With ~27.6 MiB of headroom
-  // after one small slice admits, many run at once.
-  assert.ok(maxConcurrentSubmits >= 2, `expected overlap, got ${maxConcurrentSubmits}`);
-}
-
-// ── 2. A single oversized slice still makes progress (no deadlock) ────
-{
-  const gate = new OnDemandBundleGate(1024); // tiny budget
-  const out = await gate.run(async (admit) => {
-    await admit(5 * 1024 * 1024); // far larger than budget
-    return 'ok';
+  const first = gate.run(async () => {
+    const payload = new Uint8Array(60);
+    retained += payload.byteLength;
+    peak = Math.max(peak, retained);
+    firstStarted.resolve();
+    try {
+      await releaseFirst.promise;
+    } finally {
+      retained -= payload.byteLength;
+    }
+    return 'first';
   });
-  assert.equal(out, 'ok');
-  assert.equal(gate.inFlightBytes, 0);
+  await firstStarted.promise;
+
+  const second = gate.run(async () => {
+    secondBodyStarted = true;
+    const payload = new Uint8Array(60);
+    retained += payload.byteLength;
+    peak = Math.max(peak, retained);
+    try {
+      await settle();
+    } finally {
+      retained -= payload.byteLength;
+    }
+    return 'second';
+  });
+
+  await settle();
+  await settle();
+  assert.equal(secondBodyStarted, false, 'second body must not start while the first job is held');
+  assert.equal(retained, 60, 'only the first job\'s bytes are resident');
+
+  releaseFirst.resolve();
+  assert.deepEqual(await Promise.all([first, second]), ['first', 'second']);
+  assert.equal(secondBodyStarted, true);
+  assert.equal(peak, 60, `peak retained bytes must equal one job, got ${peak}`);
+  assert.equal(retained, 0, 'all bytes released');
+  console.log('  [1] allocation at body start never overlaps a held job');
 }
 
-// ── 3. Two oversized slices serialize (peak == one slice) ─────────────
+// ── 2. FIFO drain order, each job's result preserved ─────────────────
 {
-  const BUDGET = 1024;
-  const gate = new OnDemandBundleGate(BUDGET);
-  let live = 0;
-  let peak = 0;
-  const big = 10 * 1024 * 1024;
-  await Promise.all([0, 1, 2].map(() =>
-    gate.run(async (admit) => {
-      await admit(big);
-      live += big;
-      peak = Math.max(peak, live);
-      await tick();
-      live -= big;
+  const gate = new OnDemandBundleGate();
+  const order = [];
+  const holds = [0, 1, 2, 3].map(() => Promise.withResolvers());
+  let running = 0;
+  let maxRunning = 0;
+
+  const jobs = holds.map((hold, i) =>
+    gate.run(async () => {
+      running++;
+      maxRunning = Math.max(maxRunning, running);
+      order.push(`start:${i}`);
+      await hold.promise;
+      order.push(`end:${i}`);
+      running--;
+      return i * 10;
     }),
-  ));
-  // Oversized slices can't share the budget, so they run one at a time:
-  // peak resident is exactly one slice, never two.
-  assert.equal(peak, big, `oversized slices must serialize; peak=${peak}`);
-  assert.equal(gate.inFlightBytes, 0);
-}
-
-// ── 4. Jobs that bail before admitting don't wedge the build lock ─────
-{
-  const gate = new OnDemandBundleGate(1024);
-  const a = await gate.run(async () => 'no-admit'); // never calls admit
-  assert.equal(a, 'no-admit');
-  // A subsequent job must still acquire the build lock and run.
-  const b = await gate.run(async (admit) => { await admit(100); return 'after'; });
-  assert.equal(b, 'after');
-  assert.equal(gate.inFlightBytes, 0);
-}
-
-// ── 5. A throwing job releases its reservation ───────────────────────
-{
-  const gate = new OnDemandBundleGate(1024);
-  await assert.rejects(
-    gate.run(async (admit) => { await admit(500); throw new Error('boom'); }),
-    /boom/,
   );
-  assert.equal(gate.inFlightBytes, 0, 'reservation released on throw');
-  const ok = await gate.run(async (admit) => { await admit(500); return 'ok'; });
-  assert.equal(ok, 'ok');
+
+  // Release out of order — the gate must still start bodies in FIFO order.
+  for (const i of [2, 0, 3, 1]) {
+    await settle();
+    holds[i].resolve();
+  }
+  assert.deepEqual(await Promise.all(jobs), [0, 10, 20, 30], 'results map to their own jobs');
+  assert.equal(maxRunning, 1, 'never more than one body in flight');
+  assert.deepEqual(order, [
+    'start:0', 'end:0',
+    'start:1', 'end:1',
+    'start:2', 'end:2',
+    'start:3', 'end:3',
+  ]);
+  console.log('  [2] queue drains FIFO with one body in flight');
+}
+
+// ── 3. A rejected job does not poison the next ───────────────────────
+{
+  const gate = new OnDemandBundleGate();
+  const failing = gate.run(async () => { throw new Error('boom'); });
+  const next = gate.run(async () => 'after-failure');
+  await assert.rejects(failing, /boom/);
+  assert.equal(await next, 'after-failure');
+  // A synchronous throw from the job factory is a rejection too, not a hang.
+  const syncThrow = gate.run(() => { throw new Error('sync-boom'); });
+  await assert.rejects(syncThrow, /sync-boom/);
+  assert.equal(await gate.run(async () => 'still-alive'), 'still-alive');
+  console.log('  [3] rejected jobs settle their own promise and the queue keeps moving');
+}
+
+// ── 4. Zero queued work: a single job completes immediately ──────────
+{
+  const gate = new OnDemandBundleGate();
+  assert.equal(await gate.run(async () => 'solo'), 'solo');
+  assert.equal(await gate.run(async () => 'solo-again'), 'solo-again');
+  console.log('  [4] an idle gate runs a lone job to completion');
 }
 
 console.log('on-demand-bundle-gate: ok');

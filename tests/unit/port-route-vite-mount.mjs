@@ -60,7 +60,13 @@ const INDEX_HTML =
 // base on the `/@modules/` URL the browser fetches next.
 const DEP_JS = 'import confetti from "canvas-confetti";\nexport default confetti;\n';
 
-function makeVfs() {
+/**
+ * `faults` maps a path to how many times `exists(path)` should throw before
+ * answering normally — the one fault the cold module path can be handed
+ * from inside the gate (package resolution walks `home/user/node_modules`,
+ * which nothing before the gate touches).
+ */
+function makeVfs(faults = new Map()) {
   const files = new Map([
     [`${ROOT}/index.html`, INDEX_HTML],
     [`${ROOT}/src/main.js`, 'console.log("main");\n'],
@@ -68,7 +74,14 @@ function makeVfs() {
     [`${ROOT}/package.json`, JSON.stringify({ name: 'app', dependencies: {} })],
   ]);
   const view = {
-    exists: (p) => files.has(p),
+    exists: (p) => {
+      const remaining = faults.get(p) ?? 0;
+      if (remaining > 0) {
+        faults.set(p, remaining - 1);
+        throw new Error(`injected vfs fault: ${p}`);
+      }
+      return files.has(p);
+    },
     isDirectory: () => false,
     readFileString: (p) => files.get(p),
     readFile: (p) => new TextEncoder().encode(files.get(p) ?? ''),
@@ -76,7 +89,7 @@ function makeVfs() {
   return { as: () => view, events: { on: () => () => {} } };
 }
 
-function makeWokenSession(storage = {}) {
+function makeWokenSession(storage = {}, faults = new Map()) {
   const store = new Map(Object.entries(storage));
   let nextPid = 100;
   const self = {
@@ -107,7 +120,7 @@ function makeWokenSession(storage = {}) {
     get nimbusDebug() { return false; },
     get viteBasePath() { return (this.sessionBasePath || '') + '/preview'; },
     async hydrateSessionBasePath() {},
-    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(); },
+    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(faults); },
     seedFilesystem() {},
   };
   self.store = store;
@@ -196,6 +209,64 @@ function pathRequest(path) {
   const pathCode = await onPath.text();
   assert.match(pathCode, new RegExp(`["']${PREVIEW_BASE}/@modules/canvas-confetti["']`), 'path module URL carries the preview prefix');
   console.log('  [4] module URLs are per-base and the transform cache is keyed by base');
+}
+
+// 5. Simultaneous identical /@modules/ requests coalesce into ONE cold build,
+//    and every requester still reads the full body. A Response body is
+//    readable once; handing the same Response object to two doors made the
+//    second reader fail with a consumed body. Both consumers here must read
+//    the same complete bytes independently.
+{
+  const self = makeWokenSession(HIBERNATED);
+  const path = `/port/${VITE_PORT}/@modules/canvas-confetti`;
+  const [first, second, third] = await Promise.all([
+    handleFetch(self, hostRequest(path)),
+    handleFetch(self, hostRequest(path)),
+    handleFetch(self, hostRequest(path)),
+  ]);
+  assert.notEqual(first, second, 'coalesced consumers must not share one Response object');
+  assert.notEqual(second, third);
+  for (const response of [first, second, third]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.bodyUsed, false, 'no consumer starts with a consumed body');
+  }
+  // Read the initiator LAST so the order of consumption cannot mask a shared
+  // body: the later requesters must not depend on the first being unread.
+  const thirdText = await third.text();
+  const secondText = await second.text();
+  const firstText = await first.text();
+  assert.match(firstText, /__nimbus_optional_dep_stub = true/, 'the cold path served the not-installed stub');
+  assert.equal(secondText, firstText, 'second consumer reads the same full bytes');
+  assert.equal(thirdText, firstText, 'third consumer reads the same full bytes');
+  assert.equal(first.headers.get('Content-Type'), 'application/javascript; charset=utf-8');
+  assert.equal(second.headers.get('Content-Type'), first.headers.get('Content-Type'));
+  // A later request lands on the hot cache with an independent body too.
+  const later = await handleFetch(self, hostRequest(path));
+  assert.equal(await later.text(), firstText);
+  console.log('  [5] coalesced identical requests each read the full module body');
+}
+
+// 6. A cold build that throws rejects every coalesced requester with THAT
+//    failure — and does not pin the failure: the next request for the same
+//    module re-enters the cold path instead of inheriting a settled rejection.
+{
+  const faults = new Map([['home/user/node_modules/boom-pkg', 1]]);
+  const self = makeWokenSession(HIBERNATED, faults);
+  const path = `/port/${VITE_PORT}/@modules/boom-pkg`;
+  const attempts = [
+    handleFetch(self, hostRequest(path)),
+    handleFetch(self, hostRequest(path)),
+  ];
+  const outcomes = await Promise.allSettled(attempts);
+  for (const outcome of outcomes) {
+    assert.equal(outcome.status, 'rejected', 'every coalesced requester sees the cold-path failure');
+    assert.match(String(outcome.reason?.message ?? outcome.reason), /injected vfs fault: home\/user\/node_modules\/boom-pkg/);
+  }
+  assert.equal(faults.get('home/user/node_modules/boom-pkg'), 0, 'exactly one cold attempt consumed the single fault');
+  const retry = await handleFetch(self, hostRequest(path));
+  assert.equal(retry.status, 200, 'a rejected cold build must not poison the next request');
+  assert.match(await retry.text(), /__nimbus_optional_dep_stub = true/);
+  console.log('  [6] a rejected cold build is shared by its waiters and cleared for the next request');
 }
 
 await rm(outputDir, { recursive: true, force: true });
