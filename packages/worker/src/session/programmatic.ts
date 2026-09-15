@@ -1342,22 +1342,8 @@ export async function rpcRemoveDurableApp(
   owner: string,
 ): Promise<{ owner: string; removed: boolean; port: number | null }> {
   await ensureProgrammaticReady(self);
-  if (typeof owner !== 'string' || owner.length === 0) {
-    throw new Error('removeDurableApp: owner must be a non-empty string');
-  }
-  // Which durable address is being released — the reservation's row names it
-  // before the manager retires it.
-  const rows = await self.ctx.storage.list({ prefix: PORT_CAPABILITY_KEY_PREFIX });
-  let port: number | null = null;
-  for (const [key, record] of rows) {
-    const parsed = PortRecordSchema.safeParse(record);
-    if (!parsed.success || parsed.data.owner !== owner) continue;
-    const n = Number(key.slice(PORT_CAPABILITY_KEY_PREFIX.length));
-    if (Number.isInteger(n) && n > 0) { port = n; break; }
-  }
-  self.ensureFacetManager();
-  const removed = await self.facetManager!.removeDurableApp(owner);
-  return { owner, removed, port };
+  // The composed manager owns the durable-app verbs — validation included.
+  return self.ensureFacetManager().apps.removeDurableApp(owner);
 }
 
 

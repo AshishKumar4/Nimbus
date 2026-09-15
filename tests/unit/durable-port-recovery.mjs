@@ -37,7 +37,7 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 // the same as the other route tests.
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-durable-port-test-'));
 const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts'],
+  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/facets/compose.ts'],
   outdir: outputDir,
   target: 'bun',
   format: 'esm',
@@ -59,6 +59,8 @@ assert.equal(build.success, true, build.logs.map(String).join('\n'));
 const entry = build.outputs.find((output) => output.path.endsWith('/routes.js'));
 assert.ok(entry, 'the routes bundle was emitted');
 const { routeToSessionPort } = await import(pathToFileURL(entry.path).href);
+const composeEntry = build.outputs.find((output) => output.path.endsWith('/compose.js'));
+const { composeFacetManager } = await import(pathToFileURL(composeEntry.path).href);
 
 const NONE = new Set();
 
@@ -103,7 +105,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
     ...hooks,
   });
   fm.setVfs(vfs);
-  return { boots, world, ctx, fm, processes, portRegistry, storage, vfs, disk };
+  return { boots, world, ctx, fm, processes, portRegistry, storage, vfs, disk, env };
 }
 
 /** The RoutesHost slice routeToSessionPort reads for this seam. */
@@ -315,7 +317,7 @@ function routeHost(fm, portRegistry) {
 
 // ── 9. removeDurableApp answers through the public RPC surface ─────────────
 {
-  const { ctx, fm, portRegistry } = setup();
+  const { ctx, fm, portRegistry, world, processes, vfs, env } = setup();
   await reservePort(ctx, {
     owner: 'app', preferredPort: 20350, occupiedPorts: NONE,
     capability: 'e'.repeat(24), visibility: 'public',
@@ -329,9 +331,16 @@ function routeHost(fm, portRegistry) {
   // The ProgrammaticHost the public RPC reads: already booted (shell set),
   // its facet manager ensured.
   const self = {
-    shell: {},
-    ensureSqliteFs() {},
-    ensureFacetManager() { this.facetManager = fm; },
+    ensureFacetManager() {
+      // The delegation contract: returns the composed shape so rpc verbs
+      // reach `.apps`. The same fm is under test either way.
+      this.facetManagerComposed ??= composeFacetManager({
+        ctx, env, processes, portRegistry, vfs,
+        hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
+      });
+      this.facetManager = fm;
+      return this.facetManagerComposed;
+    },
     facetManager: fm,
     ctx,
     portRegistry,

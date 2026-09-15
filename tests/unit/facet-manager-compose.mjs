@@ -32,51 +32,17 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ESBUILD_TRANSFORM_WORKER_ID } from '../../packages/worker/src/facets/esbuild-transform.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
-// compose.ts imports session/routes.ts, which reaches `cloudflare:workers`
-// through fabric's bindings — the factory and the session class are loaded
-// from one stubbed bundle so both parts of this file share the module graph.
-const root = new URL('../../', import.meta.url).pathname;
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-compose-test-'));
-let bundle;
-try {
-  const entryPath = join(outputDir, 'entry.ts');
-  await writeFile(entryPath, [
-    `export { NimbusSession } from '${root}packages/worker/src/session/nimbus-session.ts';`,
-    `export { composeFacetManager } from '${root}packages/worker/src/facets/compose.ts';`,
-    `export { adoptCtxExports, composeFabric } from '${root}packages/fabric/src/composition.ts';`,
-    '',
-  ].join('\n'));
-  const build = await Bun.build({
-    entrypoints: [entryPath],
-    outdir: join(outputDir, 'out'),
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  bundle = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
-  bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
-  bundle.adoptCtxExports({
-    SupervisorRPC: ({ props }) => ({ props }),
-    NimbusLoadedEntrypoint: () => ({
-      async startProcess() { return { ok: true }; },
-      async handleHttpRequest() { return new Response('ok'); },
-    }),
-  });
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
-const { composeFacetManager } = bundle;
+import { composeFacetManager } from '../../packages/worker/src/facets/compose.ts';
+
+adoptCtxExports({
+  SupervisorRPC: ({ props }) => ({ props }),
+  NimbusLoadedEntrypoint: () => ({
+    async startProcess() { return { ok: true }; },
+    async handleHttpRequest() { return new Response('ok'); },
+  }),
+});
 
 const ASSETS = {
   async fetch(request) {
@@ -170,10 +136,42 @@ const settle = async (predicate, tries = 400) => {
 }
 
 // ── 2. the session's ensureFacetManager IS the factory ───────────────────
-//
-// The bundle at the top of this file carries both the factory and the
-// session class in one module graph — the stub that gets `routes.ts` (now
-// reached through compose.ts) past `cloudflare:workers` in plain Bun.
+// nimbus-session.ts transitively imports `cloudflare:workers`, so the
+// session class comes from a stubbed bundle; the factory under test is the
+// same source-graph import the published subpath exposes.
+const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-compose-test-'));
+let bundle;
+try {
+  const entryPath = join(outputDir, 'entry.ts');
+  await writeFile(entryPath, [
+    `export { NimbusSession } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/session/nimbus-session.ts';`,
+    `export { composeFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/compose.ts';`,
+    `export { adoptCtxExports, composeFabric } from '${new URL('../../', import.meta.url).pathname}packages/fabric/src/composition.ts';`,
+    '',
+  ].join('\n'));
+  const build = await Bun.build({
+    entrypoints: [entryPath],
+    outdir: join(outputDir, 'out'),
+    target: 'bun',
+    format: 'esm',
+    plugins: [{
+      name: 'cloudflare-workers-test-stub',
+      setup(builder) {
+        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
+        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
+          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
+          loader: 'js',
+        }));
+      },
+    }],
+  });
+  assert.equal(build.success, true, build.logs.map(String).join('\n'));
+  bundle = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
+  bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+  bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
+} finally {
+  await rm(outputDir, { recursive: true, force: true });
+}
 {
 
   /** The same launch, on a manager, recorded as the hook events it produced. */
@@ -233,7 +231,7 @@ const settle = async (predicate, tries = 400) => {
     portRegistry: new PortRegistry(),
     sqliteFs: null,
     esbuildService: null,
-    facetManager: null,
+    facetManagerComposed: null,
     terminal: { write: (text) => { terminalWrites.push(text); } },
     ensureSqliteFs() { this.sqliteFs ??= vfs; },
     _reportExternalExit(pid, code, reason) { sessionEvents.push(['exit', pid, code, reason]); },
@@ -241,9 +239,10 @@ const settle = async (predicate, tries = 400) => {
     _notifySession(line) { sessionEvents.push(['notify', line]); },
   };
   bundle.NimbusSession.prototype.ensureFacetManager.call(host);
-  assert.ok(host.facetManager, 'the session composed a manager');
+  const sessionManager = host.facetManagerComposed.manager;
+  assert.ok(sessionManager, 'the session composed a manager');
   assert.equal(host.sqliteFs, vfs, 'over its filesystem, which it stood up first');
-  const sessionRun = await exercise(host.facetManager, sessionEvents);
+  const sessionRun = await exercise(sessionManager, sessionEvents);
   assert.ok(terminalWrites.some((t) => /\[facet started \(long-running\): pid=\d+ cmd="embedder worker"\]/.test(t)), 'the session-only part of onSpawn wrote to the terminal');
 
   // (b) the factory, over the same kind of fakes, with an embedder's hooks
@@ -279,7 +278,7 @@ const settle = async (predicate, tries = 400) => {
   // (c) the transform hook that used to live in nimbus-session is the
   // factory's default: from either manager it reaches the same loader id
   // and the same facet name with the same payload.
-  const sessionTransform = host.facetManager.hooks.transformLargeEsm;
+  const sessionTransform = sessionManager.hooks.transformLargeEsm;
   const embedderTransform = composed.manager.hooks.transformLargeEsm;
   assert.equal(typeof sessionTransform, 'function', 'the session manager carries the transform hook');
   assert.equal(typeof embedderTransform, 'function', 'so does the composed one');
@@ -292,9 +291,9 @@ const settle = async (predicate, tries = 400) => {
   assert.equal(sessionProbe.reached[1][1], `esbuild-transform-${ESBUILD_TRANSFORM_WORKER_ID}`);
 
   // (d) and both carry the image-store fallback the factory owns.
-  assert.equal(typeof host.facetManager.hooks.resolveWorkerLaunchFallback, 'function');
+  assert.equal(typeof sessionManager.hooks.resolveWorkerLaunchFallback, 'function');
   assert.equal(typeof composed.manager.hooks.resolveWorkerLaunchFallback, 'function');
-  assert.equal(host.facetManager.hooks.resolveWorkerLaunch, undefined, 'the session composes no embedder resolver');
+  assert.equal(sessionManager.hooks.resolveWorkerLaunch, undefined, 'the session composes no embedder resolver');
 }
 
 

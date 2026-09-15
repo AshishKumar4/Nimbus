@@ -121,6 +121,7 @@ import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/pr
 import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
+import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
@@ -332,8 +333,11 @@ export class NimbusSession extends CloudflareDurableObject {
   shell: Shell | null = null;
   shellProcessPid: number | null = null;
   terminal: WebSocketTerminal | null = null;
-  facetManager: FacetManager | null = null;
+  /** The composed manager is the one field; `.manager` is derived. */
   facetManagerComposed: ComposedFacetManager | null = null;
+  get facetManager(): FacetManager | null {
+    return this.facetManagerComposed?.manager ?? null;
+  }
   /** W8: child_process broker. Lazy — only constructed when first cp* RPC arrives. */
   facetProcessManager: any = null;
   /**
@@ -968,7 +972,16 @@ export class NimbusSession extends CloudflareDurableObject {
   async _rpcUnexposePort(port: number) { return _programmatic.rpcUnexposePort(this as any, port); }
   /** Capability-authenticated port route, for an embedder holding the token. */
   async _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string) {
-    return _routes.routeCapabilityPort(this as any, port, capability, request, innerPath);
+    return _portCapability.routeCapabilityPort(this as any, port, capability, request, innerPath);
+  }
+
+  /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
+  restorePersistedDevServer(onlyPort?: number): Promise<void> {
+    return _routes.restorePersistedDevServer(this as any, onlyPort);
+  }
+  /** The port route's in-DO HMR accept, delegated — same reason. */
+  acceptCirrusHmrWs(request: Request): Response {
+    return _routes.acceptCirrusHmrWs(this as any, request);
   }
 
   /**
@@ -1134,7 +1147,7 @@ export class NimbusSession extends CloudflareDurableObject {
    * transform and the durable image-store fallback are the factory's.
    */
   ensureFacetManager(): ComposedFacetManager {
-    if (!this.facetManagerComposed && !this.facetManager) {
+    if (!this.facetManagerComposed) {
       // The manager is composed over the filesystem, so the filesystem comes
       // first. Cheap and idempotent; every caller already stood it up or is
       // about to.
@@ -1171,8 +1184,8 @@ export class NimbusSession extends CloudflareDurableObject {
           },
         },
       });
-      this.facetManager = this.facetManagerComposed.manager;
     }
+    const composed = this.facetManagerComposed;
     // W3.5 Fix B: share the session's lazy esbuildService with the
     // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
     // wasm-init twice. The session may construct it after the manager
@@ -1180,11 +1193,9 @@ export class NimbusSession extends CloudflareDurableObject {
     // otherwise lazy-creates its own on first exec — same wasm bytes,
     // same ~10ms init cost, just paid once per surface.
     if (this.esbuildService) {
-      this.facetManager!.setEsbuildService(this.esbuildService);
+      composed.manager.setEsbuildService(this.esbuildService);
     }
-    // A host that pre-set `facetManager` (tests) has no composed object;
-    // the callers that dereference `.apps` only run where it was composed.
-    return this.facetManagerComposed as ComposedFacetManager;
+    return composed;
   }
 
   /**

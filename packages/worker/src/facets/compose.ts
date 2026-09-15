@@ -46,10 +46,10 @@ import {
   readPortReservation,
   readPortReservationByOwner,
   reservePort,
+  routeCapabilityPort,
   type PortVisibility,
 } from '../session/port-capability.js';
 import { bindPublicPortCapability } from '../router/public-directory.js';
-import { routeCapabilityPort } from '../session/routes.js';
 import {
   ESBUILD_TRANSFORM_WORKER_ID,
   esbuildTransformWorkerCode,
@@ -237,7 +237,7 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
         // there; a copy here dropped the latter. Session-only concerns
         // (dev-server restore, the vite-shim branch) no-op on this host.
         return routeCapabilityPort(
-          { ctx, portRegistry, ensureDurableAppOnPort: (p) => manager.ensureDurableAppOnPort(p) },
+          { ctx, portRegistry, ensureDurableAppOnPort: (p: number) => manager.ensureDurableAppOnPort(p) },
           port, capability, request, innerPath,
         );
       },

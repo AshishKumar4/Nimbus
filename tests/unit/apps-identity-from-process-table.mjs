@@ -144,6 +144,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     ctx,
     portRegistry,
     processes,
+    facetManagerComposed: { manager: fm, apps: {}, pumpLaunches: async () => {} },
     facetManager: fm,
     sessionBasePath: BASE_PATH,
     sessionBasePathHydrated: true,
@@ -159,7 +160,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     async hydrateSessionBasePath() {},
     ensureSqliteFs() {},
     seedFilesystem() {},
-    ensureFacetManager() { this.facetManager = fm; },
+    ensureFacetManager() { this.facetManager = fm; return this.facetManagerComposed; },
     ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port),
   };
   return { world, ctx, env, fm, processes, portRegistry, storage, self, directory, notices };

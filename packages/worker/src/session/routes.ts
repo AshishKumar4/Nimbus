@@ -61,10 +61,14 @@ import {
 } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
 import {
+  isCirrusHmrPath,
   persistPortCapability,
   readPortCapability,
-  readPortReservation,
+  normalizeForwardedHttpPath,
   readPortReservationByName,
+  readoptCapability,
+  routeCapabilityPort,
+  routeToSessionPort,
   restorePortCapability,
 } from './port-capability.js';
 import { registerServingPort } from './serving-port.js';
@@ -85,23 +89,11 @@ import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 
 type RoutesHost = any;
 
-/**
- * The host surface `routeToSessionPort` actually reads — deliberately the
- * narrowest shape that serves every port-addressed route, so non-session
- * hosts (the composed facet manager's `apps.routeCapabilityPort`) can call
- * the one implementation instead of carrying a copy. The session
- * satisfies every field; a compose host supplies `ctx`/`portRegistry`/
- * `ensureDurableAppOnPort` and the dev-server/HMR fields stay absent —
- * `restorePersistedDevServer` and the vite-shim branch no-op on it.
- */
-interface SessionPortHost {
-  ctx: DurableObjectState;
-  portRegistry: PortRegistry;
-  ensureDurableAppOnPort?: (port: number) => Promise<'absent' | 'started' | 'failed'>;
-  _viteShimPort?: number | null;
-  viteDevServer?: { isRunning: boolean; handleRequest(request: Request, innerPath: string, mountBase: string): Promise<Response> } | null;
-  cirrusReal?: { isRunning: boolean } | null;
-}
+// `SessionPortHost`, `routeToSessionPort` and `routeCapabilityPort` live in
+// session/port-capability.ts so the composed manager's `apps` surface can
+// call the one implementation without importing this file (which reaches
+// `cloudflare:workers` through fabric bindings). The session-only helpers
+// the route delegates to stay here and arrive on the host as fields.
 
 const TestSpawnEmitterBodySchema = z.object({
   lines: z.coerce.number().optional(),
@@ -119,10 +111,6 @@ const RecoverySessionStateSchema: z.ZodType<SessionState> = z.enum([
   'online',
 ]);
 
-function normalizeForwardedHttpPath(path: string): string {
-  const text = path || '/';
-  return '/' + text.replace(/^\/+/, '');
-}
 
 /**
  * Restore the dev server a previous isolate left behind.
@@ -140,7 +128,7 @@ function normalizeForwardedHttpPath(path: string): string {
  * Idempotent, and silent on failure — a session with no dev server to restore
  * is the normal case, not an error.
  */
-async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): Promise<void> {
+export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): Promise<void> {
   if (self.cirrusReal?.isRunning || self.viteDevServer?.isRunning) return;
   if (onlyPort != null && self.portRegistry.has(onlyPort)) return;
   try {
@@ -229,124 +217,6 @@ async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): P
 }
 
 /**
- * Route a request to whatever is listening on a session port.
- *
- * The one implementation behind every port-addressed surface: `/port/<n>/`,
- * `/preview/?port=N`, and the `<port>--<sid>` preview hostname, which the
- * router forwards as `/port/<n>/`. They differ only in how the port and the
- * inner path are spelled, so they must not differ in what answers.
- *
- * `mountBase` is the public URL prefix the served app is mounted at for THIS
- * request — '' for a root-mounted `<port>--<sid>` host, '/s/<sid>/preview' for
- * the preview path. The in-process Cirrus dev server rewrites base-relative
- * URLs (module URLs, <base href>, BASE_URL, router basename), so it is handed
- * the base directly: the generic port proxy strips the Nimbus base header at
- * the untrusted-code boundary and cannot carry it, and a plain user server on
- * any other port is mounted at root and needs no rewriting.
- */
-export async function routeToSessionPort(
-  self: SessionPortHost,
-  port: number,
-  request: Request,
-  innerPath: string,
-  mountBase: string,
-  capability?: string,
-): Promise<Response> {
-  await restorePersistedDevServer(self, port);
-  // The durable seam: a request on a port nothing is serving may be a
-  // durable application a reset left dead — the alarm pump would re-drive
-  // it eventually, but a URL in someone's hands cannot wait for eventually.
-  // 'absent' falls through to the honest 502 unchanged; 'started' continues
-  // to normal routing with the port freshly bound; 'failed' is mid-launch
-  // or a lost boot, so the page re-asks on its own timer.
-  if (self.ensureDurableAppOnPort !== undefined) {
-    const durable = await self.ensureDurableAppOnPort(port);
-    if (durable === 'failed') {
-      return new Response(renderPortStartingHtml(port), {
-        status: 503,
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store',
-          'Retry-After': '3',
-        },
-      });
-    }
-  }
-  if (capability !== undefined) {
-    // A rebuilt supervisor holds a capability nobody was handed; the durable
-    // one is the value in circulation, so it wins before the check.
-    await restorePortCapability(self, port);
-    if (!self.portRegistry.hasCapability(port, capability)) {
-      // 404, not 403: a wrong capability must not confirm that the port is
-      // listening at all.
-      return new Response('Not found', { status: 404 });
-    }
-    // The public bearer form arrived without a session attach: the
-    // capability is real, but it authorises this route only for a port the
-    // owner deliberately exposed — the stored visibility is the gate.
-    if (request.headers.get(PUBLIC_BEARER_HEADER) !== null) {
-      const reservation = await readPortReservation(self.ctx, port);
-      if (reservation === null || reservation.visibility !== 'public') {
-        return new Response('Not found', { status: 404 });
-      }
-    }
-  }
-  if (port === self._viteShimPort) {
-    // The preview HMR WebSocket can't cross the port-registry RPC, so it is
-    // accepted in-DO for both dev servers — the same handling `/preview/` uses.
-    if (self.cirrusReal?.isRunning && isCirrusHmrPath(innerPath)) {
-      return acceptCirrusHmrWs(self, request);
-    }
-    // The Cirrus dev server rewrites base-relative URLs per request and the
-    // generic proxy strips the base header, so hand it the request directly.
-    if (self.viteDevServer?.isRunning) {
-      return self.viteDevServer.handleRequest(request, innerPath, mountBase);
-    }
-  }
-  const proxied = capability === undefined
-    ? await self.portRegistry.routeRequest(port, request, innerPath)
-    : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
-  if (proxied) return proxied;
-  return new Response(`No process listening on port ${port}`, { status: 502 });
-}
-
-
-/** The "durable application is (re)starting" 503 page — self-refreshing. */
-function renderPortStartingHtml(port: number): string {
-  return renderSessionStatusPage({
-    title: 'Starting',
-    heading: 'Starting&hellip;',
-    body: `The application on port <code>${port}</code> is restarting.<br>This page refreshes itself.`,
-    metaRefreshSeconds: 3,
-  });
-}
-/**
- * Re-adopt a preview capability the embedder already holds, after a restore
- * re-registered the port under a freshly minted one.
- */
-async function readoptCapability(
-  self: RoutesHost,
-  port: number,
-  capability: string | null,
-): Promise<void> {
-  if (!capability) return;
-  if (self.portRegistry.restoreCapability(port, capability)) {
-    await persistPortCapability(self, port, capability);
-  }
-}
-
-/** Route a capability-authenticated embedder request to a guest HTTP server. */
-export function routeCapabilityPort(
-  self: SessionPortHost,
-  port: number,
-  capability: string,
-  request: Request,
-  innerPath: string,
-): Promise<Response> {
-  return routeToSessionPort(self, port, request, normalizeForwardedHttpPath(innerPath), '', capability);
-}
-
-/**
  * The public URL prefix a port-routed request is mounted at. `<port>--<sid>`
  * hosts arrive with an empty base header (mounted at the origin root); the
  * path form `/s/<sid>/port/<n>/` arrives with `/s/<sid>` and mounts under
@@ -381,14 +251,6 @@ export async function routeToSessionApp(
   return routeToSessionPort(self, held.port, request, innerPath, mountBase, capability);
 }
 
-/** True if `innerPath` targets the cirrus-real HMR socket, under any mount
- *  base — the client opens `<base>/__nimbus_hmr`, and on a `<port>--<sid>` host
- *  the router forwards the whole path, base and all, under `/port/N`. */
-function isCirrusHmrPath(innerPath: string): boolean {
-  const p = innerPath.split('?')[0];
-  return p === '/__nimbus_hmr' || p.endsWith('/__nimbus_hmr');
-}
-
 /**
  * Accept a Vite HMR WebSocket for the running cirrus-real facet and wire it
  * into the facet's HMR bridge.
@@ -403,7 +265,7 @@ function isCirrusHmrPath(innerPath: string): boolean {
  * from a DIFFERENT request context (the facet's long-poll RPC), and workerd
  * forbids cross-request I/O on a `server.accept()`'d socket.
  */
-function acceptCirrusHmrWs(self: RoutesHost, request: Request): Response {
+export function acceptCirrusHmrWs(self: RoutesHost, request: Request): Response {
   if (request.headers.get('Upgrade') !== 'websocket') {
     return new Response('Expected WebSocket', { status: 426 });
   }
