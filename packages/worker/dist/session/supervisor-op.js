@@ -26,7 +26,7 @@ export function buildSessionSupervisorOps(host, store) {
         // alone doesn't know: a read lease sized to what the file can return.
         readFile: async (envelope, tools) => {
             const path = envelope.args?.[0];
-            const fs = tools.bridge(envelope.pid);
+            const fs = tools.bridge(envelope.pid, envelope.cred);
             const stat = await fs.stat(path);
             if (!stat)
                 return null;
@@ -37,7 +37,7 @@ export function buildSessionSupervisorOps(host, store) {
         },
         readFileBytes: async (envelope, tools) => {
             const path = envelope.args?.[0];
-            const fs = tools.bridge(envelope.pid);
+            const fs = tools.bridge(envelope.pid, envelope.cred);
             const stat = await fs.stat(path);
             if (!stat)
                 return null;
@@ -49,7 +49,7 @@ export function buildSessionSupervisorOps(host, store) {
                 offset: envelope.args?.[1],
                 length: envelope.args?.[2],
             });
-            const fs = tools.bridge(envelope.pid);
+            const fs = tools.bridge(envelope.pid, envelope.cred);
             return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length));
         },
         fsReadRangeUncached: async (envelope, tools) => {
@@ -58,7 +58,7 @@ export function buildSessionSupervisorOps(host, store) {
                 offset: envelope.args?.[1],
                 length: envelope.args?.[2],
             });
-            const fs = tools.bridge(envelope.pid);
+            const fs = tools.bridge(envelope.pid, envelope.cred);
             return withReadAllocation(await rangeReadBytes(fs, args.path, args.offset, args.length), () => fs.readRange(args.path, args.offset, args.length, { cached: false }));
         },
         // The write stream's decode-drain timestamp starts when the envelope
@@ -73,7 +73,7 @@ export function buildSessionSupervisorOps(host, store) {
             if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
                 throw new Error('filesystem RPC requires a valid process pid');
             }
-            return tools.vfs.as(tools.cred(pid)).writeStream(envelope.stream, {
+            return tools.vfs.as(tools.cred(pid, envelope.cred)).writeStream(envelope.stream, {
                 decodeDrainStartedAt: performance.now(),
                 mutationOwner: envelope.mutationOwner,
             });

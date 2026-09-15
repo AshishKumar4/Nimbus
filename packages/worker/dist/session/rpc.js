@@ -38,7 +38,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/plat
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { acquireSupervisorReadAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/platform/diag-counters.js';
-import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { routeSessionLoopback } from './loopback.js';
@@ -81,9 +81,22 @@ function processPid(pid) {
  * binding, the remote `/rpc` dispatcher, the static asset server — and those
  * act as the unprivileged session user, the same identity `exec` runs as.
  * A supplied-but-invalid pid still throws: only an absent pid is a host call.
+ *
+ * A host call may name the credential it acts as (`cred`) — the same
+ * `SqliteVFS.as(cred)` view an in-process caller has, reached over the RPC
+ * surface. That is the embedder's trusted surface: the SDK over the DO
+ * binding hands it through `files.as(cred)`; the remote `/rpc` dispatcher
+ * refuses it, exactly as it refuses `cred` on exec, because a token
+ * authenticates a session and not a user inside it. Absent, every file op
+ * keeps the identity it has always had. A pid and a cred together are
+ * refused, so a process can never widen its own identity.
  */
-function callerCred(self, pid) {
-    return pid === undefined ? CRED_SESSION_USER : self.processes.cred(processPid(pid));
+function callerCred(self, pid, cred) {
+    if (pid === undefined)
+        return cred === undefined ? CRED_SESSION_USER : requireVfsCred(cred, 'filesystem RPC');
+    if (cred !== undefined)
+        throw new Error('filesystem RPC: a process acts as its own credential; cred cannot ride a pid');
+    return self.processes.cred(processPid(pid));
 }
 export function checkedReadPayloadBytes(bytes) {
     if (!Number.isSafeInteger(bytes) || bytes < 0) {
@@ -128,16 +141,16 @@ export async function withReadAllocation(bytes, read) {
  * The body lives in `buildSessionSupervisorOps`'s `readFile` override so
  * direct `_rpc*` calls and the supervisor envelope share it.
  */
-export async function _rpcReadFile(self, path, pid) {
-    return self.supervisorOp({ op: 'readFile', args: [path], pid });
+export async function _rpcReadFile(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'readFile', args: [path], pid, cred });
 }
 /**
  * Read a file as raw bytes (Uint8Array). Used by git network facet for
  * binary .git/objects/** and packfile reads, where TextDecoder/TextEncoder
  * round-tripping through readFile (string) would corrupt bytes.
  */
-export async function _rpcReadFileBytes(self, path, pid) {
-    return self.supervisorOp({ op: 'readFileBytes', args: [path], pid });
+export async function _rpcReadFileBytes(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'readFileBytes', args: [path], pid, cred });
 }
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
@@ -202,11 +215,11 @@ export async function _rpcInnerDoFetch(self, req) {
         };
     }
 }
-export async function _rpcWriteFile(self, path, content, pid) {
+export async function _rpcWriteFile(self, path, content, pid, cred) {
     // binary-fs wave: the bridge's writeFile already accepts
     // string | Uint8Array — the shape arrives unchanged across structured
     // clone.
-    return self.supervisorOp({ op: 'writeFile', args: [path, content], pid });
+    return self.supervisorOp({ op: 'writeFile', args: [path, content], pid, cred });
 }
 /**
  * Write one host-governed file at a session root and let ordinary Unix
@@ -239,11 +252,11 @@ export async function _rpcWriteProtectedRootFile(self, rootPath, path, content) 
     fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
     fs.chmod(protectedPath, 0o444);
 }
-export async function _rpcStat(self, path, pid) {
-    return self.supervisorOp({ op: 'stat', args: [path], pid });
+export async function _rpcStat(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'stat', args: [path], pid, cred });
 }
-export async function _rpcLstat(self, path, pid) {
-    return self.supervisorOp({ op: 'lstat', args: [path], pid });
+export async function _rpcLstat(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
 }
 export async function _rpcHasLegacySymlinkUnder(self, path, pid) {
     return self.supervisorOp({ op: 'hasLegacySymlinkUnder', args: [path], pid });
@@ -251,8 +264,8 @@ export async function _rpcHasLegacySymlinkUnder(self, path, pid) {
 export async function _rpcUtimes(self, path, atimeMs, mtimeMs, pid) {
     await self.supervisorOp({ op: 'utimes', args: [path, atimeMs, mtimeMs], pid });
 }
-export async function _rpcChmod(self, path, mode, pid) {
-    await self.supervisorOp({ op: 'chmod', args: [path, mode], pid });
+export async function _rpcChmod(self, path, mode, pid, cred) {
+    await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }
 export async function _rpcAccess(self, path, mode, pid) {
     await self.supervisorBridge(pid).access(path, mode);
@@ -263,20 +276,20 @@ export async function _rpcChown(self, path, uid, gid, pid, options) {
 export async function _rpcSetUmask(self, mask, pid) {
     return self.processes.setUmask(processPid(pid), mask);
 }
-export async function _rpcReaddir(self, path, pid) {
-    return self.supervisorOp({ op: 'readdir', args: [path], pid });
+export async function _rpcReaddir(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'readdir', args: [path], pid, cred });
 }
-export async function _rpcExists(self, path, pid) {
-    return self.supervisorOp({ op: 'exists', args: [path], pid });
+export async function _rpcExists(self, path, pid, cred) {
+    return self.supervisorOp({ op: 'exists', args: [path], pid, cred });
 }
-export async function _rpcMkdir(self, path, pid) {
-    await self.supervisorOp({ op: 'mkdir', args: [path], pid });
+export async function _rpcMkdir(self, path, pid, cred) {
+    await self.supervisorOp({ op: 'mkdir', args: [path], pid, cred });
 }
 export async function _rpcRmdir(self, path, pid) {
     await self.supervisorOp({ op: 'rmdir', args: [path], pid });
 }
-export async function _rpcRename(self, from, to, pid) {
-    await self.supervisorOp({ op: 'rename', args: [from, to], pid });
+export async function _rpcRename(self, from, to, pid, cred) {
+    await self.supervisorOp({ op: 'rename', args: [from, to], pid, cred });
 }
 export async function _rpcReadlink(self, path, pid) {
     return self.supervisorOp({ op: 'readlink', args: [path], pid });
@@ -393,8 +406,8 @@ export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
     return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
 }
-export async function _rpcFsReadRange(self, path, offset, length, pid) {
-    return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid });
+export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
+    return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
 }
 /**
  * The same read, through the same process credential and the same bridge, with

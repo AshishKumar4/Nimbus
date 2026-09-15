@@ -24,7 +24,7 @@
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
-import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type RuntimeOpenFlags, type VfsAcquireResult, type VfsCred, type VfsListPage } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 type RpcHost = any;
@@ -45,13 +45,13 @@ export declare function withReadAllocation<T>(bytes: number, read: () => Promise
  * The body lives in `buildSessionSupervisorOps`'s `readFile` override so
  * direct `_rpc*` calls and the supervisor envelope share it.
  */
-export declare function _rpcReadFile(self: RpcHost, path: string, pid?: number): Promise<string | null>;
+export declare function _rpcReadFile(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
 /**
  * Read a file as raw bytes (Uint8Array). Used by git network facet for
  * binary .git/objects/** and packfile reads, where TextDecoder/TextEncoder
  * round-tripping through readFile (string) would corrupt bytes.
  */
-export declare function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number): Promise<Uint8Array | null>;
+export declare function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /**
  * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
  * from the inner Worker via the env.NIMBUS_SESSION loopback. We
@@ -76,7 +76,7 @@ export declare function _rpcInnerDoFetch(self: RpcHost, req: {
     headers: [string, string][];
     body: ArrayBuffer | null;
 }>;
-export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number): Promise<number>;
+export declare function _rpcWriteFile(self: RpcHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number>;
 /**
  * Write one host-governed file at a session root and let ordinary Unix
  * permissions keep it that way: the root becomes a sticky 1777 directory owned
@@ -92,24 +92,24 @@ export declare function _rpcWriteFile(self: RpcHost, path: string, content: stri
  * may write it.
  */
 export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
-export declare function _rpcStat(self: RpcHost, path: string, pid?: number): Promise<any>;
-export declare function _rpcLstat(self: RpcHost, path: string, pid?: number): Promise<any>;
+export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
+export declare function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<any>;
 export declare function _rpcHasLegacySymlinkUnder(self: RpcHost, path: string, pid?: number): Promise<boolean>;
 export declare function _rpcUtimes(self: RpcHost, path: string, atimeMs: number, mtimeMs: number, pid?: number): Promise<void>;
-export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number): Promise<void>;
+export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcAccess(self: RpcHost, path: string, mode: number, pid?: number): Promise<void>;
 export declare function _rpcChown(self: RpcHost, path: string, uid: number, gid: number, pid?: number, options?: {
     followSymlinks?: boolean;
 }): Promise<void>;
 export declare function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number>;
-export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number): Promise<{
+export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<{
     name: string;
     type: string;
 }[]>;
-export declare function _rpcExists(self: RpcHost, path: string, pid?: number): Promise<boolean>;
-export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number): Promise<void>;
+export declare function _rpcExists(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
+export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcRmdir(self: RpcHost, path: string, pid?: number): Promise<void>;
-export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number): Promise<void>;
+export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcReadlink(self: RpcHost, path: string, pid?: number): Promise<string | null>;
 export declare function _rpcSymlink(self: RpcHost, target: string, path: string, pid?: number): Promise<void>;
 export declare const FsReadRangeArgsSchema: z.ZodObject<{
@@ -163,7 +163,7 @@ export declare function _rpcFsAcquire(self: RpcHost, epoch: string | null, curso
  * — a process must not learn of a path it could not stat.
  */
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
-export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<Uint8Array | null>;
+export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /**
  * The same read, through the same process credential and the same bridge, with
  * the LRU content cache bypassed.
