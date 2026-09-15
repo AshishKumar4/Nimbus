@@ -39,7 +39,7 @@ import {
   TYPESCRIPT_INDEX_CANDIDATES,
   typescriptFallbackCandidates,
 } from '../_shared/typescript-specifiers.js';
-import { FACET_PROVIDED_PACKAGES } from '../constants.js';
+import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 
@@ -508,14 +508,45 @@ function resolveImportsField(
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
- * The walk is deliberately unbounded. A facet has no synchronous I/O
- * primitive, so `require()` cannot fetch a file it was not shipped — a
- * budget applied here is not backpressure, it is an unrecoverable hole
- * in the module graph. Bounds belong to the optional enrichment passes
- * in facet-manager.ts, which have a live async read path behind them.
+ * The walk is bounded at `VFS_BUNDLE_MAX_BYTES` of staged content. A
+ * facet has no synchronous I/O primitive, so `require()` cannot fetch a
+ * file it was not shipped — a closure that does not fit the bound can
+ * never launch as a snapshot, and reading it in full is memory the
+ * isolate may not survive. The walk therefore stats each required file
+ * before reading and stops, without reading, on the file that would
+ * cross the bound; the result is the typed `closure-exceeds-bound`
+ * outcome below, never a partial closure passed off as complete.
+ * Bounds for the optional enrichment passes live in facet-manager.ts,
+ * which has a live async read path behind it.
  */
 export interface PrefetchResult {
   bundle: Record<string, string>;
+}
+
+/**
+ * The walk stopped at the snapshot bound. `bytesSeen` is content
+ * already staged when the bound tripped; `lastPath` is the file whose
+ * stat crossed it — it was never read.
+ */
+export interface ClosureBoundExceeded {
+  kind: 'closure-exceeds-bound';
+  entry: string;
+  bytesSeen: number;
+  bound: number;
+  lastPath: string;
+}
+
+export type PrefetchOutcome = PrefetchResult | ClosureBoundExceeded;
+
+/** Error form of `ClosureBoundExceeded` for callers that cannot return it. */
+export class ClosureBoundExceededError extends Error {
+  constructor(public readonly outcome: ClosureBoundExceeded) {
+    super(
+      `require closure for ${outcome.entry} exceeds the ${outcome.bound}-byte ` +
+      `snapshot bound (${outcome.bytesSeen} bytes staged, stopped at ${outcome.lastPath})`,
+    );
+    this.name = 'ClosureBoundExceededError';
+  }
 }
 
 /** Resolve the complete dependency graph starting from entry code. */
@@ -524,16 +555,37 @@ export function prefetchForRequire(
   entryCode: string,
   cwd: string,
   entryFile?: string,
-): PrefetchResult {
+  maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
+): PrefetchOutcome {
   const bundle: Record<string, string> = {};
   const visited = new Set<string>();
+  let bytesSeen = 0;
+  let closureExceeded: ClosureBoundExceeded | null = null;
 
   function addFile(vfsPath: string): void {
-    if (visited.has(vfsPath)) return;
+    if (closureExceeded || visited.has(vfsPath)) return;
     visited.add(vfsPath);
+    // Stat before read: a required file is not optional, so if its size
+    // would carry the bundle past the bound the closure cannot launch —
+    // stop here rather than buy the read that resets the isolate. A stat
+    // failure means the size is unknown; the read attempt decides, as it
+    // did before this gate existed.
+    let size = 0;
+    try { size = vfs.stat(vfsPath).size; } catch { /* size unknown */ }
+    if (bytesSeen + size > maxBundleBytes) {
+      closureExceeded = {
+        kind: 'closure-exceeds-bound',
+        entry: entryFile ?? 'entry code',
+        bytesSeen,
+        bound: maxBundleBytes,
+        lastPath: vfsPath,
+      };
+      return;
+    }
     let content: string;
     try { content = vfs.readFileString(vfsPath); }
     catch { return; }
+    bytesSeen += size;
     bundle[vfsPath] = content;
 
     // Also add the package.json for the enclosing node_modules package
@@ -622,6 +674,7 @@ export function prefetchForRequire(
     for (let match = REQUIRE_RE.exec(stripped); match !== null; match = REQUIRE_RE.exec(stripped)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
+      if (closureExceeded) break;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
       if (r) {
         addFile(r.resolved);
@@ -638,6 +691,7 @@ export function prefetchForRequire(
     for (let match = IMPORT_RE.exec(stripped); match !== null; match = IMPORT_RE.exec(stripped)) {
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
+      if (closureExceeded) break;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
       if (r) {
         addFile(r.resolved);
@@ -651,6 +705,7 @@ export function prefetchForRequire(
       const specifier = match[2];
       if (isFacetProvided(specifier)) continue;
       const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
+      if (closureExceeded) break;
       if (r) {
         addFile(r.resolved);
         if (r.stub) addStub(r.stub.path, r.stub.content);
@@ -732,7 +787,7 @@ export function prefetchForRequire(
     } catch { /* ignore */ }
   }
 
-  return { bundle };
+  return closureExceeded ?? { bundle };
 }
 
 const BUILTINS = new Set([

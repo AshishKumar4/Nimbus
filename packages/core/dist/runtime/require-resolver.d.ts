@@ -30,15 +30,38 @@ import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
- * The walk is deliberately unbounded. A facet has no synchronous I/O
- * primitive, so `require()` cannot fetch a file it was not shipped — a
- * budget applied here is not backpressure, it is an unrecoverable hole
- * in the module graph. Bounds belong to the optional enrichment passes
- * in facet-manager.ts, which have a live async read path behind them.
+ * The walk is bounded at `VFS_BUNDLE_MAX_BYTES` of staged content. A
+ * facet has no synchronous I/O primitive, so `require()` cannot fetch a
+ * file it was not shipped — a closure that does not fit the bound can
+ * never launch as a snapshot, and reading it in full is memory the
+ * isolate may not survive. The walk therefore stats each required file
+ * before reading and stops, without reading, on the file that would
+ * cross the bound; the result is the typed `closure-exceeds-bound`
+ * outcome below, never a partial closure passed off as complete.
+ * Bounds for the optional enrichment passes live in facet-manager.ts,
+ * which has a live async read path behind it.
  */
 export interface PrefetchResult {
     bundle: Record<string, string>;
 }
+/**
+ * The walk stopped at the snapshot bound. `bytesSeen` is content
+ * already staged when the bound tripped; `lastPath` is the file whose
+ * stat crossed it — it was never read.
+ */
+export interface ClosureBoundExceeded {
+    kind: 'closure-exceeds-bound';
+    entry: string;
+    bytesSeen: number;
+    bound: number;
+    lastPath: string;
+}
+export type PrefetchOutcome = PrefetchResult | ClosureBoundExceeded;
+/** Error form of `ClosureBoundExceeded` for callers that cannot return it. */
+export declare class ClosureBoundExceededError extends Error {
+    readonly outcome: ClosureBoundExceeded;
+    constructor(outcome: ClosureBoundExceeded);
+}
 /** Resolve the complete dependency graph starting from entry code. */
-export declare function prefetchForRequire(vfs: CredentialedVfs, entryCode: string, cwd: string, entryFile?: string): PrefetchResult;
+export declare function prefetchForRequire(vfs: CredentialedVfs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number): PrefetchOutcome;
 //# sourceMappingURL=require-resolver.d.ts.map

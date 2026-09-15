@@ -411,4 +411,71 @@ assert.deepEqual(
   );
 }
 
+
+// A required closure larger than the snapshot bound can never launch as
+// a snapshot, so prefetchForRequire stats each required file BEFORE
+// reading and stops on the file that would cross the bound — reporting
+// { kind: 'closure-exceeds-bound', ... } instead of a partial bundle.
+// buildPrefetchBundle surfaces it as ClosureBoundExceededError. Fixture:
+// three 10 MiB required files under an injected 15 MiB bound — a.js is
+// staged (10 MiB), the second stat (b.js) trips the bound, and neither
+// b.js nor c.js is ever read.
+{
+  const cwd = 'home/user';
+  const MIB = 1024 * 1024;
+  const entryPath = `${cwd}/entry.js`;
+  const files = {
+    [entryPath]: "require('./a');\nrequire('./b');\nrequire('./c');",
+    [`${cwd}/a.js`]: `'${'A'.repeat(10 * MIB)}';`,
+    [`${cwd}/b.js`]: `'${'B'.repeat(10 * MIB)}';`,
+    [`${cwd}/c.js`]: `'${'C'.repeat(10 * MIB)}';`,
+  };
+
+  class SpyVfs2 extends FakeVfs {
+    constructor(f) { super(f); this.reads = []; this.stats = []; }
+    stat(p) { this.stats.push(p.replace(/^\/+/, '')); return this.lstat(p); }
+    readFile(p) { this.reads.push(p.replace(/^\/+/, '')); return super.readFile(p); }
+    readFileString(p) { this.reads.push(p.replace(/^\/+/, '')); return super.readFileString(p); }
+  }
+  const vfs = new SpyVfs2(files);
+  const bound = 15 * MIB;
+
+  let failure;
+  try {
+    await buildPrefetchBundle(
+      vfs, `/${entryPath}`, cwd, files[entryPath],
+      identityEsbuild, undefined, undefined, undefined, undefined, bound,
+    );
+  } catch (e) {
+    failure = e;
+  }
+  assert.ok(failure, 'an over-bound required closure fails the build');
+  assert.equal(failure.name, 'ClosureBoundExceededError');
+  const outcome = failure.outcome;
+  assert.equal(outcome.kind, 'closure-exceeds-bound');
+  assert.equal(outcome.bound, bound);
+  assert.equal(outcome.bytesSeen, files[`${cwd}/a.js`].length, 'only a.js was staged');
+  assert.equal(outcome.lastPath, `${cwd}/b.js`, 'the second stat trips the bound');
+  assert.equal(outcome.entry, `/${entryPath}`);
+
+  assert.ok(
+    !vfs.reads.includes(`${cwd}/b.js`) && !vfs.reads.includes(`${cwd}/c.js`),
+    `the bound tripped without reading the crossing file (or after it); reads=${vfs.reads.length}`,
+  );
+  assert.ok(
+    vfs.reads.includes(`${cwd}/a.js`),
+    'a file that fits is still staged',
+  );
+
+  // A closure that fits the bound is unchanged.
+  const ok = await buildPrefetchBundle(
+    new FakeVfs(files), `/${entryPath}`, cwd, files[entryPath],
+    identityEsbuild, undefined, undefined, undefined, undefined, VFS_BUNDLE_MAX_BYTES,
+  );
+  assert.equal(
+    ok.bundle[`${cwd}/c.js`], files[`${cwd}/c.js`],
+    'a closure inside the bound still bundles every required file',
+  );
+}
+
 console.log('facet VFS snapshot closure: ok');

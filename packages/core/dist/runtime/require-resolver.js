@@ -28,7 +28,7 @@
  */
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates, } from '../_shared/typescript-specifiers.js';
-import { FACET_PROVIDED_PACKAGES } from '../constants.js';
+import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { stripCommentsForImports } from './comment-strip.js';
 // Match literal-string require/require.resolve with single, double, or
@@ -448,14 +448,46 @@ function resolveImportsField(vfs, name, fromDir, sink) {
         dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
     }
 }
+/** Error form of `ClosureBoundExceeded` for callers that cannot return it. */
+export class ClosureBoundExceededError extends Error {
+    outcome;
+    constructor(outcome) {
+        super(`require closure for ${outcome.entry} exceeds the ${outcome.bound}-byte ` +
+            `snapshot bound (${outcome.bytesSeen} bytes staged, stopped at ${outcome.lastPath})`);
+        this.outcome = outcome;
+        this.name = 'ClosureBoundExceededError';
+    }
+}
 /** Resolve the complete dependency graph starting from entry code. */
-export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
+export function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES) {
     const bundle = {};
     const visited = new Set();
+    let bytesSeen = 0;
+    let closureExceeded = null;
     function addFile(vfsPath) {
-        if (visited.has(vfsPath))
+        if (closureExceeded || visited.has(vfsPath))
             return;
         visited.add(vfsPath);
+        // Stat before read: a required file is not optional, so if its size
+        // would carry the bundle past the bound the closure cannot launch —
+        // stop here rather than buy the read that resets the isolate. A stat
+        // failure means the size is unknown; the read attempt decides, as it
+        // did before this gate existed.
+        let size = 0;
+        try {
+            size = vfs.stat(vfsPath).size;
+        }
+        catch { /* size unknown */ }
+        if (bytesSeen + size > maxBundleBytes) {
+            closureExceeded = {
+                kind: 'closure-exceeds-bound',
+                entry: entryFile ?? 'entry code',
+                bytesSeen,
+                bound: maxBundleBytes,
+                lastPath: vfsPath,
+            };
+            return;
+        }
         let content;
         try {
             content = vfs.readFileString(vfsPath);
@@ -463,6 +495,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         catch {
             return;
         }
+        bytesSeen += size;
         bundle[vfsPath] = content;
         // Also add the package.json for the enclosing node_modules package
         // so the runtime resolver can read the same exports/main field we
@@ -552,6 +585,8 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;
+            if (closureExceeded)
+                break;
             const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
                 addFile(r.resolved);
@@ -570,6 +605,8 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;
+            if (closureExceeded)
+                break;
             const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
             if (r) {
                 addFile(r.resolved);
@@ -585,6 +622,8 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
             if (isFacetProvided(specifier))
                 continue;
             const r = resolveRequireEx(vfs, specifier, fromDir, addPkgJson);
+            if (closureExceeded)
+                break;
             if (r) {
                 addFile(r.resolved);
                 if (r.stub)
@@ -671,7 +710,7 @@ export function prefetchForRequire(vfs, entryCode, cwd, entryFile) {
         }
         catch { /* ignore */ }
     }
-    return { bundle };
+    return closureExceeded ?? { bundle };
 }
 const BUILTINS = new Set([
     'fs', 'path', 'os', 'events', 'stream', 'buffer', 'util', 'url', 'crypto',

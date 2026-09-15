@@ -28,7 +28,7 @@ import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { unbindPublicPortCapability } from '../router/public-directory.js';
-import { prefetchForRequire } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { prefetchForRequire, ClosureBoundExceededError } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { hasTopLevelModuleSyntax } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindImportMetaResolve, importMetaDefines } from '@nimbus-sh/core/runtime/import-meta-transform.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -3106,7 +3106,7 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
  * behaviour for code paths that don't have esbuild handy).
  *
  */
-export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform) {
+export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform, maxBundleBytes) {
     // This build accumulates raw VFS contents in the supervisor heap, and did it
     // with nothing watching: the estimator read 9.4 MiB while these bytes were
     // resetting the DO three times. Take the budget the enrichment passes are
@@ -3116,19 +3116,25 @@ export async function buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbui
     const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, isolatedTransform);
+        return await _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile, observedReads, pacer, isolatedTransform, maxBundleBytes);
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform) {
+async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, isolatedTransform, maxBundleBytes = VFS_BUNDLE_MAX_BYTES) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
     // 1. Static reachable-set walk from entry.
-    const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath);
+    const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath, maxBundleBytes);
+    if ('kind' in prefetch) {
+        // A required closure larger than the bound can never launch as a
+        // snapshot. Surface it as the process's own failure rather than a
+        // build error: the caller maps it to exit 1 + stderr.
+        throw new ClosureBoundExceededError(prefetch);
+    }
     const bundle = { ...prefetch.bundle };
     const requiredPaths = new Set(Object.keys(prefetch.bundle));
     let truncated = false;
@@ -3940,12 +3946,28 @@ export class FacetManager {
             vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
         }
         catch (err) {
+            // The require closure that cannot fit the snapshot bound is the
+            // process's own answer, not a build failure: exit 1 with a stderr
+            // that names the entry, the staged bytes at the stop, the bound,
+            // and the remedy — the same shape the got/next guards print.
+            pacer.settle();
+            if (err instanceof ClosureBoundExceededError) {
+                const o = err.outcome;
+                const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
+                const stderr = `require closure for ${o.entry} exceeds the snapshot bound: ` +
+                    `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
+                    `${mib(o.bound)} bound; the process was not started.\n` +
+                    `Run it as a server or split the entry; there is no flag to bypass.`;
+                if (this.processes.get(entry.pid)?.state === 'running') {
+                    this._failLaunch(entry.pid, stderr);
+                }
+                return { exitCode: 1, stdout: '', stderr };
+            }
             // A failed build is thrown to the caller exactly as before. What must
             // not be left behind is the process entry: it was spawned above and
             // would otherwise sit 'running' forever for a process that never
             // started. A build ended by a kill finds its entry already exited and
             // reports nothing twice.
-            pacer.settle();
             if (this.processes.get(entry.pid)?.state === 'running') {
                 this._failLaunch(entry.pid, `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}`);
             }

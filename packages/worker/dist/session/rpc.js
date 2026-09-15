@@ -975,8 +975,13 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
     // want to refresh the bundle mid-execution; today only the
     // SupervisorRPC.prefetch surface exposes it externally.
     self.ensureSqliteFs();
-    const { prefetchForRequire } = await import('@nimbus-sh/core/runtime/require-resolver.js');
-    return prefetchForRequire(self.sqliteFs, entryCode, cwd).bundle;
+    // Dynamic import stays: keeps the resolver out of this module's eager
+    // graph (the original reason for the lazy load above).
+    const { prefetchForRequire, ClosureBoundExceededError } = await import('@nimbus-sh/core/runtime/require-resolver.js');
+    const outcome = prefetchForRequire(self.sqliteFs, entryCode, cwd);
+    if ('kind' in outcome)
+        throw new ClosureBoundExceededError(outcome);
+    return outcome.bundle;
 }
 export async function _rpcRegisterPort(self, pid, port) {
     // Port registration stores the facet association — the actual facet stub
