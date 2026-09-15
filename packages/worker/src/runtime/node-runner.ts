@@ -115,6 +115,9 @@ export interface RunFreshOpts {
   forceLongRunning?: boolean;
   attachedTty?: boolean;
   bundleProfile?: FacetBundleProfile;
+  /** Shell abort (Ctrl+C): aborting this kills the run through the
+   *  terminator exec registers on the pid. */
+  signal?: AbortSignal;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */

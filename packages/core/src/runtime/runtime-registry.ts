@@ -79,6 +79,8 @@ export interface RuntimeRunOpts {
   bundleProfile?: FacetBundleProfile;
   /** Invoking process credentials for credential-bound runtime snapshots. */
   cred?: VfsCred;
+  /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
+  signal?: AbortSignal;
 }
 
 /** Extensions probed when a target names no exact file, in Node's order. */
@@ -280,6 +282,7 @@ export function buildRuntimeHandler(
       }
       const result = await spec.run(code, {
         cred: ctx.cred,
+        signal: ctx.signal,
         argv: args.slice(evalIdx + 2),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -319,6 +322,7 @@ export function buildRuntimeHandler(
       // [exportName, intArg1, intArg2, ...] for wasm-runner).
       const result = await spec.run('', {
         cred: ctx.cred,
+        signal: ctx.signal,
         argv: args.slice(scriptIdx + 1),
         env: ctx.env,
         cwd: ctx.cwd,
@@ -469,6 +473,7 @@ export function buildRuntimeHandler(
     const leadingFlags = args.slice(0, scriptIdx);
     const result = await spec.run(code, {
       cred: ctx.cred,
+      signal: ctx.signal,
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       env: ctx.env,
       cwd: ctx.cwd,

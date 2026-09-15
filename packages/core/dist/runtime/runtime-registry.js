@@ -146,6 +146,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             }
             const result = await spec.run(code, {
                 cred: ctx.cred,
+                signal: ctx.signal,
                 argv: args.slice(evalIdx + 2),
                 env: ctx.env,
                 cwd: ctx.cwd,
@@ -183,6 +184,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             // [exportName, intArg1, intArg2, ...] for wasm-runner).
             const result = await spec.run('', {
                 cred: ctx.cred,
+                signal: ctx.signal,
                 argv: args.slice(scriptIdx + 1),
                 env: ctx.env,
                 cwd: ctx.cwd,
@@ -326,6 +328,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         const leadingFlags = args.slice(0, scriptIdx);
         const result = await spec.run(code, {
             cred: ctx.cred,
+            signal: ctx.signal,
             argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
             env: ctx.env,
             cwd: ctx.cwd,

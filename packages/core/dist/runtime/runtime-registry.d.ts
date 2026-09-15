@@ -73,6 +73,8 @@ export interface RuntimeRunOpts {
     bundleProfile?: FacetBundleProfile;
     /** Invoking process credentials for credential-bound runtime snapshots. */
     cred?: VfsCred;
+    /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
+    signal?: AbortSignal;
 }
 /** The VFS surface script resolution needs. */
 export interface ScriptResolutionFs {

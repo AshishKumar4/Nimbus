@@ -1045,6 +1045,8 @@ export declare class FacetManager {
         /** Return stdout/stderr in the result while keeping supervisor RPC
          *  available for VFS and child_process operations. */
         captureOutput?: boolean;
+        /** Shell abort (Ctrl+C): aborting this aborts the in-flight run. */
+        signal?: AbortSignal;
     }): Promise<FacetExecResult>;
     /**
      * W5 Lever 5: push a DiagFailure into the OOM ring for every facet

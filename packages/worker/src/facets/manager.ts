@@ -4495,6 +4495,8 @@ export class FacetManager {
       /** Return stdout/stderr in the result while keeping supervisor RPC
        *  available for VFS and child_process operations. */
       captureOutput?: boolean;
+      /** Shell abort (Ctrl+C): aborting this aborts the in-flight run. */
+      signal?: AbortSignal;
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -4583,6 +4585,10 @@ export class FacetManager {
     // Ctrl-C / kill on a user program has to end the in-flight run, not just
     // mark the table row: the runOnce request carries this signal.
     this.processes.setTerminator(entry.pid, () => abortController.abort());
+    // A shell Ctrl+C arrives as an abort on the command's signal — it is the
+    // same kill, forwarded onto the controller the runOnce request carries.
+    const onShellAbort = () => abortController.abort();
+    opts.signal?.addEventListener('abort', onShellAbort, { once: true });
     try {
       const result = await this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink);
       this._flushVfsWrites(result, entry.pid);
@@ -4624,6 +4630,7 @@ export class FacetManager {
       } catch {}
       return { exitCode, stdout: '', stderr: errorMessage(err) };
     } finally {
+      opts.signal?.removeEventListener('abort', onShellAbort);
       pacer.settle();
     }
   }
