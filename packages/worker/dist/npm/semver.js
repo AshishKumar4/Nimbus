@@ -61,15 +61,13 @@ export function compareSemver(a, b) {
         const y = bp[i];
         if (x === y)
             continue;
-        const xn = typeof x === 'number';
-        const yn = typeof y === 'number';
-        if (xn && yn)
+        if (typeof x === 'number' && typeof y === 'number')
             return x - y;
-        if (xn)
+        if (typeof x === 'number')
             return -1;
-        if (yn)
+        if (typeof y === 'number')
             return 1;
-        return String(x) < String(y) ? -1 : 1;
+        return x < y ? -1 : 1;
     }
     return ap.length - bp.length;
 }

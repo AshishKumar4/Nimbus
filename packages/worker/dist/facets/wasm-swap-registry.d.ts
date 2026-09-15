@@ -44,8 +44,6 @@ export declare const STAGED_ARTIFACT_BIN_PREFIX = "nimbus-staged:";
  * one JSON-serializable object.
  */
 export declare const PACKAGE_ABI_POLICY: PackageAbiPolicy;
-/** Check if a package is build-only (skipped at transitive depth). */
-export declare function policyShouldSkipPackage(policy: PackageAbiPolicy, name: string, frameworkAware: boolean): boolean;
 export declare function policyLookupSwap(policy: PackageAbiPolicy, name: string): PackageSwapEntry | undefined;
 export declare function policyLookupReject(policy: PackageAbiPolicy, name: string): PackageRejectEntry | undefined;
 export declare function policyLookupStagedArtifact(policy: PackageAbiPolicy, name: string): PackageStagedArtifactEntry | undefined;
@@ -73,14 +71,6 @@ export declare function applyStagedArtifact(pkg: {
     bin?: Record<string, string>;
     optionalDependencies?: Record<string, string>;
 }, entry: PackageStagedArtifactEntry): void;
-/** Check if a package should be skipped (build-only, types). */
-export declare function shouldSkipPackage(name: string): boolean;
-/**
- * W11: framework-aware skip variant. When `frameworkAware` is true,
- * packages in `frameworkRequiredPackages` (currently just `vite`) pass
- * through so framework dev binaries can import them from node_modules.
- */
-export declare function shouldSkipPackageWithFramework(name: string, frameworkAware: boolean): boolean;
 /**
  * Pure: return a new specs map with every swap `from` key rewritten
  * to its swap target. Records the swaps actually performed.
@@ -116,19 +106,6 @@ export declare function shouldWarnSkipTransitive(name: string): PackageRejectEnt
  */
 export declare function formatSwapNotice(s: PackageSwapEntry): string;
 /**
- * Multi-line red error thrown when one or more top-level rejects fire.
- * Includes a leading summary line and a `try:` suggestion per package
- * (when present).
- *
- * `devOnly` names the rejects that only a devDependency asked for. Refusing a
- * bundled 150 MB browser is right — a sandbox cannot run it, and fetching it
- * to fail later is the same dishonesty as answering `uname -m` with a value
- * whose binaries cannot execute. But when nothing the project RUNS wanted the
- * package, refusing without naming the flag that skips it leaves the caller
- * stuck at a wall that has a door in it.
- */
-export declare function formatRejectError(rejects: ReadonlyArray<PackageRejectEntry>, devOnly?: ReadonlySet<string>): string;
-/**
  * Single-line yellow notice emitted for a `[skip]`.
  *   `[npm] [skip] fsevents — macOS-only filesystem watcher; never runs in Workers`
  *
@@ -138,29 +115,6 @@ export declare function formatRejectError(rejects: ReadonlyArray<PackageRejectEn
  * left out.
  */
 export declare function formatTransitiveSkip(r: PackageRejectEntry): string;
-/**
- * Tag class for registry-driven rejects. Both the supervisor-side path
- * (npm-installer.ts and npm-resolver.ts) and the
- * facet-side path (resolve-one-facet.ts:resolveOnePackumentInFacet) throw
- * errors tagged for this case.
- *
- * Supervisor-side: throw `new RegistryRejectError(rejects)` directly.
- * Facet-side: cannot import this class (preamble has no import surface),
- *   so the facet throws `new Error(...)` with `err.__nimbus_registry_reject = true`.
- *   Both are detected via `isRegistryReject()`.
- *
- * The own-property survives worker boundary serialization.
- */
-export declare class RegistryRejectError extends Error {
-    readonly rejects: ReadonlyArray<PackageRejectEntry>;
-    readonly __nimbus_registry_reject: true;
-    constructor(rejects: ReadonlyArray<PackageRejectEntry>, devOnly?: ReadonlySet<string>);
-}
-/**
- * Robust check that survives the supervisor↔facet boundary: prototypes
- * are lost across that boundary, so we tag via an own-property.
- */
-export declare function isRegistryReject(e: unknown): boolean;
 /**
  * The discriminated-union event emitted by the supervisor whenever the
  * registry takes a decision.
@@ -312,17 +266,4 @@ export declare function selectAutoInstallPeers(pkg: {
 }, opts?: {
     requiredOnly?: boolean;
 }): string[];
-/**
- * Classification of an install-time error so the supervisor can decide
- * whether to swallow (recoverable) or propagate (real fail).
- *
- *   - 'optional-dep-skip'  — the failed package was an entry in
- *                            `optionalDependencies`; skip silently.
- *   - 'registry-reject'    — RegistryRejectError.
- *   - 'real-resolve-fail'  — anything else; propagate.
- */
-export type InstallErrorClass = 'optional-dep-skip' | 'registry-reject' | 'real-resolve-fail';
-export declare function classifyInstallError(e: unknown, ctx?: {
-    isOptional?: boolean;
-}): InstallErrorClass;
 //# sourceMappingURL=wasm-swap-registry.d.ts.map

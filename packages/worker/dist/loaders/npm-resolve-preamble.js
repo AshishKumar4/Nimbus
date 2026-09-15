@@ -8,7 +8,6 @@
  * re-declared in the preamble.
  *
  * The resolver facets reference the following preamble symbols:
- *   - SHOULD_SKIP_PACKAGE(name, frameworkAware) → boolean
  *   - SHOULD_SWAP(name)         → swap entry | undefined
  *   - SHOULD_REJECT_FAIL(name)  → reject entry | undefined
  *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
@@ -33,23 +32,19 @@
  * any edit invalidates the warm slot and forces a re-load on next
  * dispatch. Acceptable cost for a one-shot resolver phase.
  */
-import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeArtifactReject, policyShouldSkipPackage, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
+import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeArtifactReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
 import { compareSemver, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
 export const NPM_RESOLVE_PREAMBLE = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
 // of truth; tests/unit/package-abi-policy.mjs enforces parity.
 const __NIMBUS_PACKAGE_ABI_POLICY = ${JSON.stringify(PACKAGE_ABI_POLICY)};
-const __policyShouldSkipPackage = ${policyShouldSkipPackage.toString()};
 const __policyLookupSwap = ${policyLookupSwap.toString()};
 const __policyLookupReject = ${policyLookupReject.toString()};
 const __policyNativeArtifactReject = ${policyNativeArtifactReject.toString()};
 const __policyIsOptionalNativeBinding = ${policyIsOptionalNativeBinding.toString()};
 const __policyLookupStagedArtifact = ${policyLookupStagedArtifact.toString()};
 const __policyApplyStagedArtifact = ${policyApplyStagedArtifact.toString()};
-function SHOULD_SKIP_PACKAGE(name, frameworkAware) {
-  return __policyShouldSkipPackage(__NIMBUS_PACKAGE_ABI_POLICY, name, !!frameworkAware);
-}
 function SHOULD_SWAP(name) {
   return __policyLookupSwap(__NIMBUS_PACKAGE_ABI_POLICY, name);
 }

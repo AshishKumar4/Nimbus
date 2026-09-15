@@ -46,21 +46,10 @@ const SWAPS = [
         reason: 'Native esbuild not available in Workers; esbuild-wasm exposes the same build/transform/version/initialize API.',
         compat: 'drop-in',
     },
-    // X.5-G G2: rollup ships native platform shards as
-    // `optionalDependencies` (26 of them). On any host where the matching
-    // shard isn't present, rollup's own `native.js` throws the famous
-    // 'npm has a bug related to optional dependencies (#4828)'. Even
-    // when the matching shard IS installed, the .node binary cannot
-    // load in workerd. @rollup/wasm-node is the upstream-published
-    // pure-WASM build with byte-identical exports (verified via registry
-    // packument compare 2026-05-05; both ship `dist/rollup.js` with the
-    // same `exports` map). Drop-in swap.
     {
-        from: 'rollup',
-        to: '@rollup/wasm-node',
-        reason: 'Native rollup uses optionalDependencies for 26 platform shards (npm CLI bug #4828) ' +
-            'and ships .node binaries that workerd cannot load. @rollup/wasm-node is the upstream ' +
-            'pure-WASM build with identical exports.',
+        from: 'mocha',
+        to: 'mocha-wasm',
+        reason: 'mocha-wasm is a pure-WASM build of mocha with identical exports.',
         compat: 'drop-in',
     },
 ];
@@ -296,26 +285,6 @@ const REJECTS = [
         transitive: 'fail',
     },
 ];
-// SKIP_PACKAGES used to name build tools — typescript, vite, webpack,
-// postcss, tailwindcss, eslint, prettier, husky, @types/* and friends — and
-// the resolver dropped them from every install: transitively, and also
-// from the project's own package.json (buildSpecs filtered declared
-// dependencies through it). A cloned TypeScript project therefore had no
-// node_modules/.bin/tsc, no @types, no eslint, while the install reported
-// Done!. None of those packages is unable to run here: they are JavaScript,
-// and the ones with native shards (parcel, tailwind v4's oxide, TypeScript
-// 7's Go binary) are caught by the native-artifact and reject policies with
-// a stated reason. So the skip list is empty: a declared dependency is
-// installed or refused loudly, never silently left out. What must not be
-// installed is a REJECT with its reason (node-gyp, node-pre-gyp, wrangler,
-// @cloudflare/vite-plugin above); `esbuild`/`rollup` are SWAPS.
-//
-// W11 kept `vite` out of node_modules unless a framework was detected; the
-// builtin `vite` command still shadows the bin in the shell, and the package
-// is installed like any other so `import { createServer } from 'vite'` and
-// plugin resolution work without a framework heuristic.
-const SKIP_PACKAGES = [];
-const SKIP_PREFIXES = [];
 /**
  * The single typed package-ABI policy (see `PackageAbiPolicy` in
  * runtime/os-contracts.ts). Everything the npm resolver/installer needs
@@ -337,9 +306,14 @@ export const PACKAGE_ABI_POLICY = {
     swaps: SWAPS,
     stagedArtifacts: STAGED_ARTIFACTS,
     rejects: REJECTS,
-    skipPackages: SKIP_PACKAGES,
-    skipPrefixes: SKIP_PREFIXES,
-    frameworkRequiredPackages: ['vite'],
+    skipPackages: [],
+    skipPrefixes: [],
+    frameworkRequiredPackages: [],
+    // The transitive-skip gate these fields fed was removed with the
+    // required-reachability work: every package a project declares is
+    // resolved, and refusal is the reject list's job. The fields stay —
+    // empty — because `PackageAbiPolicy` is a public `@nimbus-sh/core`
+    // type and the preamble's serialized policy must keep its shape.
     // Known native-shard name globs. Matched as `prefix-` (so the parent
     // package name without a platform suffix never matches).
     nativeShardPrefixes: [
@@ -362,18 +336,6 @@ export const PACKAGE_ABI_POLICY = {
 // Policy functions — SERIALIZED into facet preambles via fn.toString().
 // Self-contained by contract: parameters and JS globals only.
 // ─────────────────────────────────────────────────────────────────────────
-/** Check if a package is build-only (skipped at transitive depth). */
-export function policyShouldSkipPackage(policy, name, frameworkAware) {
-    if (frameworkAware && policy.frameworkRequiredPackages.includes(name))
-        return false;
-    if (policy.skipPackages.includes(name))
-        return true;
-    for (const prefix of policy.skipPrefixes) {
-        if (name.startsWith(prefix))
-            return true;
-    }
-    return false;
-}
 export function policyLookupSwap(policy, name) {
     return policy.swaps.find((entry) => entry.from === name);
 }
@@ -417,18 +379,6 @@ export function lookupStagedArtifact(name) {
 /** Apply the staged-artifact bin/optionalDeps rewrite in supervisor scope. */
 export function applyStagedArtifact(pkg, entry) {
     policyApplyStagedArtifact(pkg, entry, STAGED_ARTIFACT_BIN_PREFIX);
-}
-/** Check if a package should be skipped (build-only, types). */
-export function shouldSkipPackage(name) {
-    return policyShouldSkipPackage(PACKAGE_ABI_POLICY, name, false);
-}
-/**
- * W11: framework-aware skip variant. When `frameworkAware` is true,
- * packages in `frameworkRequiredPackages` (currently just `vite`) pass
- * through so framework dev binaries can import them from node_modules.
- */
-export function shouldSkipPackageWithFramework(name, frameworkAware) {
-    return policyShouldSkipPackage(PACKAGE_ABI_POLICY, name, frameworkAware);
 }
 /**
  * Pure: return a new specs map with every swap `from` key rewritten
@@ -489,7 +439,6 @@ export function shouldWarnSkipTransitive(name) {
 // ─────────────────────────────────────────────────────────────────────────
 // Formatters
 // ─────────────────────────────────────────────────────────────────────────
-const ANSI_RED = '\x1b[31m';
 const ANSI_YELLOW = '\x1b[33m';
 const ANSI_DIM = '\x1b[2m';
 const ANSI_RESET = '\x1b[0m';
@@ -499,37 +448,6 @@ const ANSI_RESET = '\x1b[0m';
  */
 export function formatSwapNotice(s) {
     return `[npm] ${ANSI_YELLOW}[swap]${ANSI_RESET} ${s.from} → ${s.to} (${s.reason})`;
-}
-/**
- * Multi-line red error thrown when one or more top-level rejects fire.
- * Includes a leading summary line and a `try:` suggestion per package
- * (when present).
- *
- * `devOnly` names the rejects that only a devDependency asked for. Refusing a
- * bundled 150 MB browser is right — a sandbox cannot run it, and fetching it
- * to fail later is the same dishonesty as answering `uname -m` with a value
- * whose binaries cannot execute. But when nothing the project RUNS wanted the
- * package, refusing without naming the flag that skips it leaves the caller
- * stuck at a wall that has a door in it.
- */
-export function formatRejectError(rejects, devOnly = new Set()) {
-    if (rejects.length === 0)
-        return '';
-    const head = `${ANSI_RED}npm install rejected:${ANSI_RESET} ${rejects.length} package${rejects.length === 1 ? '' : 's'} not supported on Nimbus.`;
-    const lines = rejects.map((r) => {
-        const dev = devOnly.has(r.from) ? ' (devDependency)' : '';
-        const main = `  ❌ ${r.from}${dev} — ${r.reason}`;
-        if (r.suggest) {
-            return `${main}\n     ${ANSI_DIM}try:${ANSI_RESET} ${r.suggest}`;
-        }
-        return main;
-    });
-    const allDev = rejects.every((r) => devOnly.has(r.from));
-    const footer = allDev
-        ? [`  ${ANSI_DIM}Nothing this project runs depends on ${rejects.length === 1 ? 'it' : 'them'}:`
-                + ` \`npm install --omit=dev\` installs the rest.${ANSI_RESET}`]
-        : [];
-    return [head, ...lines, ...footer].join('\n');
 }
 /**
  * Single-line yellow notice emitted for a `[skip]`.
@@ -545,39 +463,6 @@ export function formatTransitiveSkip(r) {
     if (r.suggest)
         return `${base} ${ANSI_DIM}… try:${ANSI_RESET} ${r.suggest}`;
     return base;
-}
-// ─────────────────────────────────────────────────────────────────────────
-// Error class — used to mark registry-driven rejects across the
-// supervisor/facet boundary
-// ─────────────────────────────────────────────────────────────────────────
-/**
- * Tag class for registry-driven rejects. Both the supervisor-side path
- * (npm-installer.ts and npm-resolver.ts) and the
- * facet-side path (resolve-one-facet.ts:resolveOnePackumentInFacet) throw
- * errors tagged for this case.
- *
- * Supervisor-side: throw `new RegistryRejectError(rejects)` directly.
- * Facet-side: cannot import this class (preamble has no import surface),
- *   so the facet throws `new Error(...)` with `err.__nimbus_registry_reject = true`.
- *   Both are detected via `isRegistryReject()`.
- *
- * The own-property survives worker boundary serialization.
- */
-export class RegistryRejectError extends Error {
-    rejects;
-    __nimbus_registry_reject = true;
-    constructor(rejects, devOnly) {
-        super(formatRejectError(rejects, devOnly));
-        this.name = 'RegistryRejectError';
-        this.rejects = rejects;
-    }
-}
-/**
- * Robust check that survives the supervisor↔facet boundary: prototypes
- * are lost across that boundary, so we tag via an own-property.
- */
-export function isRegistryReject(e) {
-    return !!(e && typeof e === 'object' && e.__nimbus_registry_reject === true);
 }
 let _sink = null;
 let _sinkThrowCount = 0;
@@ -768,13 +653,6 @@ export function selectAutoInstallPeers(pkg, opts = {}) {
         out.push(name);
     }
     return out;
-}
-export function classifyInstallError(e, ctx = {}) {
-    if (isRegistryReject(e))
-        return 'registry-reject';
-    if (ctx.isOptional)
-        return 'optional-dep-skip';
-    return 'real-resolve-fail';
 }
 // ─────────────────────────────────────────────────────────────────────────
 // Module-load assertion: swap and reject `from` names are disjoint

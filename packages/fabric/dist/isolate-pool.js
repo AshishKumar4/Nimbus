@@ -113,6 +113,16 @@ export class IsolatePool {
     defaultRetries;
     tag;
     slotGenerations = new Map();
+    /**
+     * Per-slot execution ownership: the tail of each slot's in-flight
+     * dispatch chain. Two dispatches on the same warm isolate at once
+     * interleave on its QueueState — map() callers used to trust the
+     * caller's slot round-robin, which could not prevent submit() (slot
+     * 0) or a second map() landing on a slot a task still occupied. Every
+     * dispatch now waits for the slot's previous execution to settle
+     * before touching it.
+     */
+    slotTails = new Map();
     bindings;
     preamble;
     preambleHash;
@@ -398,8 +408,24 @@ export class IsolatePool {
     /**
      * Dispatch a single task to the slot isolate. `slotIndex` picks which
      * warm isolate services the call; callers round-robin slots themselves.
+     * Serialized per slot: this call waits for the slot's previous
+     * execution to settle before touching the warm isolate.
      */
     async #dispatchSlot(fnSource, fnHash, slotIndex, args, resilience, perCallWasm) {
+        // A warm slot executes one dispatch at a time: queue behind the
+        // previous owner, then record this dispatch as the new tail.
+        const previous = this.slotTails.get(slotIndex) ?? Promise.resolve();
+        let release;
+        this.slotTails.set(slotIndex, new Promise((resolve) => { release = resolve; }));
+        await previous;
+        try {
+            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm);
+        }
+        finally {
+            release();
+        }
+    }
+    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm) {
         // Per-call wasm fingerprint. Mixed into the cache key so two calls
         // with different bytes hit different slots (no cache poisoning).
         // For the common case (no per-call wasm) the fingerprint is '0',

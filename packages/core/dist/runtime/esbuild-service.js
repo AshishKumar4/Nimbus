@@ -1565,7 +1565,7 @@ export class EsbuildService {
                             return {
                                 errors: [{
                                         text: `Built-in vite build does not support the '?${suffix}' import modifier` +
-                                            ` (imported as '${args.path}'). Supported: ?url, ?raw, ?inline.`,
+                                            ` (imported as '${args.path}'). Supported: ${Object.keys(VITE_ASSET_QUERY_SUFFIXES).map((s) => '?' + s).join(', ')}.`,
                                     }],
                             };
                         }

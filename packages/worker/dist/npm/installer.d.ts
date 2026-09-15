@@ -106,9 +106,11 @@ export declare class NpmInstaller {
      *   - W6 swap / warn / reject decisions (top-level enforcement; the
      *     per-package task ALSO checks these for transitive correctness).
      *     A package is required iff it is reachable from a required root
-     *     (root `dependencies`, explicit specs) through a chain of
-     *     required edges (`dependencies`, required peers); W6 refusals
-     *     are classified at end of walk.
+     *     (every selected spec except optionalDependencies roots) through
+     *     a chain of required edges (`dependencies` minus the package's
+     *     own optionalDependencies, required peers); W6 refusals are
+     *     classified against the closure computed over the resolved
+     *     graph at end of walk.
      *   - cache flushing (one batched putRegistryEntries at end).
      *
      * The per-package task (resolveOnePackumentInFacet) owns ONLY the
@@ -143,18 +145,6 @@ export declare class NpmInstaller {
      *   the V8 cap risk.
      */
     private fetchViaBatchFacet;
-    /**
-     * Build the dependency specs from package.json + explicit packages.
-     */
-    /**
-     * W11: framework detection at install time. Reads package.json from the
-     * project root and runs detectFramework() against its deps + the basenames
-     * we can see in node_modules-adjacent siblings.
-     *
-     * Returns true if the project is detected as one of {next, astro, nuxt,
-     * remix, sveltekit, vite, wrangler}. False for 'unknown'.
-     */
-    private detectFrameworkAware;
     private buildSpecs;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
@@ -163,11 +153,12 @@ export declare class NpmInstaller {
      * G2: rejects never throw. Every refused package is announced with the
      * same `[skip] <pkg> — <reason> … try: <hint>` line the transitive path
      * uses, removed from the returned specs, and reported in `rejected`:
-     * `required` is false for `transitive: 'warn'` entries (they soften by
-     * design) and for devDependency-only names (dev-optional), true
-     * otherwise — explicit `npm install <refused>` included. The caller
-     * installs the returned specs and fails the install on required
-     * rejections; swaps always apply either way.
+     * `required` is false only for `optionalDependencies` roots, true for
+     * every other selected spec — dependencies AND devDependencies are
+     * required roots unless `--omit=dev`/`--production` removed them at
+     * spec selection, and explicit `npm install <refused>` is required.
+     * The caller installs the returned specs and fails the install on
+     * required rejections; swaps always apply either way.
      *
      * Idempotent: running on already-swapped specs is a no-op.
      */

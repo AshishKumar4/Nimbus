@@ -235,6 +235,16 @@ export declare class IsolatePool {
     private readonly defaultRetries;
     private readonly tag;
     private readonly slotGenerations;
+    /**
+     * Per-slot execution ownership: the tail of each slot's in-flight
+     * dispatch chain. Two dispatches on the same warm isolate at once
+     * interleave on its QueueState — map() callers used to trust the
+     * caller's slot round-robin, which could not prevent submit() (slot
+     * 0) or a second map() landing on a slot a task still occupied. Every
+     * dispatch now waits for the slot's previous execution to settle
+     * before touching it.
+     */
+    private readonly slotTails;
     private bindings;
     private readonly preamble;
     private readonly preambleHash;

@@ -8,7 +8,6 @@
  * re-declared in the preamble.
  *
  * The resolver facets reference the following preamble symbols:
- *   - SHOULD_SKIP_PACKAGE(name, frameworkAware) → boolean
  *   - SHOULD_SWAP(name)         → swap entry | undefined
  *   - SHOULD_REJECT_FAIL(name)  → reject entry | undefined
  *   - SHOULD_WARN_SKIP_TRANSITIVE(name) → reject entry | undefined
