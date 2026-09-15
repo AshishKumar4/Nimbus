@@ -57,13 +57,6 @@ const SWAPS: ReadonlyArray<PackageSwapEntry> = [
       'Native esbuild not available in Workers; esbuild-wasm exposes the same build/transform/version/initialize API.',
     compat: 'drop-in',
   },
-  {
-    from: 'mocha',
-    to: 'mocha-wasm',
-    reason:
-      'mocha-wasm is a pure-WASM build of mocha with identical exports.',
-    compat: 'drop-in',
-  },
 ];
 
 /**
