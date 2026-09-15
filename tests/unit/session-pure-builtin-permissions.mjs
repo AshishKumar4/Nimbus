@@ -90,10 +90,10 @@ try {
   session.env = {};
   session.sqliteFs = rawVfs;
   session.processes = processes;
-  session.facetManager = { setVfs() {} };
   // ensureFacetManager short-circuits on this — the cp verbs under test
-  // never reach a real composition.
-  session.facetManagerComposed = { manager: session.facetManager, apps: {}, pumpLaunches: async () => {} };
+  // never reach a real composition. `facetManager` is a derived getter now;
+  // the composed field is what a preset sets.
+  session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
   session.facetProcessManager = null;
   session.esbuildService = null;
   session._setCpRegistry(registry);
