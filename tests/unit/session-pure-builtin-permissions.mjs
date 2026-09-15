@@ -326,11 +326,12 @@ try {
     await session._rpcCpStdinEnd(childPid);
     const waited = await session._rpcCpWait(childPid, 2_000);
     assert.equal(waited.done, true, `${command} ${args.join(' ')} completed`);
+    // The child ring carries bytes; this test reads it as text.
     const output = await session._rpcCpDrainOutput(childPid);
     return {
       exitCode: waited.exitCode,
-      stdout: output.stdout,
-      stderr: output.stderr,
+      stdout: new TextDecoder().decode(output.stdout),
+      stderr: new TextDecoder().decode(output.stderr),
     };
   }
 } finally {

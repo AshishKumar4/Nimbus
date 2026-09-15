@@ -35,6 +35,7 @@
  */
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand, rehydrateGlobalPackages, } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
+import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -245,8 +246,8 @@ export async function initSession(self, ws, options = {}) {
                     stdout: parent.isFdTerminal?.(1) ?? false,
                     stderr: parent.isFdTerminal?.(2) ?? false,
                 },
-                onStdout: (data) => parent.stdout.write(data),
-                onStderr: (data) => parent.stderr.write(data),
+                onStdout: textSink((data) => parent.stdout.write(data)),
+                onStderr: textSink((data) => parent.stderr.write(data)),
                 commandContext: {
                     pid: identity.pid,
                     cred: identity.cred,
@@ -804,8 +805,8 @@ export async function initSession(self, ws, options = {}) {
                         const shellResult = await shell.execute(command, {
                             cwd: ctx.cwd,
                             env: ctx.env,
-                            onStdout: (d) => ctx.stdout.write(d),
-                            onStderr: (d) => ctx.stderr.write(d),
+                            onStdout: textSink((d) => ctx.stdout.write(d)),
+                            onStderr: textSink((d) => ctx.stderr.write(d)),
                         });
                         return shellResult.exitCode;
                     }
@@ -1297,8 +1298,8 @@ export async function initSession(self, ws, options = {}) {
         const result = await shell.execute(cmd, {
             cwd: cmdCtx.cwd,
             env: cmdCtx.env,
-            onStdout: (d) => cmdCtx.stdout.write(d),
-            onStderr: (d) => cmdCtx.stderr.write(d),
+            onStdout: textSink((d) => cmdCtx.stdout.write(d)),
+            onStderr: textSink((d) => cmdCtx.stderr.write(d)),
             stdin,
             terminalStdin: cmdCtx.terminalStdin,
             // `npm run x` runs x on npm's own fds. Handing the nested execution a
@@ -1376,15 +1377,18 @@ export async function initSession(self, ws, options = {}) {
         });
         // Wrap the caller-supplied streams so every chunk is both displayed
         // AND captured in the ring buffer keyed by this PID.
-        const tee = (stream, target) => (d) => {
-            try {
-                self.processes.appendOutput(pid, stream, String(d));
-            }
-            catch { }
-            try {
-                target.write(d);
-            }
-            catch { }
+        const tee = (stream, target) => {
+            const toTarget = textSink((text) => target.write(text));
+            return (d) => {
+                try {
+                    self.processes.appendOutputBytes(pid, stream, d);
+                }
+                catch { }
+                try {
+                    toTarget(d);
+                }
+                catch { }
+            };
         };
         let exitCode = 1;
         try {
@@ -1427,7 +1431,15 @@ export async function initSession(self, ws, options = {}) {
         catch (e) {
             // Surface the error in the terminal and the ring buffer.
             const msg = (e && (e.stack || e.message)) || String(e);
-            tee('stderr', cmdCtx.stderr)('shellExecuteTracked error: ' + msg + '\n');
+            const line = 'shellExecuteTracked error: ' + msg + '\n';
+            try {
+                self.processes.appendOutput(pid, 'stderr', line);
+            }
+            catch { }
+            try {
+                cmdCtx.stderr.write(line);
+            }
+            catch { }
             exitCode = 1;
         }
         finally {

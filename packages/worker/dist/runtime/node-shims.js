@@ -470,6 +470,33 @@ const __BufferMod = (() => {
   return B;
 })();
 
+// ═══════════════════════════════════════════════════════════════════════
+// ──  Process output is bytes ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// A process's stdout and stderr are byte streams: esbuild's service protocol
+// is binary packets, and so is any program piping an image or an archive.
+// The relay to the supervisor carries Uint8Array; a text producer encodes
+// at its own edge, and the facet's REPORTED result — the \`stdout\`/\`stderr\`
+// strings the wrapper declares — decodes at its edge with one streaming
+// decoder per stream, so a multibyte character split across two writes
+// still reads as one character.
+const __nimbusOutEnc = new TextEncoder();
+const __nimbusOutDec = { stdout: new TextDecoder("utf-8"), stderr: new TextDecoder("utf-8") };
+/** \`process.stdout.write(d, enc)\` payload as bytes. */
+function __nimbusOutBytes(d, enc) {
+  if (d instanceof Uint8Array) return d;
+  if (typeof d === "string") {
+    return typeof enc === "string" && enc !== "utf8" && enc !== "utf-8"
+      ? __BufferMod.from(d, enc)
+      : __nimbusOutEnc.encode(d);
+  }
+  return __nimbusOutEnc.encode(String(d));
+}
+/** Decode one stream's bytes into its text accumulator, streaming. */
+function __nimbusOutText(streamName, bytes) {
+  return __nimbusOutDec[streamName === "stderr" ? "stderr" : "stdout"].decode(bytes, { stream: true });
+}
+
 /**
  * What the resident set holds under a directory prefix — the ONE question the
  * shims ask of it that a plain object cannot answer cheaply.
@@ -3101,9 +3128,8 @@ const __fsMod = (() => {
   function writeSync(fd, data, a, b, c) {
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      // The stream shim stringifies whatever it is given, so decode first.
       const bytes = _normWriteArgs(data, a, b, c).bytes;
-      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(bytes));
+      (n === 2 ? __processMod.stderr : __processMod.stdout).write(bytes);
       return bytes.byteLength;
     }
     if (n === 0) throw _fsErr("EBADF", "write", fd);
@@ -4731,13 +4757,17 @@ const __childProcessMod = (() => {
   const HAS_SUPERVISOR = !!(__supervisor && typeof __supervisor.cpSpawn === "function");
 
   /**
-   * Child stdout/stderr. Defaults to utf8 so consumers see strings (the
-   * common cross-spawn / husky pattern); callers override via
-   * .setEncoding('hex'), .setEncoding(null), etc. Flowing-mode resumption
-   * and encoding are the Readable base class's job — see streams.ts.
+   * Child stdout/stderr. Bytes, as Node's: a 'data' listener sees a Buffer
+   * until the consumer calls .setEncoding(), which is how a binary protocol
+   * (esbuild's service) reads its packets and how a text consumer opts into
+   * text. It used to default to utf8 for the cross-spawn / husky pattern;
+   * that pattern reads \`String(chunk)\` and works on a Buffer, and the
+   * default turned every byte above 0x7f into U+FFFD for everyone else.
+   * Flowing-mode resumption and encoding are the Readable base class's job —
+   * see streams.ts.
    */
   function _makeReadable() {
-    return new __streamMod.PassThrough({ encoding: "utf8" });
+    return new __streamMod.PassThrough();
   }
 
   /**
@@ -4934,7 +4964,9 @@ const __childProcessMod = (() => {
         if (r && Array.isArray(r.chunks) && r.chunks.length > 0) {
           backoff = 100;  // reset — child is producing
           for (const c of r.chunks) {
-            stream.write(c.data);
+            // The queue hands back bytes; a Readable given a string would
+            // encode it again.
+            stream.write(__BufferMod.from(c.data));
             if (typeof c.seq === "number" && c.seq > sinceSeqRef.value) {
               sinceSeqRef.value = c.seq;
             }
@@ -5303,11 +5335,11 @@ const __childProcessMod = (() => {
             __supervisor.cpDrainOutput(pid),
             (result) => result,
           );
-          if (r && r.stdout && child.stdout) {
-            try { child.stdout.write(r.stdout); } catch {}
+          if (r && r.stdout && r.stdout.byteLength > 0 && child.stdout) {
+            try { child.stdout.write(__BufferMod.from(r.stdout)); } catch {}
           }
-          if (r && r.stderr && child.stderr) {
-            try { child.stderr.write(r.stderr); } catch {}
+          if (r && r.stderr && r.stderr.byteLength > 0 && child.stderr) {
+            try { child.stderr.write(__BufferMod.from(r.stderr)); } catch {}
           }
           // Force-close streams so listeners receive 'end'. The 'end'
           // event listeners in _makeChild flip _stdoutEnded/_stderrEnded.
@@ -5527,8 +5559,8 @@ function __makeProcessStdin() {
       }
       // The queue hands back bytes; a Readable given a string would encode
       // it again.
-      if (packet && packet.data && packet.data.length > 0) {
-        r.write(packet.data instanceof Uint8Array ? __BufferMod.from(packet.data) : packet.data);
+      if (packet && packet.data && packet.data.byteLength > 0) {
+        r.write(__BufferMod.from(packet.data));
       }
       if (packet && packet.ended) {
         r.end();
@@ -5554,7 +5586,7 @@ function __makeProcessStdin() {
         }
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
-        try { __nimbusUseRpcResult(__supervisor.stderr(trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+        try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")), () => undefined).catch(() => {}); } catch {}
         try { __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined).catch(() => {}); } catch {}
         try { r.end(); } catch {}
       });
@@ -5625,7 +5657,8 @@ function __makeProcessOutputStream(streamName) {
     errored: null,
     write(d, enc, cb) {
       if (typeof enc === "function") cb = enc;
-      const s = String(d);
+      // The reported result is text; decode the bytes at this edge only.
+      const s = __nimbusOutText(streamName, __nimbusOutBytes(d, enc));
       if (streamName === "stderr") stderr += s;
       else stdout += s;
       if (typeof cb === "function") queueMicrotask(cb);
@@ -5816,7 +5849,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
   const line = label + __nimbusRuntimeErrorTrace(error) + "\\n";
   stderr += line;
   if (__supervisor && typeof __supervisor.stderr === "function") {
-    try { __nimbusUseRpcResult(__supervisor.stderr(line), () => undefined).catch(() => {}); } catch {}
+    try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}
   }
   __nimbusReportProcessExit(1, line);
 }

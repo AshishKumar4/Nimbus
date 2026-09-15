@@ -7,6 +7,8 @@
 
 import assert from 'node:assert/strict';
 
+const bytes = (s) => new TextEncoder().encode(s);
+
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import {
   rpcExec,
@@ -27,7 +29,7 @@ function makeHost() {
       const [name, argument] = String(command).split(/\s+/);
       if (name === 'sleep') {
         const ms = Number(argument) * 1000;
-        options.onStdout?.('starting\n');
+        options.onStdout?.(bytes('starting\n'));
         const aborted = await new Promise((resolve) => {
           const timer = setTimeout(() => resolve(false), ms);
           options.signal?.addEventListener('abort', () => {
@@ -36,7 +38,7 @@ function makeHost() {
           }, { once: true });
         });
         if (aborted) return { exitCode: 130 };
-        options.onStdout?.('woke\n');
+        options.onStdout?.(bytes('woke\n'));
         return { exitCode: 0 };
       }
       if (name === 'spawner') {
@@ -49,7 +51,7 @@ function makeHost() {
         processes.exit(child.pid, 0);
         return { exitCode: 0 };
       }
-      options.onStdout?.(`${command}\n`);
+      options.onStdout?.(bytes(`${command}\n`));
       return { exitCode: 0 };
     },
   };

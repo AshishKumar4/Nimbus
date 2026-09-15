@@ -124,8 +124,9 @@ function makeSupervisor(props) {
     async writeFile() {},
     async registerPort() {},
     async unregisterPort() {},
-    async stdout(s) { stdoutChunks.push(String(s)); },
-    async stderr(s) { stdoutChunks.push(String(s)); },
+    // Process output crosses this RPC as bytes; the test reads it as text.
+    async stdout(s) { stdoutChunks.push(new TextDecoder().decode(s)); },
+    async stderr(s) { stdoutChunks.push(new TextDecoder().decode(s)); },
     async reportExit() {},
   };
 }

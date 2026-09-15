@@ -44,14 +44,20 @@ export interface SessionSupervisorHost {
   ensureSqliteFs(): void;
   readonly sqliteFs: SqliteVFS | null;
   readonly processes: SessionProcessSupervisor;
-  _rpcStdout(pid: number, data: string): Promise<void>;
-  _rpcStderr(pid: number, data: string): Promise<void>;
+  _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
+  _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
 }
 export interface SessionSupervisorOps {
   readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
   readonly bridge: (pid?: number) => SqliteRuntimeFsBridge;
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
   readonly forget: (pid: number) => void;
+}
+
+/** The stdout/stderr ops carry bytes; anything else is a caller bug, named. */
+function outputBytesArg(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
 }
 
 export function buildSessionSupervisorOps(
@@ -122,8 +128,8 @@ export function buildSessionSupervisorOps(
     },
     // stdout/stderr are session methods, not bridge ops: mirroring,
     // log-append and prior-generation filtering all live in _rpcStdout.
-    stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, envelope.args?.[0] as string),
-    stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, envelope.args?.[0] as string),
+    stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
+    stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
   };
   const dispatch = createSupervisorOpHandler({
     vfs: host.sqliteFs!,

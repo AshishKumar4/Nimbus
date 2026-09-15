@@ -261,7 +261,7 @@ await expectOut('an unterminated boundary keeps GNU newline rules inside a range
   };
   try {
     await box.shell.execute("sed -n 'p' /tmp/f1.txt /tmp/f2.txt /tmp/f3.txt", {
-      onStdout: (data) => { events.push(`out ${JSON.stringify(data)}`); },
+      onStdout: (data) => { events.push(`out ${JSON.stringify(new TextDecoder().decode(data))}`); },
     });
   } finally {
     delete rawVfs.readFileString;

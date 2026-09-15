@@ -65,6 +65,7 @@ import type {
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 
 export interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -86,8 +87,9 @@ type ProgrammaticShellParent = ProgrammaticShell & Pick<
 interface ProgrammaticShellExecuteOptions {
   cwd?: string;
   env?: Record<string, string>;
-  onStdout?: (data: string) => void;
-  onStderr?: (data: string) => void;
+  /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. */
+  onStdout?: (data: Uint8Array) => void;
+  onStderr?: (data: Uint8Array) => void;
   signal?: AbortSignal;
   stdin?: string;
   isolateShellState?: boolean;
@@ -486,8 +488,8 @@ function startShellJob(
     /** Background job: keep an input channel, tee output to the log ring, and
      *  let a registry command adopt this pid instead of allocating a second. */
     background: boolean;
-    onStdout?: (data: string) => void;
-    onStderr?: (data: string) => void;
+    onStdout?: (data: Uint8Array) => void;
+    onStderr?: (data: Uint8Array) => void;
   },
   scoped: ScopedShell | null,
 ): ShellJob {
@@ -511,12 +513,11 @@ function startShellJob(
     try { controller.abort(); } catch { /* already settled */ }
   });
 
-  const emit = (stream: 'stdout' | 'stderr', sink?: (data: string) => void) => (data: string) => {
-    const text = String(data);
+  const emit = (stream: 'stdout' | 'stderr', sink?: (data: Uint8Array) => void) => (data: Uint8Array) => {
     if (job.background) {
-      try { self.processes.appendOutput(pid, stream, text); } catch { /* ring gone */ }
+      try { self.processes.appendOutputBytes(pid, stream, data); } catch { /* ring gone */ }
     }
-    sink?.(text);
+    sink?.(data);
   };
 
   const run = shell.execute(line, {
@@ -589,8 +590,8 @@ async function execOnShell(
 
   const job = startShellJob(self, command, options, {
     background: false,
-    onStdout: (d) => stdout.push(d),
-    onStderr: (d) => stderr.push(d),
+    onStdout: textSink((d) => stdout.push(d)),
+    onStderr: textSink((d) => stderr.push(d)),
   }, scoped);
 
   let result: { exitCode: number };

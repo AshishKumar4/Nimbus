@@ -602,12 +602,16 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   // ── Process I/O ───────────────────────────────────────────────────────
+  //
+  // A process's stdio is bytes end to end: stdout/stderr up, cpStdinWrite
+  // down, cpReadStdin/cpReadOutput/cpDrainOutput in a child's direction. A
+  // text producer encodes at its own edge; a text consumer decodes at its.
 
-  async stdout(data: string): Promise<void> {
+  async stdout(data: Uint8Array): Promise<void> {
     return this._call(this._op('stdout', [data], { pid: this._reportingPid() }));
   }
 
-  async stderr(data: string): Promise<void> {
+  async stderr(data: Uint8Array): Promise<void> {
     return this._call(this._op('stderr', [data], { pid: this._reportingPid() }));
   }
 
@@ -673,7 +677,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._op('cpSpawn', [{ ...req, parentPid: this._pid() }]));
   }
 
-  async cpStdinWrite(childPid: number, data: string): Promise<{ ok: boolean }> {
+  async cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> {
     return this._call(this._op('cpStdinWrite', [childPid, data]));
   }
 
@@ -682,7 +686,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
 
   async cpReadStdin(childPid: number, waitMs: number): Promise<{
-    data: string;
+    data: Uint8Array;
     ended: boolean;
     resize?: { columns: number; rows: number };
     signal?: string;
@@ -695,11 +699,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
     fd: 1 | 2,
     sinceSeq: number,
     waitMs: number,
-  ): Promise<{ chunks: { seq: number; data: string }[]; closed: boolean; maxSeq: number }> {
+  ): Promise<{ chunks: { seq: number; data: Uint8Array }[]; closed: boolean; maxSeq: number }> {
     return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs]));
   }
 
-  async cpDrainOutput(childPid: number): Promise<{ stdout: string; stderr: string; stdoutClosed: boolean; stderrClosed: boolean }> {
+  async cpDrainOutput(childPid: number): Promise<{ stdout: Uint8Array; stderr: Uint8Array; stdoutClosed: boolean; stderrClosed: boolean }> {
     return this._call(this._op('cpDrainOutput', [childPid]));
   }
 

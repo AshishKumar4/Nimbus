@@ -9,7 +9,7 @@ import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { composeFacetManager } from '../facets/compose.js';
-import { FacetProcessManager } from '../facets/process.js';
+import { FacetProcessManager, textBytes } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
@@ -1095,29 +1095,29 @@ export class NimbusSession extends CloudflareDurableObject {
                 try {
                     const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
                     if (!parsed.success) {
-                        hooks.onStderr('child_process: facet dispatch requires a broker-assigned process pid\n');
+                        hooks.onStderr(textBytes('child_process: facet dispatch requires a broker-assigned process pid\n'));
                         return 1;
                     }
                     payload = parsed.data;
                 }
                 catch {
-                    hooks.onStderr('child_process: invalid facet dispatch payload\n');
+                    hooks.onStderr(textBytes('child_process: invalid facet dispatch payload\n'));
                     return 1;
                 }
                 const registry = this._cpRegistry;
                 if (!registry) {
-                    hooks.onStderr('child_process: command registry unavailable\n');
+                    hooks.onStderr(textBytes('child_process: command registry unavailable\n'));
                     return 127;
                 }
                 const commandName = normalizeCpCommandName(payload.command);
                 const cmd = await registry.resolve(commandName);
                 if (!cmd) {
-                    hooks.onStderr(`${payload.command}: command not found\n`);
+                    hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
                     return 127;
                 }
                 // Synthesize a CommandContext for the internal shell substrate.
-                const stdoutStream = { write: (d) => hooks.onStdout(String(d)) };
-                const stderrStream = { write: (d) => hooks.onStderr(String(d)) };
+                const stdoutStream = { write: (d) => hooks.onStdout(textBytes(String(d))) };
+                const stderrStream = { write: (d) => hooks.onStderr(textBytes(String(d))) };
                 const ac = new AbortController();
                 const cred = this.processes.cred(payload.processPid);
                 const ctx = {
@@ -1153,7 +1153,7 @@ export class NimbusSession extends CloudflareDurableObject {
                     return typeof code === 'number' ? code : 0;
                 }
                 catch (e) {
-                    hooks.onStderr(`${payload.command}: ${e?.message || String(e)}\n`);
+                    hooks.onStderr(textBytes(`${payload.command}: ${e?.message || String(e)}\n`));
                     return 1;
                 }
             },
@@ -1190,13 +1190,13 @@ export class NimbusSession extends CloudflareDurableObject {
             runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
                 const registry = this._cpRegistry;
                 if (!registry) {
-                    hooks.onStderr('cp: registry unavailable\n');
+                    hooks.onStderr(textBytes('cp: registry unavailable\n'));
                     return 127;
                 }
                 const commandName = normalizeCpCommandName(name);
                 const cmd = await registry.resolve(commandName);
                 if (!cmd) {
-                    hooks.onStderr(`${name}: command not found\n`);
+                    hooks.onStderr(textBytes(`${name}: command not found\n`));
                     return 127;
                 }
                 const cred = this.processes.cred(pid);
@@ -1206,8 +1206,8 @@ export class NimbusSession extends CloudflareDurableObject {
                     cred,
                     args, env, cwd,
                     vfs: this.sqliteFs.as(cred),
-                    stdout: { write: (d) => hooks.onStdout(String(d)) },
-                    stderr: { write: (d) => hooks.onStderr(String(d)) },
+                    stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
+                    stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
                     signal: ac.signal,
                     stdin: staticStdinReader(stdin),
                     setUmask: (mask) => { this.processes.setUmask(pid, mask); },
@@ -1230,7 +1230,7 @@ export class NimbusSession extends CloudflareDurableObject {
                     return typeof code === 'number' ? code : 0;
                 }
                 catch (e) {
-                    hooks.onStderr(`${name}: ${e?.message || String(e)}\n`);
+                    hooks.onStderr(textBytes(`${name}: ${e?.message || String(e)}\n`));
                     return 1;
                 }
             },
@@ -1255,7 +1255,7 @@ export class NimbusSession extends CloudflareDurableObject {
             shellExecutor: {
                 execute: async (pid, commandLine, env, cwd, stdin, hooks) => {
                     if (!this.shell) {
-                        hooks.onStderr('sh: shell unavailable\n');
+                        hooks.onStderr(textBytes('sh: shell unavailable\n'));
                         return 127;
                     }
                     const cred = this.processes.cred(pid);
@@ -1276,8 +1276,8 @@ export class NimbusSession extends CloudflareDurableObject {
                     const result = await this.shell.execute(String(commandLine), {
                         cwd: cwd || '/home/user',
                         env: { ...this.shell.env, ...(env || {}) },
-                        onStdout: (d) => hooks.onStdout(String(d)),
-                        onStderr: (d) => hooks.onStderr(String(d)),
+                        onStdout: hooks.onStdout,
+                        onStderr: hooks.onStderr,
                         stdin,
                         isolateShellState: true,
                         commandContext: { pid, cred, setUmask },

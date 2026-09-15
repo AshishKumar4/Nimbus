@@ -1,5 +1,6 @@
 import { Kernel } from '../kernel/index.js';
 import { Shell } from '../shell/Shell.js';
+import { textSink } from '../../../_shared/bytes.js';
 import {
 	createDefaultRegistry,
 } from '../commands/registry.js';
@@ -139,8 +140,8 @@ export class Sandbox {
 			const result = await shell.execute(cmd, {
 				cwd: cmdCtx.cwd,
 				env: cmdCtx.env,
-				onStdout: (data: string) => cmdCtx.stdout.write(data),
-				onStderr: (data: string) => cmdCtx.stderr.write(data),
+				onStdout: textSink((data) => cmdCtx.stdout.write(data)),
+				onStderr: textSink((data) => cmdCtx.stderr.write(data)),
 			});
 			return result.exitCode;
 		};

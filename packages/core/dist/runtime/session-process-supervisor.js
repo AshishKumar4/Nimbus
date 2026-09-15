@@ -22,10 +22,17 @@
 import { ProcessTable } from './process-table.js';
 import { ProcessInputStore } from './process-input.js';
 import { ProcessLogStore, } from './process-logs.js';
+import { StreamTextDecoders } from '../_shared/bytes.js';
 export class SessionProcessSupervisor {
     table = new ProcessTable();
     input = new ProcessInputStore();
     logs = new ProcessLogStore();
+    /**
+     * The log ring holds text lines; a process's output arrives as bytes. One
+     * streaming decoder per (pid, stream) is this text consumer's edge, so a
+     * character split across two chunks survives. Dropped at markExit.
+     */
+    outputDecoders = new StreamTextDecoders();
     /** Terminators for processes whose work is a promise this session owns. */
     terminators = new Map();
     /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -191,8 +198,19 @@ export class SessionProcessSupervisor {
         this.logs.append(pid, stream, data);
         this.logActivity?.();
     }
+    /** A process's own output: bytes on the relay, decoded at this edge. */
+    appendOutputBytes(pid, stream, data) {
+        const text = this.outputDecoders.decode(`${pid}:${stream}`, data);
+        if (text.length > 0)
+            this.appendOutput(pid, stream, text);
+    }
     /** Record exit in the log store. Idempotent: the first record wins. */
     markExit(pid, code, reason) {
+        for (const stream of ['stdout', 'stderr']) {
+            const tail = this.outputDecoders.drop(`${pid}:${stream}`);
+            if (tail.length > 0)
+                this.logs.append(pid, stream, tail);
+        }
         this.logs.markExit(pid, code, reason);
         this.logActivity?.();
     }

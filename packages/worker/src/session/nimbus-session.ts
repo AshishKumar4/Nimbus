@@ -16,7 +16,7 @@ import { SqliteVFS, type WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqli
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { composeFacetManager, type ComposedFacetManager } from '../facets/compose.js';
-import { FacetProcessManager } from '../facets/process.js';
+import { FacetProcessManager, textBytes, type OutputHooks } from '../facets/process.js';
 import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
@@ -868,8 +868,8 @@ export class NimbusSession extends CloudflareDurableObject {
   }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
-  async _rpcStdout(pid: number, data: string): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
-  async _rpcStderr(pid: number, data: string): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
+  async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
+  async _rpcStderr(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
   async _rpcReportExit(pid: number, code: number, tail: string): Promise<void> { return _rpc._rpcReportExit(this as any, pid, code, tail); }
 
   // W3 emitters / external-exit / log janitor
@@ -1245,7 +1245,7 @@ export class NimbusSession extends CloudflareDurableObject {
       execStream: async (
         codeJson: string,
         opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[] },
-        hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+        hooks: OutputHooks,
       ): Promise<number> => {
         // codeJson is a payload from FacetProcessManager._dispatch facet-direct
         // path: {command, args, env, cwd, stdin}. We dispatch through the
@@ -1255,28 +1255,28 @@ export class NimbusSession extends CloudflareDurableObject {
         try {
           const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
           if (!parsed.success) {
-            hooks.onStderr('child_process: facet dispatch requires a broker-assigned process pid\n');
+            hooks.onStderr(textBytes('child_process: facet dispatch requires a broker-assigned process pid\n'));
             return 1;
           }
           payload = parsed.data;
         } catch {
-          hooks.onStderr('child_process: invalid facet dispatch payload\n');
+          hooks.onStderr(textBytes('child_process: invalid facet dispatch payload\n'));
           return 1;
         }
         const registry = this._cpRegistry;
         if (!registry) {
-          hooks.onStderr('child_process: command registry unavailable\n');
+          hooks.onStderr(textBytes('child_process: command registry unavailable\n'));
           return 127;
         }
         const commandName = normalizeCpCommandName(payload.command);
         const cmd = await registry.resolve(commandName);
         if (!cmd) {
-          hooks.onStderr(`${payload.command}: command not found\n`);
+          hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
           return 127;
         }
         // Synthesize a CommandContext for the internal shell substrate.
-        const stdoutStream = { write: (d: string) => hooks.onStdout(String(d)) };
-        const stderrStream = { write: (d: string) => hooks.onStderr(String(d)) };
+        const stdoutStream = { write: (d: string) => hooks.onStdout(textBytes(String(d))) };
+        const stderrStream = { write: (d: string) => hooks.onStderr(textBytes(String(d))) };
         const ac = new AbortController();
         const cred = this.processes.cred(payload.processPid);
         const ctx = {
@@ -1322,7 +1322,7 @@ export class NimbusSession extends CloudflareDurableObject {
           const code = await cmd(ctx);
           return typeof code === 'number' ? code : 0;
         } catch (e: any) {
-          hooks.onStderr(`${payload.command}: ${e?.message || String(e)}\n`);
+          hooks.onStderr(textBytes(`${payload.command}: ${e?.message || String(e)}\n`));
           return 1;
         }
       },
@@ -1360,13 +1360,13 @@ export class NimbusSession extends CloudflareDurableObject {
         env: Record<string, string>,
         cwd: string,
         stdin: string,
-        hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+        hooks: OutputHooks,
       ): Promise<number> => {
         const registry = this._cpRegistry;
-        if (!registry) { hooks.onStderr('cp: registry unavailable\n'); return 127; }
+        if (!registry) { hooks.onStderr(textBytes('cp: registry unavailable\n')); return 127; }
         const commandName = normalizeCpCommandName(name);
         const cmd = await registry.resolve(commandName);
-        if (!cmd) { hooks.onStderr(`${name}: command not found\n`); return 127; }
+        if (!cmd) { hooks.onStderr(textBytes(`${name}: command not found\n`)); return 127; }
         const cred = this.processes.cred(pid);
         const ac = new AbortController();
         const ctx = {
@@ -1374,8 +1374,8 @@ export class NimbusSession extends CloudflareDurableObject {
           cred,
           args, env, cwd,
           vfs: this.sqliteFs!.as(cred),
-          stdout: { write: (d: string) => hooks.onStdout(String(d)) },
-          stderr: { write: (d: string) => hooks.onStderr(String(d)) },
+          stdout: { write: (d: string) => hooks.onStdout(textBytes(String(d))) },
+          stderr: { write: (d: string) => hooks.onStderr(textBytes(String(d))) },
           signal: ac.signal,
           stdin: staticStdinReader(stdin),
           setUmask: (mask: number) => { this.processes.setUmask(pid, mask); },
@@ -1408,7 +1408,7 @@ export class NimbusSession extends CloudflareDurableObject {
           const code = await cmd(ctx);
           return typeof code === 'number' ? code : 0;
         } catch (e: any) {
-          hooks.onStderr(`${name}: ${e?.message || String(e)}\n`);
+          hooks.onStderr(textBytes(`${name}: ${e?.message || String(e)}\n`));
           return 1;
         }
       },
@@ -1436,10 +1436,10 @@ export class NimbusSession extends CloudflareDurableObject {
           env: Record<string, string>,
           cwd: string,
           stdin: string,
-          hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+          hooks: OutputHooks,
         ): Promise<number> => {
           if (!this.shell) {
-            hooks.onStderr('sh: shell unavailable\n');
+            hooks.onStderr(textBytes('sh: shell unavailable\n'));
             return 127;
           }
           const cred = this.processes.cred(pid);
@@ -1475,8 +1475,8 @@ export class NimbusSession extends CloudflareDurableObject {
           const result = await this.shell.execute(String(commandLine), {
             cwd: cwd || '/home/user',
             env: { ...(this.shell as any).env, ...(env || {}) },
-            onStdout: (d: string) => hooks.onStdout(String(d)),
-            onStderr: (d: string) => hooks.onStderr(String(d)),
+            onStdout: hooks.onStdout,
+            onStderr: hooks.onStderr,
             stdin,
             isolateShellState: true,
             commandContext: { pid, cred, setUmask },

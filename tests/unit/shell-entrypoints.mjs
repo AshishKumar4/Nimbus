@@ -45,7 +45,7 @@ function makeHarness(files = {}, existingCommands = new Map()) {
     {
       async execute(body, options) {
         calls.push({ body, options });
-        options.onStdout?.('executor stdout\n');
+        options.onStdout?.(new TextEncoder().encode('executor stdout\n'));
         return { exitCode: 7, stdout: 'executor stdout\n' };
       },
     },

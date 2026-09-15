@@ -27,8 +27,9 @@ export interface ProgrammaticShell {
 interface ProgrammaticShellExecuteOptions {
     cwd?: string;
     env?: Record<string, string>;
-    onStdout?: (data: string) => void;
-    onStderr?: (data: string) => void;
+    /** Bytes, as the shell's own ExecuteOptions: a process's stdio is bytes. */
+    onStdout?: (data: Uint8Array) => void;
+    onStderr?: (data: Uint8Array) => void;
     signal?: AbortSignal;
     stdin?: string;
     isolateShellState?: boolean;

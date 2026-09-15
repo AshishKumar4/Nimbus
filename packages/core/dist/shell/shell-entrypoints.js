@@ -1,4 +1,5 @@
 import { resolveVfsPath } from '../vfs/path.js';
+import { textSink } from '../_shared/bytes.js';
 import { parseShellInvocation } from './shell-invocation.js';
 const SHELL_ALIASES = {
     sh: ['sh', '/bin/sh', '/usr/bin/sh'],
@@ -52,14 +53,14 @@ function makeShellEntrypoint(shellName, shell, vfs) {
             scriptMode: true,
             stdin: inheritedStdin.stdin,
             terminalStdin: ctx.terminalStdin,
-            onStdout: (data) => {
+            onStdout: textSink((data) => {
                 forwardedStdout += data;
                 ctx.stdout.write(data);
-            },
-            onStderr: (data) => {
+            }),
+            onStderr: textSink((data) => {
                 forwardedStderr += data;
                 ctx.stderr.write(data);
-            },
+            }),
             runExitTrap: true,
             terminalFds: {
                 stdin: ctx.isFdTerminal?.(0) ?? false,

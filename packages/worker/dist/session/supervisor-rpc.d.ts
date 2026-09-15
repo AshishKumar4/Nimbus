@@ -274,8 +274,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    stdout(data: string): Promise<void>;
-    stderr(data: string): Promise<void>;
+    stdout(data: Uint8Array): Promise<void>;
+    stderr(data: Uint8Array): Promise<void>;
     /**
      * Report process exit to the supervisor. Called from the facet's own
      * `finally` block after I/O has drained. The supervisor uses this to
@@ -309,12 +309,12 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     cpSpawn(req: any): Promise<{
         childPid: number;
     }>;
-    cpStdinWrite(childPid: number, data: string): Promise<{
+    cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     cpReadStdin(childPid: number, waitMs: number): Promise<{
-        data: string;
+        data: Uint8Array;
         ended: boolean;
         resize?: {
             columns: number;
@@ -325,14 +325,14 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
         chunks: {
             seq: number;
-            data: string;
+            data: Uint8Array;
         }[];
         closed: boolean;
         maxSeq: number;
     }>;
     cpDrainOutput(childPid: number): Promise<{
-        stdout: string;
-        stderr: string;
+        stdout: Uint8Array;
+        stderr: Uint8Array;
         stdoutClosed: boolean;
         stderrClosed: boolean;
     }>;

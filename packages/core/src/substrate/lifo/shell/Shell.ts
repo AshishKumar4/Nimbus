@@ -28,6 +28,7 @@ import { complete, type CompletionContext } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
+import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
 
 function shellPromptParts(env: Record<string, string>, cwd: string): {
@@ -60,8 +61,14 @@ const CONTINUATION_PROMPT = '> ';
 export interface ExecuteOptions {
   cwd?: string;
   env?: Record<string, string>;
-  onStdout?: (data: string) => void;
-  onStderr?: (data: string) => void;
+  /**
+   * Streaming output, as bytes: a process's stdio is a byte stream, and this
+   * is the seam a child's output crosses on its way to a parent process. The
+   * shell's own command output is text, encoded here at the producer's edge;
+   * a text consumer decodes at its own edge with a streaming decoder.
+   */
+  onStdout?: (data: Uint8Array) => void;
+  onStderr?: (data: Uint8Array) => void;
   stdin?: string;
   terminalStdin?: TerminalInputStream;
   signal?: AbortSignal;
@@ -304,7 +311,7 @@ export class Shell {
     if (this._executeDepth > 10) {
       this._executeDepth--;
       const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
-      options?.onStderr?.(msg);
+      options?.onStderr?.(enc.encode(msg));
       return { stdout: '', stderr: msg, exitCode: 1 };
     }
     let stdoutBuf = '';
@@ -313,13 +320,13 @@ export class Shell {
     const stdoutStream: CommandOutputStream = {
       write: (text: string) => {
         stdoutBuf += text;
-        options?.onStdout?.(text);
+        options?.onStdout?.(enc.encode(text));
       },
     };
     const stderrStream: CommandOutputStream = {
       write: (text: string) => {
         stderrBuf += text;
-        options?.onStderr?.(text);
+        options?.onStderr?.(enc.encode(text));
       },
     };
 
@@ -342,7 +349,7 @@ export class Shell {
     // parent command's late-bound closures read.
     const writeToTerminal = (text: string) => {
       stderrBuf += text;
-      options?.onStderr?.(text);
+      options?.onStderr?.(enc.encode(text));
     };
 
     // Apply per-call overrides
@@ -386,7 +393,7 @@ export class Shell {
     } catch (e) {
       const msg = e instanceof Error ? (e.stack || e.message) : String(e);
       stderrBuf += msg + '\n';
-      options?.onStderr?.(msg + '\n');
+      options?.onStderr?.(enc.encode(msg + '\n'));
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
       this._executeDepth--;

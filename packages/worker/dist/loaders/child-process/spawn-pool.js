@@ -8,6 +8,7 @@
  */
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { runSpawnInIsolate } from './spawn-facet.js';
+const RESULT_ENCODER = new TextEncoder();
 export class ChildProcessSpawnPool {
     /**
      * Shared single-slot pool. Serial dispatch keeps one dynamic-worker
@@ -79,9 +80,9 @@ export class ChildProcessSpawnPool {
         this.chain = myTurn.catch(() => undefined);
         result = await myTurn;
         if (result.stdout)
-            hooks.onStdout(result.stdout);
+            hooks.onStdout(RESULT_ENCODER.encode(result.stdout));
         if (result.stderr)
-            hooks.onStderr(result.stderr);
+            hooks.onStderr(RESULT_ENCODER.encode(result.stderr));
         return typeof result.exitCode === 'number' ? result.exitCode : 1;
     }
 }

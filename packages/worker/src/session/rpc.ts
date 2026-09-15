@@ -22,7 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 
-import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
+import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -915,7 +915,20 @@ function isPriorGenerationPid(self: RpcHost, pid: number): boolean {
 
 export const PRIOR_GENERATION_EXIT_REASON = 'process lost: instance reset';
 
-export async function _rpcStdout(self: RpcHost, pid: number, data: string): Promise<void> {
+/**
+ * A process's output arrives as bytes: the relay from the facet carries
+ * Uint8Array so a binary protocol or an image survives it. The two text
+ * consumers here decode at their own edge — the log ring inside
+ * `appendOutputBytes`, and the terminal tee through these per-(pid, stream)
+ * streaming decoders, dropped when the process reports its exit.
+ */
+const _terminalTeeDecoders = new StreamTextDecoders<string>();
+
+function decodeForTerminal(pid: number, stream: 'stdout' | 'stderr', data: Uint8Array): string {
+  return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
+}
+
+export async function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): Promise<void> {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —
     // its output must not merge into this generation's logs or shell.
     if (isPriorGenerationPid(self, pid)) return;
@@ -925,9 +938,10 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
     // was threaded) to avoid polluting a sentinel slot with output from
     // un-traceable facets.
     try {
-      if (pid > 0) self.processes.appendOutput(pid, 'stdout', data);
+      if (pid > 0) self.processes.appendOutputBytes(pid, 'stdout', data);
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-        self.terminal.write(normalizeTerminalNewlines(data));
+        const text = decodeForTerminal(pid, 'stdout', data);
+        if (text.length > 0) self.terminal.write(normalizeTerminalNewlines(text));
       }
     } catch (e: any) {
       // Fix 5: surface RPC envelope errors when NIMBUS_DEBUG=1. Silent
@@ -940,14 +954,15 @@ export async function _rpcStdout(self: RpcHost, pid: number, data: string): Prom
     }
 }
 
-export async function _rpcStderr(self: RpcHost, pid: number, data: string): Promise<void> {
+export async function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void> {
     if (isPriorGenerationPid(self, pid)) return;
     try {
-      if (pid > 0) self.processes.appendOutput(pid, 'stderr', data);
+      if (pid > 0) self.processes.appendOutputBytes(pid, 'stderr', data);
       // Terminal gets red wrapping; the ring buffer keeps it raw so the
       // stream tag can drive color decisions at replay time.
       if (self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-        self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(data)}\x1b[0m`);
+        const text = decodeForTerminal(pid, 'stderr', data);
+        if (text.length > 0) self.terminal.write(`\x1b[31m${normalizeTerminalNewlines(text)}\x1b[0m`);
       }
     } catch (e: any) {
       if (self.nimbusDebug && self.terminal) {
@@ -987,6 +1002,12 @@ export async function _rpcReportExit(self: RpcHost, pid: number, code: number, t
       return;
     }
     try { self.processes.closeInput(pid); } catch {}
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
+      if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
+        self.terminal.write(normalizeTerminalNewlines(rest));
+      }
+    }
     // A relayed socket is held open by the supervisor on the process's behalf,
     // so it does not die when the facet does. Nothing else would ever close
     // it, and a live one keeps buffering into the supervisor's heap.
@@ -1308,7 +1329,10 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
       return { signal: 'SIGKILL', ended: true };
     }
     if (self.processes.hasInput(childPid)) {
-      return self.processes.readInput(childPid, waitMs);
+      // The interactive input store holds text packets; the child's stdin
+      // pump takes bytes, so this text producer encodes at its edge.
+      const packet = await self.processes.readInput(childPid, waitMs);
+      return { ...packet, data: enc.encode(packet.data) };
     }
     const fpm = self._ensureFacetProcessManager();
     return fpm.cpReadStdin(childPid, waitMs);

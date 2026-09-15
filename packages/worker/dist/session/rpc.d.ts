@@ -258,8 +258,8 @@ export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): P
     failed: number;
 }>;
 export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
-export declare function _rpcStdout(self: RpcHost, pid: number, data: string): Promise<void>;
-export declare function _rpcStderr(self: RpcHost, pid: number, data: string): Promise<void>;
+export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
+export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
 /**
  * Called by facets from their `finally` block after I/O has drained.
  * Marks the log store so `logs` / `ps` can show the exit code, and

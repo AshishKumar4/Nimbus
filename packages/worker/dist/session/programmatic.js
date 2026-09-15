@@ -21,6 +21,7 @@ import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPre
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const ShellStateSchema = z.object({
     cwd: z.string().startsWith('/'),
@@ -217,14 +218,13 @@ function startShellJob(self, command, options, job, scoped) {
         catch { /* already settled */ }
     });
     const emit = (stream, sink) => (data) => {
-        const text = String(data);
         if (job.background) {
             try {
-                self.processes.appendOutput(pid, stream, text);
+                self.processes.appendOutputBytes(pid, stream, data);
             }
             catch { /* ring gone */ }
         }
-        sink?.(text);
+        sink?.(data);
     };
     const run = shell.execute(line, {
         // A named shell already holds its own cwd and env; passing them again
@@ -285,8 +285,8 @@ async function execOnShell(self, command, options, scoped) {
     let timedOut = false;
     const job = startShellJob(self, command, options, {
         background: false,
-        onStdout: (d) => stdout.push(d),
-        onStderr: (d) => stderr.push(d),
+        onStdout: textSink((d) => stdout.push(d)),
+        onStderr: textSink((d) => stderr.push(d)),
     }, scoped);
     let result;
     try {

@@ -45,11 +45,13 @@ export interface ExecStreamResult {
 }
 /**
  * Output chunk in a child's per-fd ring. Sequence numbers let parents
- * read incrementally with cpReadOutput(sinceSeq).
+ * read incrementally with cpReadOutput(sinceSeq). The data is bytes: a
+ * child's stdio is not text, and a string here would lose any byte sequence
+ * that is not valid UTF-8.
  */
 interface OutputChunk {
     seq: number;
-    data: string;
+    data: Uint8Array;
 }
 /**
  * Per-child mutable state. Created on spawn, torn down only when the
@@ -116,26 +118,29 @@ export interface SpawnReq {
 export interface ReadOutputResult {
     chunks: {
         seq: number;
-        data: string;
+        data: Uint8Array;
     }[];
     closed: boolean;
     maxSeq: number;
 }
 export interface DrainResult {
-    stdout: string;
-    stderr: string;
+    stdout: Uint8Array;
+    stderr: Uint8Array;
     stdoutClosed: boolean;
     stderrClosed: boolean;
 }
 /**
  * Hooks invoked by the inline runner / facet-direct runner to push
  * output back into the per-child ring. Kept as a small structural type
- * so tests can supply mocks.
+ * so tests can supply mocks. They carry bytes; a text producer encodes at
+ * its own edge (see `textBytes`).
  */
 export interface OutputHooks {
-    onStdout: (data: string) => void;
-    onStderr: (data: string) => void;
+    onStdout: (data: Uint8Array) => void;
+    onStderr: (data: Uint8Array) => void;
 }
+/** A text producer's edge onto the byte hooks. */
+export declare function textBytes(text: string): Uint8Array;
 /**
  * Command resolution. The shell registry returns whatever shape it likes;
  * we adapt to a normalized 3-state result.
@@ -186,10 +191,7 @@ export interface FacetProcessManagerDeps {
     };
     /** Optional Worker Loader pool for isolating child-process dispatch. */
     spawnPool?: {
-        runOne: (req: any, kind: Exclude<CommandKind, 'unknown'>, hooks: {
-            onStdout: (d: string) => void;
-            onStderr: (d: string) => void;
-        }) => Promise<number>;
+        runOne: (req: any, kind: Exclude<CommandKind, 'unknown'>, hooks: OutputHooks) => Promise<number>;
     };
 }
 /** Cap recursion depth to defend against runaway spawn loops. */
@@ -252,6 +254,8 @@ export declare class FacetProcessManager {
         data: Uint8Array;
         ended: boolean;
     }>;
+    /** A broker-side text message onto the child's byte ring. */
+    private _appendText;
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     private _appendOutput;
     /**

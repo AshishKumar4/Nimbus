@@ -938,7 +938,7 @@ async function __ocDrainVfsWrites() {
     stderr += trace + "\\n";
     exitCode = 1;
     if (__ocResident) {
-      try { await __supervisor.stderr(trace + "\\n"); } catch {}
+      try { await __supervisor.stderr(new TextEncoder().encode(trace + "\\n")); } catch {}
     }
   }
 }
@@ -1093,7 +1093,7 @@ function __ocEmitMemDiag(tag) {
     // RPC that lands in the process log even when the chain is wedged —
     // discriminates a dead event loop from a wedged outbound chain.
     if (tag === "p" && __supervisor) {
-      try { __supervisor.stderr("[oc-mem-direct]" + __line).catch(() => {}); } catch {}
+      try { __supervisor.stderr(new TextEncoder().encode("[oc-mem-direct]" + __line)).catch(() => {}); } catch {}
     }
   } finally {
     __ocDiag.busy = false;

@@ -497,6 +497,10 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return { ...result, events: _drainCacheEvents(r2) };
     }
     // ── Process I/O ───────────────────────────────────────────────────────
+    //
+    // A process's stdio is bytes end to end: stdout/stderr up, cpStdinWrite
+    // down, cpReadStdin/cpReadOutput/cpDrainOutput in a child's direction. A
+    // text producer encodes at its own edge; a text consumer decodes at its.
     async stdout(data) {
         return this._call(this._op('stdout', [data], { pid: this._reportingPid() }));
     }

@@ -33,6 +33,7 @@ import {
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
 import type { VfsCred } from './os-contracts.js';
+import { StreamTextDecoders } from '../_shared/bytes.js';
 
 export interface ProcessSpawnOptions {
   /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -63,6 +64,12 @@ export class SessionProcessSupervisor {
   private readonly table = new ProcessTable();
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
+  /**
+   * The log ring holds text lines; a process's output arrives as bytes. One
+   * streaming decoder per (pid, stream) is this text consumer's edge, so a
+   * character split across two chunks survives. Dropped at markExit.
+   */
+  private readonly outputDecoders = new StreamTextDecoders<string>();
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -249,8 +256,18 @@ export class SessionProcessSupervisor {
     this.logActivity?.();
   }
 
+  /** A process's own output: bytes on the relay, decoded at this edge. */
+  appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): void {
+    const text = this.outputDecoders.decode(`${pid}:${stream}`, data);
+    if (text.length > 0) this.appendOutput(pid, stream, text);
+  }
+
   /** Record exit in the log store. Idempotent: the first record wins. */
   markExit(pid: number, code: number, reason?: string): void {
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const tail = this.outputDecoders.drop(`${pid}:${stream}`);
+      if (tail.length > 0) this.logs.append(pid, stream, tail);
+    }
     this.logs.markExit(pid, code, reason);
     this.logActivity?.();
   }

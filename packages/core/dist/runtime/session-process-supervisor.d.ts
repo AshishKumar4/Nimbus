@@ -51,6 +51,12 @@ export declare class SessionProcessSupervisor {
     private readonly table;
     private readonly input;
     private logs;
+    /**
+     * The log ring holds text lines; a process's output arrives as bytes. One
+     * streaming decoder per (pid, stream) is this text consumer's edge, so a
+     * character split across two chunks survives. Dropped at markExit.
+     */
+    private readonly outputDecoders;
     /** Terminators for processes whose work is a promise this session owns. */
     private terminators;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -125,6 +131,8 @@ export declare class SessionProcessSupervisor {
     /** Controlling-terminal descriptor; null when no input channel is open. */
     terminal(pid: number): ProcessTerminalDescriptor | null;
     appendOutput(pid: number, stream: LogStream, data: string): void;
+    /** A process's own output: bytes on the relay, decoded at this edge. */
+    appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): void;
     /** Record exit in the log store. Idempotent: the first record wins. */
     markExit(pid: number, code: number, reason?: string): void;
     getExit(pid: number): ProcessExitInfo | null;

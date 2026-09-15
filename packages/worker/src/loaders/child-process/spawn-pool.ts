@@ -10,10 +10,12 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { runSpawnInIsolate, type SpawnInIsolateSpec, type SpawnInIsolateResult } from './spawn-facet.js';
 
+/** The child ring takes bytes; the inline result is text, encoded at this edge. */
 export interface SpawnPoolHooks {
-  onStdout(data: string): void;
-  onStderr(data: string): void;
+  onStdout(data: Uint8Array): void;
+  onStderr(data: Uint8Array): void;
 }
+const RESULT_ENCODER = new TextEncoder();
 
 export interface SpawnPoolReq {
   command: string;
@@ -106,8 +108,8 @@ export class ChildProcessSpawnPool {
     // the chain for subsequent calls.
     this.chain = myTurn.catch(() => undefined);
     result = await myTurn;
-    if (result.stdout) hooks.onStdout(result.stdout);
-    if (result.stderr) hooks.onStderr(result.stderr);
+    if (result.stdout) hooks.onStdout(RESULT_ENCODER.encode(result.stdout));
+    if (result.stderr) hooks.onStderr(RESULT_ENCODER.encode(result.stderr));
     return typeof result.exitCode === 'number' ? result.exitCode : 1;
   }
 }

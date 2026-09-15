@@ -8,6 +8,8 @@ import {
   _rpcStdout,
 } from '../../packages/worker/src/session/rpc.ts';
 
+const bytes = (s) => new TextEncoder().encode(s);
+
 function createHost() {
   const writes = [];
   const processes = new SessionProcessSupervisor();
@@ -25,8 +27,8 @@ function createHost() {
   const { host, writes } = createHost();
   const entry = host.processes.spawn('plain-server', [], '/home/user', { longRunning: true });
 
-  await _rpcStdout(host, entry.pid, 'a\nb\n');
-  await _rpcStderr(host, entry.pid, 'c\nd\n');
+  await _rpcStdout(host, entry.pid, bytes('a\nb\n'));
+  await _rpcStderr(host, entry.pid, bytes('c\nd\n'));
 
   assert.deepEqual(writes, [
     'a\r\nb\r\n',
@@ -46,7 +48,7 @@ function createHost() {
     attachedTty: true,
   });
 
-  await _rpcStdout(host, entry.pid, 'raw\nframe\n');
+  await _rpcStdout(host, entry.pid, bytes('raw\nframe\n'));
 
   assert.deepEqual(writes, [], 'attached-TTY output is not mirrored into the shell terminal');
   assert.equal(host.processes.allLogs(entry.pid)[0].data, 'raw\nframe\n');

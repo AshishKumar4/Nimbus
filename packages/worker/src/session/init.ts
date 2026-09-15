@@ -42,6 +42,7 @@ import {
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import type { CommandContext, CommandRunAsHost } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
+import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -338,8 +339,8 @@ export async function initSession(
               stdout: parent.isFdTerminal?.(1) ?? false,
               stderr: parent.isFdTerminal?.(2) ?? false,
             },
-            onStdout: (data) => parent.stdout.write(data),
-            onStderr: (data) => parent.stderr.write(data),
+            onStdout: textSink((data) => parent.stdout.write(data)),
+            onStderr: textSink((data) => parent.stderr.write(data)),
             commandContext: {
               pid: identity.pid,
               cred: identity.cred,
@@ -912,8 +913,8 @@ export async function initSession(
               const shellResult = await shell.execute(command, {
                 cwd: ctx.cwd,
                 env: ctx.env,
-                onStdout: (d: string) => ctx.stdout.write(d),
-                onStderr: (d: string) => ctx.stderr.write(d),
+                onStdout: textSink((d) => ctx.stdout.write(d)),
+                onStderr: textSink((d) => ctx.stderr.write(d)),
               });
               return shellResult.exitCode;
             } catch (e: any) {
@@ -1455,8 +1456,8 @@ export async function initSession(
       const result = await shell.execute(cmd, {
         cwd: cmdCtx.cwd,
         env: cmdCtx.env,
-        onStdout: (d: string) => cmdCtx.stdout.write(d),
-        onStderr: (d: string) => cmdCtx.stderr.write(d),
+        onStdout: textSink((d) => cmdCtx.stdout.write(d)),
+        onStderr: textSink((d) => cmdCtx.stderr.write(d)),
         stdin,
         terminalStdin: cmdCtx.terminalStdin,
         // `npm run x` runs x on npm's own fds. Handing the nested execution a
@@ -1556,9 +1557,12 @@ export async function initSession(
 
       // Wrap the caller-supplied streams so every chunk is both displayed
       // AND captured in the ring buffer keyed by this PID.
-      const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => (d: string) => {
-        try { self.processes.appendOutput(pid, stream, String(d)); } catch {}
-        try { target.write(d); } catch {}
+      const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => {
+        const toTarget = textSink((text) => target.write(text));
+        return (d: Uint8Array) => {
+          try { self.processes.appendOutputBytes(pid, stream, d); } catch {}
+          try { toTarget(d); } catch {}
+        };
       };
 
       let exitCode = 1;
@@ -1601,7 +1605,9 @@ export async function initSession(
       } catch (e: any) {
         // Surface the error in the terminal and the ring buffer.
         const msg = (e && (e.stack || e.message)) || String(e);
-        tee('stderr', cmdCtx.stderr)('shellExecuteTracked error: ' + msg + '\n');
+        const line = 'shellExecuteTracked error: ' + msg + '\n';
+        try { self.processes.appendOutput(pid, 'stderr', line); } catch {}
+        try { cmdCtx.stderr.write(line); } catch {}
         exitCode = 1;
       } finally {
         // When a long-running script handed off to a live server (the registry

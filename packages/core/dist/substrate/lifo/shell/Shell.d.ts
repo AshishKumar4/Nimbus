@@ -11,8 +11,14 @@ export declare function formatShellPrompt(env: Record<string, string>, cwd: stri
 export interface ExecuteOptions {
     cwd?: string;
     env?: Record<string, string>;
-    onStdout?: (data: string) => void;
-    onStderr?: (data: string) => void;
+    /**
+     * Streaming output, as bytes: a process's stdio is a byte stream, and this
+     * is the seam a child's output crosses on its way to a parent process. The
+     * shell's own command output is text, encoded here at the producer's edge;
+     * a text consumer decodes at its own edge with a streaming decoder.
+     */
+    onStdout?: (data: Uint8Array) => void;
+    onStderr?: (data: Uint8Array) => void;
     stdin?: string;
     terminalStdin?: TerminalInputStream;
     signal?: AbortSignal;

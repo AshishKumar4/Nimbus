@@ -115,7 +115,7 @@ assert.equal(storage.get(GENERATION_KEY), GEN + 1,
 // ── The behaviour that floor exists to produce ──────────────────────────
 // A facet spawned before the destroy is still alive and still calling back.
 // Its output must be dropped, not merged into the recreated session's logs.
-await _rpcStdout(host, straggler, 'output from a destroyed session\n');
+await _rpcStdout(host, straggler, new TextEncoder().encode('output from a destroyed session\n'));
 assert.deepEqual(host.processes.tailLogs(straggler, { lines: 10 }), [],
   'straggler stdout must be refused, not buffered into this generation');
 
@@ -132,7 +132,7 @@ assert.equal(exit.reason, PRIOR_GENERATION_EXIT_REASON,
 const fresh = host.processes.spawn('sh', [], '/home/user');
 assert.ok(fresh.pid > (GEN + 1) * PID_GEN_STRIDE,
   'a post-destroy spawn allocates above the new floor');
-await _rpcStdout(host, fresh.pid, 'hello\n');
+await _rpcStdout(host, fresh.pid, new TextEncoder().encode('hello\n'));
 const freshLogs = host.processes.tailLogs(fresh.pid, { lines: 10 });
 assert.equal(freshLogs.length, 1, 'current-generation output is still buffered');
 assert.equal(freshLogs[0].data, 'hello\n');

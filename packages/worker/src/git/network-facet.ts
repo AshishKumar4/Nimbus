@@ -610,8 +610,10 @@ async function invokeFacet(
 
 /** The supervisor stub surface this module calls: terminal progress, nothing else. */
 interface GitSupervisorStub {
-  stdout(message: string): Promise<unknown>;
+  /** Process output is bytes on the relay; this text producer encodes. */
+  stdout(data: Uint8Array): Promise<unknown>;
 }
+const GIT_PROGRESS_ENCODER = new TextEncoder();
 
 async function writeClonePhaseProgress(
   supervisor: GitSupervisorStub,
@@ -621,11 +623,11 @@ async function writeClonePhaseProgress(
     const rpcCount = Object.values(diagnostic.supervisorRpc)
       .reduce((total, count) => total + count, 0);
     const status = diagnostic.outcome === 'success' ? 'complete' : diagnostic.outcome;
-    const result = await supervisor.stdout(
+    const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(
       `\n[git] ${diagnostic.phase} ${status} ` +
       `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
       `w7=${diagnostic.w7Waves} rpc=${rpcCount})\n`,
-    );
+    ));
     disposeRpcResource(result);
   } catch {
     // Terminal progress is best-effort; the phase result remains authoritative.
@@ -641,13 +643,13 @@ async function writeCloneChunkProgress(
   try {
     const rpcCount = Object.values(diagnostic.supervisorRpc)
       .reduce((total, count) => total + count, 0);
-    const result = await supervisor.stdout(
+    const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(
       `\n[git] clone-checkout chunk ${chunk} complete ` +
       `(entries=${progress.treeEntriesVisited} decoded=${progress.decodedBytes}B ` +
       `index=${progress.indexEntries} continuation=${progress.nextCursor === null ? 'done' : 'yes'} ` +
       `wall=${diagnostic.elapsed}ms w7=${diagnostic.w7Waves} rpc=${rpcCount} ` +
       `cold=${diagnostic.cold === true ? 'yes' : 'no'})\n`,
-    );
+    ));
     disposeRpcResource(result);
   } catch {
     // Terminal progress is best-effort; the chunk result remains authoritative.
@@ -2523,7 +2525,7 @@ export default {
     }
     const log = (msg) => {
       stats.supervisorRpc.stdout++;
-      try { useRpcResult(supervisor.stdout(msg), () => undefined).catch(() => {}); } catch {}
+      try { useRpcResult(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch {}
     };
 
     // Import the pre-bundled isomorphic-git + http/web.

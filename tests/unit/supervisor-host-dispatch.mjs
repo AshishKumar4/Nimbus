@@ -81,7 +81,7 @@ const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 2
 const code = 0, reason = 'closed', flags = 'r', handleId = 4, offset = 0, length = 3;
 const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
-const entries = [], data = 'output', tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
+const entries = [], data = new TextEncoder().encode('output'), tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
 const request = new Request('https://loopback.test/'), loader = 'js', req = { parentPid: 999, command: 'cat' };
 const childPid = 42, fd = 1, sinceSeq = 3, signal = 'SIGTERM', kind = 'pure-builtin';
 const INPUTS = {

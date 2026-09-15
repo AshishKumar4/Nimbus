@@ -61,10 +61,10 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** Timeout in milliseconds */
   timeout?: number;
-  /** Streaming stdout callback */
-  onStdout?: (data: string) => void;
-  /** Streaming stderr callback */
-  onStderr?: (data: string) => void;
+  /** Streaming stdout callback; bytes, see Shell's ExecuteOptions */
+  onStdout?: (data: Uint8Array) => void;
+  /** Streaming stderr callback; bytes */
+  onStderr?: (data: Uint8Array) => void;
   /** Provide stdin content */
   stdin?: string;
 }

@@ -41,7 +41,8 @@ function makePump(cpReadStdin, reportExit) {
     async () => {
       calls++;
       if (calls <= 3) throw new Error('Internal error in Durable Object storage caused object to be reset');
-      if (calls === 4) return { data: 'keystroke' };
+      // The supervisor hands stdin to the pump as bytes.
+      if (calls === 4) return { data: new TextEncoder().encode('keystroke') };
       return { ended: true };
     },
     async (code, tail) => { exits.push({ code, tail }); },

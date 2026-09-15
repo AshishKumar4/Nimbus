@@ -349,14 +349,15 @@ async function invokeFacet(entrypoint, phase, invocationId, body, outerDeadline,
             clearTimeout(timeoutHandle);
     }
 }
+const GIT_PROGRESS_ENCODER = new TextEncoder();
 async function writeClonePhaseProgress(supervisor, diagnostic) {
     try {
         const rpcCount = Object.values(diagnostic.supervisorRpc)
             .reduce((total, count) => total + count, 0);
         const status = diagnostic.outcome === 'success' ? 'complete' : diagnostic.outcome;
-        const result = await supervisor.stdout(`\n[git] ${diagnostic.phase} ${status} ` +
+        const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(`\n[git] ${diagnostic.phase} ${status} ` +
             `(invocation=${diagnostic.invocationId} wall=${diagnostic.elapsed}ms ` +
-            `w7=${diagnostic.w7Waves} rpc=${rpcCount})\n`);
+            `w7=${diagnostic.w7Waves} rpc=${rpcCount})\n`));
         disposeRpcResource(result);
     }
     catch {
@@ -367,11 +368,11 @@ async function writeCloneChunkProgress(supervisor, diagnostic, chunk, progress) 
     try {
         const rpcCount = Object.values(diagnostic.supervisorRpc)
             .reduce((total, count) => total + count, 0);
-        const result = await supervisor.stdout(`\n[git] clone-checkout chunk ${chunk} complete ` +
+        const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(`\n[git] clone-checkout chunk ${chunk} complete ` +
             `(entries=${progress.treeEntriesVisited} decoded=${progress.decodedBytes}B ` +
             `index=${progress.indexEntries} continuation=${progress.nextCursor === null ? 'done' : 'yes'} ` +
             `wall=${diagnostic.elapsed}ms w7=${diagnostic.w7Waves} rpc=${rpcCount} ` +
-            `cold=${diagnostic.cold === true ? 'yes' : 'no'})\n`);
+            `cold=${diagnostic.cold === true ? 'yes' : 'no'})\n`));
         disposeRpcResource(result);
     }
     catch {
@@ -2185,7 +2186,7 @@ export default {
     }
     const log = (msg) => {
       stats.supervisorRpc.stdout++;
-      try { useRpcResult(supervisor.stdout(msg), () => undefined).catch(() => {}); } catch {}
+      try { useRpcResult(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch {}
     };
 
     // Import the pre-bundled isomorphic-git + http/web.

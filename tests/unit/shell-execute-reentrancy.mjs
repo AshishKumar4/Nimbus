@@ -20,6 +20,9 @@
 import assert from 'node:assert/strict';
 import { Sandbox } from '../../packages/core/src/substrate/lifo/sandbox/Sandbox.ts';
 
+// The shell's streaming hooks carry bytes; this test reads them as text.
+const text = (b) => new TextDecoder().decode(b);
+
 // Minimal ITerminal that records everything written to the real terminal.
 function makeRecordingTerminal() {
   let buf = '';
@@ -51,8 +54,8 @@ try {
   box.commands.registry.register('parentcmd', async (ctx) => {
     ctx.stdout.write('PARENT_BEFORE\n');
     nestedResult = await box.shell.execute('echo NESTED_CAPTURED', {
-      onStdout: (t) => { try { ctx.stdout.write(t); } catch {} },
-      onStderr: (t) => { try { ctx.stderr.write(t); } catch {} },
+      onStdout: (t) => { try { ctx.stdout.write(text(t)); } catch {} },
+      onStderr: (t) => { try { ctx.stderr.write(text(t)); } catch {} },
     });
     ctx.stdout.write('PARENT_AFTER\n');
     return 0;
@@ -92,7 +95,7 @@ try {
   terminal.clear();
   let cap = '';
   const captured = await box.shell.execute('echo CAPTURED_AGAIN', {
-    onStdout: (t) => { cap += t; },
+    onStdout: (t) => { cap += text(t); },
   });
   assert.equal(captured.stdout, 'CAPTURED_AGAIN\n', 'post-nested captured stdout');
   assert.equal(cap, 'CAPTURED_AGAIN\n', 'post-nested onStdout');

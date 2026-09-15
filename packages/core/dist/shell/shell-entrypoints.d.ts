@@ -25,8 +25,8 @@ export type ShellEntrypointExecutor = {
     execute(cmd: string, options?: {
         cwd?: string;
         env?: Record<string, string>;
-        onStdout?: (data: string) => void;
-        onStderr?: (data: string) => void;
+        onStdout?: (data: Uint8Array) => void;
+        onStderr?: (data: Uint8Array) => void;
         stdin?: string;
         terminalStdin?: TerminalInputStream;
         runExitTrap?: boolean;

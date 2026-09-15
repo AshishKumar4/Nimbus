@@ -6,9 +6,10 @@
  * Each spawn receives its own lifecycle envelope while command semantics
  * continue to flow through the existing supervisor RPC.
  */
+/** The child ring takes bytes; the inline result is text, encoded at this edge. */
 export interface SpawnPoolHooks {
-    onStdout(data: string): void;
-    onStderr(data: string): void;
+    onStdout(data: Uint8Array): void;
+    onStderr(data: Uint8Array): void;
 }
 export interface SpawnPoolReq {
     command: string;

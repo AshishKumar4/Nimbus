@@ -38,6 +38,7 @@ import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseShellInvocation, type ShellName } from '@nimbus-sh/core/shell/shell-invocation.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -50,11 +51,13 @@ export interface ExecStreamResult {
 
 /**
  * Output chunk in a child's per-fd ring. Sequence numbers let parents
- * read incrementally with cpReadOutput(sinceSeq).
+ * read incrementally with cpReadOutput(sinceSeq). The data is bytes: a
+ * child's stdio is not text, and a string here would lose any byte sequence
+ * that is not valid UTF-8.
  */
 interface OutputChunk {
   seq: number;
-  data: string;
+  data: Uint8Array;
 }
 
 /**
@@ -113,14 +116,14 @@ export interface SpawnReq {
 }
 
 export interface ReadOutputResult {
-  chunks: { seq: number; data: string }[];
+  chunks: { seq: number; data: Uint8Array }[];
   closed: boolean;
   maxSeq: number;
 }
 
 export interface DrainResult {
-  stdout: string;
-  stderr: string;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
   stdoutClosed: boolean;
   stderrClosed: boolean;
 }
@@ -128,11 +131,26 @@ export interface DrainResult {
 /**
  * Hooks invoked by the inline runner / facet-direct runner to push
  * output back into the per-child ring. Kept as a small structural type
- * so tests can supply mocks.
+ * so tests can supply mocks. They carry bytes; a text producer encodes at
+ * its own edge (see `textBytes`).
  */
 export interface OutputHooks {
-  onStdout: (data: string) => void;
-  onStderr: (data: string) => void;
+  onStdout: (data: Uint8Array) => void;
+  onStderr: (data: Uint8Array) => void;
+}
+
+/** A text producer's edge onto the byte hooks. */
+export function textBytes(text: string): Uint8Array {
+  return enc.encode(text);
+}
+
+function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const c of chunks) total += c.byteLength;
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { joined.set(c, at); at += c.byteLength; }
+  return joined;
 }
 
 /**
@@ -199,7 +217,7 @@ export interface FacetProcessManagerDeps {
     runOne: (
       req: any,
       kind: Exclude<CommandKind, 'unknown'>,
-      hooks: { onStdout: (d: string) => void; onStderr: (d: string) => void },
+      hooks: OutputHooks,
     ) => Promise<number>;
   };
 }
@@ -384,7 +402,7 @@ export class FacetProcessManager {
       void this._dispatch(child, kind, dispatchReq).catch((e) => {
         // Last-resort: if both runners somehow throw, exit 1 with the error
         // on stderr.
-        this._appendOutput(child, 2, `Error: ${e?.message || String(e)}\n`);
+        this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
         this._stampExit(child, 1, null);
       });
     }, 0);
@@ -395,7 +413,7 @@ export class FacetProcessManager {
   /** Dispatch by kind. */
   private async _dispatch(child: ChildEntry, kind: CommandKind, req: SpawnReq): Promise<void> {
     if (kind === 'unknown') {
-      this._appendOutput(child, 2, `${req.command}: command not found\n`);
+      this._appendText(child, 2, `${req.command}: command not found\n`);
       this._stampExit(child, 127, null);
       return;
     }
@@ -433,7 +451,7 @@ export class FacetProcessManager {
         const code = await this.deps.spawnPool.runOne(reqCopy, kind, hooks);
         this._stampExit(child, code, null);
       } catch (e: any) {
-        this._appendOutput(child, 2, `spawn-pool error: ${e?.message || String(e)}\n`);
+        this._appendText(child, 2, `spawn-pool error: ${e?.message || String(e)}\n`);
         this._stampExit(child, 1, null);
       }
       return;
@@ -456,7 +474,7 @@ export class FacetProcessManager {
         );
         this._stampExit(child, code, null);
       } catch (e: any) {
-        this._appendOutput(child, 2, `Error: ${e?.message || String(e)}\n`);
+        this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
         this._stampExit(child, 1, null);
       }
       return;
@@ -483,7 +501,7 @@ export class FacetProcessManager {
       );
       this._stampExit(child, code, null);
     } catch (e: any) {
-      this._appendOutput(child, 2, `facet error: ${e?.message || String(e)}\n`);
+      this._appendText(child, 2, `facet error: ${e?.message || String(e)}\n`);
       this._stampExit(child, 1, null);
     }
   }
@@ -508,11 +526,14 @@ export class FacetProcessManager {
     if (kind === 'unknown') {
       return { exitCode: 127, stdout: '', stderr: `${req.command}: command not found\n` };
     }
+    // An inline result is text for a caller expecting text: decode here, at
+    // its edge, streaming per fd so a split multibyte character survives.
     let stdoutBuf = '';
     let stderrBuf = '';
+    const decoders = new StreamTextDecoders<1 | 2>();
     const hooks: OutputHooks = {
-      onStdout: (d) => { stdoutBuf += d; },
-      onStderr: (d) => { stderrBuf += d; },
+      onStdout: (d) => { stdoutBuf += decoders.decode(1, d); },
+      onStderr: (d) => { stderrBuf += decoders.decode(2, d); },
     };
     const childEnv: Record<string, string> = {
       ...(req.env || {}),
@@ -630,12 +651,7 @@ export class FacetProcessManager {
     }
     // A pure builtin takes its stdin as text, so the decode happens here,
     // at the consumer's edge, over the whole queued run at once.
-    let total = 0;
-    for (const c of child.stdinChunks) total += c.byteLength;
-    const joined = new Uint8Array(total);
-    let at = 0;
-    for (const c of child.stdinChunks) { joined.set(c, at); at += c.byteLength; }
-    return new TextDecoder('utf-8').decode(joined);
+    return dec.decode(concatBytes(child.stdinChunks));
   }
 
   private _shellPlanFor(req: SpawnReq): ShellSpawnPlan | null {
@@ -651,7 +667,7 @@ export class FacetProcessManager {
   private async _dispatchShell(child: ChildEntry, req: SpawnReq, hooks: OutputHooks): Promise<void> {
     const plan = this._shellPlanFor(req);
     if (!plan) {
-      this._appendOutput(child, 2, `${req.command}: unsupported shell invocation\n`);
+      this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
       this._stampExit(child, 127, null);
       return;
     }
@@ -672,7 +688,7 @@ export class FacetProcessManager {
       const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
-      this._appendOutput(child, 2, `shell error: ${e?.message || String(e)}\n`);
+      this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
       this._stampExit(child, 1, null);
     }
   }
@@ -684,7 +700,8 @@ export class FacetProcessManager {
     if (!child.stdinClosed && child.stdinChunks.length > 0) {
       await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
     }
-    return child.stdinChunks.join('');
+    // A shell line's stdin is text; the queue holds bytes.
+    return dec.decode(concatBytes(child.stdinChunks));
   }
 
   private _shellCommandLineForPlan(
@@ -702,12 +719,12 @@ export class FacetProcessManager {
     try {
       const vfs = this.deps.vfsForProcess(processPid);
       if (!vfs.exists(scriptPath) || vfs.isDirectory(scriptPath)) {
-        hooks.onStderr(`${shellName}: ${plan.path}: No such file or directory\n`);
+        hooks.onStderr(textBytes(`${shellName}: ${plan.path}: No such file or directory\n`));
         return null;
       }
       return vfs.readFileString(scriptPath);
     } catch (e: any) {
-      hooks.onStderr(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`);
+      hooks.onStderr(textBytes(`${shellName}: ${plan.path}: ${e?.message || String(e)}\n`));
       return null;
     }
   }
@@ -721,7 +738,7 @@ export class FacetProcessManager {
     hooks: OutputHooks,
   ): Promise<number> {
     if (!this.deps.shellExecutor) {
-      hooks.onStderr('sh: shell executor unavailable\n');
+      hooks.onStderr(textBytes('sh: shell executor unavailable\n'));
       return 127;
     }
     return this.deps.shellExecutor.execute(pid, commandLine, env, cwd || '/home/user', stdin, hooks);
@@ -786,16 +803,21 @@ export class FacetProcessManager {
 
   // ── output queue ────────────────────────────────────────────────────────
 
+  /** A broker-side text message onto the child's byte ring. */
+  private _appendText(child: ChildEntry, fd: 1 | 2, text: string): void {
+    this._appendOutput(child, fd, textBytes(text));
+  }
+
   /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
-  private _appendOutput(child: ChildEntry, fd: 1 | 2, data: string): void {
-    if (!data) return;
+  private _appendOutput(child: ChildEntry, fd: 1 | 2, data: Uint8Array): void {
+    if (data.byteLength === 0) return;
     child.outputSeq[fd]++;
     const chunk: OutputChunk = { seq: child.outputSeq[fd], data };
     child.outputs[fd].push(chunk);
     // Tee to the process supervisor's log ring for `logs <pid>` parity
-    // with facet processes.
+    // with facet processes; the ring decodes at its own edge.
     try {
-      this.deps.processes.appendOutput(child.pid, fd === 1 ? 'stdout' : 'stderr', data);
+      this.deps.processes.appendOutputBytes(child.pid, fd === 1 ? 'stdout' : 'stderr', data);
     } catch { /* ignore */ }
     // Resolve waiters whose fd matches and whose sinceSeq is now satisfied.
     for (let i = child.outputWaiters.length - 1; i >= 0; i--) {
@@ -869,7 +891,7 @@ export class FacetProcessManager {
   async drainOutput(childPid: number): Promise<DrainResult> {
     const child = this.children.get(childPid);
     if (!child) {
-      return { stdout: '', stderr: '', stdoutClosed: true, stderrClosed: true };
+      return { stdout: EMPTY_BYTES, stderr: EMPTY_BYTES, stdoutClosed: true, stderrClosed: true };
     }
     // Wait briefly (up to 50ms) for the dispatch to settle if the child
     // hasn't exited yet — without this, drain races against the spawn's
@@ -879,8 +901,8 @@ export class FacetProcessManager {
       await new Promise((r) => setTimeout(r, 5));
     }
     return {
-      stdout: child.outputs[1].map((c) => c.data).join(''),
-      stderr: child.outputs[2].map((c) => c.data).join(''),
+      stdout: concatBytes(child.outputs[1].map((c) => c.data)),
+      stderr: concatBytes(child.outputs[2].map((c) => c.data)),
       stdoutClosed: child.exitCode !== null,
       stderrClosed: child.exitCode !== null,
     };

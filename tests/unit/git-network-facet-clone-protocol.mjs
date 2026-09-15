@@ -21,7 +21,8 @@ const continuationCursor = {
 };
 
 const supervisor = {
-  async stdout(message) { terminalLines.push(message); },
+  // Process output crosses this RPC as bytes; the test reads it as text.
+  async stdout(message) { terminalLines.push(new TextDecoder().decode(message)); },
   [Symbol.dispose]() { supervisorDisposeCount++; },
 };
 

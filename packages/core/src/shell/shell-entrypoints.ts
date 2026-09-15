@@ -3,6 +3,7 @@ import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/co
 import type { VfsCred } from '../runtime/os-contracts.js';
 import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { textSink } from '../_shared/bytes.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';
 
 type Output = { write(s: string): void };
@@ -27,8 +28,8 @@ export type ShellEntrypointExecutor = {
   execute(cmd: string, options?: {
     cwd?: string;
     env?: Record<string, string>;
-    onStdout?: (data: string) => void;
-    onStderr?: (data: string) => void;
+    onStdout?: (data: Uint8Array) => void;
+    onStderr?: (data: Uint8Array) => void;
     stdin?: string;
     terminalStdin?: TerminalInputStream;
     runExitTrap?: boolean;
@@ -119,14 +120,14 @@ function makeShellEntrypoint(
       scriptMode: true,
       stdin: inheritedStdin.stdin,
       terminalStdin: ctx.terminalStdin,
-      onStdout: (data) => {
+      onStdout: textSink((data) => {
         forwardedStdout += data;
         ctx.stdout.write(data);
-      },
-      onStderr: (data) => {
+      }),
+      onStderr: textSink((data) => {
         forwardedStderr += data;
         ctx.stderr.write(data);
-      },
+      }),
       runExitTrap: true,
       terminalFds: {
         stdin: ctx.isFdTerminal?.(0) ?? false,

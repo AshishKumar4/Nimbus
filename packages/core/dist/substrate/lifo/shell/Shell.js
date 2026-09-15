@@ -11,6 +11,7 @@ import { complete } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
+import { enc } from '../../../_shared/bytes.js';
 import { readDefaultShell } from './default-shell.js';
 function shellPromptParts(env, cwd) {
     const home = env['HOME'] ?? '/home/user';
@@ -210,7 +211,7 @@ export class Shell {
         if (this._executeDepth > 10) {
             this._executeDepth--;
             const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
-            options?.onStderr?.(msg);
+            options?.onStderr?.(enc.encode(msg));
             return { stdout: '', stderr: msg, exitCode: 1 };
         }
         let stdoutBuf = '';
@@ -218,13 +219,13 @@ export class Shell {
         const stdoutStream = {
             write: (text) => {
                 stdoutBuf += text;
-                options?.onStdout?.(text);
+                options?.onStdout?.(enc.encode(text));
             },
         };
         const stderrStream = {
             write: (text) => {
                 stderrBuf += text;
-                options?.onStderr?.(text);
+                options?.onStderr?.(enc.encode(text));
             },
         };
         // Save current state
@@ -248,7 +249,7 @@ export class Shell {
         // parent command's late-bound closures read.
         const writeToTerminal = (text) => {
             stderrBuf += text;
-            options?.onStderr?.(text);
+            options?.onStderr?.(enc.encode(text));
         };
         // Apply per-call overrides
         if (options?.cwd) {
@@ -286,7 +287,7 @@ export class Shell {
         catch (e) {
             const msg = e instanceof Error ? (e.stack || e.message) : String(e);
             stderrBuf += msg + '\n';
-            options?.onStderr?.(msg + '\n');
+            options?.onStderr?.(enc.encode(msg + '\n'));
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
         }
         finally {

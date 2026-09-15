@@ -29,8 +29,8 @@ export interface SessionSupervisorHost {
     ensureSqliteFs(): void;
     readonly sqliteFs: SqliteVFS | null;
     readonly processes: SessionProcessSupervisor;
-    _rpcStdout(pid: number, data: string): Promise<void>;
-    _rpcStderr(pid: number, data: string): Promise<void>;
+    _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
+    _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
 }
 export interface SessionSupervisorOps {
     readonly dispatch: (envelope: SupervisorOpEnvelope) => Promise<unknown>;

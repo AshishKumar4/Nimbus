@@ -23,8 +23,9 @@
  *     chunk, not a poll loop.
  *
  * Non-goals:
- *   - Routing raw Uint8Array. RPC boundary already strings the data
- *     (SupervisorRPC.stdout(data: string)), so we store strings.
+ *   - Holding raw Uint8Array. The RPC boundary carries bytes
+ *     (SupervisorRPC.stdout(data: Uint8Array)); the supervisor decodes them
+ *     at its edge, per (pid, stream), and this ring holds text lines.
  *
  * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
