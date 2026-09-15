@@ -108,8 +108,15 @@ async function startShell(defaultShell) {
     { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' },
     new ProcessRegistry(),
   );
-  shell.start();
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  // `start()` settles once the rc files are applied and, for the built-in
+  // shell, the prompt is written — a host with input waiting for the shell
+  // relies on that ordering, so the lifo case gets no timer. The bash
+  // launch is deliberately outside the promise (an interactive bash runs
+  // until the user leaves it), so that case still yields a macrotask.
+  const started = shell.start();
+  assert.equal(typeof started.then, 'function', 'start() returns the startup promise');
+  await started;
+  if (defaultShell === 'bash') await new Promise((resolve) => setTimeout(resolve, 0));
   return { invocations, terminalOutput };
 }
 

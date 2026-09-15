@@ -104,13 +104,14 @@ import {
   ensureSessionStateSchema, loadShellState, persistShellState,
   stampHydratedAt, countSessionStateKeys,
   loadKernelMounts, persistKernelMounts,
-  appendScrollback, loadScrollback,
+  loadScrollback,
   type ShellStateSnapshot,
 } from './state-store.js';
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
+import { shellTerminalTee } from './ws.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 import { registerServingPort } from './serving-port.js';
 import type { SessionInternal } from './internal.js';
@@ -137,7 +138,27 @@ function quoteShellArgument(value: string): string {
 }
 
 
-export async function initSession(self: InitHost, ws: WebSocket): Promise<void> {
+/**
+ * How the socket being wired came to need a session.
+ *
+ *   - reconnect: a fresh terminal on a fresh /ws upgrade. Its screen is
+ *     empty, so the persisted scrollback is replayed above the live prompt.
+ *   - wake: the socket was accepted by a previous instance and outlived it
+ *     in hibernation; the peer's screen still shows everything up to the
+ *     sleep. Replaying scrollback there duplicates what the peer already
+ *     has, and a driver waiting for a fresh prompt would take the replayed
+ *     one for its answer. Only the resumed-instance notice is written.
+ */
+export interface InitSessionOptions {
+  resume?: 'reconnect' | 'wake';
+}
+
+export async function initSession(
+  self: InitHost,
+  ws: WebSocket,
+  options: InitSessionOptions = {},
+): Promise<void> {
+    const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs!.as(CRED_KERNEL);
     self.ensureFacetManager();
@@ -168,12 +189,7 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
     // facet and the scrollback replay below is wire-phase work.
     // Phase B will tag in once we start building the kernel.
     setPhase(self, 'wire', 'init-session');
-    self.terminal = new WebSocketTerminal(ws, (frame: string) => {
-      try { appendScrollback(self.ctx, frame, Date.now()); }
-      catch (e: any) {
-        try { console.warn('[B\'.3] appendScrollback failed:', e?.message || e); } catch {}
-      }
-    });
+    self.terminal = new WebSocketTerminal(ws, shellTerminalTee(self));
 
     // [B'.3] Replay persisted scrollback BEFORE the cold-start UI gate.
     // On rehydrate (hasPersistedState=true) we emit the prior
@@ -188,11 +204,13 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
     // same scrollback both times. The cap eviction keeps total bytes
     // bounded.
     if (persisted.hasPersistedState) {
-      try {
-        const replay = loadScrollback(self.ctx);
-        if (replay.length > 0) self.terminal.write(replay);
-      } catch (e: any) {
-        try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
+      if (replayScrollback) {
+        try {
+          const replay = loadScrollback(self.ctx);
+          if (replay.length > 0) self.terminal.write(replay);
+        } catch (e: any) {
+          try { console.warn('[B\'.3] scrollback replay failed:', e?.message || e); } catch {}
+        }
       }
       // The scrollback stops mid-command when the previous instance was
       // reset under it — the platform kills the isolate without running a
@@ -2462,13 +2480,18 @@ export async function initSession(self: InitHost, ws: WebSocket): Promise<void> 
     // ── Start shell ──
     //
     // Now, and not inside the workspace, because the login files are the
-    // user's and may name any of the commands registered above. Not awaited:
-    // `shell.start()` runs synchronously and the rc files apply as they
-    // finish, which is what the terminal has always done. A user's broken
-    // rc file must not take the socket down with it.
-    workspace.start().catch((e: any) => {
-      console.warn('[nimbus] shell start failed:', e?.message || e);
+    // user's and may name any of the commands registered above. On a
+    // reconnect it is not awaited: `shell.start()` registers the input
+    // handler synchronously and the rc files apply as they finish, which is
+    // what the terminal has always done. On a wake the caller has the
+    // peer's frame in hand and delivers it the moment this returns, so the
+    // prompt has to be on the terminal first — otherwise the line runs
+    // alongside the rc files and its prompt lands before the shell's own.
+    // Either way a user's broken rc file must not take the socket down.
+    const started = workspace.start().catch((e: unknown) => {
+      console.warn('[nimbus] shell start failed:', errorText(e));
     });
+    if (options.resume === 'wake') await started;
 
     ws.send(JSON.stringify({ type: 'ready' }));
 }

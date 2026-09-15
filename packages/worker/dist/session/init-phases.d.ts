@@ -88,6 +88,6 @@ export declare function joinExistingSession(self: {
     };
     _b4Phase: SessionState | null;
     _b4WarmJoinCount: number;
-}, ws: WebSocket, appendScrollback: (ctx: any, data: string, atMs: number) => void, loadScrollback: (ctx: any) => string): void;
+}, ws: WebSocket, tee: (frame: string) => void, loadScrollback: (ctx: any) => string): void;
 export {};
 //# sourceMappingURL=init-phases.d.ts.map

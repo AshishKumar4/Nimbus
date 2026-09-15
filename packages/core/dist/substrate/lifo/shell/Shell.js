@@ -322,6 +322,17 @@ export class Shell {
             runAs: this.commandIdentity.runAs,
         };
     }
+    /**
+     * Begin reading the terminal and apply the rc files.
+     *
+     * Resolves once the rc files have been applied and the first prompt is
+     * on the terminal (or the user's bash has been launched in its place).
+     * A host that has a line of input waiting for this shell — one that
+     * rebuilt it under a peer who was already typing — delivers the line
+     * after this, so the prompt precedes the echo the way it does on a
+     * fresh terminal. Input arriving earlier is still taken; it just runs
+     * alongside the rc files.
+     */
     start() {
         // Register this shell instance as a process
         // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
@@ -329,7 +340,10 @@ export class Shell {
         this.env['$'] = String(pid);
         this.terminal.onData((data) => this.handleInput(data));
         // Source rc files on startup (like bash/zsh)
-        this.sourceRcFiles().then(async () => {
+        const sourced = this.sourceRcFiles();
+        // The bash launch is deliberately not part of the returned promise: an
+        // interactive bash runs until the user exits it.
+        sourced.then(async () => {
             const home = this.env['HOME'] ?? '/home/user';
             if (readDefaultShell(this.vfs, home) === 'bash') {
                 await this.executeLine('bash -i');
@@ -338,6 +352,7 @@ export class Shell {
                 this.printPrompt();
             }
         });
+        return sourced;
     }
     async sourceRcFiles() {
         const home = this.env['HOME'] ?? '/home/user';

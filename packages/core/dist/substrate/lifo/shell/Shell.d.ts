@@ -110,7 +110,18 @@ export declare class Shell {
         exitCode: number;
     }>;
     private resolveCommandIdentity;
-    start(): void;
+    /**
+     * Begin reading the terminal and apply the rc files.
+     *
+     * Resolves once the rc files have been applied and the first prompt is
+     * on the terminal (or the user's bash has been launched in its place).
+     * A host that has a line of input waiting for this shell — one that
+     * rebuilt it under a peer who was already typing — delivers the line
+     * after this, so the prompt precedes the echo the way it does on a
+     * fresh terminal. Input arriving earlier is still taken; it just runs
+     * alongside the rc files.
+     */
+    start(): Promise<void>;
     private sourceRcFiles;
     printPrompt(): void;
     handleInput(data: string): void;

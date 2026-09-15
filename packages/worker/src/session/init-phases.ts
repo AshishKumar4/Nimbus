@@ -112,7 +112,7 @@ export function joinExistingSession(
     _b4WarmJoinCount: number;
   },
   ws: WebSocket,
-  appendScrollback: (ctx: any, data: string, atMs: number) => void,
+  tee: (frame: string) => void,
   loadScrollback: (ctx: any) => string,
 ): void {
   // Phase R — pure SQL reads. No-op on warm rejoin (live state is
@@ -125,12 +125,7 @@ export function joinExistingSession(
   // the same WebSocketTerminal instance is preserved (we mutate
   // its internal ws ref via attach()).
   setPhase(self as any, 'wire', 'warm-rejoin');
-  self.terminal.attach(ws, (frame: string) => {
-    try { appendScrollback(self.ctx, frame, Date.now()); }
-    catch (e: any) {
-      try { console.warn("[B'.3] appendScrollback failed:", e?.message || e); } catch {}
-    }
-  });
+  self.terminal.attach(ws, tee);
   // Replay scrollback to the new ws so the user sees the prior
   // session's terminal contents. Same shape as cold-init's replay
   // when persisted state exists.

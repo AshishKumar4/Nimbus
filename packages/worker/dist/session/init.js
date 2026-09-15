@@ -66,11 +66,12 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_MOUNT_POINTS, NODE_VERSION, } from '@nimbus-sh/core/constants.js';
-import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, appendScrollback, loadScrollback, } from './state-store.js';
+import { ensureSessionStateSchema, loadShellState, stampHydratedAt, countSessionStateKeys, loadKernelMounts, persistKernelMounts, loadScrollback, } from './state-store.js';
 import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { routeSessionLoopback } from './loopback.js';
 import { setPhase } from './init-phases.js';
+import { shellTerminalTee } from './ws.js';
 import { VITE_CONFIG_KEY } from './keys.js';
 function resolveNpmPrefix(prefix, cwd) {
     return prefix.startsWith('/')
@@ -80,7 +81,8 @@ function resolveNpmPrefix(prefix, cwd) {
 function quoteShellArgument(value) {
     return `'${value.replace(/'/g, `'\\''`)}'`;
 }
-export async function initSession(self, ws) {
+export async function initSession(self, ws, options = {}) {
+    const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs.as(CRED_KERNEL);
     self.ensureFacetManager();
@@ -109,17 +111,7 @@ export async function initSession(self, ws) {
     // facet and the scrollback replay below is wire-phase work.
     // Phase B will tag in once we start building the kernel.
     setPhase(self, 'wire', 'init-session');
-    self.terminal = new WebSocketTerminal(ws, (frame) => {
-        try {
-            appendScrollback(self.ctx, frame, Date.now());
-        }
-        catch (e) {
-            try {
-                console.warn('[B\'.3] appendScrollback failed:', e?.message || e);
-            }
-            catch { }
-        }
-    });
+    self.terminal = new WebSocketTerminal(ws, shellTerminalTee(self));
     // [B'.3] Replay persisted scrollback BEFORE the cold-start UI gate.
     // On rehydrate (hasPersistedState=true) we emit the prior
     // session's terminal contents as a single batched write — the
@@ -133,16 +125,18 @@ export async function initSession(self, ws) {
     // same scrollback both times. The cap eviction keeps total bytes
     // bounded.
     if (persisted.hasPersistedState) {
-        try {
-            const replay = loadScrollback(self.ctx);
-            if (replay.length > 0)
-                self.terminal.write(replay);
-        }
-        catch (e) {
+        if (replayScrollback) {
             try {
-                console.warn('[B\'.3] scrollback replay failed:', e?.message || e);
+                const replay = loadScrollback(self.ctx);
+                if (replay.length > 0)
+                    self.terminal.write(replay);
             }
-            catch { }
+            catch (e) {
+                try {
+                    console.warn('[B\'.3] scrollback replay failed:', e?.message || e);
+                }
+                catch { }
+            }
         }
         // The scrollback stops mid-command when the previous instance was
         // reset under it — the platform kills the isolate without running a
@@ -2296,13 +2290,19 @@ export async function initSession(self, ws) {
     // ── Start shell ──
     //
     // Now, and not inside the workspace, because the login files are the
-    // user's and may name any of the commands registered above. Not awaited:
-    // `shell.start()` runs synchronously and the rc files apply as they
-    // finish, which is what the terminal has always done. A user's broken
-    // rc file must not take the socket down with it.
-    workspace.start().catch((e) => {
-        console.warn('[nimbus] shell start failed:', e?.message || e);
+    // user's and may name any of the commands registered above. On a
+    // reconnect it is not awaited: `shell.start()` registers the input
+    // handler synchronously and the rc files apply as they finish, which is
+    // what the terminal has always done. On a wake the caller has the
+    // peer's frame in hand and delivers it the moment this returns, so the
+    // prompt has to be on the terminal first — otherwise the line runs
+    // alongside the rc files and its prompt lands before the shell's own.
+    // Either way a user's broken rc file must not take the socket down.
+    const started = workspace.start().catch((e) => {
+        console.warn('[nimbus] shell start failed:', errorText(e));
     });
+    if (options.resume === 'wake')
+        await started;
     ws.send(JSON.stringify({ type: 'ready' }));
 }
 function installShellExecutionFeatures(shell, terminal) {
