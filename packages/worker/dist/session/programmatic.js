@@ -1231,7 +1231,7 @@ function resetInMemorySessionState(self) {
     self.shell = null;
     self.shellProcessPid = null;
     self.terminal = null;
-    self.facetManager = null;
+    self.facetManagerComposed = null;
     self.facetProcessManager = null;
     self.esbuildService = null;
     self.viteDevServer = null;

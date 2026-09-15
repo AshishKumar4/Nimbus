@@ -86,6 +86,7 @@ export interface ProgrammaticHost {
     sqliteFs: SqliteVFS | null;
     processes: SessionProcessSupervisor;
     portRegistry: PortRegistry;
+    facetManagerComposed: ComposedFacetManager | null;
     facetManager: ProgrammaticFacetManager | null;
     viteDevServer: ProgrammaticViteServer | null;
     cirrusReal: ProgrammaticCirrusServer | null;
