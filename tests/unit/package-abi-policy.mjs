@@ -24,8 +24,6 @@ import {
   lookupSwap,
   lookupReject,
   shouldWarnSkipTransitive,
-  shouldSkipPackage,
-  shouldSkipPackageWithFramework,
   nativeExecutableReject,
   isOptionalNativeBinding,
   lookupStagedArtifact,
@@ -39,7 +37,6 @@ import { registryEntryFromResolved } from '../../packages/worker/src/npm/resolve
 const facet = new Function(`${NPM_RESOLVE_PREAMBLE}
 return {
   POLICY: __NIMBUS_PACKAGE_ABI_POLICY,
-  SHOULD_SKIP_PACKAGE,
   SHOULD_SWAP,
   SHOULD_REJECT_FAIL,
   SHOULD_WARN_SKIP_TRANSITIVE,
@@ -79,13 +76,6 @@ for (const name of names) {
     shouldWarnSkipTransitive(name),
     `warn-skip parity: ${name}`,
   );
-  for (const frameworkAware of [false, true]) {
-    assert.equal(
-      facet.SHOULD_SKIP_PACKAGE(name, frameworkAware),
-      shouldSkipPackageWithFramework(name, frameworkAware),
-      `skip parity: ${name} (frameworkAware=${frameworkAware})`,
-    );
-  }
 }
 
 // ── 2. Policy model invariants ──────────────────────────────────────────
@@ -126,13 +116,12 @@ for (const swap of PACKAGE_ABI_POLICY.swaps) {
   assert.deepEqual(findRejects(specs, 'transitive').map((r) => r.from), ['sharp']);
 }
 
-// The skip list is empty: nothing a project declares or depends on is
-// silently left out — what cannot run is a REJECT with a reason.
-assert.equal(shouldSkipPackage('vite'), false);
-assert.equal(shouldSkipPackageWithFramework('vite', true), false);
-assert.equal(shouldSkipPackage('typescript'), false);
-assert.equal(shouldSkipPackage('@types/node'), false);
-assert.equal(shouldSkipPackage('react'), false);
+// The skip fields exist only because PackageAbiPolicy is a public
+// @nimbus-sh/core type; they are empty and read by nothing — a declared
+// dependency is installed or refused loudly, never silently left out.
+assert.deepEqual(PACKAGE_ABI_POLICY.skipPackages, []);
+assert.deepEqual(PACKAGE_ABI_POLICY.skipPrefixes, []);
+assert.deepEqual(PACKAGE_ABI_POLICY.frameworkRequiredPackages, []);
 for (const name of ['wrangler', '@cloudflare/vite-plugin', 'parcel', 'node-gyp']) {
   assert.equal(lookupReject(name)?.transitive, 'warn', `${name} is a warn-reject with a reason`);
 }

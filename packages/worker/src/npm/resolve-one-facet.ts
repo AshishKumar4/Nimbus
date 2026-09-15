@@ -19,7 +19,6 @@
  *   - All helpers (semver, exports, skip-list, registry decisions) are
  *     accessed via bare identifiers from the preamble:
  *
- *       SHOULD_SKIP_PACKAGE(name, frameworkAware) → boolean
  *       SHOULD_SWAP(name) → { from, to } | null
  *       SHOULD_WARN_SKIP_TRANSITIVE(name) → { from, reason } | null
  *       SHOULD_REJECT_FAIL(name) → { from, reason, suggest? } | null
@@ -38,24 +37,21 @@
  *     bestEffortNames set; the task returns the `pkg` raw and the
  *     supervisor decides whether a downstream reject silent-skips or
  *     propagates.
- *   - Top-level handling: the supervisor maintains topLevelNames.
- *     `topLevel` is passed in per task so SKIP_PACKAGES bypass works.
  *
  * What the task DOES do
  * ─────────────────────
- *   1. Apply SKIP_PACKAGES filter (unless `topLevel`).
- *   2. Apply swap / warn-skip / reject-fail registry policy.
- *   3. Try in-task cache from `cachedHit` (one entry shipped from
+ *   1. Apply swap / warn-skip / reject-fail registry policy.
+ *   2. Try in-task cache from `cachedHit` (one entry shipped from
  *      supervisor's NpmCache).
- *   4. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
+ *   3. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
  *      registry and filling the cross-tenant cache are supervisor-side;
  *      the facet only reads.
- *   5. Pick version via preamble's RESOLVE_VERSION.
- *   6. Materialise ResolvedPackage shape (versionToResolved-style).
- *   7. Stage cache writes for this version + top-5 recent versions.
+ *   4. Pick version via preamble's RESOLVE_VERSION.
+ *   5. Materialise ResolvedPackage shape (versionToResolved-style).
+ *   6. Stage cache writes for this version + top-5 recent versions.
  *      Returns them in `cacheWrites` so the supervisor can flush in one
  *      batched RPC.
- *   8. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
+ *   7. Return {pkg, deps, peerDeps, optionalDeps, allPeerDependencies,
  *      cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?}.
  */
@@ -106,17 +102,9 @@ export interface ResolveOneSpec {
    * the best version that satisfies range.
    */
   cachedEntries: FacetCachedEntry[];
-  /**
-   * X.5-F R1: when true, this package was either user-typed OR a
-   * required peer-dep enqueued by the supervisor. Bypasses
-   * SKIP_PACKAGES. The supervisor decides the flag at enqueue time.
-   */
-  topLevel: boolean;
   /** X.5-G G1: this spec came from an optionalDependencies edge, so
    *  platform-native bindings silent-skip rather than failing the parent. */
   isOptional: boolean;
-  /** W11 framework-aware skip. */
-  frameworkAware: boolean;
   /** Per-fetch timeout (ms). Default 15_000. */
   fetchTimeoutMs: number;
   /** Retries for transient failures. Default 3. */
@@ -316,19 +304,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     });
   };
 
-  // 1. SKIP_PACKAGES gate. Loud, like the warn path below: a transitive
-  //    dependency the policy leaves out of node_modules is a fact the
-  //    install log and the registry events must carry, because the program
-  //    that requires it will fail at runtime and nothing else says why.
-  // @ts-ignore — preamble.
-  if (!spec.topLevel && SHOULD_SKIP_PACKAGE(spec.name, !!spec.frameworkAware)) {
-    const reason = 'build-time or Nimbus-provided package; not installed as a transitive dependency';
-    messages.push(`[npm] \x1b[33m[skip]\x1b[0m ${spec.name} — ${reason}`);
-    events.push({ type: 'transitive-skip', from: spec.name, reason });
-    return out(null, 0, 'skipped');
-  }
-
-  // 2. Registry policy.
+  // 1. Registry policy.
   let effName = request.registryName;
   // @ts-ignore — preamble.
   const __swap = SHOULD_SWAP(spec.name);
@@ -363,7 +339,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
   }
 
-  // 3. cachedHit fast-path. The pick over the cached versions is the same
+  // 2. cachedHit fast-path. The pick over the cached versions is the same
   //    RESOLVE_VERSION the packument path uses — a range is never reduced
   //    to its base version. It used to be: `^3.0.0` was stripped to `3.0.0`
   //    and answered by a cached 3.0.0 even with 3.0.1 sitting beside it,
@@ -496,7 +472,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     });
   }
 
-  // 6. Pick version.
+  // 3. Pick version.
   let version: string | null = null;
   if (request.range && data.versions[request.range]) version = request.range;
   if (!version && request.range && request.range !== 'latest') {
@@ -515,7 +491,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     });
   }
 
-  // 7. Materialise ResolvedPackage.
+  // 4. Materialise ResolvedPackage.
   const vData = data.versions[version];
   const versionToResolved = (v: any): ResolvedPackage => {
     const packageName = request.installName || v.name;
@@ -572,7 +548,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const nativeReject = outNativeExecutableReject(pkg, bytes, packumentSource);
   if (nativeReject) return nativeReject;
 
-  // 8. Stage cache writes.
+  // 5. Stage cache writes.
   cacheWrites.push({
     name: pkg.name,
     version: pkg.version,

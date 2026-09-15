@@ -27,7 +27,7 @@ import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-reso
 import { PACKAGE_ABI_POLICY } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 
 const PREAMBLE_SYMBOLS = [
-  'SHOULD_SKIP_PACKAGE', 'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
+  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
   'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
@@ -39,9 +39,7 @@ globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 
 const spec = (overrides = {}) => ({
   cachedEntries: [],
-  topLevel: false,
   isOptional: false,
-  frameworkAware: false,
   fetchTimeoutMs: 1_000,
   retries: 0,
   ...overrides,
@@ -78,32 +76,28 @@ const cacheEntry = (name, version) => ({
   console.log('  chokidar resolves transitively, with its subtree');
 }
 
-// ── 2. a transitive policy skip is loud ─────────────────────────────────────
+// ── 2. a transitive warn-reject is loud ────────────────────────────────────
 //
-// The list is empty today; the gate stays, and stays loud, for whatever is
-// ever put back on it. Exercised through a preamble built from a policy
-// that names typescript.
+// The skip list is gone — what remains is the registry policy path. A warn
+// entry like node-gyp at transitive depth returns 'skipped' with the [skip]
+// line and a transitive-skip event; the required-reachability work moved
+// exit-code classification to the installer's end-of-walk closure, so the
+// task itself only reports.
 {
-  const skipping = NPM_RESOLVE_PREAMBLE.replace('"skipPackages":[]', '"skipPackages":["typescript"]');
-  assert.notEqual(skipping, NPM_RESOLVE_PREAMBLE, 'the preamble carries the policy JSON');
-  const { SHOULD_SKIP_PACKAGE } = new Function(`${skipping}\nreturn { SHOULD_SKIP_PACKAGE };`)();
-  const restore = globalThis.SHOULD_SKIP_PACKAGE;
-  globalThis.SHOULD_SKIP_PACKAGE = SHOULD_SKIP_PACKAGE;
   const res = await resolveOnePackumentInFacet(
-    spec({ name: 'typescript', range: '^5.0.0' }),
+    spec({ name: 'node-gyp', range: '^10.0.0' }),
     envReturning({ json: null, source: 'network', status: 404 }),
   );
-  globalThis.SHOULD_SKIP_PACKAGE = restore;
   assert.equal(res.pkg, null);
-  assert.equal(res.error, undefined, 'a policy skip is still not a failure');
+  assert.equal(res.error, undefined, 'a warn-reject skip is not a resolution failure');
   assert.equal(res.packumentSource, 'skipped');
-  assert.ok(res.messages.some((m) => /\[skip\].*typescript/.test(m)), `the install log names the skip: ${JSON.stringify(res.messages)}`);
+  assert.ok(res.messages.some((m) => /\[skip\].*node-gyp/.test(m)), `the install log names the skip: ${JSON.stringify(res.messages)}`);
   assert.deepEqual(
     res.events.filter((e) => e.type === 'transitive-skip').map((e) => e.from),
-    ['typescript'],
+    ['node-gyp'],
     'and a transitive-skip event carries it to the registry telemetry',
   );
-  console.log('  a transitive policy skip prints a [skip] line and emits an event');
+  console.log('  a transitive warn-reject prints a [skip] line and emits an event');
 }
 
 // ── 3. an exact prerelease pin resolves to itself on both paths ────────────

@@ -14,7 +14,7 @@ import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolv
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 
 const PREAMBLE_SYMBOLS = [
-  'SHOULD_SKIP_PACKAGE', 'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
+  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
   'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
@@ -28,9 +28,7 @@ const spec = (overrides = {}) => ({
   name: 'which',
   range: '^2.0.0',
   cachedEntries: [],
-  topLevel: false,
   isOptional: false,
-  frameworkAware: false,
   fetchTimeoutMs: 1_000,
   retries: 0,
   ...overrides,

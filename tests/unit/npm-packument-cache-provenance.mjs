@@ -22,7 +22,7 @@ import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-reso
 // injected by the loader preamble. Evaluate the real preamble so this test
 // exercises the real decisions.
 const PREAMBLE_SYMBOLS = [
-  'SHOULD_SKIP_PACKAGE', 'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
+  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'SHOULD_WARN_SKIP_TRANSITIVE',
   'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
   'SATISFIES_RANGE', 'RESOLVE_VERSION', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
 ];
@@ -155,7 +155,7 @@ function recordingFetch(responder) {
   globalThis.fetch = async () => { throw new Error('the resolve facet must not perform network I/O'); };
 
   const result = await resolveOnePackumentInFacet(
-    { name: 'react', range: '19.0.0', cachedEntries: [], topLevel: true, isOptional: false, frameworkAware: false, fetchTimeoutMs: 15_000, retries: 3 },
+    { name: 'react', range: '19.0.0', cachedEntries: [], isOptional: false, fetchTimeoutMs: 15_000, retries: 3 },
     { SUPERVISOR: supervisor },
   );
 

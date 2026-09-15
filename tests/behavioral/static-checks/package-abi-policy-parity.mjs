@@ -12,7 +12,6 @@ import {
   lookupSwap,
   lookupReject,
   shouldWarnSkipTransitive,
-  shouldSkipPackageWithFramework,
   nativeExecutableReject,
   isOptionalNativeBinding,
 } from '../../../packages/worker/src/facets/wasm-swap-registry.ts';
@@ -23,7 +22,6 @@ const a = makeAsserter('static-checks/package-abi-policy-parity');
 const facet = new Function(`${NPM_RESOLVE_PREAMBLE}
 return {
   POLICY: __NIMBUS_PACKAGE_ABI_POLICY,
-  SHOULD_SKIP_PACKAGE,
   SHOULD_SWAP,
   SHOULD_REJECT_FAIL,
   SHOULD_WARN_SKIP_TRANSITIVE,
@@ -67,13 +65,6 @@ for (const name of names) {
     facet.SHOULD_REJECT_FAIL(name),
   );
   same(`warn-skip('${name}')`, shouldWarnSkipTransitive(name), facet.SHOULD_WARN_SKIP_TRANSITIVE(name));
-  for (const frameworkAware of [false, true]) {
-    same(
-      `skip('${name}', frameworkAware=${frameworkAware})`,
-      shouldSkipPackageWithFramework(name, frameworkAware),
-      facet.SHOULD_SKIP_PACKAGE(name, frameworkAware),
-    );
-  }
 }
 
 // 3. Native-artifact classification parity across the metadata surface:
