@@ -92,10 +92,20 @@ export declare class ImageStore {
      * Materialize generated module sources in the content-addressed image store
      * and return the module-name → path map naming them.
      *
+     * Takes the images as a SEQUENCE, produced on demand and released as each
+     * one's slices land, so exactly one image's text is resident here. The old
+     * record-shaped parameter held every source for the whole call, and the
+     * caller held its own copy beside it: measured on a real-vite launch, the
+     * second image reported not one slice — ~25 MB of module text as UTF-16 in
+     * two places, plus the first image's just-freed 10.36 MB encode buffer, on a
+     * 128 MiB isolate. Yielding and dropping is what makes the peak one image
+     * instead of all of them; it is not a pacing question, and a fresh turn does
+     * not shrink a live heap.
+     *
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
      */
-    materialize(pid: number, modules: Record<string, string>, pacer: TurnBudget): Promise<Record<string, string>>;
+    materialize(pid: number, images: AsyncIterable<readonly [string, string]> | Iterable<readonly [string, string]>, pacer: TurnBudget): Promise<Record<string, string>>;
     /**
      * Drop every image no running process boots from.
      *

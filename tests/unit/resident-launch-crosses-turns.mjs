@@ -180,15 +180,22 @@ async function settle(world) {
   assert.ok(start > 0, 'the image store is written by ImageStore.materialize');
   const body = source.slice(start, source.indexOf('\n  /**', start + 10));
 
-  const rooted = body.indexOf('this.residentImages.set(');
+  // The images arrive as a SEQUENCE, so the root set cannot be known up
+  // front: each image is rooted as it is named, before its own first byte.
+  // That is the same guarantee — a sweep sees every written image rooted, and
+  // an image not yet written is not yet a file — and the array identity is
+  // what makes an append visible to the sweep.
+  const setRoots = body.indexOf('this.residentImages.set(');
+  const pushRoot = body.indexOf('rooted.push(');
   const wrote = body.indexOf('fs.writeFile(');
   const swept = body.indexOf('this.sweep(');
-  assert.ok(rooted > 0, 'the launch claims its images');
+  assert.ok(setRoots > 0, 'the launch holds a root set for its pid');
+  assert.ok(pushRoot > 0, 'each image is claimed as it is named');
   assert.ok(wrote > 0, 'the launch writes its images');
   assert.ok(swept > 0, 'the launch sweeps once its images are written');
   assert.ok(
-    rooted < wrote,
-    'the WHOLE root set is claimed before the first write — a file written before it is '
+    setRoots < pushRoot && pushRoot < wrote,
+    'an image is rooted before its own first write — a file written before it is '
     + 'rooted can be collected by a sweep that runs while this launch is suspended, and '
     + 'the facet then boots against a map with holes in it',
   );
@@ -196,15 +203,54 @@ async function settle(world) {
     wrote < swept,
     'the sweep runs after the writes it is meant to leave alone',
   );
+  assert.ok(
+    !/this\.residentImages\.set\(pid, \[/.test(body),
+    'the root array is appended to, never replaced: a replacement drops the images '
+    + 'a suspended launch has already written',
+  );
 
   // Rooting must also precede every suspension point in the write loop, or a
   // launch could yield the turn with images written and unclaimed.
   const firstYield = body.indexOf('pacer.spend(');
   assert.ok(firstYield > 0, 'the write loop is paced');
+  assert.ok(pushRoot < firstYield, 'nothing is yielded on before the image is claimed');
+}
+
+// ── 2b. materialize holds ONE image's text, not every image's ─────────────
+//
+// The record-shaped parameter it used to take held every source for the whole
+// call while the caller held its own copy beside it; on a real-vite launch the
+// second image reported not one slice. Pinned on the contract rather than on a
+// heap number, which no runtime here can observe.
+{
+  const { ImageStore } = await import('../../packages/fabric/src/image-store.ts');
+  const written = [];
+  const store = new ImageStore(() => ({
+    mkdirp() {}, sizeOf: () => null, writeFile(p, b) { written.push([p, b.byteLength]); },
+    writeRange(p, o, b) { written.push([p, b.byteLength]); }, list: () => [], unlink() {},
+  }), () => true);
+  // Each source is produced on demand and the producer records how many it has
+  // handed over, so "one at a time" is observable: the consumer must not be
+  // able to ask for the next before the previous one's slices are written.
+  let produced = 0;
+  const liveWhileWriting = [];
+  const sources = (function* () {
+    for (const name of ['a.js', 'b.js', 'c.js']) {
+      produced++;
+      liveWhileWriting.push(produced - written.length);
+      yield [name, name.repeat(64)];
+    }
+  })();
+  const pacer = { chunks: 0, async spend() {} };
+  const paths = await store.materialize(7, sources, pacer);
+  assert.deepEqual(Object.keys(paths), ['a.js', 'b.js', 'c.js'], 'every image is named');
+  assert.equal(produced, 3, 'every image was produced');
   assert.ok(
-    rooted < firstYield || body.slice(0, rooted).includes('await pacer.spend('),
-    'nothing is written and yielded on before the root set is claimed',
+    liveWhileWriting.every((live) => live <= 1),
+    `at most one image is outstanding at a time, got ${JSON.stringify(liveWhileWriting)}`,
   );
+  assert.equal(written.length, 3, 'each image was written');
+  console.log('  materialize consumes images one at a time');
 }
 
 // ── 3. a sweep between chunks does not collect a suspended launch's images ─

@@ -802,6 +802,22 @@ ${RESIDENCY_MISS_REPORT}
  * compiled user entry is booted once and the exported entrypoint keeps
  * serving HTTP requests from the shimmed http.Server registry.
  */
+/**
+ * Hand a record's entries to a consumer one at a time, releasing each as it
+ * goes, so the record stops being a second holder of the whole set.
+ *
+ * The image store takes its images as a sequence for exactly this: a launch's
+ * module text is the largest thing the coordinator assembles, and holding it
+ * in two places at once is what the 128 MiB isolate could not survive.
+ */
+function* drainSources(sources: Record<string, string>): Generator<readonly [string, string]> {
+  for (const name of Object.keys(sources)) {
+    const source = sources[name];
+    delete sources[name];
+    yield [name, source];
+  }
+}
+
 export async function generateLongRunningNodeCode(
   userCode: string,
   vfsState: FacetVfsState,
@@ -5695,13 +5711,17 @@ export class FacetManager {
     let resourcesTracked = false;
 
     try {
-      const vfsTextModules = await this.imageStore.materialize(entry.pid, {
+      // Assembled as one record of the SAME string objects the generator
+      // produced — no copy — and then handed over: this frame drops its own
+      // reference before materialize runs, and the sequence below drops each
+      // source as the store takes it, so one image's text is resident rather
+      // than every image's twice over.
+      const sources: Record<string, string> = {
         'worker.js': generatedWorker.code,
         ...generatedWorker.modules,
-      }, pacer);
-      // The image store has taken it; this frame must not be what holds the
-      // only other copy while the facet boots.
+      };
       generatedWorker = undefined;
+      const vfsTextModules = await this.imageStore.materialize(entry.pid, drainSources(sources), pacer);
       // Last gate before the facet exists. A launch now spans many turns, so
       // a kill can land anywhere inside it; booting a process the table has
       // already exited would leave a facet nothing owns, running against a
