@@ -76,34 +76,6 @@ export interface StagedArtifactExecResult extends FacetExecResult {
     port?: number;
 }
 /**
- * Reserve held back from a one-shot facet's lifetime so a program that runs
- * out of time is still alive to say so.
- *
- * A one-shot exec is ALREADY bounded: `_execWithTimeout` kills it at
- * FACET_TIMEOUT_MS with exit 124 and "[process killed: timeout after 30s]".
- * The entry drain must therefore not be a second, tighter, independent
- * timeout. Measured against a deployed Worker, floating async work of 5s /
- * 15s / 25s completes and 40s is killed by that outer bound at exactly 30s —
- * so the fixed 8s budget this used to carry was abandoning programs 22
- * seconds before anything actually required it.
- *
- * The drain therefore runs to the outer bound MINUS this reserve, which is
- * what buys the facet time to flush and report the honest "still in flight"
- * reason instead of the supervisor's generic kill. The reserve has to cover
- * the longest tail a facet can have after the drain: settling pending RPC,
- * writing back __vfsWrites (bounded by MAX_RPC_SAFE_PAYLOAD_BYTES; a 20 MiB
- * write-back measures ~1.5s), draining children, then reportExit.
- */
-export declare const ONE_SHOT_EXIT_RESERVE_MS = 3000;
-/**
- * Budget used when the supervisor did not stamp an absolute deadline on the
- * payload. The deadline is the real bound — see `entryDeadlineAt` — because
- * it is measured from the supervisor's own timer rather than restarted when
- * the drain begins, so a slow module init cannot push the drain past the kill
- * and lose the honest message.
- */
-export declare const ONE_SHOT_ENTRY_DEADLINE_MS: number;
-/**
  * How long a RESIDENT facet settles its startup before answering its boot
  * call. It keeps running afterwards, so this is not a lifetime decision: the
  * budget only has to cover the entrypoint's own startup chain (binding a
@@ -118,8 +90,11 @@ export declare const RESIDENT_BOOT_SETTLE_MS = 1000;
  * servers, requests in flight. A promise is not a handle: a program whose
  * last act leaves `new Promise(() => {})` unsettled prints its output and
  * exits 0. Counting unsettled promises as work was a real divergence from
- * that — such a program burned the whole facet lifetime and was then
- * reported as having not finished.
+ * that — such a program's drain used to end early and it was
+ * reported as having not finished. A user-invoked program runs this loop
+ * with NO deadline — Node itself has no wall-clock kill; the only endings
+ * are the program's exit and a signal. Callers that still pass a finite
+ * deadline (the resident boot settle) arm the expiry timer.
  *
  * Three kinds of handle, each owned by the shim that creates them:
  *
@@ -132,19 +107,12 @@ export declare const RESIDENT_BOOT_SETTLE_MS = 1000;
  *   - listening SERVERS (`__portRegistry`), open until the program closes
  *     them.
  *
- * The bound is a REAL wall-clock deadline, armed as a timer rather than
- * compared against `Date.now()`: a `setTimeout(0)` turn in workerd costs
- * ~5µs, so the pass budget this loop used to carry (50k) expired after
- * ~150ms and silently overrode every longer deadline the callers declared —
- * anything slower than that, including an ordinary network fetch, was
- * abandoned mid-flight and reported as a clean exit.
- *
  * The loop subscribes to the exit promise ONCE — a per-pass
  * `exitPromise.then()` allocates a promise every iteration — and yields
  * through the raw setTimeout so its own ticks don't inflate the timer count
  * it watches.
  */
-export declare const ENTRYPOINT_EVENT_LOOP = "\nfunction __nimbusHandleCount(__name) {\n  const __value = globalThis[__name];\n  return typeof __value === \"number\" ? __value : 0;\n}\n\n// Work an entrypoint's STARTUP has to settle before it can be called booted.\nfunction __nimbusPendingStartupWork() {\n  return __nimbusHandleCount(\"__nimbusPendingTimers\") + __nimbusHandleCount(\"__nimbusPendingOps\");\n}\n\n// The above, plus the handles a program holds open on purpose. A bound port\n// keeps a Node process alive, and it keeps a one-shot facet alive too.\nfunction __nimbusLiveHandles() {\n  const __servers = globalThis.__portRegistry;\n  const __bound = __servers && typeof __servers.size === \"number\" ? __servers.size : 0;\n  return __nimbusPendingStartupWork() + __bound;\n}\n\nasync function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {\n  let __exited = false;\n  if (__exitPromise && typeof __exitPromise.then === \"function\") {\n    __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n  }\n  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n    ? globalThis.__nimbusRawSetTimeout\n    : globalThis.setTimeout;\n  const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n    ? globalThis.__nimbusRawClearTimeout\n    : globalThis.clearTimeout;\n  let __expired = false;\n  const __deadline = __rawSetTimeout(() => { __expired = true; }, __deadlineMs);\n  let __pass = 0;\n  while (!__exited && !__expired && (__pass < __minPasses || __countHandles() > 0)) {\n    // The warm-up passes give a settling microtask chain its turns and cost\n    // ~5\u00B5s each; past them the loop is waiting on wall-clock work, where\n    // spinning at 0ms would burn the isolate's CPU for the whole deadline.\n    await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));\n    __pass++;\n  }\n  try { __rawClearTimeout(__deadline); } catch {}\n  // `pending` is what the caller reports when it gives up: a one-shot program\n  // still holding a handle did NOT finish, and exiting 0 would claim it did.\n  return { passes: __pass, pending: __exited ? 0 : __countHandles() };\n}\n\n// An ESM entry's own evaluation promise (top-level await) is the one promise\n// that IS a handle \u2014 the module has not finished loading until it settles.\n// Answers true when process.exit won the race instead.\nasync function __nimbusAwaitEntryEvaluation(__entryResult) {\n  if (!__entryResult || typeof __entryResult.then !== \"function\") return false;\n  const __exit = {};\n  const __raced = await Promise.race([\n    __entryResult.then(() => null),\n    __nimbusProcessExitPromise.then(() => __exit, () => __exit),\n  ]);\n  return __raced === __exit;\n}\n\n// A one-shot facet's lifetime IS the loop: it runs the program until Node\n// would exit, or until the lifetime budget runs out.\nasync function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {\n  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };\n  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);\n}\n\n// A resident facet keeps running after the call that boots it returns, so it\n// settles startup and nothing more. The handles it holds open deliberately \u2014\n// its listening port \u2014 are the point of it, not a reason to make the shell's\n// prompt wait.\nasync function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {\n  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };\n  return await __nimbusRunEventLoop(\n    __nimbusPendingStartupWork, __nimbusProcessExitPromise, __deadlineMs, 4,\n  );\n}\n";
+export declare const ENTRYPOINT_EVENT_LOOP = "\nfunction __nimbusHandleCount(__name) {\n  const __value = globalThis[__name];\n  return typeof __value === \"number\" ? __value : 0;\n}\n\n// Work an entrypoint's STARTUP has to settle before it can be called booted.\nfunction __nimbusPendingStartupWork() {\n  return __nimbusHandleCount(\"__nimbusPendingTimers\") + __nimbusHandleCount(\"__nimbusPendingOps\");\n}\n\n// The above, plus the handles a program holds open on purpose. A bound port\n// keeps a Node process alive, and it keeps a one-shot facet alive too.\nfunction __nimbusLiveHandles() {\n  const __servers = globalThis.__portRegistry;\n  const __bound = __servers && typeof __servers.size === \"number\" ? __servers.size : 0;\n  return __nimbusPendingStartupWork() + __bound;\n}\n\nasync function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs, __minPasses) {\n  let __exited = false;\n  if (__exitPromise && typeof __exitPromise.then === \"function\") {\n    __exitPromise.then(() => { __exited = true; }, () => { __exited = true; });\n  }\n  const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === \"function\")\n    ? globalThis.__nimbusRawSetTimeout\n    : globalThis.setTimeout;\n  const __rawClearTimeout = (typeof globalThis.__nimbusRawClearTimeout === \"function\")\n    ? globalThis.__nimbusRawClearTimeout\n    : globalThis.clearTimeout;\n  let __expired = false;\n  let __pass = 0;\n  // A user-invoked program runs until it exits or is killed \u2014 there is no\n  // wall-clock deadline, so no expiry timer is armed at all. (Callers that\n  // still pass a finite deadline get the timer for compatibility.)\n  const __deadline = Number.isFinite(__deadlineMs)\n    ? __rawSetTimeout(() => { __expired = true; }, __deadlineMs)\n    : null;\n  while (!__exited && !__expired && (__pass < __minPasses || __countHandles() > 0)) {\n    // The warm-up passes give a settling microtask chain its turns and cost\n    // ~5\u00B5s each; past them the loop is waiting on wall-clock work, where\n    // spinning at 0ms would burn the isolate's CPU indefinitely.\n    await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));\n    __pass++;\n  }\n  if (__deadline !== null) { try { __rawClearTimeout(__deadline); } catch {} }\n  // `pending` is what the caller reports when it gives up: a one-shot program\n  // still holding a handle did NOT finish, and exiting 0 would claim it did.\n  return { passes: __pass, pending: __exited ? 0 : __countHandles() };\n}\n\n// An ESM entry's own evaluation promise (top-level await) is the one promise\n// that IS a handle \u2014 the module has not finished loading until it settles.\n// Answers true when process.exit won the race instead.\nasync function __nimbusAwaitEntryEvaluation(__entryResult) {\n  if (!__entryResult || typeof __entryResult.then !== \"function\") return false;\n  const __exit = {};\n  const __raced = await Promise.race([\n    __entryResult.then(() => null),\n    __nimbusProcessExitPromise.then(() => __exit, () => __exit),\n  ]);\n  return __raced === __exit;\n}\n\n// A one-shot facet's lifetime IS the loop: it runs the program until Node\n// would exit, or until the lifetime budget runs out.\nasync function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {\n  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };\n  return await __nimbusRunEventLoop(__nimbusLiveHandles, __nimbusProcessExitPromise, __deadlineMs, 4);\n}\n\n// A resident facet keeps running after the call that boots it returns, so it\n// settles startup and nothing more. The handles it holds open deliberately \u2014\n// its listening port \u2014 are the point of it, not a reason to make the shell's\n// prompt wait.\nasync function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {\n  if (await __nimbusAwaitEntryEvaluation(__entryResult)) return { passes: 0, pending: 0 };\n  return await __nimbusRunEventLoop(\n    __nimbusPendingStartupWork, __nimbusProcessExitPromise, __deadlineMs, 4,\n  );\n}\n";
 /**
  * A generated facet's module map: its main module plus whatever side modules
  * the VFS bundle had to be partitioned across.
@@ -851,7 +819,6 @@ export declare class FacetManager {
      * journal recovery rides the first pump.
      */
     private readonly launchPump;
-    private timedOutProcessIds;
     private _pairedServeFacet;
     /**
      * W3.5 Fix B: lazily-created EsbuildService for the ESM→CJS pre-pass
@@ -1230,8 +1197,6 @@ export declare class FacetManager {
     private _failLaunch;
     /** Flush files written by the script back to the supervisor's VFS. */
     private _flushVfsWrites;
-    /** Execution timeout. */
-    private _execWithTimeout;
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe and nothing else: env and credentials are never

@@ -119,7 +119,6 @@ export const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 // shared DO isolates (concurrency=2 of max slices crashed Mossaic-scale).
 export const ON_DEMAND_SLICE_CAP_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 // ── Facet Constants ─────────────────────────────────────────────────────
-export const FACET_TIMEOUT_MS = 30_000; // 30s execution timeout
 //
 // W2.6a: bundle-size budget is gated on the JSON-ENCODED UTF-8 BYTE
 // length of the final {bundle, manifest} payload, not on raw content

@@ -48,7 +48,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, FACET_TIMEOUT_MS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -132,34 +132,6 @@ function parseFacetManagerEnv(env) {
     };
 }
 /**
- * Reserve held back from a one-shot facet's lifetime so a program that runs
- * out of time is still alive to say so.
- *
- * A one-shot exec is ALREADY bounded: `_execWithTimeout` kills it at
- * FACET_TIMEOUT_MS with exit 124 and "[process killed: timeout after 30s]".
- * The entry drain must therefore not be a second, tighter, independent
- * timeout. Measured against a deployed Worker, floating async work of 5s /
- * 15s / 25s completes and 40s is killed by that outer bound at exactly 30s —
- * so the fixed 8s budget this used to carry was abandoning programs 22
- * seconds before anything actually required it.
- *
- * The drain therefore runs to the outer bound MINUS this reserve, which is
- * what buys the facet time to flush and report the honest "still in flight"
- * reason instead of the supervisor's generic kill. The reserve has to cover
- * the longest tail a facet can have after the drain: settling pending RPC,
- * writing back __vfsWrites (bounded by MAX_RPC_SAFE_PAYLOAD_BYTES; a 20 MiB
- * write-back measures ~1.5s), draining children, then reportExit.
- */
-export const ONE_SHOT_EXIT_RESERVE_MS = 3_000;
-/**
- * Budget used when the supervisor did not stamp an absolute deadline on the
- * payload. The deadline is the real bound — see `entryDeadlineAt` — because
- * it is measured from the supervisor's own timer rather than restarted when
- * the drain begins, so a slow module init cannot push the drain past the kill
- * and lose the honest message.
- */
-export const ONE_SHOT_ENTRY_DEADLINE_MS = FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESERVE_MS;
-/**
  * How long a RESIDENT facet settles its startup before answering its boot
  * call. It keeps running afterwards, so this is not a lifetime decision: the
  * budget only has to cover the entrypoint's own startup chain (binding a
@@ -174,8 +146,11 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * servers, requests in flight. A promise is not a handle: a program whose
  * last act leaves `new Promise(() => {})` unsettled prints its output and
  * exits 0. Counting unsettled promises as work was a real divergence from
- * that — such a program burned the whole facet lifetime and was then
- * reported as having not finished.
+ * that — such a program's drain used to end early and it was
+ * reported as having not finished. A user-invoked program runs this loop
+ * with NO deadline — Node itself has no wall-clock kill; the only endings
+ * are the program's exit and a signal. Callers that still pass a finite
+ * deadline (the resident boot settle) arm the expiry timer.
  *
  * Three kinds of handle, each owned by the shim that creates them:
  *
@@ -187,13 +162,6 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  *     awaited work is seen at all. See the shim's __nimbusTrackOp.
  *   - listening SERVERS (`__portRegistry`), open until the program closes
  *     them.
- *
- * The bound is a REAL wall-clock deadline, armed as a timer rather than
- * compared against `Date.now()`: a `setTimeout(0)` turn in workerd costs
- * ~5µs, so the pass budget this loop used to carry (50k) expired after
- * ~150ms and silently overrode every longer deadline the callers declared —
- * anything slower than that, including an ordinary network fetch, was
- * abandoned mid-flight and reported as a clean exit.
  *
  * The loop subscribes to the exit promise ONCE — a per-pass
  * `exitPromise.then()` allocates a promise every iteration — and yields
@@ -231,16 +199,21 @@ async function __nimbusRunEventLoop(__countHandles, __exitPromise, __deadlineMs,
     ? globalThis.__nimbusRawClearTimeout
     : globalThis.clearTimeout;
   let __expired = false;
-  const __deadline = __rawSetTimeout(() => { __expired = true; }, __deadlineMs);
   let __pass = 0;
+  // A user-invoked program runs until it exits or is killed — there is no
+  // wall-clock deadline, so no expiry timer is armed at all. (Callers that
+  // still pass a finite deadline get the timer for compatibility.)
+  const __deadline = Number.isFinite(__deadlineMs)
+    ? __rawSetTimeout(() => { __expired = true; }, __deadlineMs)
+    : null;
   while (!__exited && !__expired && (__pass < __minPasses || __countHandles() > 0)) {
     // The warm-up passes give a settling microtask chain its turns and cost
     // ~5µs each; past them the loop is waiting on wall-clock work, where
-    // spinning at 0ms would burn the isolate's CPU for the whole deadline.
+    // spinning at 0ms would burn the isolate's CPU indefinitely.
     await new Promise((resolve) => __rawSetTimeout(resolve, __pass < __minPasses ? 0 : 1));
     __pass++;
   }
-  try { __rawClearTimeout(__deadline); } catch {}
+  if (__deadline !== null) { try { __rawClearTimeout(__deadline); } catch {} }
   // \`pending\` is what the caller reports when it gives up: a one-shot program
   // still holding a handle did NOT finish, and exiting 0 would claim it did.
   return { passes: __pass, pending: __exited ? 0 : __countHandles() };
@@ -454,20 +427,16 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, entryDeadlineAt, vfsCursor } = args;
+    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor } = args;
     // Per invocation, not per module: this body is cached on
     // hash(code + bundle + manifest) and reused by any session whose snapshot
     // hashes the same, and epochs are per supervisor incarnation.
     const __MODULE_VFS_CURSOR = vfsCursor || null;
 ${VFS_CURSOR_SEED_SOURCE}
-    // What is left of this facet's lifetime, measured from the supervisor's
-    // own timeout timer rather than from whenever the drain happens to start
-    // — a slow module init must not be able to push the drain past the kill
-    // and lose the honest reason. Same shape as the git network facet's
-    // phaseDeadline.
-    const __entryBudgetMs = Number.isFinite(entryDeadlineAt)
-      ? Math.max(0, Number(entryDeadlineAt) - Date.now())
-      : ${ONE_SHOT_ENTRY_DEADLINE_MS};
+    // A user-invoked program has no wall-clock lifetime: the drain runs the
+    // entrypoint's event loop until Node would exit, and only a kill (Ctrl-C)
+    // ends it early.
+    const __entryBudgetMs = Infinity;
     let __drainPasses = 0;
     const __vfsBundle = __MODULE_VFS_BUNDLE;
     const __vfsManifest = __MODULE_VFS_MANIFEST;
@@ -546,18 +515,6 @@ ${RESIDENCY_MISS_REPORT}
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
-      // This facet's lifetime IS the event loop, so a handle still open when
-      // the deadline passes is work that will never run. Reporting exit 0
-      // there is the silent-truncation failure: name the limit and fail.
-      else if (__drain.pending > 0) {
-        const __why = "node: reached the ${FACET_TIMEOUT_MS / 1000}s facet lifetime limit with " +
-          __drain.pending + " operation(s) still in flight; the rest of the program did not run. " +
-          "A program that needs longer than ${FACET_TIMEOUT_MS / 1000}s has to run as a " +
-          "long-running process (node --watch, or a server), which is not bound by it.\\n";
-        stderr += __why;
-        exitCode = 1;
-        if (__supervisor && !captureOutput) __queueRpcWrite("stderr", __why);
-      }
       if (__nimbusLiveStdinPump && !__nimbusAttachedTty) await __nimbusLiveStdinPump;
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
@@ -3391,7 +3348,6 @@ export class FacetManager {
      * journal recovery rides the first pump.
      */
     launchPump;
-    timedOutProcessIds = new Set();
     // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
     // spawn created as an OS-child of the attach TUI. When the attach process
     // exits (reported / killed), its serve facet is torn down with it.
@@ -3906,7 +3862,7 @@ export class FacetManager {
         if (opts.skipSpawn && opts.callerPid != null) {
             // The caller already allocated the PID via the supervisor
             // (with their own user-facing label). Look up the full entry
-            // from the table — _execWithTimeout etc. need the canonical
+            // from the table — the exec path needs the canonical
             // ProcessEntry shape. Do NOT reap() either: reaping would
             // clear the caller's just-spawned entry because its startTime
             // is recent (< 60s) but reap() ALSO drops 'running' entries
@@ -3978,8 +3934,11 @@ export class FacetManager {
             ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0, manifestBytes: 0, metadataBytes: 0 }
             : undefined;
         const abortController = new AbortController();
+        // Ctrl-C / kill on a user program has to end the in-flight run, not just
+        // mark the table row: the runOnce request carries this signal.
+        this.processes.setTerminator(entry.pid, () => abortController.abort());
         try {
-            const result = await this._execWithTimeout(this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink), entry, () => abortController.abort());
+            const result = await this._execViaLoader(code, opts, entry, vfsState, abortController.signal, diagSink);
             this._flushVfsWrites(result, entry.pid);
             this._recordResidencyMisses(vfsState.bundleKey, result.residencyMisses);
             this.processes.exit(entry.pid, result.exitCode);
@@ -4008,32 +3967,18 @@ export class FacetManager {
             return result;
         }
         catch (err) {
-            // If the timeout already fired, it already called onExternalExit
-            // with code 124 and reason "timeout…". Don't clobber that with a
-            // generic exit code 1. (_reportExternalExit's guard separately
-            // prevents double-dump; this stops ProcessTable from showing a
-            // different exit code than the ring buffer's footer.)
-            const timedOut = this.timedOutProcessIds.has(entry.pid);
-            const exitCode = timedOut ? 124 : 1;
-            const reason = timedOut ? 'timeout' : `runtime worker error: ${errorMessage(err)}`;
+            const exitCode = 1;
+            const reason = `runtime worker error: ${errorMessage(err)}`;
             this.processes.exit(entry.pid, exitCode);
-            // W5 Lever 5: ring entry on every catch-path exit.
-            this._w5RecordTermination(entry.pid, exitCode, timedOut ? 'rpc' : 'runtime-worker', reason);
-            // Non-timeout failure: route through external-exit so the log
-            // store marks exit AND the tabs-UI structured event fires. The
-            // timeout path already called onExternalExit from the timeout
-            // handler; _reportExternalExit's getExit() guard dedupes.
-            if (!timedOut) {
-                try {
-                    this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
-                }
-                catch { }
+            this._w5RecordTermination(entry.pid, exitCode, 'runtime-worker', reason);
+            try {
+                this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
             }
+            catch { }
             return { exitCode, stdout: '', stderr: errorMessage(err) };
         }
         finally {
             pacer.settle();
-            this.timedOutProcessIds.delete(entry.pid);
         }
     }
     /**
@@ -4093,13 +4038,6 @@ export class FacetManager {
             stdin: opts.stdin || '',
             captureOutput: !!opts.captureOutput,
             cred: { ...entry.cred, groups: [...entry.cred.groups] },
-            // Absolute wall-clock instant the entry drain must stop at, derived
-            // from the same FACET_TIMEOUT_MS the supervisor's kill timer uses. It
-            // is stamped here rather than computed facet-side so the budget tracks
-            // the real remaining lifetime; everything still to happen before the
-            // facet runs (module map build, LOADER.load, the RPC hop) only makes
-            // this earlier than the kill, which is the safe direction.
-            entryDeadlineAt: Date.now() + FACET_TIMEOUT_MS - ONE_SHOT_EXIT_RESERVE_MS,
             vfsCursor: vfsState.cursor,
             ...(diagSink ? { diag: true } : {}),
         });
@@ -4113,8 +4051,8 @@ export class FacetManager {
                 // here rather than named by the enclosing frame, and the serialized
                 // forms it was built from are released unless the prefetch cache is
                 // keeping them. Otherwise the coordinator carries a second full copy
-                // of the program for the whole FACET_TIMEOUT_MS the facet then runs
-                // for, which is the window the isolate was being reset in.
+                // of the program for the whole run the facet then performs,
+                // which is the window the isolate was being reset in.
                 code: async () => {
                     const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims);
                     if (diagSink) {
@@ -4738,34 +4676,6 @@ export class FacetManager {
             // propagate before a successful process exit is recorded.
             const restored = _reviveVfsWriteCell(content);
             vfs.writeFile(path, restored);
-        }
-    }
-    /** Execution timeout. */
-    async _execWithTimeout(promise, entry, abort) {
-        let timer;
-        const timeout = new Promise((_, reject) => {
-            timer = setTimeout(() => {
-                this.timedOutProcessIds.add(entry.pid);
-                abort();
-                // The process cannot report exit after the request is cancelled, so
-                // notify the session explicitly.
-                try {
-                    this.hooks.onExternalExit?.(entry.pid, 124, // conventional timeout exit code
-                    `timeout after ${FACET_TIMEOUT_MS / 1000}s`);
-                }
-                catch { }
-                reject(new Error(`Process timed out after ${FACET_TIMEOUT_MS / 1000}s`));
-            }, FACET_TIMEOUT_MS);
-        });
-        // Always clear the timer; otherwise a successful run would still
-        // trigger the timeout callback at FACET_TIMEOUT_MS, spuriously
-        // marking the exit code as 124.
-        try {
-            return await Promise.race([promise, timeout]);
-        }
-        finally {
-            if (timer !== undefined)
-                clearTimeout(timer);
         }
     }
     /**

@@ -24,7 +24,6 @@ export declare const FS_READ_BATCH_REQUEST_BYTES: number;
 export declare const FS_LIST_PAGE_LIMIT = 8192;
 export declare const VITE_MODULE_CACHE_MAX_ENTRIES = 1024;
 export declare const ON_DEMAND_SLICE_CAP_BYTES: number;
-export declare const FACET_TIMEOUT_MS = 30000;
 export declare const VFS_BUNDLE_MAX_FILES = 4000;
 export declare const VFS_BUNDLE_MAX_BYTES: number;
 export declare const BUNDLE_MAX_ENCODED_BYTES: number;
