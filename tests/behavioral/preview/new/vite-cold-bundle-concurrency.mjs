@@ -4,11 +4,11 @@
 // packages requested CONCURRENTLY (as a fresh app's first load does)
 // without erroring and without crashing the supervisor (CF 1101).
 //
-// Cold builds are admitted one at a time, from slice allocation through
-// the facet RPC and response construction, so peak supervisor slice
-// memory stays bounded at one slice cap (the admission-before-allocation
-// invariant is unit-tested in tests/unit/on-demand-bundle-gate.mjs; this
-// probe proves the deployed path serves them all correctly under load).
+// Each cold build leases its slice bytes from the shared supervisor
+// allocation budget before the slice is built, so distinct modules never
+// hold slices beside each other — or beside the pre-bundler's — past the
+// budget (unit-tested in tests/unit/port-route-vite-mount.mjs; this probe
+// proves the deployed path serves them all correctly under load).
 //
 // Public surface: GET /s/<sid>/preview/@modules/<pkg>. Strictly
 // black-box. The packages are small, pure-ESM/CJS libs that bundle

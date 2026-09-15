@@ -30,7 +30,8 @@ import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runt
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
-import { OnDemandBundleGate } from './on-demand-bundle-gate.js';
+import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import type { BundlePool, BundlePoolProvider } from './esbuild-bundle-pool.js';
 import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
@@ -1295,15 +1296,6 @@ export class ViteDevServer {
    * crashes the supervisor for N≥3 on a busy isolate.
    */
   private pendingBundles = new Map<string, Promise<Response>>();
-  /**
-   * FIFO admission gate for the on-demand bundle slow path. Across
-   * DIFFERENT specs, one cold build runs at a time from slice allocation
-   * through the facet RPC and response construction, so peak resident
-   * slice bytes in the supervisor stay at one ON_DEMAND_SLICE_CAP_BYTES
-   * slice. The shared pool has one slot, so this costs no execution
-   * overlap. Coupled with pendingBundles (same-spec coalescing).
-   */
-  private onDemandGate = new OnDemandBundleGate();
 
   /**
    * process diagnostics support: the supervisor's per-PID log store. When set
@@ -1364,7 +1356,8 @@ export class ViteDevServer {
    * The session's shared esbuild pool for on-demand bundling of
    * /preview/@modules/<spec> requests that miss both the in-memory and
    * pkg_esm_bundles caches. Null when no pool was provided (legacy
-   * in-supervisor fallback).
+   * in-supervisor fallback). Acquired BEFORE the slice lease — see
+   * EsbuildBundlePool.acquire.
    */
   private async ensureOnDemandPool(): Promise<BundlePool | null> {
     if (!this.bundlePool) return null;
@@ -1849,21 +1842,21 @@ export class ViteDevServer {
       }
     }
 
-    // ── Cold path coalescing + FIFO admission ─────────────────────
+    // ── Cold path coalescing ──────────────────────────────────────
     // Multiple parallel browser requests for the same module are
     // common on first preview load; coalesce so exactly ONE bundle
-    // attempt runs per spec. Across DIFFERENT specs, the gate runs one
-    // cold build at a time so peak supervisor memory stays at one
-    // slice. See `pendingBundles` and `onDemandGate` field docs.
+    // attempt runs per spec. Across DIFFERENT specs, the cold path
+    // leases its slice bytes from the shared supervisor allocation
+    // budget before building, so it queues behind every other heavy
+    // owner in this isolate (the pre-bundler included) instead of
+    // stacking slices beside them. See `pendingBundles`.
     //
     // The shared promise resolves to a Response nobody consumes
     // directly: a Response body is readable once, so every coalesced
     // consumer — the initiator included — takes its own clone.
     const inflight = this.pendingBundles.get(cacheKey);
     if (inflight) return inflight.then((response) => response.clone());
-    const coldPromise = this.onDemandGate.run(() =>
-      this.serveModuleCold(specifier, headers, base, barrelInfo),
-    );
+    const coldPromise = this.serveModuleCold(specifier, headers, base, barrelInfo);
     this.pendingBundles.set(cacheKey, coldPromise);
     // Drop the coalescing entry once settled. Subsequent requests
     // for the same spec will hit the moduleCache (set inside the
@@ -1879,9 +1872,11 @@ export class ViteDevServer {
    * Cold path of serveModule: package resolution → on-demand facet
    * bundle (synthetic-entry for barrels) → hard-error if bundle fails.
    * NO CDN fallback (100% edge contract). Extracted so the coalescing
-   * + gate wrapper in serveModule() reads cleanly. Always runs inside
-   * the on-demand FIFO gate — see serveModule's wrapper — so the slice
-   * this body allocates is the only cold slice resident until it returns.
+   * wrapper in serveModule() reads cleanly. The slice this body builds is
+   * leased from the shared supervisor allocation budget for its worst
+   * case before it is built, shrunk to its real size once built, and
+   * released only after the facet result has been rewritten, cached and
+   * wrapped in the Response — the pre-bundler's per-slice pattern.
    */
   private async serveModuleCold(
     specifier: string,
@@ -2008,145 +2003,164 @@ export class ViteDevServer {
         );
       }
 
-      if (onDemandPool) {
-        // Facet path — supervisor stays at 0 esbuild bytes.
-        try {
-          const {
-            buildSliceForSpecifierWithCap,
-            prebundleOne,
-            BUNDLER_VERSION,
-          } = await import('../npm/pre-bundle-facet.js');
-          const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
-          const projDir = this.root;
-          const nmDir = projDir + '/node_modules';
-          let slice: { slice: SliceEntry[]; totalBytes: number } | null = null;
-          if (synthetic && syntheticReferencedFiles) {
-            // SCOPED slice: only the files the synthetic entry directly
-            // references (+ transitive relative imports + package.json).
-            // Skips the full package walk so icon-libraries with
-            // thousands of files don't blow the 28 MiB cap.
-            const scoped = buildScopedSliceForSynthetic(
-              this.vfs, nmDir, pkgName, syntheticReferencedFiles,
-            );
-            const built: { slice: SliceEntry[]; totalBytes: number } = {
-              slice: scoped.entries,
-              totalBytes: scoped.totalBytes,
-            };
-            try {
-              const bytes = this.vfs.readFile(bundleEntryPath);
-              const parentDir = bundleEntryPath.substring(0, bundleEntryPath.lastIndexOf('/'));
-              built.slice.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
-              built.slice.push({
-                path: '/' + bundleEntryPath.replace(/^\/+/, ''),
-                bytes,
-                isDir: false,
-              });
-              built.totalBytes += bytes.length + bundleEntryPath.length;
-            } catch (e: any) {
-              this.log('error', '[vite-dev] synthetic entry unreadable for ' + specifier + ': ' + (e?.message || e));
-            }
-            slice = built;
-          } else {
-            slice = buildSliceForSpecifierWithCap(
-              this.vfs, specifier, nmDir, SLICE_CAP_BYTES,
-            );
-          }
-          if (slice) {
-            // Build the spec, then drop our supervisor-side handle to
-            // the slice array immediately — `spec` is the only thing
-            // that needs to keep it alive until the RPC structured-clone
-            // completes. Mirrors the install-time runSlot pattern (see
-            // commit 40cfc01). The gate holds every other cold build
-            // until this method returns, so this slice is the only one
-            // resident during a flurry of /preview/@modules/* requests.
-            let spec: any = {
-              specifier,
-              entryPath: bundleEntryPath,
-              externals,
-              slice: slice.slice,
-              bundlerVersion: BUNDLER_VERSION,
-              // Base-neutral: the @modules bundle is persisted raw and shared
-              // across mounts, so BASE_URL is fixed to '/' here (module URLs
-              // get the per-request base applied at serve time, not baked in).
-              define: this.defineFor(''),
-            };
-            slice = null;
-            let result: any = null;
-            try {
-              result = await onDemandPool.submit(prebundleOne, spec);
-            } finally {
-              spec = null;
-            }
-            if (result && result.ok && result.esmCode) {
-              bundled = result.esmCode;
-            } else if (result && result.errorText) {
-              this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
-            }
-            result = null;
-          } else {
-            this.log('error', '[vite-dev] slice walker exceeded cap for ' + specifier);
-          }
-        } catch (e: any) {
-          this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
-        }
-      } else {
-        // Legacy fallback — in-supervisor esbuild. Used only when no
-        // bundle pool was provided.
-        try {
-          const result = await this.esbuild.build([bundleEntryPath], {
-            bundle: true,
-            format: 'esm',
-            platform: 'browser',
-            target: 'esnext',
-            // Base-neutral (see the pooled build above).
-            define: this.defineFor(''),
-            external: externals.length > 0 ? externals : undefined,
-          });
-          if (result.outputFiles?.length) {
-            bundled = result.outputFiles[0].contents;
-          }
-        } catch (e: any) {
-          this.log('error', '[vite-dev] esbuild bundle failed for ' + specifier + ': ' + (e?.message || e));
-        }
-      }
-
-      if (bundled !== null) {
-        // Persist the RAW esbuild output. It is base-independent — the only
-        // base-dependent step is the module-URL rewrite below, applied at
-        // serve time — so one persisted bundle serves every mount (the
-        // `/preview/` path and the `<port>--<sid>` host alike). Caching the
-        // post-rewrite text instead would pin the bundle to whichever base
-        // built it first and 404 the other. Cache ONLY successful bundles;
-        // a failed build left `bundled` null and never reaches here.
-        if (this.npmCache) {
+      // Held from before the slice is built until the Response wrapping
+      // its bundle exists — see the method doc. Null on the legacy path.
+      let sliceLease: ResizableCreditLease | null = null;
+      try {
+        if (onDemandPool) {
+          // Facet path — supervisor stays at 0 esbuild bytes.
           try {
-            this.npmCache.putEsmBundle({
-              specifier,
-              bundleHash: BUNDLER_VERSION,
-              esmCode: bundled,
-              builtAt: Date.now(),
-              inputHash: barrelInfo?.inputHash ?? '',
+            const {
+              buildSliceForSpecifierWithCap,
+              prebundleOne,
+              BUNDLER_VERSION,
+            } = await import('../npm/pre-bundle-facet.js');
+            const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
+            const projDir = this.root;
+            const nmDir = projDir + '/node_modules';
+            // Lease the slice's worst-case supervisor footprint BEFORE it is
+            // allocated. FIFO byte credit is what stops this slice from
+            // stacking beside a pre-bundle slice, a streamed install write or
+            // a VFS read that independently claimed the same shared-isolate
+            // headroom. The pool was acquired above, so nothing this waits
+            // on is waiting on us.
+            sliceLease = await acquireSupervisorAllocation(SLICE_CAP_BYTES);
+            let slice: { slice: SliceEntry[]; totalBytes: number } | null = null;
+            if (synthetic && syntheticReferencedFiles) {
+              // SCOPED slice: only the files the synthetic entry directly
+              // references (+ transitive relative imports + package.json).
+              // Skips the full package walk so icon-libraries with
+              // thousands of files don't blow the 28 MiB cap.
+              const scoped = buildScopedSliceForSynthetic(
+                this.vfs, nmDir, pkgName, syntheticReferencedFiles,
+              );
+              const built: { slice: SliceEntry[]; totalBytes: number } = {
+                slice: scoped.entries,
+                totalBytes: scoped.totalBytes,
+              };
+              try {
+                const bytes = this.vfs.readFile(bundleEntryPath);
+                const parentDir = bundleEntryPath.substring(0, bundleEntryPath.lastIndexOf('/'));
+                built.slice.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
+                built.slice.push({
+                  path: '/' + bundleEntryPath.replace(/^\/+/, ''),
+                  bytes,
+                  isDir: false,
+                });
+                built.totalBytes += bytes.length + bundleEntryPath.length;
+              } catch (e: any) {
+                this.log('error', '[vite-dev] synthetic entry unreadable for ' + specifier + ': ' + (e?.message || e));
+              }
+              slice = built;
+            } else {
+              slice = buildSliceForSpecifierWithCap(
+                this.vfs, specifier, nmDir, SLICE_CAP_BYTES,
+              );
+            }
+            if (slice) {
+              // The real size is known now: give back the credit the slice
+              // did not use so smaller owners can proceed beside it. The
+              // lease only shrinks to a positive size no larger than itself.
+              if (slice.totalBytes > 0 && slice.totalBytes < sliceLease.bytes) {
+                sliceLease.shrinkTo(slice.totalBytes);
+              }
+              // Build the spec, then drop our supervisor-side handle to
+              // the slice array immediately — `spec` is the only thing
+              // that needs to keep it alive until the RPC structured-clone
+              // completes. Mirrors the install-time runSlot pattern (see
+              // commit 40cfc01); the lease above keeps every other budget
+              // owner from allocating beside it until the Response exists.
+              let spec: any = {
+                specifier,
+                entryPath: bundleEntryPath,
+                externals,
+                slice: slice.slice,
+                bundlerVersion: BUNDLER_VERSION,
+                // Base-neutral: the @modules bundle is persisted raw and shared
+                // across mounts, so BASE_URL is fixed to '/' here (module URLs
+                // get the per-request base applied at serve time, not baked in).
+                define: this.defineFor(''),
+              };
+              slice = null;
+              let result: any = null;
+              try {
+                result = await onDemandPool.submit(prebundleOne, spec);
+              } finally {
+                spec = null;
+              }
+              if (result && result.ok && result.esmCode) {
+                bundled = result.esmCode;
+              } else if (result && result.errorText) {
+                this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
+              }
+              result = null;
+            } else {
+              this.log('error', '[vite-dev] slice walker exceeded cap for ' + specifier);
+            }
+          } catch (e: any) {
+            this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
+          }
+        } else {
+          // Legacy fallback — in-supervisor esbuild. Used only when no
+          // bundle pool was provided.
+          try {
+            const result = await this.esbuild.build([bundleEntryPath], {
+              bundle: true,
+              format: 'esm',
+              platform: 'browser',
+              target: 'esnext',
+              // Base-neutral (see the pooled build above).
+              define: this.defineFor(''),
+              external: externals.length > 0 ? externals : undefined,
             });
-          } catch { /* non-fatal */ }
+            if (result.outputFiles?.length) {
+              bundled = result.outputFiles[0].contents;
+            }
+          } catch (e: any) {
+            this.log('error', '[vite-dev] esbuild bundle failed for ' + specifier + ': ' + (e?.message || e));
+          }
         }
 
-        // Convert `__require("external")` calls (from CJS source with esbuild
-        // externals) into ESM `import * as` + dispatch, and rewrite any bare
-        // imports esbuild marked external so they carry the mount base.
-        // Without the base prefix, `import X from "scheduler"` 404s.
-        let code = rewriteExternalRequires(bundled, base);
-        code = rewriteAllImports(code, this.aliases, base);
-        // For CJS-only packages (react, react-dom), esbuild's __commonJS
-        // wrapper only emits `export default` — named imports like
-        // `import { createRoot } from "react-dom/client"` would fail. Statically
-        // scan the bundled source for CJS export patterns and synthesize
-        // named exports.
-        code = synthesizeCjsNamedExports(code);
+        if (bundled !== null) {
+          // Persist the RAW esbuild output. It is base-independent — the only
+          // base-dependent step is the module-URL rewrite below, applied at
+          // serve time — so one persisted bundle serves every mount (the
+          // `/preview/` path and the `<port>--<sid>` host alike). Caching the
+          // post-rewrite text instead would pin the bundle to whichever base
+          // built it first and 404 the other. Cache ONLY successful bundles;
+          // a failed build left `bundled` null and never reaches here.
+          if (this.npmCache) {
+            try {
+              this.npmCache.putEsmBundle({
+                specifier,
+                bundleHash: BUNDLER_VERSION,
+                esmCode: bundled,
+                builtAt: Date.now(),
+                inputHash: barrelInfo?.inputHash ?? '',
+              });
+            } catch { /* non-fatal */ }
+          }
 
-        this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
-        return new Response(code, {
-          headers: { ...headers, 'Content-Type': JS_CT },
-        });
+          // Convert `__require("external")` calls (from CJS source with esbuild
+          // externals) into ESM `import * as` + dispatch, and rewrite any bare
+          // imports esbuild marked external so they carry the mount base.
+          // Without the base prefix, `import X from "scheduler"` 404s.
+          let code = rewriteExternalRequires(bundled, base);
+          code = rewriteAllImports(code, this.aliases, base);
+          // For CJS-only packages (react, react-dom), esbuild's __commonJS
+          // wrapper only emits `export default` — named imports like
+          // `import { createRoot } from "react-dom/client"` would fail. Statically
+          // scan the bundled source for CJS export patterns and synthesize
+          // named exports.
+          code = synthesizeCjsNamedExports(code);
+
+          this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
+          return new Response(code, {
+            headers: { ...headers, 'Content-Type': JS_CT },
+          });
+        }
+      } finally {
+        sliceLease?.release();
       }
 
       // Bundle failed — fall through to the hard-error response below.

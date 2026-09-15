@@ -316,6 +316,64 @@ function pathRequest(path) {
   console.log('  [6] a rejected cold build is shared by its waiters and cleared for the next request');
 }
 
+// 7. Two cold builds for DIFFERENT modules never hold their slices at the
+//    same time when together they exceed the supervisor allocation budget.
+//    The lease is taken before the slice is built, so the second build's
+//    package files are not even read while the first build's facet RPC is
+//    outstanding; they are read only after the first Response exists.
+{
+  const MiB = 1024 * 1024;
+  const bigBody = new Uint8Array(20 * MiB);
+  const reads = [];
+  const timeline = [];
+  const { provider, submits } = makeParkedBundlePool();
+  const extraFiles = new Map([
+    [`${ROOT}/node_modules/big-pkg/package.json`, JSON.stringify({ name: 'big-pkg', main: 'index.js' })],
+    [`${ROOT}/node_modules/big-pkg/index.js`, bigBody],
+    [`${ROOT}/node_modules/small-pkg/package.json`, JSON.stringify({ name: 'small-pkg', main: 'index.js' })],
+    [`${ROOT}/node_modules/small-pkg/index.js`, 'module.exports = "small";\n'],
+  ]);
+  const self = makeWokenSession(HIBERNATED, { extraFiles, reads, bundlePool: provider });
+  const smallEntry = `${ROOT}/node_modules/small-pkg/index.js`;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const until = async (predicate, what) => {
+    for (let i = 0; i < 200; i++) {
+      if (predicate()) return;
+      await settle();
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  };
+
+  const big = handleFetch(self, hostRequest(`/port/${VITE_PORT}/@modules/big-pkg`))
+    .then((response) => { timeline.push('big:response'); return response; });
+  await until(() => submits.length === 1, 'the big build to reach its facet submit');
+  assert.equal(submits[0].specifier, 'big-pkg');
+  assert.ok(submits[0].sliceBytes >= bigBody.byteLength, 'the big slice (entry + package.json) is resident at the submit');
+
+  const small = handleFetch(self, hostRequest(`/port/${VITE_PORT}/@modules/small-pkg`))
+    .then((response) => { timeline.push('small:response'); return response; });
+  for (let i = 0; i < 20; i++) await settle();
+  assert.equal(submits.length, 1, 'the small build must not reach the facet while the big slice is held');
+  assert.ok(!reads.includes(smallEntry), 'the small slice must not be built while the big slice is held');
+
+  submits[0].resolve({ ok: true, esmCode: 'export default "big";' });
+  const bigResponse = await big;
+  assert.equal(bigResponse.status, 200);
+  assert.match(await bigResponse.text(), /"big"/);
+
+  await until(() => submits.length === 2, 'the small build to reach its facet submit after the big one released');
+  assert.equal(submits[1].specifier, 'small-pkg');
+  assert.ok(reads.includes(smallEntry), 'the small slice is built once the budget frees');
+  assert.deepEqual(timeline, ['big:response'], 'the small build started only after the big Response existed');
+
+  submits[1].resolve({ ok: true, esmCode: 'export default "small";' });
+  const smallResponse = await small;
+  assert.equal(smallResponse.status, 200);
+  assert.match(await smallResponse.text(), /"small"/);
+  assert.deepEqual(timeline, ['big:response', 'small:response']);
+  console.log('  [7] two cold builds never hold slices beside each other under the supervisor budget');
+}
+
 await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-vite-mount OK: the dev-server mount base follows the door the request came through');
