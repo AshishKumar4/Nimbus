@@ -152,6 +152,13 @@ export class IsolatePool {
      * 12 chars is enough entropy for DO ids to collide-free per process.
      */
     doIdShort;
+    /**
+     * The supervisor identity the minted worker's env.SUPERVISOR binding
+     * bakes (doId short-form + pid), folded into the loader cache key. 's-none'
+     * when no SUPERVISOR binding was minted, so a supervisor-less pool keeps
+     * the old key shape and its warm slots stay shared.
+     */
+    supervisorKey;
     constructor(env, ctx, opts) {
         // A host hands its whole env over; the binding is claimed here and the
         // claim is checked on the next line.
@@ -219,6 +226,7 @@ export class IsolatePool {
             this.wasmHash = hashSource(fp);
         }
         const bindings = { ...(opts?.extraBindings ?? {}) };
+        this.supervisorKey = 's-none';
         if (!opts?.omitSupervisor) {
             const supervisorRpc = supervisorEntrypoint();
             if (supervisorRpc) {
@@ -227,9 +235,19 @@ export class IsolatePool {
                 // to the user's session DO, not the peer DO. Default to the
                 // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
                 const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
+                const supPid = opts?.supervisorPid ?? 0;
                 bindings.SUPERVISOR = supervisorRpc({
-                    props: { doId: supDoId, pid: opts?.supervisorPid ?? 0 },
+                    props: { doId: supDoId, pid: supPid },
                 });
+                // Whatever the minted worker's env carries must be in its loader
+                // cache key — workerd's loader cache survives a DO hibernation
+                // wake while generation-strided pids (1000001 → 2000001) do not:
+                // a warm slot keyed without the supervisor identity returns in
+                // the new generation still credentialed to the dead pid, and
+                // every pid-authorized RPC from it fails "process pid … does
+                // not exist". doIdShort alone cannot cover this — it changes
+                // across sessions, not across wakes of the same session.
+                this.supervisorKey = `s${supDoId.slice(0, 12)}-${supPid}`;
             }
             else {
                 // Supervisor entrypoint unavailable — running without ctx.exports
@@ -446,11 +464,11 @@ export class IsolatePool {
         const perCallWasmEntries = this.#materialisePerCallWasm(perCallWasm);
         const perCallWasmHash = this.#fingerprintWasm(perCallWasmEntries);
         // Cache key includes the short DO id so warm isolates are scoped to
-        // ONE session. See the doIdShort field comment for why — without it,
-        // a later session's pool reuses the warm worker from a previous
-        // session (which still carries the old session's env.SUPERVISOR
-        // binding), and writeBatch RPCs land in the wrong DO's VFS.
-        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:slot-${slotIndex}:g${generation}`;
+        // ONE session (see the doIdShort field comment), and the supervisor
+        // identity so a wake of that same session can never reuse a warm
+        // worker whose SUPERVISOR binding still names the dead generation's
+        // pid. See the supervisorKey field comment for the failure mode.
+        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}`;
         let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
         const code = this.#buildCode(fnSource, perCallWasmEntries);
         // W5 Lever 5: record the dispatch so /api/_diag/memory shows the

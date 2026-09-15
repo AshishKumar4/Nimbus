@@ -805,11 +805,12 @@ export class CirrusReal {
     // [D'.1] Spawn cirrus-real as a DO Facet, not a Worker.
     //
     // Step A: LOADER.get(stableId, configCb) → DynamicWorker stub. The
-    //   stable ID per-(supervisor-DO + cirrus-real-version) makes the
+    //   stable ID per-(supervisor-DO + cirrus-real-version + pid) makes the
     //   loader cache the bundled vite + plugin code across hibernation.
-    //   Two restarts within the same supervisor isolate hit the warm
-    //   cache; a different DO ID gets a fresh slot.
-    //
+    //   The pid is in the key because env.SUPERVISOR bakes it — a wake
+    //   strides pids, and a warm worker credentialed to the dead pid
+    //   would fail every supervisor RPC with "process pid … does not
+    //   exist". Two restarts on the same pid hit the warm cache.
     // Step B: worker.getDurableObjectClass('CirrusRealVite') → the
     //   class constructor from the dynamic worker's exports. Same
     //   pattern facet-manager.ts uses for NodeProcess.
@@ -820,7 +821,7 @@ export class CirrusReal {
     //   DO so eviction is coherent. The same name returns the same
     //   facet on subsequent calls — that's what makes the cookie
     //   persist across supervisor reconnects.
-    const stableLoaderId = `${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}`;
+    const stableLoaderId = `${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}`;
     const facetName = 'cirrus-real-vite';
     try {
       const worker = this.env.LOADER.get(stableLoaderId, async () => ({

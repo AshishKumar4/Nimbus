@@ -44,4 +44,63 @@ new IsolatePool(env, ctx, { supervisorDoIdOverride: 'coordinator-do', supervisor
 assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7 }],
   'supervisorPid composes with supervisorDoIdOverride');
 
+// ── Hibernation-wake regression (the sv-create "process pid 1000001 does
+// not exist" failure): a warm loader slot minted in generation 1 must not be
+// returned in generation 2 still credentialed to the dead pid. The cache key
+// therefore carries the supervisor identity (supDoId short + pid).
+{
+  const loaderIds = [];
+  const loaderEnvs = [];
+  const keyedLoader = {
+    get(id, cb) {
+      loaderIds.push(id);
+      // loader.get's callback may be async (pool passes `async () => code`);
+      // store a promise of the minted config's env.
+      loaderEnvs.push(Promise.resolve(cb()).then((code) => code?.env));
+      return { getEntrypoint: () => ({ async execute() { return 'ok'; } }) };
+    },
+  };
+  const keyedCtx = { id: { toString: () => 'loader-pid-test' } };
+
+  // Two pools identical except supervisorPid — generation-1 then
+  // generation-2 of the same session.
+  const poolG1 = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    tag: 'x', concurrency: 1, supervisorPid: 1000001,
+  });
+  await poolG1.map((v) => v, ['a']);
+  const poolG2 = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    tag: 'x', concurrency: 1, supervisorPid: 2000001,
+  });
+  await poolG2.map((v) => v, ['a']);
+
+  assert.equal(loaderIds.length, 2, 'each pool dispatch calls loader.get once');
+  assert.notEqual(loaderIds[0], loaderIds[1],
+    'different supervisorPid must produce different loader ids (wake can never reuse a stale-pid slot)');
+  assert.match(loaderIds[1], /2000001/,
+    'generation-2 loader id names its own supervisor pid');
+
+  // The minted worker's env carries the pid it was keyed under.
+  const g2Props = boundProps[boundProps.length - 1];
+  assert.deepEqual(g2Props, { doId: 'loader-pid-test', pid: 2000001 },
+    'generation-2 pool mints SUPERVISOR with the new pid');
+  assert.ok((await loaderEnvs[1])?.SUPERVISOR,
+    'the gen-2 worker config carries the SUPERVISOR binding in env');
+
+  // Warm reuse preserved: same identity → same id.
+  loaderIds.length = 0;
+  const poolG2b = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    tag: 'x', concurrency: 1, supervisorPid: 2000001,
+  });
+  await poolG2b.map((v) => v, ['a']);
+  const warmPool = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    tag: 'x', concurrency: 1, supervisorPid: 2000001,
+  });
+  await warmPool.map((v) => v, ['a']);
+  assert.equal(loaderIds.length, 2);
+  assert.equal(loaderIds[0], loaderIds[1],
+    'identical supervisorPid must reuse the loader id (warm slot preserved)');
+
+  await poolG1.dispose(); await poolG2.dispose(); await poolG2b.dispose(); await warmPool.dispose();
+}
+
 console.log('loader-pool supervisor pid: ok');

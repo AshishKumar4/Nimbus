@@ -274,6 +274,13 @@ export declare class IsolatePool {
      * 12 chars is enough entropy for DO ids to collide-free per process.
      */
     private readonly doIdShort;
+    /**
+     * The supervisor identity the minted worker's env.SUPERVISOR binding
+     * bakes (doId short-form + pid), folded into the loader cache key. 's-none'
+     * when no SUPERVISOR binding was minted, so a supervisor-less pool keeps
+     * the old key shape and its warm slots stay shared.
+     */
+    private readonly supervisorKey;
     constructor(env: unknown, ctx: DurableObjectState, opts?: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
