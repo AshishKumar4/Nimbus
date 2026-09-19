@@ -14,7 +14,9 @@
 // tight microtask loop that starves the macrotask queue and no timer in the
 // test ever fires again.
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcStdout, _rpcReportExit } from '../../packages/worker/src/session/rpc.ts';
 import { StreamTextDecoders, textSink } from '../../packages/core/src/_shared/bytes.ts';
@@ -23,6 +25,7 @@ import {
   generateLongRunningNodeCode,
 } from '../../packages/worker/src/facets/manager.ts';
 
+const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 // Captured before the shims install their timer barrier over the global.
 const realSetTimeout = globalThis.setTimeout;
 const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
@@ -157,12 +160,12 @@ console.log('  the child\'s reported text decodes split characters as one');
   const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
   const oneShot = (await generateEntrypointCode('', state, false, generateShimsCode())).code;
   const resident = (await generateLongRunningNodeCode('', state, { cred }, false, generateShimsCode())).code;
-  for (const [label, code] of [['one-shot wrapper', oneShot], ['resident wrapper', resident]]) {
-    const body = code
-      .replace(/^\s*import\s[^\n]*$/gm, '')
-      .replace(/^\s*export\s+default\s+/gm, 'const __default = ')
-      .replace(/^\s*export\s+/gm, '');
-    assert.doesNotThrow(() => new Function(body), `${label} parses`);
+  const opencode = generateOpencodeRunnerCode({
+    argv: [], env: {}, cred, cwd: '/home/user', stdin: '', mode: 'attached',
+    shimsCode: generateShimsCode(), vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
+  });
+  for (const [label, code] of [['one-shot wrapper', oneShot], ['resident wrapper', resident], ['opencode wrapper', opencode]]) {
+    assert.doesNotThrow(() => parse(code, { ecmaVersion: 'latest', sourceType: 'module' }), `${label} parses`);
     for (const sink of ['"stdout"', '"stderr"']) {
       assert.ok(code.includes(`__queueRpcWrite(${sink}, b)`), `${label} sends the stream's bytes, not a string`);
     }

@@ -907,15 +907,15 @@ let __ntC = 0, __qmC = 0;
 let __fetchC = 0;
 // WebAssembly.Memory.grow probe: total grows / pages, last grower's stack.
 let __wgC = 0, __wgP = 0, __wgLast = "";
-const __queueRpcWrite = (method, s) => {
+const __queueRpcWrite = (method, bytes) => {
   if (!__supervisor) return;
-  __rpcQc += 1; __rpcQb += s.length;
+  __rpcQc += 1; __rpcQb += bytes.byteLength;
   const __task = __rpcWriteChain
-    .then(() => __supervisor[method](s))
+    .then(() => __supervisor[method](bytes))
     .catch(() => {});
   __rpcWriteChain = __task.then(() => {}, () => {});
   __pendingWrites.add(__task);
-  const __len = s.length;
+  const __len = bytes.byteLength;
   __task.finally(() => { __rpcSc += 1; __rpcSb += __len; __chainSettleAt = Date.now(); __pendingWrites.delete(__task); });
   __ocFlowDiag();
 };
@@ -949,30 +949,30 @@ if (__ocResident) {
   // stream would grow without bound over a resident process's lifetime.
   process.stdout.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
-    const s = String(d);
-    stdout = __ocTail(stdout, s);
-    __queueRpcWrite("stdout", s);
+    const b = __nimbusOutBytes(d, enc);
+    stdout = __ocTail(stdout, __nimbusOutText("stdout", b));
+    __queueRpcWrite("stdout", b);
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
   };
   process.stderr.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
-    const s = String(d);
-    stderr = __ocTail(stderr, s);
-    __queueRpcWrite("stderr", s);
+    const b = __nimbusOutBytes(d, enc);
+    stderr = __ocTail(stderr, __nimbusOutText("stderr", b));
+    __queueRpcWrite("stderr", b);
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
   };
 } else {
   process.stdout.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
-    stdout += String(d);
+    stdout += __nimbusOutText("stdout", __nimbusOutBytes(d, enc));
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
   };
   process.stderr.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
-    stderr += String(d);
+    stderr += __nimbusOutText("stderr", __nimbusOutBytes(d, enc));
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
   };
@@ -987,8 +987,8 @@ const __ocFmt = (...a) => a.map((x) => {
 // event loop — the only channel that still reports from a CPU-bound spin.
 const __realConsoleError = console.error.bind(console);
 if (__ocResident) {
-  console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout = __ocTail(stdout, s); __queueRpcWrite("stdout", s); };
-  console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr = __ocTail(stderr, s); __queueRpcWrite("stderr", s); };
+  console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout = __ocTail(stdout, s); __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
+  console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr = __ocTail(stderr, s); __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
 } else {
   console.log = (...a) => { stdout += __ocFmt(...a) + "\\n"; };
   console.error = (...a) => { stderr += __ocFmt(...a) + "\\n"; };
