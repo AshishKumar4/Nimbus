@@ -24,13 +24,12 @@
 // path, and the placeholder carries no such mount, so that is the marker for
 // "the dev server is serving" as opposed to "the route answered".
 //
-// The reading is then a bracket: dev-server HTML seen at time T with the last
-// placeholder read at time P means startup completed in (P, T]. That decides
-// the bound when the bracket sits entirely on one side of it, and decides
-// nothing when it straddles — which is refused out loud rather than scored in
-// whichever direction the poll phase happened to land. Polling every 20 ms
-// keeps the bracket narrow. A run that never witnesses the placeholder never
-// started its clock, and is refused for the same reason.
+// Verify the placeholder before sending the start command. Startup then lies
+// after command-sent time, even when the first subsequent read is already ready.
+// A later placeholder response advances the lower bound only to its request's
+// start: the server may start while that response travels back to the client.
+// Failed requests supply no timing evidence. A bracket that straddles the
+// threshold remains unscorable rather than being counted as a pass.
 //
 // Threshold provenance: see THRESHOLD_MS below.
 //
@@ -69,50 +68,43 @@ try {
 
   await t.run('cd example-app && npm install', 300_000);
 
+  const servedByDevServer = new RegExp(`<base href="/s/${sid}/preview/`);
+  const before = await fetch(`${BASE}/s/${sid}/preview/`, {
+    redirect: 'manual', headers: requestHeaders(), signal: AbortSignal.timeout(POLL_BUDGET_MS),
+  });
+  const beforeBody = await before.text();
+  const sawPlaceholder = before.status === 200 && !servedByDevServer.test(beforeBody);
+
   t.reset();
   const t0 = performance.now();
   t.cmd('npm run dev');
-
-  // The dev server rewrites the project's index.html to mount under the
-  // preview path. The placeholder page carries no such mount, so this is the
-  // marker that separates "the dev server is serving" from "the preview route
-  // answered".
-  const servedByDevServer = new RegExp(`<base href="/s/${sid}/preview/`);
-
-  // upper = when dev-server HTML was first seen. lower = the last observation
-  // that was still the placeholder, so first-paint lies in (lower, upper].
   let upperMs = 0;
   let lowerMs = 0;
-  let sawPlaceholder = false;
   let polls = 0;
   while (performance.now() - t0 < POLL_BUDGET_MS) {
+    const requestStartedMs = performance.now() - t0;
     try {
-      const r = await fetch(`${BASE}/s/${sid}/preview/`, { redirect: 'manual', headers: requestHeaders() });
+      const r = await fetch(`${BASE}/s/${sid}/preview/`, {
+        redirect: 'manual', headers: requestHeaders(),
+        signal: AbortSignal.timeout(Math.max(1, Math.ceil(POLL_BUDGET_MS - requestStartedMs))),
+      });
       const body = await r.text();
       polls++;
       if (r.status === 200 && servedByDevServer.test(body)) {
         upperMs = performance.now() - t0;
         break;
       }
-      sawPlaceholder = true;
-      lowerMs = performance.now() - t0;
-    } catch {
-      // The dev server may still be binding its port; a failed request is
-      // still evidence it was not serving at this instant.
-      lowerMs = performance.now() - t0;
-    }
+      if (r.status === 200) lowerMs = requestStartedMs;
+    } catch { /* A transport failure does not establish whether startup finished. */ }
     await new Promise((rs) => setTimeout(rs, POLL_INTERVAL_MS));
   }
 
   a.check('preview served the dev server within the poll budget', upperMs > 0,
     `polls=${polls} budget=${POLL_BUDGET_MS}ms — never saw the dev-server mount in /preview/`);
 
-  // If the very first observation was already the dev server, the run proves
-  // nothing about startup: the placeholder state was never witnessed, so the
-  // measurement did not begin before the thing it is timing.
   a.check('observed the pre-startup state, so the timing has a starting point',
     sawPlaceholder,
-    'the first /preview/ read was already the dev server — this run did not bracket startup and its duration is not a measurement of it');
+    `the preview did not serve its placeholder before npm run dev (status=${before.status})`);
 
   // Direct property: the dev server actually came up and announced a bound
   // port. A 200 alone can be served by something that is not the dev server,
@@ -130,7 +122,7 @@ try {
     `terminal tail=${JSON.stringify(buf.slice(-400))}`);
 
   // The bracket decides the bound only when it does not straddle it.
-  const decidable = upperMs > 0 && (upperMs <= THRESHOLD_MS || lowerMs > THRESHOLD_MS);
+  const decidable = sawPlaceholder && upperMs > 0 && (upperMs <= THRESHOLD_MS || lowerMs > THRESHOLD_MS);
   a.check(`measurement brackets first-paint tightly enough to score ${THRESHOLD_MS} ms`,
     decidable,
     `first-paint is somewhere in (${lowerMs.toFixed(0)}, ${upperMs.toFixed(0)}] ms, which straddles the ${THRESHOLD_MS} ms bound — this run cannot say which side it is on, so it is not scored`);
