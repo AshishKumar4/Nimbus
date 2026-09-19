@@ -18,8 +18,7 @@
 //      every longer deadline the callers declared. The bound is now a real
 //      timer.
 //
-// And when the drain does run out with work still pending, the program did
-// NOT finish: it exits non-zero saying so, instead of reporting success.
+// Live handles keep the program running until it exits or the user cancels it.
 
 import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
 
@@ -86,25 +85,15 @@ try {
     JSON.stringify(longRun.slice(-600)),
   );
 
-  // 5. Work that never completes is a failure, not a silent success — and the
-  //    message must name the limit that was hit, not merely that something was
-  //    dropped. It must also be the FACET's own exit: if the drain overran, the
-  //    supervisor's generic "[process killed: timeout after 30s]" would replace
-  //    it and the user would lose the reason.
-  const stuck = stripAnsi((await t.run(
-    `node -e 'setInterval(() => {}, 1000); console.log("STUCK-START");' ; echo "EXIT=$?"`,
-    90_000,
-  )).output);
-  a.check(
-    'a program abandoned with work in flight names the limit it hit',
-    /facet lifetime limit/.test(stuck) && /still in flight/.test(stuck),
-    JSON.stringify(stuck.slice(-600)),
-  );
-  a.check(
-    "that failure is the facet's own honest exit, not the supervisor kill",
-    /EXIT=1\b/.test(stuck) && !/timeout after \d+s/.test(stuck),
-    JSON.stringify(stuck.slice(-600)),
-  );
+  // 5. There is no implicit lifetime cap. Cancel a live interval explicitly.
+  t.reset();
+  t.cmd(`node -e 'setInterval(() => {}, 1000); console.log("STUCK-START");'`);
+  await t.waitFor((output) => /\nSTUCK-START\r?\n/.test(stripAnsi(output)), 15_000, 'interval program started');
+  t.send('\x03');
+  await t.waitForPrompt(15_000);
+  const cancelled = stripAnsi((await t.run('echo "CANCEL_EXIT=$?"', 15_000)).output);
+  a.check('Ctrl+C terminates the active program with exit 130',
+    /CANCEL_EXIT=130\b/.test(cancelled), JSON.stringify(cancelled.slice(-600)));
 
   // 6. The other side of that line: an unsettled PROMISE is not work in
   //    flight. Node exits on live handles, not on pending promises, so a
