@@ -1,28 +1,7 @@
-/**
- * WebSocket-backed terminal matching Nimbus's ITerminal interface.
- * HeadlessTerminal has: write, writeln, onData, sendData, cols, rows, focus, clear
- *
- * [B'.5] The `ws` ref is no longer readonly: a wsClose leaves the
- * Shell + this terminal alive in-memory; the next /ws upgrade calls
- * `attach(newWs, ...)` to swap in the new socket. The buffer/flush
- * timer state is preserved across the swap so any in-flight
- * coalescing continues seamlessly.
- */
 export declare class WebSocketTerminal {
-    ws: WebSocket;
+    /** Null while the terminal is headless (composed before any attach). */
+    ws: WebSocket | null;
     private dataCallback;
-    /**
-     * REPL-W1: secondary input callback installed by interactive runtimes
-     * (e.g. `python` no-args). When non-null, sendData() routes input to
-     * this callback INSTEAD of the shell. Set via attachRepl(); cleared
-     * by the disposer the attach call returns. Supports nesting (the
-     * disposer restores the prior callback).
-     *
-     * §3 (Layer 2): the explicit handoff mirrors how `vim`/`less` swap
-     * the parent shell's terminal handler. Auto-detect was rejected as
-     * fragile. Additive only — when null, behavior is identical to pre-W1.
-     */
-    private replCallback;
     /**
      * editor/monaco (2026-05-13): Editor-pane file-system bridge.
      *
@@ -46,7 +25,7 @@ export declare class WebSocketTerminal {
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
      *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
     private onFlush;
-    constructor(ws: WebSocket, onFlush?: (data: string) => void);
+    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void);
     /**
      * [B'.5] Swap the underlying WebSocket on a warm rejoin. The Shell
      * keeps `terminal` as a stable instance reference (it stored
@@ -56,6 +35,11 @@ export declare class WebSocketTerminal {
      * self.ctx, but TypeScript-wise it's a fresh function value).
      */
     attach(ws: WebSocket, onFlush?: (data: string) => void): void;
+    /** Release the socket without ending the terminal's lifetime. */
+    detach(): void;
+    private replBinding;
+    private replTeardown;
+    disposeRepl(): Promise<void>;
     close(): void;
     get cols(): number;
     get rows(): number;
@@ -94,13 +78,7 @@ export declare class WebSocketTerminal {
      */
     onFs(cb: (msg: any, reply: (frame: any) => void) => void): void;
     sendData(data: string): void;
-    /**
-     * REPL-W1: install a runtime-side input handler. Returns a disposer
-     * that restores the prior handler (supports nesting). Calling this
-     * does NOT change the shell's dataCallback — it just shadows it
-     * until the disposer runs.
-     */
-    attachRepl(cb: (data: string) => void): () => void;
+    attachRepl(input: (data: string) => void, dispose?: () => Promise<void>): () => void;
     focus(): void;
     clear(): void;
 }

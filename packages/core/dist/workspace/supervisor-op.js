@@ -64,6 +64,8 @@ export const SUPERVISOR_OPS = [
     'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
     'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
     'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
+    'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
+    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay',
 ];
 /** The host-side argument plan per op — how an envelope becomes an _rpc* call. */
 export const SUPERVISOR_OP_ROUTES = {
@@ -124,6 +126,15 @@ export const SUPERVISOR_OP_ROUTES = {
     cpKill: { method: '_rpcCpKill', args: [0, 1] },
     cpWait: { method: '_rpcCpWait', args: [0, 1] },
     cpDispatchInline: { method: '_rpcCpDispatchInline', args: [0, 1] },
+    innerDoFetch: { method: '_rpcInnerDoFetch', args: [0] },
+    fanoutExecute: { method: '_rpcFanoutExecute', args: [0, 1, 2] },
+    processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
+    hostProcess: { method: '_rpcHostProcess', args: [0, 1] },
+    awaitHostedOpen: { method: '_rpcAwaitHostedOpen', args: [0] },
+    awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
+    routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
+    cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
+    hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
 };
 /**
  * The ops `createSupervisorOpHandler` serves natively — one pid-keyed

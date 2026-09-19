@@ -146,6 +146,7 @@ try {
   await writeFile(entryPath, [
     `export { NimbusSession } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/session/nimbus-session.ts';`,
     `export { composeFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/compose.ts';`,
+    `export { ensureFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/hosted/services.ts';`,
     `export { adoptCtxExports, composeFabric } from '${new URL('../../', import.meta.url).pathname}packages/fabric/src/composition.ts';`,
     '',
   ].join('\n'));
@@ -238,7 +239,7 @@ try {
     _scheduleLaunchTurn(notBefore) { sessionEvents.push(['turn', typeof notBefore]); return Promise.resolve(true); },
     _notifySession(line) { sessionEvents.push(['notify', line]); },
   };
-  bundle.NimbusSession.prototype.ensureFacetManager.call(host);
+  bundle.ensureFacetManager(host, {ctx: host.ctx, env: host.env, notify: line => host._notifySession(line), requestLaunchTurn: notBefore => host._scheduleLaunchTurn(notBefore)});
   const sessionManager = host.facetManagerComposed.manager;
   assert.ok(sessionManager, 'the session composed a manager');
   assert.equal(host.sqliteFs, vfs, 'over its filesystem, which it stood up first');

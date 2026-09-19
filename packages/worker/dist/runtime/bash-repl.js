@@ -10,6 +10,7 @@ class BashReplAdapter {
     incompleteSource = null;
     pendingStdout = '';
     pendingStderr = '';
+    active = null;
     ps2 = '> ';
     constructor(deps) {
         this.deps = deps;
@@ -22,13 +23,28 @@ class BashReplAdapter {
     banner() {
         return '';
     }
-    async push(source) {
+    push(source) {
+        const controller = new AbortController();
+        const done = this.evaluate(source, controller.signal);
+        const active = { controller, done };
+        this.active = active;
+        const clear = () => { if (this.active === active)
+            this.active = null; };
+        void done.then(clear, clear);
+        return done;
+    }
+    async evaluate(source, signal) {
         try {
-            const bootResult = await this.ensureSession();
+            signal.throwIfAborted();
+            const bootResult = await this.ensureSession(signal);
+            signal.throwIfAborted();
             if (bootResult)
                 return bootResult;
+            const session = this.session;
+            if (!session)
+                throw new Error('Bash REPL is not initialized');
             const delta = this.sourceDelta(source);
-            const slice = await this.session.push(`${delta}\n`);
+            const slice = await session.push(`${delta}\n`);
             return this.consumeSlice(slice, source);
         }
         catch (error) {
@@ -39,6 +55,11 @@ class BashReplAdapter {
         }
     }
     async close() {
+        if (this.active)
+            await this.interrupt();
+        await this.resetSession();
+    }
+    async resetSession() {
         const session = this.session;
         this.session = null;
         this.incompleteSource = null;
@@ -46,7 +67,19 @@ class BashReplAdapter {
         this.pendingStderr = '';
         await session?.close();
     }
-    async ensureSession() {
+    async interrupt() {
+        const active = this.active;
+        const session = this.session;
+        if (active && session && !session.interrupt) {
+            throw new Error('Bash facet does not support interruption');
+        }
+        active?.controller.abort();
+        if (active && session?.interrupt)
+            await session.interrupt();
+        await active?.done;
+        await this.resetSession();
+    }
+    async ensureSession(signal) {
         if (this.session)
             return null;
         this.session = await createBashFacetSession({
@@ -64,6 +97,7 @@ class BashReplAdapter {
             cwd: this.deps.cwd,
             stdinClosed: false,
             stdinTty: true,
+            signal,
         });
         const initial = this.session.initial;
         if (initial.state !== 'need-input')

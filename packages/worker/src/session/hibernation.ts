@@ -99,6 +99,17 @@ export function wireHibernationOnConstruct(ctx: any): WsHibernationConfigResult 
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export function wireProcessLogPersist(host: HibHost, ctx: any): void {
+  installLogPersistence(host, ctx, () => {
+    scheduleHibFlush(host, ctx);
+    ensureLogJanitor(host, ctx);
+  });
+}
+
+export function installLogPersistence(
+  host: Pick<HibHost, '_w9PersistWired' | '_w9SchemaInit' | 'processes'>,
+  ctx: DurableObjectState,
+  onActivity: () => void,
+): void {
   if (host._w9PersistWired) return;
   host._w9PersistWired = true;
   const adapter: PersistAdapter = {
@@ -203,10 +214,7 @@ export function wireProcessLogPersist(host: HibHost, ctx: any): void {
   // every boot, including boots caused by a destroyed session's own
   // leftover alarm, making every session DO ever created fire an alarm
   // every ~60s forever (see dispatchAlarm's re-arm condition below).
-  host.processes.setLogPersist(adapter, () => {
-    scheduleHibFlush(host, ctx);
-    ensureLogJanitor(host, ctx);
-  });
+  host.processes.setLogPersist(adapter, onActivity);
 }
 
 /**
@@ -254,7 +262,7 @@ export function ensureLogJanitor(host: HibHost, ctx: any): void {
 }
 
 /** W9: idempotent SQL schema bootstrap. */
-export function ensureHibSchema(host: HibHost, ctx: any): void {
+export function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any): void {
   if (host._w9SchemaInit) return;
   host._w9SchemaInit = true;
   try {

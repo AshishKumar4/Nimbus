@@ -1,22 +1,10 @@
-/**
- * nimbus-session.ts — NimbusSession Durable Object (v2.0).
- *
- * The supervisor DO that owns the VFS, shell, and all commands.
- * `node` execution is delegated to dynamic workers via LOADER.load().
- * IPC between facets and the supervisor flows through SupervisorRPC.
- */
-import { staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
+import * as runtimeServices from '../hosted/services.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { composeFacetManager } from '../facets/compose.js';
-import { FacetProcessManager, textBytes } from '../facets/process.js';
-import { ChildProcessSpawnPool } from '../loaders/child-process/spawn-pool.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
-import { CRED_KERNEL, CRED_SESSION_USER, } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
-import { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
-import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
 // getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
@@ -30,58 +18,63 @@ import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 // longer references them directly. Phase 2 A'.5 renamed the function
 // (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
 // supervisor cache; goes through env.ASSETS on demand).
+// S10: oom-discriminator helpers (recordFailure, getFailures,
+// getLastRpcFrame, getLastFacetId, snapshotForStorage, rehydrateFromStorage)
+// moved to sibling modules (-rpc uses recordFailure for _reportExternalExit;
+// -ws uses recordFailure for webSocketError; -diag uses getFailures +
+// snapshotForStorage + rehydrateFromStorage; -routes uses getFailures +
+// getLastRpcFrame + getLastFacetId for /api/_diag/memory). Class file
+// no longer references any of them directly.
+// S10: classifyError, LRU_MAX_ENTRIES, fetchEsbuildWasmBytes moved to
+// sibling modules (-rpc, -routes, esbuild-wasm-bytes); class file no
+// longer references them directly. Phase 2 A'.5 renamed the function
+// (was getEsbuildWasmBytes; cached) to fetchEsbuildWasmBytes (no
+// supervisor cache; goes through env.ASSETS on demand).
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
-import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS, CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { NIMBUS_VERSION, DEFAULT_MOUNT_POINTS } from '@nimbus-sh/core/constants.js';
 import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
+import { routeSessionLoopback } from './ai.js';
 import { seedProject, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { ATTACH_BOOTSTRAP_JTI_KEY_PREFIX, SESSION_DESTROYED_KEY } from './keys.js';
 import { appendScrollback } from './state-store.js';
-import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
+import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 // S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
-import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState, } from './replica-routes.js';
+// S3: tryEnableReplicas + getReplicaState extracted to ./nimbus-session-replica.ts.
+import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 // S5: storage-key constants moved to ./nimbus-session-keys.ts; consumed by
 // sibling modules (-hib, -diag, -ws). The class file itself no longer
 // references any storage key directly.
 // S4: W9 hibernation surface extracted.
-import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, } from './hibernation.js';
+// S5: storage-key constants moved to ./nimbus-session-keys.ts; consumed by
+// sibling modules (-hib, -diag, -ws). The class file itself no longer
+// references any storage key directly.
+// S4: W9 hibernation surface extracted.
+import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+// S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, } from './ws.js';
+// S7: webSocket lifecycle (message, close, error, F1 discriminator,
+// _w5SafePersistRing) extracted.
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing } from './ws.js';
+// S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
 import { buildSessionSupervisorOps } from './supervisor-op.js';
-// The supervisor terminates a facet's outbound sockets so inbound frames
-// arrive as supervisor replies (VFS coherence witness 3).
-import { WebSocketRelay } from './ws-relay.js';
+// S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
+// Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
+// S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
-// ── Pure helpers extracted to ./nimbus-session-helpers.ts (S1) ────────
-//
-// renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS,
-// WRANGLER_IGNORED_FLAGS{,_WITH_VALUE}, WRANGLER_UNSUPPORTED_CONFIG_FIELDS,
-// filterWranglerFlags, detectUnsupportedWranglerConfig, _CP_FACET_DIRECT,
-// _CP_PURE_BUILTIN, _classifyCommand, detectBundlerBin, checkNodeModulesGuard
-// all live in the helpers module now.
-//
-// They are imported here (so call sites in this file work unchanged) and
-// re-exported (so external callers importing them from
-// `./nimbus-session.js` keep working — back-compat).
-//
-// (esbuild wasm bytes are fetched from env.ASSETS by
-//  src/esbuild-wasm-bytes.ts at pool-construction time; A'.5 dropped
-//  the supervisor-resident cache + the SUPERVISOR.getEsbuildWasm RPC.)
-// Helpers needed by this class file's own logic (not just re-export).
-import { _classifyCommand, } from './helpers.js';
 import { z } from 'zod/v4';
 const CpFacetDirectPayloadSchema = z.object({
     command: z.unknown().optional().transform((value) => value == null ? '' : String(value)),
@@ -241,7 +234,26 @@ The editor opens this file in Markdown preview mode by default. Use
 `;
 }
 export class NimbusSession extends CloudflareDurableObject {
+    #runtimeServices;
     // this.ctx and this.env are provided by the DurableObject base class
+    runtimeWorkspace = null;
+    runtimeReady = null;
+    get runtimeManager() {
+        if (!this.runtimeWorkspace)
+            throw new Error('Nimbus runtime is not initialized');
+        return this.runtimeWorkspace.runtimes;
+    }
+    async routeLoopback(port, request) {
+        return routeSessionLoopback({ ctx: this.ctx, env: this.env, portRegistry: this.portRegistry }, port, request);
+    }
+    async ensureRuntimeReady() {
+        if (this.shell)
+            return;
+        this.runtimeReady ??= this.initSession(null).then(() => {
+            this._b4Phase = 'drained';
+        }).finally(() => { this.runtimeReady = null; });
+        await this.runtimeReady;
+    }
     sqliteFs = null;
     kernel = null;
     shell = null;
@@ -414,7 +426,13 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     wranglerAliasBannerShown = false;
     constructor(ctx, env) {
-        super(ctx, env); // enables RPC on the DO
+        super(ctx, env);
+        this.#runtimeServices = runtimeServices.bindRuntimeServices(this, {
+            ctx,
+            env,
+            notify: (line) => this._notifySession(line),
+            requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
+        });
         // In `wrangler dev`, the outer Worker and this DO share a single
         // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
         // outer fetch handler (src/index.ts) is visible here via the
@@ -989,11 +1007,7 @@ export class NimbusSession extends CloudflareDurableObject {
         return _diag.persistRing(this, this.ctx);
     }
     /** The session's esbuild facet pool provider; constructing it does no work. */
-    ensureBundlePool() {
-        if (!this.bundlePool)
-            this.bundlePool = new EsbuildBundlePool(this.env, this.ctx);
-        return this.bundlePool;
-    }
+    ensureBundlePool() { return this.#runtimeServices.ensureBundlePool(); }
     /**
      * The session's FacetManager, composed through the one factory every host
      * uses (`facets/compose.ts`). What is wired here is only what is the
@@ -1002,295 +1016,19 @@ export class NimbusSession extends CloudflareDurableObject {
      * report that keeps the process table honest. The isolated esbuild
      * transform and the durable image-store fallback are the factory's.
      */
-    ensureFacetManager() {
-        if (!this.facetManagerComposed) {
-            // The manager is composed over the filesystem, so the filesystem comes
-            // first. Cheap and idempotent; every caller already stood it up or is
-            // about to.
-            this.ensureSqliteFs();
-            this.facetManagerComposed = composeFacetManager({
-                ctx: this.ctx,
-                env: this.env,
-                processes: this.processes,
-                portRegistry: this.portRegistry,
-                vfs: this.sqliteFs,
-                ...(this.esbuildService ? { esbuild: this.esbuildService } : {}),
-                hooks: {
-                    onExternalExit: (pid, code, reason) => this._reportExternalExit(pid, code, reason),
-                    requestLaunchTurn: (notBefore) => { void this._scheduleLaunchTurn(notBefore); },
-                    notify: (line) => this._notifySession(line),
-                    onSpawn: (pid, command, longRunning) => {
-                        const attachedTty = this.processes.get(pid)?.attachedTty === true;
-                        if (longRunning) {
-                            try {
-                                this.processes.openInput(pid);
-                            }
-                            catch { }
-                        }
-                        // Only surface long-running / user-visible spawns to keep
-                        // the terminal uncluttered. Short `node <file>` evals also
-                        // get a line because users want the pid for `logs`/`kill`.
-                        if (!this.terminal)
-                            return;
-                        const label = longRunning ? 'started (long-running)' : 'started';
-                        this.terminal.write(`\x1b[2m[facet ${label}: pid=${pid} cmd="${command}"]\x1b[0m\r\n`);
-                        // Structured event so the tabs UI can auto-open a log tab
-                        // for long-running processes (vite, wrangler dev, etc.).
-                        notifyTerminalEvent(this.terminal, {
-                            type: 'spawn', pid, command, longRunning, attachedTty,
-                        });
-                    },
-                },
-            });
-        }
-        const composed = this.facetManagerComposed;
-        // W3.5 Fix B: share the session's lazy esbuildService with the
-        // FacetManager so the bundle's ESM→CJS pre-pass doesn't pay
-        // wasm-init twice. The session may construct it after the manager
-        // exists, so the share is re-offered on every call; FacetManager
-        // otherwise lazy-creates its own on first exec — same wasm bytes,
-        // same ~10ms init cost, just paid once per surface.
-        if (this.esbuildService) {
-            composed.manager.setEsbuildService(this.esbuildService);
-        }
-        return composed;
-    }
+    ensureFacetManager() { return this.#runtimeServices.ensureFacetManager(); }
     /**
      * The supervisor-owned WebSocket relay. Lazy, because most sessions never
      * open a socket and the sockets it holds are live objects that must not
      * outlive the session.
      */
-    _ensureWebSocketRelay() {
-        if (!this.webSocketRelay)
-            this.webSocketRelay = new WebSocketRelay();
-        return this.webSocketRelay;
-    }
+    _ensureWebSocketRelay() { return this.#runtimeServices._ensureWebSocketRelay(); }
     /**
      * W8: lazily construct the FacetProcessManager when the first cp* RPC
      * arrives. Wired with adapters that bridge the Nimbus shell command
      * registry to the FacetProcessManager's CommandRegistryLike contract.
      */
-    _ensureFacetProcessManager() {
-        if (this.facetProcessManager)
-            return this.facetProcessManager;
-        this.ensureSqliteFs();
-        this.ensureFacetManager();
-        // FacetProcessManager is statically imported at top-of-file (W8).
-        // No lazy-import: workerd doesn't ship CJS require, and the dynamic
-        // import would be async — making _ensureFacetProcessManager async
-        // would force every cp* RPC entry point to also be async on the
-        // promise-resolution path, which is fine but uglier. Compile-time
-        // tree-shaking handles unused-when-no-cp-RPC paths.
-        // Adapter for FacetManagerLike — wraps the existing FacetManager.exec
-        // with a streaming surface. Phase 1 simplification: facet-direct
-        // commands are dispatched through the shell registry the same way
-        // shell.execute does, but with the per-PID hooks routed.
-        const facetMgrAdapter = {
-            execStream: async (codeJson, opts, hooks) => {
-                // codeJson is a payload from FacetProcessManager._dispatch facet-direct
-                // path: {command, args, env, cwd, stdin}. We dispatch through the
-                // existing shell registry by resolving the command and invoking
-                // it with synthesized output streams that route to hooks.
-                let payload;
-                try {
-                    const parsed = CpFacetDirectPayloadSchema.safeParse(JSON.parse(codeJson));
-                    if (!parsed.success) {
-                        hooks.onStderr(textBytes('child_process: facet dispatch requires a broker-assigned process pid\n'));
-                        return 1;
-                    }
-                    payload = parsed.data;
-                }
-                catch {
-                    hooks.onStderr(textBytes('child_process: invalid facet dispatch payload\n'));
-                    return 1;
-                }
-                const registry = this._cpRegistry;
-                if (!registry) {
-                    hooks.onStderr(textBytes('child_process: command registry unavailable\n'));
-                    return 127;
-                }
-                const commandName = normalizeCpCommandName(payload.command);
-                const cmd = await registry.resolve(commandName);
-                if (!cmd) {
-                    hooks.onStderr(textBytes(`${payload.command}: command not found\n`));
-                    return 127;
-                }
-                // Synthesize a CommandContext for the internal shell substrate.
-                const stdoutStream = { write: (d) => hooks.onStdout(textBytes(String(d))) };
-                const stderrStream = { write: (d) => hooks.onStderr(textBytes(String(d))) };
-                const ac = new AbortController();
-                const cred = this.processes.cred(payload.processPid);
-                const ctx = {
-                    pid: payload.processPid,
-                    cred,
-                    args: payload.args || [],
-                    env: payload.env || {},
-                    cwd: payload.cwd || '/home/user',
-                    vfs: this.sqliteFs.as(cred),
-                    stdout: stdoutStream,
-                    stderr: stderrStream,
-                    signal: ac.signal,
-                    // For commands that need stdin we pass a tiny adapter.
-                    stdin: staticStdinReader(payload.stdin || ''),
-                    setUmask: (mask) => { this.processes.setUmask(payload.processPid, mask); },
-                    runAs: async (targetCred, argv) => {
-                        if (argv.length === 0)
-                            return 0;
-                        const child = this.processes.spawn(argv.join(' '), argv, payload.cwd, { parentPid: payload.processPid, cred: targetCred });
-                        let exitCode = 1;
-                        try {
-                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), payload.env, payload.cwd, payload.stdin, hooks);
-                            return exitCode;
-                        }
-                        finally {
-                            this.processes.exit(child.pid, exitCode);
-                        }
-                    },
-                    __nimbusCaptureOutput: true,
-                };
-                try {
-                    const code = await cmd(ctx);
-                    return typeof code === 'number' ? code : 0;
-                }
-                catch (e) {
-                    hooks.onStderr(textBytes(`${payload.command}: ${e?.message || String(e)}\n`));
-                    return 1;
-                }
-            },
-            abort: (facetName) => {
-                // Best-effort: relay to ctx.facets.abort, mirroring FacetManager.kill.
-                try {
-                    this.ctx.facets?.abort?.(facetName, new Error('SIGKILL'));
-                }
-                catch { }
-                return true;
-            },
-        };
-        // Adapter for CommandRegistryLike. The shared shell registry is
-        // attached to `this._cpRegistry` by the shell-init path (see
-        // construction near line 2058 — registry passed as ctor arg there).
-        const cmdRegistryAdapter = {
-            // Consult the live shell registry FIRST so dynamically-registered
-            // commands (registerUnixCommands / git / npm / wrangler etc.) are seen
-            // even if they're not in the static _CP_PURE_BUILTIN allow-list. Falls
-            // back to the static facet-direct table for known facet-only commands.
-            // Returns null
-            // (→ exit 127) for everything unknown.
-            resolve: (name) => {
-                const commandName = normalizeCpCommandName(name);
-                const registry = this._cpRegistry;
-                if (registry && typeof registry.has === 'function' && registry.has(commandName)) {
-                    // Registered — classify by name. Reuse the static table so
-                    // facet-direct commands (node/npm/git/...) keep their kind
-                    // even when they ALSO happen to be registry entries.
-                    return _classifyCommand(commandName) || { kind: 'pure-builtin' };
-                }
-                return _classifyCommand(commandName);
-            },
-            runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
-                const registry = this._cpRegistry;
-                if (!registry) {
-                    hooks.onStderr(textBytes('cp: registry unavailable\n'));
-                    return 127;
-                }
-                const commandName = normalizeCpCommandName(name);
-                const cmd = await registry.resolve(commandName);
-                if (!cmd) {
-                    hooks.onStderr(textBytes(`${name}: command not found\n`));
-                    return 127;
-                }
-                const cred = this.processes.cred(pid);
-                const ac = new AbortController();
-                const ctx = {
-                    pid,
-                    cred,
-                    args, env, cwd,
-                    vfs: this.sqliteFs.as(cred),
-                    stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
-                    stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
-                    signal: ac.signal,
-                    stdin: staticStdinReader(stdin),
-                    setUmask: (mask) => { this.processes.setUmask(pid, mask); },
-                    runAs: async (targetCred, argv) => {
-                        if (argv.length === 0)
-                            return 0;
-                        const child = this.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
-                        let exitCode = 1;
-                        try {
-                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
-                            return exitCode;
-                        }
-                        finally {
-                            this.processes.exit(child.pid, exitCode);
-                        }
-                    },
-                };
-                try {
-                    const code = await cmd(ctx);
-                    return typeof code === 'number' ? code : 0;
-                }
-                catch (e) {
-                    hooks.onStderr(textBytes(`${name}: ${e?.message || String(e)}\n`));
-                    return 1;
-                }
-            },
-        };
-        // Construct the child-process Loader pool when the binding is available.
-        // Unit-test hosts without LOADER continue through direct dispatch.
-        let spawnPool;
-        try {
-            const envAny = this.env;
-            if (envAny?.LOADER && typeof envAny.LOADER.get === 'function') {
-                spawnPool = new ChildProcessSpawnPool(this.env, this.ctx);
-            }
-        }
-        catch {
-            spawnPool = undefined;
-        }
-        this.facetProcessManager = new FacetProcessManager({
-            facetMgr: facetMgrAdapter,
-            processes: this.processes,
-            vfsForProcess: (pid) => this.sqliteFs.as(this.processes.cred(pid)),
-            commandRegistry: cmdRegistryAdapter,
-            shellExecutor: {
-                execute: async (pid, commandLine, env, cwd, stdin, hooks) => {
-                    if (!this.shell) {
-                        hooks.onStderr(textBytes('sh: shell unavailable\n'));
-                        return 127;
-                    }
-                    const cred = this.processes.cred(pid);
-                    const setUmask = (mask) => { this.processes.setUmask(pid, mask); };
-                    const runAs = async (_parent, targetCred, argv) => {
-                        if (argv.length === 0)
-                            return 0;
-                        const child = this.processes.spawn(argv.join(' '), argv, cwd, { parentPid: pid, cred: targetCred });
-                        let exitCode = 1;
-                        try {
-                            exitCode = await cmdRegistryAdapter.runPureBuiltin(child.pid, argv[0], argv.slice(1), env, cwd, stdin, hooks);
-                            return exitCode;
-                        }
-                        finally {
-                            this.processes.exit(child.pid, exitCode);
-                        }
-                    };
-                    const result = await this.shell.execute(String(commandLine), {
-                        cwd: cwd || '/home/user',
-                        env: { ...this.shell.env, ...(env || {}) },
-                        onStdout: hooks.onStdout,
-                        onStderr: hooks.onStderr,
-                        stdin,
-                        isolateShellState: true,
-                        commandContext: { pid, cred, setUmask },
-                        runAs,
-                    });
-                    return typeof result?.exitCode === 'number' ? result.exitCode : 0;
-                },
-            },
-            ctx: this.ctx,
-            spawnPool,
-        });
-        return this.facetProcessManager;
-    }
+    _ensureFacetProcessManager() { return this.#runtimeServices._ensureFacetProcessManager(); }
     /**
      * Set the shell command registry for the W8 broker to dispatch
      * resolved commands. Called from the shell-init path right after
@@ -1304,148 +1042,13 @@ export class NimbusSession extends CloudflareDurableObject {
      * fetch calls across the lifetime of this DO instance. This prevents
      * ephemeral port exhaustion from creating a new worker per fetch.
      */
-    ensureFetchProxy(log) {
-        if (this.fetchProxyEntrypoint)
-            return this.fetchProxyEntrypoint;
-        try {
-            const env = this.env;
-            if (!env?.LOADER?.load) {
-                log?.('LOADER.load not available — using global fetch');
-                return null;
-            }
-            // Buffered proxy: reads the entire response body into an ArrayBuffer
-            // and returns it in ONE message instead of forwarding a ReadableStream.
-            // In workerd local dev, streaming responses across a service-binding
-            // RPC fabric opens a separate loopback socket PER chunk (~16KB), which
-            // exhausts ephemeral ports for larger installs (npm registry packuments
-            // are 500KB-3MB, tarballs up to 5MB). Buffering to arrayBuffer means
-            // 1 stub call = 1 loopback connection, not N connections.
-            //
-            // 32MB cap prevents a malformed giant response from OOMing the proxy
-            // isolate. Packages with tarballs larger than 32MB will fail to install
-            // cleanly (returned as 413 → caller treats as failed fetch).
-            const proxyCode = [
-                'const MAX_BYTES = 32 * 1024 * 1024;',
-                'export default {',
-                '  async fetch(request, workerEnv) {',
-                '    try {',
-                '      const body = await request.json();',
-                '      const resp = await fetch(body.url, {',
-                '        method: body.method || "GET",',
-                '        headers: body.headers || {},',
-                '      });',
-                '      // Check advertised Content-Length before buffering',
-                '      const clStr = resp.headers.get("content-length");',
-                '      if (clStr) {',
-                '        const cl = parseInt(clStr, 10);',
-                '        if (cl > MAX_BYTES) {',
-                '          return new Response(',
-                '            JSON.stringify({ error: "response too large: " + cl + " bytes (cap " + MAX_BYTES + ")" }),',
-                '            { status: 413, headers: { "Content-Type": "application/json" } }',
-                '          );',
-                '        }',
-                '      }',
-                '      // Buffer entire body — ONE message, not streamed chunks',
-                '      const buf = await resp.arrayBuffer();',
-                '      if (buf.byteLength > MAX_BYTES) {',
-                '        return new Response(',
-                '          JSON.stringify({ error: "response exceeded cap: " + buf.byteLength + " bytes" }),',
-                '          { status: 413, headers: { "Content-Type": "application/json" } }',
-                '        );',
-                '      }',
-                '      return new Response(buf, {',
-                '        status: resp.status,',
-                '        statusText: resp.statusText,',
-                '        headers: Object.fromEntries(resp.headers.entries()),',
-                '      });',
-                '    } catch (e) {',
-                '      return new Response(JSON.stringify({ error: e.message }), {',
-                '        status: 502,',
-                '        headers: { "Content-Type": "application/json" },',
-                '      });',
-                '    }',
-                '  }',
-                '};',
-            ].join('\n');
-            const worker = env.LOADER.load({
-                compatibilityDate: CF_COMPAT_DATE,
-                compatibilityFlags: ['nodejs_compat'],
-                mainModule: 'fetch-proxy.js',
-                modules: { 'fetch-proxy.js': proxyCode },
-            });
-            this.fetchProxyEntrypoint = worker.getEntrypoint();
-            log?.('Fetch proxy worker created (singleton)');
-            return this.fetchProxyEntrypoint;
-        }
-        catch (e) {
-            log?.(`Fetch proxy creation failed: ${e?.message}`);
-            return null;
-        }
-    }
+    ensureFetchProxy(log) { return this.#runtimeServices.ensureFetchProxy(log); }
     /**
      * Build a FetchFn that routes through the singleton proxy entrypoint.
      * All concurrent fetches share ONE worker — no port exhaustion.
      */
-    buildFetchFn(log) {
-        const entrypoint = this.ensureFetchProxy(log);
-        if (!entrypoint)
-            return undefined;
-        return async (url, init) => {
-            const headers = {};
-            if (init?.headers) {
-                if (init.headers instanceof Headers) {
-                    init.headers.forEach((v, k) => { headers[k] = v; });
-                }
-                else if (typeof init.headers === 'object') {
-                    Object.assign(headers, init.headers);
-                }
-            }
-            return entrypoint.fetch(new Request('http://fetch-proxy/do-fetch', {
-                method: 'POST',
-                body: JSON.stringify({ url, method: init?.method || 'GET', headers }),
-            }));
-        };
-    }
-    async ensureNpmInstaller(onProgress) {
-        this.ensureSqliteFs();
-        if (!this.esbuildService) {
-            if (!this.sqliteFs)
-                throw new Error('Session VFS is not initialized');
-            this.esbuildService = new EsbuildService(this.sqliteFs.as(CRED_KERNEL));
-        }
-        // Lazy-load the installer (+ its ~216 KB resolver/facet/loader-pool
-        // subgraph) on first npm use so it stays out of the cold script-eval
-        // graph. The install command paths that call this are already async.
-        const { NpmInstaller } = await import('../npm/installer.js');
-        // ── Lazy fetch-proxy ────────────────────────────────────────────
-        // The fetch-proxy is a singleton dynamic worker (LOADER.load) that
-        // buffers registry responses to dodge wrangler-local-dev port
-        // exhaustion. It is only needed for the in-supervisor npm paths.
-        // When the resolver and install paths run in facets (default-on),
-        // they use bare globalThis.fetch and need no proxy.
-        //
-        // workerd has a per-DO cap on concurrent dynamic workers (~5-6
-        // empirically). A permanent live proxy worker eats one of those
-        // slots for the entire DO lifetime, so the proxy is built only when
-        // any facet path is disabled via its env flag.
-        const useFacetResolver = this._envFlagDefaultOn('NIMBUS_FACET_RESOLVER');
-        const useFacetInstall = this._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL');
-        const useBatchFacet = this._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL_BATCH');
-        const needProxy = !(useFacetResolver && useFacetInstall && useBatchFacet);
-        const fetchFn = needProxy ? this.buildFetchFn(onProgress) : undefined;
-        if (!needProxy) {
-            onProgress?.(`[npm] Lazy fetch-proxy: skipped (all facet paths default-on)`);
-        }
-        this.npmInstaller = new NpmInstaller(this.sqliteFs, this.ctx.storage.sql, {
-            esbuild: this.esbuildService,
-            bundlePool: this.ensureBundlePool(),
-            ctx: this.ctx,
-            env: this.env,
-            onProgress,
-            fetchFn,
-        });
-        return this.npmInstaller;
-    }
+    buildFetchFn(log) { return this.#runtimeServices.buildFetchFn(log); }
+    async ensureNpmInstaller(onProgress) { return this.#runtimeServices.ensureNpmInstaller(onProgress); }
     /**
      * Read an environment flag with default-on semantics. Mirrors the
      * shouldUseFacetPool / shouldUseFacetResolver / shouldUseBatchFacet
@@ -1453,15 +1056,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * lazy-proxy decision uses identical semantics without leaking that
      * private API across modules.
      */
-    _envFlagDefaultOn(name) {
-        const raw = this.env?.[name];
-        if (raw === undefined || raw === null)
-            return true;
-        const s = String(raw).toLowerCase();
-        if (s === '0' || s === '' || s === 'false' || s === 'off' || s === 'no')
-            return false;
-        return true;
-    }
+    _envFlagDefaultOn(name) { return this.#runtimeServices._envFlagDefaultOn(name); }
     // ── Session initialization ────────────────────────────────────────────
     // ── Session initialization ────────────────────────────────────────────
     //
@@ -1487,19 +1082,7 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _wakeRebuild = null;
     // ── Filesystem seeding ────────────────────────────────────────────────
-    ensureGlobalPrefixDirs(prefix) {
-        const fs = this.sqliteFs.as(CRED_SESSION_USER);
-        const dirs = [
-            prefix,
-            `${prefix}/lib`,
-            `${prefix}/lib/node_modules`,
-            `${prefix}/bin`,
-        ];
-        for (const dir of dirs) {
-            if (!fs.exists(dir))
-                fs.mkdir(dir, { recursive: true });
-        }
-    }
+    ensureGlobalPrefixDirs(prefix) { return this.#runtimeServices.ensureGlobalPrefixDirs(prefix); }
     /**
      * The starter content a fresh Nimbus session shows a user: the banner, the
      * sample files, and the Vite starter app.

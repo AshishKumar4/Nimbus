@@ -15,7 +15,7 @@
  *   session's `_rpc*` methods — `host` IS the session — exactly as the
  *   canonical route table maps them.
  */
-import { type SupervisorOpBridgeStore, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { type SupervisorOpBridgeStore, type SupervisorOpEnvelope, type SupervisorOpHost } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -38,5 +38,5 @@ export interface SessionSupervisorOps {
     /** Drop a pid's bridge — a process exit ends its credential's validity. */
     readonly forget: (pid: number) => void;
 }
-export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore): SessionSupervisorOps;
+export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore, methods?: SupervisorOpHost): SessionSupervisorOps;
 //# sourceMappingURL=supervisor-op.d.ts.map

@@ -6,15 +6,15 @@
  * duplicating the interactive terminal boot path.
  */
 
-import {
-  ensureRuntimesProgrammatic,
-  installRuntimeProgrammatic,
-  listAvailableRuntimes,
-} from '../runtime/package-manager.js';
-import {
-  listInstalledRuntimes,
-  type MinShellRegistry,
-} from '@nimbus-sh/core/runtime/installed-runtimes.js';
+/**
+ * session/programmatic.ts - public sandbox RPC helpers.
+ *
+ * These helpers are called by NimbusSession one-line delegators so the
+ * Durable Object exposes a typed, programmatic sandbox surface without
+ * duplicating the interactive terminal boot path.
+ */
+import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
+import { type MinShellRegistry } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { LogChunk, ProcessLogReadOptions } from '@nimbus-sh/core/runtime/process-logs.js';
 import { notifyTerminalEvent, type TerminalLike } from '../runtime/process-logs-api.js';
@@ -22,50 +22,20 @@ import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-proces
 import type { ComposedFacetManager } from '../facets/compose.js';
 import { PortRegistry, createPortCapability, type PortEntry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
-import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, requireVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import {
-  endProcessInput,
-  resizeProcess,
-  signalProcess,
-  writeProcessInput,
-} from '@nimbus-sh/core/runtime/process-input-routing.js';
+import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import {
-  clearPortCapability,
-  isValidAppName,
-  persistPortCapability,
-  PortRecordSchema,
-  portRecordKey,
-  readPortReservation,
-  readPortReservationByName,
-  readPortReservationByOwner,
-  reservePort,
-  restorePortCapability,
-  rotatePortCapability,
-  type PortReservation,
-  type PortVisibility,
-} from './port-capability.js';
-import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
+import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, restorePortCapability, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
-import {
-  buildPreviewHost,
-  buildPublicPreviewHost,
-  isPreviewHostSafeSid,
-  readPreviewHostSuffix,
-} from '../_shared/preview-host.js';
-import type {
-  LongRunningWorkerSpawnOptions,
-  ResidentAppSummary,
-  ResidentIdentity,
-  ResidentRestartPolicy,
-  SpawnedWorker,
-} from '../facets/manager.js';
+import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix } from '../_shared/preview-host.js';
+import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
+import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 
 export interface ProgrammaticShell {
   env?: Record<string, string>;
@@ -96,27 +66,7 @@ interface ProgrammaticShellExecuteOptions {
   commandContext?: Record<string, unknown>;
 }
 
-interface ProgrammaticContext {
-  /** The session DO's own id — the public-directory binding reads its name. */
-  id?: { name?: unknown };
-  getWebSockets?(tag?: string): WebSocket[];
-  /** Holds a background process's work open for the life of the process. */
-  waitUntil?(promise: Promise<unknown>): void;
-  storage: {
-    get(key: string): Promise<unknown>;
-    put(key: string, value: unknown): Promise<void>;
-    delete(key: string): Promise<void>;
-    deleteAll(): Promise<void>;
-    deleteAlarm(): Promise<void>;
-    list<T = unknown>(options: { prefix: string }): Promise<Map<string, T>>;
-    transaction<T>(body: (txn: {
-      get(key: string): Promise<unknown>;
-      put(key: string, value: unknown): Promise<void>;
-      delete(key: string): Promise<unknown>;
-      list<T2 = unknown>(options: { prefix: string }): Promise<Map<string, T2>>;
-    }) => Promise<T>): Promise<T>;
-  };
-}
+type ProgrammaticContext = DurableObjectState;
 
 interface ProgrammaticFacetManager {
   kill(pid: number): boolean;
@@ -143,6 +93,8 @@ interface ProgrammaticCirrusServer {
 }
 
 export interface ProgrammaticHost {
+  readonly runtimeManager: RuntimeManager;
+  ensureRuntimeReady(): Promise<void>;
   _w1SessionDestroyed: boolean;
   env: RuntimeCatalogEnv;
   ctx: ProgrammaticContext;
@@ -183,7 +135,6 @@ export interface ProgrammaticHost {
   _w9WireProcessLogPersist?(): void;
   ensureSqliteFs(): void;
   ensureFacetManager(): ComposedFacetManager;
-  initSession(ws: WebSocket): Promise<void>;
 }
 
 export interface ProgrammaticReadyOptions {
@@ -385,33 +336,6 @@ const ProcessLogsOptionsSchema = z.object({
   bytes: z.number().int().nonnegative().optional(),
 }).strict();
 
-function makeHeadlessWebSocket(): WebSocket {
-  const listeners = new Map<string, Set<(event?: unknown) => void>>();
-  const state = { readyState: 1 };
-  const ws = {
-    get readyState() { return state.readyState; },
-    send(_data: string) {},
-    close() {
-      state.readyState = 3;
-      for (const cb of listeners.get('close') ?? []) {
-        try { cb(); } catch {}
-      }
-    },
-    accept() {},
-    addEventListener(type: string, cb: (event?: unknown) => void) {
-      const set = listeners.get(type) ?? new Set();
-      set.add(cb);
-      listeners.set(type, set);
-    },
-    removeEventListener(type: string, cb: (event?: unknown) => void) {
-      listeners.get(type)?.delete(cb);
-    },
-    serializeAttachment(_value: unknown) {},
-    deserializeAttachment() { return { kind: 'programmatic' }; },
-  };
-  return ws as unknown as WebSocket;
-}
-
 function getHome(self: ProgrammaticHost): string {
   try {
     const envHome = self.shell?.env?.HOME;
@@ -429,8 +353,8 @@ function runtimeDeps(self: ProgrammaticHost) {
   if (!self.sqliteFs) throw new Error('Nimbus SQLite filesystem did not initialize');
   if (!self._cpRegistry) throw new Error('Nimbus shell registry did not initialize');
   return {
-    env: self.env,
-    vfs: self.sqliteFs,
+    runtimes: self.runtimeManager,
+    vfs: self.sqliteFs.as(CRED_KERNEL),
     registry: self._cpRegistry,
     getHome: () => getHome(self),
   };
@@ -440,15 +364,7 @@ export async function ensureProgrammaticReady(
   self: ProgrammaticHost,
   options: ProgrammaticReadyOptions = {},
 ): Promise<{ ok: true; preinstalled: string[] }> {
-  if (!self.shell) {
-    await self.initSession(makeHeadlessWebSocket());
-    // A programmatic boot owns no terminal socket, which is what
-    // 'drained' reports to the diagnostics and the recovery ring.
-    self._b4Phase = 'drained';
-  } else {
-    self.ensureSqliteFs();
-    self.ensureFacetManager();
-  }
+  await self.ensureRuntimeReady();
 
   const preinstall = Array.from(new Set(options.preinstall ?? []))
     .map((s) => String(s).trim())
@@ -810,8 +726,8 @@ export async function rpcEnsureRuntimes(
 export async function rpcListRuntimes(self: ProgrammaticHost) {
   await ensureProgrammaticReady(self);
   return {
-    installed: listInstalledRuntimes(self.sqliteFs!, getHome(self)),
-    available: await listAvailableRuntimes(self.env),
+    installed: self.runtimeManager.list(),
+    available: await self.runtimeManager.available(),
   };
 }
 

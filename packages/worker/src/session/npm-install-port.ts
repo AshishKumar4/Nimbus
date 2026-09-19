@@ -16,7 +16,9 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
 import type { SessionInternal } from './internal.js';
 
-export function createNpmInstallPort(self: SessionInternal): NpmInstallPort {
+type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs'>;
+
+export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
   return {
     async install(spec) {
       const globalPrefix = spec.global ? spec.globalPrefix : undefined;

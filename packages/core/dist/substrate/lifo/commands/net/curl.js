@@ -1,6 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { isLoopbackHost } from '../../kernel/index.js';
-import { waitForSignalOrTimeout } from '../signal.js';
+import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
 const SHORT_VALUE_OPTIONS = new Set(['X', 'H', 'd', 'o', 'w', 'D']);
@@ -111,17 +110,13 @@ function createCurlImpl(kernel) {
             const requestSignal = createRequestSignal(ctx.signal, options.maxTimeSeconds);
             try {
                 await headers.open();
-                if (kernel?.portRegistry) {
-                    const virtual = await resolveVirtualCurlResponse(kernel, ctx, options, url, headers);
-                    if (virtual?.kind === 'response') {
-                        return handleCurlResponse(ctx, options, virtual.response);
-                    }
-                    if (virtual?.kind === 'external') {
-                        url = virtual.url;
-                    }
-                    if (virtual?.kind === 'error') {
-                        return virtual.exitCode;
-                    }
+                if (kernel) {
+                    // Kernel-bound: every hop — including any a redirect lands on — is
+                    // classified before it is served, so a loopback hop is answered by
+                    // this kernel's port registry or its host's loopback router, never
+                    // by fetch. The hop walk itself is the same fetch-follow mutation
+                    // the external -L path performs.
+                    return await executeKernelRequest(kernel, ctx, options, url, headers, requestSignal.signal);
                 }
                 // -L with a dump target needs every hop's headers, so redirects are
                 // followed manually here; without -D the fetch-native follow keeps
@@ -472,131 +467,131 @@ function addHeader(options, header) {
         return;
     options.headers[header.slice(0, colonIdx).trim()] = header.slice(colonIdx + 1).trim();
 }
-async function resolveVirtualCurlResponse(kernel, ctx, options, startUrl, headers) {
-    let currentUrl = startUrl;
+/**
+ * One bounded hop walk for a kernel-bound request. Loopback hops — including
+ * ones a redirect lands on — go through `dispatchWorkspaceRequest`; external
+ * hops fetch directly. Redirects mutate exactly as fetch-follow and
+ * `followExternalWithDump` do: 301/302 collapse only POST, 303 collapses
+ * everything but HEAD, content headers die with the body, and credential
+ * headers are stripped when a hop crosses origins. An external hop that
+ * presents this session's AI capability token is served by the session's
+ * gateway wherever it was addressed — `routeLoopback` on the AI port.
+ */
+async function executeKernelRequest(kernel, ctx, options, startUrl, headers, signal) {
+    let current = startUrl;
+    let method = options.method;
+    let data = options.data;
+    const requestHeaders = new Headers(Object.keys(options.headers).length > 0 ? options.headers : {});
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-        const response = await fetchVirtualCurlResponse(kernel, ctx, options, currentUrl, headers);
-        if (!response) {
-            return redirects === 0 ? null : { kind: 'external', url: currentUrl };
+        let requestUrl;
+        try {
+            requestUrl = new URL(current);
         }
-        if ('exitCode' in response) {
-            return { kind: 'error', exitCode: response.exitCode };
+        catch {
+            requestUrl = null;
         }
-        if (options.followRedirects && isRedirectStatus(response.status)) {
-            const location = getHeader(response.headers, 'location');
-            if (location) {
-                try {
-                    currentUrl = new URL(location, currentUrl).toString();
-                    cancelStreamBody(response.body);
-                    continue;
+        let response = null;
+        if (requestUrl !== null) {
+            const hasBody = method !== 'GET' && method !== 'HEAD' && data !== undefined;
+            const port = workspaceRequestPort(kernel, requestUrl);
+            if (port !== null) {
+                const local = await dispatchWorkspaceRequest(kernel, port, new Request(requestUrl, {
+                    method,
+                    headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
+                    body: hasBody ? data : undefined,
+                    signal,
+                }));
+                if (local.kind === 'aborted') {
+                    if (signal.reason instanceof Error && signal.reason.message === CURL_TIMEOUT_ERROR) {
+                        ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
+                        return 7;
+                    }
+                    return 130;
                 }
-                catch {
-                    return { kind: 'response', response };
+                if (local.kind === 'timeout') {
+                    ctx.stderr.write('curl: request timeout after 30s\n');
+                    return 7;
+                }
+                if (local.kind === 'refused') {
+                    ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
+                    return 7;
+                }
+                response = local.response;
+            }
+            else if (requestCarriesSessionAiToken(requestHeaders, ctx.env[NIMBUS_AI_TOKEN_ENV] || '')) {
+                // Off-box, but possibly still ours: inference the session owns is
+                // served by the session's gateway wherever it was addressed — which
+                // is how `curl https://api.openai.com/v1/models -H "Authorization:
+                // Bearer $OPENAI_API_KEY"` answers with the session's models. An
+                // aborted gateway hop is the caller's own cancel; a refusal keeps
+                // the old behavior: the request falls through and is fetched as
+                // the remote it claims to be.
+                const gateway = await dispatchWorkspaceRequest(kernel, NIMBUS_AI_GATEWAY_PORT, new Request(requestUrl, {
+                    method,
+                    headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
+                    body: hasBody ? data : undefined,
+                    signal,
+                }));
+                if (gateway.kind === 'response')
+                    response = gateway.response;
+                else if (gateway.kind === 'aborted')
+                    return 130;
+                else if (gateway.kind === 'timeout') {
+                    ctx.stderr.write('curl: request timeout after 30s\n');
+                    return 7;
                 }
             }
         }
-        return { kind: 'response', response };
+        response ??= await fetch(current, {
+            method,
+            headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
+            body: data,
+            redirect: 'manual',
+            signal,
+        });
+        // Dump on arrival — before any drain of this hop's body.
+        await writeHeaderDump(headers, response);
+        const record = headersToRecord(response.headers);
+        const follow = options.followRedirects && isRedirectStatus(response.status)
+            ? getHeader(record, 'location')
+            : undefined;
+        if (follow && redirects === MAX_REDIRECTS) {
+            cancelStreamBody(response.body);
+            break;
+        }
+        if (!follow) {
+            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || current));
+        }
+        let next;
+        try {
+            next = new URL(follow, current);
+        }
+        catch {
+            // Unusable Location: this hop is as final as it gets.
+            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, current));
+        }
+        // Follow decision made: this hop's body is no longer needed.
+        cancelStreamBody(response.body);
+        if ([301, 302].includes(response.status) && method === 'POST') {
+            method = 'GET';
+            data = undefined;
+        }
+        else if (response.status === 303 && method !== 'HEAD') {
+            method = 'GET';
+            data = undefined;
+        }
+        if (data === undefined) {
+            for (const name of CONTENT_HEADERS)
+                requestHeaders.delete(name);
+        }
+        if (next.origin !== requestUrl?.origin) {
+            for (const name of CREDENTIAL_HEADERS)
+                requestHeaders.delete(name);
+        }
+        current = next.toString();
     }
     ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
-    return { kind: 'error', exitCode: 47 };
-}
-/**
- * Hand one curl request to the supervisor's loopback router and shape the
- * answer as curl sees it. Null when nothing is listening on `port`.
- */
-async function routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port, headers) {
-    if (!kernel.routeLoopback)
-        return null;
-    const hasBody = options.method !== 'GET' && options.method !== 'HEAD' && options.data !== undefined;
-    const response = await kernel.routeLoopback(port, new Request(requestUrl, {
-        method: options.method,
-        headers: options.headers,
-        body: hasBody ? options.data : undefined,
-        signal: ctx.signal,
-    }));
-    if (!response)
-        return null;
-    // Dump on arrival — before the optional arrayBuffer() drain below.
-    await writeHeaderDump(headers, response);
-    return {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headersToRecord(response.headers),
-        // Stream to stdout as bytes arrive (a facet's SSE flows live);
-        // an -o file needs the whole payload for a single VFS write.
-        body: options.outputFile
-            ? new Uint8Array(await response.arrayBuffer())
-            : response.body ?? '',
-        url: response.url || url,
-    };
-}
-async function fetchVirtualCurlResponse(kernel, ctx, options, url, headers) {
-    let requestUrl;
-    try {
-        requestUrl = new URL(url);
-    }
-    catch {
-        return null;
-    }
-    let host = requestUrl.hostname;
-    const port = requestUrl.port ? Number(requestUrl.port) : (requestUrl.protocol === 'http:' ? 80 : 443);
-    if (kernel.networkStack && !isLoopbackHost(host)) {
-        host = kernel.networkStack.getDNS().lookup(host)?.value ?? host;
-    }
-    // Off-box, but possibly still ours: a request that presents this session's
-    // AI capability token is inference the session owns, and is served by the
-    // session's gateway wherever it was addressed — which is how `curl
-    // https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
-    // answers with the session's models. Anything carrying a different
-    // credential is not ours and goes to the network. See _shared/ai-egress.ts.
-    if (!isLoopbackHost(host)) {
-        if (!requestCarriesSessionAiToken(new Headers(options.headers), ctx.env[NIMBUS_AI_TOKEN_ENV] || '')) {
-            return null;
-        }
-        return routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, NIMBUS_AI_GATEWAY_PORT, headers);
-    }
-    const handler = kernel.portRegistry.get(port);
-    if (handler) {
-        const vReq = {
-            method: options.method,
-            url: requestUrl.pathname + requestUrl.search,
-            headers: options.headers,
-            body: options.data || '',
-        };
-        const vRes = {
-            statusCode: 200,
-            headers: {},
-            body: '',
-        };
-        handler(vReq, vRes);
-        if (vRes._donePromise) {
-            const result = await waitForSignalOrTimeout(vRes._donePromise, ctx.signal, 30_000);
-            if (result.type === 'aborted') {
-                return { exitCode: 130 };
-            }
-            if (result.type === 'timeout') {
-                ctx.stderr.write('curl: request timeout after 30s\n');
-                return { exitCode: 7 };
-            }
-        }
-        await headers.writeBlock({
-            status: vRes.statusCode,
-            statusText: statusText(vRes.statusCode),
-            headers: vRes.headers,
-        });
-        return {
-            status: vRes.statusCode,
-            statusText: statusText(vRes.statusCode),
-            headers: vRes.headers,
-            body: vRes.body,
-            url,
-        };
-    }
-    const routed = await routeCurlOverLoopback(kernel, ctx, options, requestUrl, url, port, headers);
-    if (routed)
-        return routed;
-    ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
-    return { exitCode: 7 };
+    return 47;
 }
 async function handleCurlResponse(ctx, options, response) {
     const failed = options.fail && response.status >= 400;
@@ -774,24 +769,6 @@ function bodySize(body) {
     if (typeof body === 'string')
         return body.length;
     return body instanceof Uint8Array ? body.byteLength : 0;
-}
-function statusText(status) {
-    switch (status) {
-        case 200: return 'OK';
-        case 201: return 'Created';
-        case 204: return 'No Content';
-        case 301: return 'Moved Permanently';
-        case 302: return 'Found';
-        case 303: return 'See Other';
-        case 307: return 'Temporary Redirect';
-        case 308: return 'Permanent Redirect';
-        case 400: return 'Bad Request';
-        case 401: return 'Unauthorized';
-        case 403: return 'Forbidden';
-        case 404: return 'Not Found';
-        case 500: return 'Internal Server Error';
-        default: return '';
-    }
 }
 function parsePositiveNumber(value) {
     const parsed = Number(value);

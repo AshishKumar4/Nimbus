@@ -23,7 +23,7 @@ export interface BashReplDeps {
   cred: VfsCred;
   env: Record<string, string>;
   cwd: string;
-  shell?: Pick<Shell, 'env' | 'cwd'>;
+  shell?: Pick<Shell, 'env' | 'cwd' | 'takeQueuedInput'>;
 }
 
 class BashReplAdapter implements ReplAdapter {
@@ -33,6 +33,7 @@ class BashReplAdapter implements ReplAdapter {
   private incompleteSource: string | null = null;
   private pendingStdout = '';
   private pendingStderr = '';
+  private active: { controller: AbortController; done: Promise<ReplPushResult> } | null = null;
 
   readonly ps2 = '> ';
 
@@ -48,13 +49,26 @@ class BashReplAdapter implements ReplAdapter {
     return '';
   }
 
-  async push(source: string): Promise<ReplPushResult> {
-    try {
-      const bootResult = await this.ensureSession();
-      if (bootResult) return bootResult;
+  push(source: string): Promise<ReplPushResult> {
+    const controller = new AbortController();
+    const done = this.evaluate(source, controller.signal);
+    const active = { controller, done };
+    this.active = active;
+    const clear = () => { if (this.active === active) this.active = null; };
+    void done.then(clear, clear);
+    return done;
+  }
 
+  private async evaluate(source: string, signal: AbortSignal): Promise<ReplPushResult> {
+    try {
+      signal.throwIfAborted();
+      const bootResult = await this.ensureSession(signal);
+      signal.throwIfAborted();
+      if (bootResult) return bootResult;
+      const session = this.session;
+      if (!session) throw new Error('Bash REPL is not initialized');
       const delta = this.sourceDelta(source);
-      const slice = await this.session!.push(`${delta}\n`);
+      const slice = await session.push(`${delta}\n`);
       return this.consumeSlice(slice, source);
     } catch (error: unknown) {
       return {
@@ -65,6 +79,11 @@ class BashReplAdapter implements ReplAdapter {
   }
 
   async close(): Promise<void> {
+    if (this.active) await this.interrupt();
+    await this.resetSession();
+  }
+
+  private async resetSession(): Promise<void> {
     const session = this.session;
     this.session = null;
     this.incompleteSource = null;
@@ -73,7 +92,19 @@ class BashReplAdapter implements ReplAdapter {
     await session?.close();
   }
 
-  private async ensureSession(): Promise<ReplPushResult | null> {
+  async interrupt(): Promise<void> {
+    const active = this.active;
+    const session = this.session;
+    if (active && session && !session.interrupt) {
+      throw new Error('Bash facet does not support interruption');
+    }
+    active?.controller.abort();
+    if (active && session?.interrupt) await session.interrupt();
+    await active?.done;
+    await this.resetSession();
+  }
+
+  private async ensureSession(signal: AbortSignal): Promise<ReplPushResult | null> {
     if (this.session) return null;
     this.session = await createBashFacetSession({
       facets: facetHostForManager(this.deps.facetMgr),
@@ -90,6 +121,7 @@ class BashReplAdapter implements ReplAdapter {
       cwd: this.deps.cwd,
       stdinClosed: false,
       stdinTty: true,
+      signal,
     });
 
     const initial = this.session.initial;

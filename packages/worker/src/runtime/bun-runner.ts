@@ -205,5 +205,5 @@ export async function runBunScript(
   opts: RunFreshOpts,
 ): Promise<RunFreshResult> {
   const wrappedCode = BUN_SHIM_PREAMBLE + code;
-  return runFresh(facetMgr, wrappedCode, opts);
+  return runFresh(facetMgr, wrappedCode, opts, code);
 }

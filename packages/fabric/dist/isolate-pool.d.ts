@@ -76,6 +76,15 @@ export interface IsolatePoolOptions {
      */
     cacheScope?: 'session' | 'global';
     /**
+     * Baked into the loader id. Two pools sharing tag, preamble, wasm and
+     * supervisor but differing in `scope` never reuse each other's warm
+     * workers: an interpreter scope that ENDS (REPL close, Ctrl-C reset)
+     * must not resurrect the loader-cached heap for the next owner.
+     * Default '' preserves the existing id bytes — only scoped pools get
+     * the extra segment.
+     */
+    scope?: string;
+    /**
      * Override the `doId` baked into the auto-injected SUPERVISOR binding.
      * Default: `ctx.id.toString()` (the DO that constructs the pool).
      *
@@ -281,6 +290,8 @@ export declare class IsolatePool {
      * the old key shape and its warm slots stay shared.
      */
     private readonly supervisorKey;
+    /** Extra loader-id segment from options.scope — see IsolatePoolOptions. */
+    private readonly scope;
     constructor(env: unknown, ctx: DurableObjectState, opts?: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
@@ -289,6 +300,16 @@ export declare class IsolatePool {
      * throws TimeoutError / RetryExhaustedError / ExecutionError.
      */
     submit<T, R>(fn: FacetTaskFn<T, R>, arg: T, opts?: IsolateCallOptions): Promise<Awaited<R>>;
+    /**
+     * Dispatch `fn` through the fetch transport — the pool's only
+     * cancellable path: aborting `request.signal` cancels the inner
+     * execution context at its next I/O suspension (a synchronous CPU
+     * section cannot be preempted — the platform's honest limit), the
+     * call rejects, and the slot generation bumps so the next dispatch
+     * gets a fresh interpreter. `fn` is request-shaped: it encodes and
+     * decodes its own payload.
+     */
+    submitRequest(fn: (request: Request, env: FacetBindings) => Response | Promise<Response>, request: Request, opts?: IsolateCallOptions): Promise<Response>;
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
      * pinned to stable slots so warm isolates are reused.

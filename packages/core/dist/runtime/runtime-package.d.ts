@@ -24,6 +24,7 @@
  * filesystem are bytes that execute.
  */
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestFile, type RuntimeManifest } from './runtime-manifest.js';
 /**
  * An installed npm package holding one runtime.
@@ -51,13 +52,70 @@ export interface SeededRuntime {
     /** False when the runtime was already installed at `root` and nothing was written. */
     readonly written: boolean;
 }
+/** What the catalog can offer, without fetching one blob of it. */
+export interface RuntimeAvailability {
+    name: string;
+    abi: RuntimePackageAbi;
+    defaultVersion: string;
+    versions: Array<{
+        version: string;
+        sizeBytes: number;
+        license: string;
+    }>;
+}
+/**
+ * Where a runtime comes from. `resolve` answers a spec (`name`,
+ * `name@version`, or any bin the runtime provides) with the package that
+ * satisfies it, or null when nothing does.
+ */
+export interface RuntimeSource {
+    list(): Promise<RuntimeAvailability[]>;
+    resolve(spec: string): Promise<RuntimePackage | null>;
+}
+export declare function splitRuntimeSpec(spec: string): {
+    name: string;
+    versionOverride: string | null;
+};
+/**
+ * Runtimes replaced by another implementation, keyed by the name users type.
+ *
+ * `python` was Pyodide and is now CPython for wasm32-wasi. The redirection
+ * lives in code rather than a catalog `default` because the catalog is shared
+ * with production deployments that still register the old runner. An explicit
+ * `python@<version>` is a deliberate request and bypasses this entirely.
+ */
+export declare const SUPERSEDED_RUNTIMES: Readonly<Record<string, string>>;
+/**
+ * The runtime source made of packages an embedder already holds. Specs match
+ * by name, by `name@version`, and by every bin `runtimeEntrypoints` declares —
+ * so `python3`, `pip` and `wasm-ld` resolve to their runtime with no
+ * hand-maintained alias map.
+ */
+export declare function suppliedRuntimeSource(packages: readonly RuntimePackage[]): RuntimeSource;
+/**
+ * One source out of several: each spec tries every source in order and the
+ * first non-null answer wins. Listing concatenates in the same order, so a
+ * supplied package shadows a catalog entry of the same name.
+ */
+export declare function composeRuntimeSources(sources: readonly RuntimeSource[]): RuntimeSource;
 /**
  * Write a runtime package into the filesystem as an install.
  *
- * Idempotent on the same rule the package manager uses: a `manifest.json`
- * already at the install root means the install completed, and the root
- * carries the version, so a package upgrade lands beside its predecessor
- * rather than half over it.
+ * `manifest.json` is written LAST: its presence is what
+ * `listInstalledManifests` takes as "install completed", so a tree that stops
+ * partway lists as nothing and retries cleanly. Before any payload write the
+ * marker is invalidated — `force` and a previously-interrupted tree share
+ * this path — but the tree itself is NEVER removed: an install root may hold
+ * files the manifest does not declare (pip's site-packages, a host's own
+ * additions), and the old R2 installer's `--reinstall` never deleted them
+ * either. A manifest already at the root is reused only when it parses to
+ * the identical manifest and every payload file verifies against its digest
+ * — the legacy R2 installer wrote the manifest first, so its interrupted
+ * trees fail this check and are rewritten rather than reported as installed.
  */
-export declare function seedRuntimePackage(vfs: CredentialedVfs, homeDir: string, runtimePackage: RuntimePackage): Promise<SeededRuntime>;
+export declare function seedRuntimePackage(vfs: CredentialedVfs, homeDir: string, runtimePackage: RuntimePackage, options?: {
+    force?: boolean;
+    /** One line per payload file, as it lands. */
+    onProgress?: (line: string) => void;
+}): Promise<SeededRuntime>;
 //# sourceMappingURL=runtime-package.d.ts.map

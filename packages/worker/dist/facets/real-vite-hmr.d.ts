@@ -108,7 +108,9 @@ export declare function registerHmrBridge(doId: string, holder: {
  *   doId — the supervisor DO's id, used to find the right stub +
  *          HmrBridge.
  */
-export declare class CirrusHmrRPC extends WorkerEntrypoint {
+export declare class CirrusHmrRPC extends WorkerEntrypoint<object, {
+    doId?: string;
+}> {
     private _bridge;
     private _stub;
     hmrSend(clientId: string | null, msg: string): Promise<void>;

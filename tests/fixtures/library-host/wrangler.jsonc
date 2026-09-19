@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nimbus-tw-library-host",
+  "main": "index.ts",
+  "compatibility_date": "2026-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "NIMBUS_PROCESS_HOST": "facet" },
+  "assets": {
+    "directory": "node_modules/@nimbus-sh/worker/public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACES", "class_name": "EmbeddedWorkspace" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EmbeddedWorkspace"] }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "r2_buckets": [{
+    "binding": "NIMBUS_RUNTIME_CACHE",
+    "bucket_name": "nimbus-runtime-cache",
+    "remote": true
+  }]
+}

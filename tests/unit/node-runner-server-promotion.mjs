@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { looksLikeServer, runFresh } from '../../packages/worker/src/runtime/node-runner.ts';
+import { runBunScript, BUN_SHIM_PREAMBLE } from '../../packages/worker/src/runtime/bun-runner.ts';
 
 // ── looksLikeServer signal ───────────────────────────────────────────────────
 for (const src of [
@@ -85,6 +86,19 @@ const PLAIN = `console.log('one-shot'); process.exit(0);`;
   await runFresh(fm, PLAIN, { argv: ['--watch'], filename: '/home/user/build.js' });
   assert.equal(fm.calls.spawnNode.length, 1, '--watch still forces the long-running path');
   assert.equal(fm.calls.exec.length, 0);
+}
+
+{
+  const fm = makeFacetMgr();
+  await runBunScript(fm, PLAIN, { argv: ['-e'] });
+  assert.equal(fm.calls.exec.length, 1, 'Bun compatibility preamble must not promote a short user script');
+  assert.equal(fm.calls.spawnNode.length, 0);
+  assert.ok(fm.calls.exec[0].code.startsWith(BUN_SHIM_PREAMBLE), 'Bun APIs remain installed');
+}
+{
+  const fm = makeFacetMgr();
+  await runBunScript(fm, 'Bun.serve({fetch() { return new Response("ok"); }});', { argv: [] });
+  assert.equal(fm.calls.spawnNode.length, 1, 'a real Bun server still gets a resident process');
 }
 
 console.log('node-runner-server-promotion: ok');

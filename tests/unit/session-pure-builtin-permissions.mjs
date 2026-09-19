@@ -24,6 +24,7 @@ try {
     entrypoints: [
       './packages/worker/src/session/nimbus-session.ts',
       './packages/worker/src/session/supervisor-rpc.ts',
+      './packages/worker/src/hosted/services.ts',
     ],
     outdir: outputDir,
     target: 'bun',
@@ -50,6 +51,9 @@ try {
   const rpcEntry = build.outputs.find((output) => output.path.endsWith('/supervisor-rpc.js'));
   assert.ok(rpcEntry, 'the supervisor RPC entry bundle was emitted');
   const { SupervisorRPC } = await import(pathToFileURL(rpcEntry.path).href);
+  const servicesEntry = build.outputs.find((output) => output.path.endsWith('/services.js'));
+  assert.ok(servicesEntry, 'the shared runtime services entry was emitted');
+  const { bindRuntimeServices } = await import(pathToFileURL(servicesEntry.path).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -88,6 +92,12 @@ try {
   const session = Object.create(NimbusSession.prototype);
   session.ctx = { facets: {} };
   session.env = {};
+  Object.assign(session, bindRuntimeServices(session, {
+    ctx: session.ctx,
+    env: session.env,
+    notify() {},
+    async requestLaunchTurn() { return true; },
+  }));
   session.sqliteFs = rawVfs;
   session.processes = processes;
   // ensureFacetManager short-circuits on this — the cp verbs under test

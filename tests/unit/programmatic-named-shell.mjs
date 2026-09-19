@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { rpcExec } from '../../packages/worker/src/session/programmatic.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -44,26 +44,27 @@ try {
       },
     },
     shell: ws.shell,
-    shellProcessPid: null,
+    shellProcessPid: ws.shellProcessPid,
     sqliteFs: ws.vfs,
-    processes: new SessionProcessSupervisor(),
+    processes: ws.processes,
     portRegistry: { getAll: () => [] },
     facetManager: null,
     viteDevServer: null,
     cirrusReal: null,
-    _cpRegistry: null,
+    _cpRegistry: ws.registry,
     _viteShimPid: null,
     _viteShimPort: null,
     terminal: null,
     ensureSqliteFs() {},
     ensureFacetManager() {},
-    initSession() { throw new Error('the test host is already booted'); },
+    ensureRuntimeReady() { assert.equal(this.shell, ws.shell); assert.equal(this.processes, ws.processes); },
   };
 
   // ── cd sticks, and so does an exported variable ───────────────────────────
   assert.equal((await rpcExec(host, 'cd /home/user/build', { shellId: 'agent-1' })).exitCode, 0);
   const where = await rpcExec(host, 'pwd', { shellId: 'agent-1' });
   assert.equal(where.stdout.trim(), '/home/user/build', 'the named shell stayed where it was put');
+  assert.equal((await rpcExec(host, 'echo "$PWD"', { shellId: 'agent-1' })).stdout.trim(), '/home/user/build', 'PWD follows the persisted cwd');
 
   await rpcExec(host, 'export STAGE=release', { shellId: 'agent-1' });
   const stage = await rpcExec(host, 'echo $STAGE', { shellId: 'agent-1' });
@@ -72,6 +73,7 @@ try {
   // ── Two names are two shells ──────────────────────────────────────────────
   const other = await rpcExec(host, 'pwd', { shellId: 'agent-2' });
   assert.equal(other.stdout.trim(), '/home/user', 'a fresh name starts at home, not in the other shell');
+  assert.equal((await rpcExec(host, 'echo "$PWD"', { shellId: 'agent-2' })).stdout.trim(), '/home/user', 'PWD stays scoped to its named shell');
   const stillThere = await rpcExec(host, 'pwd', { shellId: 'agent-1' });
   assert.equal(stillThere.stdout.trim(), '/home/user/build', 'and does not disturb the first');
 
@@ -106,6 +108,10 @@ try {
     [...rows.keys()].every((key) => key.startsWith('nimbus_programmatic_shell:')),
     'state is stored under the declared prefix and nothing else',
   );
+
+  ws.shell.getEnv().PWD = '/stale';
+  await ws.shell.execute(':', { isolateShellState: true });
+  assert.equal(ws.shell.getEnv().PWD, ws.shell.getCwd(), 'restoring a shell frame synchronizes PWD with cwd');
 
   db.close();
 } finally {

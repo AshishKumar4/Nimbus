@@ -9,13 +9,15 @@
  * again at every boot, because a Durable Object that was evicted comes back
  * with the filesystem and none of the registry.
  *
- * Nothing here fetches. Where a runtime came FROM — an R2 bucket and a digest
- * chain in the Cloudflare deployment — is `@nimbus-sh/worker`'s
- * `runtime/package-manager.ts`; a runtime that is already installed is the
- * same runtime whichever publisher put it there, so an embedder that seeds the
- * tree itself gets working commands out of this with nothing else in play.
+ * Nothing here fetches. Where a runtime came FROM is the caller's
+ * RuntimeSource; a runtime that is already installed is the same runtime
+ * whichever publisher put it there. Nothing here is process-global either:
+ * the runner table and the singleflight live on the workspace's
+ * RuntimeManager (runtime-manager.ts), because two workspaces in one process
+ * must not share either.
  */
 
+import { sha256Hex } from '../_shared/crypto.js';
 import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import {
@@ -35,6 +37,7 @@ import {
 export interface MinShellRegistry {
   register(name: string, handler: Command): void;
   unregister?(name: string): void;
+  has?(name: string): boolean;
   resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
 }
 
@@ -51,30 +54,9 @@ export type RunnerFactory = (
 
 /**
  * How a manifest entrypoint's `runner` key is resolved to code.
- *
- * A parameter rather than a fixed lookup because the process-global table
- * below is a property of the Cloudflare session, not of the idea: a factory
- * closes over one session's filesystem and one session's facet host, so an
- * embedder holding two workspaces in one process must be able to give each its
- * own without the second silently retargeting the first.
+ * The map is owned by the workspace's RuntimeManager.
  */
 export type RunnerLookup = (key: string) => RunnerFactory | undefined;
-
-/** Map of runner-key → factory. Populated by init.ts before install. */
-const runnerFactories: Record<string, RunnerFactory> = {};
-
-export function registerRunnerFactory(key: string, factory: RunnerFactory): void {
-  runnerFactories[key] = factory;
-}
-
-export function getRegisteredRunners(): string[] {
-  return Object.keys(runnerFactories);
-}
-
-/** The factory a manifest entrypoint's `runner` names, or undefined. */
-export function runnerFactoryFor(key: string): RunnerFactory | undefined {
-  return runnerFactories[key];
-}
 
 export interface RuntimeSummary {
   name: string;
@@ -187,28 +169,48 @@ export function listInstalledManifestsView(
   }
   return out;
 }
-
 /**
- * Re-register every installed runtime's entrypoints in the shell
- * registry. Call once at session-init time after all runner factories
- * are registered (init.ts:registerRunnerFactory blocks).
+ * An installed tree is trustworthy when its manifest parses and every payload
+ * file it declares is present with the digest the manifest vouches for.
+ *
+ * Digest-verified rather than size-verified because the tree's manifest is
+ * what rehydration binds commands to: a same-size corruption or a rewritten
+ * entrypoints table is a different runtime than the one that was installed,
+ * and trusting it would run bytes nobody published. One file at a time —
+ * these are interpreters, tens of megabytes each.
  */
-export function rehydrateInstalledRuntimes(
-  vfs: SqliteVFS,
-  registry: MinShellRegistry,
-  homeDir: string,
-): { count: number; bins: string[] } {
-  return rehydrateInstalledRuntimesView(vfs.as(CRED_KERNEL), registry, homeDir, runnerFactoryFor);
+export async function runtimePayloadIntact(
+  fs: CredentialedVfs,
+  root: string,
+  manifest: RuntimeManifest,
+): Promise<boolean> {
+  try {
+    for (const file of manifest.files) {
+      const target = `${root}/${file.path}`;
+      if (!fs.exists(target)) return false;
+      if ((await sha256Hex(fs.readFile(target))) !== file.sha256) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function rehydrateInstalledRuntimesView(
+/**
+ * Re-register every VERIFIED installed runtime's entrypoints in the shell
+ * registry. A tree that fails the payload check is not bound: it may be a
+ * legacy manifest-first install interrupted mid-write or a corruption, and
+ * the manager's install path repairs it on demand rather than running it.
+ */
+export async function rehydrateInstalledRuntimesView(
   vfs: CredentialedVfs,
   registry: MinShellRegistry,
   homeDir: string,
   runnerFor: RunnerLookup,
-): { count: number; bins: string[] } {
+): Promise<{ count: number; bins: string[] }> {
   const bins: string[] = [];
   for (const { root, manifest } of listInstalledManifestsView(vfs, homeDir)) {
+    if (!await runtimePayloadIntact(vfs, root, manifest)) continue;
     for (const ep of runtimeEntrypoints(manifest)) {
       const factory = runnerFor(ep.runner);
       if (!factory) continue; // runner not registered yet — skip

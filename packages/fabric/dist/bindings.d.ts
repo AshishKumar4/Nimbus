@@ -26,16 +26,6 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { WorkerCode } from './vendor/types.js';
 /**
- * The supervisor DO namespace a shim resolves ONE stub from, by the id its
- * props carry. `Stub` is that DO's RPC surface as the calling shim uses it —
- * the supervisor class belongs to the embedder, so each shim names the methods
- * it calls rather than the class.
- */
-interface SupervisorNamespace<Stub> {
-    idFromString(id: string): DurableObjectId;
-    get(id: DurableObjectId): Stub;
-}
-/**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
  * entrypoint contract every loaded worker answers; `handleHttpRequest` is the
  * fabric's own route target, which only a facet that serves ports exposes.
@@ -69,17 +59,6 @@ interface NimbusLoaderShimEnv {
     LOADER?: OuterWorkerLoader;
     NIMBUS_INNER_LOADER_DEPTH?: string;
 }
-/**
- * What the assets shim reads off the supervisor DO: the VFS bytes of one path,
- * or null when it holds no such file.
- */
-interface AssetsSupervisorStub {
-    _rpcReadFileBytes(path: string): Promise<ArrayBuffer | Uint8Array | null>;
-}
-/** `env` for the assets shim: the supervisor its VFS reads round-trip through. */
-interface NimbusAssetsEnv {
-    NIMBUS_SESSION?: SupervisorNamespace<AssetsSupervisorStub>;
-}
 /** Props the assets shim is minted with. */
 interface NimbusAssetsProps {
     /** Project root in VFS (e.g. "home/user/myapp"). */
@@ -110,7 +89,7 @@ interface NimbusAssetsProps {
  * For Phase 1, we use a simpler approach: the props carry a supervisor
  * DO id so we can round-trip through an RPC method that reads the file.
  */
-export declare class NimbusAssetsRPC extends WorkerEntrypoint<NimbusAssetsEnv, NimbusAssetsProps> {
+export declare class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps> {
     /**
      * Fetch a static asset. Called by the inner Worker as
      * `env.ASSETS.fetch(request)`. The request URL's pathname is used to
@@ -269,29 +248,6 @@ export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<unkno
     /** Return a stub bound to the given id. */
     get(id: string): unknown;
 }
-/**
- * What the DO shim reads off the supervisor: one inner-DO request, answered
- * from the facet the supervisor resolves in its own request context.
- */
-interface InnerDoSupervisorStub {
-    _rpcInnerDoFetch(request: {
-        bindingName: string;
-        id: string;
-        method: string;
-        url: string;
-        headers: [string, string][];
-        body: ArrayBuffer | null;
-    }): Promise<{
-        body: ArrayBuffer;
-        status: number;
-        statusText: string;
-        headers: [string, string][];
-    }>;
-}
-/** `env` for the DO shim: the supervisor that owns the facet. */
-interface NimbusInnerDoEnv {
-    NIMBUS_SESSION?: SupervisorNamespace<InnerDoSupervisorStub>;
-}
 /** Props the DO stub carries: which binding, which supervisor, which id. */
 interface NimbusDoStubProps extends NimbusDoNamespaceProps {
     id?: string;
@@ -304,11 +260,11 @@ interface NimbusDoStubProps extends NimbusDoNamespaceProps {
  * spins up / attaches to a facet via the supervisor's ctx.facets in
  * the SAME outer request context — never reusing stubs across requests.
  */
-export declare class NimbusDOStub extends WorkerEntrypoint<NimbusInnerDoEnv, NimbusDoStubProps> {
+export declare class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
     /**
-     * Resolve the supervisor DO from env.NIMBUS_SESSION and route through
-     * its _rpcInnerDoFetch RPC method, which runs ctx.facets.get(...) in
-     * its own context and forwards the request.
+     * Resolve the supervisor DO through the composed host namespace and
+     * dispatch the innerDoFetch op through its one supervisorOp entrypoint —
+     * a host forwards envelopes, not private _rpc* methods.
      */
     fetch(request: Request): Promise<Response>;
 }

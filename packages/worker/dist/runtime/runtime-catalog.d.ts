@@ -46,6 +46,8 @@
  * makes a stale pin a cache miss rather than an outage.
  */
 import { type ManifestFile, type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { type RuntimeSource } from '@nimbus-sh/core/runtime/runtime-package.js';
+import { type RuntimePackageAbi } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {
     get(key: string): Promise<{
@@ -102,5 +104,16 @@ export declare function fetchManifest(env: RuntimeCatalogEnv, entry: CatalogVers
  * execution in whichever session installs it.
  */
 export declare function fetchBlob(env: RuntimeCatalogEnv, file: ManifestFile): Promise<Uint8Array>;
+export declare function runtimeAbiForCatalogName(name: string): RuntimePackageAbi;
+/**
+ * The R2 catalog as a core `RuntimeSource` — the worker adapter half of the
+ * install path, so a workspace composed inside this Worker resolves
+ * `nimbus install <spec>` against the same bucket and digest chain the
+ * session's installer always used. Aliases resolve the way the old
+ * resolver did: `python` redirects to `cpython` unless a version pins it,
+ * and any bin a runtime's default manifest declares resolves to that
+ * runtime — except a superseded one, which never answers for a bin.
+ */
+export declare function runtimeCatalogSource(env: RuntimeCatalogEnv): RuntimeSource;
 export {};
 //# sourceMappingURL=runtime-catalog.d.ts.map

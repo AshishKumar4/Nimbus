@@ -12,6 +12,7 @@
  * interface declared below.
  */
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
+import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 /**
  * Per-runtime adapter contract. The shell-side ReplSession orchestrates
  * input handling; the adapter wraps the actual runtime invocation.
@@ -30,6 +31,8 @@ export interface ReplAdapter {
     /** Called once on session close (exit() / Ctrl-D / shell teardown).
      *  Should free any cached pool / isolate. Idempotent. */
     close(): Promise<void>;
+    /** Abort and settle the active push, resetting its interpreter before resolving. */
+    interrupt?(): void | Promise<void>;
     /** Primary prompt (typically '>>> '). */
     ps1: string;
     /** Continuation prompt (typically '... '). */
@@ -50,45 +53,10 @@ export type ReplPushResult = {
     kind: 'error';
     stderr: string;
 };
-/**
- * Manages an interactive REPL session: stdin buffering with minimal
- * readline UX (line-mode), output routing to the WS terminal, prompt
- * rendering, and adapter dispatch.
- *
- * The shell creates a ReplSession when a runtime's `startRepl` hook
- * fires; the session installs a `replCallback` on the WebSocketTerminal
- * (via attachRepl()) and runs until the adapter signals 'exit' or the
- * user presses Ctrl-D on an empty line.
- *
- * No setTimeout in the read loop — the session is driven entirely by
- * keystroke arrival on the WS, with awaits gating the adapter's push().
- */
 export declare class ReplSession {
     private adapter;
+    private detachRepl;
     private terminal;
-    private detachReplCb;
-    /**
-     * REPL-R7-1 (2026-05-12): optional reference to the Nimbus shell.
-     *
-     * Required when the REPL is launched from a multi-line WS frame
-     * (e.g. user pastes `python\nexit(7)`). The shell input handler
-     * splits the frame on \r\n and pushes lines AFTER
-     * the first into `shell.pasteQueue`, which is drained ONLY when
-     * the shell becomes idle (after executeLine returns). While our
-     * REPL is running, those pasteQueue lines sit there waiting and
-     * the REPL itself receives no input → user sees a hung `>>> `
-     * prompt that never responds.
-     *
-     * If `shell` is provided, ReplSession will, immediately after
-     * attaching its replCallback, drain shell.pasteQueue and feed the
-     * lines into the callback (suffixed with \r each — matches what
-     * the WS frame originally would have looked like). This makes the
-     * paste path work transparently for REPL launches.
-     *
-     * The shell reference is optional so existing adapters (bun, node,
-     * ruby) that haven't been updated keep working with their
-     * pre-fix behavior.
-     */
     private shellRef;
     /** Current line buffer (chars typed since the last enter). */
     private lineBuf;
@@ -101,9 +69,11 @@ export declare class ReplSession {
     /** Per-session history ring (most recent first). Capped at 100. */
     private history;
     private historyIdx;
-    /** Resolves when close() has been called and the session ended. */
     private closedResolve;
     private closedPromise;
+    private pendingInterrupt;
+    private activePush;
+    private ending;
     /** Exit code captured from adapter's last 'exit' return. */
     private exitCode;
     /**
@@ -124,23 +94,16 @@ export declare class ReplSession {
      */
     private inputQueue;
     private draining;
-    constructor(adapter: ReplAdapter, terminal: WebSocketTerminal, shell?: any);
+    constructor(adapter: ReplAdapter, terminal: WebSocketTerminal, shell?: Pick<Shell, 'takeQueuedInput'>);
     /** Run the session: prints banner, installs the input hook, returns
      *  a promise that resolves with the exit code when the session ends. */
     run(): Promise<number>;
-    /**
-     * REPL-A1b: drain the input queue serially. Pulls data off
-     * inputQueue, runs handleInput, and reads any data that arrived
-     * during the await. Exits when queue is empty. Only ONE drainInput
-     * runs at a time (guarded by draining flag set in attachRepl
-     * callback).
-     */
     private drainInput;
     /** Process an input chunk. May contain multiple characters (paste
      *  or rapid typing) — we iterate char-by-char to handle each
      *  control byte individually. */
     private handleInput;
-    /** Submit the current line buffer to the adapter. */
+    private interruptBusy;
     private submitLine;
     /** Map up-arrow → previous history entry. */
     private historyUp;
@@ -148,7 +111,6 @@ export declare class ReplSession {
     private historyDown;
     /** Erase the current displayed line and replace with `text`. */
     private replaceCurrentLine;
-    /** Close the session: detach input hook, free adapter, resolve. */
     private endSession;
 }
 //# sourceMappingURL=repl-session.d.ts.map

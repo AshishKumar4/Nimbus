@@ -9,28 +9,8 @@
  */
 import { type SessionAiHost } from './ai.js';
 import { type ProgrammaticHost } from './programmatic.js';
-interface AgentStorage {
-    get(key: string): Promise<unknown>;
-    put(key: string, value: unknown): Promise<void>;
-    delete(key: string): Promise<void>;
-    deleteAll(): Promise<void>;
-    deleteAlarm(): Promise<void>;
-    list<T = unknown>(options: {
-        prefix: string;
-    }): Promise<Map<string, T>>;
-    transaction<T>(body: (txn: {
-        get(key: string): Promise<unknown>;
-        put(key: string, value: unknown): Promise<void>;
-        delete(key: string): Promise<unknown>;
-        list<T2 = unknown>(options: {
-            prefix: string;
-        }): Promise<Map<string, T2>>;
-    }) => Promise<T>): Promise<T>;
-}
 interface Host extends ProgrammaticHost, SessionAiHost {
-    ctx: {
-        storage: AgentStorage;
-    };
+    ctx: ProgrammaticHost['ctx'];
     env: ProgrammaticHost['env'] & Record<string, unknown>;
 }
 interface OAuthStatePayload {

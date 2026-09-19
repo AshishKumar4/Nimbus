@@ -15,18 +15,12 @@
  */
 import { type FacetTaskFn } from './isolate-pool.js';
 import type { WorkerLoader } from './vendor/types.js';
-/**
- * The sibling-session namespace the peer-DO topology routes through. Ids are
- * derived from a name so a task key always lands on the same peer.
- */
-interface PeerSessionNamespace {
-    idFromName(name: string): DurableObjectId;
-    get(id: DurableObjectId): unknown;
-}
-/** The bindings a fan-out needs off the coordinator DO's env. */
+/** The bindings a fan-out needs off the coordinator DO's env. The host
+ *  namespace key is the composed one — whatever this host named its own
+ *  binding (default NIMBUS_SESSION); peers dispatch supervisorOp envelopes. */
 export interface FanoutEnv {
     LOADER?: WorkerLoader;
-    NIMBUS_SESSION?: PeerSessionNamespace;
+    NIMBUS_SESSION?: unknown;
 }
 /**
  * Threshold at which routing switches from coordinator-local loaders to
@@ -219,5 +213,4 @@ export declare class Fanout {
  * Tests use this to predict placement.
  */
 export declare function hashKeyToShard(key: string, peerCount: number): number;
-export {};
 //# sourceMappingURL=fanout.d.ts.map

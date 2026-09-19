@@ -15,7 +15,7 @@
 //      in-session callers can.
 
 import assert from 'node:assert/strict';
-import { routeSessionLoopback } from '../../packages/worker/src/session/loopback.ts';
+import { routeSessionLoopback } from '../../packages/worker/src/session/ai.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import {
   NIMBUS_AI_GATEWAY_PORT,

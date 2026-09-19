@@ -429,5 +429,7 @@ declare global {
     var __NIMBUS_WASM: Record<string, WebAssembly.Module> | undefined;
     var __bashBoot: (args: BashBootArgs) => BashSlice;
     var __bashFeed: (args: BashFeedArgs) => BashSlice;
+    /** One step entry both transports dispatch through; validates raw input. */
+    var __bashStep: (raw: unknown) => BashSlice;
 }
 //# sourceMappingURL=types.d.ts.map

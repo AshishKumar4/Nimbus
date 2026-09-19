@@ -204,9 +204,14 @@ import {
   _rpcCancelHostProcess,
   _rpcHostProcess,
   _rpcRouteHostedHttp,
+  routeHostedWebSocket,
 } from '../../packages/worker/src/session/rpc.ts';
+import {
+  HOSTED_WEBSOCKET_CAPABILITY_HEADER,
+  HOSTED_WEBSOCKET_KEY_HEADER,
+  isolateToken,
+} from '../../packages/fabric/src/process-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { isolateToken } from '../../packages/fabric/src/process-host.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
@@ -271,6 +276,7 @@ export function createProcessHost(mode, world, disk, {
   };
   const ns = {
     idFromName: (name) => name,
+    idFromString: (id) => id,
     get(name) {
       const peer = peerFor(name);
       calls.push(name);
@@ -280,12 +286,32 @@ export function createProcessHost(mode, world, disk, {
       const record = stubs[stubs.length - 1];
       return {
         [Symbol.dispose]() { record.disposed = true; },
-        _rpcProcessHostProbe: () => Promise.resolve({ isolateToken: peer.isolateToken }),
-        _rpcHostProcess: (boot, opts) => Promise.race([_rpcHostProcess(peer, boot, opts), peer.death]),
-        _rpcAwaitHostedOpen: (key) => _rpcAwaitHostedOpen(peer, key),
-        _rpcAwaitHostedBoot: (key) => _rpcAwaitHostedBoot(peer, key),
-        _rpcRouteHostedHttp: (key, wire) => _rpcRouteHostedHttp(peer, key, wire),
-        _rpcCancelHostProcess: (key) => _rpcCancelHostProcess(peer, key),
+        // The upgrade leg is a service-binding fetch on the peer — route it
+        // to the same real handler the production entrypoint calls.
+        async fetch(request) {
+          const headers = request.headers;
+          return routeHostedWebSocket(
+            peer,
+            headers.get(HOSTED_WEBSOCKET_KEY_HEADER) ?? '',
+            headers.get(HOSTED_WEBSOCKET_CAPABILITY_HEADER) ?? '',
+            request,
+          );
+        },
+        // The host forwards one envelope op; the arm still exercises the
+        // REAL _rpc* implementations — routing just went through
+        // supervisorOp first, exactly as the shipped host does.
+        supervisorOp(envelope) {
+          const { op, args } = envelope;
+          switch (op) {
+            case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
+            case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
+            case 'awaitHostedOpen': return _rpcAwaitHostedOpen(peer, args[0]);
+            case 'awaitHostedBoot': return _rpcAwaitHostedBoot(peer, args[0]);
+            case 'routeHostedHttp': return _rpcRouteHostedHttp(peer, args[0], args[1]);
+            case 'cancelHostProcess': return _rpcCancelHostProcess(peer, args[0]);
+            default: return Promise.reject(new Error(`peer stub: unserved op ${op}`));
+          }
+        },
       };
     },
   };

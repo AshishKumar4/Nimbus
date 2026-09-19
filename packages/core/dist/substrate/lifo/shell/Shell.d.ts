@@ -98,6 +98,9 @@ export declare class Shell {
     setCwd(cwd: string): void;
     getEnv(): Record<string, string>;
     getVfs(): VFS;
+    /** Transfer terminal I/O without replacing shell state or sourcing login files. */
+    bindTerminal(terminal: ITerminal): void;
+    takeQueuedInput(): string[];
     /**
      * The `runAs` host this shell re-credentials through. A caller building a
      * second Shell over the same kernel needs it, or its commands lose the

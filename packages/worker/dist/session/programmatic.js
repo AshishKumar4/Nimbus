@@ -5,19 +5,25 @@
  * Durable Object exposes a typed, programmatic sandbox surface without
  * duplicating the interactive terminal boot path.
  */
-import { ensureRuntimesProgrammatic, installRuntimeProgrammatic, listAvailableRuntimes, } from '../runtime/package-manager.js';
-import { listInstalledRuntimes, } from '@nimbus-sh/core/runtime/installed-runtimes.js';
+/**
+ * session/programmatic.ts - public sandbox RPC helpers.
+ *
+ * These helpers are called by NimbusSession one-line delegators so the
+ * Durable Object exposes a typed, programmatic sandbox surface without
+ * duplicating the interactive terminal boot path.
+ */
+import { ensureRuntimesProgrammatic, installRuntimeProgrammatic } from '../runtime/package-manager.js';
 import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { endProcessInput, resizeProcess, signalProcess, writeProcessInput, } from '@nimbus-sh/core/runtime/process-input-routing.js';
+import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
-import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, restorePortCapability, rotatePortCapability, } from './port-capability.js';
+import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, restorePortCapability, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
-import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix, } from '../_shared/preview-host.js';
+import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { HeadlessTerminal, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
@@ -113,35 +119,6 @@ const ProcessLogsOptionsSchema = z.object({
     lines: z.number().int().nonnegative().optional(),
     bytes: z.number().int().nonnegative().optional(),
 }).strict();
-function makeHeadlessWebSocket() {
-    const listeners = new Map();
-    const state = { readyState: 1 };
-    const ws = {
-        get readyState() { return state.readyState; },
-        send(_data) { },
-        close() {
-            state.readyState = 3;
-            for (const cb of listeners.get('close') ?? []) {
-                try {
-                    cb();
-                }
-                catch { }
-            }
-        },
-        accept() { },
-        addEventListener(type, cb) {
-            const set = listeners.get(type) ?? new Set();
-            set.add(cb);
-            listeners.set(type, set);
-        },
-        removeEventListener(type, cb) {
-            listeners.get(type)?.delete(cb);
-        },
-        serializeAttachment(_value) { },
-        deserializeAttachment() { return { kind: 'programmatic' }; },
-    };
-    return ws;
-}
 function getHome(self) {
     try {
         const envHome = self.shell?.env?.HOME;
@@ -164,23 +141,14 @@ function runtimeDeps(self) {
     if (!self._cpRegistry)
         throw new Error('Nimbus shell registry did not initialize');
     return {
-        env: self.env,
-        vfs: self.sqliteFs,
+        runtimes: self.runtimeManager,
+        vfs: self.sqliteFs.as(CRED_KERNEL),
         registry: self._cpRegistry,
         getHome: () => getHome(self),
     };
 }
 export async function ensureProgrammaticReady(self, options = {}) {
-    if (!self.shell) {
-        await self.initSession(makeHeadlessWebSocket());
-        // A programmatic boot owns no terminal socket, which is what
-        // 'drained' reports to the diagnostics and the recovery ring.
-        self._b4Phase = 'drained';
-    }
-    else {
-        self.ensureSqliteFs();
-        self.ensureFacetManager();
-    }
+    await self.ensureRuntimeReady();
     const preinstall = Array.from(new Set(options.preinstall ?? []))
         .map((s) => String(s).trim())
         .filter(Boolean);
@@ -468,8 +436,8 @@ export async function rpcEnsureRuntimes(self, specs, options = {}) {
 export async function rpcListRuntimes(self) {
     await ensureProgrammaticReady(self);
     return {
-        installed: listInstalledRuntimes(self.sqliteFs, getHome(self)),
-        available: await listAvailableRuntimes(self.env),
+        installed: self.runtimeManager.list(),
+        available: await self.runtimeManager.available(),
     };
 }
 export async function rpcListProcesses(self) {

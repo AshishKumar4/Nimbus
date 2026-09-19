@@ -57,6 +57,7 @@ function makeHost() {
     sqliteFs: vfs,
     processes: new SessionProcessSupervisor(),
     ensureSqliteFs() {},
+    async ensureRuntimeReady() {},
     ensureFacetManager() {},
     // rpcDeleteFile's ensureProgrammaticReady takes the already-booted path.
     shell: {},

@@ -98,6 +98,7 @@ export class Shell {
         this.registry = registry;
         this.cwd = env['HOME'] ?? '/home/user';
         this.env = { ...env };
+        this.env.PWD = this.cwd;
         if (!this.env['0'])
             this.env['0'] = 'nimbus-sh';
         if (!this.env['$'])
@@ -125,7 +126,7 @@ export class Shell {
             env: this.env,
             arrays: this.arrays,
             getCwd: () => this.cwd,
-            setCwd: (cwd) => { this.cwd = cwd; },
+            setCwd: (cwd) => this.setCwd(cwd),
             vfs: this.vfs,
             registry: this.registry,
             builtins: this.builtins,
@@ -183,12 +184,24 @@ export class Shell {
     }
     setCwd(cwd) {
         this.cwd = cwd;
+        this.env.PWD = cwd;
     }
     getEnv() {
         return this.env;
     }
     getVfs() {
         return this.vfs;
+    }
+    /** Transfer terminal I/O without replacing shell state or sourcing login files. */
+    bindTerminal(terminal) {
+        if (this.terminal === terminal)
+            return;
+        this.terminal.onData(() => { });
+        this.terminal = terminal;
+        terminal.onData((data) => this.handleInput(data));
+    }
+    takeQueuedInput() {
+        return this.pasteQueue.splice(0);
     }
     /**
      * The `runAs` host this shell re-credentials through. A caller building a
@@ -253,7 +266,7 @@ export class Shell {
         };
         // Apply per-call overrides
         if (options?.cwd) {
-            this.cwd = options.cwd;
+            this.setCwd(options.cwd);
         }
         if (options?.env) {
             Object.assign(this.env, options.env);
@@ -306,7 +319,7 @@ export class Shell {
                     restoreShellOptions(this.shellOptions, optionSnapshot);
             }
             if (prevCwd !== undefined) {
-                this.cwd = prevCwd;
+                this.setCwd(prevCwd);
             }
         }
     }
@@ -905,7 +918,7 @@ export class Shell {
                 return 1;
             }
             this.env['OLDPWD'] = this.cwd;
-            this.cwd = newPath;
+            this.setCwd(newPath);
             return 0;
         }
         catch (e) {
@@ -1401,8 +1414,8 @@ export class Shell {
         };
     }
     restoreShellState(frame) {
-        this.cwd = frame.cwd;
         replaceRecord(this.env, frame.env);
+        this.setCwd(frame.cwd);
         replaceMap(this.arrays, frame.arrays);
         restoreShellOptions(this.shellOptions, frame.shellOptions);
         replaceMap(this.traps, frame.traps);

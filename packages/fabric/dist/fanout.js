@@ -18,6 +18,7 @@ import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { describeError, isDoOverloaded, isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
+import { hostNamespaceBinding, hostOpDispatch, } from './host-dispatch.js';
 /**
  * Threshold at which routing switches from coordinator-local loaders to
  * sibling Durable Objects.
@@ -70,21 +71,9 @@ export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
  * tolerates rather than by the barrier count.
  */
 export const FANOUT_PHASE_SIZE = 4;
-function isFanoutPeerStub(value) {
-    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-        return false;
-    }
-    const execute = Reflect.get(value, '_rpcFanoutExecute');
-    return typeof execute === 'function';
-}
-function fanoutPeerStub(value) {
-    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-        throw new BindingError('Fanout: NIMBUS_SESSION.get() did not return a peer stub.');
-    }
-    if (!isFanoutPeerStub(value)) {
-        throw new BindingError('Fanout: peer stub does not expose _rpcFanoutExecute().');
-    }
-    return value;
+// Task values retain the submitted function's type; validate the wire envelope.
+function isPeerResult(value) {
+    return value !== null && typeof value === 'object' && 'results' in value && Array.isArray(value.results);
 }
 /**
  * Two-tier fan-out pool. Constructed by the supervisor DO; routes
@@ -201,12 +190,10 @@ export class Fanout {
     }
     // ── Private: peer-DO dispatch (peer-DO fanout) ────────────────────────────
     async _dispatchPeerDo(tasks, fn) {
-        const ns = this.env?.NIMBUS_SESSION;
-        if (!ns || typeof ns.idFromName !== 'function' || typeof ns.get !== 'function') {
-            throw new BindingError('Fanout: env.NIMBUS_SESSION binding missing or invalid. ' +
-                'The peer-DO topology requires it. ' +
-                'Add the binding via durable_objects.bindings in wrangler.jsonc.');
-        }
+        // The peer-DO topology routes through the composed host namespace —
+        // a workspace host names its own binding, and its stub forwards one
+        // supervisorOp entrypoint, not private _rpc* methods.
+        const ns = hostNamespaceBinding(this.env ?? {}, 'Fanout');
         // Serialize the user function ONCE here on the supervisor side.
         // Each peer DO receives the same fnSource string; warm peer
         // loader isolates (keyed on fnHash) reuse across calls with
@@ -252,34 +239,43 @@ export class Fanout {
                     // stub points at a torn-down object, so a retry re-resolves the
                     // sibling by its stable id.
                     const peerStub = ns.get(id);
-                    const stub = fanoutPeerStub(peerStub);
                     try {
+                        const dispatch = hostOpDispatch(peerStub, `Fanout peer ${siblingName}`);
                         // Each peer DO RPC call uses ONE LOADER worker on its side.
                         // Supervisor → peer DO is a stub.fetch / RPC method call,
                         // NOT an env.LOADER.get(); that's the cap-sidestep that
                         // makes peer-DO fanout work.
-                        const rpcResp = await stub._rpcFanoutExecute(fnSource, peerArgs, {
-                            tag: this.opts.tag,
-                            timeoutMs: this.opts.timeoutMs,
-                            preamble: this.opts.preamble,
-                            wasmModules: this.opts.wasmModules,
-                            extraBindings: this.opts.extraBindings,
-                            omitSupervisor: this.opts.omitSupervisor,
-                            // INSTALL-HONESTY: forward the COORDINATOR's full doId so
-                            // the peer's IsolatePool can mint a SUPERVISOR
-                            // binding that routes back HERE (the user's session DO),
-                            // not to the peer DO itself. Without this, peer DOs'
-                            // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
-                            // ... write into the peer's own VFS — invisible to the
-                            // user. See INSTALL-HONESTY-retro.md.
-                            coordinatorDoId: this.coordDoId,
-                            // Credential source for peer-side writeBatchStream — the
-                            // invoking process pid, so package writes are authorized
-                            // as the user (not rejected as pid:0).
-                            supervisorPid: this.opts.supervisorPid,
+                        const rpcResp = await dispatch({
+                            op: 'fanoutExecute',
+                            args: [
+                                fnSource,
+                                peerArgs,
+                                {
+                                    tag: this.opts.tag,
+                                    timeoutMs: this.opts.timeoutMs,
+                                    preamble: this.opts.preamble,
+                                    wasmModules: this.opts.wasmModules,
+                                    extraBindings: this.opts.extraBindings,
+                                    omitSupervisor: this.opts.omitSupervisor,
+                                    // INSTALL-HONESTY: forward the COORDINATOR's full doId so
+                                    // the peer's IsolatePool can mint a SUPERVISOR
+                                    // binding that routes back HERE (the user's session DO),
+                                    // not to the peer DO itself. Without this, peer DOs'
+                                    // env.SUPERVISOR.writeBatch / writeBatchStream / stdout /
+                                    // ... write into the peer's own VFS — invisible to the
+                                    // user. See INSTALL-HONESTY-retro.md.
+                                    coordinatorDoId: this.coordDoId,
+                                    // Credential source for peer-side writeBatchStream — the
+                                    // invoking process pid, so package writes are authorized
+                                    // as the user (not rejected as pid:0).
+                                    supervisorPid: this.opts.supervisorPid,
+                                },
+                            ],
                         });
                         try {
-                            const peerResults = rpcResp.results ?? [];
+                            if (!isPeerResult(rpcResp))
+                                throw new BindingError(`Fanout peer '${siblingName}' returned no result array`);
+                            const peerResults = rpcResp.results;
                             if (peerResults.length !== bucket.length) {
                                 throw new Error(`peer DO returned ${peerResults.length} results for ${bucket.length} tasks ` +
                                     `(siblingName=${siblingName})`);

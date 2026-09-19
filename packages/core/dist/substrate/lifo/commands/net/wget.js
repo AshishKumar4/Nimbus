@@ -1,78 +1,175 @@
 import { resolve } from '../../utils/path.js';
-const command = async (ctx) => {
-    let outputFile;
-    let quiet = false;
-    let url;
-    const args = ctx.args;
+import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.js';
+const MAX_REDIRECTS = 20;
+function parseWgetArgs(args) {
+    const options = { quiet: false };
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         switch (arg) {
             case '-O':
-                outputFile = args[++i] ?? '';
+                options.outputFile = args[++i] ?? '';
                 break;
             case '-q':
             case '--quiet':
-                quiet = true;
+                options.quiet = true;
                 break;
             default:
                 if (!arg.startsWith('-')) {
-                    url = arg;
+                    options.url = arg;
                 }
                 break;
         }
     }
-    if (!url) {
-        ctx.stderr.write('wget: missing URL\n');
-        ctx.stderr.write('Usage: wget [-O file] [-q] url\n');
-        return 1;
+    return options;
+}
+function wgetHeader(headers, name) {
+    const wanted = name.toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+        if (key.toLowerCase() === wanted)
+            return value;
     }
-    // Ensure URL has protocol
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        url = 'https://' + url;
-    }
-    // Determine output filename
-    if (!outputFile) {
+    return undefined;
+}
+function isRedirectStatus(status) {
+    return status >= 300 && status < 400;
+}
+function createWgetImpl(kernel) {
+    return async (ctx) => {
+        const options = parseWgetArgs(ctx.args);
+        if (!options.url) {
+            ctx.stderr.write('wget: missing URL\n');
+            ctx.stderr.write('Usage: wget [-O file] [-q] url\n');
+            return 1;
+        }
+        let url = options.url;
+        // Ensure URL has protocol
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            url = 'https://' + url;
+        }
+        // Determine output filename
+        let outputFile = options.outputFile;
+        if (!outputFile) {
+            try {
+                const urlObj = new URL(url);
+                const pathSegments = urlObj.pathname.split('/').filter(Boolean);
+                outputFile = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : 'index.html';
+            }
+            catch {
+                outputFile = 'index.html';
+            }
+        }
+        if (!options.quiet) {
+            ctx.stderr.write(`--  ${url}\n`);
+            ctx.stderr.write(`Connecting... `);
+        }
         try {
-            const urlObj = new URL(url);
-            const pathSegments = urlObj.pathname.split('/').filter(Boolean);
-            outputFile = pathSegments.length > 0 ? pathSegments[pathSegments.length - 1] : 'index.html';
+            let response;
+            if (!kernel) {
+                // No kernel bound: fetch's own redirect handling stands — the
+                // process-wide default keeps its documented behavior.
+                const res = await fetch(url, { signal: ctx.signal });
+                response = {
+                    status: res.status,
+                    statusText: res.statusText,
+                    headers: Object.fromEntries(res.headers.entries()),
+                    body: await res.text(),
+                };
+            }
+            else {
+                // Bound to a kernel: every hop is classified first. A loopback hop —
+                // including one a redirect lands on — is served by this kernel's port
+                // table or its host's loopback router, never by fetch.
+                let current = url;
+                let hops = 0;
+                for (;;) {
+                    const requestUrl = new URL(current);
+                    const port = workspaceRequestPort(kernel, requestUrl);
+                    if (port !== null) {
+                        const local = await dispatchWorkspaceRequest(kernel, port, new Request(requestUrl, { method: 'GET', signal: ctx.signal }));
+                        if (local.kind === 'refused') {
+                            if (!options.quiet)
+                                ctx.stderr.write('failed.\n');
+                            ctx.stderr.write(`wget: unable to connect to ${current}\n`);
+                            return 1;
+                        }
+                        if (local.kind === 'aborted') {
+                            ctx.stderr.write('wget: request aborted\n');
+                            return 1;
+                        }
+                        if (local.kind === 'timeout') {
+                            ctx.stderr.write('wget: request timed out\n');
+                            return 1;
+                        }
+                        const res = local.response;
+                        response = {
+                            status: res.status,
+                            statusText: res.statusText,
+                            headers: Object.fromEntries(res.headers.entries()),
+                            body: await res.text(),
+                        };
+                    }
+                    else {
+                        const res = await fetch(requestUrl, { redirect: 'manual', signal: ctx.signal });
+                        response = {
+                            status: res.status,
+                            statusText: res.statusText,
+                            headers: Object.fromEntries(res.headers.entries()),
+                            body: await res.text(),
+                        };
+                    }
+                    if (!isRedirectStatus(response.status))
+                        break;
+                    const location = wgetHeader(response.headers, 'location');
+                    if (!location)
+                        break;
+                    if (++hops > MAX_REDIRECTS) {
+                        ctx.stderr.write(`wget: too many redirects\n`);
+                        return 1;
+                    }
+                    try {
+                        current = new URL(location, requestUrl).toString();
+                    }
+                    catch {
+                        break;
+                    }
+                }
+            }
+            if (!options.quiet) {
+                ctx.stderr.write(`connected.\n`);
+                ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);
+            }
+            const path = resolve(ctx.cwd, outputFile);
+            ctx.vfs.writeFile(path, response.body);
+            if (!options.quiet) {
+                ctx.stderr.write(`Saving to: '${outputFile}'\n`);
+                ctx.stderr.write(`${response.body.length} bytes saved.\n`);
+            }
+            return response.status < 400 ? 0 : 1;
         }
-        catch {
-            outputFile = 'index.html';
+        catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (!options.quiet) {
+                ctx.stderr.write(`failed.\n`);
+            }
+            if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
+                ctx.stderr.write(`wget: unable to connect to ${url}\n`);
+                ctx.stderr.write(`Note: This may be a CORS restriction. The target server must allow cross-origin requests.\n`);
+            }
+            else {
+                ctx.stderr.write(`wget: ${msg}\n`);
+            }
+            return 1;
         }
-    }
-    if (!quiet) {
-        ctx.stderr.write(`--  ${url}\n`);
-        ctx.stderr.write(`Connecting... `);
-    }
-    try {
-        const response = await fetch(url, { signal: ctx.signal });
-        if (!quiet) {
-            ctx.stderr.write(`connected.\n`);
-            ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);
-        }
-        const body = await response.text();
-        const path = resolve(ctx.cwd, outputFile);
-        ctx.vfs.writeFile(path, body);
-        if (!quiet) {
-            ctx.stderr.write(`Saving to: '${outputFile}'\n`);
-            ctx.stderr.write(`${body.length} bytes saved.\n`);
-        }
-        return response.ok ? 0 : 1;
-    }
-    catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!quiet) {
-            ctx.stderr.write(`failed.\n`);
-        }
-        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-            ctx.stderr.write(`wget: unable to connect to ${url}\n`);
-            ctx.stderr.write(`Note: This may be a CORS restriction. The target server must allow cross-origin requests.\n`);
-        }
-        else {
-            ctx.stderr.write(`wget: ${msg}\n`);
-        }
-        return 1;
-    }
-};
+    };
+}
+/**
+ * A `wget` bound to one kernel: its loopback traffic resolves through that
+ * kernel's port registry and loopback router, so two workspaces serving the
+ * same numeric port answer independently.
+ */
+export function createWgetCommand(kernel) {
+    return createWgetImpl(kernel);
+}
+// Default command (no kernel -- always uses fetch)
+const command = createWgetImpl();
 export default command;

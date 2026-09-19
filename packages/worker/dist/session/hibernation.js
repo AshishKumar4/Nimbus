@@ -75,6 +75,12 @@ export function wireHibernationOnConstruct(ctx) {
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export function wireProcessLogPersist(host, ctx) {
+    installLogPersistence(host, ctx, () => {
+        scheduleHibFlush(host, ctx);
+        ensureLogJanitor(host, ctx);
+    });
+}
+export function installLogPersistence(host, ctx, onActivity) {
     if (host._w9PersistWired)
         return;
     host._w9PersistWired = true;
@@ -174,10 +180,7 @@ export function wireProcessLogPersist(host, ctx) {
     // every boot, including boots caused by a destroyed session's own
     // leftover alarm, making every session DO ever created fire an alarm
     // every ~60s forever (see dispatchAlarm's re-arm condition below).
-    host.processes.setLogPersist(adapter, () => {
-        scheduleHibFlush(host, ctx);
-        ensureLogJanitor(host, ctx);
-    });
+    host.processes.setLogPersist(adapter, onActivity);
 }
 /**
  * W1: arm the log-janitor alarm cycle for this instance. Called from the

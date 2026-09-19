@@ -87,5 +87,5 @@ export interface RunFreshOpts {
     signal?: AbortSignal;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
-export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;
+export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts, entrySource?: string): Promise<RunFreshResult>;
 //# sourceMappingURL=node-runner.d.ts.map

@@ -39,7 +39,7 @@ export interface LogsWebSocketDeps {
  * cycle and lets tests pass a plain stub.
  */
 export interface TerminalLike {
-    ws: WebSocket;
+    ws: WebSocket | null;
 }
 /**
  * Send a structured JSON event to the main terminal WebSocket, if one is

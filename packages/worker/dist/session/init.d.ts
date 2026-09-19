@@ -1,38 +1,3 @@
-/**
- * session/init.ts — initSession boot + shell-command registrations.
- *
- * Why this is one big function and not a class:
- * initSession runs once per /ws upgrade and walks the session
- * through Phase R (rehydrate from SQL), Phase B (compose the
- * workspace + register the session's commands), Phase W (attach
- * terminal), and (cold-only) Phase O (MOTD + framework hint). The
- * phases share lots of locals (vfs, kernel, registry, shell) and
- * ordering matters strictly — there's no interesting reuse boundary
- * that a class decomposition would expose.
- *
- * What it no longer does is COMPOSE the operating system. The kernel,
- * the provider mounts, the command registry, the coreutils, the exec
- * resolver, the default environment and the shell come from
- * `NimbusWorkspace` (@nimbus-sh/core/workspace), which an embedder off
- * Cloudflare builds the same way. What stays here is everything that
- * only makes sense with a socket, a Durable Object and a product behind
- * it: the terminal and its scrollback, the phase machine, the persisted
- * shell state, npm, git, vite, wrangler and the facet-backed runtimes.
- *
- * The function is intentionally written so that a reader sees:
- *   1. setPhase('rehydrate') ...
- *   2. setPhase('build')    ... (~95% of the LOC)
- *   3. setPhase('online')   if (cold)
- *   4. self._b4Phase = 'hydrated'
- *
- * `self` is typed as InitHost, a narrow view of SessionInternal plus readonly
- * ctx/env, so this module can use the session internals it owns without
- * depending on the full Durable Object class surface.
- *
- * Imports and class delegators on NimbusSession preserve back-compat:
- *   - acceptShellWebSocket → self.initSession(ws)  (S7 will extract).
- *   - The class still has `initSession(ws)` as a delegator method.
- */
 import type { SessionInternal } from './internal.js';
 /**
  * `initSession` reads `this.ctx` and `this.env` extensively (~14 sites).
@@ -61,6 +26,6 @@ type InitHost = SessionInternal & {
 export interface InitSessionOptions {
     resume?: 'reconnect' | 'wake';
 }
-export declare function initSession(self: InitHost, ws: WebSocket, options?: InitSessionOptions): Promise<void>;
+export declare function initSession(self: InitHost, ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
 export {};
 //# sourceMappingURL=init.d.ts.map

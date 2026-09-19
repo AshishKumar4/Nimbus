@@ -44,9 +44,11 @@ function makeInstaller(pkgJson) {
     LOADER: { get() { return {}; } },
     NIMBUS_SESSION: {
       idFromName(name) { return { toString: () => name, name }; },
+      idFromString(id) { return { toString: () => id, name: id }; },
       get() {
         return {
-          async _rpcFanoutExecute(_fnSource, args) {
+          async supervisorOp(envelope) {
+            const [_fnSource, args] = envelope.args;
             if (args[0] && Array.isArray(args[0].packages)) {
               return { results: args.map((shard) => ({
                 perPackage: shard.packages.map((p) => {

@@ -1,28 +1,7 @@
-/**
- * WebSocket-backed terminal matching Nimbus's ITerminal interface.
- * HeadlessTerminal has: write, writeln, onData, sendData, cols, rows, focus, clear
- *
- * [B'.5] The `ws` ref is no longer readonly: a wsClose leaves the
- * Shell + this terminal alive in-memory; the next /ws upgrade calls
- * `attach(newWs, ...)` to swap in the new socket. The buffer/flush
- * timer state is preserved across the swap so any in-flight
- * coalescing continues seamlessly.
- */
 export class WebSocketTerminal {
+    /** Null while the terminal is headless (composed before any attach). */
     ws;
     dataCallback = null;
-    /**
-     * REPL-W1: secondary input callback installed by interactive runtimes
-     * (e.g. `python` no-args). When non-null, sendData() routes input to
-     * this callback INSTEAD of the shell. Set via attachRepl(); cleared
-     * by the disposer the attach call returns. Supports nesting (the
-     * disposer restores the prior callback).
-     *
-     * §3 (Layer 2): the explicit handoff mirrors how `vim`/`less` swap
-     * the parent shell's terminal handler. Auto-detect was rejected as
-     * fragile. Additive only — when null, behavior is identical to pre-W1.
-     */
-    replCallback = null;
     /**
      * editor/monaco (2026-05-13): Editor-pane file-system bridge.
      *
@@ -46,7 +25,7 @@ export class WebSocketTerminal {
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
      *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
     onFlush;
-    constructor(ws, onFlush) {
+    constructor(ws = null, onFlush) {
         this.ws = ws;
         this.onFlush = onFlush ?? null;
     }
@@ -63,20 +42,51 @@ export class WebSocketTerminal {
         if (onFlush !== undefined)
             this.onFlush = onFlush;
     }
+    /** Release the socket without ending the terminal's lifetime. */
+    detach() {
+        this.ws = null;
+    }
+    replBinding = null;
+    replTeardown = null;
+    disposeRepl() {
+        if (this.replTeardown)
+            return this.replTeardown;
+        const first = this.replBinding;
+        if (!first)
+            return Promise.resolve();
+        this.replBinding = null;
+        this.replTeardown = Promise.resolve().then(async () => {
+            const errors = [];
+            let binding = first;
+            while (binding) {
+                const next = binding.previous;
+                try {
+                    await binding.dispose?.();
+                }
+                catch (error) {
+                    errors.push(error instanceof Error ? error : new Error(String(error)));
+                }
+                binding = next;
+            }
+            if (errors.length > 0)
+                throw new AggregateError(errors, 'REPL cleanup failed');
+        }).finally(() => { this.replTeardown = null; });
+        return this.replTeardown;
+    }
     close() {
-        if (this.flushTimer) {
+        void this.disposeRepl().catch((error) => console.warn('[terminal] REPL cleanup failed', error));
+        if (this.flushTimer)
             clearTimeout(this.flushTimer);
-            this.flushTimer = null;
-        }
+        this.flushTimer = null;
         this.buffer = [];
         this.onFlush = null;
         this.dataCallback = null;
-        this.replCallback = null;
         this.fsCallback = null;
         try {
-            this.ws.close(1000, 'terminal closed');
+            this.ws?.close(1000, 'terminal closed');
         }
         catch { }
+        this.ws = null;
     }
     get cols() { return this._cols; }
     get rows() { return this._rows; }
@@ -112,7 +122,7 @@ export class WebSocketTerminal {
         const combined = this.buffer.join('');
         this.buffer = [];
         try {
-            this.ws.send(JSON.stringify({ type: 'output', data: combined }));
+            this.ws?.send(JSON.stringify({ type: 'output', data: combined }));
         }
         catch { }
         // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
@@ -161,7 +171,7 @@ export class WebSocketTerminal {
                             const merged = (reqId !== undefined && frame && typeof frame === 'object')
                                 ? { ...frame, reqId }
                                 : frame;
-                            this.ws.send(JSON.stringify(merged));
+                            this.ws?.send(JSON.stringify(merged));
                         }
                         catch { }
                     };
@@ -191,29 +201,26 @@ export class WebSocketTerminal {
         this.fsCallback = cb;
     }
     sendData(data) {
-        // REPL-W1: replCallback takes priority when set. Restored by the
-        // disposer attachRepl() returns.
-        if (this.replCallback) {
-            this.replCallback(data);
-            return;
-        }
-        if (this.dataCallback)
-            this.dataCallback(data);
+        if (this.replBinding)
+            this.replBinding.input(data);
+        else
+            this.dataCallback?.(data);
     }
-    /**
-     * REPL-W1: install a runtime-side input handler. Returns a disposer
-     * that restores the prior handler (supports nesting). Calling this
-     * does NOT change the shell's dataCallback — it just shadows it
-     * until the disposer runs.
-     */
-    attachRepl(cb) {
-        const prior = this.replCallback;
-        this.replCallback = cb;
+    attachRepl(input, dispose) {
+        if (this.replTeardown)
+            throw new Error('Cannot attach a REPL while cleanup is running');
+        const binding = { input, dispose, previous: this.replBinding };
+        this.replBinding = binding;
         return () => {
-            // Idempotent: only restore if we're still the current shadow.
-            // If a nested attachRepl ran in between, the disposer chain
-            // resolves bottom-up correctly.
-            this.replCallback = prior;
+            if (this.replBinding === binding) {
+                this.replBinding = binding.previous;
+                return;
+            }
+            let current = this.replBinding;
+            while (current && current.previous !== binding)
+                current = current.previous;
+            if (current)
+                current.previous = binding.previous;
         };
     }
     focus() { }

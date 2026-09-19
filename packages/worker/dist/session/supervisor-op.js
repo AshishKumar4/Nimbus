@@ -15,7 +15,7 @@
  *   session's `_rpc*` methods — `host` IS the session — exactly as the
  *   canonical route table maps them.
  */
-import { createSupervisorOpHandler, createSupervisorBridgeStore, } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { createSupervisorOpHandler, createSupervisorBridgeStore, SUPERVISOR_OP_ROUTES, } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { FsReadRangeArgsSchema, rangeReadBytes, withReadAllocation, } from './rpc.js';
 import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 /** The stdout/stderr ops carry bytes; anything else is a caller bug, named. */
@@ -24,7 +24,7 @@ function outputBytesArg(value) {
         return value;
     throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
 }
-export function buildSessionSupervisorOps(host, store) {
+export function buildSessionSupervisorOps(host, store, methods) {
     host.ensureSqliteFs();
     store ??= createSupervisorBridgeStore({ vfs: host.sqliteFs, processes: host.processes });
     const extend = {
@@ -94,7 +94,15 @@ export function buildSessionSupervisorOps(host, store) {
         processes: host.processes,
         // The session IS the host — its _rpc* methods are the route table's
         // targets. The index signature exists on the declared surface only.
-        host: host,
+        host: methods ?? Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => [
+            method,
+            (...args) => {
+                const handler = Reflect.get(host, method);
+                if (typeof handler !== 'function')
+                    throw new Error(`supervisor op: missing host method ${method}`);
+                return Reflect.apply(handler, host, args);
+            },
+        ])),
         bridge: store,
         extend,
     });

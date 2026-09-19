@@ -43,7 +43,7 @@ export interface LogsWebSocketDeps {
  * cycle and lets tests pass a plain stub.
  */
 export interface TerminalLike {
-  ws: WebSocket;
+  ws: WebSocket | null;
 }
 
 /**
@@ -64,7 +64,7 @@ export function notifyTerminalEvent(
 ): void {
   if (!terminal) return;
   try {
-    terminal.ws.send(JSON.stringify(event));
+    terminal.ws?.send(JSON.stringify(event));
   } catch {
     /* socket closed or congested — dropping is the right behavior here */
   }

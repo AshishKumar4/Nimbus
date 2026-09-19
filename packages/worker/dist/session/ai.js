@@ -41,8 +41,15 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { z } from 'zod/v4';
 import { NIMBUS_AI_GATEWAY_PORT } from '@nimbus-sh/core/constants.js';
+import { routeRuntimeLoopback } from './loopback.js';
 import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { NIMBUS_AGENT_AUTH_COOKIE, NIMBUS_CLOUDFLARE_API, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, loadNimbusAgentOAuthFromRequest, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, readNimbusCookie, requestNimbusCloudflareOAuthToken, } from './agent-oauth.js';
+export function routeSessionLoopback(host, port, request) {
+    // A credential-backed gateway is private, not a shareable port entry.
+    if (port === NIMBUS_AI_GATEWAY_PORT)
+        return handleSessionAiRequest(host, request);
+    return routeRuntimeLoopback(host.portRegistry, port, request);
+}
 /** DO storage key holding this session's Cloudflare credential of record. */
 export const SESSION_AI_CREDENTIAL_KEY = 'nimbus:ai:credential';
 /**

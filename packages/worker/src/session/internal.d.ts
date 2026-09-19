@@ -50,6 +50,7 @@ import type { EsbuildBundlePool } from '../facets/esbuild-bundle-pool.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
+import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import type { InitSessionOptions } from './init.js';
 import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
@@ -66,6 +67,8 @@ import type { W12EnableResult } from './replica-routes.js';
  * args separately from this `host`.
  */
 export interface SessionInternal {
+  routeLoopback(port: number, request: Request): Promise<Response | null>;
+  runtimeWorkspace: NimbusWorkspace | null;
   // ── Core session state (always set after first request) ─────────────
   sqliteFs: SqliteVFS | null;
   kernel: Kernel | null;
@@ -165,7 +168,7 @@ export interface SessionInternal {
   seedFilesystem(): void;
 
   // Class delegators that siblings dispatch through (per plan §IX.2 R3).
-  initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
+  initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
   /** Rebuild in flight for a shell socket that woke a hibernated instance (session/ws.ts). */
   _wakeRebuild: Promise<void> | null;
   _w9FlushOnClose(): void;

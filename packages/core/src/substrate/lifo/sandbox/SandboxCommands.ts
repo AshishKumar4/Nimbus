@@ -35,25 +35,12 @@ export class SandboxCommandsImpl implements ISandboxCommands {
   }
 
   private async executeWithOptions(cmd: string, options?: RunOptions): Promise<CommandResult> {
-    // Handle timeout + abort signal
-    let abortController: AbortController | undefined;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    if (options?.timeout || options?.signal) {
-      abortController = new AbortController();
-
-      if (options.signal) {
-        // Forward external signal
-        if (options.signal.aborted) {
-          return { stdout: '', stderr: '', exitCode: 130 };
-        }
-        options.signal.addEventListener('abort', () => abortController!.abort(), { once: true });
-      }
-
-      if (options.timeout) {
-        timeoutId = setTimeout(() => abortController!.abort(), options.timeout);
-      }
-    }
+    const signal = options?.signal;
+    if (signal?.aborted) return { stdout: '', stderr: '', exitCode: 130 };
+    const controller = options?.timeout ? new AbortController() : undefined;
+    const forwardAbort = () => controller?.abort(signal?.reason);
+    if (controller && signal) signal.addEventListener('abort', forwardAbort, { once: true });
+    const timeoutId = controller ? setTimeout(() => controller.abort(), options?.timeout) : undefined;
 
     try {
       const result = await this.shell.execute(cmd, {
@@ -62,6 +49,7 @@ export class SandboxCommandsImpl implements ISandboxCommands {
         onStdout: options?.onStdout,
         onStderr: options?.onStderr,
         stdin: options?.stdin,
+        signal: controller?.signal ?? signal,
       });
 
       return result;
@@ -69,6 +57,7 @@ export class SandboxCommandsImpl implements ISandboxCommands {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
+      signal?.removeEventListener('abort', forwardAbort);
     }
   }
 }

@@ -23,6 +23,7 @@ import {
   type SupervisorOpHandler,
   type SupervisorOpHost,
   type SupervisorOpName,
+  SUPERVISOR_OP_ROUTES,
 } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { SqliteRuntimeFsBridge } from '@nimbus-sh/core/runtime/sqlite-runtime-fs-bridge.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -63,6 +64,7 @@ function outputBytesArg(value: unknown): Uint8Array {
 export function buildSessionSupervisorOps(
   host: SessionSupervisorHost,
   store?: SupervisorOpBridgeStore,
+  methods?: SupervisorOpHost,
 ): SessionSupervisorOps {
   host.ensureSqliteFs();
   store ??= createSupervisorBridgeStore({ vfs: host.sqliteFs!, processes: host.processes });
@@ -136,7 +138,14 @@ export function buildSessionSupervisorOps(
     processes: host.processes,
     // The session IS the host — its _rpc* methods are the route table's
     // targets. The index signature exists on the declared surface only.
-    host: host as unknown as SupervisorOpHost,
+    host: methods ?? Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => [
+      method,
+      (...args: NonNullable<SupervisorOpEnvelope['args']>) => {
+        const handler = Reflect.get(host, method);
+        if (typeof handler !== 'function') throw new Error(`supervisor op: missing host method ${method}`);
+        return Reflect.apply(handler, host, args);
+      },
+    ])),
     bridge: store,
     extend,
   });

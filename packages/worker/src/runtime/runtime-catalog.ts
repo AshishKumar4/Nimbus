@@ -55,6 +55,19 @@ import {
   type ManifestFile,
   type RuntimeManifest,
 } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
+import {
+  splitRuntimeSpec,
+  SUPERSEDED_RUNTIMES,
+  type RuntimeAvailability,
+  type RuntimePackage,
+  type RuntimeSource,
+} from '@nimbus-sh/core/runtime/runtime-package.js';
+import {
+  NIMBUS_RUNTIME_ABIS,
+  NATIVE_UNSUPPORTED_ABI,
+  type RuntimePackageAbi,
+} from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /** Minimal R2Bucket shape we depend on. */
 type R2BucketLike = {
@@ -283,6 +296,95 @@ export async function fetchBlob(
   }
   await l2Put(verified, 'application/octet-stream');
   return verified.bytes;
+}
+
+// ── RuntimeSource ────────────────────────────────────────────────────
+
+export function runtimeAbiForCatalogName(name: string): RuntimePackageAbi {
+  return NIMBUS_RUNTIME_ABIS[name] ?? NATIVE_UNSUPPORTED_ABI;
+}
+
+/**
+ * The R2 catalog as a core `RuntimeSource` — the worker adapter half of the
+ * install path, so a workspace composed inside this Worker resolves
+ * `nimbus install <spec>` against the same bucket and digest chain the
+ * session's installer always used. Aliases resolve the way the old
+ * resolver did: `python` redirects to `cpython` unless a version pins it,
+ * and any bin a runtime's default manifest declares resolves to that
+ * runtime — except a superseded one, which never answers for a bin.
+ */
+export function runtimeCatalogSource(env: RuntimeCatalogEnv): RuntimeSource {
+  return {
+    async list() {
+      const catalog = await fetchCatalog(env);
+      return Object.entries(catalog.runtimes)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, entry]) => ({
+          name,
+          abi: runtimeAbiForCatalogName(name),
+          defaultVersion: entry.default,
+          versions: Object.entries(entry.versions)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([version, v]) => ({
+              version,
+              sizeBytes: v.size_bytes,
+              license: v.license,
+            })),
+        }));
+    },
+
+    async resolve(spec) {
+      const { name, versionOverride } = splitRuntimeSpec(spec);
+      const catalog = await fetchCatalog(env);
+
+      // `python` is CPython now: a bare spec follows the supersession, an
+      // explicit `python@<version>` is a deliberate request and bypasses it.
+      const superseding = versionOverride === null ? SUPERSEDED_RUNTIMES[name] : undefined;
+      const runtimeName =
+        (superseding !== undefined && catalog.runtimes[superseding] ? superseding : null)
+        ?? (catalog.runtimes[name] ? name : null);
+
+      let resolved = runtimeName;
+      if (resolved === null) {
+        // Bin-name aliasing is catalog-driven: any command a runtime
+        // provides resolves to that runtime. A superseded runtime does not
+        // answer for a command name either — its runner is no longer
+        // registered, and the successor declares the same commands further
+        // down this same loop.
+        for (const [candidate, entry] of Object.entries(catalog.runtimes)) {
+          if (versionOverride === null
+            && SUPERSEDED_RUNTIMES[candidate] !== undefined
+            && catalog.runtimes[SUPERSEDED_RUNTIMES[candidate]]) continue;
+          const versionEntry = entry.versions[entry.default];
+          if (!versionEntry) continue;
+          try {
+            const manifest = await fetchManifest(env, versionEntry);
+            if (runtimeEntrypoints(manifest).some((ep) => ep.binName === name)) {
+              resolved = candidate;
+              break;
+            }
+          } catch {
+            // A bad manifest should not prevent canonical catalog names from
+            // resolving; it only suppresses bin-name aliasing for that runtime.
+          }
+        }
+      }
+      if (resolved === null) return null;
+
+      const entry = catalog.runtimes[resolved];
+      const version = versionOverride ?? entry.default;
+      const versionEntry = entry.versions[version];
+      if (!versionEntry) {
+        throw new Error(`'${resolved}@${version}' not in catalog`);
+      }
+      const manifest = await fetchManifest(env, versionEntry);
+      const pkg: RuntimePackage = {
+        manifest,
+        readBlob: (file) => fetchBlob(env, file),
+      };
+      return pkg;
+    },
+  };
 }
 
 // ── L2 (caches.default) helpers ──────────────────────────────────────

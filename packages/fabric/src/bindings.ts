@@ -26,8 +26,9 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { supervisorEntrypoint, supervisorEntrypointName } from './composition.js';
+import { hostNamespace, supervisorEntrypoint, supervisorEntrypointName } from './composition.js';
 import { stagedBootAssembler } from './composition.js';
+import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './host-dispatch.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode } from './vendor/types.js';
@@ -42,17 +43,6 @@ interface ShimCtxExports {
   NimbusLoadedWorker?: EntrypointLoopbackFactory;
   NimbusLoadedEntrypoint?: EntrypointLoopbackFactory;
   NimbusDOStub?: EntrypointLoopbackFactory;
-}
-
-/**
- * The supervisor DO namespace a shim resolves ONE stub from, by the id its
- * props carry. `Stub` is that DO's RPC surface as the calling shim uses it —
- * the supervisor class belongs to the embedder, so each shim names the methods
- * it calls rather than the class.
- */
-interface SupervisorNamespace<Stub> {
-  idFromString(id: string): DurableObjectId;
-  get(id: DurableObjectId): Stub;
 }
 
 /**
@@ -116,34 +106,6 @@ function shimCtxExports(ctx: unknown): ShimCtxExports {
   return exports as ShimCtxExports;
 }
 
-// ── Inner-Worker loopback bindings ────────────────────────────────────
-//
-// These WorkerEntrypoint classes are top-level exports so that ctx.exports
-// auto-populates Service Bindings for them (enable_ctx_exports compat
-// flag is already enabled via default compatibility_date 2026-04-01).
-//
-// They are re-exported from src/index.ts so wrangler detects them as
-// reachable from the entry file and bundles their classes.
-//
-// Usage pattern (in nimbus-wrangler.ts):
-//   ctx.exports.NimbusAssetsRPC({ props: { vfsRoot, assetsDir } })
-// produces a Service Binding stub that can be placed in the inner
-// Worker's `env` under whatever binding name the user declared in
-// wrangler.jsonc's `assets.binding` (typically "ASSETS").
-
-/**
- * What the assets shim reads off the supervisor DO: the VFS bytes of one path,
- * or null when it holds no such file.
- */
-interface AssetsSupervisorStub {
-  _rpcReadFileBytes(path: string): Promise<ArrayBuffer | Uint8Array | null>;
-}
-
-/** `env` for the assets shim: the supervisor its VFS reads round-trip through. */
-interface NimbusAssetsEnv {
-  NIMBUS_SESSION?: SupervisorNamespace<AssetsSupervisorStub>;
-}
-
 /** Props the assets shim is minted with. */
 interface NimbusAssetsProps {
   /** Project root in VFS (e.g. "home/user/myapp"). */
@@ -175,7 +137,7 @@ interface NimbusAssetsProps {
  * For Phase 1, we use a simpler approach: the props carry a supervisor
  * DO id so we can round-trip through an RPC method that reads the file.
  */
-export class NimbusAssetsRPC extends WorkerEntrypoint<NimbusAssetsEnv, NimbusAssetsProps> {
+export class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps> {
   /**
    * Fetch a static asset. Called by the inner Worker as
    * `env.ASSETS.fetch(request)`. The request URL's pathname is used to
@@ -193,12 +155,22 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<NimbusAssetsEnv, NimbusAss
     const parts = clean.split('/').filter((p) => p && p !== '..' && p !== '.');
     clean = parts.join('/');
 
-    // Resolve the supervisor DO stub so we can call its VFS read RPC.
-    const ns = this.env.NIMBUS_SESSION;
-    if (!ns || !doId) {
-      return new Response('ASSETS binding not wired: missing NIMBUS_SESSION or doId', { status: 500 });
+    // Resolve the supervisor DO through the composed host namespace and
+    // dispatch readFileBytes through its supervisorOp entrypoint — a host
+    // forwards envelopes, not private _rpc* methods.
+    if (!doId) {
+      return new Response('ASSETS binding not wired: missing doId', { status: 500 });
     }
-    const stub = ns.get(ns.idFromString(doId));
+    let stub: DurableObjectStub | null = null;
+    let dispatch: HostOpDispatch;
+    try {
+      const ns = hostNamespaceBinding(this.env, 'NimbusAssetsRPC');
+      stub = ns.get(ns.idFromString(doId));
+      dispatch = hostOpDispatch(stub, 'NimbusAssetsRPC');
+    } catch (e) {
+      disposeRpcResource(stub);
+      return new Response(`ASSETS binding not wired: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+    }
 
     // Candidate VFS paths, tried in order. The assetsDir is relative to
     // the project root in VFS. Trailing-slash and bare dir → index.html.
@@ -219,10 +191,14 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<NimbusAssetsEnv, NimbusAss
       for (const candidate of candidates) {
         try {
           const response = await useRpcResource(
-            stub._rpcReadFileBytes(candidate),
-            (bytes: ArrayBuffer | Uint8Array | null) => {
-              if (!bytes || bytes.byteLength === undefined) return null;
-              return new Response(bytes, {
+            dispatch({ op: 'readFileBytes', args: [candidate] }),
+            (bytes) => {
+              if (bytes === null) return null;
+              const body = bytes instanceof ArrayBuffer ? bytes
+                : bytes instanceof Uint8Array && bytes.buffer instanceof ArrayBuffer
+                  ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+              if (!body) return new Response('Nimbus: readFileBytes returned invalid bytes', { status: 502 });
+              return new Response(body, {
                 status: 200,
                 headers: {
                   'Content-Type': mimeTypeForPath(candidate),
@@ -785,31 +761,6 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint<unknown, Nimb
   }
 }
 
-/**
- * What the DO shim reads off the supervisor: one inner-DO request, answered
- * from the facet the supervisor resolves in its own request context.
- */
-interface InnerDoSupervisorStub {
-  _rpcInnerDoFetch(request: {
-    bindingName: string;
-    id: string;
-    method: string;
-    url: string;
-    headers: [string, string][];
-    body: ArrayBuffer | null;
-  }): Promise<{
-    body: ArrayBuffer;
-    status: number;
-    statusText: string;
-    headers: [string, string][];
-  }>;
-}
-
-/** `env` for the DO shim: the supervisor that owns the facet. */
-interface NimbusInnerDoEnv {
-  NIMBUS_SESSION?: SupervisorNamespace<InnerDoSupervisorStub>;
-}
-
 /** Props the DO stub carries: which binding, which supervisor, which id. */
 interface NimbusDoStubProps extends NimbusDoNamespaceProps {
   id?: string;
@@ -823,21 +774,28 @@ interface NimbusDoStubProps extends NimbusDoNamespaceProps {
  * spins up / attaches to a facet via the supervisor's ctx.facets in
  * the SAME outer request context — never reusing stubs across requests.
  */
-export class NimbusDOStub extends WorkerEntrypoint<NimbusInnerDoEnv, NimbusDoStubProps> {
+export class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
   /**
-   * Resolve the supervisor DO from env.NIMBUS_SESSION and route through
-   * its _rpcInnerDoFetch RPC method, which runs ctx.facets.get(...) in
-   * its own context and forwards the request.
+   * Resolve the supervisor DO through the composed host namespace and
+   * dispatch the innerDoFetch op through its one supervisorOp entrypoint —
+   * a host forwards envelopes, not private _rpc* methods.
    */
   async fetch(request: Request): Promise<Response> {
     const props: NimbusDoStubProps = this.ctx.props || {};
-    const ns = this.env?.NIMBUS_SESSION;
-    if (!ns) return new Response('Nimbus: env.NIMBUS_SESSION unavailable', { status: 500 });
     const supervisorDoId = String(props.supervisorDoId || '');
     if (!supervisorDoId) return new Response('Nimbus: supervisorDoId missing', { status: 500 });
     const bindingName = String(props.bindingName || '');
     const id = String(props.id || '');
-    const stub = ns.get(ns.idFromString(supervisorDoId));
+    let stub: DurableObjectStub | null = null;
+    let dispatch: HostOpDispatch;
+    try {
+      const ns = hostNamespaceBinding(this.env ?? {}, 'NimbusDOStub');
+      stub = ns.get(ns.idFromString(supervisorDoId));
+      dispatch = hostOpDispatch(stub, 'NimbusDOStub');
+    } catch (e) {
+      disposeRpcResource(stub);
+      return new Response(`Nimbus: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+    }
     // Forward the full request (method, body, headers preserved) by
     // serializing what's needed and reconstructing on the other side.
     // The supervisor reconstitutes the Request from these fields and
@@ -849,20 +807,27 @@ export class NimbusDOStub extends WorkerEntrypoint<NimbusInnerDoEnv, NimbusDoStu
     request.headers.forEach((v, k) => { headerList.push([k, v]); });
     try {
       return await useRpcResource(
-        stub._rpcInnerDoFetch({
-          bindingName,
-          id,
-          method: request.method,
-          url: request.url,
-          headers: headerList,
-          body,
+        dispatch({
+          op: 'innerDoFetch',
+          args: [{
+            bindingName,
+            id,
+            method: request.method,
+            url: request.url,
+            headers: headerList,
+            body,
+          }],
         }),
-        (res) =>
-          new Response(res.body, {
+        (res) => {
+          if (!(res instanceof Response)) {
+            return new Response('Nimbus: innerDoFetch returned an invalid result', { status: 502 });
+          }
+          return new Response(res.body, {
             status: res.status,
             statusText: res.statusText,
             headers: res.headers,
-          }),
+          });
+        },
       );
     } finally {
       disposeRpcResource(stub);

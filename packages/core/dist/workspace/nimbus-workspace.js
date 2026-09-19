@@ -22,16 +22,22 @@
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import { createDefaultRegistry } from '../substrate/lifo/commands/registry.js';
+import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
+import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
+import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { SandboxCommandsImpl } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { SandboxFsImpl } from '../substrate/lifo/sandbox/SandboxFs.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS, SqliteVFSProvider } from '../vfs/sqlite-vfs.js';
+import { textSink } from '../_shared/bytes.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
-import { rehydrateInstalledRuntimesView, } from '../runtime/installed-runtimes.js';
-import { seedRuntimePackage } from '../runtime/runtime-package.js';
+import { runtimeEntrypoints } from '../runtime/installed-runtimes.js';
+import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
+import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
@@ -68,8 +74,16 @@ export class NimbusWorkspace {
      * hands to a subordinate shell it starts itself.
      */
     env;
+    /** The process table this workspace's shell and wasm-runner allocate from —
+     *  the host's own when it supplied one. */
+    processes;
+    /** Runtime installs, runners and the `nimbus` verb's backing store. */
+    runtimes;
+    /** The pid the shell's commands run as — the host's identity pid when it
+     *  supplied one, else the `sh` this workspace spawned. */
+    shellProcessPid;
     commands;
-    constructor(vfs, kernel, shell, registry, env, sql, supervisorOps) {
+    constructor(vfs, kernel, shell, registry, env, sql, processes, runtimes, shellProcessPid, supervisorOps) {
         this.sql = sql;
         this.supervisorOps = supervisorOps;
         this.vfs = vfs;
@@ -77,6 +91,9 @@ export class NimbusWorkspace {
         this.shell = shell;
         this.registry = registry;
         this.env = env;
+        this.processes = processes;
+        this.runtimes = runtimes;
+        this.shellProcessPid = shellProcessPid;
         this.commands = new SandboxCommandsImpl(shell, registry);
         // NOT the kernel VFS as it stands, which is kernel-credentialed because
         // the shell re-credentials per command; a host calling `.fs` has no
@@ -103,34 +120,121 @@ export class NimbusWorkspace {
         // The durable coreutils replace ~25 lifo builtins. They are the ones that
         // carry credentials and read this filesystem's uid/gid, so they must win.
         registerUnixCommands(registry, vfs);
+        const processes = options.processes ?? new SessionProcessSupervisor();
+        // Only a supervisor this workspace created gets its pid base set here; a
+        // host-supplied one keeps the base its owner configured.
+        if (!options.processes)
+            processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
         const env = { ...defaultEnv(), ...options.env };
-        const shell = new Shell(options.terminal ?? new HeadlessTerminal(), kernel.vfs, registry, env, kernel.processRegistry, options.identity);
+        // The identity every shell command runs as. A host that supplied one keeps
+        // it verbatim — its pid is already alive in ITS process table. Otherwise
+        // the workspace's own supervisor spawns the shell process, so `sudo`,
+        // `chown` and the per-process umask have a live table entry behind them
+        // rather than the Shell's pid-less uid-1000 default.
+        let shell;
+        let identity;
+        let shellProcessPid;
+        if (options.identity) {
+            identity = options.identity;
+            shellProcessPid = options.identity.pid;
+        }
+        else {
+            const shellProcess = processes.spawn('sh', ['sh'], options.cwd ?? env.HOME ?? DEFAULT_HOME);
+            shellProcessPid = shellProcess.pid;
+            identity = workspaceShellIdentity(processes, shellProcess, () => shell);
+        }
+        shell = new Shell(options.terminal ?? new HeadlessTerminal(), kernel.vfs, registry, env, kernel.processRegistry, identity);
         if (options.cwd)
             shell.setCwd(options.cwd);
         // Kernel-credentialed on purpose: this only INSPECTS a file to decide how
         // to run it, and re-checks the caller's own execute permission at
         // invocation time — the `authorize` wrapper in exec-dispatch.ts.
         installPathExecResolver(registry, vfs.as(CRED_KERNEL), () => shell.getCwd());
-        const home = env.HOME ?? DEFAULT_HOME;
-        // Before the runners are wired, because registration reads what the
-        // filesystem holds — the same order `nimbus install` observes, and the
-        // same order a Durable Object observes when it rehydrates after eviction.
-        for (const runtimePackage of options.runtimes ?? []) {
-            await seedRuntimePackage(vfs.as(CRED_KERNEL), home, runtimePackage);
-        }
+        // node/curl/wget are bound to THIS workspace's kernel: their localhost
+        // traffic resolves through its port registry and loopback router, not the
+        // process-wide defaults the lazily-loaded commands would share.
+        registry.register('node', createNodeCommand(kernel));
+        registry.register('curl', createCurlCommand(kernel));
+        registry.register('wget', createWgetCommand(kernel));
+        const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
+        const kernelFs = vfs.as(CRED_KERNEL);
+        const runtimes = new RuntimeManager({
+            vfs: kernelFs,
+            registry,
+            getHome,
+            source: options.runtimeSource
+                ? composeRuntimeSources([suppliedRuntimeSource(options.runtimes ?? []), options.runtimeSource])
+                : suppliedRuntimeSource(options.runtimes ?? []),
+        });
         if (options.facets) {
             await registerWasmRuntimes({
                 facets: options.facets,
                 vfs,
                 registry,
-                generation: options.generation ?? 1,
-                home,
+                processes,
+                runtimes,
             });
         }
+        if (options.runtimeInstall === 'on-demand') {
+            // Stubs only for bins nothing already answers: a coreutil never yields
+            // its name, and a rehydrated runtime is rebound below anyway.
+            const stubbed = new Set();
+            for (const runtimePackage of options.runtimes ?? []) {
+                for (const ep of runtimeEntrypoints(runtimePackage.manifest)) {
+                    if (stubbed.has(ep.binName) || registry.has(ep.binName))
+                        continue;
+                    runtimes.registerInstallStub(ep.binName);
+                    stubbed.add(ep.binName);
+                }
+            }
+            // Beyond the supplied packages: a name the registry cannot answer is
+            // offered to the source — catalog reads only, no payload — and gets a
+            // stub when something could satisfy it. Registered last so every real
+            // command and the PATH resolver still win.
+            const baseResolve = registry.resolve.bind(registry);
+            registry.resolve = async (name) => {
+                const found = await baseResolve(name);
+                if (found)
+                    return found;
+                if (!name || name.includes('/'))
+                    return undefined;
+                try {
+                    if (!await runtimes.resolvable(name))
+                        return undefined;
+                }
+                catch {
+                    return undefined;
+                }
+                runtimes.registerInstallStub(name);
+                return baseResolve(name);
+            };
+        }
+        else {
+            // Before the runners are wired, because registration reads what the
+            // filesystem holds — the same order `nimbus install` observes, and the
+            // same order a Durable Object observes when it rehydrates after
+            // eviction. No runner factories yet means a filesystem-only install,
+            // exactly as before.
+            for (const runtimePackage of options.runtimes ?? []) {
+                await runtimes.installPackage(runtimePackage);
+            }
+        }
+        await runtimes.rehydrate();
+        // The one `nimbus` verb: installs go through the manager, and a host with
+        // application verbs supplies them — a bare workspace reports that it has
+        // no session to address.
+        registry.register('nimbus', makeNimbusVerbHandler({
+            runtimes,
+            registry,
+            vfs: kernelFs,
+        }));
         const supervisorOps = createSupervisorOpHandler({
-            vfs, processes: options.processes, output: options.processOutput, extend: options.supervisorOps,
+            vfs,
+            processes,
+            output: options.processOutput,
+            extend: options.supervisorOps,
         });
-        return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, supervisorOps);
+        return new NimbusWorkspace(vfs, kernel, shell, registry, env, options.sql, processes, runtimes, shellProcessPid, supervisorOps);
     }
     exec(command, options) {
         return this.commands.run(command, options);
@@ -226,13 +330,82 @@ function defaultEnv() {
     };
 }
 /**
- * Turn a facet host into commands: the runtimes this filesystem already holds,
- * plus `wasm-runner` for everything else with a `\0asm` header.
+ * The identity the workspace's own `sh` runs commands under.
  *
- * The runner factories are held here rather than in the process-global table
- * `nimbus install` writes to, because each one closes over THIS workspace's
- * filesystem and THIS workspace's facet host — a second workspace in the same
- * process would otherwise silently retarget the first one's bash.
+ * Every command is credentialed by a live entry in the process table, which is
+ * what makes `sudo`, `chown` and the per-process umask mean anything. `runAs`
+ * is the privilege-transition path: it spawns a child of the calling process
+ * under the requested credential and re-runs the command line through the
+ * shell, so the elevated or dropped execution is a real table entry rather
+ * than a flag on the parent's.
+ */
+function workspaceShellIdentity(processes, shellProcess, getShell) {
+    const runAsProcess = async (parent, cred, argv) => {
+        if (argv.length === 0)
+            return 0;
+        const child = processes.spawn(argv.join(' '), argv, parent.cwd, {
+            parentPid: parent.pid,
+            cred,
+        });
+        const identity = commandIdentityFor(child.pid);
+        let exitCode = 1;
+        try {
+            const stdin = parent.stdin && parent.stdin !== parent.terminalStdin
+                ? await parent.stdin.readAll()
+                : undefined;
+            const result = await getShell().execute(argv.map(quoteShellArgument).join(' '), {
+                cwd: parent.cwd,
+                env: parent.env,
+                stdin,
+                terminalStdin: parent.terminalStdin,
+                signal: parent.signal,
+                isolateShellState: true,
+                terminalFds: {
+                    stdin: parent.isFdTerminal?.(0) ?? false,
+                    stdout: parent.isFdTerminal?.(1) ?? false,
+                    stderr: parent.isFdTerminal?.(2) ?? false,
+                },
+                onStdout: textSink((data) => parent.stdout.write(data)),
+                onStderr: textSink((data) => parent.stderr.write(data)),
+                commandContext: {
+                    pid: identity.pid,
+                    cred: identity.cred,
+                    setUmask: identity.setUmask,
+                },
+                runAs: runAsProcess,
+            });
+            exitCode = result.exitCode;
+            return exitCode;
+        }
+        finally {
+            processes.exit(child.pid, exitCode);
+        }
+    };
+    const commandIdentityFor = (pid) => ({
+        pid,
+        get cred() {
+            return processes.cred(pid);
+        },
+        setUmask(mask) {
+            processes.setUmask(pid, mask);
+        },
+        runAs: runAsProcess,
+    });
+    return commandIdentityFor(shellProcess.pid);
+}
+function quoteShellArgument(value) {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+/**
+ * Turn a facet host into commands: runner factories for the runtimes this
+ * filesystem may hold, plus `wasm-runner` for everything else with a `\0asm`
+ * header.
+ *
+ * The factories are registered on THIS workspace's RuntimeManager rather than
+ * a process-global table, because each one closes over THIS workspace's
+ * filesystem and facet host — a second workspace in the same process would
+ * otherwise silently retarget the first one's bash. `rehydrate` on the
+ * manager is what binds them to the bins the filesystem already holds.
  *
  * Imported on demand: the runners carry the WASI shim and the bash scheduler as
  * source strings, and a workspace with no facet host must not pay to parse
@@ -247,10 +420,9 @@ async function registerWasmRuntimes(deps) {
         import('../runtime/wasm-runner.js'),
         import('../runtime/runtime-registry.js'),
     ]);
-    // wasm-runner allocates pids for what it runs, so it needs a process table
-    // whose pid space is this generation's.
-    const processes = new SessionProcessSupervisor();
-    processes.setPidBase(deps.generation * PID_GEN_STRIDE);
+    // wasm-runner allocates pids for what it runs, off the SAME supervisor the
+    // shell identity uses — the host's own when it supplied one.
+    const processes = deps.processes;
     // Loaded on the first TypeScript or ESM script and not before. The module
     // statically imports `esbuild-wasm/esbuild.wasm`, which only wrangler
     // resolves — node instantiates it as a wasm module and fails on its Go
@@ -280,7 +452,9 @@ async function registerWasmRuntimes(deps) {
         }),
         'clang-runner': makeClangRunnerFactory({ facets: deps.facets, vfs: deps.vfs }),
     };
-    rehydrateInstalledRuntimesView(deps.vfs.as(CRED_KERNEL), deps.registry, deps.home, (key) => runners[key]);
+    for (const [key, factory] of Object.entries(runners)) {
+        deps.runtimes.registerRunner(key, factory);
+    }
 }
 /**
  * Every table the filesystem creates.

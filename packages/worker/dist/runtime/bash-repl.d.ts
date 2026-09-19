@@ -13,7 +13,7 @@ export interface BashReplDeps {
     cred: VfsCred;
     env: Record<string, string>;
     cwd: string;
-    shell?: Pick<Shell, 'env' | 'cwd'>;
+    shell?: Pick<Shell, 'env' | 'cwd' | 'takeQueuedInput'>;
 }
 export declare function runBashRepl(deps: BashReplDeps): Promise<number>;
 //# sourceMappingURL=bash-repl.d.ts.map

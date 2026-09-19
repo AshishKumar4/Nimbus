@@ -85,7 +85,10 @@ export function assembleLoaderWorkerModuleSource(options) {
     const callExpr = options.hasBindings
         ? '__fn__(...args, this.env)'
         : '__fn__(...args)';
-    lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    const result = ${callExpr};`, '    if (result instanceof Promise) return result;', '    return result;', '  }', '}');
+    const requestCallExpr = options.hasBindings
+        ? '__fn__(request, this.env)'
+        : '__fn__(request)';
+    lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    const result = ${callExpr};`, '    if (result instanceof Promise) return result;', '    return result;', '  }', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const message = err instanceof Error && err.message ? err.message : String(err);', '      return Response.json({ __nimbusFacetError: message }, { status: 500 });', '    }', '  }', '}');
     return lines.join('\n');
 }
 /**
@@ -159,6 +162,8 @@ export class IsolatePool {
      * the old key shape and its warm slots stay shared.
      */
     supervisorKey;
+    /** Extra loader-id segment from options.scope — see IsolatePoolOptions. */
+    scope;
     constructor(env, ctx, opts) {
         // A host hands its whole env over; the binding is claimed here and the
         // claim is checked on the next line.
@@ -180,6 +185,7 @@ export class IsolatePool {
         this.doIdShort = opts?.cacheScope === 'global'
             ? 'global'
             : ctx.id.toString().slice(0, 12);
+        this.scope = opts?.scope ?? '';
         // Materialise the wasm-modules table. Sanitise each name into a
         // valid JS identifier for the static import binding; key collisions
         // (e.g. 'esbuild.wasm' and 'esbuild_wasm' both sanitise to
@@ -430,8 +436,14 @@ export class IsolatePool {
      * warm isolate services the call; callers round-robin slots themselves.
      * Serialized per slot: this call waits for the slot's previous
      * execution to settle before touching the warm isolate.
+     *
+     * `invoke` is the single-attempt call against the slot's entrypoint
+     * stub. `execute` dispatches call `entrypoint.execute(...args)`;
+     * `fetch` dispatches call `entrypoint.fetch(<per-attempt Request>)` —
+     * the attempt index lets a fetch invoke mint a fresh clone for retries,
+     * since a Request's body is consumed once.
      */
-    async #dispatchSlot(fnSource, fnHash, slotIndex, args, resilience, perCallWasm) {
+    async #dispatchSlot(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, wasAborted) {
         // A warm slot executes one dispatch at a time: queue behind the
         // previous owner, then record this dispatch as the new tail. The
         // tail outlives the caller's outcome: a timeout rejects the
@@ -448,7 +460,7 @@ export class IsolatePool {
         }
         const inFlight = [];
         try {
-            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm, inFlight);
+            return await this.#dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, wasAborted);
         }
         finally {
             // Do not delay the caller's own outcome — the tail releases when
@@ -456,7 +468,7 @@ export class IsolatePool {
             void Promise.allSettled(inFlight).then(() => release());
         }
     }
-    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, args, resilience, perCallWasm, inFlight) {
+    async #dispatchSlotOwned(fnSource, fnHash, slotIndex, invoke, resilience, perCallWasm, inFlight, wasAborted) {
         // Per-call wasm fingerprint. Mixed into the cache key so two calls
         // with different bytes hit different slots (no cache poisoning).
         // For the common case (no per-call wasm) the fingerprint is '0',
@@ -468,7 +480,7 @@ export class IsolatePool {
         // identity so a wake of that same session can never reuse a warm
         // worker whose SUPERVISOR binding still names the dead generation's
         // pid. See the supervisorKey field comment for the failure mode.
-        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}`;
+        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}`;
         let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
         const code = this.#buildCode(fnSource, perCallWasmEntries);
         // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
@@ -510,8 +522,7 @@ export class IsolatePool {
             // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
             const endFetch = beginLoaderFetch(this.ctx);
             try {
-                const out = await entrypoint.execute(...args);
-                return out;
+                return await invoke(entrypoint, attempt);
             }
             catch (err) {
                 if (err instanceof Error) {
@@ -585,6 +596,18 @@ export class IsolatePool {
                     });
                 }
                 catch { /* fail-soft */ }
+                if (wasAborted?.()) {
+                    // The caller aborted this dispatch's Request. workerd cancelled
+                    // the isolate's execution context wherever it was suspended —
+                    // mid-syscall, mid-stream — so the interpreter's heap may hold
+                    // half-applied state. Bump the slot generation: the next
+                    // dispatch lands on a FRESH worker under a new id rather than
+                    // reusing the abandoned one. Retrying is wrong — the user
+                    // interrupted; surface the abort.
+                    const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
+                    this.slotGenerations.set(slotIndex, generation);
+                    throw lastError;
+                }
                 if (cause === 'clone_refused' && !retriedCloneRefusal) {
                     retriedCloneRefusal = true;
                     const generation = (this.slotGenerations.get(slotIndex) ?? 0) + 1;
@@ -628,7 +651,28 @@ export class IsolatePool {
     async submit(fn, arg, opts) {
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
-        return (await this.#dispatchSlot(fnSource, fnHash, 0, [arg], resilience, opts?.wasmModules));
+        return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+    }
+    /**
+     * Dispatch `fn` through the fetch transport — the pool's only
+     * cancellable path: aborting `request.signal` cancels the inner
+     * execution context at its next I/O suspension (a synchronous CPU
+     * section cannot be preempted — the platform's honest limit), the
+     * call rejects, and the slot generation bumps so the next dispatch
+     * gets a fresh interpreter. `fn` is request-shaped: it encodes and
+     * decodes its own payload.
+     */
+    async submitRequest(fn, request, opts) {
+        if (request.bodyUsed) {
+            throw new BindingError('IsolatePool.submitRequest: request body is already consumed — ' +
+                'pass an unconsumed Request so retries can re-issue it.');
+        }
+        const { fnSource, fnHash } = this.#prepare(fn);
+        const resilience = this.#resolve(opts);
+        // Every attempt fetches a clone: a Request's body is consumed once,
+        // so the caller's original stays unspent and retries get a fresh
+        // body that follows the same signal.
+        return this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, () => request.signal.aborted);
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,
@@ -677,7 +721,7 @@ export class IsolatePool {
                 if (idx >= items.length)
                     return;
                 try {
-                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, [items[idx]], resilience, opts?.wasmModules));
+                    const value = (await this.#dispatchSlot(fnSource, fnHash, slotIndex, (entrypoint) => entrypoint.execute(items[idx]), resilience, opts?.wasmModules));
                     settled[idx] = { ok: true, value };
                 }
                 catch (err) {

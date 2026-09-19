@@ -1485,6 +1485,34 @@ function pump(s: BashSession): BashSlice {
   return { state: 'error', exitCode: 1, stdout: out, stderr: err, error: 'bash-runner: deadlock — live procs with empty run queue', stats };
 }
 
+/**
+ * The one step dispatch, shared by both transports the host can pick:
+ * `facet.submit(bashFacetStep, args)` calls it with the args object
+ * already decoded; `facet.submitRequest(bashRequestStep, request)`
+ * reaches it through a JSON Request. Both go through this validation so
+ * nothing but a boot/feed-shaped payload can reach the scheduler.
+ */
+globalThis.__bashStep = function __bashStep(raw: unknown): BashSlice {
+  if (typeof raw !== 'object' || raw === null || !('op' in raw)) {
+    return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: step args must be an object with op' };
+  }
+  if (raw.op === 'feed') {
+    const a = raw as { data?: unknown; eof?: unknown };
+    if ((a.data !== undefined && typeof a.data !== 'string') || (a.eof !== undefined && typeof a.eof !== 'boolean')) {
+      return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: malformed feed args' };
+    }
+    return globalThis.__bashFeed(raw as BashFeedArgs);
+  }
+  if (raw.op === 'boot') {
+    const a = raw as { argv?: unknown; environ?: unknown; cwd?: unknown };
+    if (!Array.isArray(a.argv) || !Array.isArray(a.environ) || typeof a.cwd !== 'string') {
+      return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: malformed boot args' };
+    }
+    return globalThis.__bashBoot(raw as BashBootArgs);
+  }
+  return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: `bash-runner: unknown step op ${JSON.stringify(raw.op)}` };
+};
+
 globalThis.__bashBoot = function __bashBoot(args: BashBootArgs): BashSlice {
   try {
     S = newSession(args);

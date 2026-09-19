@@ -67,6 +67,8 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
+import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
+import { z } from 'zod/v4';
 import {
   type HostedProcess,
   type OneShotParams,
@@ -219,20 +221,6 @@ export interface HostedHttpResponse {
   body: ReadableStream | null;
 }
 
-/**
- * Every method a hosting sibling must answer. Checked as a set at first
- * contact: a stub that has the probe but not the router is a deployment skew,
- * and finding that out mid-process is finding it out too late.
- */
-const PROCESS_PEER_METHODS = [
-  '_rpcProcessHostProbe',
-  '_rpcHostProcess',
-  '_rpcAwaitHostedOpen',
-  '_rpcAwaitHostedBoot',
-  '_rpcRouteHostedHttp',
-  '_rpcCancelHostProcess',
-] as const;
-
 /** The host-process surface a sibling session DO exposes. */
 interface ProcessPeerStub {
   _rpcProcessHostProbe(): Promise<{ isolateToken: string }>;
@@ -257,41 +245,70 @@ interface ProcessPeerStub {
 export const HOSTED_WEBSOCKET_KEY_HEADER = 'x-nimbus-hosted-websocket';
 export const HOSTED_WEBSOCKET_CAPABILITY_HEADER = 'x-nimbus-hosted-websocket-capability';
 
-interface PeerNamespace {
-  idFromName(name: string): unknown;
-  get(id: unknown): unknown;
-}
-
-function peerNamespace(env: unknown): PeerNamespace {
-  const ns = (typeof env === 'object' || typeof env === 'function') && env !== null
-    ? Reflect.get(env, 'NIMBUS_SESSION')
-    : undefined;
-  if ((typeof ns !== 'object' && typeof ns !== 'function') || ns === null
-    || typeof Reflect.get(ns, 'idFromName') !== 'function'
-    || typeof Reflect.get(ns, 'get') !== 'function') {
-    throw new BindingError(
-      'ProcessFabric: env.NIMBUS_SESSION binding missing or invalid. '
-        + "NIMBUS_PROCESS_HOST='peer' hosts every resident process on a sibling "
-        + 'Durable Object; add the binding via durable_objects.bindings in wrangler.jsonc.',
-    );
-  }
-  return ns as unknown as PeerNamespace;
-}
-
-function processPeerStub(value: unknown, peerName: string): ProcessPeerStub {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-    throw new BindingError(`ProcessFabric: NIMBUS_SESSION.get() returned no stub for peer '${peerName}'.`);
-  }
-  for (const method of PROCESS_PEER_METHODS) {
-    if (typeof Reflect.get(value, method) !== 'function') {
+/**
+ * Peer stubs forward one supervisorOp entrypoint: every method the host-
+ * process surface needs is an envelope op, not a private _rpc* method.
+ */
+function peerNamespace(env: object): HostNamespaceBinding {
+  try {
+    return hostNamespaceBinding(env, 'ProcessFabric');
+  } catch (e) {
+    if (e instanceof BindingError) {
       throw new BindingError(
-        `ProcessFabric: peer '${peerName}' does not expose ${method}(). `
-          + 'A sibling that answers some of the host-process surface and not the rest '
-          + 'would fail somewhere inside a running process instead of here.',
+        e.message
+          + " NIMBUS_PROCESS_HOST='peer' hosts every resident process on a sibling "
+          + "Durable Object; name the host's own binding with composeFabric({ hostNamespace }).",
       );
     }
+    throw e;
   }
-  return value as unknown as ProcessPeerStub;
+}
+
+const PeerProbeResult = z.object({ isolateToken: z.string() });
+const PeerOpenResult = z.object({ ok: z.boolean() });
+const PeerBootResult = z.object({ payload: z.unknown() });
+const PeerCancelResult = z.object({ cancelled: z.boolean() });
+const PeerHttpResult = z.object({
+  status: z.number().int(),
+  statusText: z.string(),
+  headers: z.array(z.tuple([z.string(), z.string()])),
+  body: z.instanceof(ReadableStream).nullable(),
+});
+
+function processPeerStub(value: object, peerName: string): ProcessPeerStub {
+  const dispatch = hostOpDispatch(value, `ProcessFabric peer '${peerName}'`);
+  const fetchFn = (typeof value === 'object' || typeof value === 'function') && value !== null
+    ? Reflect.get(value, 'fetch')
+    : undefined;
+  if (typeof fetchFn !== 'function') {
+    throw new BindingError(
+      `ProcessFabric: peer '${peerName}' exposes no fetch() — the hosted-websocket `
+        + 'upgrade leg still travels as a service-binding fetch.',
+    );
+  }
+  const adapter: ProcessPeerStub = {
+    _rpcProcessHostProbe: async () => PeerProbeResult.parse(await dispatch({ op: 'processHostProbe', args: [] })),
+    _rpcHostProcess: async (boot, opts) => PeerOpenResult.parse(await dispatch({ op: 'hostProcess', args: [boot, opts] })),
+    _rpcAwaitHostedOpen: async (key) => PeerOpenResult.parse(await dispatch({ op: 'awaitHostedOpen', args: [key] })),
+    _rpcAwaitHostedBoot: async (key) => {
+      const result = PeerBootResult.parse(await dispatch({ op: 'awaitHostedBoot', args: [key] }));
+      return { payload: result.payload };
+    },
+    _rpcRouteHostedHttp: async (key, request) => PeerHttpResult.parse(await dispatch({ op: 'routeHostedHttp', args: [key, request] })),
+    _rpcCancelHostProcess: async (key) => PeerCancelResult.parse(await dispatch({ op: 'cancelHostProcess', args: [key] })),
+    fetch: async (request) => {
+      const response = await Reflect.apply(fetchFn, value, [request]);
+      if (!(response instanceof Response)) throw new BindingError(`ProcessFabric: peer '${peerName}' returned no Response`);
+      return response;
+    },
+  };
+  // The adapter wraps the raw stub; releasing the adapter must release it —
+  // a held RPC stub pins the peer DO for the session's life.
+  const disposerKey = Reflect.get(Symbol, 'dispose');
+  if (typeof disposerKey === 'symbol') {
+    Object.defineProperty(adapter, disposerKey, { value: () => disposeRpcResource(value) });
+  }
+  return adapter;
 }
 
 interface PeerPlacement {
@@ -312,13 +329,16 @@ class PeerProcessHost implements ProcessHost {
     storageSharedWithSession: false,
   };
 
-  private readonly ns: PeerNamespace;
+  private readonly ns: HostNamespaceBinding;
   private readonly env: ResidentFacetEnv;
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
 
   constructor(private readonly ctx: DurableObjectState, env: unknown) {
+    if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
+      throw new BindingError('ProcessFabric: a peer host requires environment bindings');
+    }
     this.ns = peerNamespace(env);
     this.env = (env ?? {}) as ResidentFacetEnv;
     this.coordDoId = ctx.id.toString();
@@ -445,7 +465,7 @@ class PeerProcessHost implements ProcessHost {
   /** One sibling name, resolved and probed. Leaks nothing on failure. */
   private async _probePlacement(pid: number, attempt: number): Promise<PeerPlacement> {
     const peerName = `${this.coordDoId}:proc:${pid}:${attempt}`;
-    let resource: unknown;
+    let resource: DurableObjectStub | null = null;
     try {
       resource = this.ns.get(this.ns.idFromName(peerName));
       const stub = processPeerStub(resource, peerName);

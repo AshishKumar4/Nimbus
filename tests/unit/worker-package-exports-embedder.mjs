@@ -41,7 +41,9 @@ const WORKER = `${ROOT}packages/worker/`;
 {
   const pkg = JSON.parse(readFileSync(`${WORKER}package.json`, 'utf8'));
   const expected = {
-    './workspace-host': 'facets/compose',
+    './workspace-host': 'workspace-host',
+    './workspace': 'workspace',
+    './facet-host': 'runtime/facet-loader-host',
     './port-capability': 'session/port-capability',
     './durable-slots': 'facets/durable-slots',
     './git': 'git/commands',

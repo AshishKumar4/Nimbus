@@ -16,6 +16,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
+import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
     env?: Record<string, string>;
     getEnv(): Record<string, string>;
@@ -35,33 +36,7 @@ interface ProgrammaticShellExecuteOptions {
     isolateShellState?: boolean;
     commandContext?: Record<string, unknown>;
 }
-interface ProgrammaticContext {
-    /** The session DO's own id — the public-directory binding reads its name. */
-    id?: {
-        name?: unknown;
-    };
-    getWebSockets?(tag?: string): WebSocket[];
-    /** Holds a background process's work open for the life of the process. */
-    waitUntil?(promise: Promise<unknown>): void;
-    storage: {
-        get(key: string): Promise<unknown>;
-        put(key: string, value: unknown): Promise<void>;
-        delete(key: string): Promise<void>;
-        deleteAll(): Promise<void>;
-        deleteAlarm(): Promise<void>;
-        list<T = unknown>(options: {
-            prefix: string;
-        }): Promise<Map<string, T>>;
-        transaction<T>(body: (txn: {
-            get(key: string): Promise<unknown>;
-            put(key: string, value: unknown): Promise<void>;
-            delete(key: string): Promise<unknown>;
-            list<T2 = unknown>(options: {
-                prefix: string;
-            }): Promise<Map<string, T2>>;
-        }) => Promise<T>): Promise<T>;
-    };
-}
+type ProgrammaticContext = DurableObjectState;
 interface ProgrammaticFacetManager {
     kill(pid: number): boolean;
     hasResidentProcess(pid: number): boolean;
@@ -79,6 +54,8 @@ interface ProgrammaticCirrusServer {
     stop(ctx: ProgrammaticContext): void;
 }
 export interface ProgrammaticHost {
+    readonly runtimeManager: RuntimeManager;
+    ensureRuntimeReady(): Promise<void>;
     _w1SessionDestroyed: boolean;
     env: RuntimeCatalogEnv;
     ctx: ProgrammaticContext;
@@ -128,7 +105,6 @@ export interface ProgrammaticHost {
     _w9WireProcessLogPersist?(): void;
     ensureSqliteFs(): void;
     ensureFacetManager(): ComposedFacetManager;
-    initSession(ws: WebSocket): Promise<void>;
 }
 export interface ProgrammaticReadyOptions {
     preinstall?: string[];
@@ -244,16 +220,7 @@ export declare function rpcEnsureRuntimes(self: ProgrammaticHost, specs: string[
 }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
 export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<{
     installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
-    available: {
-        name: string;
-        abi: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimePackageAbi;
-        defaultVersion: string;
-        versions: Array<{
-            version: string;
-            sizeBytes: number;
-            license: string;
-        }>;
-    }[];
+    available: import("@nimbus-sh/core/runtime/runtime-package.js").RuntimeAvailability[];
 }>;
 export declare function rpcListProcesses(self: ProgrammaticHost): Promise<SerializedProcess[]>;
 export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{

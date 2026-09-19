@@ -36,21 +36,40 @@ function errorMessage(error) {
         return error.message;
     return String(error);
 }
-async function bashFacetStep(args) {
-    const boot = Reflect.get(globalThis, '__bashBoot');
-    const feed = Reflect.get(globalThis, '__bashFeed');
-    if (typeof boot !== 'function' || typeof feed !== 'function') {
-        return {
+/** The step the classic submit transport carries: args object in, slice out.
+ *  Serialized verbatim into the facet — every name it touches must be
+ *  reachable there (globals or its own literals). */
+export async function bashFacetStep(args) {
+    const step = Reflect.get(globalThis, '__bashStep');
+    return typeof step === 'function' ? step(args) : {
+        state: 'error',
+        exitCode: 127,
+        stdout: '',
+        stderr: '',
+        error: 'bash-runner preamble missing (__bashStep not in scope)',
+    };
+}
+/**
+ * The same step reached through a Request, for hosts whose facet can carry
+ * a fetch signal. Serialized verbatim like `bashFacetStep` — no closure
+ * references — and the dispatch inside is the same `__bashStep` call; only
+ * the transport wrapper differs (JSON in, Response out).
+ */
+export async function bashRequestStep(request) {
+    const step = Reflect.get(globalThis, '__bashStep');
+    if (typeof step !== 'function') {
+        return Response.json({
             state: 'error',
             exitCode: 127,
             stdout: '',
             stderr: '',
-            error: 'bash-runner preamble missing (__bashBoot/__bashFeed not in scope)',
-        };
+            error: 'bash-runner preamble missing (__bashStep not in scope)',
+        });
     }
-    return args.op === 'boot' ? boot(args) : feed(args);
+    return Response.json(step(await request.json()));
 }
 export async function createBashFacetSession(deps) {
+    deps.signal?.throwIfAborted();
     const findFile = (relativePath) => {
         const entry = deps.manifest.files.find((file) => file.path === relativePath);
         return entry ? `${deps.installRoot}/${entry.path}` : null;
@@ -101,21 +120,53 @@ export async function createBashFacetSession(deps) {
         preamble: BASH_RUNNER_PREAMBLE,
         wasmModules,
     });
+    const canInterrupt = typeof facet.submitRequest === 'function';
+    let stepController = null;
+    let stepInFlight = null;
     let active = true;
     let closed = false;
-    const submit = async (args) => {
-        const slice = normalizeSlice(await facet.submit(bashFacetStep, args, { timeoutMs: 300_000 }));
-        if (!slice)
-            throw new Error('facet returned an invalid payload');
-        if (slice.state === 'exited') {
-            if (slice.fsDiff)
-                flushVfsDiff(deps.vfs, slice.fsDiff);
-            active = false;
-        }
-        else if (slice.state === 'error') {
-            active = false;
-        }
-        return slice;
+    const submit = (args) => {
+        const tracked = (async () => {
+            deps.signal?.throwIfAborted();
+            let raw;
+            if (canInterrupt && facet.submitRequest) {
+                const controller = new AbortController();
+                stepController = controller;
+                try {
+                    const response = await facet.submitRequest(bashRequestStep, new Request('https://bash-facet.invalid/step', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify(args),
+                        signal: deps.signal ? AbortSignal.any([controller.signal, deps.signal]) : controller.signal,
+                    }), { timeoutMs: 300_000 });
+                    raw = await response.json();
+                }
+                finally {
+                    if (stepController === controller)
+                        stepController = null;
+                }
+            }
+            else {
+                raw = await facet.submit(bashFacetStep, args, { timeoutMs: 300_000 });
+            }
+            const slice = normalizeSlice(raw);
+            if (!slice)
+                throw new Error('facet returned an invalid payload');
+            if (slice.state === 'exited') {
+                if (slice.fsDiff)
+                    flushVfsDiff(deps.vfs, slice.fsDiff);
+                active = false;
+            }
+            else if (slice.state === 'error') {
+                active = false;
+            }
+            return slice;
+        })();
+        stepInFlight = tracked;
+        tracked.then(() => { if (stepInFlight === tracked)
+            stepInFlight = null; }, () => { if (stepInFlight === tracked)
+            stepInFlight = null; });
+        return tracked;
     };
     try {
         const initial = await submit({
@@ -136,6 +187,24 @@ export async function createBashFacetSession(deps) {
                     throw new Error('bash facet session is closed');
                 return submit({ op: 'feed', data, eof });
             },
+            // Abort the in-flight step's fetch signal, then settle when the step
+            // promise has — the caller observes the abort as the push's rejection.
+            ...(canInterrupt ? {
+                async interrupt() {
+                    stepController?.abort();
+                    const inFlight = stepInFlight;
+                    if (inFlight) {
+                        try {
+                            await inFlight;
+                        }
+                        catch { /* the push surfaces the error */ }
+                    }
+                    // The aborted dispatch leaves the isolate's session dead — the
+                    // pool's generation bump guarantees the next dispatch a fresh
+                    // worker — so close() must not feed an EOF into the corpse.
+                    active = false;
+                },
+            } : {}),
             async close() {
                 if (closed)
                     return;

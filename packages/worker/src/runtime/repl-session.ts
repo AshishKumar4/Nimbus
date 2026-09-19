@@ -13,6 +13,8 @@
  */
 
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
+import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 
 /**
@@ -33,6 +35,8 @@ export interface ReplAdapter {
   /** Called once on session close (exit() / Ctrl-D / shell teardown).
    *  Should free any cached pool / isolate. Idempotent. */
   close(): Promise<void>;
+  /** Abort and settle the active push, resetting its interpreter before resolving. */
+  interrupt?(): void | Promise<void>;
   /** Primary prompt (typically '>>> '). */
   ps1: string;
   /** Continuation prompt (typically '... '). */
@@ -58,33 +62,13 @@ export type ReplPushResult =
  * No setTimeout in the read loop — the session is driven entirely by
  * keystroke arrival on the WS, with awaits gating the adapter's push().
  */
+type InterruptOutcome = { kind: 'interrupted' } | { kind: 'failed'; message: string };
+
 export class ReplSession {
   private adapter: ReplAdapter;
+  private detachRepl: (() => void) | null = null;
   private terminal: WebSocketTerminal;
-  private detachReplCb: (() => void) | null = null;
-  /**
-   * REPL-R7-1 (2026-05-12): optional reference to the Nimbus shell.
-   *
-   * Required when the REPL is launched from a multi-line WS frame
-   * (e.g. user pastes `python\nexit(7)`). The shell input handler
-   * splits the frame on \r\n and pushes lines AFTER
-   * the first into `shell.pasteQueue`, which is drained ONLY when
-   * the shell becomes idle (after executeLine returns). While our
-   * REPL is running, those pasteQueue lines sit there waiting and
-   * the REPL itself receives no input → user sees a hung `>>> `
-   * prompt that never responds.
-   *
-   * If `shell` is provided, ReplSession will, immediately after
-   * attaching its replCallback, drain shell.pasteQueue and feed the
-   * lines into the callback (suffixed with \r each — matches what
-   * the WS frame originally would have looked like). This makes the
-   * paste path work transparently for REPL launches.
-   *
-   * The shell reference is optional so existing adapters (bun, node,
-   * ruby) that haven't been updated keep working with their
-   * pre-fix behavior.
-   */
-  private shellRef: any = null;
+  private shellRef: Pick<Shell, 'takeQueuedInput'> | null = null;
 
   /** Current line buffer (chars typed since the last enter). */
   private lineBuf: string = '';
@@ -97,9 +81,12 @@ export class ReplSession {
   /** Per-session history ring (most recent first). Capped at 100. */
   private history: string[] = [];
   private historyIdx: number = -1;
-  /** Resolves when close() has been called and the session ended. */
   private closedResolve: (() => void) | null = null;
   private closedPromise: Promise<void>;
+  private pendingInterrupt: Promise<InterruptOutcome> | null = null;
+  private activePush: Promise<ReplPushResult> | null = null;
+  private ending: Promise<void> | null = null;
+
   /** Exit code captured from adapter's last 'exit' return. */
   private exitCode: number = 0;
   /**
@@ -121,7 +108,7 @@ export class ReplSession {
   private inputQueue: string = '';
   private draining: boolean = false;
 
-  constructor(adapter: ReplAdapter, terminal: WebSocketTerminal, shell?: any) {
+  constructor(adapter: ReplAdapter, terminal: WebSocketTerminal, shell?: Pick<Shell, 'takeQueuedInput'>) {
     this.adapter = adapter;
     this.terminal = terminal;
     // REPL-R7-1: optional shell reference for pasteQueue drain.
@@ -145,65 +132,48 @@ export class ReplSession {
     // 3. Install the input handler.
     // REPL-A1b: per-frame data appended to inputQueue; single drain
     // task ensures serial processing across multiple WS frames.
-    this.detachReplCb = this.terminal.attachRepl((data: string) => {
+    this.detachRepl = this.terminal.attachRepl((data: string) => {
+      // Ctrl-C is the one input byte that must not queue behind a busy
+      // push: it is the user's abort, and it only works if it runs now.
+      if (this.busy && data.includes('\x03')) {
+        this.inputQueue = '';
+        data = data.slice(data.lastIndexOf('\x03') + 1);
+        this.interruptBusy();
+        if (data.length === 0) return;
+      }
+      if (this.ending) return;
       this.inputQueue += data;
       if (!this.draining) {
         this.draining = true;
         void this.drainInput();
       }
-    });
+    }, () => this.endSession(this.exitCode));
 
-    // REPL-R7-1: drain any input that the shell received in the SAME
-    // WS frame as the REPL-launching command (`python\nexit(7)` style
-    // pastes). Without this drain, those lines sit forever in
-    // shell.pasteQueue while the REPL hangs at `>>> `.
-    //
-    // Each pasteQueue entry is a single line (no \r/\n). We re-frame
-    // each into the replCallback as `line + \r` so handleInput
-    // processes it through the normal Enter-triggered submitLine
-    // path — same behavior as if the user had typed and pressed
-    // Enter for each line.
-    //
-    // Best-effort: if shellRef is null or pasteQueue is missing,
-    // skip silently. Mutate the queue (shift) so the shell doesn't
-    // try to re-process the same items when it drains its own queue
-    // after this REPL exits.
-    if (this.shellRef && Array.isArray(this.shellRef.pasteQueue)) {
-      const pq: string[] = this.shellRef.pasteQueue;
-      if (pq.length > 0) {
-        const drained = pq.splice(0).filter(line => line !== undefined && line !== null);
-        if (drained.length > 0) {
-          // Feed via inputQueue + draining (same path as a real WS
-          // frame). Each line ends with \r so handleInput's
-          // submitLine fires per line.
-          this.inputQueue += drained.join('\r') + '\r';
-          if (!this.draining) {
-            this.draining = true;
-            void this.drainInput();
-          }
-        }
-      }
+    const queued = this.shellRef?.takeQueuedInput() ?? [];
+    if (queued.length > 0) {
+      this.inputQueue += queued.join('\r') + '\r';
+      if (!this.draining) { this.draining = true; void this.drainInput(); }
     }
 
     // 4. Wait until close() is called.
     await this.closedPromise;
     return this.exitCode;
   }
-
-  /**
-   * REPL-A1b: drain the input queue serially. Pulls data off
-   * inputQueue, runs handleInput, and reads any data that arrived
-   * during the await. Exits when queue is empty. Only ONE drainInput
-   * runs at a time (guarded by draining flag set in attachRepl
-   * callback).
-   */
   private async drainInput(): Promise<void> {
-    while (this.inputQueue.length > 0) {
-      const chunk = this.inputQueue;
-      this.inputQueue = '';
-      await this.handleInput(chunk);
+    try {
+      while (this.inputQueue.length > 0 && !this.ending) {
+        const chunk = this.inputQueue;
+        this.inputQueue = '';
+        await this.handleInput(chunk);
+      }
+    } catch (error) {
+      if (!this.ending) {
+        this.terminal.write('[repl] ' + errorText(error) + '\r\n');
+        try { await this.endSession(1); } catch { /* run() reports the cleanup failure as exit 1. */ }
+      }
+    } finally {
+      this.draining = false;
     }
-    this.draining = false;
   }
 
   /** Process an input chunk. May contain multiple characters (paste
@@ -211,6 +181,7 @@ export class ReplSession {
    *  control byte individually. */
   private async handleInput(data: string): Promise<void> {
     for (let i = 0; i < data.length; i++) {
+      if (this.ending) return;
       const ch = data[i];
       // CTRL-D (0x04): on empty line, close cleanly.
       if (ch === '\x04') {
@@ -225,10 +196,7 @@ export class ReplSession {
       // CTRL-C (0x03): cancel current line / block.
       if (ch === '\x03') {
         if (this.busy) {
-          // Mid-execution: we can't actually interrupt the wasm runtime
-          // in v1 (no SIGINT plumbing). Buffer the cancel for after.
-          // For now: just display ^C and let the runtime finish.
-          this.terminal.write('^C\r\n');
+          this.interruptBusy();
           continue;
         }
         // Idle: discard current buffer, reset, fresh prompt.
@@ -285,8 +253,23 @@ export class ReplSession {
       }
     }
   }
+  private interruptBusy(): void {
+    if (this.ending || this.pendingInterrupt) return;
+    this.terminal.write('^C\r\n');
+    this.terminal.flushNow();
+    if (!this.adapter.interrupt) return;
+    try {
+      this.pendingInterrupt = Promise.resolve(this.adapter.interrupt()).then(
+        (): InterruptOutcome => ({ kind: 'interrupted' }),
+        (error): InterruptOutcome => ({ kind: 'failed', message: errorText(error) }),
+      );
+    } catch (error) {
+      this.pendingInterrupt = Promise.resolve({ kind: 'failed', message: errorText(error) });
+    }
+  }
 
-  /** Submit the current line buffer to the adapter. */
+
+
   private async submitLine(): Promise<void> {
     this.terminal.write('\r\n');
     const line = this.lineBuf;
@@ -306,14 +289,26 @@ export class ReplSession {
     this.busy = true;
     let result: ReplPushResult;
     try {
-      result = await this.adapter.push(fullSource);
-    } catch (e: any) {
-      result = {
-        kind: 'error',
-        stderr: `[repl] adapter threw: ${e?.message || e}\n`,
-      };
+      this.activePush = this.adapter.push(fullSource);
+      result = await this.activePush;
+    } catch (error) {
+      result = { kind: 'error', stderr: '[repl] adapter threw: ' + errorText(error) + '\n' };
+    } finally {
+      this.activePush = null;
+    }
+    const pending = this.pendingInterrupt;
+    if (pending) {
+      const outcome = await pending;
+      if (this.pendingInterrupt === pending) this.pendingInterrupt = null;
+      if (outcome.kind === 'interrupted') {
+        result = { kind: 'error', stderr: 'KeyboardInterrupt\n[repl] execution interrupted; interpreter state reset.\n' };
+      } else {
+        this.terminal.write('[repl] interrupt failed: ' + outcome.message + '\r\n');
+        this.terminal.flushNow();
+      }
     }
     this.busy = false;
+    if (this.ending) return;
 
     // REPL-A1 (master plan §1): emit stdout, stderr, and the next-prompt
     // as three discrete WS frames in deterministic order. Without
@@ -394,18 +389,28 @@ export class ReplSession {
     this.cursorPos = text.length;
     this.terminal.write(text);
   }
-
-  /** Close the session: detach input hook, free adapter, resolve. */
-  private async endSession(code: number): Promise<void> {
+  private endSession(code: number): Promise<void> {
+    if (this.ending) return this.ending;
     this.exitCode = code;
-    if (this.detachReplCb) {
-      try { this.detachReplCb(); } catch { /* fail-soft */ }
-      this.detachReplCb = null;
-    }
-    try { await this.adapter.close(); } catch { /* fail-soft */ }
-    if (this.closedResolve) {
-      this.closedResolve();
+    this.inputQueue = '';
+    this.ending = Promise.resolve().then(async () => {
+      let failure: Error | null = null;
+      try {
+        await this.adapter.close();
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+        this.exitCode = 1;
+        this.terminal.write('[repl] cleanup failed: ' + failure.message + '\r\n');
+        this.terminal.flushNow();
+      }
+      if (this.activePush) await this.activePush.catch(() => {});
+      if (this.pendingInterrupt) await this.pendingInterrupt;
+      this.detachRepl?.();
+      this.detachRepl = null;
+      this.closedResolve?.();
       this.closedResolve = null;
-    }
+      if (failure) throw failure;
+    });
+    return this.ending;
   }
 }

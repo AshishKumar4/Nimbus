@@ -196,5 +196,5 @@ export const BUN_SHIM_PREAMBLE = `
  */
 export async function runBunScript(facetMgr, code, opts) {
     const wrappedCode = BUN_SHIM_PREAMBLE + code;
-    return runFresh(facetMgr, wrappedCode, opts);
+    return runFresh(facetMgr, wrappedCode, opts, code);
 }

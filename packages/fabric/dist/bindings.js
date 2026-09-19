@@ -27,6 +27,7 @@ import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { supervisorEntrypoint, supervisorEntrypointName } from './composition.js';
 import { stagedBootAssembler } from './composition.js';
+import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 /**
  * `ctx.exports` — workerd's loopback bag, which the installed
@@ -88,12 +89,23 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
         let clean = url.pathname.replace(/^\/+/, '');
         const parts = clean.split('/').filter((p) => p && p !== '..' && p !== '.');
         clean = parts.join('/');
-        // Resolve the supervisor DO stub so we can call its VFS read RPC.
-        const ns = this.env.NIMBUS_SESSION;
-        if (!ns || !doId) {
-            return new Response('ASSETS binding not wired: missing NIMBUS_SESSION or doId', { status: 500 });
+        // Resolve the supervisor DO through the composed host namespace and
+        // dispatch readFileBytes through its supervisorOp entrypoint — a host
+        // forwards envelopes, not private _rpc* methods.
+        if (!doId) {
+            return new Response('ASSETS binding not wired: missing doId', { status: 500 });
         }
-        const stub = ns.get(ns.idFromString(doId));
+        let stub = null;
+        let dispatch;
+        try {
+            const ns = hostNamespaceBinding(this.env, 'NimbusAssetsRPC');
+            stub = ns.get(ns.idFromString(doId));
+            dispatch = hostOpDispatch(stub, 'NimbusAssetsRPC');
+        }
+        catch (e) {
+            disposeRpcResource(stub);
+            return new Response(`ASSETS binding not wired: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+        }
         // Candidate VFS paths, tried in order. The assetsDir is relative to
         // the project root in VFS. Trailing-slash and bare dir → index.html.
         const base = (vfsRoot ? vfsRoot + '/' : '') + (assetsDir ? assetsDir + '/' : '');
@@ -112,10 +124,15 @@ export class NimbusAssetsRPC extends WorkerEntrypoint {
         try {
             for (const candidate of candidates) {
                 try {
-                    const response = await useRpcResource(stub._rpcReadFileBytes(candidate), (bytes) => {
-                        if (!bytes || bytes.byteLength === undefined)
+                    const response = await useRpcResource(dispatch({ op: 'readFileBytes', args: [candidate] }), (bytes) => {
+                        if (bytes === null)
                             return null;
-                        return new Response(bytes, {
+                        const body = bytes instanceof ArrayBuffer ? bytes
+                            : bytes instanceof Uint8Array && bytes.buffer instanceof ArrayBuffer
+                                ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+                        if (!body)
+                            return new Response('Nimbus: readFileBytes returned invalid bytes', { status: 502 });
+                        return new Response(body, {
                             status: 200,
                             headers: {
                                 'Content-Type': mimeTypeForPath(candidate),
@@ -633,21 +650,28 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
  */
 export class NimbusDOStub extends WorkerEntrypoint {
     /**
-     * Resolve the supervisor DO from env.NIMBUS_SESSION and route through
-     * its _rpcInnerDoFetch RPC method, which runs ctx.facets.get(...) in
-     * its own context and forwards the request.
+     * Resolve the supervisor DO through the composed host namespace and
+     * dispatch the innerDoFetch op through its one supervisorOp entrypoint —
+     * a host forwards envelopes, not private _rpc* methods.
      */
     async fetch(request) {
         const props = this.ctx.props || {};
-        const ns = this.env?.NIMBUS_SESSION;
-        if (!ns)
-            return new Response('Nimbus: env.NIMBUS_SESSION unavailable', { status: 500 });
         const supervisorDoId = String(props.supervisorDoId || '');
         if (!supervisorDoId)
             return new Response('Nimbus: supervisorDoId missing', { status: 500 });
         const bindingName = String(props.bindingName || '');
         const id = String(props.id || '');
-        const stub = ns.get(ns.idFromString(supervisorDoId));
+        let stub = null;
+        let dispatch;
+        try {
+            const ns = hostNamespaceBinding(this.env ?? {}, 'NimbusDOStub');
+            stub = ns.get(ns.idFromString(supervisorDoId));
+            dispatch = hostOpDispatch(stub, 'NimbusDOStub');
+        }
+        catch (e) {
+            disposeRpcResource(stub);
+            return new Response(`Nimbus: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
+        }
         // Forward the full request (method, body, headers preserved) by
         // serializing what's needed and reconstructing on the other side.
         // The supervisor reconstitutes the Request from these fields and
@@ -658,18 +682,26 @@ export class NimbusDOStub extends WorkerEntrypoint {
         const headerList = [];
         request.headers.forEach((v, k) => { headerList.push([k, v]); });
         try {
-            return await useRpcResource(stub._rpcInnerDoFetch({
-                bindingName,
-                id,
-                method: request.method,
-                url: request.url,
-                headers: headerList,
-                body,
-            }), (res) => new Response(res.body, {
-                status: res.status,
-                statusText: res.statusText,
-                headers: res.headers,
-            }));
+            return await useRpcResource(dispatch({
+                op: 'innerDoFetch',
+                args: [{
+                        bindingName,
+                        id,
+                        method: request.method,
+                        url: request.url,
+                        headers: headerList,
+                        body,
+                    }],
+            }), (res) => {
+                if (!(res instanceof Response)) {
+                    return new Response('Nimbus: innerDoFetch returned an invalid result', { status: 502 });
+                }
+                return new Response(res.body, {
+                    status: res.status,
+                    statusText: res.statusText,
+                    headers: res.headers,
+                });
+            });
         }
         finally {
             disposeRpcResource(stub);

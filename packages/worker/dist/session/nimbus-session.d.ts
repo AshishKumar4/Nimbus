@@ -1,3 +1,11 @@
+import * as runtimeServices from '../hosted/services.js';
+/**
+ * nimbus-session.ts — NimbusSession Durable Object (v2.0).
+ *
+ * The supervisor DO that owns the VFS, shell, and all commands.
+ * `node` execution is delegated to dynamic workers via LOADER.load().
+ * IPC between facets and the supervisor flows through SupervisorRPC.
+ */
 /**
  * nimbus-session.ts — NimbusSession Durable Object (v2.0).
  *
@@ -22,6 +30,9 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { NpmInstaller } from '../npm/installer.js';
+import type { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
+import { type SessionAiHost } from './ai.js';
 import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/routing.js';
 import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
@@ -50,7 +61,14 @@ export { detectCloudflareWorkersProject } from '@nimbus-sh/core/runtime/project-
  */
 export declare function renderMotdBanner(version: string): string;
 export declare function renderWelcomeMarkdown(version: string): string;
-export declare class NimbusSession extends CloudflareDurableObject {
+type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
+export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
+    #private;
+    runtimeWorkspace: NimbusWorkspace | null;
+    private runtimeReady;
+    get runtimeManager(): RuntimeManager;
+    routeLoopback(port: number, request: Request): Promise<Response | null>;
+    ensureRuntimeReady(): Promise<void>;
     sqliteFs: SqliteVFS | null;
     kernel: Kernel | null;
     shell: Shell | null;
@@ -203,7 +221,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * sees it once per terminal attach. Purely cosmetic; no persistence.
      */
     wranglerAliasBannerShown: boolean;
-    constructor(ctx: DurableObjectState, env: any);
+    constructor(ctx: DurableObjectState, env: SessionEnv);
     _w9WireProcessLogPersist(): void;
     _w9EnsureSchema(): void;
     _w9ScheduleFlush(): void;
@@ -421,16 +439,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
     }): Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
     _rpcListRuntimes(): Promise<{
         installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
-        available: {
-            name: string;
-            abi: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimePackageAbi;
-            defaultVersion: string;
-            versions: Array<{
-                version: string;
-                sizeBytes: number;
-                license: string;
-            }>;
-        }[];
+        available: import("@nimbus-sh/core/runtime/runtime-package.js").RuntimeAvailability[];
     }>;
     _rpcListProcesses(): Promise<_programmatic.SerializedProcess[]>;
     _rpcKillProcess(pid: number): Promise<{
@@ -641,7 +650,7 @@ export declare class NimbusSession extends CloudflareDurableObject {
      * private API across modules.
      */
     _envFlagDefaultOn(name: string): boolean;
-    initSession(ws: WebSocket, options?: InitSessionOptions): Promise<void>;
+    initSession(ws: WebSocket | null, options?: InitSessionOptions): Promise<void>;
     /**
      * The rebuild in flight for a shell socket that woke this instance from
      * hibernation, so every frame that arrives while it runs awaits the one

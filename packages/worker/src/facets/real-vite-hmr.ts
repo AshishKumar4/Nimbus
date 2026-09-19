@@ -44,6 +44,7 @@
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { hostOpDispatch, hostNamespaceBinding, type HostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
@@ -210,31 +211,42 @@ export function registerHmrBridge(doId: string, holder: { hmr: HmrBridge }): voi
  *   doId — the supervisor DO's id, used to find the right stub +
  *          HmrBridge.
  */
-export class CirrusHmrRPC extends WorkerEntrypoint {
+export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string }> {
   private _bridge(): HmrBridge | null {
-    const doId = (this.ctx as any).props?.doId;
+    const doId = this.ctx.props?.doId;
     if (!doId) return null;
     return _BRIDGES.get(doId)?.hmr || null;
   }
 
-  private _stub(): any {
-    const doId = (this.ctx as any).props?.doId;
+  private _stub(): { stub: DurableObjectStub; dispatch: HostOpDispatch } | null {
+    const doId = this.ctx.props?.doId;
     if (!doId) return null;
-    const id = (this.env as any).NIMBUS_SESSION.idFromString(doId);
-    return (this.env as any).NIMBUS_SESSION.get(id);
+    let stub: DurableObjectStub | null = null;
+    try {
+      const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC');
+      stub = binding.get(binding.idFromString(doId));
+      return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC') };
+    } catch (error) {
+      disposeRpcResource(stub);
+      throw error;
+    }
   }
 
   async hmrSend(clientId: string | null, msg: string): Promise<void> {
-    const stub = this._stub();
-    if (!stub) return;
-    // Call the DO's own RPC method, which runs in the DO's context
-    // and can legally call ws.send() on hibernatable sockets.
+    const resolved = this._stub();
+    if (!resolved) return;
+    // The host's supervisorOp routes hmrRelay to its own RPC — running in
+    // the DO's context, it can legally call ws.send() on hibernatable
+    // sockets.
     try {
-      await useRpcResource(stub._rpcHmrRelay(clientId, msg), () => undefined);
+      await useRpcResource(
+        resolved.dispatch({ op: 'hmrRelay', args: [clientId, msg] }),
+        () => undefined,
+      );
     } catch {
       /* socket gone */
     } finally {
-      disposeRpcResource(stub);
+      disposeRpcResource(resolved.stub);
     }
   }
 

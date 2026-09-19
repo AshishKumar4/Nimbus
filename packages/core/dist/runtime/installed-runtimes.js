@@ -9,26 +9,16 @@
  * again at every boot, because a Durable Object that was evicted comes back
  * with the filesystem and none of the registry.
  *
- * Nothing here fetches. Where a runtime came FROM — an R2 bucket and a digest
- * chain in the Cloudflare deployment — is `@nimbus-sh/worker`'s
- * `runtime/package-manager.ts`; a runtime that is already installed is the
- * same runtime whichever publisher put it there, so an embedder that seeds the
- * tree itself gets working commands out of this with nothing else in play.
+ * Nothing here fetches. Where a runtime came FROM is the caller's
+ * RuntimeSource; a runtime that is already installed is the same runtime
+ * whichever publisher put it there. Nothing here is process-global either:
+ * the runner table and the singleflight live on the workspace's
+ * RuntimeManager (runtime-manager.ts), because two workspaces in one process
+ * must not share either.
  */
+import { sha256Hex } from '../_shared/crypto.js';
 import { CRED_KERNEL, NIMBUS_ABI_TARGET, NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from './os-contracts.js';
 import { parseRuntimeManifest, } from './runtime-manifest.js';
-/** Map of runner-key → factory. Populated by init.ts before install. */
-const runnerFactories = {};
-export function registerRunnerFactory(key, factory) {
-    runnerFactories[key] = factory;
-}
-export function getRegisteredRunners() {
-    return Object.keys(runnerFactories);
-}
-/** The factory a manifest entrypoint's `runner` names, or undefined. */
-export function runnerFactoryFor(key) {
-    return runnerFactories[key];
-}
 export function runtimeAbiForManifest(manifest) {
     const byName = NIMBUS_RUNTIME_ABIS[manifest.name];
     if (byName)
@@ -128,16 +118,41 @@ export function listInstalledManifestsView(fs, homeDir) {
     return out;
 }
 /**
- * Re-register every installed runtime's entrypoints in the shell
- * registry. Call once at session-init time after all runner factories
- * are registered (init.ts:registerRunnerFactory blocks).
+ * An installed tree is trustworthy when its manifest parses and every payload
+ * file it declares is present with the digest the manifest vouches for.
+ *
+ * Digest-verified rather than size-verified because the tree's manifest is
+ * what rehydration binds commands to: a same-size corruption or a rewritten
+ * entrypoints table is a different runtime than the one that was installed,
+ * and trusting it would run bytes nobody published. One file at a time —
+ * these are interpreters, tens of megabytes each.
  */
-export function rehydrateInstalledRuntimes(vfs, registry, homeDir) {
-    return rehydrateInstalledRuntimesView(vfs.as(CRED_KERNEL), registry, homeDir, runnerFactoryFor);
+export async function runtimePayloadIntact(fs, root, manifest) {
+    try {
+        for (const file of manifest.files) {
+            const target = `${root}/${file.path}`;
+            if (!fs.exists(target))
+                return false;
+            if ((await sha256Hex(fs.readFile(target))) !== file.sha256)
+                return false;
+        }
+        return true;
+    }
+    catch {
+        return false;
+    }
 }
-export function rehydrateInstalledRuntimesView(vfs, registry, homeDir, runnerFor) {
+/**
+ * Re-register every VERIFIED installed runtime's entrypoints in the shell
+ * registry. A tree that fails the payload check is not bound: it may be a
+ * legacy manifest-first install interrupted mid-write or a corruption, and
+ * the manager's install path repairs it on demand rather than running it.
+ */
+export async function rehydrateInstalledRuntimesView(vfs, registry, homeDir, runnerFor) {
     const bins = [];
     for (const { root, manifest } of listInstalledManifestsView(vfs, homeDir)) {
+        if (!await runtimePayloadIntact(vfs, root, manifest))
+            continue;
         for (const ep of runtimeEntrypoints(manifest)) {
             const factory = runnerFor(ep.runner);
             if (!factory)

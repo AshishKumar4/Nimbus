@@ -42,7 +42,18 @@ function makeEnv(stubFactory) {
     LOADER: { get() { return {}; } },
     NIMBUS_SESSION: {
       idFromName(name) { return { toString: () => name, name }; },
-      get(id) { return stubFactory(id.name); },
+      idFromString(id) { return { toString: () => id, name: id }; },
+      get(id) {
+        const impl = stubFactory(id.name);
+        // Peer dispatch is one envelope op now — adapt the fixture's
+        // fanoutExecute body onto the composed supervisorOp method.
+        return {
+          async supervisorOp(envelope) {
+            const [fnSource, args, opts] = envelope.args;
+            return impl.fanoutExecute(fnSource, args, opts);
+          },
+        };
+      },
     },
   };
 }
@@ -53,7 +64,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
 {
   const calls = new Map(); // siblingName -> attempt count
   const env = makeEnv((name) => ({
-    async _rpcFanoutExecute(_fnSource, args) {
+    async fanoutExecute(_fnSource, args) {
       const n = (calls.get(name) ?? 0) + 1;
       calls.set(name, n);
       if (n === 1) throw new Error('Durable Object reset because its code was updated.');
@@ -71,7 +82,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
 {
   let attempts = 0;
   const env = makeEnv(() => ({
-    async _rpcFanoutExecute() {
+    async fanoutExecute() {
       attempts++;
       throw new Error('Internal error while starting up Durable Object storage caused object to be reset; reference = x');
     },
@@ -91,7 +102,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
 {
   let attempts = 0;
   const env = makeEnv(() => ({
-    async _rpcFanoutExecute() {
+    async fanoutExecute() {
       attempts++;
       throw new Error('genuine task failure — not a reset');
     },
@@ -109,7 +120,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
 {
   const calls = new Map();
   const env = makeEnv((name) => ({
-    async _rpcFanoutExecute(_fnSource, args) {
+    async fanoutExecute(_fnSource, args) {
       const n = (calls.get(name) ?? 0) + 1;
       calls.set(name, n);
       if (n === 1) throw new Error('Durable Object is overloaded.');
@@ -130,7 +141,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
 // users — a sentence carrying no layer, no sibling, no attempt count.
 {
   const env = makeEnv(() => ({
-    async _rpcFanoutExecute() { throw new Error('internal error'); },
+    async fanoutExecute() { throw new Error('internal error'); },
   }));
   const pool = new Fanout(env, ctx, { tag: 'opaque-test', omitSupervisor: true });
   const err = await pool.submitMany(TASKS, (x) => x).then(

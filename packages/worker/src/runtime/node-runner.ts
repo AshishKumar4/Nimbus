@@ -125,6 +125,7 @@ export async function runFresh(
   facetMgr: FacetManager,
   code: string,
   opts: RunFreshOpts,
+  entrySource = code,
 ): Promise<RunFreshResult> {
   const args = opts.argv || [];
 
@@ -136,7 +137,7 @@ export async function runFresh(
   const wantsLongRunning =
     opts.forceLongRunning ||
     isLongRunningInvocation(args) ||
-    (!opts.skipSpawn && looksLikeServer(code));
+    (!opts.skipSpawn && looksLikeServer(entrySource));
 
   if (!wantsLongRunning) {
     // Short path: fresh-isolate-per-call via facetMgr.exec.

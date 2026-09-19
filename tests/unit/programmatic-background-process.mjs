@@ -74,7 +74,7 @@ function makeHost() {
     held,
     ensureSqliteFs() {},
     ensureFacetManager() {},
-    initSession() { throw new Error('the test host is already booted'); },
+    ensureRuntimeReady() { assert.ok(this.shell && this.sqliteFs, 'the test host must already be initialized'); },
   };
 }
 

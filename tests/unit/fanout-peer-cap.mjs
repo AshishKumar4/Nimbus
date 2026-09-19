@@ -23,9 +23,11 @@ function makeEnv(seen) {
     LOADER: { get() { return {}; } },
     NIMBUS_SESSION: {
       idFromName(name) { return { toString: () => name, name }; },
+      idFromString(id) { return { toString: () => id, name: id }; },
       get(id) {
         return {
-          async _rpcFanoutExecute(_fnSource, args) {
+          async supervisorOp(envelope) {
+            const [_fnSource, args] = envelope.args;
             seen.push({ peer: id.name, count: args.length });
             return { results: args };
           },

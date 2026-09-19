@@ -78,7 +78,7 @@ export function looksLikeServer(code) {
     return SERVER_BIND_RE.test(code);
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
-export async function runFresh(facetMgr, code, opts) {
+export async function runFresh(facetMgr, code, opts, entrySource = code) {
     const args = opts.argv || [];
     // Promote server-shaped scripts to the keyed long-running facet even without
     // an explicit --watch flag: it is the only path whose route stub is
@@ -87,7 +87,7 @@ export async function runFresh(facetMgr, code, opts) {
     // are CLIs, and their PID accounting assumes a single foreground exec.
     const wantsLongRunning = opts.forceLongRunning ||
         isLongRunningInvocation(args) ||
-        (!opts.skipSpawn && looksLikeServer(code));
+        (!opts.skipSpawn && looksLikeServer(entrySource));
     if (!wantsLongRunning) {
         // Short path: fresh-isolate-per-call via facetMgr.exec.
         // LOADER.get(codeId) keyed on hash(code+bundle+manifest) — every

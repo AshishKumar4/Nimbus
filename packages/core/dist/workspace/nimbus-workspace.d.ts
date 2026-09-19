@@ -29,7 +29,8 @@ import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
-import { type RuntimePackage } from '../runtime/runtime-package.js';
+import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-package.js';
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 export interface NimbusWorkspaceOptions {
@@ -124,6 +125,18 @@ export interface NimbusWorkspaceOptions {
     readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
     /** Host operations, including overrides for host-specific accounting. */
     readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
+    /**
+     * When supplied `runtimes` land on disk: `eager` (default) writes every
+     * package at create; `on-demand` registers each bin as a stub that installs
+     * on first invocation, so a workspace that never runs a runtime never
+     * carries its rows. Remote `runtimeSource` packages are never touched at
+     * create either way — `nimbus install` reaches them.
+     */
+    readonly runtimeInstall?: 'eager' | 'on-demand';
+    /** Beyond the supplied `runtimes`: a remote catalog the `nimbus` verb and
+     *  install stubs can resolve against. Supplied packages win same-name
+     *  lookups. */
+    readonly runtimeSource?: RuntimeSource;
 }
 /**
  * A durable filesystem and a shell over it.
@@ -157,6 +170,14 @@ export declare class NimbusWorkspace {
      * hands to a subordinate shell it starts itself.
      */
     readonly env: Record<string, string>;
+    /** The process table this workspace's shell and wasm-runner allocate from —
+     *  the host's own when it supplied one. */
+    readonly processes: SessionProcessSupervisor;
+    /** Runtime installs, runners and the `nimbus` verb's backing store. */
+    readonly runtimes: RuntimeManager;
+    /** The pid the shell's commands run as — the host's identity pid when it
+     *  supplied one, else the `sh` this workspace spawned. */
+    readonly shellProcessPid: number;
     private readonly commands;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;

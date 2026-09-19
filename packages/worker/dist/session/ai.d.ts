@@ -40,6 +40,7 @@
  */
 import type { LanguageModel } from 'ai';
 import { z } from 'zod/v4';
+import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type NimbusCloudflareAccount } from './agent-oauth.js';
 export interface SessionAiHost {
     env: Record<string, unknown>;
@@ -47,10 +48,13 @@ export interface SessionAiHost {
         storage: {
             get(key: string): Promise<unknown>;
             put(key: string, value: unknown): Promise<void>;
-            delete(key: string): Promise<void>;
+            delete(key: string): Promise<boolean | void>;
         };
     };
 }
+export declare function routeSessionLoopback(host: SessionAiHost & {
+    portRegistry: PortRegistry;
+}, port: number, request: Request): Promise<Response | null>;
 /** DO storage key holding this session's Cloudflare credential of record. */
 export declare const SESSION_AI_CREDENTIAL_KEY = "nimbus:ai:credential";
 export declare const DEFAULT_SESSION_AI_MODEL = "@cf/zai-org/glm-5.2";

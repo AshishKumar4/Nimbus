@@ -36,7 +36,7 @@ function makeHost(initialStore = new Map()) {
       processes: { getAll() { return []; } },
       ensureSqliteFs() {},
       ensureFacetManager() {},
-      initSession() {},
+      async ensureRuntimeReady() {},
       sqliteFs: null,
     },
     store,

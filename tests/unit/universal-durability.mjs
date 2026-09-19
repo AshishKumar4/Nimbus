@@ -165,6 +165,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
     sessionBasePath: `/s/${SID}`,
     sessionOrigin: 'https://probe.test',
     ensureSqliteFs() {},
+    async ensureRuntimeReady() {},
     // No facet pool in this harness: cold /@modules/ misses take the legacy path.
     ensureBundlePool() { return null; },
     ensureFacetManager() {

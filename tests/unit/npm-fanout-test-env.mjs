@@ -34,9 +34,11 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [] }
     LOADER: { get() { return { getEntrypoint: () => ({ execute: async (...args) => fanoutReply(args).results[0] }) }; } },
     NIMBUS_SESSION: {
       idFromName(name) { return { toString: () => name, name }; },
+      idFromString(id) { return { toString: () => id, name: id }; },
       get() {
         return {
-          async _rpcFanoutExecute(_fnSource, args) {
+          async supervisorOp(envelope) {
+            const [_fnSource, args] = envelope.args;
             return fanoutReply(args);
           },
         };

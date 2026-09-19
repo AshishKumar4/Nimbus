@@ -18,7 +18,7 @@ const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-session-seed-test-'));
 
 try {
   const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/nimbus-session.ts'],
+    entrypoints: ['./packages/worker/src/session/nimbus-session.ts', './packages/worker/src/hosted/services.ts'],
     outdir: outputDir,
     target: 'bun',
     format: 'esm',
@@ -41,6 +41,9 @@ try {
   const entry = build.outputs.find((output) => output.path.endsWith('/nimbus-session.js'));
   assert.ok(entry, 'the session entry bundle was emitted');
   const { NimbusSession } = await import(pathToFileURL(entry.path).href);
+  const servicesEntry = build.outputs.find((output) => output.path.endsWith('/services.js'));
+  assert.ok(servicesEntry, 'the services entry bundle was emitted');
+  const { ensureGlobalPrefixDirs } = await import(pathToFileURL(servicesEntry.path).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -129,7 +132,7 @@ try {
     'without the prefix chain the credentialed install batch ENOENTs on the missing parent',
   );
 
-  session.ensureGlobalPrefixDirs(customPrefix);
+  ensureGlobalPrefixDirs(session, { ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; } }, customPrefix);
 
   const customPrefixDirs = [
     customPrefix,
@@ -147,7 +150,7 @@ try {
   }
 
   const prefixRevision = userVfs.revision(customPrefix);
-  session.ensureGlobalPrefixDirs(customPrefix);
+  ensureGlobalPrefixDirs(session, { ctx: session.ctx, env: session.env, notify() {}, async requestLaunchTurn() { return true; } }, customPrefix);
   assert.equal(
     userVfs.revision(customPrefix),
     prefixRevision,

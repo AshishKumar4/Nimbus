@@ -10,10 +10,11 @@ import assert from 'node:assert/strict';
 import {
   createRuntimeCommandHintResolver,
   installRuntimeProgrammatic,
+  runtimeCatalogSource,
 } from '../../packages/worker/src/runtime/package-manager.ts';
+import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.ts';
 import {
   RUNTIME_EXTRA_ENTRYPOINTS,
-  registerRunnerFactory,
 } from '../../packages/core/src/runtime/installed-runtimes.ts';
 import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contracts.ts';
 
@@ -168,15 +169,21 @@ class FakeVfs {
 
 {
   const registered = [];
-  registerRunnerFactory('cpython-runner', (_manifest, _root, binName) => async () => {
-    void binName;
-    return 0;
-  });
   const vfs = new FakeVfs();
   const registry = {
     register(name) { registered.push(name); },
   };
-  const deps = { env: fakeEnv, vfs, registry, getHome: () => '/home/user' };
+  const runtimes = new RuntimeManager({
+    vfs,
+    registry,
+    getHome: () => '/home/user',
+    source: runtimeCatalogSource(fakeEnv),
+  });
+  runtimes.registerRunner('cpython-runner', (_manifest, _root, binName) => async () => {
+    void binName;
+    return 0;
+  });
+  const deps = { runtimes, registry, vfs, getHome: () => '/home/user' };
 
   const result = await installRuntimeProgrammatic(deps, 'pip');
   assert.equal(result.exitCode, 0, `install failed: ${result.stderr}`);

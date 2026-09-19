@@ -80,6 +80,7 @@ export declare function wireHibernationOnConstruct(ctx: any): WsHibernationConfi
  * (per /api/_test/hib/simulate flow; plan §VI.7 F.2 invariant).
  */
 export declare function wireProcessLogPersist(host: HibHost, ctx: any): void;
+export declare function installLogPersistence(host: Pick<HibHost, '_w9PersistWired' | '_w9SchemaInit' | 'processes'>, ctx: DurableObjectState, onActivity: () => void): void;
 /**
  * W1: arm the log-janitor alarm cycle for this instance. Called from the
  * log-activity hook so only sessions that actually produce process logs
@@ -103,7 +104,7 @@ export declare function wireProcessLogPersist(host: HibHost, ctx: any): void;
 export declare function clearDestroyedTombstone(host: HibHost, ctx: any): void;
 export declare function ensureLogJanitor(host: HibHost, ctx: any): void;
 /** W9: idempotent SQL schema bootstrap. */
-export declare function ensureHibSchema(host: HibHost, ctx: any): void;
+export declare function ensureHibSchema(host: Pick<HibHost, '_w9SchemaInit'>, ctx: any): void;
 /**
  * W1: this session's canonical alarm-reason strings, registered on the
  * fabric's reason map. Forward-compat: the dispatcher silently drops unknown

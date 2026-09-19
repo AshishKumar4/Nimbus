@@ -41,7 +41,6 @@ import { rpcPayloadEnd, rpcPayloadStart, } from '@nimbus-sh/platform/diag-counte
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
-import { routeSessionLoopback } from './loopback.js';
 import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
@@ -1018,7 +1017,7 @@ export async function _rpcUnregisterPort(self, port) {
 export async function _rpcRouteLoopback(self, port, request) {
     // In-session loopback routing for a facet's outbound fetch — the same policy
     // as kernel.routeLoopback (session/init.ts) used by the shell curl/node path.
-    const res = await routeSessionLoopback(self, port, request);
+    const res = await self.routeLoopback(port, request);
     return res ?? new Response(JSON.stringify({ error: 'connection refused (no server listening)', port }), { status: 502, headers: { 'Content-Type': 'application/json' } });
 }
 export async function _rpcTransform(self, code, loader) {

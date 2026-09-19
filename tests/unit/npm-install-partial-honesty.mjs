@@ -102,9 +102,11 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
     LOADER: { get() { return {}; } },
     NIMBUS_SESSION: {
       idFromName(name) { return { toString: () => name, name }; },
+      idFromString(id) { return { toString: () => id, name: id }; },
       get() {
         return {
-          async _rpcFanoutExecute(_fnSource, args) {
+          async supervisorOp(envelope) {
+            const [_fnSource, args] = envelope.args;
             // The same RPC carries both fanouts; the argument shape says
             // which one. Resolve tasks are one package, install tasks are
             // a shard of packages.

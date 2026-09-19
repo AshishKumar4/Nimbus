@@ -1,3 +1,4 @@
+import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 /**
  * python-repl.ts — the interactive `python` prompt.
  *
@@ -40,7 +41,7 @@ export interface PythonReplDeps {
      * ReplSession lets it drain that queue on attach, which is the difference
      * between the pasted tail arriving and the prompt hanging.
      */
-    shell?: unknown;
+    shell?: Pick<Shell, 'takeQueuedInput'>;
     /**
      * The invoking process's pid.
      *

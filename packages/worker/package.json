@@ -29,9 +29,9 @@
       "import": "./dist/index.js"
     },
     "./workspace": {
-      "workspace": "./src/workspace/nimbus-workspace.ts",
-      "types": "./dist/workspace/nimbus-workspace.d.ts",
-      "import": "./dist/workspace/nimbus-workspace.js"
+      "workspace": "./src/workspace.ts",
+      "types": "./dist/workspace.d.ts",
+      "import": "./dist/workspace.js"
     },
     "./router": {
       "workspace": "./src/router/index.ts",
@@ -54,9 +54,14 @@
       "import": "./dist/_shared/preview-host.js"
     },
     "./workspace-host": {
-      "workspace": "./src/facets/compose.ts",
-      "types": "./dist/facets/compose.d.ts",
-      "import": "./dist/facets/compose.js"
+      "workspace": "./src/workspace-host.ts",
+      "types": "./dist/workspace-host.d.ts",
+      "import": "./dist/workspace-host.js"
+    },
+    "./facet-host": {
+      "workspace": "./src/runtime/facet-loader-host.ts",
+      "types": "./dist/runtime/facet-loader-host.d.ts",
+      "import": "./dist/runtime/facet-loader-host.js"
     },
     "./port-capability": {
       "workspace": "./src/session/port-capability.ts",
@@ -98,8 +103,8 @@
     "bundle:agent-chat": "node scripts/bundle-agent-chat.mjs",
     "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:agent-chat",
     "clean:dist": "node scripts/clean-dist.mjs",
-    "build": "npm run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
-    "prepack": "npm run build",
+    "build": "bun run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit && tsc -p frontend --noEmit"
   },
   "dependencies": {

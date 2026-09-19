@@ -1,3 +1,9 @@
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
+import type { WasiFsSnapshot } from '@nimbus-sh/core/runtime/wasi-instance.js';
+import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
+import { z } from 'zod/v4';
 /**
  * python-repl.ts — the interactive `python` prompt.
  *
@@ -60,7 +66,7 @@ export interface PythonReplDeps {
    * ReplSession lets it drain that queue on attach, which is the difference
    * between the pasted tail arriving and the prompt hanging.
    */
-  shell?: unknown;
+  shell?: Pick<Shell, 'takeQueuedInput'>;
   /**
    * The invoking process's pid.
    *
@@ -72,13 +78,11 @@ export interface PythonReplDeps {
    */
   pid?: number;
 }
+const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
+const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
+type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
+type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest' | 'pid'>;
 
-interface PythonReplFacetResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-  error?: string;
-}
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
@@ -134,18 +138,18 @@ function buildReplDriver(source: string): string {
 }
 
 class PythonReplAdapter implements ReplAdapter {
-  private pool: { submit: Function; dispose?: () => void } | null = null;
+  private pool: IsolatePool | null = null;
   /** Which interpreter variant the cached pool holds; see ensurePool. */
   private poolUsesSci = false;
-  private deps: PythonReplDeps;
+  private deps: InterpreterDeps;
   private wasmBytes: ArrayBuffer | null = null;
-  private fsSnapshot: unknown = null;
+  private fsSnapshot: WasiFsSnapshot | null = null;
   private pythonHome = '/usr/local';
 
   ps1 = '>>> ';
   ps2 = '... ';
 
-  constructor(deps: PythonReplDeps) {
+  constructor(deps: InterpreterDeps) {
     this.deps = deps;
   }
 
@@ -155,14 +159,25 @@ class PythonReplAdapter implements ReplAdapter {
       'Type "exit()" or press Ctrl-D to exit.\r\n'
     );
   }
+  push(source: string): Promise<ReplPushResult> {
+    const controller = new AbortController();
+    const done = this.evaluate(source, controller.signal);
+    const active = { controller, done };
+    this.active = active;
+    const clear = () => { if (this.active === active) this.active = null; };
+    void done.then(clear, clear);
+    return done;
+  }
 
-  async push(source: string): Promise<ReplPushResult> {
+  private async evaluate(source: string, signal: AbortSignal): Promise<ReplPushResult> {
     const trimmed = source.trim();
     if (trimmed === 'exit' || trimmed === 'quit') {
       return { kind: 'output', stdout: '', stderr: 'Use exit() or Ctrl-D to exit\n' };
     }
     try {
+      signal.throwIfAborted();
       await this.ensurePool();
+      signal.throwIfAborted();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       return { kind: 'error', stderr: `[python-repl] bootstrap failed: ${message}\n` };
@@ -170,7 +185,7 @@ class PythonReplAdapter implements ReplAdapter {
 
     let result: PythonReplFacetResult;
     try {
-      result = await this.submit(buildReplDriver(source));
+      result = await this.submit(buildReplDriver(source), signal);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       return { kind: 'error', stderr: `[python-repl] dispatch failed: ${message}\n` };
@@ -204,14 +219,21 @@ class PythonReplAdapter implements ReplAdapter {
     }
     return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
   }
+  close(): Promise<void> { return this.interrupt(); }
 
-  async close(): Promise<void> {
-    if (this.pool) {
-      try { this.pool.dispose?.(); } catch { /* fail-soft: the session is ending anyway */ }
-      this.pool = null;
-    }
+  private resetPool(): void {
+    const pool = this.pool;
+    this.pool = null;
+    this.wasmBytes = null;
+    this.fsSnapshot = null;
+    pool?.dispose();
   }
-
+  async interrupt(): Promise<void> {
+    const active = this.active;
+    active?.controller.abort();
+    try { await active?.done; }
+    finally { this.resetPool(); }
+  }
   private async ensurePool(): Promise<void> {
     const vfsForVariant = this.deps.vfs.as(CRED_KERNEL);
     const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
@@ -220,8 +242,7 @@ class PythonReplAdapter implements ReplAdapter {
     // interpreter that does not have it. Dropping the pool rebuilds on the next
     // statement, which is the facet restart EXTENSIONS.md says this costs.
     if (this.pool && this.poolUsesSci !== wantsSci) {
-      try { this.pool.dispose?.(); } catch { /* fail-soft: it is being replaced */ }
-      this.pool = null;
+      this.resetPool();
     }
     if (this.pool) return;
     this.poolUsesSci = wantsSci;
@@ -237,7 +258,6 @@ class PythonReplAdapter implements ReplAdapter {
     }
     this.wasmBytes = toArrayBuffer(vfs.readFile(wasmPath));
 
-    const { manifestVfs } = await import('@nimbus-sh/core/runtime/vfs-manifest.js');
     // The install root is the Python prefix, so the manifest covers lib/ and
     // etc/ as they are — nothing is aliased into a path the supervisor could
     // not serve.
@@ -247,7 +267,7 @@ class PythonReplAdapter implements ReplAdapter {
     // defect: the guest cannot consume the stdlib as a manifest-only
     // demand-load, though the transport delivers it byte-identically. Seeding
     // it by value is what makes the interpreter start. Remove both together.
-    const snapshot = built.snapshot as unknown as { files: Record<string, string> };
+    const snapshot = built.snapshot;
     const zipBytes = vfs.readFile(stdlibPath);
     let bin = '';
     const CH = 32768;
@@ -258,7 +278,6 @@ class PythonReplAdapter implements ReplAdapter {
     this.fsSnapshot = snapshot;
     this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 
-    const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
     const host = getFacetManagerLoaderHost(facetMgr);
     // A prompt where `open(path, "w")` silently does nothing is worse than one
     // that refuses to start, so the pid decides which pool this is. Written as
@@ -270,76 +289,94 @@ class PythonReplAdapter implements ReplAdapter {
       // Distinct from cpython-runner's tag: a REPL facet holds a live
       // interpreter and must never be handed a one-shot invocation.
       tag: wantsSci ? 'python-repl:sci' : 'python-repl',
+      scope: crypto.randomUUID(),
       concurrency: 1,
       preamble: buildCPythonPreamble(),
       wasmModules: { 'python.wasm': this.wasmBytes },
     };
     const pid = this.deps.pid;
-    this.pool = (typeof pid === 'number' && pid > 0
+    this.pool = typeof pid === 'number' && pid > 0
       ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid })
       // The install-time warm-up has no invoking process. It boots the
       // interpreter and never touches a file, so it asks for no supervisor
       // rather than binding one it cannot authenticate to.
-      : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true })) as never;
+      : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true });
   }
+  private active: { controller: AbortController; done: Promise<ReplPushResult> } | null = null;
 
-  private async submit(userCode: string): Promise<PythonReplFacetResult> {
-    const result = await (this.pool as { submit: Function }).submit(
-      pythonReplStepFacetFn,
-      {
-        userCode,
-        pythonHome: this.pythonHome,
-        pyArgv: ['python'],
-        userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
-        progName: 'python',
-        cwd: '/home/user',
-        fsSnapshot: this.fsSnapshot,
-      },
+  private async submit(userCode: string, signal: AbortSignal): Promise<PythonReplFacetResult> {
+    const pool = this.pool;
+    if (!pool || !this.fsSnapshot) throw new Error('Python REPL is not initialized');
+    const response = await pool.submitRequest(
+      pythonReplStepRequestFn,
+      new Request('https://facet.internal/python-repl-step', {
+        method: 'POST',
+        body: JSON.stringify({
+          userCode,
+          pythonHome: this.pythonHome,
+          pyArgv: ['python'],
+          userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },
+          progName: 'python',
+          cwd: '/home/user',
+          fsSnapshot: this.fsSnapshot,
+        }),
+        signal,
+      }),
       { timeoutMs: 60_000 },
     );
-    return result as PythonReplFacetResult;
+    if (!response.ok) {
+      const failure = PythonFacetFailure.parse(await response.json());
+      throw new Error(failure.__nimbusFacetError);
+    }
+    return PythonFacetResult.parse(await response.json());
   }
 }
 
 /**
- * Facet-side. Serialized with fn.toString(), so it captures nothing and names
- * no import: __cpythonReplRun is put on globalThis by the preamble, and unlike
- * __cpythonRun it keeps its interpreter between calls.
+ * Facet-side, request-shaped: serialized with fn.toString() into the
+ * pool's fetch entrypoint, so it captures nothing and names no import —
+ * __cpythonReplRun is put on globalThis by the preamble, and unlike
+ * __cpythonRun it keeps its interpreter between calls. The request body
+ * is the step payload the adapter JSON-encodes; the response is the
+ * step result. Request transport because it is the pool's only
+ * cancellable dispatch: Ctrl-C aborts the request, workerd stops the
+ * interpreter at its suspension point.
  */
-async function pythonReplStepFacetFn(
-  args: Record<string, unknown>,
-  facetEnv: { SUPERVISOR?: unknown } | undefined,
-): Promise<PythonReplFacetResult> {
-  const run = Reflect.get(globalThis, '__cpythonReplRun') as
-    ((a: unknown) => Promise<PythonReplFacetResult>) | undefined;
+async function pythonReplStepRequestFn(
+  request: Request,
+  facetEnv: FacetBindings,
+): Promise<Response> {
+  const args = await request.json();
+  if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
+    throw new Error('Python REPL request must contain userCode');
+  }
+  const run = Reflect.get(globalThis, '__cpythonReplRun');
   if (typeof run !== 'function') {
-    return {
+    return Response.json({
       stdout: '', stderr: '', exitCode: 127,
       error: 'cpython preamble missing: __cpythonReplRun not in scope',
-    };
+    });
   }
-  const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as
-    ((s: unknown) => void) | undefined;
-  const drain = Reflect.get(globalThis, '__wasiDrainPersist') as
-    (() => Promise<void>) | undefined;
+  const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor');
+  const drain = Reflect.get(globalThis, '__wasiDrainPersist');
   const supervisor = facetEnv && facetEnv.SUPERVISOR;
   // Published where the boot re-adopts it after the mount, because
   // __wasiInitFS clears the adoption on purpose. Omitting this here — while
   // cpython-runner's entry had it — is what made the prompt start with no
   // filesystem it could read.
   if (supervisor) Reflect.set(globalThis, '__nimbusPySupervisor', supervisor);
-  adopt?.(supervisor);
+  if (typeof adopt === 'function') Reflect.apply(adopt, undefined, [supervisor ?? null]);
   try {
-    return await run(args);
+    return Response.json(await run(args));
   } finally {
     // A line that wrote a file and then raised still wrote the file.
-    await drain?.();
+    if (typeof drain === 'function') await drain();
   }
 }
 
 export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
   const adapter = new PythonReplAdapter(deps);
-  const session = new ReplSession(adapter, deps.terminal, deps.shell as never);
+  const session = new ReplSession(adapter, deps.terminal, deps.shell);
   return await session.run();
 }
 
@@ -350,7 +387,7 @@ export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
 export async function warmPythonRepl(
   deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest'>,
 ): Promise<void> {
-  const adapter = new PythonReplAdapter(deps as PythonReplDeps);
+  const adapter = new PythonReplAdapter(deps);
   await adapter.push('');
   await adapter.close();
 }

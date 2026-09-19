@@ -142,6 +142,15 @@ const INPUTS = {
   cpKill: [childPid, signal],
   cpWait: [childPid, waitMs],
   cpDispatchInline: [req, kind],
+  innerDoFetch: [{ bindingName: 'NimbusDO', id: 'inner-id', method: 'GET', url: 'https://inner.test/', headers: [] }],
+  fanoutExecute: ['fn-source', [1, 2], { tag: 'probe' }],
+  processHostProbe: [],
+  hostProcess: [{ entry: 'boot.js' }, { workerKey: 'wk' }],
+  awaitHostedOpen: ['wk'],
+  awaitHostedBoot: ['wk'],
+  routeHostedHttp: ['wk', { method: 'GET', url: 'https://hosted.test/' }],
+  cancelHostProcess: ['wk'],
+  hmrRelay: ['client-1', 'hmr-message'],
 };
 
 // The props the supervisor binding stamps — the envelope's identity fields
@@ -237,12 +246,23 @@ for (const [op, input, envelopeArgs, sentArgs, delegate, expected] of cases) {
   if (!SUPERVISOR_NATIVE_OPS.has(op)) {
     host[delegate] = (...args) => { delegateCalls.push([delegate, ...args]); return Promise.resolve(answer); };
   }
-  const result = await supervisor[op](...input);
-  assert.equal(receivedEnvelope.op, op);
-  // The envelope's args must carry the RPC's inputs — the route's numeric
-  // slots are indexes into this array, so a dropped arg is a dropped arg.
-  assert.deepEqual(receivedEnvelope.args, sentArgs, `${op}: envelope args`);
-  if (op === 'writeBatchStream') assert.equal(receivedEnvelope.stream, stream);
+  let result;
+  const droveDirect = typeof supervisor[op] !== 'function';
+  if (!droveDirect) {
+    result = await supervisor[op](...input);
+    assert.equal(receivedEnvelope.op, op);
+    // The envelope's args must carry the RPC's inputs — the route's numeric
+    // slots are indexes into this array, so a dropped arg is a dropped arg.
+    assert.deepEqual(receivedEnvelope.args, sentArgs, `${op}: envelope args`);
+    if (op === 'writeBatchStream') assert.equal(receivedEnvelope.stream, stream);
+  } else {
+    // No session-side convenience method: peers dispatch these envelopes
+    // straight onto the host's composed dispatch method (hostOpDispatch).
+    // The routed half is what the table names — drive it directly. The
+    // caller owns the response — disposal happens in the RPC layer this
+    // path bypasses (callers dispose via disposeRpcResource).
+    result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, mutationOwner });
+  }
   if (SUPERVISOR_NATIVE_OPS.has(op)) {
     await nativeAssert[op](result);
   } else {
@@ -250,8 +270,8 @@ for (const [op, input, envelopeArgs, sentArgs, delegate, expected] of cases) {
     // contract the canonical table names, and the response is disposed once
     // the RPC is done with it (routeLoopback's body streams on).
     assert.deepEqual(delegateCalls.at(-1), [delegate, ...expected], `${op}: delegate args`);
+    assert.equal(disposed, (op === 'routeLoopback' || droveDirect) ? 0 : 1, `${op}: response lifetime`);
     assert.equal(result, answer, op);
-    assert.equal(disposed, op === 'routeLoopback' ? 0 : 1, `${op}: response lifetime`);
     if (op === 'routeLoopback') assert.equal(await answer.text(), 'streamed body');
   }
 }

@@ -135,6 +135,15 @@ export interface FacetSubmitOptions {
  */
 export interface Facet {
     submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>>;
+    /**
+     * The same call dispatched as a fetch Request through the host's fetch
+     * seam. Present only where the host can carry one — a Worker Loader
+     * isolate behind `IsolatePool.submitRequest` — so `request.signal` can
+     * actually stop the submitted function's yielded execution. The function
+     * is still serialized and scoped exactly as `submit`'s; it receives the
+     * Request itself and answers with a Response.
+     */
+    submitRequest?(fn: FacetFn<Request, Response>, request: Request, options?: FacetSubmitOptions): Promise<Response>;
     /** Idempotent. The scope and everything it holds are dropped. */
     dispose(): void;
 }

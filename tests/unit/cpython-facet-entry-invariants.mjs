@@ -64,12 +64,13 @@ const REQUIREMENTS = [
   },
   {
     name: 'adopts the supervisor',
-    test: (body) => /adopt\?\.\(supervisor\)/.test(body),
+    test: (body) => /adopt\?\.\(supervisor\)/.test(body)
+      || /if \(typeof adopt === 'function'\) Reflect\.apply\(adopt, undefined, \[supervisor \?\? null\]\)/.test(body),
     why: 'demand-loaded reads return EIO with no supervisor',
   },
   {
     name: 'drains queued writes in a finally',
-    test: (body) => /finally\s*\{[\s\S]{0,400}drain\?\.\(\)/.test(body),
+    test: (body) => /finally\s*\{[\s\S]{0,400}(?:drain\?\.\(\)|if \(typeof drain === 'function'\) await drain\(\))/.test(body),
     why: 'a program that wrote a file and then raised would lose the write',
   },
   {
