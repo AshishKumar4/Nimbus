@@ -12,16 +12,49 @@ export class PipeChannel {
   private closed = false;
   private waiting: Array<(value: Uint8Array | null) => void> = [];
   private decoder = new TextDecoder('utf-8');
+  private queuedBytes = 0;
+  private readonly capacity = 64 * 1024;
+  private drained: Array<() => void> = [];
+  private readerClosed = false;
+  private unlinkSignal: (() => void) | undefined;
+
+  constructor(signal?: AbortSignal) {
+    if (signal?.aborted) this.cancel();
+    else if (signal) {
+      const abort = () => this.cancel();
+      signal.addEventListener('abort', abort, { once: true });
+      this.unlinkSignal = () => signal.removeEventListener('abort', abort);
+    }
+  }
+
+  private async push(bytes: Uint8Array): Promise<void> {
+    for (let offset = 0; offset < bytes.length;) {
+      while (this.queuedBytes >= this.capacity && !this.closed) {
+        await new Promise<void>((resolve) => this.drained.push(resolve));
+      }
+      if (this.closed || this.readerClosed) {
+        throw Object.assign(new Error('EPIPE: pipe reader closed'), { code: 'EPIPE' });
+      }
+      const length = Math.min(bytes.length - offset, this.capacity - this.queuedBytes);
+      this.deliver(bytes.slice(offset, offset + length), 'back');
+      offset += length;
+    }
+  }
+
+  private wakeWriters(): void {
+    for (const wake of this.drained.splice(0)) wake();
+  }
+
+  cancel(): void {
+    this.readerClosed = true;
+    this.buffer = [];
+    this.queuedBytes = 0;
+    this.close();
+  }
 
   readonly writer: CommandOutputStream = {
-    write: (text: string) => {
-      if (this.closed) return;
-      this.deliver(encode(text), 'back');
-    },
-    writeBytes: (bytes: Uint8Array) => {
-      if (this.closed) return;
-      this.deliver(bytes, 'back');
-    },
+    write: (text: string) => this.push(encode(text)),
+    writeBytes: (bytes: Uint8Array) => this.push(bytes),
   };
 
   readonly reader: CommandInputStream = {
@@ -34,7 +67,10 @@ export class PipeChannel {
   /** Next queued chunk, a waiter's delivery, or null once closed and empty. */
   private pull(): Promise<Uint8Array | null> {
     if (this.buffer.length > 0) {
-      return Promise.resolve(this.buffer.shift() ?? null);
+      const bytes = this.buffer.shift()!;
+      this.queuedBytes -= bytes.length;
+      this.wakeWriters();
+      return Promise.resolve(bytes);
     }
     if (this.closed) {
       return Promise.resolve(null);
@@ -105,12 +141,15 @@ export class PipeChannel {
     const chunk = await this.pull();
     if (chunk === null) return null;
     if (chunk.length <= maxLength) return chunk;
-    this.buffer.unshift(chunk.subarray(maxLength));
+    this.deliver(chunk.subarray(maxLength), 'front');
     return chunk.subarray(0, maxLength);
   }
 
   close(): void {
     this.closed = true;
+    this.unlinkSignal?.();
+    this.unlinkSignal = undefined;
+    this.wakeWriters();
     while (this.waiting.length > 0) {
       const resolve = this.waiting.shift()!;
       resolve(null);
@@ -126,6 +165,7 @@ export class PipeChannel {
       return;
     }
 
+    this.queuedBytes += bytes.length;
     if (position === 'front') this.buffer.unshift(bytes);
     else this.buffer.push(bytes);
   }

@@ -25,12 +25,12 @@
  * not text.
  */
 export interface ByteSink {
-  write(text: string): void;
-  writeBytes?(bytes: Uint8Array): void;
+  write(text: string): void | Promise<void>;
+  writeBytes?(bytes: Uint8Array): void | Promise<void>;
 }
 
 /** Reads at most `length` bytes at `offset`; an empty result means EOF. */
-export type RangeReader = (offset: number, length: number) => Uint8Array;
+export type RangeReader = (offset: number, length: number) => Uint8Array | Promise<Uint8Array>;
 
 /** Bytes moved per read. Comfortably under any RPC payload ceiling. */
 export const STREAM_CHUNK_BYTES = 64 * 1024;
@@ -52,44 +52,44 @@ export class SinkWriter {
     return this.written;
   }
 
-  write(bytes: Uint8Array): void {
+  async write(bytes: Uint8Array): Promise<void> {
     if (bytes.length === 0) return;
+    if (this.decoder) await this.sink.write(this.decoder.decode(bytes, { stream: true }));
+    else await this.sink.writeBytes!(bytes);
     this.written += bytes.length;
-    if (this.decoder) this.sink.write(this.decoder.decode(bytes, { stream: true }));
-    else this.sink.writeBytes!(bytes);
   }
 
-  end(): void {
+  async end(): Promise<void> {
     if (!this.decoder) return;
     const tail = this.decoder.decode();
-    if (tail) this.sink.write(tail);
+    if (tail) await this.sink.write(tail);
   }
 }
 
 /**
  * Copies bytes from `read` into `sink` in {@link STREAM_CHUNK_BYTES} chunks.
  *
- * Stops at `length` bytes when given one, otherwise at the first short read
+ * Stops at `length` bytes when given one, otherwise at the first empty read
  * (EOF). Returns the number of bytes copied. Does not call `sink.end()` —
  * callers that write more than one range share a single writer.
  */
-export function streamRange(
+export async function streamRange(
   read: RangeReader,
   writer: SinkWriter,
   options: { offset?: number; length?: number; signal?: AbortSignal } = {},
-): number {
+): Promise<number> {
   const { offset = 0, length, signal } = options;
   let position = offset;
   let copied = 0;
 
   while (length === undefined || copied < length) {
-    if (signal?.aborted) break;
+    signal?.throwIfAborted();
     const want = length === undefined
       ? STREAM_CHUNK_BYTES
       : Math.min(STREAM_CHUNK_BYTES, length - copied);
-    const chunk = read(position, want);
+    const chunk = await read(position, want);
     if (chunk.length === 0) break;
-    writer.write(chunk);
+    await writer.write(chunk);
     position += chunk.length;
     copied += chunk.length;
   }
