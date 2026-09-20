@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/fabric",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "The Cloudflare half of Nimbus — Durable Object facet hosting, dynamic-worker loader pools, the resident-process fabric, and DO alarm/hibernation machinery.",
   "keywords": [
     "cloudflare",
@@ -46,11 +46,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
-    "prepack": "npm run build",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nimbus-sh/core": "^0.9.0",
+    "@nimbus-sh/core": "^0.10.0",
     "@nimbus-sh/platform": "^0.4.0",
     "zod": "^4.4.3"
   },

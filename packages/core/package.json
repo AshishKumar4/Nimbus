@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/core",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Backend-agnostic half of Nimbus — the durable filesystem, the shell, and the OS/process contracts, over a host-supplied SQL port.",
   "keywords": [
     "filesystem",
@@ -51,7 +51,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
-    "prepack": "npm run build",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

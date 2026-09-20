@@ -1,10 +1,23 @@
 # Changelog
 
+An AI assistant maintains this changelog. It is provided as-is.
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+Prepared versions: core 0.10.0, fabric 0.6.0, worker 0.8.0, sdk 0.7.0,
+loom 0.1.2, cli 0.1.10, react 0.1.6.
+
+- Add supported runtime composition for application-owned Durable Objects through
+  `@nimbus-sh/worker/workspace-host` and `@nimbus-sh/worker/facet-host`.
+  Hosts retain ownership of storage, alarms, and lifecycle.
+- Share workspace commands, runtimes, processes, terminals, and port routing
+  with NimbusSession. No private Session adapter or fake WebSocket boot is required.
+- Add instance-scoped runtime provisioning with eager and on-demand installation,
+  verified rehydration, and interrupted-install recovery.
+- Fix opencode byte output and dynamic-import analysis. Bundled provided packages
+  now use the same runtime adapter as ordinary package imports.
 - Fixed compiler privilege escalation: `EsbuildService` now accepts a
   `CredentialedVfs` instead of a raw `SqliteVFS`. Embedders compiling authored
   code must pass the author's view (`new EsbuildService(vfs.as(authorCred))`);

@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-sh/cli",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Nimbus CLI — `create-nimbus-app` scaffolder + `token mint` + `runtime sync`.",
   "keywords": [
     "cloudflare",
@@ -41,12 +41,12 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src && chmod +x dist/bin.js dist/scaffold-bin.js",
-    "prepack": "npm run build",
+    "prepack": "bun run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nimbus-sh/sdk": "^0.6.0",
-    "@nimbus-sh/worker": "^0.7.0"
+    "@nimbus-sh/sdk": "^0.7.0",
+    "@nimbus-sh/worker": "^0.8.0"
   },
   "engines": {
     "node": ">=20"
