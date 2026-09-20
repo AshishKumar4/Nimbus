@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import { resolve, dirname } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 
@@ -349,7 +349,7 @@ export function parseZip(data: Uint8Array): ZipEntry[] {
  * operand's own parent instead flattened every multi-component operand to its
  * basename, and the archive lost the directory the caller asked for.
  */
-export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEntry[] {
+export function collectFiles(vfs: ExecutionFs, basePath: string, paths: string[]): TarEntry[] {
   const entries: TarEntry[] = [];
   const relBase = basePath === '/' ? '/' : basePath + '/';
 

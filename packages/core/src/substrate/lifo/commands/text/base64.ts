@@ -43,24 +43,24 @@ const command: Command = async (ctx) => {
     if (ctx.stdin) {
       input = await ctx.stdin.readAll();
     } else {
-      ctx.stderr.write('base64: missing input\n');
+      await ctx.stderr.write('base64: missing input\n');
       return 1;
     }
   } else if (files.length === 0) {
-    ctx.stderr.write(`Usage: base64 [-d] [-w COLS] [FILE]\n`);
-    ctx.stderr.write(`Encode or decode base64. Use '-' to read from stdin.\n`);
+    await ctx.stderr.write(`Usage: base64 [-d] [-w COLS] [FILE]\n`);
+    await ctx.stderr.write(`Encode or decode base64. Use '-' to read from stdin.\n`);
     return 1;
   } else {
     const path = resolve(ctx.cwd, files[0]);
     try {
       if (decode) {
-        input = ctx.vfs.readFileString(path);
+        input = (await ctx.vfs.readFileString(path));
       } else {
-        input = ctx.vfs.readFile(path);
+        input = (await ctx.vfs.readFile(path));
       }
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`base64: ${files[0]}: ${e.message}\n`);
+        await ctx.stderr.write(`base64: ${files[0]}: ${e.message}\n`);
         return 1;
       }
       throw e;
@@ -70,9 +70,9 @@ const command: Command = async (ctx) => {
   if (decode) {
     try {
       const text = typeof input === 'string' ? input : new TextDecoder().decode(input);
-      ctx.stdout.write(fromBase64(text));
+      await ctx.stdout.write(fromBase64(text));
     } catch {
-      ctx.stderr.write('base64: invalid input\n');
+      await ctx.stderr.write('base64: invalid input\n');
       return 1;
     }
   } else {
@@ -93,7 +93,7 @@ const command: Command = async (ctx) => {
       encoded = wrapped.join('\n');
     }
 
-    ctx.stdout.write(encoded + '\n');
+    await ctx.stdout.write(encoded + '\n');
   }
 
   return 0;

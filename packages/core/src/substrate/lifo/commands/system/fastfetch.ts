@@ -312,34 +312,34 @@ const command: Command = async (ctx) => {
 
   // Handle --help
   if (ctx.args.includes('--help') || ctx.args.includes('-h')) {
-    ctx.stdout.write(`Usage: fastfetch [--logo default|small|none] [--color COLOR]
-
-Config file: ~/.config/fastfetch/config.json
-
-Example config:
-{
-  "logo": "default",
-  "color": "brightcyan",
-  "separator": "",
-  "modules": [
+    await ctx.stdout.write(`Usage: fastfetch [--logo default|small|none] [--color COLOR]
+    
+    Config file: ~/.config/fastfetch/config.json
+    
+    Example config:
+    {
+      "logo": "default",
+      "color": "brightcyan",
+      "separator": "",
+      "modules": [
     "title", "separator", "os", "host", "kernel",
     "uptime", "packages", "shell", "terminal",
     "cpu", "memory", "disk", "locale",
     "break", "colors"
-  ]
-}
-
-Available modules:
-  title, separator, os, host, kernel, uptime, packages,
-  shell, terminal, cpu, memory, disk, locale, colors, break
-
-Available logos: default, small, none (or put custom ASCII in config)
-
-Colors: black, red, green, yellow, blue, magenta, cyan, white,
+      ]
+    }
+    
+    Available modules:
+      title, separator, os, host, kernel, uptime, packages,
+      shell, terminal, cpu, memory, disk, locale, colors, break
+    
+    Available logos: default, small, none (or put custom ASCII in config)
+    
+    Colors: black, red, green, yellow, blue, magenta, cyan, white,
         brightblack, brightred, brightgreen, brightyellow,
         brightblue, brightmagenta, brightcyan, brightwhite,
         or a number 0-255 for 256-color palette
-`);
+    `);
     return 0;
   }
 
@@ -359,7 +359,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
   const isKnownColor = COLOR_MAP[colorChoice] !== undefined ||
     (!isNaN(parseInt(colorChoice, 10)) && parseInt(colorChoice, 10) >= 0 && parseInt(colorChoice, 10) <= 255);
   if (!isKnownColor) {
-    ctx.stderr.write(`fastfetch: unknown color '${colorChoice}', using default (brightcyan)\n`);
+    await ctx.stderr.write(`fastfetch: unknown color '${colorChoice}', using default (brightcyan)\n`);
   }
   const accent = resolveColor(colorChoice);
 
@@ -374,7 +374,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
   } else {
     // Try loading custom logo from file
     try {
-      const raw = ctx.vfs.readFileString(logoChoice);
+      const raw = (await ctx.vfs.readFileString(logoChoice));
       logo = buildCustomLogo(raw, accent);
     } catch {
       logo = buildDefaultLogo(accent);
@@ -420,7 +420,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
   }
 
   output += '\n';
-  ctx.stdout.write(output);
+  await ctx.stdout.write(output);
 
   return 0;
 };

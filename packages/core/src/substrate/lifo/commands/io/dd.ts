@@ -36,39 +36,39 @@ const SIZE_SUFFIXES: ReadonlyMap<string, number> = new Map([
 const command: Command = async (ctx) => {
   const parsed = parseOptions(ctx.args);
   if (!parsed.ok) {
-    ctx.stderr.write(`dd: ${parsed.error}\n`);
+    await ctx.stderr.write(`dd: ${parsed.error}\n`);
     return 1;
   }
   const options = parsed.options;
 
   try {
     const copied = options.input && options.input !== '-' && options.input !== '/dev/stdin'
-      ? copyFromFile(ctx, options)
+      ? await copyFromFile(ctx, options)
       : await copyFromStdin(ctx, options);
-    if (options.status !== 'none') writeStatus(ctx, options, copied);
+    if (options.status !== 'none') await writeStatus(ctx, options, copied);
     return 0;
   } catch (error) {
-    ctx.stderr.write(`dd: ${error instanceof Error ? error.message : String(error)}\n`);
+    await ctx.stderr.write(`dd: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 };
 
-function copyFromFile(ctx: CommandContext, options: DdOptions): number {
+async function copyFromFile(ctx: CommandContext, options: DdOptions): Promise<number> {
   const path = resolve(ctx.cwd, options.input!);
-  const limit = inputLimit(ctx, options, path);
-  const sink = openOutput(ctx, options);
+  const limit = await inputLimit(ctx, options, path);
+  const sink = await openOutput(ctx, options);
   const start = options.skip * options.inputBlockSize;
 
   let copied = 0;
   while (copied < limit) {
     if (ctx.signal.aborted) break;
     const want = Math.min(options.inputBlockSize, limit - copied);
-    const block = readInput(ctx, path, start + copied, want, options.input!);
+    const block = await readInput(ctx, path, start + copied, want, options.input!);
     if (block.length === 0) break;
-    sink.write(block);
+    await sink.write(block);
     copied += block.length;
   }
-  sink.end();
+  await sink.end();
   return copied;
 }
 
@@ -79,7 +79,7 @@ async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<n
   const limit = options.count === undefined
     ? Number.POSITIVE_INFINITY
     : options.count * options.inputBlockSize;
-  const sink = openOutput(ctx, options);
+  const sink = await openOutput(ctx, options);
 
   let copied = 0;
   let skipRemaining = options.skip * options.inputBlockSize;
@@ -92,10 +92,10 @@ async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<n
       continue;
     }
     const bytes = typeof chunk === 'string' ? encode(chunk) : chunk;
-    sink.write(bytes);
+    await sink.write(bytes);
     copied += bytes.length;
   }
-  sink.end();
+  await sink.end();
   return copied;
 }
 
@@ -112,25 +112,25 @@ async function readStdinChunk(stdin: CommandInputStream, want: number): Promise<
  * unbounded copy from one cannot be satisfied and is rejected rather than
  * silently producing whatever a single read returned.
  */
-function inputLimit(ctx: CommandContext, options: DdOptions, path: string): number {
+async function inputLimit(ctx: CommandContext, options: DdOptions, path: string): Promise<number> {
   if (options.count !== undefined) return options.count * options.inputBlockSize;
 
-  const stat = ctx.vfs.stat(path);
+  const stat = await ctx.vfs.stat(path);
   if (isCharacterDevice(stat.mode)) {
     throw new Error(`${options.input}: character device has no end — pass count= to bound the copy`);
   }
   return Math.max(0, stat.size - options.skip * options.inputBlockSize);
 }
 
-function readInput(
+async function readInput(
   ctx: CommandContext,
   path: string,
   offset: number,
   length: number,
   label: string,
-): Uint8Array {
+): Promise<Uint8Array> {
   try {
-    return ctx.vfs.readRange(path, offset, length);
+    return await ctx.vfs.readRange(path, offset, length);
   } catch (error) {
     if (error instanceof VFSError) throw new Error(`${label}: ${error.message}`);
     throw error;
@@ -139,11 +139,11 @@ function readInput(
 
 /** A byte destination that tracks its own write offset, like an open fd. */
 interface DdSink {
-  write(bytes: Uint8Array): void;
-  end(): void;
+  write(bytes: Uint8Array): void | Promise<void>;
+  end(): void | Promise<void>;
 }
 
-function openOutput(ctx: CommandContext, options: DdOptions): DdSink {
+async function openOutput(ctx: CommandContext, options: DdOptions): Promise<DdSink> {
   const target = options.output;
   if (!target || target === '-' || target === '/dev/stdout') return streamSink(ctx.stdout);
   if (target === '/dev/stderr') return streamSink(ctx.stderr);
@@ -153,14 +153,14 @@ function openOutput(ctx: CommandContext, options: DdOptions): DdSink {
   // dd truncates its output file unless conv=notrunc; seeking still keeps
   // whatever precedes the seek point.
   if (!options.notrunc) {
-    if (ctx.vfs.exists(path)) ctx.vfs.truncate(path, start);
-    else ctx.vfs.writeFile(path, new Uint8Array(start));
+    if (await ctx.vfs.exists(path)) await ctx.vfs.truncate(path, start);
+    else await ctx.vfs.writeFile(path, new Uint8Array(start));
   }
 
   let offset = start;
   return {
-    write: (bytes) => {
-      ctx.vfs.writeRange(path, offset, bytes);
+    write: async (bytes) => {
+      await ctx.vfs.writeRange(path, offset, bytes);
       offset += bytes.length;
     },
     end: () => { /* nothing buffered */ },
@@ -172,16 +172,14 @@ function streamSink(stream: CommandContext['stdout']): DdSink {
   return { write: (bytes) => writer.write(bytes), end: () => writer.end() };
 }
 
-function writeStatus(ctx: CommandContext, options: DdOptions, copied: number): void {
+async function writeStatus(ctx: CommandContext, options: DdOptions, copied: number): Promise<void> {
   const inBlocks = Math.floor(copied / options.inputBlockSize);
   const inPartial = copied % options.inputBlockSize === 0 ? 0 : 1;
   const outBlocks = Math.floor(copied / options.outputBlockSize);
   const outPartial = copied % options.outputBlockSize === 0 ? 0 : 1;
-  ctx.stderr.write(
-    `${inBlocks}+${inPartial} records in\n` +
-    `${outBlocks}+${outPartial} records out\n` +
-    `${copied} bytes copied\n`,
-  );
+  await ctx.stderr.write(`${inBlocks}+${inPartial} records in\n` +
+  `${outBlocks}+${outPartial} records out\n` +
+  `${copied} bytes copied\n`,);
 }
 
 function parseOptions(args: string[]): { ok: true; options: DdOptions } | { ok: false; error: string } {

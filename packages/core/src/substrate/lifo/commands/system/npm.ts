@@ -68,34 +68,30 @@ export interface NpmCommandDeps {
 /** The end-of-install report, shared by every install path so a failure
  *  reads the same regardless of which engine ran it. Byte-identical to
  *  what the worker's wrapper printed. */
-function writeInstallSummary(
-  ctx: CommandContext,
-  installed: string[],
-  failed: string[],
-  opts: { totalFiles?: number; fromCacheHits?: number; linkedBins?: number; globalBinDir?: string; startedAt: number },
-): void {
-  if (failed.length > 0) {
-    ctx.stderr.write(`\x1b[31mFailed: ${failed.join(', ')}\x1b[0m\n`);
-  }
-  const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
-  if (installed.length === 0 && failed.length === 0) {
-    ctx.stdout.write(`\x1b[32mup to date in ${secs}s\x1b[0m\n`);
-    return;
-  }
-  if (installed.length === 0) return;
-  const partial = failed.length > 0;
-  const color = partial ? '\x1b[33m' : '\x1b[32m';
-  const suffix = partial ? ` (${failed.length} failed, see above)` : '';
-  const files = opts.totalFiles !== undefined ? ` (${opts.totalFiles} files)` : '';
-  ctx.stdout.write(`\n${color}added ${installed.length} packages${files} in ${secs}s${suffix}\x1b[0m\n`);
-  if (opts.fromCacheHits) {
-    ctx.stdout.write(`\x1b[2m  (${opts.fromCacheHits} from cache)\x1b[0m\n`);
-  }
-  if (opts.linkedBins) {
-    const n = opts.linkedBins;
-    ctx.stdout.write(`\x1b[2m  linked ${n} bin${n === 1 ? '' : 's'} into ${opts.globalBinDir}\x1b[0m\n`);
-  }
+async function writeInstallSummary(ctx: CommandContext,
+installed: string[],
+failed: string[],
+opts: { totalFiles?: number; fromCacheHits?: number; linkedBins?: number; globalBinDir?: string; startedAt: number },): Promise<void> { if (failed.length > 0) {
+  await ctx.stderr.write(`\x1b[31mFailed: ${failed.join(', ')}\x1b[0m\n`);
 }
+const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
+if (installed.length === 0 && failed.length === 0) {
+  await ctx.stdout.write(`\x1b[32mup to date in ${secs}s\x1b[0m\n`);
+  return;
+}
+if (installed.length === 0) return;
+const partial = failed.length > 0;
+const color = partial ? '\x1b[33m' : '\x1b[32m';
+const suffix = partial ? ` (${failed.length} failed, see above)` : '';
+const files = opts.totalFiles !== undefined ? ` (${opts.totalFiles} files)` : '';
+await ctx.stdout.write(`\n${color}added ${installed.length} packages${files} in ${secs}s${suffix}\x1b[0m\n`);
+if (opts.fromCacheHits) {
+  await ctx.stdout.write(`\x1b[2m  (${opts.fromCacheHits} from cache)\x1b[0m\n`);
+}
+if (opts.linkedBins) {
+  const n = opts.linkedBins;
+  await ctx.stdout.write(`\x1b[2m  linked ${n} bin${n === 1 ? '' : 's'} into ${opts.globalBinDir}\x1b[0m\n`);
+} }
 // ─── Helpers ───
 
 function getRegistry(env: Record<string, string>): string {
@@ -372,25 +368,23 @@ async function installSinglePackage(
 
 // ─── Subcommands ───
 
-function printHelp(ctx: CommandContext): void {
-	ctx.stdout.write('Usage: npm <command> [args]\n\n');
-	ctx.stdout.write('Commands:\n');
-	ctx.stdout.write('  init [-y]                  create package.json\n');
-	ctx.stdout.write('  install [pkg...] [-g] [-D] install packages\n');
-	ctx.stdout.write('  uninstall <pkg> [-g]       remove a package\n');
-	ctx.stdout.write('  list [-g]                  list installed packages\n');
-	ctx.stdout.write('  run <script>               run a package.json script\n');
-	ctx.stdout.write('  start                      run the "start" script\n');
-	ctx.stdout.write('  test                       run the "test" script\n');
-	ctx.stdout.write('  info <pkg>                 show package info from registry\n');
-	ctx.stdout.write('  search <term>              search the npm registry\n');
-	ctx.stdout.write('  -v, --version              print npm version\n');
-}
+async function printHelp(ctx: CommandContext): Promise<void> { await ctx.stdout.write('Usage: npm <command> [args]\n\n');
+	await ctx.stdout.write('Commands:\n');
+	await ctx.stdout.write('  init [-y]                  create package.json\n');
+	await ctx.stdout.write('  install [pkg...] [-g] [-D] install packages\n');
+	await ctx.stdout.write('  uninstall <pkg> [-g]       remove a package\n');
+	await ctx.stdout.write('  list [-g]                  list installed packages\n');
+	await ctx.stdout.write('  run <script>               run a package.json script\n');
+	await ctx.stdout.write('  start                      run the "start" script\n');
+	await ctx.stdout.write('  test                       run the "test" script\n');
+	await ctx.stdout.write('  info <pkg>                 show package info from registry\n');
+	await ctx.stdout.write('  search <term>              search the npm registry\n');
+	await ctx.stdout.write('  -v, --version              print npm version\n'); }
 
 async function npmInit(ctx: CommandContext): Promise<number> {
 	const pkgPath = join(ctx.cwd, 'package.json');
-	if (ctx.vfs.exists(pkgPath)) {
-		ctx.stderr.write('package.json already exists\n');
+	if ((await ctx.vfs.exists(pkgPath))) {
+		await ctx.stderr.write('package.json already exists\n');
 		return 1;
 	}
 
@@ -407,8 +401,8 @@ async function npmInit(ctx: CommandContext): Promise<number> {
 	};
 
 	writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg);
-	ctx.stdout.write(`Wrote to ${pkgPath}:\n\n`);
-	ctx.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
+	await ctx.stdout.write(`Wrote to ${pkgPath}:\n\n`);
+	await ctx.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
 	return 0;
 }
 
@@ -426,12 +420,12 @@ async function npmInstall(
 	// `npm install -g` needs names (npm says the same); `npm install` needs a
 	// package.json when no names were given. Both fire before any work, and
 	if (invocation.global && packages.length === 0) {
-		ctx.stderr.write('npm ERR! missing package name for global install\n');
+		await ctx.stderr.write('npm ERR! missing package name for global install\n');
 		return 1;
 	}
 	if (!invocation.global && packages.length === 0) {
-		if (!ctx.vfs.exists(join(ctx.cwd, 'package.json'))) {
-			ctx.stderr.write('npm ERR! no package.json found\n');
+		if (!(await ctx.vfs.exists(join(ctx.cwd, 'package.json')))) {
+			await ctx.stderr.write('npm ERR! no package.json found\n');
 			return 1;
 		}
 	}
@@ -453,7 +447,7 @@ async function npmInstall(
 	// so two terminals' installs can't interleave lines on one installer.
 	if (deps?.installer) {
 		const npmLog: NpmLogEmitter | null = invocation.loglevel
-			? (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) ctx.stderr.write(`${line}\n`); }
+			? (level, line) => { if (npmLogEnabled(invocation.loglevel, level)) await ctx.stderr.write(`${line}\n`); }
 			: null;
 		try {
 			const result = await deps.installer.install({
@@ -464,9 +458,9 @@ async function npmInstall(
 				pid: ctx.pid,
 				production: invocation.production,
 				npmLog,
-				onProgress: (line) => ctx.stdout.write(`[npm] ${line}\n`),
+				onProgress: (line) => await ctx.stdout.write(`[npm] ${line}\n`),
 			});
-			writeInstallSummary(ctx, result.installed, result.failed, {
+			await writeInstallSummary(ctx, result.installed, result.failed, {
 				totalFiles: result.totalFiles,
 				fromCacheHits: result.fromCacheHits,
 				linkedBins: result.linkedBins,
@@ -475,7 +469,7 @@ async function npmInstall(
 			});
 			return result.failed.length > 0 ? 1 : 0;
 		} catch (err) {
-			ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
+			await ctx.stderr.write(`\x1b[31mnpm install failed: ${err instanceof Error ? err.message : String(err)}\x1b[0m\n`);
 			return 1;
 		}
 	}
@@ -487,7 +481,7 @@ async function npmInstall(
 
 	if (invocation.global) {
 		for (const dir of [globalModulesDir, globalBinDir]) {
-			try { ctx.vfs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
+			try { (await ctx.vfs.mkdir(dir, { recursive: true })); } catch { /* exists */ }
 		}
 	}
 
@@ -497,7 +491,7 @@ async function npmInstall(
 		// Install from package.json
 		const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
 		if (!pkg) {
-			ctx.stderr.write('npm ERR! no package.json found\n');
+			await ctx.stderr.write('npm ERR! no package.json found\n');
 			return 1;
 		}
 
@@ -505,11 +499,11 @@ async function npmInstall(
 		const depNames = Object.keys(allDeps);
 
 		if (depNames.length === 0) {
-			ctx.stdout.write('up to date, audited 0 packages\n');
+			await ctx.stdout.write('up to date, audited 0 packages\n');
 			return 0;
 		}
 
-		ctx.stdout.write('Installing dependencies...\n');
+		await ctx.stdout.write('Installing dependencies...\n');
 		const seen = new Set<string>();
 		for (const [name, range] of Object.entries(allDeps)) {
 			try {
@@ -519,12 +513,12 @@ async function npmInstall(
 				);
 			} catch (e) {
 				failed.push(name);
-				ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+				await ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
 			}
 		}
 	} else {
 		// Install specified packages
-		ctx.stdout.write('Installing packages...\n');
+		await ctx.stdout.write('Installing packages...\n');
 		const seen = new Set<string>();
 		for (const spec of packages) {
 			const { name, version } = parsePackageSpec(spec);
@@ -542,7 +536,7 @@ async function npmInstall(
 						const installedPkgPath = join(targetBase, name, 'package.json');
 						let versionStr = 'latest';
 						try {
-							const ipkg = JSON.parse(ctx.vfs.readFileString(installedPkgPath));
+							const ipkg = JSON.parse((await ctx.vfs.readFileString(installedPkgPath)));
 							versionStr = '^' + ipkg.version;
 						} catch { /* ignore */ }
 
@@ -560,10 +554,10 @@ async function npmInstall(
 				failed.push(name);
 				const msg = e instanceof Error ? e.message : String(e);
 				if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-					ctx.stderr.write(`npm ERR! network error fetching ${name}\n`);
-					ctx.stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
+					await ctx.stderr.write(`npm ERR! network error fetching ${name}\n`);
+					await ctx.stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
 				} else {
-					ctx.stderr.write(`npm ERR! ${msg}\n`);
+					await ctx.stderr.write(`npm ERR! ${msg}\n`);
 				}
 			}
 		}
@@ -571,12 +565,10 @@ async function npmInstall(
 
 	// The in-process fallback reports the count it actually installed;
 	// writeInstallSummary's file/bin/cache decorations don't apply here.
-	writeInstallSummary(
-		ctx,
+	await writeInstallSummary(ctx,
 		installed > 0 ? new Array<string>(installed).fill('') : [],
 		failed,
-		{ startedAt: startTime },
-	);
+		{ startedAt: startTime },);
 	return failed.length > 0 ? 1 : 0;
 }
 
@@ -601,7 +593,7 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 	}
 
 	if (packages.length === 0) {
-		ctx.stderr.write('npm uninstall requires at least one package name\n');
+		await ctx.stderr.write('npm uninstall requires at least one package name\n');
 		return 1;
 	}
 	const globalPrefix = isGlobal ? resolveNpmPrefixVfs(ctx.cwd, ctx.env, null) : null;
@@ -611,26 +603,26 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 	for (const name of packages) {
 		const targetDir = join(targetBase, name);
 
-		if (!ctx.vfs.exists(targetDir)) {
-			ctx.stderr.write(`npm warn: ${name} is not installed\n`);
+		if (!(await ctx.vfs.exists(targetDir))) {
+			await ctx.stderr.write(`npm warn: ${name} is not installed\n`);
 			continue;
 		}
 
 		// Unlink global binaries
 		if (isGlobal && globalBinDir) {
 			try {
-				const pkg: PackageJson = JSON.parse(ctx.vfs.readFileString(join(targetDir, 'package.json')));
+				const pkg: PackageJson = JSON.parse((await ctx.vfs.readFileString(join(targetDir, 'package.json'))));
 				for (const binName of Object.keys(getBinEntries(pkg))) {
-					try { ctx.vfs.unlink(join(globalBinDir, binName)); } catch { /* ignore */ }
+					try { (await ctx.vfs.unlink(join(globalBinDir, binName))); } catch { /* ignore */ }
 				}
 			} catch { /* ignore */ }
 		}
 
 		// Remove the package
 		try {
-			ctx.vfs.rmdirRecursive(targetDir);
+			(await ctx.vfs.rmdirRecursive(targetDir));
 		} catch (e) {
-			ctx.stderr.write(`npm ERR! could not remove ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+			await ctx.stderr.write(`npm ERR! could not remove ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
 			return 1;
 		}
 
@@ -644,7 +636,7 @@ async function npmUninstall(ctx: CommandContext, _registry: CommandRegistry): Pr
 			}
 		}
 
-		ctx.stdout.write(`removed ${name}\n`);
+		await ctx.stdout.write(`removed ${name}\n`);
 	}
 
 	return 0;
@@ -658,14 +650,14 @@ async function npmList(ctx: CommandContext): Promise<number> {
 	const header = isGlobal
 		? `${globalPrefix}/lib`
 		: (readProjectPackageJson(ctx.vfs, ctx.cwd)?.name || ctx.cwd);
-	ctx.stdout.write(`${header}\n`);
+	await ctx.stdout.write(`${header}\n`);
 
-	if (!ctx.vfs.exists(modulesDir)) {
-		ctx.stdout.write('└── (empty)\n');
+	if (!(await ctx.vfs.exists(modulesDir))) {
+		await ctx.stdout.write('└── (empty)\n');
 		return 0;
 	}
 
-	const entries = ctx.vfs.readdir(modulesDir);
+	const entries = (await ctx.vfs.readdir(modulesDir));
 	const packages: { name: string; version: string }[] = [];
 
 	for (const entry of entries) {
@@ -674,7 +666,7 @@ async function npmList(ctx: CommandContext): Promise<number> {
 		if (entry.name.startsWith('@')) {
 			// Scoped packages
 			try {
-				const scopeEntries = ctx.vfs.readdir(join(modulesDir, entry.name));
+				const scopeEntries = (await ctx.vfs.readdir(join(modulesDir, entry.name)));
 				for (const se of scopeEntries) {
 					if (se.type !== 'directory') continue;
 					const v = readPkgVersion(ctx.vfs, join(modulesDir, entry.name, se.name));
@@ -688,12 +680,12 @@ async function npmList(ctx: CommandContext): Promise<number> {
 	}
 
 	if (packages.length === 0) {
-		ctx.stdout.write('└── (empty)\n');
+		await ctx.stdout.write('└── (empty)\n');
 	} else {
 		for (let i = 0; i < packages.length; i++) {
 			const p = packages[i];
 			const last = i === packages.length - 1;
-			ctx.stdout.write(`${last ? '└── ' : '├── '}${p.name}@${p.version}\n`);
+			await ctx.stdout.write(`${last ? '└── ' : '├── '}${p.name}@${p.version}\n`);
 		}
 	}
 
@@ -715,37 +707,37 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 
 	const pkg = readProjectPackageJson(ctx.vfs, ctx.cwd);
 	if (!pkg) {
-		ctx.stderr.write('npm ERR! no package.json found\n');
+		await ctx.stderr.write('npm ERR! no package.json found\n');
 		return 1;
 	}
 
 	if (!scriptName) {
 		// List available scripts
 		if (!pkg.scripts || Object.keys(pkg.scripts).length === 0) {
-			ctx.stdout.write('No scripts defined in package.json\n');
+			await ctx.stdout.write('No scripts defined in package.json\n');
 			return 0;
 		}
-		ctx.stdout.write('Available scripts:\n');
+		await ctx.stdout.write('Available scripts:\n');
 		for (const [name, cmd] of Object.entries(pkg.scripts)) {
-			ctx.stdout.write(`  ${name}\n    ${cmd}\n`);
+			await ctx.stdout.write(`  ${name}\n    ${cmd}\n`);
 		}
 		return 0;
 	}
 
 	if (!pkg.scripts || !pkg.scripts[scriptName]) {
-		ctx.stderr.write(`npm ERR! Missing script: "${scriptName}"\n`);
+		await ctx.stderr.write(`npm ERR! Missing script: "${scriptName}"\n`);
 		if (pkg.scripts) {
-			ctx.stderr.write('\nAvailable scripts:\n');
+			await ctx.stderr.write('\nAvailable scripts:\n');
 			for (const name of Object.keys(pkg.scripts)) {
-				ctx.stderr.write(`  - ${name}\n`);
+				await ctx.stderr.write(`  - ${name}\n`);
 			}
 		}
 		return 1;
 	}
 
 	const script = pkg.scripts[scriptName];
-	ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${scriptName}\n`);
-	ctx.stdout.write(`> ${script}\n\n`);
+	await ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${scriptName}\n`);
+	await ctx.stdout.write(`> ${script}\n\n`);
 
 	// Register local bin scripts from node_modules so they're available in scripts
 	if (registry) {
@@ -773,7 +765,7 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 	}
 
 	// No shell access - print the command for the user
-	ctx.stderr.write('(shell integration unavailable, run the command directly)\n');
+	await ctx.stderr.write('(shell integration unavailable, run the command directly)\n');
 	return 1;
 }
 
@@ -844,7 +836,7 @@ async function npmInfo(ctx: CommandContext): Promise<number> {
 	const spec = args[0];
 
 	if (!spec) {
-		ctx.stderr.write('Usage: npm info <package>\n');
+		await ctx.stderr.write('Usage: npm info <package>\n');
 		return 1;
 	}
 
@@ -853,29 +845,29 @@ async function npmInfo(ctx: CommandContext): Promise<number> {
 
 	try {
 		const info = await fetchPackageInfo(npmRegistry, name, version, ctx.signal);
-		ctx.stdout.write(`\n${info.name}@${info.version}\n`);
-		if (info.description) ctx.stdout.write(`${info.description}\n`);
-		ctx.stdout.write('\n');
-		if (info.main) ctx.stdout.write(`main: ${info.main}\n`);
+		await ctx.stdout.write(`\n${info.name}@${info.version}\n`);
+		if (info.description) await ctx.stdout.write(`${info.description}\n`);
+		await ctx.stdout.write('\n');
+		if (info.main) await ctx.stdout.write(`main: ${info.main}\n`);
 
 		const binEntries = getBinEntries(info);
 		if (Object.keys(binEntries).length > 0) {
-			ctx.stdout.write(`bin: ${Object.keys(binEntries).join(', ')}\n`);
+			await ctx.stdout.write(`bin: ${Object.keys(binEntries).join(', ')}\n`);
 		}
 
 		if (info.dependencies) {
 			const deps = Object.keys(info.dependencies);
-			ctx.stdout.write(`\ndependencies (${deps.length}):\n`);
+			await ctx.stdout.write(`\ndependencies (${deps.length}):\n`);
 			for (const dep of deps) {
-				ctx.stdout.write(`  ${dep}: ${info.dependencies[dep]}\n`);
+				await ctx.stdout.write(`  ${dep}: ${info.dependencies[dep]}\n`);
 			}
 		}
 
-		ctx.stdout.write(`\ntarball: ${info.dist.tarball}\n`);
-		if (info.dist.shasum) ctx.stdout.write(`shasum: ${info.dist.shasum}\n`);
-		if (info.dist.integrity) ctx.stdout.write(`integrity: ${info.dist.integrity}\n`);
+		await ctx.stdout.write(`\ntarball: ${info.dist.tarball}\n`);
+		if (info.dist.shasum) await ctx.stdout.write(`shasum: ${info.dist.shasum}\n`);
+		if (info.dist.integrity) await ctx.stdout.write(`integrity: ${info.dist.integrity}\n`);
 	} catch (e) {
-		ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
+		await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
 		return 1;
 	}
 
@@ -887,7 +879,7 @@ async function npmSearch(ctx: CommandContext): Promise<number> {
 	const term = args.join(' ');
 
 	if (!term) {
-		ctx.stderr.write('Usage: npm search <term>\n');
+		await ctx.stderr.write('Usage: npm search <term>\n');
 		return 1;
 	}
 
@@ -904,22 +896,22 @@ async function npmSearch(ctx: CommandContext): Promise<number> {
 		const results = data.objects;
 
 		if (!results || results.length === 0) {
-			ctx.stdout.write('No results found\n');
+			await ctx.stdout.write('No results found\n');
 			return 0;
 		}
 
 		// Header
-		ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
-		ctx.stdout.write('-'.repeat(70) + '\n');
+		await ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
+		await ctx.stdout.write('-'.repeat(70) + '\n');
 
 		for (const r of results) {
 			const p = r.package;
 			const name = p.name.length > 28 ? p.name.slice(0, 28) + '..' : p.name;
 			const desc = (p.description || '').slice(0, 40);
-			ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
+			await ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
 		}
 	} catch (e) {
-		ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
+		await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
 		return 1;
 	}
 
@@ -938,7 +930,7 @@ export function createNpmCommand(
 		const subcommand = ctx.args[0];
 
 		if (!subcommand || subcommand === '--help' || subcommand === '-h') {
-			printHelp(ctx);
+			await printHelp(ctx);
 			return subcommand ? 0 : 1;
 		}
 
@@ -972,11 +964,11 @@ export function createNpmCommand(
 				return npmSearch(ctx);
 			case '-v':
 			case '--version':
-				ctx.stdout.write(NPM_VERSION + '\n');
+				await ctx.stdout.write(NPM_VERSION + '\n');
 				return 0;
 			default:
-				ctx.stderr.write(`npm: unknown command '${subcommand}'\n`);
-				ctx.stderr.write('Run npm --help for usage\n');
+				await ctx.stderr.write(`npm: unknown command '${subcommand}'\n`);
+				await ctx.stderr.write('Run npm --help for usage\n');
 				return 1;
 		}
 	};
@@ -1041,16 +1033,16 @@ export function createNpxCommand(
 				continue;
 			}
 			if (a === '--version' || a === '-v') {
-				ctx.stdout.write(NPM_VERSION + '\n');
+				await ctx.stdout.write(NPM_VERSION + '\n');
 				return 0;
 			}
 			if (a === '--help' || a === '-h') {
-				ctx.stdout.write('Usage: npx [options] <package[@version]> [args...]\n\n');
-				ctx.stdout.write('Options:\n');
-				ctx.stdout.write('  -y, --yes              skip prompts\n');
-				ctx.stdout.write('  --package=<pkg>        explicit package name\n');
-				ctx.stdout.write('  -v, --version          print version\n');
-				ctx.stdout.write('  -h, --help             show this help\n');
+				await ctx.stdout.write('Usage: npx [options] <package[@version]> [args...]\n\n');
+				await ctx.stdout.write('Options:\n');
+				await ctx.stdout.write('  -y, --yes              skip prompts\n');
+				await ctx.stdout.write('  --package=<pkg>        explicit package name\n');
+				await ctx.stdout.write('  -v, --version          print version\n');
+				await ctx.stdout.write('  -h, --help             show this help\n');
 				return 0;
 			}
 			// First non-flag is the package spec (or bin name if --package was set)
@@ -1059,8 +1051,8 @@ export function createNpxCommand(
 
 		const spec = rawArgs[i];
 		if (!spec) {
-			ctx.stderr.write('npx: missing package or command\n');
-			ctx.stderr.write('Usage: npx <package[@version]> [args...]\n');
+			await ctx.stderr.write('npx: missing package or command\n');
+			await ctx.stderr.write('Usage: npx <package[@version]> [args...]\n');
 			return 1;
 		}
 		// Everything after the spec is passthrough args
@@ -1083,7 +1075,7 @@ export function createNpxCommand(
 		// 3. Install to cache
 		if (!scriptPath) {
 			const cacheDir = join(NPX_CACHE, parsedName);
-			if (!ctx.vfs.exists(join(cacheDir, 'package.json'))) {
+			if (!(await ctx.vfs.exists(join(cacheDir, 'package.json')))) {
 				const npmRegistry = getRegistry(ctx.env);
 				const seen = new Set<string>();
 				try {
@@ -1092,7 +1084,7 @@ export function createNpxCommand(
 						ctx.stdout, ctx.stderr, false, registry, seen,
 					);
 				} catch (e) {
-					ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
+					await ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
 					return 1;
 				}
 			}
@@ -1100,7 +1092,7 @@ export function createNpxCommand(
 		}
 
 		if (!scriptPath) {
-			ctx.stderr.write(`npx: could not find executable for '${binName}'\n`);
+			await ctx.stderr.write(`npx: could not find executable for '${binName}'\n`);
 			return 1;
 		}
 
@@ -1118,7 +1110,7 @@ export function createNpxCommand(
 			return shellExecute(cmd, ctx);
 		}
 
-		ctx.stderr.write('npx: node command not available\n');
+		await ctx.stderr.write('npx: node command not available\n');
 		return 1;
 	};
 }
@@ -1136,8 +1128,8 @@ export async function npmInstallGlobal(
 	const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
 	const modulesDir = `${prefix}/lib/node_modules`;
 	const binDir = `${prefix}/bin`;
-	try { ctx.vfs.mkdir(modulesDir, { recursive: true }); } catch { /* exists */ }
-	try { ctx.vfs.mkdir(binDir, { recursive: true }); } catch { /* exists */ }
+	try { (await ctx.vfs.mkdir(modulesDir, { recursive: true })); } catch { /* exists */ }
+	try { (await ctx.vfs.mkdir(binDir, { recursive: true })); } catch { /* exists */ }
 
 	try {
 		const installed = await installSinglePackage(
@@ -1146,15 +1138,15 @@ export async function npmInstallGlobal(
 		);
 
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-		ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
+		await ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
 		return 0;
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-			ctx.stderr.write(`npm ERR! network error fetching ${packageName}\n`);
-			ctx.stderr.write('This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n');
+			await ctx.stderr.write(`npm ERR! network error fetching ${packageName}\n`);
+			await ctx.stderr.write('This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n');
 		} else {
-			ctx.stderr.write(`npm ERR! ${msg}\n`);
+			await ctx.stderr.write(`npm ERR! ${msg}\n`);
 		}
 		return 1;
 	}

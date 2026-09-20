@@ -17,7 +17,7 @@ export function createWatchCommand(registry: CommandRegistry): Command {
     }
 
     if (argStart >= ctx.args.length) {
-      ctx.stderr.write('watch: missing command\n');
+      await ctx.stderr.write('watch: missing command\n');
       return 1;
     }
 
@@ -27,14 +27,14 @@ export function createWatchCommand(registry: CommandRegistry): Command {
 
     const command = await registry.resolve(cmdName);
     if (!command) {
-      ctx.stderr.write(`watch: ${cmdName}: command not found\n`);
+      await ctx.stderr.write(`watch: ${cmdName}: command not found\n`);
       return 1;
     }
 
     const runOnce = async () => {
       // Clear screen
-      ctx.stdout.write('\x1b[2J\x1b[H');
-      ctx.stdout.write(`Every ${interval}s: ${fullCmd}\n\n`);
+      await ctx.stdout.write('\x1b[2J\x1b[H');
+      await ctx.stdout.write(`Every ${interval}s: ${fullCmd}\n\n`);
 
       const output: string[] = [];
       const collectStdout: CommandOutputStream = {
@@ -47,7 +47,7 @@ export function createWatchCommand(registry: CommandRegistry): Command {
         stdout: collectStdout,
       });
 
-      ctx.stdout.write(output.join(''));
+      await ctx.stdout.write(output.join(''));
     };
 
     if (ctx.signal.aborted) {

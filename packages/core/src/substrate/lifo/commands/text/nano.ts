@@ -99,26 +99,22 @@ interface State {
 
 // ─── File I/O ───
 
-function loadFile(ctx: CommandContext, path: string): { lines: string[]; isNew: boolean } {
-  try {
-    const content = ctx.vfs.readFileString(path);
-    const lines = content.split('\n');
-    // Files that end with \n produce a trailing empty string from split
-    if (lines.length > 1 && lines[lines.length - 1] === '') {
-      lines.pop();
-    }
-    return { lines: lines.length === 0 ? [''] : lines, isNew: false };
-  } catch (e) {
-    if (e instanceof VFSError && e.message.includes('ENOENT')) {
-      return { lines: [''], isNew: true };
-    }
-    throw e;
+async function loadFile(ctx: CommandContext, path: string): Promise<{ lines: string[]; isNew: boolean }> { try {
+  const content = (await ctx.vfs.readFileString(path));
+  const lines = content.split('\n');
+  // Files that end with \n produce a trailing empty string from split
+  if (lines.length > 1 && lines[lines.length - 1] === '') {
+    lines.pop();
   }
-}
+  return { lines: lines.length === 0 ? [''] : lines, isNew: false };
+} catch (e) {
+  if (e instanceof VFSError && e.message.includes('ENOENT')) {
+    return { lines: [''], isNew: true };
+  }
+  throw e;
+} }
 
-function saveFile(ctx: CommandContext, path: string, lines: string[]): void {
-  ctx.vfs.writeFile(path, lines.join('\n') + '\n');
-}
+async function saveFile(ctx: CommandContext, path: string, lines: string[]): Promise<void> { (await ctx.vfs.writeFile(path, lines.join('\n') + '\n')); }
 
 // ─── Text editing ───
 
@@ -370,33 +366,31 @@ function handleEditKey(s: State, key: KeyEvent): boolean {
   return false;
 }
 
-function handleSavePrompt(s: State, key: KeyEvent, ctx: CommandContext): boolean {
-  switch (key.type) {
-    case 'enter':
-      try {
-        const path = resolve(ctx.cwd, s.promptBuf);
-        saveFile(ctx, path, s.lines);
-        s.filePath = path;
-        s.modified = false;
-        setStatus(s, `Wrote ${s.lines.length} lines`);
-      } catch (e) {
-        setStatus(s, `Error: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      s.mode = 'edit';
-      break;
-    case 'ctrl-c':
-    case 'escape':
-      s.mode = 'edit';
-      break;
-    case 'backspace':
-      s.promptBuf = s.promptBuf.slice(0, -1);
-      break;
-    case 'char':
-      s.promptBuf += key.char!;
-      break;
-  }
-  return false;
+async function handleSavePrompt(s: State, key: KeyEvent, ctx: CommandContext): Promise<boolean> { switch (key.type) {
+  case 'enter':
+    try {
+      const path = resolve(ctx.cwd, s.promptBuf);
+      (await saveFile(ctx, path, s.lines));
+      s.filePath = path;
+      s.modified = false;
+      setStatus(s, `Wrote ${s.lines.length} lines`);
+    } catch (e) {
+      setStatus(s, `Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    s.mode = 'edit';
+    break;
+  case 'ctrl-c':
+  case 'escape':
+    s.mode = 'edit';
+    break;
+  case 'backspace':
+    s.promptBuf = s.promptBuf.slice(0, -1);
+    break;
+  case 'char':
+    s.promptBuf += key.char!;
+    break;
 }
+return false; }
 
 function handleSearchPrompt(s: State, key: KeyEvent): boolean {
   switch (key.type) {
@@ -422,23 +416,21 @@ function handleSearchPrompt(s: State, key: KeyEvent): boolean {
   return false;
 }
 
-function handleDirtyExit(s: State, key: KeyEvent, ctx: CommandContext): boolean {
-  if (key.type === 'char') {
-    if (key.char === 'y' || key.char === 'Y') {
-      try { saveFile(ctx, s.filePath, s.lines); } catch { /* best effort */ }
-      return true;
-    }
-    if (key.char === 'n' || key.char === 'N') return true;
+async function handleDirtyExit(s: State, key: KeyEvent, ctx: CommandContext): Promise<boolean> { if (key.type === 'char') {
+  if (key.char === 'y' || key.char === 'Y') {
+    try { (await saveFile(ctx, s.filePath, s.lines)); } catch { /* best effort */ }
+    return true;
   }
-  if (key.type === 'ctrl-c' || key.type === 'escape') s.mode = 'edit';
-  return false;
+  if (key.char === 'n' || key.char === 'N') return true;
 }
+if (key.type === 'ctrl-c' || key.type === 'escape') s.mode = 'edit';
+return false; }
 
 // ─── Main command ───
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
-    ctx.stderr.write('Usage: nano <filename>\n');
+    await ctx.stderr.write('Usage: nano <filename>\n');
     return 1;
   }
 
@@ -449,7 +441,7 @@ const command: Command = async (ctx) => {
   ctx.setRawMode?.(true);
 
   try {
-    const { lines, isNew } = loadFile(ctx, filePath);
+    const { lines, isNew } = (await loadFile(ctx, filePath));
 
     const s: State = {
       lines,
@@ -470,7 +462,7 @@ const command: Command = async (ctx) => {
       cutBuffer: [],
     };
 
-    ctx.stdout.write(CLEAR + HOME);
+    await ctx.stdout.write(CLEAR + HOME);
     render(s, ctx.stdout);
 
     while (true) {
@@ -484,9 +476,9 @@ const command: Command = async (ctx) => {
         const key = parseKey(data);
         switch (s.mode) {
           case 'edit': shouldExit = handleEditKey(s, key); break;
-          case 'save-prompt': shouldExit = handleSavePrompt(s, key, ctx); break;
+          case 'save-prompt': shouldExit = await handleSavePrompt(s, key, ctx); break;
           case 'search-prompt': shouldExit = handleSearchPrompt(s, key); break;
-          case 'dirty-exit': shouldExit = handleDirtyExit(s, key, ctx); break;
+          case 'dirty-exit': shouldExit = await handleDirtyExit(s, key, ctx); break;
         }
       } else {
         // Pasted text -- insert each character
@@ -502,7 +494,7 @@ const command: Command = async (ctx) => {
       render(s, ctx.stdout);
     }
 
-    ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
+    await ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
   } finally {
     ctx.setRawMode?.(false);
   }

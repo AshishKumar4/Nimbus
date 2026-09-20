@@ -11,7 +11,7 @@ const command: Command = async (ctx) => {
   const { flags, positional } = parseArgs(ctx.args, spec);
 
   if (positional.length === 0) {
-    ctx.stderr.write('mkdir: missing operand\n');
+    await ctx.stderr.write('mkdir: missing operand\n');
     return 1;
   }
 
@@ -20,10 +20,10 @@ const command: Command = async (ctx) => {
   for (const arg of positional) {
     const path = resolve(ctx.cwd, arg);
     try {
-      ctx.vfs.mkdir(path, { recursive: flags.parents as boolean });
+      (await ctx.vfs.mkdir(path, { recursive: flags.parents as boolean }));
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`mkdir: ${arg}: ${e.message}\n`);
+        await ctx.stderr.write(`mkdir: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;

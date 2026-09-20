@@ -34,21 +34,21 @@ const command: Command = async (ctx) => {
   try {
     // Ensure parent dir exists
     try {
-      ctx.vfs.stat(dir);
+      (await ctx.vfs.stat(dir));
     } catch {
-      ctx.vfs.mkdir(dir, { recursive: true });
+      (await ctx.vfs.mkdir(dir, { recursive: true }));
     }
 
     if (flags.directory) {
-      ctx.vfs.mkdir(fullPath);
+      (await ctx.vfs.mkdir(fullPath));
     } else {
-      ctx.vfs.writeFile(fullPath, '');
+      (await ctx.vfs.writeFile(fullPath, ''));
     }
 
-    ctx.stdout.write(fullPath + '\n');
+    await ctx.stdout.write(fullPath + '\n');
     return 0;
   } catch (e) {
-    ctx.stderr.write(`mktemp: failed to create ${flags.directory ? 'directory' : 'file'}: ${(e as Error).message}\n`);
+    await ctx.stderr.write(`mktemp: failed to create ${flags.directory ? 'directory' : 'file'}: ${(e as Error).message}\n`);
     return 1;
   }
 };

@@ -4,7 +4,7 @@ import { VFSError } from '../../kernel/vfs/index.js';
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
-    ctx.stderr.write('touch: missing operand\n');
+    await ctx.stderr.write('touch: missing operand\n');
     return 1;
   }
 
@@ -13,10 +13,10 @@ const command: Command = async (ctx) => {
   for (const arg of ctx.args) {
     const path = resolve(ctx.cwd, arg);
     try {
-      ctx.vfs.touch(path);
+      (await ctx.vfs.touch(path));
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`touch: ${arg}: ${e.message}\n`);
+        await ctx.stderr.write(`touch: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;

@@ -46,7 +46,7 @@ const command: Command = async (ctx) => {
   }
 
   if (!pattern) {
-    ctx.stderr.write('grep: missing pattern\n');
+    await ctx.stderr.write('grep: missing pattern\n');
     return 2;
   }
 
@@ -59,7 +59,7 @@ const command: Command = async (ctx) => {
   try {
     regex = new RegExp(regexPattern, ignoreCase ? 'i' : '');
   } catch {
-    ctx.stderr.write(`grep: invalid regex: ${pattern}\n`);
+    await ctx.stderr.write(`grep: invalid regex: ${pattern}\n`);
     return 2;
   }
 
@@ -75,7 +75,7 @@ const command: Command = async (ctx) => {
         matched = true;
         count++;
         if (filesWithMatches) {
-          if (fileName) ctx.stdout.write(fileName + '\n');
+          if (fileName) await ctx.stdout.write(fileName + '\n');
           return;
         }
         if (!countOnly) {
@@ -83,7 +83,7 @@ const command: Command = async (ctx) => {
           if (multiFile && fileName) output += fileName + ':';
           if (lineNumbers) output += (idx + 1) + ':';
           output += line + '\n';
-          ctx.stdout.write(output);
+          await ctx.stdout.write(output);
         }
       }
     }
@@ -91,27 +91,25 @@ const command: Command = async (ctx) => {
       let output = '';
       if (multiFile && fileName) output += fileName + ':';
       output += count + '\n';
-      ctx.stdout.write(output);
+      await ctx.stdout.write(output);
     }
   }
 
-  function walkDir(dirPath: string): string[] {
-    const result: string[] = [];
-    try {
-      const entries = ctx.vfs.readdir(dirPath);
-      for (const entry of entries) {
-        const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
-        if (entry.type === 'file') {
-          result.push(fullPath);
-        } else if (entry.type === 'directory') {
-          result.push(...walkDir(fullPath));
-        }
+  async function walkDir(dirPath: string): Promise<string[]> { const result: string[] = [];
+  try {
+    const entries = (await ctx.vfs.readdir(dirPath));
+    for (const entry of entries) {
+      const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
+      if (entry.type === 'file') {
+        result.push(fullPath);
+      } else if (entry.type === 'directory') {
+        result.push(...(await walkDir(fullPath)));
       }
-    } catch {
-      // skip inaccessible dirs
     }
-    return result;
+  } catch {
+    // skip inaccessible dirs
   }
+  return result; }
 
   if (files.length === 0) {
     if (ctx.stdin) {
@@ -119,23 +117,23 @@ const command: Command = async (ctx) => {
       const lines = content.replace(/\n$/, '').split('\n');
       await grepLines(lines, null);
     } else {
-      ctx.stderr.write('grep: missing file operand\n');
+      await ctx.stderr.write('grep: missing file operand\n');
       return 2;
     }
   } else {
     for (const file of files) {
       const path = resolve(ctx.cwd, file);
       try {
-        const stat = ctx.vfs.stat(path);
+        const stat = (await ctx.vfs.stat(path));
         if (stat.type === 'directory') {
           if (recursive) {
-            const dirFiles = walkDir(path);
+            const dirFiles = (await walkDir(path));
             for (const f of dirFiles) {
               try {
                 if (isBinaryMime(getMimeType(f))) {
                   continue;
                 }
-                const content = ctx.vfs.readFileString(f);
+                const content = (await ctx.vfs.readFileString(f));
                 const lines = content.replace(/\n$/, '').split('\n');
                 await grepLines(lines, f);
               } catch {
@@ -143,20 +141,20 @@ const command: Command = async (ctx) => {
               }
             }
           } else {
-            ctx.stderr.write(`grep: ${file}: Is a directory\n`);
+            await ctx.stderr.write(`grep: ${file}: Is a directory\n`);
           }
           continue;
         }
         if (isBinaryMime(getMimeType(path))) {
-          ctx.stderr.write(`grep: ${file}: binary file, skipping\n`);
+          await ctx.stderr.write(`grep: ${file}: binary file, skipping\n`);
           continue;
         }
-        const content = ctx.vfs.readFileString(path);
+        const content = (await ctx.vfs.readFileString(path));
         const lines = content.replace(/\n$/, '').split('\n');
         await grepLines(lines, multiFile ? file : null);
       } catch (e) {
         if (e instanceof VFSError) {
-          ctx.stderr.write(`grep: ${file}: ${e.message}\n`);
+          await ctx.stderr.write(`grep: ${file}: ${e.message}\n`);
         } else {
           throw e;
         }

@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import { resolve } from './path.js';
 
 /**
@@ -103,7 +103,7 @@ function matchCharClass(pattern: string, pos: number, ch: string): { matched: bo
  * Expand a glob pattern against the VFS.
  * Returns sorted matching paths, or [pattern] if no matches.
  */
-export function expandGlob(pattern: string, cwd: string, vfs: VFS): string[] {
+export async function expandGlob(pattern: string, cwd: string, vfs: ExecutionFs): Promise<string[]> {
   // If no glob chars, return as-is
   if (!hasGlobChars(pattern)) {
     return [pattern];
@@ -122,7 +122,7 @@ export function expandGlob(pattern: string, cwd: string, vfs: VFS): string[] {
       // Literal path segment
       for (const dir of candidates) {
         const full = dir === '/' ? `/${part}` : `${dir}/${part}`;
-        if (vfs.exists(full)) {
+        if (await vfs.exists(full)) {
           nextCandidates.push(full);
         }
       }
@@ -130,7 +130,7 @@ export function expandGlob(pattern: string, cwd: string, vfs: VFS): string[] {
       // Glob segment -- match against directory entries
       for (const dir of candidates) {
         try {
-          const entries = vfs.readdir(dir);
+          const entries = await vfs.readdir(dir);
           for (const entry of entries) {
             if (globMatch(part, entry.name)) {
               const full = dir === '/' ? `/${entry.name}` : `${dir}/${entry.name}`;

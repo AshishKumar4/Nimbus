@@ -39,7 +39,7 @@ function isText(data: Uint8Array): boolean {
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
-    ctx.stderr.write('file: missing operand\n');
+    await ctx.stderr.write('file: missing operand\n');
     return 1;
   }
 
@@ -48,35 +48,35 @@ const command: Command = async (ctx) => {
   for (const arg of ctx.args) {
     const path = resolve(ctx.cwd, arg);
     try {
-      const st = ctx.vfs.stat(path);
+      const st = (await ctx.vfs.stat(path));
 
       if (st.type === 'directory') {
-        ctx.stdout.write(`${arg}: directory\n`);
+        await ctx.stdout.write(`${arg}: directory\n`);
         continue;
       }
 
       if (st.size === 0) {
-        ctx.stdout.write(`${arg}: empty\n`);
+        await ctx.stdout.write(`${arg}: empty\n`);
         continue;
       }
 
       // Check by extension first
       const ext = extname(arg);
       if (ext && extTypes[ext]) {
-        ctx.stdout.write(`${arg}: ${extTypes[ext]}\n`);
+        await ctx.stdout.write(`${arg}: ${extTypes[ext]}\n`);
         continue;
       }
 
       // Check content
-      const data = ctx.vfs.readFile(path);
+      const data = (await ctx.vfs.readFile(path));
       if (isText(data)) {
-        ctx.stdout.write(`${arg}: ASCII text\n`);
+        await ctx.stdout.write(`${arg}: ASCII text\n`);
       } else {
-        ctx.stdout.write(`${arg}: data\n`);
+        await ctx.stdout.write(`${arg}: data\n`);
       }
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`file: ${arg}: ${e.message}\n`);
+        await ctx.stderr.write(`file: ${arg}: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;

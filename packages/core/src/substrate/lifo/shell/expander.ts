@@ -1,5 +1,5 @@
 import type { WordPart } from './types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import { expandGlob, globMatch } from '../utils/glob.js';
 import { readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './interpreter.js';
@@ -15,7 +15,7 @@ export interface ExpandContext {
   positionals?: readonly string[];
   lastExitCode: number;
   cwd: string;
-  vfs: VFS;
+  vfs: ExecutionFs;
   options: ShellOptions;
   executeCapture?: (input: string) => Promise<CapturedCommand>;
   /**
@@ -75,7 +75,7 @@ export async function expandWords(words: WordPart[][], ctx: ExpandContext): Prom
 
       // Glob expansion only for unquoted parts
       if (hasUnquotedGlob(braceExpandedWord)) {
-        for (const field of fields) results.push(...expandGlob(field, ctx.cwd, ctx.vfs));
+        for (const field of fields) results.push(...await expandGlob(field, ctx.cwd, ctx.vfs));
       } else {
         results.push(...fields);
       }

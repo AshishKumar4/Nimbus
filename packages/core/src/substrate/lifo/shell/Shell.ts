@@ -1,9 +1,9 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import { ExecutionFs } from '../../../shell/execution-fs.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import type { CommandContext, CommandRunAsHost } from '../commands/types.js';
-import type { VfsCred } from '../../../runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
@@ -67,8 +67,8 @@ export interface ExecuteOptions {
    * shell's own command output is text, encoded here at the producer's edge;
    * a text consumer decodes at its own edge with a streaming decoder.
    */
-  onStdout?: (data: Uint8Array) => void;
-  onStderr?: (data: Uint8Array) => void;
+  onStdout?: (data: Uint8Array) => void | Promise<void>;
+  onStderr?: (data: Uint8Array) => void | Promise<void>;
   stdin?: string;
   terminalStdin?: TerminalInputStream;
   signal?: AbortSignal;
@@ -97,7 +97,9 @@ export interface ShellCommandIdentity {
 
 export class Shell {
   private terminal: ITerminal;
-  private vfs: VFS;
+  private get vfs(): ExecutionFs {
+    return new ExecutionFs(this.filesystem.bind({ pid: this.commandIdentity.pid, cred: this.commandIdentity.cred }));
+  }
   private registry: CommandRegistry;
   cwd: string;
   env: Record<string, string>;
@@ -165,14 +167,13 @@ export class Shell {
 
   constructor(
     terminal: ITerminal,
-    vfs: VFS,
+    readonly filesystem: NimbusFilesystemAuthority,
     registry: CommandRegistry,
     env: Record<string, string>,
     processRegistry: ProcessRegistry,
     commandIdentity?: ShellCommandIdentity,
   ) {
     this.terminal = terminal;
-    this.vfs = vfs;
     this.registry = registry;
     this.cwd = env['HOME'] ?? '/home/user';
     this.env = { ...env };
@@ -199,8 +200,7 @@ export class Shell {
     this.processRegistry = processRegistry;
 
     // Initialize history manager
-    this.historyManager = new HistoryManager(vfs);
-    this.historyManager.load();
+    this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? '/home/user');
 
     // Initialize interpreter
     this.interpreterConfig = {
@@ -209,6 +209,7 @@ export class Shell {
       getCwd: () => this.cwd,
       setCwd: (cwd: string) => this.setCwd(cwd),
       vfs: this.vfs,
+      filesystem,
       registry: this.registry,
       builtins: this.builtins,
       jobTable: this.jobTable,
@@ -282,7 +283,7 @@ export class Shell {
     return this.env;
   }
 
-  getVfs(): VFS {
+  getVfs(): ExecutionFs {
     return this.vfs;
   }
 
@@ -325,7 +326,7 @@ export class Shell {
     if (this._executeDepth > 10) {
       this._executeDepth--;
       const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
-      options?.onStderr?.(enc.encode(msg));
+      await options?.onStderr?.(enc.encode(msg));
       return { stdout: '', stderr: msg, exitCode: 1 };
     }
     let stdoutBuf = '';
@@ -334,13 +335,13 @@ export class Shell {
     const stdoutStream: CommandOutputStream = {
       write: (text: string) => {
         stdoutBuf += text;
-        options?.onStdout?.(enc.encode(text));
+        return options?.onStdout?.(enc.encode(text));
       },
     };
     const stderrStream: CommandOutputStream = {
       write: (text: string) => {
         stderrBuf += text;
-        options?.onStderr?.(enc.encode(text));
+        return options?.onStderr?.(enc.encode(text));
       },
     };
 
@@ -363,7 +364,7 @@ export class Shell {
     // parent command's late-bound closures read.
     const writeToTerminal = (text: string) => {
       stderrBuf += text;
-      options?.onStderr?.(enc.encode(text));
+      return options?.onStderr?.(enc.encode(text));
     };
 
     // Apply per-call overrides
@@ -407,7 +408,7 @@ export class Shell {
     } catch (e) {
       const msg = e instanceof Error ? (e.stack || e.message) : String(e);
       stderrBuf += msg + '\n';
-      options?.onStderr?.(enc.encode(msg + '\n'));
+      await options?.onStderr?.(enc.encode(msg + '\n'));
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
       this._executeDepth--;

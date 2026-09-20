@@ -18,24 +18,24 @@ const spec = {
 const command: Command = async (ctx) => {
   const { flags, positional, unknown } = parseArgs(ctx.args, spec);
   if (flags.help) {
-    ctx.stdout.write('Usage: unzip [-lonqjp] [-d dir] archive.zip\n');
-    ctx.stdout.write('  -l       list contents\n');
-    ctx.stdout.write('  -o       overwrite existing files without prompting\n');
-    ctx.stdout.write('  -n       never overwrite existing files\n');
-    ctx.stdout.write('  -q       quiet\n');
-    ctx.stdout.write('  -j       junk paths, extract every entry into one directory\n');
-    ctx.stdout.write('  -p       extract to stdout\n');
-    ctx.stdout.write('  -d dir   extract to directory\n');
+    await ctx.stdout.write('Usage: unzip [-lonqjp] [-d dir] archive.zip\n');
+    await ctx.stdout.write('  -l       list contents\n');
+    await ctx.stdout.write('  -o       overwrite existing files without prompting\n');
+    await ctx.stdout.write('  -n       never overwrite existing files\n');
+    await ctx.stdout.write('  -q       quiet\n');
+    await ctx.stdout.write('  -j       junk paths, extract every entry into one directory\n');
+    await ctx.stdout.write('  -p       extract to stdout\n');
+    await ctx.stdout.write('  -d dir   extract to directory\n');
     return 0;
   }
   if (unknown.length > 0) {
-    ctx.stderr.write(`unzip: invalid option: ${unknown[0]}\n`);
+    await ctx.stderr.write(`unzip: invalid option: ${unknown[0]}\n`);
     return 1;
   }
 
   const archiveFile = positional[0];
   if (!archiveFile) {
-    ctx.stderr.write('unzip: missing archive operand\n');
+    await ctx.stderr.write('unzip: missing archive operand\n');
     return 1;
   }
 
@@ -49,26 +49,26 @@ const command: Command = async (ctx) => {
   const targetDir = destDir ? resolve(ctx.cwd, destDir) : ctx.cwd;
 
   try {
-    const data = ctx.vfs.readFile(archivePath);
+    const data = (await ctx.vfs.readFile(archivePath));
     const entries = parseZip(data);
 
     if (listOnly) {
-      ctx.stdout.write('  Length      Name\n');
-      ctx.stdout.write('---------  ----\n');
+      await ctx.stdout.write('  Length      Name\n');
+      await ctx.stdout.write('---------  ----\n');
       let totalSize = 0;
       for (const entry of entries) {
         const size = entry.data.length;
         totalSize += size;
         const path = entry.isDirectory ? entry.path + '/' : entry.path;
-        ctx.stdout.write(`${String(size).padStart(9)}  ${path}\n`);
+        await ctx.stdout.write(`${String(size).padStart(9)}  ${path}\n`);
       }
-      ctx.stdout.write('---------  ----\n');
-      ctx.stdout.write(`${String(totalSize).padStart(9)}  ${entries.length} file(s)\n`);
+      await ctx.stdout.write('---------  ----\n');
+      await ctx.stdout.write(`${String(totalSize).padStart(9)}  ${entries.length} file(s)\n`);
       return 0;
     }
 
     if (destDir) {
-      try { ctx.vfs.mkdir(targetDir, { recursive: true }); } catch { /* exists */ }
+      try { (await ctx.vfs.mkdir(targetDir, { recursive: true })); } catch { /* exists */ }
     }
 
     for (const entry of entries) {
@@ -76,8 +76,8 @@ const command: Command = async (ctx) => {
       if (entry.isDirectory) {
         if (junkPaths) continue;
         const entryPath = resolve(targetDir, name);
-        try { ctx.vfs.mkdir(entryPath, { recursive: true }); } catch { /* exists */ }
-        if (!quiet) ctx.stdout.write(`  extracting: ${entry.path}/\n`);
+        try { (await ctx.vfs.mkdir(entryPath, { recursive: true })); } catch { /* exists */ }
+        if (!quiet) await ctx.stdout.write(`  extracting: ${entry.path}/\n`);
         continue;
       }
 
@@ -87,15 +87,15 @@ const command: Command = async (ctx) => {
       }
 
       const entryPath = resolve(targetDir, name);
-      if (neverOverwrite && ctx.vfs.exists(entryPath)) continue;
+      if (neverOverwrite && (await ctx.vfs.exists(entryPath))) continue;
       const parent = dirname(entryPath);
-      try { ctx.vfs.mkdir(parent, { recursive: true }); } catch { /* exists */ }
-      ctx.vfs.writeFile(entryPath, entry.data);
-      if (!quiet) ctx.stdout.write(`  extracting: ${entry.path}\n`);
+      try { (await ctx.vfs.mkdir(parent, { recursive: true })); } catch { /* exists */ }
+      (await ctx.vfs.writeFile(entryPath, entry.data));
+      if (!quiet) await ctx.stdout.write(`  extracting: ${entry.path}\n`);
     }
   } catch (e) {
     if (e instanceof VFSError) {
-      ctx.stderr.write(`unzip: ${e.message}\n`);
+      await ctx.stderr.write(`unzip: ${e.message}\n`);
       return 1;
     }
     throw e;

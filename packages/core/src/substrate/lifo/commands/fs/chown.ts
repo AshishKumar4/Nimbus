@@ -10,7 +10,7 @@ const spec = {
 const command: Command = async (ctx) => {
   const { flags, positional } = parseArgs(ctx.args, spec);
   if (positional.length < 2) {
-    ctx.stderr.write('chown: missing operand\n');
+    await ctx.stderr.write('chown: missing operand\n');
     return 1;
   }
   const vfs = ctx.vfs;
@@ -19,7 +19,7 @@ const command: Command = async (ctx) => {
   try {
     requested = parseChownOwnership(vfs, positional[0]);
   } catch (error) {
-    ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
+    await ctx.stderr.write(`chown: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 
@@ -35,7 +35,7 @@ const command: Command = async (ctx) => {
     try {
       apply(resolve(ctx.cwd, file));
     } catch (error) {
-      ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+      await ctx.stderr.write(`chown: ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
       exitCode = 1;
     }
   }

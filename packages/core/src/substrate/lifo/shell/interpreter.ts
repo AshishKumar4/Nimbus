@@ -16,7 +16,8 @@ import type {
   RedirectionNode,
   AssignmentNode,
 } from './types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import { ExecutionFs } from '../../../shell/execution-fs.js';
+import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type {
   CommandOutputStream,
@@ -118,7 +119,7 @@ export interface TrapTable {
 }
 
 export interface BuiltinExecutionContext {
-  vfs: VFS;
+  vfs: ExecutionFs;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
   stdin?: CommandInputStream;
@@ -192,7 +193,7 @@ type ExecutionIo = {
     setUmask(mask: number): void;
   };
   runAs?: CommandRunAsHost;
-  vfs?: VFS;
+  vfs?: ExecutionFs;
 };
 
 export type TerminalFdState = {
@@ -221,7 +222,8 @@ export interface InterpreterConfig {
   arrays: Map<string, (string | undefined)[]>;
   getCwd: () => string;
   setCwd: (cwd: string) => void;
-  vfs: VFS;
+  vfs: ExecutionFs;
+  filesystem: NimbusFilesystemAuthority;
   registry: CommandRegistry;
   builtins: Map<string, BuiltinFn>;
   jobTable: JobTable;
@@ -329,7 +331,9 @@ export class Interpreter {
     if (options?.commandIdentity) io.commandIdentity = options.commandIdentity;
     if (options?.runAs) io.runAs = options.runAs;
     if (options?.signal) io.signal = options.signal;
-    if (options?.commandIdentity) io.vfs = this.config.vfs.as(options.commandIdentity.cred);
+    if (io.commandIdentity) io.vfs = new ExecutionFs(this.config.filesystem.bind({
+      pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
+    }));
     try {
       const tokens = lex(input);
       const script = parse(tokens);
@@ -475,7 +479,7 @@ export class Interpreter {
         let stdout: CommandOutputStream | undefined;
 
         if (i < commands.length - 1) {
-          const pipe = new PipeChannel();
+          const pipe = new PipeChannel(pipelineAbortController.signal);
           pipes.push(pipe);
           stdout = pipe.writer;
         }
@@ -505,12 +509,13 @@ export class Interpreter {
             }
             throw e;
           } finally {
+            if (i > 0) pipes[i - 1].cancel();
             if (i < commands.length - 1) {
               pipes[i].close();
             }
             if (isLast) {
               pipelineAbortController.abort();
-              for (const pipe of pipes) pipe.close();
+              for (const pipe of pipes) pipe.cancel();
             }
           }
         })();
@@ -805,6 +810,9 @@ export class Interpreter {
   ): Promise<number> {
     const abortCode = this.abortExitCode(io);
     if (abortCode !== null) return abortCode;
+    if (io.commandIdentity) io = { ...io, vfs: new ExecutionFs(this.config.filesystem.bind({
+      pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
+    })) };
 
     const expandCtx = this.createExpandContext(io);
 
@@ -1037,7 +1045,7 @@ export class Interpreter {
         }
       }
     } finally {
-      this.flushFds(fds);
+      await this.flushFds(fds);
       // Restore env from per-command assignments
       for (const [name, value] of saved) this.restoreVariable(name, value);
     }
@@ -1565,7 +1573,7 @@ export class Interpreter {
    * which is O_APPEND: every block lands at whatever the current end is, so
    * two descriptors appending to one file cannot overwrite each other.
    */
-  private createFileWriter(vfs: VFS, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
+  private createFileWriter(vfs: ExecutionFs, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
     let offset = 0;
     let pending: Uint8Array[] = [];
     let pendingBytes = 0;
@@ -1606,12 +1614,14 @@ export class Interpreter {
     try {
       return await body();
     } finally {
-      this.flushFds(fds);
+      await this.flushFds(fds);
     }
   }
 
-  private flushFds(fds: FdState): void {
-    for (const stream of fds.outputFds.values()) stream.flush?.();
+  private async flushFds(fds: FdState): Promise<void> {
+    const results = await Promise.allSettled([...new Set(fds.outputFds.values())].map((stream) => stream.flush?.()));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   /**
@@ -1623,7 +1633,7 @@ export class Interpreter {
    * fewer bytes than asked whenever their internal bound is hit; those short
    * nonempty reads advance the offset and continue, exactly like read(2).
    */
-  private createFileReader(vfs: VFS, path: string): CommandInputStream {
+  private createFileReader(vfs: ExecutionFs, path: string): CommandInputStream {
     const decoder = new TextDecoder('utf-8');
     let offset = 0;
     let eof = false;

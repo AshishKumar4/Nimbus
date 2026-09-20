@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { SandboxFs as ISandboxFs } from './types.js';
 import type { FileType } from '../kernel/vfs/types.js';
 import { resolve, dirname } from '../utils/path.js';
@@ -11,7 +11,7 @@ import type { TarEntry } from '../utils/archive.js';
  */
 export class SandboxFsImpl implements ISandboxFs {
   constructor(
-    private vfs: VFS,
+    private vfs: ExecutionFs,
     private getCwd: () => string,
   ) {}
 

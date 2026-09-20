@@ -22,37 +22,35 @@ const command: Command = async (ctx) => {
 
   if (paths.length === 0) paths.push('.');
 
-  function calcSize(dirPath: string): number {
-    let total = 0;
-    try {
-      const entries = ctx.vfs.readdir(dirPath);
-      for (const entry of entries) {
-        const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
-        if (entry.type === 'file') {
-          const st = ctx.vfs.stat(fullPath);
-          total += st.size;
-        } else {
-          total += calcSize(fullPath);
-        }
+  async function calcSize(dirPath: string): Promise<number> { let total = 0;
+  try {
+    const entries = (await ctx.vfs.readdir(dirPath));
+    for (const entry of entries) {
+      const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
+      if (entry.type === 'file') {
+        const st = (await ctx.vfs.stat(fullPath));
+        total += st.size;
+      } else {
+        total += (await calcSize(fullPath));
       }
-    } catch {
-      // skip inaccessible
     }
-    return total;
+  } catch {
+    // skip inaccessible
   }
+  return total; }
 
-  function walkAndPrint(dirPath: string, name: string): number {
+  async function walkAndPrint(dirPath: string, name: string): Promise<number> {
     let total = 0;
     try {
-      const entries = ctx.vfs.readdir(dirPath);
+      const entries = (await ctx.vfs.readdir(dirPath));
       for (const entry of entries) {
         const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
         const displayPath = name === '/' ? '/' + entry.name : name + '/' + entry.name;
         if (entry.type === 'file') {
-          const st = ctx.vfs.stat(fullPath);
+          const st = (await ctx.vfs.stat(fullPath));
           total += st.size;
         } else {
-          const subSize = walkAndPrint(fullPath, displayPath);
+          const subSize = await walkAndPrint(fullPath, displayPath);
           total += subSize;
         }
       }
@@ -61,7 +59,7 @@ const command: Command = async (ctx) => {
     }
     if (!summaryOnly) {
       const display = human ? humanSize(total) : String(total);
-      ctx.stdout.write(display + '\t' + name + '\n');
+      await ctx.stdout.write(display + '\t' + name + '\n');
     }
     return total;
   }
@@ -71,22 +69,22 @@ const command: Command = async (ctx) => {
   for (const p of paths) {
     const absPath = resolve(ctx.cwd, p);
     try {
-      const st = ctx.vfs.stat(absPath);
+      const st = (await ctx.vfs.stat(absPath));
       if (st.type === 'file') {
         const display = human ? humanSize(st.size) : String(st.size);
-        ctx.stdout.write(display + '\t' + p + '\n');
+        await ctx.stdout.write(display + '\t' + p + '\n');
       } else {
         if (summaryOnly) {
-          const total = calcSize(absPath);
+          const total = (await calcSize(absPath));
           const display = human ? humanSize(total) : String(total);
-          ctx.stdout.write(display + '\t' + p + '\n');
+          await ctx.stdout.write(display + '\t' + p + '\n');
         } else {
-          walkAndPrint(absPath, p);
+          await walkAndPrint(absPath, p);
         }
       }
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`du: ${p}: ${e.message}\n`);
+        await ctx.stderr.write(`du: ${p}: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;

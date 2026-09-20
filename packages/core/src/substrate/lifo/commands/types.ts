@@ -1,20 +1,20 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from '../../../shell/execution-fs.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 
 export interface CommandOutputStream {
-  write(text: string): void;
+  write(text: string): void | Promise<void>;
   /**
    * Present on sinks that store bytes verbatim — files, `/dev/null`, and
    * byte-capable shell pipes. Sinks without it take decoded text instead.
    */
-  writeBytes?(bytes: Uint8Array): void;
+  writeBytes?(bytes: Uint8Array): void | Promise<void>;
   /**
    * Commit anything the sink is holding. File-backed descriptors buffer, the
    * way stdio does, so a line-at-a-time producer costs one store write per
    * block rather than one per line. The shell flushes every descriptor once
    * the command that owns it finishes.
    */
-  flush?(): void;
+  flush?(): void | Promise<void>;
 }
 
 export interface CommandInputStream {
@@ -38,7 +38,7 @@ export interface CommandContext {
   args: string[];
   env: Record<string, string>;
   cwd: string;
-  vfs: VFS;
+  vfs: ExecutionFs;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
   signal: AbortSignal;

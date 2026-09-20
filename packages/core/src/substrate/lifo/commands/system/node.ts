@@ -537,22 +537,22 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 	return async (ctx) => {
 		// Handle -v/--version
 		if (ctx.args.length > 0 && (ctx.args[0] === '-v' || ctx.args[0] === '--version')) {
-			ctx.stdout.write(NODE_VERSION + '\n');
+			await ctx.stdout.write(NODE_VERSION + '\n');
 			return 0;
 		}
 
 		// Handle --help
 		if (ctx.args.length > 0 && ctx.args[0] === '--help') {
-			ctx.stdout.write('Usage: node [-e code] [script.js] [args...]\n');
-			ctx.stdout.write('       node -v\n\n');
-			ctx.stdout.write('Options:\n');
-			ctx.stdout.write('  -e, --eval <code>   evaluate code\n');
-			ctx.stdout.write('  -v, --version       print version\n\n');
-			ctx.stdout.write('Limitations:\n');
-			ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
-			ctx.stdout.write('  - No event loop (top-level async does not settle)\n');
-			ctx.stdout.write('  - No native modules\n');
-			ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
+			await ctx.stdout.write('Usage: node [-e code] [script.js] [args...]\n');
+			await ctx.stdout.write('       node -v\n\n');
+			await ctx.stdout.write('Options:\n');
+			await ctx.stdout.write('  -e, --eval <code>   evaluate code\n');
+			await ctx.stdout.write('  -v, --version       print version\n\n');
+			await ctx.stdout.write('Limitations:\n');
+			await ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
+			await ctx.stdout.write('  - No event loop (top-level async does not settle)\n');
+			await ctx.stdout.write('  - No native modules\n');
+			await ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
 			return 0;
 		}
 
@@ -563,7 +563,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// Handle -e / --eval
 		if (ctx.args.length > 0 && (ctx.args[0] === '-e' || ctx.args[0] === '--eval')) {
 			if (ctx.args.length < 2) {
-				ctx.stderr.write('node: -e requires an argument\n');
+				await ctx.stderr.write('node: -e requires an argument\n');
 				return 1;
 			}
 			source = ctx.args[1];
@@ -576,7 +576,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				source = ctx.vfs.readFileString(scriptPath);
 			} catch (e) {
 				if (e instanceof VFSError) {
-					ctx.stderr.write(`node: ${ctx.args[0]}: ${e.message}\n`);
+					await ctx.stderr.write(`node: ${ctx.args[0]}: ${e.message}\n`);
 					return 1;
 				}
 				throw e;
@@ -585,7 +585,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			scriptArgs = ctx.args.slice(1);
 		} else {
 			// No args -- print usage hint
-			ctx.stderr.write('Usage: node [-e code] [script.js] [args...]\n');
+			await ctx.stderr.write('Usage: node [-e code] [script.js] [args...]\n');
 			return 1;
 		}
 
@@ -1043,7 +1043,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				fn = new Function('return ' + wrapped)();
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
-				ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
+				await ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
 				// Binary search for exact error location, matching specific error
 				const lines = cleanSource.split('\n');
 				const targetErr = err.message;
@@ -1056,9 +1056,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						else lo = mid; // Different error (e.g. unclosed), keep going
 					}
 				}
-				ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
+				await ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
 				for (let li = Math.max(0, lo - 25); li < Math.min(lines.length, hi + 3); li++) {
-					ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
+					await ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
 				}
 				err.message = `[${modFilename}] ${err.message}`;
 				throw err;
@@ -1160,7 +1160,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const rejectionHandler = (event: PromiseRejectionEvent) => {
 			pendingRejection = event.reason;
 			event.preventDefault(); // prevent browser default logging
-			ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+			await ctx.stderr.write(`Unhandled promise rejection: ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
 		};
 		if (typeof globalThis.addEventListener === 'function') {
 			globalThis.addEventListener('unhandledrejection', rejectionHandler as EventListener);
@@ -1274,9 +1274,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				return e.exitCode;
 			}
 			if (e instanceof Error) {
-				ctx.stderr.write(`${e.stack || e.message}\n`);
+				await ctx.stderr.write(`${e.stack || e.message}\n`);
 			} else {
-				ctx.stderr.write(`${String(e)}\n`);
+				await ctx.stderr.write(`${String(e)}\n`);
 			}
 			return 1;
 		} finally {

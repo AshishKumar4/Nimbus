@@ -124,7 +124,7 @@ const command: Command = async (ctx) => {
   let smokeCounter = 0;
 
   // Switch to alternate screen buffer so terminal history is untouched
-  ctx.stdout.write(ALT_SCREEN_ON + CLEAR + HOME + HIDE_CURSOR);
+  await ctx.stdout.write(ALT_SCREEN_ON + CLEAR + HOME + HIDE_CURSOR);
 
   // Train width is body + space + coal
   const trainWidth = D51LENGTH + 1 + COAL_LENGTH;
@@ -236,12 +236,12 @@ const command: Command = async (ctx) => {
       }
     }
 
-    ctx.stdout.write(frame);
+    await ctx.stdout.write(frame);
     await sleep(40);
   }
 
   // Switch back to main screen buffer - restores previous terminal content
-  ctx.stdout.write(SHOW_CURSOR + ALT_SCREEN_OFF);
+  await ctx.stdout.write(SHOW_CURSOR + ALT_SCREEN_OFF);
 
   return 0;
 };

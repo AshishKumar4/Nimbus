@@ -21,21 +21,21 @@ const command: Command = async (ctx) => {
     if (ctx.stdin) {
       content = await ctx.stdin.readAll();
     } else {
-      ctx.stderr.write('nl: missing operand\n');
+      await ctx.stderr.write('nl: missing operand\n');
       return 1;
     }
   } else {
     const path = resolve(ctx.cwd, positional[0]);
     if (isBinaryMime(getMimeType(path))) {
-      ctx.stderr.write(`nl: ${positional[0]}: binary file, skipping
-`);
+      await ctx.stderr.write(`nl: ${positional[0]}: binary file, skipping
+      `);
       return 1;
     }
     try {
-      content = ctx.vfs.readFileString(path);
+      content = (await ctx.vfs.readFileString(path));
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`nl: ${positional[0]}: ${e.message}\n`);
+        await ctx.stderr.write(`nl: ${positional[0]}: ${e.message}\n`);
         return 1;
       }
       throw e;
@@ -61,10 +61,10 @@ const command: Command = async (ctx) => {
       false;                              // 'n' = none
 
     if (shouldNumber) {
-      ctx.stdout.write(`${String(lineNum).padStart(width, ' ')}\t${line}\n`);
+      await ctx.stdout.write(`${String(lineNum).padStart(width, ' ')}\t${line}\n`);
       lineNum++;
     } else {
-      ctx.stdout.write(`${' '.repeat(width)}\t${line}\n`);
+      await ctx.stdout.write(`${' '.repeat(width)}\t${line}\n`);
     }
   }
 

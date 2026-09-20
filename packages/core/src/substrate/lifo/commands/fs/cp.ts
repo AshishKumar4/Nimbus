@@ -4,7 +4,7 @@ import { VFSError } from '../../kernel/vfs/index.js';
 
 const command: Command = async (ctx) => {
   if (ctx.args.length < 2) {
-    ctx.stderr.write('cp: missing operand\n');
+    await ctx.stderr.write('cp: missing operand\n');
     return 1;
   }
 
@@ -13,17 +13,17 @@ const command: Command = async (ctx) => {
 
   try {
     // If dest is a directory, copy into it
-    if (ctx.vfs.exists(dest)) {
-      const stat = ctx.vfs.stat(dest);
+    if ((await ctx.vfs.exists(dest))) {
+      const stat = (await ctx.vfs.stat(dest));
       if (stat.type === 'directory') {
         dest = resolve(dest, basename(src));
       }
     }
-    ctx.vfs.copyFile(src, dest);
+    (await ctx.vfs.copyFile(src, dest));
     return 0;
   } catch (e) {
     if (e instanceof VFSError) {
-      ctx.stderr.write(`cp: ${e.message}\n`);
+      await ctx.stderr.write(`cp: ${e.message}\n`);
       return 1;
     }
     throw e;

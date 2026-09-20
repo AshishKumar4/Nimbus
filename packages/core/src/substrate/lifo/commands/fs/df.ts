@@ -18,36 +18,34 @@ const command: Command = async (ctx) => {
   let totalFiles = 0;
   let totalBytes = 0;
 
-  function walk(dirPath: string): void {
-    try {
-      const entries = ctx.vfs.readdir(dirPath);
-      for (const entry of entries) {
-        const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
-        if (entry.type === 'file') {
-          totalFiles++;
-          const st = ctx.vfs.stat(fullPath);
-          totalBytes += st.size;
-        } else {
-          walk(fullPath);
-        }
+  async function walk(dirPath: string): Promise<void> { try {
+    const entries = (await ctx.vfs.readdir(dirPath));
+    for (const entry of entries) {
+      const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
+      if (entry.type === 'file') {
+        totalFiles++;
+        const st = (await ctx.vfs.stat(fullPath));
+        totalBytes += st.size;
+      } else {
+        (await walk(fullPath));
       }
-    } catch {
-      // skip
     }
-  }
+  } catch {
+    // skip
+  } }
 
-  walk('/');
+  (await walk('/'));
 
   const totalSpace = 256 * 1024 * 1024; // 256MB virtual space
   const used = totalBytes;
   const avail = totalSpace - used;
 
   if (human) {
-    ctx.stdout.write('Filesystem      Size  Used  Avail  Use%  Mounted on\n');
-    ctx.stdout.write(`vfs             ${humanSize(totalSpace)}  ${humanSize(used)}  ${humanSize(avail)}  ${Math.round((used / totalSpace) * 100)}%    /\n`);
+    await ctx.stdout.write('Filesystem      Size  Used  Avail  Use%  Mounted on\n');
+    await ctx.stdout.write(`vfs             ${humanSize(totalSpace)}  ${humanSize(used)}  ${humanSize(avail)}  ${Math.round((used / totalSpace) * 100)}%    /\n`);
   } else {
-    ctx.stdout.write('Filesystem      1K-blocks    Used    Available  Use%  Mounted on\n');
-    ctx.stdout.write(`vfs             ${Math.round(totalSpace / 1024)}    ${Math.round(used / 1024)}    ${Math.round(avail / 1024)}  ${Math.round((used / totalSpace) * 100)}%    /\n`);
+    await ctx.stdout.write('Filesystem      1K-blocks    Used    Available  Use%  Mounted on\n');
+    await ctx.stdout.write(`vfs             ${Math.round(totalSpace / 1024)}    ${Math.round(used / 1024)}    ${Math.round(avail / 1024)}  ${Math.round((used / totalSpace) * 100)}%    /\n`);
   }
 
   return 0;

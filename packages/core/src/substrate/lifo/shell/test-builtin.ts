@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { CommandOutputStream } from '../commands/types.js';
 import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
@@ -12,7 +12,7 @@ import { resolve } from '../utils/path.js';
  */
 export async function evaluateTest(
   args: string[],
-  vfs: VFS,
+  vfs: ExecutionFs,
   stderr: CommandOutputStream,
   context?: BuiltinExecutionContext,
 ): Promise<number> {
@@ -28,7 +28,7 @@ export async function evaluateTest(
 export async function evaluateDoubleBracketWords(
   words: WordPart[][],
   expandCtx: ExpandContext,
-  vfs: VFS,
+  vfs: ExecutionFs,
   stderr: CommandOutputStream,
   context?: BuiltinExecutionContext,
 ): Promise<number> {
@@ -88,7 +88,7 @@ function operatorTextOf(word: WordPart[] | undefined): string | undefined {
 
 async function evaluateTestExpression(
   operands: Operands,
-  vfs: VFS,
+  vfs: ExecutionFs,
   stderr: CommandOutputStream,
   context: BuiltinExecutionContext | undefined,
   mode: TestMode,
@@ -121,7 +121,7 @@ interface ExprResult {
  * literal operators alone) but never expands them.
  */
 async function parseOr(
-  ops: Operands, pos: number, vfs: VFS,
+  ops: Operands, pos: number, vfs: ExecutionFs,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parseAnd(ops, pos, vfs, context, mode, evaluate);
@@ -135,7 +135,7 @@ async function parseOr(
 }
 
 async function parseAnd(
-  ops: Operands, pos: number, vfs: VFS,
+  ops: Operands, pos: number, vfs: ExecutionFs,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parsePrimary(ops, pos, vfs, context, mode, evaluate);
@@ -149,7 +149,7 @@ async function parseAnd(
 }
 
 async function parsePrimary(
-  ops: Operands, pos: number, vfs: VFS,
+  ops: Operands, pos: number, vfs: ExecutionFs,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   if (pos >= ops.length) {
@@ -277,7 +277,7 @@ function hasPatternSyntax(value: string): boolean {
  * about a path at the root, so `[ -f config.json ]` was false for a file
  * sitting right there — silently taking the wrong branch rather than failing.
  */
-function evaluateFileTest(flag: string, operand: string, vfs: VFS, cwd?: string): boolean {
+function evaluateFileTest(flag: string, operand: string, vfs: ExecutionFs, cwd?: string): boolean {
   const path = cwd === undefined ? operand : resolve(cwd, operand);
   switch (flag) {
     case 'e':
@@ -302,7 +302,7 @@ function evaluateFileTest(flag: string, operand: string, vfs: VFS, cwd?: string)
   }
 }
 
-function statOf(vfs: VFS, path: string): { type: string; size: number } | null {
+function statOf(vfs: ExecutionFs, path: string): { type: string; size: number } | null {
   try {
     return vfs.stat(path);
   } catch {

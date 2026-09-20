@@ -4,9 +4,9 @@ import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 
 type SedVfs = {
-  stat(path: string): object;
-  readFileString(path: string): string;
-  writeFile(path: string, content: string | Uint8Array): void;
+  stat(path: string): object | Promise<object>;
+  readFileString(path: string): string | Promise<string>;
+  writeFile(path: string, content: string | Uint8Array): void | Promise<void>;
 };
 
 type SedInput = {
@@ -357,7 +357,7 @@ class SedPass {
   constructor(
     commands: readonly SedCommand[],
     private readonly quiet: boolean,
-    private readonly out: (chunk: string) => void,
+    private readonly out: (chunk: string) => void | Promise<void>,
     lastRegex: SedRegexRecord,
   ) {
     this.entries = commands.map((command) => ({ command, range: { open: false } }));
@@ -366,18 +366,18 @@ class SedPass {
 
   // Runs one cycle per line with a single lookahead, so `$` still selects
   // the true last line while later input is not read yet.
-  runAll(next: SedLineSource): void {
-    let current = next();
-    let lookahead = next();
+  async runAll(next: () => SedLogicalLine | null | Promise<SedLogicalLine | null>): Promise<void> {
+    let current = await next();
+    let lookahead = await next();
     let lineNumber = 0;
     while (current !== null) {
-      this.runCycle(current.text, current.terminated, ++lineNumber, lookahead === null);
+      await this.runCycle(current.text, current.terminated, ++lineNumber, lookahead === null);
       current = lookahead;
-      lookahead = next();
+      lookahead = await next();
     }
   }
 
-  private runCycle(text: string, terminated: boolean, lineNumber: number, isLast: boolean): void {
+  private async runCycle(text: string, terminated: boolean, lineNumber: number, isLast: boolean): Promise<void> {
     const ctx = this.evalCtx;
     ctx.lineNumber = lineNumber;
     ctx.isLast = isLast;
@@ -390,7 +390,7 @@ class SedPass {
       if (!selects(entry.command, entry.range, ctx)) continue;
       const command = entry.command;
       if (command.type === 'p') {
-        this.emit(line, terminated);
+        await this.emit(line, terminated);
       } else if (command.type === 'd') {
         deleted = true;
         break;
@@ -417,26 +417,26 @@ class SedPass {
           // action flag of the substitution that used the expression.
           ctx.lastRegex.flags = command.insensitive ? 'i' : '';
         }
-        if (changed && command.print) this.emit(line, terminated);
+        if (changed && command.print) await this.emit(line, terminated);
       }
     }
 
-    if (!deleted && !this.quiet) this.emit(line, terminated);
+    if (!deleted && !this.quiet) await this.emit(line, terminated);
   }
 
-  private emit(text: string, terminated: boolean): void {
+  private async emit(text: string, terminated: boolean): Promise<void> {
     if (!terminated) {
       // Footnote 8: the missing newline waits until more output follows.
-      if (this.pendingNewline) this.out('\n');
-      this.out(text);
+      if (this.pendingNewline) await this.out('\n');
+      await this.out(text);
       this.pendingNewline = true;
       return;
     }
     if (this.pendingNewline) {
-      this.out('\n');
+      await this.out('\n');
       this.pendingNewline = false;
     }
-    this.out(`${text}\n`);
+    await this.out(`${text}\n`);
   }
 }
 
@@ -444,7 +444,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
   const options = parseSedArgs(ctx.args);
 
   if (options.expressions.length === 0) {
-    ctx.stderr.write('sed: missing expression\n');
+    await ctx.stderr.write('sed: missing expression\n');
     return 1;
   }
 
@@ -458,22 +458,22 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
       commands.push(...parseSedScript(expr));
     } catch (e) {
       if (e instanceof SedParseError) {
-        ctx.stderr.write(`sed: invalid expression: ${expr}\n`);
+        await ctx.stderr.write(`sed: invalid expression: ${expr}\n`);
         return 1;
       }
       throw e;
     }
   }
 
-  const streamOut = (chunk: string): void => ctx.stdout.write(chunk);
+  const streamOut = (chunk: string) => ctx.stdout.write(chunk);
 
   try {
     if (options.files.length === 0) {
       if (ctx.stdin) {
         const lines = iterateLogicalLines(await ctx.stdin.readAll());
-        new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(pullFrom(lines));
+        await new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(pullFrom(lines));
       } else {
-        ctx.stderr.write('sed: missing file operand\n');
+        await ctx.stderr.write('sed: missing file operand\n');
         return 1;
       }
       return 0;
@@ -484,21 +484,21 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
       for (const file of options.files) {
         const path = resolve(ctx.cwd, file);
         try {
-          ctx.vfs.stat(path);
+          await ctx.vfs.stat(path);
           if (isBinaryMime(getMimeType(path))) {
-            ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
+            await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
             continue;
           }
-          const content = ctx.vfs.readFileString(path);
+          const content = await ctx.vfs.readFileString(path);
           // One buffered pass per file: nothing touches the file until its
           // whole result exists, keeping the rewrite all-or-nothing.
           const chunks: string[] = [];
-          new SedPass(commands, options.quiet, (chunk) => chunks.push(chunk), lastRegex)
+          await new SedPass(commands, options.quiet, (chunk) => { chunks.push(chunk); }, lastRegex)
             .runAll(pullFrom(iterateLogicalLines(content)));
-          ctx.vfs.writeFile(path, chunks.join(''));
+          await ctx.vfs.writeFile(path, chunks.join(''));
         } catch (e) {
           if (e instanceof VFSError) {
-            ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
+            await ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
             exitCode = 1;
           } else {
             throw e;
@@ -515,7 +515,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
     let exitCode = 0;
     let index = 0;
     let lines: Iterator<SedLogicalLine> | null = null;
-    const nextLine = (): SedLogicalLine | null => {
+    const nextLine = async (): Promise<SedLogicalLine | null> => {
       for (;;) {
         if (lines !== null) {
           const step = lines.next();
@@ -526,15 +526,15 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         const file = options.files[index++];
         const path = resolve(ctx.cwd, file);
         try {
-          ctx.vfs.stat(path);
+          await ctx.vfs.stat(path);
           if (isBinaryMime(getMimeType(path))) {
-            ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
+            await ctx.stderr.write(`sed: ${file}: binary file, skipping\n`);
             continue;
           }
-          lines = iterateLogicalLines(ctx.vfs.readFileString(path));
+          lines = iterateLogicalLines(await ctx.vfs.readFileString(path));
         } catch (e) {
           if (e instanceof VFSError) {
-            ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
+            await ctx.stderr.write(`sed: ${file}: ${e.message}\n`);
             exitCode = 1;
           } else {
             throw e;
@@ -542,14 +542,14 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         }
       }
     };
-    new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(nextLine);
+    await new SedPass(commands, options.quiet, streamOut, lastRegex).runAll(nextLine);
 
     return exitCode;
   } catch (e) {
     if (e instanceof SedRuntimeError) {
       // Output emitted before the failing cycle already reached stdout; an
       // in-place run wrote no file for the aborted pass.
-      ctx.stderr.write(`sed: ${e.message}\n`);
+      await ctx.stderr.write(`sed: ${e.message}\n`);
       return 1;
     }
     throw e;

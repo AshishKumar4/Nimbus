@@ -254,11 +254,11 @@ const command: Command = async (ctx) => {
   if (ctx.args.length > 0) {
     const path = resolve(ctx.cwd, ctx.args[0]);
     try {
-      content = ctx.vfs.readFileString(path);
+      content = (await ctx.vfs.readFileString(path));
       fileName = ctx.args[0];
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`less: ${ctx.args[0]}: ${e.message}\n`);
+        await ctx.stderr.write(`less: ${ctx.args[0]}: ${e.message}\n`);
         return 1;
       }
       throw e;
@@ -267,8 +267,8 @@ const command: Command = async (ctx) => {
     content = await ctx.stdin.readAll();
     fileName = '(stdin)';
   } else {
-    ctx.stderr.write('Usage: less FILE\n');
-    ctx.stderr.write('View file contents one screen at a time. q to quit, / to search.\n');
+    await ctx.stderr.write('Usage: less FILE\n');
+    await ctx.stderr.write('View file contents one screen at a time. q to quit, / to search.\n');
     return 1;
   }
 
@@ -283,7 +283,7 @@ const command: Command = async (ctx) => {
 
   // If content fits on screen, just print it and exit (like real less with -F)
   if (lines.length <= rows - 1) {
-    ctx.stdout.write(content);
+    await ctx.stdout.write(content);
     return 0;
   }
 
@@ -304,7 +304,7 @@ const command: Command = async (ctx) => {
       currentMatch: -1,
     };
 
-    ctx.stdout.write(CLEAR + HOME);
+    await ctx.stdout.write(CLEAR + HOME);
     render(s, ctx.stdout);
 
     while (true) {
@@ -324,7 +324,7 @@ const command: Command = async (ctx) => {
       render(s, ctx.stdout);
     }
 
-    ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
+    await ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
   } finally {
     ctx.setRawMode?.(false);
   }

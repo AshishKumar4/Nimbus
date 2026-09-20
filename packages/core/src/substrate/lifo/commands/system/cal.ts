@@ -54,34 +54,34 @@ const command: Command = async (ctx) => {
 
   if (args.length === 0) {
     // Current month
-    ctx.stdout.write(renderMonth(today.getFullYear(), today.getMonth(), true));
+    await ctx.stdout.write(renderMonth(today.getFullYear(), today.getMonth(), true));
   } else if (args.length === 1) {
     const val = parseInt(args[0], 10);
     if (isNaN(val) || val < 1) {
-      ctx.stderr.write(`cal: invalid argument: ${args[0]}\n`);
+      await ctx.stderr.write(`cal: invalid argument: ${args[0]}\n`);
       return 1;
     }
     if (val > 12) {
       // Full year
       const year = val;
       for (let m = 0; m < 12; m++) {
-        ctx.stdout.write(renderMonth(year, m, today.getFullYear() === year));
-        if (m < 11) ctx.stdout.write('\n');
+        await ctx.stdout.write(renderMonth(year, m, today.getFullYear() === year));
+        if (m < 11) await ctx.stdout.write('\n');
       }
     } else {
       // Month of current year
-      ctx.stdout.write(renderMonth(today.getFullYear(), val - 1, true));
+      await ctx.stdout.write(renderMonth(today.getFullYear(), val - 1, true));
     }
   } else {
     // month year
     const month = parseInt(args[0], 10);
     const year = parseInt(args[1], 10);
     if (isNaN(month) || month < 1 || month > 12 || isNaN(year) || year < 1) {
-      ctx.stderr.write(`cal: invalid arguments\n`);
+      await ctx.stderr.write(`cal: invalid arguments\n`);
       return 1;
     }
     const highlightToday = today.getFullYear() === year && today.getMonth() === month - 1;
-    ctx.stdout.write(renderMonth(year, month - 1, highlightToday));
+    await ctx.stdout.write(renderMonth(year, month - 1, highlightToday));
   }
 
   return 0;

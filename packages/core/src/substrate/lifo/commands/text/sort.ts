@@ -32,22 +32,22 @@ const command: Command = async (ctx) => {
     if (ctx.stdin) {
       text = await ctx.stdin.readAll();
     } else {
-      ctx.stderr.write('sort: missing file operand\n');
+      await ctx.stderr.write('sort: missing file operand\n');
       return 1;
     }
   } else {
     for (const file of files) {
       const path = resolve(ctx.cwd, file);
       try {
-        ctx.vfs.stat(path);
+        (await ctx.vfs.stat(path));
         if (isBinaryMime(getMimeType(path))) {
-          ctx.stderr.write(`sort: ${file}: binary file, skipping\n`);
+          await ctx.stderr.write(`sort: ${file}: binary file, skipping\n`);
           continue;
         }
-        text += ctx.vfs.readFileString(path);
+        text += (await ctx.vfs.readFileString(path));
       } catch (e) {
         if (e instanceof VFSError) {
-          ctx.stderr.write(`sort: ${file}: ${e.message}\n`);
+          await ctx.stderr.write(`sort: ${file}: ${e.message}\n`);
           return 1;
         }
         throw e;
@@ -81,7 +81,7 @@ const command: Command = async (ctx) => {
     lines = lines.filter((line, idx) => idx === 0 || line !== lines[idx - 1]);
   }
 
-  ctx.stdout.write(lines.join('\n') + '\n');
+  await ctx.stdout.write(lines.join('\n') + '\n');
   return 0;
 };
 
