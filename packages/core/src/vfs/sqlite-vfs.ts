@@ -147,6 +147,18 @@ interface INode {
   contentId: string | null;
 }
 
+export interface VfsOpenDescription {
+  stat(): VfsStat;
+  read(offset: number, length: number): Uint8Array;
+  write(offset: number, bytes: Uint8Array): number;
+  truncate(size: number): void;
+  readdir(): { name: string; type: VfsInodeKind }[];
+  chmod(mode: number): void;
+  chown(uid: number, gid: number): void;
+  utimes(atime: number, mtime: number): void;
+  close(): void;
+}
+
 export interface VfsStat {
   type: VfsInodeKind;
   size: number;
@@ -579,6 +591,7 @@ interface CacheEntry {
 // ── SqliteVFS ───────────────────────────────────────────────────────────────
 
 export class SqliteVFS {
+  private readonly openNodes = new Set<{ inode: INode; path: string | null }>();
   private sql: SqlDatabase;
   private ctx: TransactionHost;
   public readonly events: VfsEventEmitter;
@@ -733,8 +746,22 @@ export class SqliteVFS {
   private _batchWrites = 0;
   private _batchWriteRows = 0;
 
-  constructor(sql: SqlDatabase, ctx?: TransactionHost) {
-    this.sql = sql;
+  readonly namespace: string;
+
+  constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string) {
+    sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
+    if (namespace === undefined) {
+      sql.exec('INSERT OR IGNORE INTO nimbus_filesystem_identity(slot, namespace) VALUES (1, ?)', crypto.randomUUID());
+      namespace = String([...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0]!.namespace);
+    }
+    if (!namespace || namespace.length > 256) throw vfsError('EINVAL', 'invalid filesystem namespace');
+    this.namespace = namespace;
+    // Receipt/fence tables are control state; existing unscoped tables remain
+    // untouched in their legacy scope. Namespace bytes, not pids, identify owners.
+    const scope = Array.from(new TextEncoder().encode(namespace), b => b.toString(16).padStart(2, '0')).join('');
+    this.sql = { exec: (query, ...bindings) => sql.exec(
+      query.replaceAll('vfs_append_', 'vfs_append_' + scope + '_'), ...bindings,
+    ) };
     this.ctx = ctx!;
     this.events = new VfsEventEmitter();
     this.initSchema();
@@ -1278,6 +1305,98 @@ export class SqliteVFS {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
+  openDescription(path: string, cred: VfsCred, rights: { read: boolean; write: boolean }): VfsOpenDescription {
+    const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+    if (!resolved.inode) throw vfsError('ENOENT', path);
+    const opened = { inode: { ...resolved.inode, contentId: this.contentIdForInode(resolved.inode) }, path: resolved.path as string | null };
+    this.openNodes.add(opened);
+    let closed = false;
+    const current = (): INode => {
+      if (closed) throw vfsError('EBADF', path);
+      return opened.inode;
+    };
+    const stat = (): VfsStat => {
+      const node = current();
+      return { type: node.kind, size: node.size, atime: node.atime, ctime: node.mtime, mtime: node.mtime, mode: node.mode, uid: node.uid, gid: node.gid };
+    };
+    const read = (offset: number, length: number): Uint8Array => {
+      const node = current();
+      if (!rights.read) throw vfsError('EBADF', path);
+      if (node.isDir) throw vfsError('EISDIR', path);
+      const start = clampNonNegativeInt(offset);
+      const end = Math.min(node.size, start + clampNonNegativeInt(length));
+      const bytes = new Uint8Array(Math.max(0, end - start));
+      for (let i = Math.floor(start / CHUNK_SIZE); i * CHUNK_SIZE < end; i++) {
+        const chunk = this.readChunkFromSql(node, i);
+        if (!chunk) continue;
+        const from = Math.max(start, i * CHUNK_SIZE);
+        const to = Math.min(end, i * CHUNK_SIZE + chunk.byteLength);
+        if (to > from) bytes.set(chunk.subarray(from - i * CHUNK_SIZE, to - i * CHUNK_SIZE), from - start);
+      }
+      return bytes;
+    };
+    const detachedResize = (size: number, offset = 0, bytes = new Uint8Array(0)): void => {
+      const node = current();
+      const contentId = this.contentIdForInode(node);
+      const count = Math.ceil(size / CHUNK_SIZE);
+      const first = Math.floor(Math.min(offset, node.size, size) / CHUNK_SIZE);
+      for (let i = first; i < count; i++) {
+        const start = i * CHUNK_SIZE;
+        const chunk = new Uint8Array(Math.min(CHUNK_SIZE, size - start));
+        const old = i < node.chunkCount ? this.readChunkFromSql(node, i) : null;
+        if (old) chunk.set(old.subarray(0, chunk.length));
+        const from = Math.max(start, offset);
+        const to = Math.min(start + chunk.length, offset + bytes.length);
+        if (to > from) chunk.set(bytes.subarray(from - offset, to - offset), from - start);
+        this.transactionSync(() => this.sql.exec('INSERT OR REPLACE INTO file_chunks(content_id, chunk_id, data) VALUES (?, ?, ?)', contentId, i, chunk));
+      }
+      this.transactionSync(() => this.sql.exec('DELETE FROM file_chunks WHERE content_id = ? AND chunk_id >= ?', contentId, count));
+      node.size = size; node.chunkCount = count; node.mtime = this.now();
+      for (const other of this.openNodes) if (other.path === null && this.contentIdForInode(other.inode) === contentId) other.inode = node;
+    };
+    return {
+      stat, read,
+      write: (offset, bytes) => {
+        const node = current();
+        if (!rights.write) throw vfsError('EBADF', path);
+        if (node.isDir) throw vfsError('EISDIR', path);
+        const start = clampNonNegativeInt(offset);
+        if (opened.path !== null) this.writeRange(opened.path, start, bytes, CRED_KERNEL);
+        else if (bytes.length) detachedResize(Math.max(node.size, start + bytes.length), start, bytes);
+        return bytes.length;
+      },
+      truncate: size => {
+        const node = current();
+        if (!rights.write) throw vfsError('EBADF', path);
+        if (node.isDir) throw vfsError('EISDIR', path);
+        if (!Number.isSafeInteger(size) || size < 0) throw vfsError('EINVAL', path);
+        if (opened.path !== null) this.truncate(opened.path, size, CRED_KERNEL);
+        else detachedResize(size, size);
+      },
+      readdir: () => {
+        if (!current().isDir) throw vfsError('ENOTDIR', path);
+        if (!rights.read) throw vfsError('EBADF', path);
+        return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
+      },
+      chmod: mode => {
+        if (cred.uid !== 0 && cred.uid !== current().uid) throw vfsError('EPERM', path);
+        if (opened.path !== null) this.chmod(opened.path, mode, CRED_KERNEL);
+        else current().mode = mode & 0o7777;
+      },
+      chown: (uid, gid) => {
+        if (cred.uid !== 0) throw vfsError('EPERM', path);
+        if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL);
+        else { current().uid = uid; current().gid = gid; }
+      },
+      utimes: (atime, mtime) => {
+        if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write) throw vfsError('EPERM', path);
+        if (opened.path !== null) this.utimes(opened.path, atime, mtime, CRED_KERNEL);
+        else { current().atime = atime; current().mtime = mtime; }
+      },
+      close: () => { if (!closed) { closed = true; this.openNodes.delete(opened); } },
+    };
+  }
+
   private now(): number { return Date.now(); }
 
   private parentPath(path: string): string {
@@ -1676,6 +1795,12 @@ export class SqliteVFS {
    * additional coverage, since no facet view keys on a grandparent.
    */
   private bumpRevision(paths: readonly string[]): void {
+    for (const opened of this.openNodes) {
+      if (opened.path === null) continue;
+      const live = this.inodes.get(opened.path);
+      if (live) opened.inode = { ...live, contentId: this.contentIdForInode(live) };
+      else opened.path = null;
+    }
     if (this.transactionPublication) {
       for (const path of paths) this.transactionPublication.paths.add(path);
       return;
@@ -3060,7 +3185,9 @@ export class SqliteVFS {
         path: logical,
         kind: inode.kind,
         size: inode.size,
-        rev: this._pathRevisions.get(path) ?? 0,
+        rev: this._revision,
+        stat: { type: inode.kind, size: inode.size, atime: inode.atime, ctime: inode.mtime, mtime: inode.mtime, mode: inode.mode, uid: inode.uid, gid: inode.gid, revision: this._revision },
+        ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
       });
     }
     return { epoch, rev, entries, next };
@@ -3354,12 +3481,14 @@ export class SqliteVFS {
     // The superseded occupant goes first: it shares its path with the entry
     // published over it, exactly as the transaction deleted before inserting.
     if (destInode) {
+      for (const opened of this.openNodes) if (opened.path === destInode.path) opened.path = null;
       this._removeFromChildrenIndex(destInode.parentPath, destInode.path);
       this.inodes.delete(destInode.path);
       this._totalFiles--;
       this._usedBytes -= destInode.size;
     }
     for (const { entry, stored } of renamed) {
+      for (const opened of this.openNodes) if (opened.path === entry.path) opened.path = stored.path;
       const moved: INode = {
         ...entry,
         path: stored.path,
@@ -4452,6 +4581,7 @@ export class SqliteVFS {
       )];
       if (lifecycle.length === 0) break;
       const contentId = String(lifecycle[0].content_id);
+      if ([...this.openNodes].some(opened => this.contentIdForInode(opened.inode) === contentId)) break;
       const candidates = [...this.sql.exec(
         `SELECT chunk_id, length(data) AS byte_length
          FROM file_chunks

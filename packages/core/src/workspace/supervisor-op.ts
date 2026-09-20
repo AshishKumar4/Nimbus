@@ -1,6 +1,7 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
-import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
+import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 
@@ -27,9 +28,10 @@ export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: Superv
 
 export interface SupervisorOpDeps {
   readonly vfs: SqliteVFS;
+  readonly filesystem?: NimbusFilesystemAuthority;
   /** Absent a process table, operations use the unprivileged session user. */
   readonly processes?: SessionProcessSupervisor;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
   /**
    * The host's `_rpc*` surface for ops beyond the native set — an in-process
    * workspace's dispatch record, or the session itself for
@@ -147,10 +149,10 @@ export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
  * the default handler would have used instead of caching its own.
  */
 export interface SupervisorOpTools {
-  readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
+  readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   readonly vfs: SqliteVFS;
   readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
 }
 
 /** The host-side argument plan per op — how an envelope becomes an _rpc* call. */
@@ -246,9 +248,10 @@ export interface SupervisorOpBridgeStore {
    * swapped on every use, and two credentialed host calls interleaving
    * across an await would otherwise read as each other.
    */
-  readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
+  readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
-  readonly forget: (pid: number) => void;
+  readonly forget: (pid: number) => Promise<void>;
+  readonly dispose: () => Promise<void>;
 }
 
 /**
@@ -257,26 +260,24 @@ export interface SupervisorOpBridgeStore {
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(
-  deps: Pick<SupervisorOpDeps, 'vfs' | 'processes'>,
+  deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>,
 ): SupervisorOpBridgeStore {
-  const bridges = new Map<number, SqliteRuntimeFsBridge>();
+  const authority = deps.filesystem ?? new SqliteFilesystemAuthority(deps.vfs);
+  const hostLeases = new Map<string, NimbusHostFilesystemLease>();
   return {
-    bridge: (pid: number | undefined, cred?: VfsCred): SqliteRuntimeFsBridge => {
-      if (pid === undefined && cred !== undefined) {
-        return new SqliteRuntimeFsBridge(deps.vfs.as(credFor(deps, pid, cred)), deps.vfs);
-      }
-      const key = pid ?? 0;
-      const credentialed = deps.vfs.as(credFor(deps, pid, cred));
-      const held = bridges.get(key);
-      if (held) {
-        held.updateCredential(credentialed);
-        return held;
-      }
-      const built = new SqliteRuntimeFsBridge(credentialed, deps.vfs);
-      bridges.set(key, built);
-      return built;
+    bridge: (pid, cred) => {
+      const identity = credFor(deps, pid, cred);
+      if (pid !== undefined) return authority.bind({ pid, cred: identity });
+      const key = JSON.stringify(identity);
+      let lease = hostLeases.get(key);
+      if (!lease) { lease = authority.openHost(identity); hostLeases.set(key, lease); }
+      return lease.fs;
     },
-    forget: (pid: number): void => { bridges.delete(pid); },
+    forget: (pid) => authority.releaseProcess(pid),
+    dispose: async () => {
+      await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));
+      hostLeases.clear();
+    },
   };
 }
 
@@ -318,10 +319,10 @@ export function createSupervisorOpHandler(
     fsTruncate: (e) => fs(e).truncate(stringArg(e, 0), numberArg(e, 1)),
     writeBatchStream: (e) => {
       if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
-      return deps.vfs.as(credFor(deps, e.pid, e.cred)).writeStream(e.stream, { mutationOwner: e.mutationOwner });
+      return fs(e).writeStream(e.stream, { mutationOwner: e.mutationOwner });
     },
-    stdout: (e) => { deps.output?.('stdout', e.pid ?? 0, stringArg(e, 0)); },
-    stderr: (e) => { deps.output?.('stderr', e.pid ?? 0, stringArg(e, 0)); },
+    stdout: (e) => deps.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
+    stderr: (e) => deps.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
   };
   const extend = deps.extend ?? {};
   return async (envelope) => {

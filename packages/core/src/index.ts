@@ -14,6 +14,13 @@
 export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
 export type { NimbusWorkspaceOptions } from './workspace/nimbus-workspace.js';
 export type {
+  NimbusFilesystemAuthority,
+  NimbusFilesystemBinding,
+  NimbusHostFilesystemLease,
+  RuntimeFsBridge,
+  RuntimeReadOptions,
+  RuntimeSynchronousFs,
+  Awaitable,
   SqlDatabase,
   SqlTransactions,
   SqlRow,

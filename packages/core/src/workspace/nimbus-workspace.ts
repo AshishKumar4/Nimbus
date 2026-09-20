@@ -41,7 +41,8 @@ import {
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
-import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
+import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
+import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
@@ -147,7 +148,9 @@ export interface NimbusWorkspaceOptions {
   readonly ctxExports?: CtxExports;
   /** The process table that allocated supervisor-binding pids. */
   readonly processes?: SessionProcessSupervisor;
-  readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+  readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly filesystemNamespace?: string;
+  readonly filesystem?: (defaultAuthority: NimbusFilesystemAuthority) => NimbusFilesystemAuthority;
   /** Host operations, including overrides for host-specific accounting. */
   readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
   /**
@@ -217,6 +220,7 @@ export class NimbusWorkspace {
     runtimes: RuntimeManager,
     shellProcessPid: number,
     private readonly supervisorOps: (envelope: SupervisorOpEnvelope) => Promise<unknown>,
+    readonly filesystem: NimbusFilesystemAuthority,
   ) {
     this.vfs = vfs;
     this.kernel = kernel;
@@ -238,6 +242,14 @@ export class NimbusWorkspace {
     const exports = options.ctxExports ?? options.transactions?.exports;
     if (exports) adoptCtxExports(exports);
     const vfs = options.vfs ?? openFilesystem(options);
+    if (options.filesystemNamespace !== undefined && options.filesystemNamespace !== vfs.namespace) {
+      throw new Error('filesystemNamespace differs from the supplied filesystem namespace');
+    }
+    const defaultAuthority = new SqliteFilesystemAuthority(vfs);
+    const filesystem = options.filesystem?.(defaultAuthority) ?? defaultAuthority;
+    if (filesystem.namespace !== defaultAuthority.namespace) {
+      throw new Error('selected filesystem authority must preserve the workspace namespace');
+    }
     const mounts = options.mounts ?? DEFAULT_MOUNT_POINTS;
     seedBaseFilesystem(vfs, mounts);
 
@@ -368,7 +380,7 @@ export class NimbusWorkspace {
     }));
 
     const supervisorOps = createSupervisorOpHandler({
-      vfs,
+      vfs, filesystem,
       processes,
       output: options.processOutput,
       extend: options.supervisorOps,
@@ -376,7 +388,7 @@ export class NimbusWorkspace {
     return new NimbusWorkspace(
       vfs, kernel, shell, registry, env, options.sql,
       processes, runtimes, shellProcessPid,
-      supervisorOps,
+      supervisorOps, filesystem,
     );
   }
 
@@ -443,7 +455,7 @@ export class NimbusWorkspace {
  * already done this, at the same seam, for the same reason.
  */
 function openFilesystem(options: NimbusWorkspaceOptions): SqliteVFS {
-  const vfs = new SqliteVFS(options.sql, options.transactions);
+  const vfs = new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
   vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
   return vfs;
 }
