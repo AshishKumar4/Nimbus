@@ -123,7 +123,7 @@ for (const [name, mutate] of [
   assert.equal(vfs.revision(), revision, `${name}: rollback publishes no revision`);
   assert.deepEqual(events, [], `${name}: rollback publishes no watch events`);
   assert.deepEqual(tree(new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL)), before);
-  assert.deepEqual(harness.sql.exec('SELECT operation_id FROM vfs_append_receipts'), []);
+  assert.deepEqual(harness.sql.exec('SELECT operation_id FROM vfs_append_receipts_v2'), []);
   assert.equal(raw._verifyCounters(), null);
   harness.db.close();
 }

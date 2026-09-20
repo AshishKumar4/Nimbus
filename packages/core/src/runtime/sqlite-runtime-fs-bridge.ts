@@ -24,11 +24,14 @@ export interface SqliteDescriptorScope {
   nextId: number;
   handles: Map<number, OpenDescription>;
   closed: boolean;
+  /** Aborted when the scope closes; cancels in-flight stream commits. */
+  abort: AbortController;
 }
 
 export function createSqliteDescriptorScope(): SqliteDescriptorScope {
-  return { nextId: 1, handles: new Map(), closed: false };
+  return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController() };
 }
+
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   readonly synchronous: RuntimeSynchronousFs = this;
@@ -43,6 +46,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   dispose(): void {
     for (const id of this.scope.handles.keys()) this.close(id);
     this.scope.closed = true;
+    this.scope.abort.abort();
   }
 
   stat(path: RuntimeFsPath, options: { followSymlinks?: boolean } = {}): RuntimeVfsStat | null {
@@ -52,7 +56,21 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (!followSymlinks && !this.vfs.exists(p)) {
       const target = this.legacySymlinks.readlink(p);
       if (target === null) return null;
-      throw fsError('ENOTSUP', 'stat legacy symlink', path);
+      const now = Date.now();
+      return {
+        dev: this.rawVfs.deviceId,
+        ino: 0,
+        nlink: 1,
+        type: 'symlink',
+        size: new TextEncoder().encode(target).byteLength,
+        ctime: now,
+        atime: now,
+        mtime: now,
+        mode: 0o120777,
+        uid: 1000,
+        gid: 1000,
+        revision: this.rawVfs.revision(p),
+      };
     }
     try {
       const st = followSymlinks ? this.vfs.stat(p) : this.vfs.lstat(p);
@@ -233,15 +251,17 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }
 
     const stat = this.vfs.stat(p);
+    const node = this.rawVfs.openDescription(p, this.vfs.cred, normalizedFlags);
     const handle: RuntimeFileHandle = {
       id: this.scope.nextId++,
       path: p,
       flags: Object.freeze(normalizedFlags),
       position: normalizedFlags.append ? stat.size : 0,
-      baseRevision: this.rawVfs.revision(p),
+      baseIno: stat.ino,
+      baseRevision: this.rawVfs.inodeRevision(stat.ino),
       closed: false,
     };
-    this.scope.handles.set(handle.id, { handle, node: this.rawVfs.openDescription(p, this.vfs.cred, normalizedFlags), refs: 1 });
+    this.scope.handles.set(handle.id, { handle, node, refs: 1 });
     return { ...handle };
   }
 
@@ -257,13 +277,19 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   write(handleId: number, offset: number | null, bytes: Uint8Array): number {
     const handle = this.getHandle(handleId);
     if (!handle.flags.write) throw fsError('EBADF', 'write', handle.path);
+    const node = this.description(handleId).node;
+    // Stale means the inode's content moved, not its name: a rename republishes
+    // the same ino, and an open descriptor may keep writing through it.
+    if (node.ino !== handle.baseIno || handle.baseRevision < this.rawVfs.inodeRevision(handle.baseIno)) {
+      throw fsError('ESTALE', 'write', handle.path);
+    }
     const start = handle.flags.append
-      ? this.description(handleId).node.stat().size
+      ? node.stat().size
       : offset == null ? handle.position : Math.max(0, offset);
-    this.description(handleId).node.write(start, bytes);
+    node.write(start, bytes);
     const end = start + bytes.byteLength;
     if (offset == null || handle.flags.append) handle.position = end;
-    handle.baseRevision = this.rawVfs.revision(handle.path);
+    handle.baseRevision = this.rawVfs.inodeRevision(handle.baseIno);
     return bytes.byteLength;
   }
 
@@ -432,9 +458,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const seen = new Set<string>();
 
     while (pending.length > 0) {
-      const segment = pending.shift()!;
+      const segment = pending.shift();
+      if (segment === undefined) break;
       if (segment === '.') continue;
-      if (segment === '..') { resolved.pop(); continue; }
       const candidate = [...resolved, segment].join('/');
       const isFinal = pending.length === 0;
       if (!followSymlinks && isFinal) {

@@ -152,6 +152,9 @@ export interface RuntimeFileHandle {
     expectedRevision?: number;
   };
   position: number;
+  /** Inode the handle opened; staleness is checked against its revision. */
+  baseIno: number;
+  /** Content revision of baseIno at the last handle operation. */
   baseRevision: number;
   closed: boolean;
 }

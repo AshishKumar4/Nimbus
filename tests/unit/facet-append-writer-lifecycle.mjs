@@ -118,7 +118,7 @@ await manager.exec('module.exports = 1', {
 assert.equal(retired.length, 1, 'unkeyed one-shot node execution retires its writer');
 assert.equal(
   [...harness.sql.exec(
-    `SELECT COUNT(*) AS count FROM vfs_append_writer_state
+    `SELECT COUNT(*) AS count FROM vfs_append_writer_state_v2
      WHERE pid = ? AND writer_id = ?`,
     retired[0].pid,
     retired[0].writerId,

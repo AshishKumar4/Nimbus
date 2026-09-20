@@ -4,6 +4,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 
 const h = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(h.sql, h.ctx);
@@ -86,4 +87,58 @@ userB.appendOnce('/b', 7, writer, moduleId, 1, 'digest', bytes('once'));
 userB.appendOnce('/b', 7, writer, moduleId, 1, 'digest', bytes('once'));
 assert.equal(userB.readFileString('/b'), 'once');
 assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, 'digest', bytes('bad')), { code: 'ESTALE' });
-console.log('filesystem authority: live descriptors, namespace isolation, scoped host leases and epoch/version races passed');
+
+// A closed scope rejects new work and an interrupted in-flight commit
+// publishes nothing.
+{
+  const h2 = createSqliteVfsTestHarness();
+  const raw2 = new SqliteVFS(h2.sql, h2.ctx);
+  const authority2 = new SqliteFilesystemAuthority(raw2);
+  const pid2 = 9;
+  const proc = authority2.bind({ pid: pid2, cred: CRED_KERNEL });
+  const payload = {
+    inodes: [{ path: 'cancelled', parentPath: '', isDir: false, size: 3, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path: 'cancelled', chunkId: 0, data: bytes('abc') }],
+  };
+  const encoded = await (async () => {
+    const reader = encodeWriteBatchStream(payload).getReader();
+    const parts = [];
+    for (;;) { const n = await reader.read(); if (n.done) break; parts.push(n.value); }
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  })();
+  // Emit the head, then end the stream mid-frame when the scope closes: the
+  // commit must fail rather than publish.
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  const interrupted = new ReadableStream({
+    type: 'bytes',
+    pull(controller) {
+      if (this.sent === undefined) {
+        this.sent = true;
+        controller.enqueue(encoded.slice(0, 24));
+        return;
+      }
+      return released.then(() => controller.error(new Error('scope closed')));
+    },
+  });
+  const commit = proc.writeStream(interrupted).then(
+    (result) => ({ resolved: result }),
+    (error) => ({ rejected: error }),
+  );
+  release();
+  await authority2.releaseProcess(pid2);
+  const outcome = await commit;
+  assert.ok(outcome.rejected || outcome.resolved.ok === false,
+    'an interrupted stream commit must not publish');
+  assert.equal(raw2.as(CRED_KERNEL).exists('cancelled'), false,
+    'the interrupted commit published no inode');
+  // And the scope gate itself: nothing else goes through this view.
+  assert.throws(() => proc.writeStream(new ReadableStream()), { code: 'EBADF' });
+  h2.db.close();
+}
+
+console.log('filesystem authority: live descriptors, namespace isolation, scoped host leases, stream cancel and epoch/version races passed');

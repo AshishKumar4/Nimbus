@@ -62,10 +62,10 @@ const CRED_OTHER = Object.freeze({
 
   await bridge.truncate('/home/user/data.txt', 5);
   assert.equal(dec.decode(await bridge.readFile('/home/user/data.txt')), 'hello');
-  await assert.rejects(bridge.truncate('/home/user/missing.txt', 0), /ENOENT/);
+  await assert.rejects(async () => bridge.truncate('/home/user/missing.txt', 0), /ENOENT/);
   await bridge.mkdir('/home/user/adir');
-  await assert.rejects(bridge.truncate('/home/user/adir', 0), /EISDIR/);
-  await assert.rejects(bridge.writeRange('/home/user/adir', 0, enc.encode('x')), /EISDIR/);
+  await assert.rejects(async () => bridge.truncate('/home/user/adir', 0), /EISDIR/);
+  await assert.rejects(async () => bridge.writeRange('/home/user/adir', 0, enc.encode('x')), /EISDIR/);
 }
 
 // ── read misses are null; permission and type errors stay errors ──
@@ -79,19 +79,19 @@ const CRED_OTHER = Object.freeze({
 
   const denied = new SqliteRuntimeFsBridge(rawVfs.as(CRED_OTHER), rawVfs);
   await assert.rejects(
-    denied.stat('/private/hidden.txt'),
+    async () => denied.stat('/private/hidden.txt'),
     (error) => error.code === 'EACCES',
   );
   await assert.rejects(
-    denied.readFile('/visible/denied.txt'),
+    async () => denied.readFile('/visible/denied.txt'),
     (error) => error.code === 'EACCES',
   );
   await assert.rejects(
-    denied.readRange('/visible/denied.txt', 0, 1),
+    async () => denied.readRange('/visible/denied.txt', 0, 1),
     (error) => error.code === 'EACCES',
   );
   await assert.rejects(
-    denied.readRange('/visible/directory', 0, 1),
+    async () => denied.readRange('/visible/directory', 0, 1),
     (error) => error.code === 'EISDIR',
   );
   assert.equal(await denied.stat('/visible/missing.txt'), null);
@@ -118,11 +118,11 @@ const CRED_OTHER = Object.freeze({
   const cur = await bridge.revision('/a/one.txt');
   await bridge.writeFile('/a/one.txt', 'fresh', { expectedRevision: cur });
   await assert.rejects(
-    bridge.writeFile('/a/one.txt', 'stale', { expectedRevision: cur }),
+    async () => bridge.writeFile('/a/one.txt', 'stale', { expectedRevision: cur }),
     /ESTALE/,
   );
   await assert.rejects(
-    bridge.writeRange('/a/one.txt', 0, enc.encode('s'), { expectedRevision: cur }),
+    async () => bridge.writeRange('/a/one.txt', 0, enc.encode('s'), { expectedRevision: cur }),
     /ESTALE/,
   );
   // Mutations elsewhere do NOT invalidate a per-path expectedRevision.
@@ -181,7 +181,7 @@ const CRED_OTHER = Object.freeze({
 
   // A same-path external mutation between writes DOES stale the handle.
   await bridge.writeFile('/x/file.txt', 'external');
-  await assert.rejects(bridge.write(handle.id, 0, enc.encode('!')), /ESTALE/);
+  await assert.rejects(async () => bridge.write(handle.id, 0, enc.encode('!')), /ESTALE/);
   await bridge.close(handle.id);
 
   // open with truncate resets content via the boundary-chunk path.
@@ -199,7 +199,7 @@ const CRED_OTHER = Object.freeze({
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/log.txt', enc.encode('base'));
   harness.setFaultInjector((statement) => (
-    /INSERT INTO vfs_append_receipts/i.test(statement.sql)
+    /INSERT INTO vfs_append_receipts_v2/i.test(statement.sql)
       ? new Error('injected receipt insert failure')
       : null
   ));
@@ -218,7 +218,7 @@ const CRED_OTHER = Object.freeze({
   harness.clearFault();
   assert.equal(dec.decode(vfs.readFile('/append/log.txt')), 'base');
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts_v2')][0].count,
     0,
     'the file mutation rolls back when its receipt cannot commit',
   );
@@ -309,7 +309,7 @@ const CRED_OTHER = Object.freeze({
     1,
   );
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts_v2')][0].count,
     0,
     'only explicit client acknowledgement removes a completed receipt',
   );
@@ -348,7 +348,7 @@ const CRED_OTHER = Object.freeze({
   reloaded.acknowledgeAppend(pid, concurrentWriter, APPEND_MODULE, 1);
   assert.equal(
     [...harness.sql.exec(
-      `SELECT acked_through FROM vfs_append_module_state
+      `SELECT acked_through FROM vfs_append_module_state_v2
        WHERE pid = ? AND writer_id = ? AND module_id = ?`,
       pid,
       concurrentWriter,
@@ -359,7 +359,7 @@ const CRED_OTHER = Object.freeze({
   );
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_acked_gaps WHERE pid = ? AND writer_id = ?',
+      'SELECT COUNT(*) AS count FROM vfs_append_acked_gaps_v2 WHERE pid = ? AND writer_id = ?',
       pid,
       concurrentWriter,
     )][0].count,
@@ -433,23 +433,26 @@ const CRED_OTHER = Object.freeze({
   vfs.mkdir('/targets', { recursive: true });
   vfs.writeFile('/targets/two', enc.encode('two'));
   harness.sql.exec(
-    `INSERT INTO vfs_append_writer_state
-     (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+    `INSERT INTO vfs_append_writer_state_v2
+     (namespace, pid, writer_id, revoked, retired_at) VALUES (?, ?, ?, 0, NULL)`,
+    rawVfs.namespace,
     capPid,
     capWriter,
   );
   harness.sql.exec(
-    `INSERT INTO vfs_append_module_state
-     (pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, 0)`,
+    `INSERT INTO vfs_append_module_state_v2
+     (namespace, pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, ?, 0)`,
+    rawVfs.namespace,
     capPid,
     capWriter,
     APPEND_MODULE,
   );
   for (let i = 0; i < VFS_APPEND_RECEIPT_LIMIT - 2; i++) {
     harness.sql.exec(
-      `INSERT INTO vfs_append_receipts
-       (pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+      `INSERT INTO vfs_append_receipts_v2
+       (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      rawVfs.namespace,
       capPid,
       capWriter,
       APPEND_MODULE,
@@ -484,7 +487,7 @@ const CRED_OTHER = Object.freeze({
   );
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_writer_state WHERE pid = ? AND writer_id = ?',
+      'SELECT COUNT(*) AS count FROM vfs_append_writer_state_v2 WHERE pid = ? AND writer_id = ?',
       capPid + 1,
       blockedWriter,
     )][0].count,
@@ -513,31 +516,35 @@ const CRED_OTHER = Object.freeze({
   vfs.mkdir('/append', { recursive: true });
   vfs.writeFile('/append/bounded.txt', 'base');
   harness.sql.exec(
-    `INSERT INTO vfs_append_writer_state
-     (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+    `INSERT INTO vfs_append_writer_state_v2
+     (namespace, pid, writer_id, revoked, retired_at) VALUES (?, ?, ?, 0, NULL)`,
+    rawVfs.namespace,
     pid,
     writer,
   );
   harness.sql.exec(
-    `INSERT INTO vfs_append_module_state
-     (pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, 0)`,
+    `INSERT INTO vfs_append_module_state_v2
+     (namespace, pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, ?, 0)`,
+    rawVfs.namespace,
     pid,
     writer,
     APPEND_MODULE,
   );
   harness.sql.exec(
-    `INSERT INTO vfs_append_receipts
-     (pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
-     VALUES (?, ?, ?, 1, '/append/bounded.txt', 0, 'digest-1', 1)`,
+    `INSERT INTO vfs_append_receipts_v2
+     (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
+     VALUES (?, ?, ?, ?, 1, '/append/bounded.txt', 0, 'digest-1', 1)`,
+    rawVfs.namespace,
     pid,
     writer,
     APPEND_MODULE,
   );
   for (let operationId = 2; operationId <= MAX_TX_LOGICAL_ROWS + 2; operationId++) {
     harness.sql.exec(
-      `INSERT INTO vfs_append_acked_gaps
-       (pid, writer_id, module_id, operation_id, path, byte_length, digest)
-       VALUES (?, ?, ?, ?, '/append/bounded.txt', 0, ?)`,
+      `INSERT INTO vfs_append_acked_gaps_v2
+       (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest)
+       VALUES (?, ?, ?, ?, ?, '/append/bounded.txt', 0, ?)`,
+      rawVfs.namespace,
       pid,
       writer,
       APPEND_MODULE,
@@ -548,7 +555,7 @@ const CRED_OTHER = Object.freeze({
   const statementStart = harness.statements.length;
   vfs.acknowledgeAppend(pid, writer, APPEND_MODULE, 1);
   const gapDeletes = harness.statements.slice(statementStart).filter(
-    (statement) => /DELETE FROM vfs_append_acked_gaps WHERE rowid IN/i.test(statement.sql),
+    (statement) => /DELETE FROM vfs_append_acked_gaps_v2 WHERE rowid IN/i.test(statement.sql),
   );
   assert.deepEqual(
     gapDeletes.map((statement) => statement.params.length),
@@ -557,7 +564,7 @@ const CRED_OTHER = Object.freeze({
   );
   assert.equal(
     [...harness.sql.exec(
-      `SELECT acked_through FROM vfs_append_module_state
+      `SELECT acked_through FROM vfs_append_module_state_v2
        WHERE pid = ? AND writer_id = ? AND module_id = ?`,
       pid,
       writer,
@@ -566,29 +573,32 @@ const CRED_OTHER = Object.freeze({
     MAX_TX_LOGICAL_ROWS + 2,
   );
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_acked_gaps')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_acked_gaps_v2')][0].count,
     0,
   );
 
   const cleanupWriter = '99999999-9999-4999-8999-999999999999';
   harness.sql.exec(
-    `INSERT INTO vfs_append_writer_state
-     (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+    `INSERT INTO vfs_append_writer_state_v2
+     (namespace, pid, writer_id, revoked, retired_at) VALUES (?, ?, ?, 0, NULL)`,
+    rawVfs.namespace,
     pid,
     cleanupWriter,
   );
   harness.sql.exec(
-    `INSERT INTO vfs_append_module_state
-     (pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, 0)`,
+    `INSERT INTO vfs_append_module_state_v2
+     (namespace, pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, ?, 0)`,
+    rawVfs.namespace,
     pid,
     cleanupWriter,
     APPEND_MODULE,
   );
   for (let operationId = 1; operationId <= VFS_APPEND_RECEIPT_LIMIT; operationId++) {
     harness.sql.exec(
-      `INSERT INTO vfs_append_receipts
-       (pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
-       VALUES (?, ?, ?, ?, '/append/bounded.txt', 0, ?, ?)`,
+      `INSERT INTO vfs_append_receipts_v2
+       (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
+       VALUES (?, ?, ?, ?, ?, '/append/bounded.txt', 0, ?, ?)`,
+      rawVfs.namespace,
       pid,
       cleanupWriter,
       APPEND_MODULE,
@@ -597,9 +607,10 @@ const CRED_OTHER = Object.freeze({
       operationId,
     );
     harness.sql.exec(
-      `INSERT INTO vfs_append_acked_gaps
-       (pid, writer_id, module_id, operation_id, path, byte_length, digest)
-       VALUES (?, ?, ?, ?, '/append/bounded.txt', 0, ?)`,
+      `INSERT INTO vfs_append_acked_gaps_v2
+       (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest)
+       VALUES (?, ?, ?, ?, ?, '/append/bounded.txt', 0, ?)`,
+      rawVfs.namespace,
       pid,
       cleanupWriter,
       APPEND_MODULE,
@@ -610,7 +621,7 @@ const CRED_OTHER = Object.freeze({
   const cleanupStart = harness.statements.length;
   rawVfs.revokeAppendWriter(pid, cleanupWriter);
   const cleanupDeletes = harness.statements.slice(cleanupStart).filter(
-    (statement) => /DELETE FROM vfs_append_(?:receipts|acked_gaps) WHERE rowid IN/i.test(statement.sql),
+    (statement) => /DELETE FROM vfs_append_(?:receipts|acked_gaps)_v2 WHERE rowid IN/i.test(statement.sql),
   );
   assert.equal(cleanupDeletes.length, 16);
   assert.ok(
@@ -619,7 +630,7 @@ const CRED_OTHER = Object.freeze({
   );
   assert.equal(
     [...harness.sql.exec(
-      `SELECT COUNT(*) AS count FROM vfs_append_receipts
+      `SELECT COUNT(*) AS count FROM vfs_append_receipts_v2
        WHERE pid = ? AND writer_id = ?`,
       pid,
       cleanupWriter,
@@ -628,7 +639,7 @@ const CRED_OTHER = Object.freeze({
   );
   assert.equal(
     [...harness.sql.exec(
-      `SELECT COUNT(*) AS count FROM vfs_append_acked_gaps
+      `SELECT COUNT(*) AS count FROM vfs_append_acked_gaps_v2
        WHERE pid = ? AND writer_id = ?`,
       pid,
       cleanupWriter,
@@ -639,8 +650,9 @@ const CRED_OTHER = Object.freeze({
   const bulkPid = 2_100_002;
   for (let index = 0; index <= MAX_TX_LOGICAL_ROWS; index++) {
     harness.sql.exec(
-      `INSERT INTO vfs_append_writer_state
-       (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+      `INSERT INTO vfs_append_writer_state_v2
+       (namespace, pid, writer_id, revoked, retired_at) VALUES (?, ?, ?, 0, NULL)`,
+      rawVfs.namespace,
       bulkPid,
       crypto.randomUUID(),
     );
@@ -648,16 +660,16 @@ const CRED_OTHER = Object.freeze({
   const bulkStart = harness.statements.length;
   rawVfs.revokeAppendWriters(bulkPid);
   const bulkUpdates = harness.statements.slice(bulkStart).filter(
-    (statement) => /UPDATE vfs_append_writer_state\s+SET revoked = 1/i.test(statement.sql),
+    (statement) => /UPDATE vfs_append_writer_state_v2\s+SET revoked = 1/i.test(statement.sql),
   );
   assert.deepEqual(
-    bulkUpdates.map((statement) => statement.params.length - 2),
+    bulkUpdates.map((statement) => statement.params.length - 3),
     [MAX_TX_LOGICAL_ROWS, 1],
     '257 live writer rows are revoked in exact 256/1 row transactions',
   );
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_writer_state WHERE pid = ? AND revoked = 0',
+      'SELECT COUNT(*) AS count FROM vfs_append_writer_state_v2 WHERE pid = ? AND revoked = 0',
       bulkPid,
     )][0].count,
     0,
@@ -690,17 +702,17 @@ const CRED_OTHER = Object.freeze({
   }
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_writer_state',
+      'SELECT COUNT(*) AS count FROM vfs_append_writer_state_v2',
     )][0].count,
     0,
     'disposed writers leave no retained authority or negative-history rows',
   );
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_module_state')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_module_state_v2')][0].count,
     0,
   );
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts_v2')][0].count,
     0,
   );
   assert.throws(
@@ -818,7 +830,7 @@ const CRED_OTHER = Object.freeze({
     new Uint8Array(),
   );
   harness.setFaultInjector((statement) => (
-    /SELECT rowid FROM vfs_append_receipts/i.test(statement.sql)
+    /SELECT rowid FROM vfs_append_receipts_v2/i.test(statement.sql)
       ? new Error('injected reset during writer cleanup')
       : null
   ));
@@ -831,7 +843,7 @@ const CRED_OTHER = Object.freeze({
   const reloaded = reloadedRaw.as(CRED_KERNEL);
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_receipts WHERE pid = ? AND writer_id = ?',
+      'SELECT COUNT(*) AS count FROM vfs_append_receipts_v2 WHERE pid = ? AND writer_id = ?',
       pid,
       writer,
     )][0].count,
@@ -853,13 +865,14 @@ const CRED_OTHER = Object.freeze({
   const bulkPid = 2_300_002;
   const bulkWriter = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
   harness.sql.exec(
-    `INSERT INTO vfs_append_writer_state
-     (pid, writer_id, revoked, retired_at) VALUES (?, ?, 0, NULL)`,
+    `INSERT INTO vfs_append_writer_state_v2
+     (namespace, pid, writer_id, revoked, retired_at) VALUES (?, ?, ?, 0, NULL)`,
+    rawVfs.namespace,
     bulkPid,
     bulkWriter,
   );
   harness.setFaultInjector((statement) => (
-    /UPDATE vfs_append_writer_state\s+SET revoked = 1/i.test(statement.sql)
+    /UPDATE vfs_append_writer_state_v2\s+SET revoked = 1/i.test(statement.sql)
       ? new Error('injected reset after pid revocation intent')
       : null
   ));
@@ -871,7 +884,7 @@ const CRED_OTHER = Object.freeze({
   const resumedRaw = new SqliteVFS(harness.sql, harness.ctx);
   assert.equal(
     [...harness.sql.exec(
-      `SELECT COUNT(*) AS count FROM vfs_append_writer_state
+      `SELECT COUNT(*) AS count FROM vfs_append_writer_state_v2
        WHERE pid = ? AND writer_id = ?`,
       bulkPid,
       bulkWriter,
@@ -881,7 +894,7 @@ const CRED_OTHER = Object.freeze({
   );
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_pid_revocations WHERE pid = ?',
+      'SELECT COUNT(*) AS count FROM vfs_append_pid_revocations_v2 WHERE pid = ?',
       bulkPid,
     )][0].count,
     0,
@@ -903,11 +916,12 @@ const CRED_OTHER = Object.freeze({
 // Restart maintenance pages durable PID-revocation intents instead of
 // materializing an unbounded table before cleanup begins.
 {
-  const { harness } = makeBridge();
+  const { harness, rawVfs } = makeBridge();
   for (let index = 0; index <= MAX_TX_LOGICAL_ROWS; index++) {
     harness.sql.exec(
-      `INSERT INTO vfs_append_pid_revocations (pid, retired_at)
-       VALUES (?, ?)`,
+      `INSERT INTO vfs_append_pid_revocations_v2 (namespace, pid, retired_at)
+       VALUES (?, ?, ?)`,
+      rawVfs.namespace,
       2_400_000 + index,
       index,
     );
@@ -916,26 +930,26 @@ const CRED_OTHER = Object.freeze({
   new SqliteVFS(harness.sql, harness.ctx);
   const restartStatements = harness.statements.slice(restartStart);
   const pageSelects = restartStatements.filter(
-    (statement) => /SELECT pid FROM vfs_append_pid_revocations[\s\S]*LIMIT \?/i.test(statement.sql),
+    (statement) => /SELECT pid FROM vfs_append_pid_revocations_v2[\s\S]*LIMIT \?/i.test(statement.sql),
   );
   assert.deepEqual(
     pageSelects.map((statement) => statement.params),
-    [[MAX_TX_LOGICAL_ROWS], [MAX_TX_LOGICAL_ROWS], [MAX_TX_LOGICAL_ROWS]],
+    [[rawVfs.namespace, MAX_TX_LOGICAL_ROWS], [rawVfs.namespace, MAX_TX_LOGICAL_ROWS], [rawVfs.namespace, MAX_TX_LOGICAL_ROWS]],
     '257 restart markers are selected in 256/1/0 bounded pages',
   );
   const markerDeletes = restartStatements.filter(
-    (statement) => /DELETE FROM vfs_append_pid_revocations WHERE pid = \?/i.test(statement.sql),
+    (statement) => /DELETE FROM vfs_append_pid_revocations_v2 WHERE namespace = \? AND pid = \?/i.test(statement.sql),
   );
   assert.equal(markerDeletes.length, MAX_TX_LOGICAL_ROWS + 1);
   assert.ok(
     markerDeletes.every(
-      (statement) => statement.transaction !== null && statement.params.length === 1,
+      (statement) => statement.transaction !== null && statement.params.length === 2,
     ),
     'each marker is retired in a bounded transaction',
   );
   assert.equal(
     [...harness.sql.exec(
-      'SELECT COUNT(*) AS count FROM vfs_append_pid_revocations',
+      'SELECT COUNT(*) AS count FROM vfs_append_pid_revocations_v2',
     )][0].count,
     0,
   );
@@ -1012,7 +1026,7 @@ const CRED_OTHER = Object.freeze({
   const reloaded = reloadedRaw.as(CRED_KERNEL);
   assert.equal(
     [...harness.sql.exec(
-      `SELECT acked_through FROM vfs_append_module_state
+      `SELECT acked_through FROM vfs_append_module_state_v2
        WHERE pid = ? AND writer_id = ? AND module_id = ?`,
       pid,
       writer,
@@ -1021,7 +1035,7 @@ const CRED_OTHER = Object.freeze({
     1,
   );
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_acked_gaps')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_acked_gaps_v2')][0].count,
     0,
   );
   assert.equal(
@@ -1050,7 +1064,7 @@ const CRED_OTHER = Object.freeze({
   );
   const large = new Uint8Array(MAX_TX_BLOB_BYTES + 1).fill(7);
   harness.setFaultInjector((statement) => (
-    /INSERT INTO vfs_append_receipts/i.test(statement.sql)
+    /INSERT INTO vfs_append_receipts_v2/i.test(statement.sql)
       ? new Error('injected staged receipt failure')
       : null
   ));
@@ -1069,7 +1083,7 @@ const CRED_OTHER = Object.freeze({
   harness.clearFault();
   assert.equal(dec.decode(vfs.readFile('/append/large.bin')), 'base');
   assert.equal(
-    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts')][0].count,
+    [...harness.sql.exec('SELECT COUNT(*) AS count FROM vfs_append_receipts_v2')][0].count,
     0,
   );
   vfs.appendOnce(
@@ -1172,7 +1186,7 @@ const CRED_OTHER = Object.freeze({
   const registry = getSymlinkRegistry(rawVfs);
   registry.set('/legacy/destination-link', '/real/dir/file.txt');
   await assert.rejects(
-    bridge.rename('/legacy/missing-source', '/legacy/destination-link'),
+    async () => bridge.rename('/legacy/missing-source', '/legacy/destination-link'),
     /ENOENT/,
   );
   assert.equal(registry.readlink('/legacy/destination-link'), '/real/dir/file.txt');
