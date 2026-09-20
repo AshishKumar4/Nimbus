@@ -1345,7 +1345,7 @@ export class SqliteVFS {
       }
       return bytes;
     };
-    const detachedResize = (size: number, offset = 0, bytes = new Uint8Array(0)): void => {
+    const detachedResize = (size: number, offset = 0, bytes: Uint8Array = new Uint8Array(0)): void => {
       const node = current();
       const contentId = this.contentIdForInode(node);
       const count = Math.ceil(size / CHUNK_SIZE);
@@ -1396,7 +1396,7 @@ export class SqliteVFS {
       },
       chown: (uid, gid) => {
         if (cred.uid !== 0) throw vfsError('EPERM', path);
-        if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL);
+        if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
         else { current().uid = uid; current().gid = gid; }
       },
       utimes: (atime, mtime) => {
