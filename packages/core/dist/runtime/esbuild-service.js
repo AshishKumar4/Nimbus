@@ -16,6 +16,7 @@
  * this is acceptable for Phase 3. Phase 4+ can move it to a dedicated
  * facet once wasm module passing to dynamic workers is stable.
  */
+import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { resolvePackageEntry, resolveExports } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
@@ -55,7 +56,7 @@ import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from '.
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
  */
-export const BUNDLER_VERSION = 'v10';
+export const BUNDLER_VERSION = 'v11';
 // ── Shared-runtime externals ────────────────────────────────────────────
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
@@ -895,6 +896,108 @@ function dynamicImportEdits(source) {
         previous = token.type;
     }
 }
+/** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
+export function rewriteProvidedCommonJsModules(source) {
+    const helpers = new Set(['__commonJS']);
+    const declarations = topLevelModuleDeclarationRanges(source);
+    if (!declarations)
+        return source;
+    for (const range of declarations) {
+        const declaration = source.slice(range.start, range.end);
+        if (tokenizer(declaration, { ecmaVersion: 'latest', sourceType: 'module' }).getToken().type !== tokTypes._import)
+            continue;
+        const parsed = parseJavaScriptModule(declaration);
+        for (const statement of nodeList(parsed, 'body')) {
+            if (statement.type !== 'ImportDeclaration')
+                continue;
+            for (const specifier of nodeList(statement, 'specifiers')) {
+                if (nodeName(nodeProp(specifier, 'imported')) !== '__commonJS')
+                    continue;
+                const local = nodeName(nodeProp(specifier, 'local'));
+                if (local)
+                    helpers.add(local);
+            }
+        }
+    }
+    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+    let a = tokens.getToken();
+    let b = tokens.getToken();
+    let c = tokens.getToken();
+    let d = tokens.getToken();
+    let e = tokens.getToken();
+    let previous = tokTypes.eof;
+    const edits = [];
+    while (a.type !== tokTypes.eof) {
+        const labelValue = 'value' in d ? d.value : undefined;
+        const helperValue = 'value' in a ? a.value : undefined;
+        const label = d.type === tokTypes.string && typeof labelValue === 'string' ? labelValue : null;
+        const entry = label === null ? undefined : Object.entries(FACET_PROVIDED_PACKAGE_ENTRYPOINTS).find(([name, path]) => {
+            const suffix = 'node_modules/' + name + '/' + path;
+            return label === suffix || label.endsWith('/' + suffix);
+        });
+        if (a.type === tokTypes.name && typeof helperValue === 'string' && helpers.has(helperValue)
+            && previous !== tokTypes.dot && previous !== tokTypes.questionDot
+            && b.type === tokTypes.parenL && c.type === tokTypes.braceL && entry
+            && e.type === tokTypes.parenL) {
+            let parens = 2;
+            let braces = 1;
+            let singleModule = true;
+            let bodySeen = false;
+            let last = e;
+            let pendingComma = false;
+            while (parens > 0) {
+                const token = tokens.getToken();
+                if (token.type === tokTypes.eof)
+                    return source;
+                if (pendingComma && token.type !== tokTypes.braceR)
+                    singleModule = false;
+                pendingComma = false;
+                if (token.type === tokTypes.braceL || token.type === tokTypes.dollarBraceL) {
+                    if (braces === 1 && parens === 1)
+                        bodySeen = true;
+                    braces++;
+                }
+                else if (token.type === tokTypes.braceR)
+                    braces--;
+                if (token.type === tokTypes.parenL)
+                    parens++;
+                else if (token.type === tokTypes.parenR)
+                    parens--;
+                if (braces === 1 && parens === 1 && token.type === tokTypes.comma)
+                    pendingComma = true;
+                if (braces === 0 && parens === 1 && token.type !== tokTypes.braceR)
+                    singleModule = false;
+                last = token;
+            }
+            if (singleModule && bodySeen && braces === 0) {
+                edits.push({ start: a.start, end: last.end, text: '(() => require(' + JSON.stringify(entry[0]) + '))' });
+            }
+            previous = last.type;
+            a = tokens.getToken();
+            b = tokens.getToken();
+            c = tokens.getToken();
+            d = tokens.getToken();
+            e = tokens.getToken();
+            continue;
+        }
+        previous = a.type;
+        a = b;
+        b = c;
+        c = d;
+        d = e;
+        e = tokens.getToken();
+    }
+    if (edits.length === 0)
+        return source;
+    const parts = [];
+    let cursor = 0;
+    for (const edit of edits) {
+        parts.push(source.slice(cursor, edit.start), edit.text);
+        cursor = edit.end;
+    }
+    parts.push(source.slice(cursor));
+    return parts.join('');
+}
 export function rewriteBundledEsmToCjs(source, absoluteUrl) {
     if (hasUnscopedAwait(source))
         return null;
@@ -1225,6 +1328,9 @@ export class EsbuildService {
      * intersection.
      */
     async transform(code, options) {
+        if (options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')) {
+            code = rewriteProvidedCommonJsModules(code);
+        }
         await this.ensureInit();
         return transformWithEsbuild(this._esbuild, code, options);
     }

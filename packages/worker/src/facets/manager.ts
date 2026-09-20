@@ -59,6 +59,7 @@ import {
 import {
   EsbuildService,
   rewriteBundledEsmToCjs,
+  rewriteProvidedCommonJsModules,
   type TransformResult,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
@@ -557,7 +558,7 @@ export async function generateEntrypointCode(
   shims: string,
   wasmImports: readonly FacetWasmImport[] = [],
 ): Promise<GeneratedNodeFacetCode> {
-  const safeCode = JSON.stringify(userCode);
+  const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
   const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
@@ -897,7 +898,7 @@ export async function generateLongRunningNodeCode(
   shims: string,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
-  const safeCode = JSON.stringify(userCode);
+  const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     env: opts.env || {},
@@ -3402,8 +3403,9 @@ async function transformEsmInBundle(
     candidates.push(path);
   }
   for (const path of candidates) {
-    const src = bundle[path];
-    if (typeof src !== 'string') continue;
+    const original = bundle[path];
+    if (typeof original !== 'string') continue;
+    const src = bundleTypescriptLoader(path) === null ? rewriteProvidedCommonJsModules(original) : original;
     // A TypeScript source keeps its bytes; its emit lands beside it.
     const target = bundleTypescriptLoader(path) === null ? path : compiledCellKey(path);
     // esbuild-wasm runs inside this isolate, so a transform is computation
@@ -3694,7 +3696,14 @@ async function _buildPrefetchBundle(
     // treatment so users see WHY the ESM file couldn't be transformed.
     _markBundleEsmAsFailed(bundle, 'esbuild service not initialized (likely lazy-init failure)');
   }
-
+  for (const path of Object.keys(bundle)) {
+    if (compiledCellPath(path) === null && (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null)) continue;
+    const source = bundle[path];
+    if (typeof source !== 'string') continue;
+    await pacer?.spend(source.length);
+    bundle[path] = rewriteProvidedCommonJsModules(source);
+  }
+  await paceAfterPass();
   // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
   //    from content cap so fs.readdirSync remains honest even if the
   //    content for a given file was capped out.

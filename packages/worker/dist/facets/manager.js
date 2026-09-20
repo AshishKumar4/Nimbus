@@ -36,7 +36,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
-import { EsbuildService, rewriteBundledEsmToCjs, } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { EsbuildService, rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
@@ -370,7 +370,7 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
  * Generate one-shot runtime code with a plain fetch handler.
  */
 export async function generateEntrypointCode(userCode, vfsState, usesSqlite, shims, wasmImports = []) {
-    const safeCode = JSON.stringify(userCode);
+    const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
     const safeManifest = vfsState.serializedManifest ?? JSON.stringify(vfsState.manifest);
     const safeMetadata = vfsState.serializedMetadata ?? JSON.stringify(vfsState.metadata);
@@ -673,7 +673,7 @@ function facetWasmImportsSource(wasmImports) {
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, shims, pacer) {
-    const safeCode = JSON.stringify(userCode);
+    const safeCode = JSON.stringify(rewriteProvidedCommonJsModules(userCode));
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
         env: opts.env || {},
@@ -3110,9 +3110,10 @@ async function transformEsmInBundle(bundle, esbuild, pacer, isolatedTransform) {
         candidates.push(path);
     }
     for (const path of candidates) {
-        const src = bundle[path];
-        if (typeof src !== 'string')
+        const original = bundle[path];
+        if (typeof original !== 'string')
             continue;
+        const src = bundleTypescriptLoader(path) === null ? rewriteProvidedCommonJsModules(original) : original;
         // A TypeScript source keeps its bytes; its emit lands beside it.
         const target = bundleTypescriptLoader(path) === null ? path : compiledCellKey(path);
         // esbuild-wasm runs inside this isolate, so a transform is computation
@@ -3370,6 +3371,16 @@ async function _buildPrefetchBundle(vfs, scriptPath, cwd, entryCode, esbuild, bu
         // treatment so users see WHY the ESM file couldn't be transformed.
         _markBundleEsmAsFailed(bundle, 'esbuild service not initialized (likely lazy-init failure)');
     }
+    for (const path of Object.keys(bundle)) {
+        if (compiledCellPath(path) === null && (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null))
+            continue;
+        const source = bundle[path];
+        if (typeof source !== 'string')
+            continue;
+        await pacer?.spend(source.length);
+        bundle[path] = rewriteProvidedCommonJsModules(source);
+    }
+    await paceAfterPass();
     // 3. Manifest pass — UNCHANGED from W2.5b. Decouples directory shape
     //    from content cap so fs.readdirSync remains honest even if the
     //    content for a given file was capped out.

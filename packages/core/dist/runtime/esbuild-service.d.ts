@@ -49,7 +49,7 @@ import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
  */
-export declare const BUNDLER_VERSION = "v10";
+export declare const BUNDLER_VERSION = "v11";
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
  * `specifier` so that React / React-DOM / Scheduler share a single instance
@@ -71,6 +71,8 @@ export declare const BUNDLER_VERSION = "v10";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
+/** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
+export declare function rewriteProvidedCommonJsModules(source: string): string;
 export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /**

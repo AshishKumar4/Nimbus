@@ -255,4 +255,5 @@ export const DEFAULT_MOUNT_POINTS = ['bin', 'etc', 'home', 'tmp', 'var', 'usr', 
 // a facet does not have, and its `install()` replaces globalThis.fetch with
 // an implementation that throws on first use AND drops Nimbus's in-session
 // loopback routing and AI-egress mediation. See runtime/undici-shim.ts.
-export const FACET_PROVIDED_PACKAGES: readonly string[] = ['undici'];
+export const FACET_PROVIDED_PACKAGE_ENTRYPOINTS: Readonly<Record<string, string>> = Object.freeze({ undici: 'index.js' });
+export const FACET_PROVIDED_PACKAGES: readonly string[] = Object.freeze(Object.keys(FACET_PROVIDED_PACKAGE_ENTRYPOINTS));
