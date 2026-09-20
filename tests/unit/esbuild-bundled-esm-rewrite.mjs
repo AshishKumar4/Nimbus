@@ -179,4 +179,28 @@ assert.equal(
   assert.match(out.code, /await import\("node:fs"\)/, 'and survives verbatim in the string');
 }
 
+for (const source of [
+  "const pattern = /[\"']/; async function load() { return (await import /* provider */ (\"./provider.js\")).value; } export { load };",
+  "async function load() { return `${(await import(\"./provider.js\")).value}`; } export { load };",
+]) {
+  const out = rewriteBundledEsmToCjs(source, absoluteUrl);
+  assert.ok(out, 'regex and template expressions remain on the bounded path');
+  const calls = [];
+  const cell = { exports: {}, require: (id) => { calls.push(id); return { value: 'PROVIDER_OK' }; } };
+  const previous = globalThis.__nimbusCellImport;
+  globalThis.__nimbusCellImport = (require, id) => Promise.resolve(require(id));
+  try {
+    new Function('exports', 'require', 'module', out.code)(cell.exports, cell.require, cell);
+    assert.equal(await cell.exports.load(), 'PROVIDER_OK');
+    assert.deepEqual(calls, ['./provider.js'], 'the provider import uses the cell resolver');
+  } finally { globalThis.__nimbusCellImport = previous; }
+}
+
+{
+  const method = rewriteBundledEsmToCjs('const api = { import(id) { return id; } }; export { api };', absoluteUrl);
+  assert.equal(method, null, 'an import-named method is left to the compiler, not rewritten as a call');
+  const member = rewriteBundledEsmToCjs('const call = (api) => api?.import("x"); export { call };', absoluteUrl);
+  assert.ok(member);
+  assert.doesNotMatch(member.code, /__nimbusCellImport/, 'optional member calls are not import expressions');
+}
 console.log('esbuild-bundled-esm-rewrite: ok');

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "fb8b21e9f77d00224888c0a95b6d966fab9eee5f07838fd09fb4313fdc62cfb0",
+  "fingerprint": "64314d772890b8597de89337ccae210f213438c324dc140328ce7d0715f8e97a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -125,9 +125,9 @@
     "packages/core/dist/runtime/cpython-runner.d.ts": "f99348119dcee31aba1d21e76079d048117eb9198cb7303f50bfe07a2a43c7d6",
     "packages/core/dist/runtime/cpython-runner.d.ts.map": "866a043f3645674c98fac7303aa4a098c71feb34a6b53be93ac2db89155063e8",
     "packages/core/dist/runtime/cpython-runner.js": "9bc29597180a7e396f4e59f43a3cc01681f076a39918a747ea3f131a0b1f427f",
-    "packages/core/dist/runtime/esbuild-service.d.ts": "25499ffb406c51ab46e4a1a4ed44ac04fd9d13d33ac82ebacd745d4c21567179",
-    "packages/core/dist/runtime/esbuild-service.d.ts.map": "c4c656435ec47f41e37c6d928000194c7fcd72724b7e4e1e7bfa236a63b15d3d",
-    "packages/core/dist/runtime/esbuild-service.js": "c983157bb7d01472c9a7dab3273b6a84e123bf092e01e647efe39b2e49fc1a72",
+    "packages/core/dist/runtime/esbuild-service.d.ts": "53d1a70d0a147a89e4b8676de726bc225bd4c870d17917b2e790594ca263914e",
+    "packages/core/dist/runtime/esbuild-service.d.ts.map": "a70b54552630e22881c552a33eff10c16443f73c394361e4252a5ed0df20baa4",
+    "packages/core/dist/runtime/esbuild-service.js": "952dba844bcfda2ce5465bf3726860da3c99cd104ad7da7f74e039b6757771b7",
     "packages/core/dist/runtime/facet-host.d.ts": "0d895e6b6d67019fe0fbf8bcdfaea09d0428e9124202a8edcfdb69dd65bc9508",
     "packages/core/dist/runtime/facet-host.d.ts.map": "d81fb6d274a336f07f91106052c407b89ce6346a3a4fc537b21f439d5859cbd5",
     "packages/core/dist/runtime/facet-host.js": "9f65d1563fcf53b1e7e3db691a5db7332ef775d76e65f18cee0cd95dcabce2f5",
@@ -906,7 +906,7 @@
     "packages/core/src/runtime/comment-strip.ts": "d93e9f104f69ab48c525bc34188feab0cdbe4ed71de625550e7a8bd54bd632b2",
     "packages/core/src/runtime/cpython-preamble.ts": "8c7053a6415b2442fce083bd382fc24e08bfe9b806fd56c82c84a871970e5ee3",
     "packages/core/src/runtime/cpython-runner.ts": "18c613cab1560fc18e144982ebce0e1e16eca6b2c8abec2ad2b6cc0b8b6d023f",
-    "packages/core/src/runtime/esbuild-service.ts": "a0b35947a0659f2977d3c1e8a752033cf7077a68ca6a19ae1dc78dee4773cef4",
+    "packages/core/src/runtime/esbuild-service.ts": "6d06d39d3505d9bc798e811befd122e83865d0fca402aa4d871c46d116282adf",
     "packages/core/src/runtime/facet-host.ts": "6e985584ca104673a7562e2bf0e2412de977bca7340b632b9dc84aea976244f4",
     "packages/core/src/runtime/framework-detect.ts": "9814a3a017015fe077f0a520683503e125db50a7e1e3b1cdb20c61b388817508",
     "packages/core/src/runtime/import-meta-transform.ts": "9051cbd081d74ae8e99addc30368173f13345bda719907bf9b556158de6e6c76",

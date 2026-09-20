@@ -49,7 +49,7 @@ import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
  *        rows hold post-rewrite text and must be re-bundled. user_module_
  *        transforms is likewise re-keyed by mount base.
  */
-export declare const BUNDLER_VERSION = "v9";
+export declare const BUNDLER_VERSION = "v10";
 /**
  * Returns the list of specifiers that must be marked `external` when bundling
  * `specifier` so that React / React-DOM / Scheduler share a single instance
