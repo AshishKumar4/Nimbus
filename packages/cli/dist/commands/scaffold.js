@@ -174,10 +174,14 @@ function renderWranglerJsonc(name) {
   },
 
   "durable_objects": {
-    "bindings": [{ "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }]
+    "bindings": [
+      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" },
+      { "name": "NIMBUS_PUBLIC_DIRECTORY", "class_name": "NimbusPublicDirectory" }
+    ]
   },
   "migrations": [
-    { "tag": "nimbus-v1", "new_sqlite_classes": ["NimbusSession"] }
+    { "tag": "nimbus-v1", "new_sqlite_classes": ["NimbusSession"] },
+    { "tag": "nimbus-v2", "new_sqlite_classes": ["NimbusPublicDirectory"] }
   ],
 
   "worker_loaders": [{ "binding": "LOADER" }],
@@ -210,6 +214,7 @@ import { defineNimbusConfig } from '@nimbus-sh/config';
 // auto-populate loopback bindings (env.SUPERVISOR, etc.).
 export {
   NimbusSession,
+  NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
   NimbusLoaderRPC,
