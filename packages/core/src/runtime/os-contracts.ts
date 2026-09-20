@@ -113,6 +113,9 @@ export function requireVfsCred(value: unknown, source: string): VfsCred {
 export type RuntimeFileType = 'file' | 'directory' | 'symlink';
 
 export interface RuntimeVfsStat {
+  dev: number;
+  ino: number;
+  nlink: number;
   type: RuntimeFileType;
   size: number;
   ctime: number;
@@ -135,6 +138,8 @@ export interface RuntimeOpenFlags {
   write?: boolean;
   append?: boolean;
   create?: boolean;
+  exclusive?: boolean;
+  directory?: boolean;
   truncate?: boolean;
   followSymlinks?: boolean;
   expectedRevision?: number;
@@ -152,6 +157,7 @@ export interface RuntimeFileHandle {
 }
 
 export type Awaitable<T> = T | Promise<T>;
+export type RuntimeFsPath = string | { readonly directory: number; readonly path: string };
 
 export interface RuntimeReadOptions {
   followSymlinks?: boolean;
@@ -191,55 +197,55 @@ export type RuntimeSynchronousFs = {
 
 export interface RuntimeFsBridge {
   readonly synchronous?: RuntimeSynchronousFs;
-  stat(path: string, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsStat | null>;
-  readFile(path: string, options?: { followSymlinks?: boolean }): Awaitable<Uint8Array | null>;
+  stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsStat | null>;
+  readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<Uint8Array | null>;
   /**
    * Whole-file write. Returns the revision the write produced, so a caller
    * holding the bytes it just sent can tell its own mutation apart from a
    * peer's when {@link RuntimeFsBridge.acquire} reports the path back.
    */
-  writeFile(path: string, bytes: string | Uint8Array, options?: {
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
     createParents?: boolean;
     expectedRevision?: number;
   }): Awaitable<number>;
   /** Stateless ranged read: clamped at EOF; null when the path is absent. */
-  readRange(path: string, offset: number, length: number, options?: RuntimeReadOptions): Awaitable<Uint8Array | null>;
+  readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Awaitable<Uint8Array | null>;
   /**
    * Stateless ranged write: updates only the chunks the range touches
    * (never a whole-file rewrite), zero-filling any gap past EOF.
    * Creates the file when missing. Returns bytes written.
    */
-  writeRange(path: string, offset: number, bytes: Uint8Array, options?: {
+  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
     createParents?: boolean;
     expectedRevision?: number;
   }): Awaitable<number>;
   /** Truncate or zero-extend to `size`, touching only the boundary chunk. */
-  truncate(path: string, size: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
-  utimes(path: string, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
+  utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
   /** Set permission bits (POSIX chmod — follows symlinks). */
-  chmod(path: string, mode: number): Awaitable<void>;
+  chmod(path: RuntimeFsPath, mode: number): Awaitable<void>;
   /** Check access using the bridge's process credential. */
-  access(path: string, mode: number): Awaitable<void>;
+  access(path: RuntimeFsPath, mode: number): Awaitable<void>;
   /** Change stored ownership, optionally operating on a symlink itself. */
-  chown(path: string, uid: number, gid: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
-  open(path: string, flags: RuntimeOpenFlags): Awaitable<RuntimeFileHandle>;
+  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): Awaitable<void>;
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeFileHandle>;
   read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
   write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
   close(handleId: number): Awaitable<void>;
-  readdir(path: string, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsDirEntry[]>;
-  mkdir(path: string, options?: { recursive?: boolean; mode?: number }): Awaitable<void>;
-  unlink(path: string): Awaitable<void>;
-  rmdir(path: string): Awaitable<void>;
-  rename(from: string, to: string): Awaitable<void>;
-  readlink(path: string): Awaitable<string | null>;
-  symlink(target: string, path: string): Awaitable<void>;
+  readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsDirEntry[]>;
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): Awaitable<void>;
+  unlink(path: RuntimeFsPath): Awaitable<void>;
+  rmdir(path: RuntimeFsPath): Awaitable<void>;
+  rename(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
+  readlink(path: RuntimeFsPath): Awaitable<string | null>;
+  symlink(target: string, path: RuntimeFsPath): Awaitable<void>;
   fsync(handleId?: number): Awaitable<void>;
   /**
    * Without a path: the global VFS mutation watermark. With a path: a
    * per-path subtree watermark — it changes iff that path or anything
    * under it mutated, so consumers can cache without global invalidation.
    */
-  revision(path?: string): Awaitable<number>;
+  revision(path?: RuntimeFsPath): Awaitable<number>;
   /**
    * The cache-coherence barrier. A caller holding a resident cache stamped
    * at `(epoch, cursor)` gets back every path mutated since, and re-stamps.
@@ -262,9 +268,9 @@ export interface RuntimeFsBridge {
    */
   list(after?: string | null, limit?: number): Awaitable<VfsListPage>;
   subscribe?(path: string, listener: (event: VfsEvent) => void): () => void;
-  realpath(path: string): Awaitable<string>;
-  remove(path: string, options?: { recursive?: boolean; force?: boolean }): Awaitable<void>;
-  copyFile(from: string, to: string): Awaitable<void>;
+  realpath(path: RuntimeFsPath): Awaitable<string>;
+  remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean }): Awaitable<void>;
+  copyFile(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
   fstat(handleId: number): Awaitable<RuntimeVfsStat>;
   dup(handleId: number): Awaitable<RuntimeFileHandle>;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): Awaitable<number>;
@@ -274,11 +280,11 @@ export interface RuntimeFsBridge {
   fchmod(handleId: number, mode: number): Awaitable<void>;
   fchown(handleId: number, uid: number, gid: number): Awaitable<void>;
   futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
-  appendOnce(path: string, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
+  appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
   acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): Awaitable<void>;
   writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload): Awaitable<{ inodes: number; chunks: number }>;
   writeStream(stream: ReadableStream<Uint8Array>, options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
-  acquireExclusiveMutation(path: string, options?: { includeMissingAncestors?: boolean }): Awaitable<{ root: string; owner: string }>;
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): Awaitable<{ root: string; owner: string }>;
   releaseExclusiveMutation(owner: string): Awaitable<void>;
 }
 

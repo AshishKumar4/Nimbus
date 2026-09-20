@@ -148,6 +148,7 @@ interface INode {
 }
 
 export interface VfsOpenDescription {
+  path(): string;
   stat(): VfsStat;
   read(offset: number, length: number): Uint8Array;
   write(offset: number, bytes: Uint8Array): number;
@@ -160,6 +161,9 @@ export interface VfsOpenDescription {
 }
 
 export interface VfsStat {
+  dev: number;
+  ino: number;
+  nlink: number;
   type: VfsInodeKind;
   size: number;
   atime: number;
@@ -747,6 +751,7 @@ export class SqliteVFS {
   private _batchWriteRows = 0;
 
   readonly namespace: string;
+  readonly deviceId: number;
 
   constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string) {
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
@@ -756,6 +761,10 @@ export class SqliteVFS {
     }
     if (!namespace || namespace.length > 256) throw vfsError('EINVAL', 'invalid filesystem namespace');
     this.namespace = namespace;
+    sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL UNIQUE)');
+    sql.exec('INSERT OR IGNORE INTO nimbus_filesystem_devices(namespace) VALUES (?)', namespace);
+    this.deviceId = Number([...sql.exec('SELECT id FROM nimbus_filesystem_devices WHERE namespace = ?', namespace)][0]!.id);
+    sql.exec('CREATE TABLE IF NOT EXISTS vfs_inode_identity (ino INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL UNIQUE)');
     // Receipt/fence tables are control state; existing unscoped tables remain
     // untouched in their legacy scope. Namespace bytes, not pids, identify owners.
     const scope = Array.from(new TextEncoder().encode(namespace), b => b.toString(16).padStart(2, '0')).join('');
@@ -1310,6 +1319,7 @@ export class SqliteVFS {
     if (!resolved.inode) throw vfsError('ENOENT', path);
     const opened = { inode: { ...resolved.inode, contentId: this.contentIdForInode(resolved.inode) }, path: resolved.path as string | null };
     this.openNodes.add(opened);
+    const ino = this.inodeIdentity(resolved.path);
     let closed = false;
     const current = (): INode => {
       if (closed) throw vfsError('EBADF', path);
@@ -1317,7 +1327,7 @@ export class SqliteVFS {
     };
     const stat = (): VfsStat => {
       const node = current();
-      return { type: node.kind, size: node.size, atime: node.atime, ctime: node.mtime, mtime: node.mtime, mode: node.mode, uid: node.uid, gid: node.gid };
+      return { dev: this.deviceId, ino, nlink: opened.path === null ? 0 : 1, type: node.kind, size: node.size, atime: node.atime, ctime: node.mtime, mtime: node.mtime, mode: node.mode, uid: node.uid, gid: node.gid };
     };
     const read = (offset: number, length: number): Uint8Array => {
       const node = current();
@@ -1355,6 +1365,7 @@ export class SqliteVFS {
       for (const other of this.openNodes) if (other.path === null && this.contentIdForInode(other.inode) === contentId) other.inode = node;
     };
     return {
+      path: () => { current(); if (opened.path === null) throw vfsError('ENOENT', path); return opened.path; },
       stat, read,
       write: (offset, bytes) => {
         const node = current();
@@ -1395,6 +1406,11 @@ export class SqliteVFS {
       },
       close: () => { if (!closed) { closed = true; this.openNodes.delete(opened); } },
     };
+  }
+
+  private inodeIdentity(path: string): number {
+    this.sql.exec('INSERT OR IGNORE INTO vfs_inode_identity(path) VALUES (?)', path);
+    return Number([...this.sql.exec('SELECT ino FROM vfs_inode_identity WHERE path = ?', path)][0]!.ino);
   }
 
   private now(): number { return Date.now(); }
@@ -3008,6 +3024,7 @@ export class SqliteVFS {
     const inode = resolved.inode;
     if (!inode) throw vfsError('ENOENT', path);
     return {
+      dev: this.deviceId, ino: this.inodeIdentity(resolved.path), nlink: 1,
       type: inode.kind,
       size: inode.size,
       atime: inode.atime || inode.mtime,
@@ -3186,7 +3203,7 @@ export class SqliteVFS {
         kind: inode.kind,
         size: inode.size,
         rev: this._revision,
-        stat: { type: inode.kind, size: inode.size, atime: inode.atime, ctime: inode.mtime, mtime: inode.mtime, mode: inode.mode, uid: inode.uid, gid: inode.gid, revision: this._revision },
+        stat: { ...this.stat(logical, cred, false), revision: this._revision },
         ...(inode.kind === 'symlink' ? { linkTarget: this.readlink(logical, cred) } : {}),
       });
     }
@@ -3489,6 +3506,11 @@ export class SqliteVFS {
     }
     for (const { entry, stored } of renamed) {
       for (const opened of this.openNodes) if (opened.path === entry.path) opened.path = stored.path;
+      this.transactionSync(() => {
+        const identity = this.inodeIdentity(entry.path);
+        this.sql.exec('DELETE FROM vfs_inode_identity WHERE path = ?', stored.path);
+        this.sql.exec('UPDATE vfs_inode_identity SET path = ? WHERE ino = ?', stored.path, identity);
+      });
       const moved: INode = {
         ...entry,
         path: stored.path,
@@ -4303,6 +4325,7 @@ export class SqliteVFS {
   ): void {
     this.executeMeasuredTransaction(plan, execution, () => {
       for (const path of plan.deletedPaths) {
+        this.sql.exec('DELETE FROM vfs_inode_identity WHERE path = ?', path);
         this.sql.exec("DELETE FROM inodes WHERE path = ?", path);
       }
 
