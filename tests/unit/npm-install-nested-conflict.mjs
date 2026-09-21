@@ -30,7 +30,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
 
-/** The synthetic registry: name → version → dependencies. */
+/** The synthetic registry: name → version → dependencies (or { dependencies, peerDependencies }). */
 const REGISTRY = {
   a: { '1.0.0': { c: '^1.0.0', d: '^2.0.0', e: '^1.0.0' } },
   b: { '1.0.0': { c: '^2.0.0' } },
@@ -50,24 +50,27 @@ function resolveFromRegistry(name, spec) {
       error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` },
     };
   }
+  const entry = versions[version];
+  const dependencies = entry.dependencies ?? entry;
+  const peerDependencies = entry.peerDependencies;
   const pkg = {
     name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-    dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
+    dependencies, peerDependencies, exports: null, main: 'index.js', module: '', bin: {},
   };
   return {
-    pkg, deps: pkg.dependencies, peerDeps: {}, optionalDeps: {}, allPeerDependencies: {},
+    pkg, deps: pkg.dependencies, peerDeps: peerDependencies ?? {}, optionalDeps: {}, allPeerDependencies: peerDependencies ?? {},
     // The registry cache is what the next install's lock-check reads edges from.
     cacheWrites: [registryEntryFromResolved(pkg)],
     messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
 }
 
-function makeInstaller() {
+function makeInstaller(dependencies = { a: '^1.0.0', b: '^1.0.0' }) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
   root.mkdir(NM, { recursive: true });
-  root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fixture', dependencies: { a: '^1.0.0', b: '^1.0.0' } }));
+  root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fixture', dependencies }));
   const log = [];
   const shardsSeen = [];
   const env = makeFanoutEnv({ root, NM, resultFor: resolveFromRegistry, shardsSeen });
@@ -135,6 +138,50 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   const summary = log.find((l) => l.startsWith('Done!'));
   assert.match(summary, /^Done! 7 packages \(2 nested\),/, summary);
   console.log('  second install: lock-check no-op, tree intact');
+}
+
+// ── a peer edge never nests: the host provides it, mismatched or not ────────
+//
+// A nested duplicate of a peer is worse than a mismatched shared copy (two
+// Reacts break hooks; npm refuses with ERESOLVE rather than duplicating).
+// `pc` peers on c@^2 while root holds c@1.0.0: no nested c, one warn line
+// the way npm warns, one c row in the lockfile.
+{
+  Object.assign(REGISTRY, { pc: { '1.0.0': { dependencies: {}, peerDependencies: { c: '^2.0.0' } } } });
+  const peer = makeInstaller({ a: '^1.0.0', pc: '^1.0.0' });
+  const result = await peer.installer.install(PROJ, { pid: 1 });
+  assert.deepEqual(result.failed, [], peer.log.join('\n'));
+  assert.equal(versionAt(peer.root, 'c'), '1.0.0');
+  assert.equal(peer.root.exists(`${NM}/pc/node_modules/c`), false, 'a peer edge is never nested');
+  const warn = peer.log.find((l) => /\[warn\] peer c@\^2\.0\.0 from pc is met by c@1\.0\.0 \(c\)/.test(l));
+  assert.ok(warn, `the mismatch is warned once: ${peer.log.join('\n')}`);
+  assert.equal(peer.log.filter((l) => /\[warn\] peer c@/.test(l)).length, 1);
+  const lock = peer.installer.npmCache.readLockfile(PROJ);
+  assert.deepEqual([...lock.keys()].filter((k) => lock.get(k).name === 'c'), ['c'], 'one c row');
+  assert.ok(!peer.log.some((l) => /nested\)/.test(l)), 'nothing nested');
+  console.log(`  peer: ${warn.trim()}`);
+}
+
+// ── shadowing: a copy nested under an ancestor cannot break what is beneath ──
+//
+// `app → a@1 → c@^2`, `app → c@^1`, `a → b@^1 → c@^1` with `app → b@2` so b
+// nests under a. Root c@1 and a/node_modules/c@2; a/node_modules/b's walk
+// now finds a/node_modules/c first, which does not satisfy ^1, so b gets
+// its own c@1 beneath it.
+{
+  Object.assign(REGISTRY, {
+    sa: { '1.0.0': { c: '^2.0.0', sb: '^1.0.0' } },
+    sb: { '1.0.0': { c: '^1.0.0' }, '2.0.0': {} },
+  });
+  const sh = makeInstaller({ c: '^1.0.0', sa: '^1.0.0', sb: '^2.0.0' });
+  const result = await sh.installer.install(PROJ, { pid: 1 });
+  assert.deepEqual(result.failed, [], sh.log.join('\n'));
+  assert.equal(versionAt(sh.root, 'c'), '1.0.0');
+  assert.equal(versionAt(sh.root, 'sb'), '2.0.0');
+  assert.equal(versionAt(sh.root, 'sa/node_modules/c'), '2.0.0');
+  assert.equal(versionAt(sh.root, 'sa/node_modules/sb'), '1.0.0');
+  assert.equal(versionAt(sh.root, 'sa/node_modules/sb/node_modules/c'), '1.0.0', 'sb beneath sa is not left against sa/node_modules/c@2');
+  console.log('  shadow: sa/node_modules/sb/node_modules/c@1.0.0 beneath sa/node_modules/c@2.0.0');
 }
 
 // ── a cycle with mutually incompatible ranges ends, and says why ───────────

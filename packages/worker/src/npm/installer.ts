@@ -684,12 +684,15 @@ export class NpmInstaller {
     const topLevelNames = new Set<string>(Object.keys(specs));
     const optionalNames = new Set<string>();   // X.5-G G1
     const bestEffortNames = new Set<string>(); // X.5-drizzle
-    // `from` is the dependent's placement, '' for the project.
-    type ResolveEdge = { name: string; range: string; from: string };
+    // `from` is the dependent's placement, '' for the project. A peer edge
+    // is provided by whatever the host's walk finds and never nests: a
+    // duplicate is worse than a mismatch (two Reacts break hooks), and npm
+    // refuses rather than duplicating.
+    type ResolveEdge = { name: string; range: string; from: string; kind: 'dep' | 'peer' };
     // A cycle with mutually incompatible ranges has no finite layout; the
     // edge is refused at this depth rather than nested without end.
     const MAX_NEST_DEPTH = 16;
-    let queue: ResolveEdge[] = Object.entries(specs).map(([name, range]) => ({ name, range, from: '' }));
+    let queue: ResolveEdge[] = Object.entries(specs).map(([name, range]) => ({ name, range, from: '', kind: 'dep' }));
     const cacheWritesPending: any[] = [];
     let totalPackumentBytes = 0;
     let totalPackumentsDecoded = 0;
@@ -746,6 +749,9 @@ export class NpmInstaller {
     while (queue.length > 0) {
       // Decide each edge against what Node's walk from its dependent sees.
       // One whose nearest visible placement is in flight waits a layer.
+      // A copy nested under a package is decided here in the layer after
+      // that package resolves, before anything beneath it can resolve, so
+      // no descendant is ever decided against a copy it will later shadow.
       const layer: Array<{ edge: ResolveEdge; placement: string }> = [];
       const deferred: ResolveEdge[] = [];
       for (const edge of queue) {
@@ -758,6 +764,9 @@ export class NpmInstaller {
           if (!pkg) continue; // never asked or failed: the walk goes on upward
           if (!isSemverRange(req.range) || satisfiesRange(pkg.version, req.range)) {
             decided = true; // reuse
+          } else if (edge.kind === 'peer') {
+            decided = true; // reuse anyway, and say so the way npm does
+            log(`  [warn] peer ${edge.name}@${edge.range} from ${edge.from} is met by ${pkg.name}@${pkg.version} (${candidate})`);
           } else {
             target = nestedPlacement(edge.from, edge.name);
           }
@@ -950,21 +959,21 @@ export class NpmInstaller {
         const inheritBestEffort = bestEffortNames.has(pkg.name);
         for (const [depName, depRange] of Object.entries(pkg.dependencies)) {
           if (inheritBestEffort) bestEffortNames.add(depName);
-          queue.push({ name: depName, range: depRange as string, from: actual });
+          queue.push({ name: depName, range: depRange as string, from: actual, kind: 'dep' });
         }
         const optDeps = pkg.optionalDependencies;
         if (optDeps) {
           for (const [depName, depRange] of Object.entries(optDeps)) {
             optionalNames.add(depName);
             if (inheritBestEffort) bestEffortNames.add(depName);
-            queue.push({ name: depName, range: depRange as string, from: actual });
+            queue.push({ name: depName, range: depRange as string, from: actual, kind: 'dep' });
           }
         }
         if (pkg.peerDependencies) {
           for (const [peerName, peerRange] of Object.entries(pkg.peerDependencies)) {
             topLevelNames.add(peerName);
             if (inheritBestEffort) bestEffortNames.add(peerName);
-            queue.push({ name: peerName, range: peerRange as string, from: actual });
+            queue.push({ name: peerName, range: peerRange as string, from: actual, kind: 'peer' });
           }
         }
         // X.5-F R2.5 + X.5-J: optional peers when THIS pkg is the
@@ -977,7 +986,7 @@ export class NpmInstaller {
             for (const [peerName, peerRange] of Object.entries(allPeers)) {
               topLevelNames.add(peerName);
               bestEffortNames.add(peerName);
-              queue.push({ name: peerName, range: peerRange as string, from: actual });
+              queue.push({ name: peerName, range: peerRange as string, from: actual, kind: 'peer' });
             }
           }
         }
