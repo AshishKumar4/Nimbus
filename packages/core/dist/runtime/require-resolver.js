@@ -44,6 +44,21 @@ const REQUIRE_RE = /(?:require(?:\.resolve)?\s*\(\s*)(['"`])([^'"`]+?)\1\s*\)/g;
 // can't read it — the scaffolder exits silently. Only literal specifiers
 // are followed; computed `import(expr)` remains out of scope.
 const DYNIMPORT_RE = /\bimport\s*\(\s*(['"`])([^'"`]+?)\1\s*\)/g;
+// Immediately-invoked `createRequire(<expr>)('literal')`. pi-coding-agent's
+// bin (dist/bundle/cli.js) is exactly:
+//   import { createRequire, enableCompileCache } from "node:module";
+//   enableCompileCache();
+//   createRequire(import.meta.url)("./cli-runtime.js");
+// None of REQUIRE_RE / IMPORT_RE / DYNIMPORT_RE match that call, so the
+// walker staged nothing beyond cli.js and the whole graph loaded lazily at
+// runtime, failing at the first `exports`-map subpath it met
+// (`@earendil-works/chord/context`) because chord's manifest was never
+// staged. `createRequire(import.meta.url)` resolves relative to the
+// current file, which is what `fromDir` already is. Deliberately narrow:
+// the argument may not contain `)` and only the immediately-invoked form is
+// matched; a bound `const require = createRequire(...)` is left alone
+// because its later `require('x')` calls already match REQUIRE_RE.
+const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`]+?)\1\s*\)/g;
 // X.5-C Fix #1: match ESM `import` and `export … from` statements.
 //
 // Why a second regex (not a unified one): REQUIRE_RE matches require(…)
@@ -585,6 +600,22 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         const stripped = stripCommentsForImports(code);
         REQUIRE_RE.lastIndex = 0;
         for (let match = REQUIRE_RE.exec(stripped); match !== null; match = REQUIRE_RE.exec(stripped)) {
+            const specifier = match[2];
+            if (isFacetProvided(specifier))
+                continue;
+            if (closureExceeded)
+                break;
+            const r = (await resolveRequireEx(vfs, specifier, fromDir, addPkgJson));
+            if (r) {
+                (await addFile(r.resolved));
+                if (r.stub)
+                    (await addStub(r.stub.path, r.stub.content));
+            }
+        }
+        // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
+        // require of './x' from this file's directory (pi-coding-agent's bin).
+        CREATE_REQUIRE_CALL_RE.lastIndex = 0;
+        for (let match = CREATE_REQUIRE_CALL_RE.exec(stripped); match !== null; match = CREATE_REQUIRE_CALL_RE.exec(stripped)) {
             const specifier = match[2];
             if (isFacetProvided(specifier))
                 continue;

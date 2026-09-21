@@ -163,3 +163,49 @@ assert.equal(
 );
 
 console.log('require-resolver: ok');
+
+// Immediately-invoked `createRequire(import.meta.url)('./x')` (pi-coding-agent
+// 0.86.1's bin, dist/bundle/cli.js, verbatim). None of the require/import
+// regexes match it, so without CREATE_REQUIRE_CALL_RE the walker stops at
+// cli.js and the exports-map subpath reached from cli-runtime.js fails at
+// runtime ("Cannot find module '@earendil-works/chord/context'").
+const piCli = [
+  'import { createRequire, enableCompileCache } from "node:module";',
+  'enableCompileCache();',
+  'createRequire(import.meta.url)("./cli-runtime.js");',
+  '',
+].join('\n');
+const piRuntime = 'import {x} from "@scope/dep/context";\n';
+const depPkgJson = JSON.stringify({
+  name: '@scope/dep',
+  type: 'module',
+  exports: {
+    '.': { import: './dist/index.js' },
+    './context': { source: './src/context.ts', types: './dist/context.d.ts', import: './dist/context.js' },
+  },
+});
+const piVfs = new FakeVfs({
+  [`${nm}/pi/dist/cli.js`]: piCli,
+  [`${nm}/pi/dist/cli-runtime.js`]: piRuntime,
+  [`${nm}/@scope/dep/package.json`]: depPkgJson,
+  [`${nm}/@scope/dep/dist/index.js`]: 'export const y = 1;\n',
+  [`${nm}/@scope/dep/dist/context.js`]: 'export const x = 1;\n',
+});
+const piResult = (await prefetchForRequire(piVfs, piCli, '/home/user', `/${nm}/pi/dist/cli.js`));
+assert.equal(
+  piResult.bundle[`${nm}/pi/dist/cli-runtime.js`],
+  piRuntime,
+  'createRequire(import.meta.url)("./cli-runtime.js") target not prefetched',
+);
+assert.equal(
+  piResult.bundle[`${nm}/@scope/dep/dist/context.js`],
+  'export const x = 1;\n',
+  'exports-map subpath reached through createRequire target not prefetched',
+);
+assert.equal(
+  piResult.bundle[`${nm}/@scope/dep/package.json`],
+  depPkgJson,
+  'package.json for exports-map subpath reached through createRequire target not shipped',
+);
+
+console.log('require-resolver: createRequire ok');
