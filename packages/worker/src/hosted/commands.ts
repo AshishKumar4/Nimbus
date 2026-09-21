@@ -1475,6 +1475,7 @@ registry.register('npx', async (ctx: any) => {
     npxArgs,
     (msg: string) => ctx.stdout.write(msg + '\n'),
     ctx.pid,
+    ctx.env?.NPM_REGISTRY,
   );
   if (resolveResult.ok && resolveResult.binPath) {
     const nodeCmd = await registry.resolve('node');

@@ -161,5 +161,31 @@ ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, 
   assert.match(r.stderr, /npm http fetch GET/);
 }
 
+// ── the registry origin is the command's NPM_REGISTRY, default npmjs ──
+//
+// An embedder that routes hosted installs through its own registry sets
+// NPM_REGISTRY in the session env; the port carries it to the installer,
+// which carries it to the resolve facet, the supervisor's packument RPC and
+// the per-origin cache key. Trailing slashes are trimmed so the same origin
+// spelled two ways shares one cache namespace.
+{
+  const seen = [];
+  ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {
+    installer: {
+      async install(spec) {
+        seen.push(spec.registry);
+        return { installed: ['example'], failed: [], totalFiles: 1 };
+      },
+    },
+  }));
+  let r = await ws.exec('cd /proj && npm install example');
+  assert.equal(r.exitCode, 0, r.stderr);
+  r = await ws.exec('cd /proj && NPM_REGISTRY=http://npm-registry.invalid/ npm install example');
+  assert.equal(r.exitCode, 0, r.stderr);
+  r = await ws.exec('cd /proj && export NPM_REGISTRY=https://mirror.invalid && npm install example');
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.deepEqual(seen, ['https://registry.npmjs.org', 'http://npm-registry.invalid', 'https://mirror.invalid']);
+}
+
 console.log('npm-install-port-contract: ok');
 harness.db.close();

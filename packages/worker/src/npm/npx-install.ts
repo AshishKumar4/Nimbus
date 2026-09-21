@@ -341,6 +341,8 @@ export async function resolveNpxBinary(
   rawArgs: string[],
   log: (msg: string) => void,
   pid?: number,
+  /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */
+  registry?: string,
 ): Promise<NpxResolveResult> {
   const parsed = parseNpxArgs(rawArgs);
   if ('error' in parsed) {
@@ -374,6 +376,7 @@ export async function resolveNpxBinary(
     const result = await installer.install(NPX_CACHE_DIR, {
       packages: [installSpec],
       pid,
+      registry,
     });
     if ((result.failed?.length || 0) > 0) {
       // Partial install — some package failed to resolve. The fix is

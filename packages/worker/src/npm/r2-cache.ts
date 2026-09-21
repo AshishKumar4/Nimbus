@@ -58,6 +58,7 @@
  *   - npm publish webhook -> cache invalidation.
  */
 
+import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 
 /**
@@ -115,18 +116,9 @@ export const R2_CACHE_PREFIX = 'v2';
  *  .expiresAt stamps remain valid against either TTL. */
 export const PACKUMENT_TTL_MS = 60 * 60_000;
 
-/** The registry an install reads from when its env names none (`NPM_REGISTRY`). */
-export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
-
-/**
- * The registry origin an install uses: the command's `NPM_REGISTRY` when
- * set, else the default — the same rule core's in-process `npm` applies.
- * A trailing slash is dropped so `${origin}/${name}` composes either way.
- */
-export function npmRegistryOrigin(configured: string | undefined): string {
-  const trimmed = configured?.trim();
-  return (trimmed ? trimmed : NPM_REGISTRY_ORIGIN).replace(/\/+$/, '');
-}
+// The origin rule lives with the command that reads NPM_REGISTRY; the cache
+// keys by the same value.
+export { NPM_REGISTRY_ORIGIN, npmRegistryOrigin };
 
 /** Jittered backoff between packument fetch attempts. */
 const PACKUMENT_BACKOFF_MS = [500, 1500, 4500];

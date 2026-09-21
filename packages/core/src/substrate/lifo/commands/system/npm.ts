@@ -16,7 +16,8 @@ import {
 } from './npm-install-args.js';
 import { npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
 
-const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
+/** The registry an install reads from when its env names none. */
+export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 export const NPM_VERSION = '10.0.0';
 
 // ─── Types ───
@@ -96,8 +97,19 @@ if (opts.linkedBins) {
 } }
 // ─── Helpers ───
 
+/**
+ * The registry origin an install uses: the command's `NPM_REGISTRY`, else
+ * the default. Normalized once, here, where the setting is read: blank is
+ * unset, and a trailing slash is trimmed so one origin spelled two ways
+ * shares one cache namespace downstream.
+ */
+export function npmRegistryOrigin(configured: string | undefined): string {
+	const trimmed = configured?.trim();
+	return (trimmed ? trimmed : NPM_REGISTRY_ORIGIN).replace(/\/+$/, '');
+}
+
 function getRegistry(env: Record<string, string>): string {
-	return env.NPM_REGISTRY || DEFAULT_REGISTRY;
+	return npmRegistryOrigin(env.NPM_REGISTRY);
 }
 
 function parsePackageSpec(spec: string): { name: string; version: string | null } {
