@@ -766,20 +766,35 @@ export class SqliteVFS {
   readonly namespace: string;
   readonly deviceId: number;
 
+  /**
+   * Construction writes only what is absent. A store whose schema and
+   * identity rows are already current is opened without a single write
+   * statement, so an embedder may hand us a readonly handle (a replica, a
+   * snapshot, a host whose SQLite is shared with us) and read. Every
+   * `CREATE ... IF NOT EXISTS` is a no-op on an existing object; every row
+   * seed is preceded by the read that decides it; the migration markers
+   * are written only when the migration runs.
+   */
   constructor(sql: SqlDatabase, ctx?: TransactionHost, namespace?: string) {
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_identity (slot INTEGER PRIMARY KEY CHECK(slot = 1), namespace TEXT NOT NULL)');
     if (namespace === undefined) {
-      sql.exec('INSERT OR IGNORE INTO nimbus_filesystem_identity(slot, namespace) VALUES (1, ?)', crypto.randomUUID());
-      const row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
-      if (!row) throw new Error('[sqlite-vfs] filesystem identity row missing after insert');
+      let row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
+      if (!row) {
+        sql.exec('INSERT OR IGNORE INTO nimbus_filesystem_identity(slot, namespace) VALUES (1, ?)', crypto.randomUUID());
+        row = [...sql.exec('SELECT namespace FROM nimbus_filesystem_identity WHERE slot = 1')][0];
+        if (!row) throw new Error('[sqlite-vfs] filesystem identity row missing after insert');
+      }
       namespace = String(row.namespace);
     }
     if (!namespace || namespace.length > 256) throw vfsError('EINVAL', 'invalid filesystem namespace');
     this.namespace = namespace;
     sql.exec('CREATE TABLE IF NOT EXISTS nimbus_filesystem_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL UNIQUE)');
-    sql.exec('INSERT OR IGNORE INTO nimbus_filesystem_devices(namespace) VALUES (?)', namespace);
-    const device = [...sql.exec('SELECT id FROM nimbus_filesystem_devices WHERE namespace = ?', namespace)][0];
-    if (!device) throw new Error('[sqlite-vfs] filesystem device row missing after insert');
+    let device = [...sql.exec('SELECT id FROM nimbus_filesystem_devices WHERE namespace = ?', namespace)][0];
+    if (!device) {
+      sql.exec('INSERT OR IGNORE INTO nimbus_filesystem_devices(namespace) VALUES (?)', namespace);
+      device = [...sql.exec('SELECT id FROM nimbus_filesystem_devices WHERE namespace = ?', namespace)][0];
+      if (!device) throw new Error('[sqlite-vfs] filesystem device row missing after insert');
+    }
     this.deviceId = Number(device.id);
     this.sql = sql;
     this.ctx = ctx;
@@ -919,7 +934,9 @@ export class SqliteVFS {
         slot INTEGER PRIMARY KEY CHECK (slot = 1),
         next INTEGER NOT NULL
       )`);
-      this.sql.exec('INSERT OR IGNORE INTO vfs_ino_allocator(slot, next) VALUES (1, 1)');
+      if ([...this.sql.exec('SELECT 1 FROM vfs_ino_allocator WHERE slot = 1')].length === 0) {
+        this.sql.exec('INSERT OR IGNORE INTO vfs_ino_allocator(slot, next) VALUES (1, 1)');
+      }
       if (!this.tableColumns('inodes').has('ino')) {
         this.sql.exec('ALTER TABLE inodes ADD COLUMN ino INTEGER NULL');
       }
@@ -1028,8 +1045,15 @@ export class SqliteVFS {
    * past the largest ino in use.
    */
   private backfillInoColumn(): void {
-    this.sql.exec('UPDATE inodes SET ino = rowid WHERE ino IS NULL');
-    this.sql.exec(`UPDATE vfs_ino_allocator SET next = MAX(next, (SELECT COALESCE(MAX(ino), 0) + 1 FROM inodes)) WHERE slot = 1`);
+    if ([...this.sql.exec('SELECT 1 FROM inodes WHERE ino IS NULL LIMIT 1')].length > 0) {
+      this.sql.exec('UPDATE inodes SET ino = rowid WHERE ino IS NULL');
+    }
+    const allocator = [...this.sql.exec(
+      `SELECT next, (SELECT COALESCE(MAX(ino), 0) + 1 FROM inodes) AS floor FROM vfs_ino_allocator WHERE slot = 1`,
+    )][0];
+    if (allocator && Number(allocator.next) < Number(allocator.floor)) {
+      this.sql.exec('UPDATE vfs_ino_allocator SET next = ? WHERE slot = 1', Number(allocator.floor));
+    }
   }
 
   
