@@ -223,7 +223,7 @@ const command: Command = async (ctx) => {
     const expr = ctx.args.slice(1).join(' ');
     const result = processLine(expr);
     if (result !== null && result !== 'quit') {
-      ctx.stdout.write(result + '\n');
+      await ctx.stdout.write(result + '\n');
     }
     return 0;
   }
@@ -232,17 +232,17 @@ const command: Command = async (ctx) => {
   if (ctx.args.length > 0 && ctx.args[0] !== '-e') {
     const path = ctx.args[0];
     try {
-      const content = ctx.vfs.readFileString(path);
+      const content = (await ctx.vfs.readFileString(path));
       for (const line of content.split('\n')) {
         const result = processLine(line);
         if (result === 'quit') return 0;
         if (result !== null) {
-          ctx.stdout.write(result + '\n');
+          await ctx.stdout.write(result + '\n');
         }
       }
       return 0;
     } catch {
-      ctx.stderr.write(`bc: ${path}: No such file\n`);
+      await ctx.stderr.write(`bc: ${path}: No such file\n`);
       return 1;
     }
   }
@@ -254,7 +254,7 @@ const command: Command = async (ctx) => {
       const result = processLine(line);
       if (result === 'quit') return 0;
       if (result !== null) {
-        ctx.stdout.write(result + '\n');
+        await ctx.stdout.write(result + '\n');
       }
     }
   }

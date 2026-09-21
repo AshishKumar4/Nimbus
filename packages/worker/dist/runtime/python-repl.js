@@ -1,5 +1,6 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { manifestVfs } from '@nimbus-sh/core/runtime/vfs-manifest.js';
+import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
@@ -164,9 +165,11 @@ class PythonReplAdapter {
         }
     }
     async ensurePool() {
-        const vfsForVariant = this.deps.vfs.as(CRED_KERNEL);
+        await withHostFilesystem(this.deps.authority, CRED_KERNEL, (vfs) => this.ensurePoolFrom(vfs));
+    }
+    async ensurePoolFrom(vfs) {
         const sciPath = `${this.deps.installRoot}/${CPYTHON_SCI_WASM_REL}`;
-        const wantsSci = sessionUsesSciVariant(vfsForVariant) && vfsForVariant.exists(sciPath);
+        const wantsSci = (await sessionUsesSciVariant(vfs)) && (await vfs.exists(sciPath));
         // A prompt that was open before `pip install numpy` is holding the
         // interpreter that does not have it. Dropping the pool rebuilds on the next
         // statement, which is the facet restart EXTENSIONS.md says this costs.
@@ -177,20 +180,19 @@ class PythonReplAdapter {
             return;
         this.poolUsesSci = wantsSci;
         const { installRoot, facetMgr } = this.deps;
-        const vfs = vfsForVariant;
         const wasmPath = wantsSci ? sciPath : `${installRoot}/${CPYTHON_WASM_REL}`;
         const stdlibPath = `${installRoot}/${CPYTHON_STDLIB_REL}`;
-        if (!vfs.exists(wasmPath)) {
+        if (!(await vfs.exists(wasmPath))) {
             throw new Error(`python.wasm missing at ${wasmPath} (run 'nimbus install python')`);
         }
-        if (!vfs.exists(stdlibPath)) {
+        if (!(await vfs.exists(stdlibPath))) {
             throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
         }
-        this.wasmBytes = toArrayBuffer(vfs.readFile(wasmPath));
+        this.wasmBytes = toArrayBuffer(await vfs.readFile(wasmPath));
         // The install root is the Python prefix, so the manifest covers lib/ and
         // etc/ as they are — nothing is aliased into a path the supervisor could
         // not serve.
-        const built = manifestVfs(vfs, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
+        const built = await manifestVfs(vfs.authority, CRED_KERNEL, 'home/user', { extraRoots: [installRoot.replace(/^\/+/, '')] });
         if ('error' in built)
             throw new Error(built.error);
         // Same workaround as cpython-runner, and it belongs to the same open
@@ -198,7 +200,7 @@ class PythonReplAdapter {
         // demand-load, though the transport delivers it byte-identically. Seeding
         // it by value is what makes the interpreter start. Remove both together.
         const snapshot = built.snapshot;
-        const zipBytes = vfs.readFile(stdlibPath);
+        const zipBytes = await vfs.readFile(stdlibPath);
         let bin = '';
         const CH = 32768;
         for (let i = 0; i < zipBytes.length; i += CH) {

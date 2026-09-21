@@ -15,6 +15,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const shimsPath = path.resolve(
@@ -71,7 +72,7 @@ const manager = new FacetManager(
   new PortRegistry(),
   processHostFor,
 );
-manager.setVfs(rawVfs);
+manager.setVfs(rawVfs, new SqliteFilesystemAuthority(rawVfs));
 
 await manager.exec(
   `const fs = require('fs');

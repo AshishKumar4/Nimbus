@@ -43,11 +43,11 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import type { RuntimeManifest } from './runtime-manifest.js';
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
+import { type NimbusFilesystemAuthority } from './os-contracts.js';
 import { type WasiFsSnapshot } from './wasi-instance.js';
-type RubyRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+type RubyRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Promise<Command>;
 /**
  * Build the ruby-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each
@@ -55,7 +55,7 @@ type RubyRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binNam
  */
 export declare function makeRubyRunnerFactory(deps: {
     facets: FacetHost;
-    vfs: SqliteVFS;
+    filesystem: NimbusFilesystemAuthority;
     registry?: {
         register(name: string, handler: Command): void;
         resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;

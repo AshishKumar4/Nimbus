@@ -32,44 +32,43 @@ export class SinkWriter {
     get bytesWritten() {
         return this.written;
     }
-    write(bytes) {
+    async write(bytes) {
         if (bytes.length === 0)
             return;
-        this.written += bytes.length;
         if (this.decoder)
-            this.sink.write(this.decoder.decode(bytes, { stream: true }));
+            await this.sink.write(this.decoder.decode(bytes, { stream: true }));
         else
-            this.sink.writeBytes(bytes);
+            await this.sink.writeBytes(bytes);
+        this.written += bytes.length;
     }
-    end() {
+    async end() {
         if (!this.decoder)
             return;
         const tail = this.decoder.decode();
         if (tail)
-            this.sink.write(tail);
+            await this.sink.write(tail);
     }
 }
 /**
  * Copies bytes from `read` into `sink` in {@link STREAM_CHUNK_BYTES} chunks.
  *
- * Stops at `length` bytes when given one, otherwise at the first short read
+ * Stops at `length` bytes when given one, otherwise at the first empty read
  * (EOF). Returns the number of bytes copied. Does not call `sink.end()` —
  * callers that write more than one range share a single writer.
  */
-export function streamRange(read, writer, options = {}) {
+export async function streamRange(read, writer, options = {}) {
     const { offset = 0, length, signal } = options;
     let position = offset;
     let copied = 0;
     while (length === undefined || copied < length) {
-        if (signal?.aborted)
-            break;
+        signal?.throwIfAborted();
         const want = length === undefined
             ? STREAM_CHUNK_BYTES
             : Math.min(STREAM_CHUNK_BYTES, length - copied);
-        const chunk = read(position, want);
+        const chunk = await read(position, want);
         if (chunk.length === 0)
             break;
-        writer.write(chunk);
+        await writer.write(chunk);
         position += chunk.length;
         copied += chunk.length;
     }

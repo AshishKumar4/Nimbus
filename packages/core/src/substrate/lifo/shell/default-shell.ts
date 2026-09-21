@@ -1,5 +1,5 @@
 import type { Command } from '../commands/types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 
 export type DefaultShell = 'lifo' | 'bash';
 
@@ -8,32 +8,32 @@ export function defaultShellPath(home: string): string {
   return `${normalizedHome}/.config/nimbus/shell`;
 }
 
-export function readDefaultShell(vfs: Pick<VFS, 'readFileString'>, home: string): DefaultShell {
+export async function readDefaultShell(vfs: Pick<ExecutionFs, 'readFileString'>, home: string): Promise<DefaultShell> {
   try {
-    return vfs.readFileString(defaultShellPath(home)).trim() === 'bash' ? 'bash' : 'lifo';
+    return (await vfs.readFileString(defaultShellPath(home))).trim() === 'bash' ? 'bash' : 'lifo';
   } catch {
     return 'lifo';
   }
 }
 
-function writeDefaultShell(vfs: VFS, home: string, shell: DefaultShell): void {
+async function writeDefaultShell(vfs: ExecutionFs, home: string, shell: DefaultShell): Promise<void> {
   const path = defaultShellPath(home);
   const parent = path.slice(0, path.lastIndexOf('/'));
-  if (!vfs.exists(parent)) vfs.mkdir(parent, { recursive: true });
-  vfs.writeFile(path, `${shell}\n`);
+  if (!(await vfs.exists(parent))) (await vfs.mkdir(parent, { recursive: true }));
+  (await vfs.writeFile(path, `${shell}\n`));
 }
 
 export function makeChshCommand(deps: {
-  isBashInstalled(home: string): boolean;
+  isBashInstalled(home: string): boolean | Promise<boolean>;
 }): Command {
   return async (ctx) => {
     const home = ctx.env.HOME || '/home/user';
     if (ctx.args.length === 0) {
-      ctx.stdout.write(`${readDefaultShell(ctx.vfs, home)}\n`);
+      (await ctx.stdout.write(`${(await readDefaultShell(ctx.vfs, home))}\n`));
       return 0;
     }
     if (ctx.args.length !== 2 || ctx.args[0] !== '-s') {
-      ctx.stderr.write('usage: chsh [-s bash|lifo|sh]\n');
+      (await ctx.stderr.write('usage: chsh [-s bash|lifo|sh]\n'));
       return 2;
     }
 
@@ -43,20 +43,20 @@ export function makeChshCommand(deps: {
       requested === 'lifo' || requested === 'sh' ? 'lifo' :
       null;
     if (shell === null) {
-      ctx.stderr.write(`chsh: unsupported shell '${requested}' (expected bash, lifo, or sh)\n`);
+      (await ctx.stderr.write(`chsh: unsupported shell '${requested}' (expected bash, lifo, or sh)\n`));
       return 2;
     }
-    if (shell === 'bash' && !deps.isBashInstalled(home)) {
-      ctx.stderr.write("chsh: bash is not installed (run 'nimbus install bash')\n");
+    if (shell === 'bash' && !await deps.isBashInstalled(home)) {
+      (await ctx.stderr.write("chsh: bash is not installed (run 'nimbus install bash')\n"));
       return 1;
     }
 
     try {
-      writeDefaultShell(ctx.vfs, home, shell);
-      ctx.stdout.write(`default shell: ${shell}\n`);
+      (await writeDefaultShell(ctx.vfs, home, shell));
+      (await ctx.stdout.write(`default shell: ${shell}\n`));
       return 0;
     } catch (error: unknown) {
-      ctx.stderr.write(`chsh: ${error instanceof Error ? error.message : String(error)}\n`);
+      (await ctx.stderr.write(`chsh: ${error instanceof Error ? error.message : String(error)}\n`));
       return 1;
     }
   };

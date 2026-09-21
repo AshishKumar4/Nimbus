@@ -15,15 +15,15 @@ const command = async (ctx) => {
         text = await ctx.stdin.readAll();
     }
     // Write to stdout
-    ctx.stdout.write(text);
+    await ctx.stdout.write(text);
     // Write to each file
     for (const file of files) {
         const path = resolve(ctx.cwd, file);
         if (append) {
-            ctx.vfs.appendFile(path, text);
+            (await ctx.vfs.appendFile(path, text));
         }
         else {
-            ctx.vfs.writeFile(path, text);
+            (await ctx.vfs.writeFile(path, text));
         }
     }
     return 0;

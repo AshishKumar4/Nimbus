@@ -30,10 +30,10 @@ const command: Command = async (ctx) => {
     const path = resolve(ctx.cwd, files[0]);
     let content: string;
     try {
-      content = ctx.vfs.readFileString(path);
+      content = (await ctx.vfs.readFileString(path));
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`sha256sum: ${files[0]}: ${e.message}\n`);
+        await ctx.stderr.write(`sha256sum: ${files[0]}: ${e.message}\n`);
         return 1;
       }
       throw e;
@@ -45,16 +45,16 @@ const command: Command = async (ctx) => {
       const [, expectedHash, fileName] = match;
       const filePath = resolve(ctx.cwd, fileName);
       try {
-        const data = ctx.vfs.readFile(filePath);
+        const data = (await ctx.vfs.readFile(filePath));
         const actual = await sha256(data);
         if (actual === expectedHash) {
-          ctx.stdout.write(`${fileName}: OK\n`);
+          await ctx.stdout.write(`${fileName}: OK\n`);
         } else {
-          ctx.stdout.write(`${fileName}: FAILED\n`);
+          await ctx.stdout.write(`${fileName}: FAILED\n`);
           exitCode = 1;
         }
       } catch {
-        ctx.stdout.write(`${fileName}: FAILED open or read\n`);
+        await ctx.stdout.write(`${fileName}: FAILED open or read\n`);
         exitCode = 1;
       }
     }
@@ -62,20 +62,20 @@ const command: Command = async (ctx) => {
   }
 
   if (files.length === 0) {
-    ctx.stderr.write('Usage: sha256sum [-c FILE] FILE...\n');
-    ctx.stderr.write('Compute or verify SHA-256 checksums.\n');
+    await ctx.stderr.write('Usage: sha256sum [-c FILE] FILE...\n');
+    await ctx.stderr.write('Compute or verify SHA-256 checksums.\n');
     return 1;
   }
 
   for (const file of files) {
     const path = resolve(ctx.cwd, file);
     try {
-      const data = ctx.vfs.readFile(path);
+      const data = (await ctx.vfs.readFile(path));
       const hash = await sha256(data);
-      ctx.stdout.write(`${hash}  ${file}\n`);
+      await ctx.stdout.write(`${hash}  ${file}\n`);
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`sha256sum: ${file}: ${e.message}\n`);
+        await ctx.stderr.write(`sha256sum: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;

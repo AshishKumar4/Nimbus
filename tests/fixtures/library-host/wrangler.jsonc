@@ -4,7 +4,7 @@
   "main": "index.ts",
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": { "NIMBUS_PROCESS_HOST": "facet" },
+  "vars": { "NIMBUS_PROCESS_HOST": "facet", "NIMBUS_LAUNCH_CHUNK_BYTES": "131072" },
   "assets": {
     "directory": "node_modules/@nimbus-sh/worker/public",
     "binding": "ASSETS",

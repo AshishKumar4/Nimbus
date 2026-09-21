@@ -20,13 +20,14 @@ import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
  * so `1 + 1` prints `2` and `x = 1` prints nothing, with no wrapper of ours
  * deciding what counts as a result.
  */
-import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface PythonReplDeps {
     facetMgr: FacetManager;
-    vfs: SqliteVFS;
+    /** Owns the installed interpreter blobs the prompt is booted from. */
+    authority: NimbusFilesystemAuthority;
     terminal: WebSocketTerminal;
     /** Per-user-VFS install dir, e.g. 'home/user/.nimbus/runtimes/cpython/3.13.14'. */
     installRoot: string;
@@ -58,5 +59,5 @@ export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
  * Pay the interpreter's boot before the user asks for a prompt. Pushing empty
  * source compiles to a no-op, so the only thing it does is bring the facet up.
  */
-export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'vfs' | 'installRoot' | 'manifest'>): Promise<void>;
+export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'manifest'>): Promise<void>;
 //# sourceMappingURL=python-repl.d.ts.map

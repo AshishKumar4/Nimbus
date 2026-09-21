@@ -88,28 +88,22 @@ export BASH_SRC=/path/to/bash-5.2.37     # from ftp.gnu.org/gnu/bash
 `cross.cache` + `nimbus-proc.h` + `nimbus-proc.c` are the Nimbus-specific inputs;
 everything else is stock bash + wasi-sdk.
 
-## Pending rebuild: the Asyncify allowlist gained `poll_oneoff`
+## Build 2: the whole WASI boundary is instrumented
 
-`build-bash.sh` now instruments `wasi_snapshot_preview1.poll_oneoff` alongside
-`fd_read`/`fd_write`. It was missing while `bash-runner.ts` already armed an
-unwind from inside `poll_oneoff` — the park taken when nothing is ready and a
-blockable fd-read subscription is pending — so that unwind ran through frames
-`--asyncify` had never instrumented and whose locals were therefore never
-spilled to `MAIN_BUF`. It is latent rather than constant only because
-`poll_oneoff` normally finds an event ready and returns through its fast path.
+`build-bash.sh` instruments every `wasi_snapshot_preview1.*` and
+`nimbus_proc.*` import. Under the filesystem authority a guest may park on any
+filesystem call, and an unwind through an uninstrumented frame corrupts the
+stack silently: measured on the build-1 binary against the build-2 preamble,
+`path_open` parked, the unwind was ignored, and bash looped forever on the
+same open and close. `nimbus-proc.c` also gained `startup_cwd`/`capture_cwd`
+and a real `F_GETFD`.
 
-The committed `bash.async.wasm` predates the fix and still carries the old
-instrumentation set. Rebuilding needs wasi-sdk-25 + binaryen (see Reproduce
-above); until then the park path in `poll_oneoff` remains as it has been.
-
-Measured 2026-08-05, against the committed binary: bash parks in `fd_read`,
-not `poll_oneoff`. Driving the runner with an open, empty stdin (`read line`,
-`stdinClosed: false`) and logging every arming site, the only park recorded is
-`fd_read` — the interactive read that returns `need-input` and resumes
-correctly on feed. So the un-instrumented unwind is reachable in principle but
-is not on the path this binary takes, which is what "latent" above means. The
-WASI correctness pass of the same date narrowed it further: a clock-only
-`poll_oneoff` now always returns events rather than arming an unwind, so the
-remaining way in is a blockable fd subscription with no clock, which this
-binary services through `fd_read` anyway. The drift is real and still owed a
-rebuild; it is not currently believed to be live.
+The committed `bash.async.wasm` is this build. It is published as catalog
+version `5.2.37-2`, and its manifest names the runner key `BASH_RUNNER`
+(`bash-runner@2`, `packages/core/src/runtime/os-contracts.ts`). A deployment
+whose preamble predates the build registers `bash-runner` and never binds it;
+one that carries this preamble resolves it by capability even while the
+catalog's default still points at `5.2.37`. The next rebuild that changes
+the import table or the Asyncify allowlist takes `bash-runner@3` and a
+`5.2.37-3` publish, made with `--keep-default` until every deployment reading
+the catalog can bind it.

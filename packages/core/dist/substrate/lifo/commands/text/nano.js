@@ -66,9 +66,9 @@ function parseKey(data) {
     return { type: 'unknown' };
 }
 // ─── File I/O ───
-function loadFile(ctx, path) {
+async function loadFile(ctx, path) {
     try {
-        const content = ctx.vfs.readFileString(path);
+        const content = (await ctx.vfs.readFileString(path));
         const lines = content.split('\n');
         // Files that end with \n produce a trailing empty string from split
         if (lines.length > 1 && lines[lines.length - 1] === '') {
@@ -83,9 +83,7 @@ function loadFile(ctx, path) {
         throw e;
     }
 }
-function saveFile(ctx, path, lines) {
-    ctx.vfs.writeFile(path, lines.join('\n') + '\n');
-}
+async function saveFile(ctx, path, lines) { (await ctx.vfs.writeFile(path, lines.join('\n') + '\n')); }
 // ─── Text editing ───
 function insertChar(s, ch) {
     const line = s.lines[s.cursorRow];
@@ -214,7 +212,7 @@ function ensureVisible(s) {
         s.scrollCol = s.cursorCol - s.cols + 1;
 }
 // ─── Rendering ───
-function render(s, out) {
+async function render(s, out) {
     const contentH = s.rows - 3;
     let buf = HIDE_CURSOR;
     // Title bar
@@ -264,7 +262,7 @@ function render(s, out) {
         buf += moveTo(s.cursorRow - s.scrollRow + 1, s.cursorCol - s.scrollCol);
     }
     buf += SHOW_CURSOR;
-    out.write(buf);
+    (await out.write(buf));
 }
 function setStatus(s, msg) {
     s.statusMsg = msg;
@@ -364,12 +362,12 @@ function handleEditKey(s, key) {
     }
     return false;
 }
-function handleSavePrompt(s, key, ctx) {
+async function handleSavePrompt(s, key, ctx) {
     switch (key.type) {
         case 'enter':
             try {
                 const path = resolve(ctx.cwd, s.promptBuf);
-                saveFile(ctx, path, s.lines);
+                (await saveFile(ctx, path, s.lines));
                 s.filePath = path;
                 s.modified = false;
                 setStatus(s, `Wrote ${s.lines.length} lines`);
@@ -415,11 +413,11 @@ function handleSearchPrompt(s, key) {
     }
     return false;
 }
-function handleDirtyExit(s, key, ctx) {
+async function handleDirtyExit(s, key, ctx) {
     if (key.type === 'char') {
         if (key.char === 'y' || key.char === 'Y') {
             try {
-                saveFile(ctx, s.filePath, s.lines);
+                (await saveFile(ctx, s.filePath, s.lines));
             }
             catch { /* best effort */ }
             return true;
@@ -434,7 +432,7 @@ function handleDirtyExit(s, key, ctx) {
 // ─── Main command ───
 const command = async (ctx) => {
     if (ctx.args.length === 0) {
-        ctx.stderr.write('Usage: nano <filename>\n');
+        await ctx.stderr.write('Usage: nano <filename>\n');
         return 1;
     }
     const filePath = resolve(ctx.cwd, ctx.args[0]);
@@ -442,7 +440,7 @@ const command = async (ctx) => {
     const cols = parseInt(ctx.env['COLUMNS'] || '80', 10);
     ctx.setRawMode?.(true);
     try {
-        const { lines, isNew } = loadFile(ctx, filePath);
+        const { lines, isNew } = (await loadFile(ctx, filePath));
         const s = {
             lines,
             modified: false,
@@ -461,8 +459,8 @@ const command = async (ctx) => {
             statusExpiry: isNew ? Date.now() + 3000 : 0,
             cutBuffer: [],
         };
-        ctx.stdout.write(CLEAR + HOME);
-        render(s, ctx.stdout);
+        await ctx.stdout.write(CLEAR + HOME);
+        (await render(s, ctx.stdout));
         while (true) {
             const data = await ctx.stdin?.read();
             if (data === null || data === undefined)
@@ -476,13 +474,13 @@ const command = async (ctx) => {
                         shouldExit = handleEditKey(s, key);
                         break;
                     case 'save-prompt':
-                        shouldExit = handleSavePrompt(s, key, ctx);
+                        shouldExit = await handleSavePrompt(s, key, ctx);
                         break;
                     case 'search-prompt':
                         shouldExit = handleSearchPrompt(s, key);
                         break;
                     case 'dirty-exit':
-                        shouldExit = handleDirtyExit(s, key, ctx);
+                        shouldExit = await handleDirtyExit(s, key, ctx);
                         break;
                 }
             }
@@ -498,9 +496,9 @@ const command = async (ctx) => {
             if (shouldExit)
                 break;
             ensureVisible(s);
-            render(s, ctx.stdout);
+            (await render(s, ctx.stdout));
         }
-        ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
+        await ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
     }
     finally {
         ctx.setRawMode?.(false);

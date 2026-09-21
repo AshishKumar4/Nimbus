@@ -1,7 +1,7 @@
+import { withHostFilesystem } from '../shell/execution-fs.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
-import { flushVfsDiff, snapshotVfs } from './vfs-snapshot.js';
-import { requireVfsCred } from './os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 const BashSliceSchema = z.object({
     state: z.enum(['need-input', 'exited', 'error']),
@@ -9,7 +9,6 @@ const BashSliceSchema = z.object({
     stdout: z.string().optional(),
     stderr: z.string().optional(),
     error: z.string().optional(),
-    fsDiff: z.custom().optional(),
     stats: z.record(z.string(), z.unknown()).optional(),
 }).passthrough();
 function normalizeSlice(raw) {
@@ -22,7 +21,6 @@ function normalizeSlice(raw) {
         stdout: parsed.data.stdout || '',
         stderr: parsed.data.stderr || '',
         error: parsed.data.error,
-        fsDiff: parsed.data.fsDiff,
         stats: parsed.data.stats,
     };
 }
@@ -39,9 +37,9 @@ function errorMessage(error) {
 /** The step the classic submit transport carries: args object in, slice out.
  *  Serialized verbatim into the facet — every name it touches must be
  *  reachable there (globals or its own literals). */
-export async function bashFacetStep(args) {
+export async function bashFacetStep(args, bindings) {
     const step = Reflect.get(globalThis, '__bashStep');
-    return typeof step === 'function' ? step(args) : {
+    return typeof step === 'function' ? step(args, bindings.SUPERVISOR) : {
         state: 'error',
         exitCode: 127,
         stdout: '',
@@ -55,7 +53,7 @@ export async function bashFacetStep(args) {
  * references — and the dispatch inside is the same `__bashStep` call; only
  * the transport wrapper differs (JSON in, Response out).
  */
-export async function bashRequestStep(request) {
+export async function bashRequestStep(request, bindings) {
     const step = Reflect.get(globalThis, '__bashStep');
     if (typeof step !== 'function') {
         return Response.json({
@@ -66,7 +64,7 @@ export async function bashRequestStep(request) {
             error: 'bash-runner preamble missing (__bashStep not in scope)',
         });
     }
-    return Response.json(step(await request.json()));
+    return Response.json(await step(await request.json(), bindings.SUPERVISOR));
 }
 export async function createBashFacetSession(deps) {
     deps.signal?.throwIfAborted();
@@ -75,24 +73,19 @@ export async function createBashFacetSession(deps) {
         return entry ? `${deps.installRoot}/${entry.path}` : null;
     };
     const bashWasmPath = findFile('share/bash/bash.async.wasm');
-    if (!bashWasmPath || !deps.vfs.exists(bashWasmPath)) {
+    if (!bashWasmPath || !(await deps.artifacts.exists(bashWasmPath))) {
         throw new Error("bash.async.wasm missing (re-run 'nimbus install bash')");
     }
     const userEnv = { ...deps.env };
     userEnv.HOME ||= '/home/user';
     userEnv.PATH ||= '/bin:/usr/bin';
+    userEnv.PATH = `/${deps.installRoot.replace(/^\/+/, '')}/bin:${userEnv.PATH}`;
     userEnv.TERM ||= 'dumb';
     userEnv.NIMBUS_PWD = deps.cwd;
     userEnv.BASH_ENV ||= '/etc/nimbus.bashrc';
     userEnv.PWD = deps.cwd;
-    const extraRoots = [...(deps.extraRoots ?? [])];
-    if (userEnv.HOME !== '/home/user')
-        extraRoots.push(userEnv.HOME);
-    const fsSnapshot = snapshotVfs(deps.vfs, deps.cwd, { extraRoots });
-    if ('error' in fsSnapshot)
-        throw new Error(fsSnapshot.error);
     const wasmModules = {
-        'bash.async.wasm': toArrayBuffer(deps.vfs.readFile(bashWasmPath)),
+        'bash.async.wasm': toArrayBuffer(await deps.artifacts.readFile(bashWasmPath)),
     };
     for (const file of deps.manifest.files) {
         const prefix = 'share/bash/coreutils/';
@@ -100,23 +93,21 @@ export async function createBashFacetSession(deps) {
             continue;
         const name = file.path.slice(prefix.length, -'.wasm'.length);
         const vfsPath = `${deps.installRoot}/${file.path}`;
-        if (deps.vfs.exists(vfsPath)) {
-            wasmModules[`cu_${name}.wasm`] = toArrayBuffer(deps.vfs.readFile(vfsPath));
+        if (await deps.artifacts.exists(vfsPath)) {
+            wasmModules[`cu_${name}.wasm`] = toArrayBuffer(await deps.artifacts.readFile(vfsPath));
         }
     }
     const appletsPath = findFile('share/bash/coreutils/busybox.applets');
-    const busyboxApplets = appletsPath && deps.vfs.exists(appletsPath)
-        ? new TextDecoder().decode(deps.vfs.readFile(appletsPath))
+    const busyboxApplets = appletsPath && (await deps.artifacts.exists(appletsPath))
+        ? new TextDecoder().decode(await deps.artifacts.readFile(appletsPath))
             .split('\n')
             .map((line) => line.trim())
             .filter(Boolean)
         : [];
     const facet = deps.facets.open({
-        tag: 'bash-runner',
+        tag: BASH_RUNNER,
         concurrency: 1,
-        // No supervisor capability: bash is seeded with its subtree by value and
-        // hands the whole mutation back as a diff on exit, so it makes no syscall
-        // into the session while it runs.
+        syscalls: { vfs: deps.filesystem, pid: deps.pid },
         preamble: BASH_RUNNER_PREAMBLE,
         wasmModules,
     });
@@ -153,8 +144,6 @@ export async function createBashFacetSession(deps) {
             if (!slice)
                 throw new Error('facet returned an invalid payload');
             if (slice.state === 'exited') {
-                if (slice.fsDiff)
-                    flushVfsDiff(deps.vfs, slice.fsDiff);
                 active = false;
             }
             else if (slice.state === 'error') {
@@ -174,11 +163,13 @@ export async function createBashFacetSession(deps) {
             argv: deps.argv,
             environ: Object.entries(userEnv).map(([key, value]) => `${key}=${value}`),
             cwd: deps.cwd,
-            fsSnapshot: fsSnapshot.snapshot,
+            cred: deps.cred,
+            parking: deps.facets.parking,
             stdinData: deps.stdinData ?? '',
             stdinClosed: deps.stdinClosed,
             stdinTty: deps.stdinTty,
             busyboxApplets,
+            coreutilsRoot: deps.installRoot + '/bin',
         });
         return {
             initial,
@@ -259,19 +250,18 @@ function findScriptArgIndex(argv) {
 export function makeBashRunnerFactory(deps) {
     return function bashRunnerFactory(manifest, installRoot, binName, _binKind) {
         return async function bashBinHandler(ctx) {
-            // All VFS access (runtime wasm reads, script probes, snapshot,
-            // fsDiff writeback) runs as the INVOKING process credential —
-            // S2a enforcement applies to bash exactly as to ruby/python.
+            // Script probes and every guest syscall run as the INVOKING process
+            // through its bound view; only the installed runtime blobs are read
+            // through a kernel host lease, as for every other runtime.
             const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
-            const vfs = deps.vfs.as(cred);
+            const filesystem = ctx.vfs.authority;
             const argv = [...(ctx.args ?? [])];
             const cwd = ctx.cwd || '/home/user';
             // Resolve a relative script path against the session cwd.
             const scriptIdx = findScriptArgIndex(argv);
-            const extraRoots = [];
             if (scriptIdx >= 0) {
                 const abs = resolveVfsPath(argv[scriptIdx], cwd);
-                if (!vfs.exists(abs)) {
+                if (!(await ctx.vfs.exists(abs))) {
                     ctx.stderr.write(`${binName}: ${argv[scriptIdx]}: No such file or directory\n`);
                     return 127;
                 }
@@ -280,9 +270,6 @@ export function makeBashRunnerFactory(deps) {
                 // would resolve against cwd twice. resolveVfsPath returns a
                 // slash-less canonical key; re-anchor it at root.
                 argv[scriptIdx] = '/' + abs;
-                const dir = abs.replace(/\/[^/]*$/, '');
-                if (dir)
-                    extraRoots.push(dir);
             }
             // stdin plumbing. A terminal-backed fd 0 feeds incrementally
             // (interactive bash, `read` builtins); a piped stdin is drained
@@ -299,9 +286,12 @@ export function makeBashRunnerFactory(deps) {
             }
             let session = null;
             try {
-                session = await createBashFacetSession({
+                session = await withHostFilesystem(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
                     facets: deps.facets,
-                    vfs,
+                    artifacts,
+                    filesystem,
+                    pid: ctx.pid,
+                    cred,
                     manifest,
                     installRoot,
                     argv: [binName, ...argv],
@@ -310,8 +300,7 @@ export function makeBashRunnerFactory(deps) {
                     stdinData,
                     stdinClosed,
                     stdinTty: stdinIsTty,
-                    extraRoots,
-                });
+                }));
                 let slice = session.initial;
                 for (;;) {
                     if (slice.stdout)

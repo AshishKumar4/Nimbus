@@ -37,8 +37,8 @@ function createWgetImpl(kernel) {
     return async (ctx) => {
         const options = parseWgetArgs(ctx.args);
         if (!options.url) {
-            ctx.stderr.write('wget: missing URL\n');
-            ctx.stderr.write('Usage: wget [-O file] [-q] url\n');
+            await ctx.stderr.write('wget: missing URL\n');
+            await ctx.stderr.write('Usage: wget [-O file] [-q] url\n');
             return 1;
         }
         let url = options.url;
@@ -59,8 +59,8 @@ function createWgetImpl(kernel) {
             }
         }
         if (!options.quiet) {
-            ctx.stderr.write(`--  ${url}\n`);
-            ctx.stderr.write(`Connecting... `);
+            await ctx.stderr.write(`--  ${url}\n`);
+            await ctx.stderr.write(`Connecting... `);
         }
         try {
             let response;
@@ -88,16 +88,16 @@ function createWgetImpl(kernel) {
                         const local = await dispatchWorkspaceRequest(kernel, port, new Request(requestUrl, { method: 'GET', signal: ctx.signal }));
                         if (local.kind === 'refused') {
                             if (!options.quiet)
-                                ctx.stderr.write('failed.\n');
-                            ctx.stderr.write(`wget: unable to connect to ${current}\n`);
+                                await ctx.stderr.write('failed.\n');
+                            await ctx.stderr.write(`wget: unable to connect to ${current}\n`);
                             return 1;
                         }
                         if (local.kind === 'aborted') {
-                            ctx.stderr.write('wget: request aborted\n');
+                            await ctx.stderr.write('wget: request aborted\n');
                             return 1;
                         }
                         if (local.kind === 'timeout') {
-                            ctx.stderr.write('wget: request timed out\n');
+                            await ctx.stderr.write('wget: request timed out\n');
                             return 1;
                         }
                         const res = local.response;
@@ -123,7 +123,7 @@ function createWgetImpl(kernel) {
                     if (!location)
                         break;
                     if (++hops > MAX_REDIRECTS) {
-                        ctx.stderr.write(`wget: too many redirects\n`);
+                        await ctx.stderr.write(`wget: too many redirects\n`);
                         return 1;
                     }
                     try {
@@ -135,28 +135,28 @@ function createWgetImpl(kernel) {
                 }
             }
             if (!options.quiet) {
-                ctx.stderr.write(`connected.\n`);
-                ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);
+                await ctx.stderr.write(`connected.\n`);
+                await ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);
             }
             const path = resolve(ctx.cwd, outputFile);
-            ctx.vfs.writeFile(path, response.body);
+            (await ctx.vfs.writeFile(path, response.body));
             if (!options.quiet) {
-                ctx.stderr.write(`Saving to: '${outputFile}'\n`);
-                ctx.stderr.write(`${response.body.length} bytes saved.\n`);
+                await ctx.stderr.write(`Saving to: '${outputFile}'\n`);
+                await ctx.stderr.write(`${response.body.length} bytes saved.\n`);
             }
             return response.status < 400 ? 0 : 1;
         }
         catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (!options.quiet) {
-                ctx.stderr.write(`failed.\n`);
+                await ctx.stderr.write(`failed.\n`);
             }
             if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-                ctx.stderr.write(`wget: unable to connect to ${url}\n`);
-                ctx.stderr.write(`Note: This may be a CORS restriction. The target server must allow cross-origin requests.\n`);
+                await ctx.stderr.write(`wget: unable to connect to ${url}\n`);
+                await ctx.stderr.write(`Note: This may be a CORS restriction. The target server must allow cross-origin requests.\n`);
             }
             else {
-                ctx.stderr.write(`wget: ${msg}\n`);
+                await ctx.stderr.write(`wget: ${msg}\n`);
             }
             return 1;
         }

@@ -33,10 +33,10 @@ function vfsWith(paths) {
 }
 
 // ── A session that installed nothing compiled stays on the base interpreter ──
-assert.equal(sessionUsesSciVariant(vfsWith([])), false,
+assert.equal((await sessionUsesSciVariant(vfsWith([]))), false,
   'an empty session must not pay for the sci variant');
 assert.equal(
-  sessionUsesSciVariant(vfsWith([`${PYTHON_SITE_PACKAGES_ROOT}/attrs-25.4.0.dist-info`])),
+  (await sessionUsesSciVariant(vfsWith([`${PYTHON_SITE_PACKAGES_ROOT}/attrs-25.4.0.dist-info`]))),
   false,
   'a pure-Python install must not select the sci variant');
 console.log('  ok  a session without compiled packages stays on the base interpreter');
@@ -66,7 +66,7 @@ console.log('  ok  pip install numpy records it instead of fetching a wheel');
 // join that makes `pip install numpy` change the next interpreter, and it is
 // asserted by feeding one side's output into the other.
 for (const dir of distInfoDirs) {
-  assert.equal(sessionUsesSciVariant(vfsWith([`${PYTHON_SITE_PACKAGES_ROOT}/${dir}`])), true,
+  assert.equal((await sessionUsesSciVariant(vfsWith([`${PYTHON_SITE_PACKAGES_ROOT}/${dir}`]))), true,
     `${dir} is written by pip but does not select the sci variant`);
 }
 console.log('  ok  the record pip writes is the record the selector reads');
@@ -80,7 +80,7 @@ assert.equal(ms.error, undefined, `pip install markupsafe failed to plan: ${ms.e
 const msVersion = ms.code.match(/markupsafe-([0-9.]+)\/src\/markupsafe/)?.[1];
 assert.equal(msVersion, '3.0.3', 'markupsafe must be pinned to the release _speedups.c is built from');
 assert.equal(
-  sessionUsesSciVariant(vfsWith([`${PYTHON_SITE_PACKAGES_ROOT}/markupsafe-${msVersion}.dist-info`])),
+  (await sessionUsesSciVariant(vfsWith([`${PYTHON_SITE_PACKAGES_ROOT}/markupsafe-${msVersion}.dist-info`]))),
   true,
   'markupsafe has a compiled half in the variant, so installing it must select the variant',
 );

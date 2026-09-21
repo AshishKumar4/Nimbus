@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
 // Behavior test: the WASI filesystem is live-backed, not snapshot-backed.
 //
 // Drives the REAL wasi-instance.ts preamble with a mock SUPERVISOR stub and
@@ -26,9 +26,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { installVirtualSocketKernel } from '../../packages/core/src/runtime/virtual-socket-kernel.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 
-const ESUCCESS = 0, ENOENT = 44;
+const ESUCCESS = 0, EISDIR = 31, ENOENT = 44;
+const EVENTTYPE_FD_READ = 1;
 
 const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}
 export { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiDrainPersist, __wasiRevalidateFS, fdTable };`;
@@ -50,7 +52,7 @@ function mockSupervisor(seed = {}) {
   const store = new Map(Object.entries(seed).map(([p, v]) => [p, enc.encode(v)]));
   const log = [];
   let revision = 1;
-  return {
+  return descriptorSupervisor({
     store, log,
     get revision() { return revision; },
     bump() { revision++; },
@@ -115,7 +117,7 @@ function mockSupervisor(seed = {}) {
       }
       return [...names].map((name) => ({ name, type: 'file' }));
     },
-  };
+  });
 }
 
 /** Fresh WASI host over the given init options. */
@@ -152,7 +154,7 @@ function host(initOpts, supervisor) {
       u8().set(bytes, 0x400);
       view().setUint32(0x300, 0x400, true);
       view().setUint32(0x304, bytes.length, true);
-      return wasiImport.fd_write(fd, 0x300, 1, 0x200);
+      return (await wasiImport.fd_write(fd, 0x300, 1, 0x200));
     },
     async stat(p) {
       const len = writePath(p);
@@ -190,7 +192,7 @@ const ROOT_INIT = (extra = {}) => ({
   const r2 = await h.read(again.fd);
   assert.equal(r2.text, 'live-bytes-from-supervisor');
   const after = sup.log.filter(([op]) => op === 'fsReadRange').length;
-  assert.equal(after, before, 'cached content served without a second fetch');
+  assert.equal(after, before + 1, 'a descriptor read reaches the authority that owns its offset and lifetime');
 }
 
 // ── 2. Write-through without exit ───────────────────────────────────────────
@@ -216,14 +218,14 @@ const ROOT_INIT = (extra = {}) => ({
   const setPath = (s, at) => { const b = enc.encode(s); h.u8().set(b, at); return b.length; };
   // mkdir
   let len = setPath('home/user/newdir', 0x100);
-  assert.equal(w.path_create_directory(3, 0x100, len), ESUCCESS);
+  assert.equal((await w.path_create_directory(3, 0x100, len)), ESUCCESS);
   // rename a.txt -> b.txt
   const flen = setPath('home/user/a.txt', 0x100);
   const tlen = setPath('home/user/b.txt', 0x500);
-  assert.equal(w.path_rename(3, 0x100, flen, 3, 0x500, tlen), ESUCCESS);
+  assert.equal((await w.path_rename(3, 0x100, flen, 3, 0x500, tlen)), ESUCCESS);
   // unlink b.txt
   len = setPath('home/user/b.txt', 0x100);
-  assert.equal(w.path_unlink_file(3, 0x100, len), ESUCCESS);
+  assert.equal((await w.path_unlink_file(3, 0x100, len)), ESUCCESS);
   await P.__wasiDrainPersist();
   const ops = sup.log.map(([op]) => op);
   assert.ok(ops.includes('mkdir'), 'mkdir reached the supervisor');
@@ -316,13 +318,143 @@ const ROOT_INIT = (extra = {}) => ({
   const { errno, fd } = await h.open('home/user/archive.zip');
   assert.equal(errno, ESUCCESS);
 
-  assert.equal(h.wasiImport.fd_seek(fd, 0n, 2 /* SEEK_END */, 0x600), ESUCCESS);
+  assert.equal((await h.wasiImport.fd_seek(fd, 0n, 2 /* SEEK_END */, 0x600)), ESUCCESS);
   assert.equal(Number(h.view().getBigUint64(0x600, true)), BODY.length,
     'SEEK_END reports the manifest size before any content has been loaded');
 
-  assert.equal(h.wasiImport.fd_seek(fd, -8n, 2, 0x600), ESUCCESS);
+  assert.equal((await h.wasiImport.fd_seek(fd, -8n, 2, 0x600)), ESUCCESS);
   const tail = await h.read(fd, 8);
   assert.equal(tail.text, 'TAILMARK', 'a read relative to the end returns the tail, not the head');
+}
+
+// ── 9. One allocator: a socket fd and a file fd never land on the same number ─
+// The authority codec and the socket helpers used to advance two counters over
+// one table, so whichever opened second silently overwrote the other's entry.
+{
+  const sup = mockSupervisor({ 'home/user/keep.txt': 'still-here' });
+  globalThis.__nimbusVirtualSockets = installVirtualSocketKernel({
+    __nimbusVirtualSocketRouteLoopback: async () => new Response('served', { status: 200 }),
+  });
+  const h = host(ROOT_INIT({
+    sizes: { 'home/user/keep.txt': 'still-here'.length },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/keep.txt': 6 },
+  }), sup);
+
+  const file = await h.open('home/user/keep.txt');
+  assert.equal(file.errno, ESUCCESS);
+  // A synthetic socket path is not a filesystem path: the codec has to hand it
+  // back to the host body that dials, supervisor or no supervisor.
+  const socket = await h.open('dev/tcp/127.0.0.1/3000');
+  assert.equal(socket.errno, ESUCCESS, 'the codec must not swallow /dev/tcp');
+  assert.notEqual(socket.fd, file.fd, 'a socket fd and a file fd must never collide');
+  assert.equal(P.fdTable.get(file.fd).kind, 'authority');
+  assert.equal(P.fdTable.get(socket.fd).kind, 'socket');
+
+  // Both descriptors still resolve to what they were opened as.
+  assert.equal((await h.read(file.fd)).text, 'still-here', 'the file fd survived the socket open');
+  assert.equal(await h.write(socket.fd, 'GET / HTTP/1.1\r\nHost: x\r\n\r\n'), ESUCCESS);
+  assert.match((await h.read(socket.fd)).text, /^HTTP\/1\.1 200/, 'the socket fd carries the exchange');
+
+  // Housekeeping on a non-authority fd stays with the host bodies, which
+  // answer 0 for a stream rather than EBADF from the codec.
+  assert.equal(await h.wasiImport.fd_sync(socket.fd), ESUCCESS);
+  assert.equal(await h.wasiImport.fd_datasync(socket.fd), ESUCCESS);
+  assert.equal(await h.wasiImport.fd_advise(socket.fd, 0n, 0n, 0), ESUCCESS);
+  assert.equal(await h.wasiImport.fd_fdstat_set_flags(socket.fd, 0), ESUCCESS);
+
+  // dup2 onto the socket closes the stream through the host body that owns it;
+  // overwriting the entry would leave the kernel holding a live connection.
+  const displaced = P.fdTable.get(socket.fd);
+  assert.equal(await h.wasiImport.fd_renumber(file.fd, socket.fd), ESUCCESS);
+  assert.equal(displaced.closed, true, 'the displaced socket was closed, not dropped');
+  assert.equal(P.fdTable.get(socket.fd).kind, 'authority');
+  assert.equal((await h.read(socket.fd)).errno, ESUCCESS, 'the moved file fd still reads');
+  assert.equal(P.fdTable.get(file.fd), undefined, 'and the number it came from is free');
+
+  // The preopen is the root every path resolves against, so it survives both.
+  assert.equal(await h.wasiImport.fd_renumber(socket.fd, 3), 76 /* ENOTCAPABLE */);
+  assert.equal(await h.wasiImport.fd_close(3), ESUCCESS);
+  assert.equal((await h.open('home/user/keep.txt')).errno, ESUCCESS,
+    'the preopen still resolves paths after a close');
+}
+
+// ── 10. poll_oneoff on an authority file fd reports ready ──────────────────
+// A regular file never blocks, and one the authority owns is still a regular
+// file. Answering EBADF told the guest its descriptor had gone away.
+{
+  const sup = mockSupervisor({ 'home/user/poll.txt': 'pollable' });
+  const h = host(ROOT_INIT({
+    sizes: { 'home/user/poll.txt': 'pollable'.length },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/poll.txt': 6 },
+  }), sup);
+  const { errno, fd } = await h.open('home/user/poll.txt');
+  assert.equal(errno, ESUCCESS);
+
+  // subscription: userdata u64 @0, tag u8 @8, fd u32 @16, 48 bytes wide.
+  const subs = 0x700, events = 0x800, nevents = 0x900;
+  h.u8().fill(0, subs, subs + 48);
+  h.view().setBigUint64(subs, 77n, true);
+  h.view().setUint8(subs + 8, EVENTTYPE_FD_READ);
+  h.view().setUint32(subs + 16, fd, true);
+
+  assert.equal(await h.wasiImport.poll_oneoff(subs, events, 1, nevents), ESUCCESS);
+  assert.equal(h.view().getUint32(nevents, true), 1, 'the subscription produced an event');
+  assert.equal(h.view().getBigUint64(events, true), 77n, 'and it is the one subscribed');
+  assert.equal(h.view().getUint16(events + 8, true), ESUCCESS,
+    'an authority file fd polls ready, not EBADF');
+}
+
+// ── 11. fd_read on a directory fd is EISDIR ────────────────────────────────
+{
+  const sup = mockSupervisor({ 'home/user/inside.txt': 'x' });
+  const h = host(ROOT_INIT({
+    sizes: { 'home/user/inside.txt': 1 },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/inside.txt': 6 },
+  }), sup);
+  const dir = await h.open('home/user', { oflags: 2 /* O_DIRECTORY */ });
+  assert.equal(dir.errno, ESUCCESS, 'a directory opens with O_DIRECTORY');
+  assert.equal(P.fdTable.get(dir.fd).kind, 'authority');
+  assert.equal((await h.read(dir.fd)).errno, EISDIR, 'a directory has no byte stream to read');
+  assert.equal((await h.read(3)).errno, EISDIR, 'and neither has the preopen root');
+}
+
+// ── 12. A read-only open is answered from a resident copy, per revision ─────
+// One stat per open, one read per revision: the descriptor calls in between
+// (fstat, seek, read, close) never reach the supervisor. A rewrite moves the
+// stat revision, so the next open reads again; a writable open never uses it.
+{
+  const RDONLY = 0x1fbffeben; // what wasi-libc requests for O_RDONLY
+  const sup = mockSupervisor({ 'home/user/mod.py': 'first' });
+  const revisions = new Map();
+  const base = sup.stat;
+  sup.stat = async (p) => { const st = await base(p); return st && { ...st, revision: revisions.get(typeof p === 'string' ? p : p.path) ?? 1 }; };
+  sup.readFileBytes = async (p) => { sup.log.push(['readFileBytes']); return sup.store.get(typeof p === 'string' ? p : p.path) ?? null; };
+  const h = host(ROOT_INIT({
+    sizes: { 'home/user/mod.py': 5 },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/mod.py': 6 },
+  }), sup);
+  const ops = () => sup.log.map(([op]) => op);
+  const readAll = async (fd) => { const r = await h.read(fd); assert.equal(r.errno, ESUCCESS); await h.wasiImport.fd_close(fd); return r.text; };
+
+  const first = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(first.errno, ESUCCESS);
+  assert.equal(P.fdTable.get(first.fd).kind, 'resident', 'a read-only open of a small file is resident');
+  assert.equal(await readAll(first.fd), 'first');
+  const second = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(await readAll(second.fd), 'first');
+  assert.deepEqual(ops().filter((op) => op !== 'stat' && op !== 'fsRevision'), ['readFileBytes'], 'two opens read the content once');
+  assert.equal(ops().filter((op) => op === 'stat').length, 2, 'each open costs one stat');
+  assert.ok(!ops().some((op) => op === 'fsOpen' || op === 'fsRead' || op === 'fsClose'), 'no descriptor op crossed to the supervisor');
+
+  sup.store.set('home/user/mod.py', enc.encode('second'));
+  revisions.set('home/user/mod.py', 2);
+  const third = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(await readAll(third.fd), 'second', 'a moved revision is read again');
+
+  const writable = await h.open('home/user/mod.py', { rights: RDONLY | (1n << 6n) });
+  assert.equal(writable.errno, ESUCCESS);
+  assert.equal(P.fdTable.get(writable.fd).kind, 'authority', 'a writable open holds a live descriptor');
+  await h.wasiImport.fd_close(writable.fd);
 }
 
 console.log('wasi-live-fs: all assertions passed');

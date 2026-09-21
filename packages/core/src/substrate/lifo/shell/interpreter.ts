@@ -16,7 +16,8 @@ import type {
   RedirectionNode,
   AssignmentNode,
 } from './types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import { ExecutionFs, bindExecutionFs, type ShellFilesystem } from '../../../shell/execution-fs.js';
+import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type {
   CommandOutputStream,
@@ -118,7 +119,7 @@ export interface TrapTable {
 }
 
 export interface BuiltinExecutionContext {
-  vfs: VFS;
+  vfs: ExecutionFs;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
   stdin?: CommandInputStream;
@@ -154,6 +155,12 @@ type FdState = {
   terminalInputFds: Set<number>;
   changedOutputFds: Set<number>;
   changedInputFds: Set<number>;
+  opened: Map<CommandInputStream | CommandOutputStream, () => Promise<void>>;
+};
+
+type PersistentFdHandle = {
+  stream: CommandInputStream | CommandOutputStream;
+  close: () => Promise<void>;
 };
 
 type OutputTarget = {
@@ -192,7 +199,7 @@ type ExecutionIo = {
     setUmask(mask: number): void;
   };
   runAs?: CommandRunAsHost;
-  vfs?: VFS;
+  vfs?: ExecutionFs;
 };
 
 export type TerminalFdState = {
@@ -221,7 +228,8 @@ export interface InterpreterConfig {
   arrays: Map<string, (string | undefined)[]>;
   getCwd: () => string;
   setCwd: (cwd: string) => void;
-  vfs: VFS;
+  vfs: ExecutionFs;
+  filesystem: ShellFilesystem;
   registry: CommandRegistry;
   builtins: Map<string, BuiltinFn>;
   jobTable: JobTable;
@@ -259,6 +267,9 @@ export class Interpreter {
   private persistentInputFds = new Map<number, CommandInputStream | undefined>();
   private persistentTerminalOutputFds = new Set<number>();
   private persistentTerminalInputFds = new Set<number>();
+  /** Bridge handles held open past the `exec` that opened them, by descriptor. */
+  private persistentOutputHandles = new Map<number, PersistentFdHandle>();
+  private persistentInputHandles = new Map<number, PersistentFdHandle>();
   private errexitSuppressionDepth = 0;
   private exitTrapDepth = 0;
   /** One frame per running function call, holding the bindings `local` shadowed. */
@@ -273,7 +284,7 @@ export class Interpreter {
   }
 
   async executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number> {
-    return this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin));
+    return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin)));
   }
 
   private async executeScriptWithIo(script: ScriptNode, io: ExecutionIo): Promise<number> {
@@ -329,7 +340,9 @@ export class Interpreter {
     if (options?.commandIdentity) io.commandIdentity = options.commandIdentity;
     if (options?.runAs) io.runAs = options.runAs;
     if (options?.signal) io.signal = options.signal;
-    if (options?.commandIdentity) io.vfs = this.config.vfs.as(options.commandIdentity.cred);
+    if (io.commandIdentity) io.vfs = bindExecutionFs(this.config.filesystem, {
+      pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
+    });
     try {
       const tokens = lex(input);
       const script = parse(tokens);
@@ -391,7 +404,7 @@ export class Interpreter {
       return 0;
     }
 
-    return this.executeListEntries(list.entries, io);
+    return (await this.executeListEntries(list.entries, io));
   }
 
   private getListCommandText(list: ListNode): string {
@@ -475,7 +488,7 @@ export class Interpreter {
         let stdout: CommandOutputStream | undefined;
 
         if (i < commands.length - 1) {
-          const pipe = new PipeChannel();
+          const pipe = new PipeChannel(pipelineAbortController.signal);
           pipes.push(pipe);
           stdout = pipe.writer;
         }
@@ -505,12 +518,13 @@ export class Interpreter {
             }
             throw e;
           } finally {
+            if (i > 0) pipes[i - 1].cancel();
             if (i < commands.length - 1) {
               pipes[i].close();
             }
             if (isLast) {
               pipelineAbortController.abort();
-              for (const pipe of pipes) pipe.close();
+              for (const pipe of pipes) pipe.cancel();
             }
           }
         })();
@@ -539,34 +553,34 @@ export class Interpreter {
 
     switch (cmd.type) {
       case 'simple_command':
-        return this.executeSimpleCommand(cmd, io);
+        return (await this.executeSimpleCommand(cmd, io));
       case 'double_bracket':
-        return this.executeDoubleBracket(cmd, io);
+        return (await this.executeDoubleBracket(cmd, io));
       case 'if':
-        return this.executeIf(cmd, io);
+        return (await this.executeIf(cmd, io));
       case 'for':
-        return this.executeFor(cmd, io);
+        return (await this.executeFor(cmd, io));
       case 'while':
-        return this.executeWhile(cmd, io);
+        return (await this.executeWhile(cmd, io));
       case 'until':
-        return this.executeUntil(cmd, io);
+        return (await this.executeUntil(cmd, io));
       case 'case':
-        return this.executeCase(cmd, io);
+        return (await this.executeCase(cmd, io));
       case 'group':
-        return this.executeGroup(cmd, io);
+        return (await this.executeGroup(cmd, io));
       case 'subshell':
-        return this.executeSubshell(cmd, io);
+        return (await this.executeSubshell(cmd, io));
       case 'function_def':
-        return this.executeFunctionDef(cmd);
+        return (await this.executeFunctionDef(cmd));
     }
   }
 
   private async executeIf(node: IfNode, io: ExecutionIo): Promise<number> {
-    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       let exitCode = 0;
 
       for (const clause of node.clauses) {
-        const condCode = await this.withErrexitSuppressed(() => this.executeCompoundList(clause.condition, redirIo));
+        const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(clause.condition, redirIo)));
         if (condCode === 0) {
           exitCode = await this.executeCompoundList(clause.body, redirIo);
           this.lastExitCode = exitCode;
@@ -580,16 +594,16 @@ export class Interpreter {
 
       this.lastExitCode = exitCode;
       return exitCode;
-    });
+    }));
   }
 
   private async executeDoubleBracket(node: DoubleBracketNode, io: ExecutionIo): Promise<number> {
-    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       const stdout = redirIo.stdout ?? this.terminalSink(redirIo);
       const stderr = redirIo.stderr ?? this.terminalSink(redirIo);
       const fds = this.createCommandFds(stdout, stderr, redirIo.stdin, redirIo);
       const builtinIo = this.createIoFromFds(redirIo, fds);
-      const exitCode = await this.withFdFlush(fds, () => evaluateDoubleBracketWords(
+      const exitCode = await this.withFdFlush(fds, async () => (await evaluateDoubleBracketWords(
         node.words,
         this.createExpandContext(redirIo),
         redirIo.vfs ?? this.config.vfs,
@@ -610,17 +624,17 @@ export class Interpreter {
           isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
           getPositionals: () => this.readPositionals(builtinIo),
           setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-          executeInline: (input, options) => this.executeInline(input, builtinIo, options),
+          executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
           declareLocal: (name) => this.declareLocal(name),
         },
-      ));
+      )));
       this.lastExitCode = exitCode;
       return exitCode;
-    });
+    }));
   }
 
   private async executeFor(node: ForNode, io: ExecutionIo): Promise<number> {
-    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       const expandCtx = this.createExpandContext(redirIo);
       let exitCode = 0;
 
@@ -656,18 +670,18 @@ export class Interpreter {
 
       this.lastExitCode = exitCode;
       return exitCode;
-    });
+    }));
   }
 
   private async executeWhile(node: WhileNode, io: ExecutionIo): Promise<number> {
-    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       let exitCode = 0;
 
       while (true) {
         const abortCode = this.abortExitCode(redirIo);
         if (abortCode !== null) return abortCode;
 
-        const condCode = await this.withErrexitSuppressed(() => this.executeCompoundList(node.condition, redirIo));
+        const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(node.condition, redirIo)));
         if (condCode !== 0) break;
 
         try {
@@ -687,18 +701,18 @@ export class Interpreter {
 
       this.lastExitCode = exitCode;
       return exitCode;
-    });
+    }));
   }
 
   private async executeUntil(node: UntilNode, io: ExecutionIo): Promise<number> {
-    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       let exitCode = 0;
 
       while (true) {
         const abortCode = this.abortExitCode(redirIo);
         if (abortCode !== null) return abortCode;
 
-        const condCode = await this.withErrexitSuppressed(() => this.executeCompoundList(node.condition, redirIo));
+        const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(node.condition, redirIo)));
         if (condCode === 0) break;
 
         try {
@@ -718,11 +732,11 @@ export class Interpreter {
 
       this.lastExitCode = exitCode;
       return exitCode;
-    });
+    }));
   }
 
   private async executeCase(node: CaseNode, io: ExecutionIo): Promise<number> {
-    return this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       const expandCtx = this.createExpandContext(redirIo);
       const wordValue = await expandWord(node.word, expandCtx);
       let exitCode = 0;
@@ -740,7 +754,7 @@ export class Interpreter {
 
       this.lastExitCode = exitCode;
       return exitCode;
-    });
+    }));
   }
 
   private async executeFunctionDef(node: FunctionDefNode): Promise<number> {
@@ -752,7 +766,7 @@ export class Interpreter {
     const exitCode = await this.executeWithRedirections(
       node.redirections,
       io,
-      (redirIo) => this.executeCompoundList(node.body, redirIo),
+      async (redirIo) => (await this.executeCompoundList(node.body, redirIo)),
     );
     this.lastExitCode = exitCode;
     return exitCode;
@@ -770,7 +784,7 @@ export class Interpreter {
       exitCode = await this.executeWithRedirections(
         node.redirections,
         subshellIo,
-        (redirIo) => this.executeCompoundList(node.body, redirIo),
+        async (redirIo) => (await this.executeCompoundList(node.body, redirIo)),
       );
     } catch (e) {
       if (e instanceof ExitSignal) {
@@ -805,6 +819,9 @@ export class Interpreter {
   ): Promise<number> {
     const abortCode = this.abortExitCode(io);
     if (abortCode !== null) return abortCode;
+    if (io.commandIdentity) io = { ...io, vfs: bindExecutionFs(this.config.filesystem, {
+      pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
+    }) };
 
     const expandCtx = this.createExpandContext(io);
 
@@ -837,7 +854,7 @@ export class Interpreter {
       if (aliasValue !== undefined) {
         // Rebuild the command line with the alias expanded
         const expandedLine = aliasValue + (args.length > 0 ? ' ' + args.join(' ') : '');
-        return this.executeLineWithIo(expandedLine, io);
+        return (await this.executeLineWithIo(expandedLine, io));
       }
     }
 
@@ -846,7 +863,7 @@ export class Interpreter {
     for (const assign of cmd.assignments) {
       if (!saved.has(assign.name)) saved.set(assign.name, this.saveVariable(assign.name));
       if (!await this.applyAssignment(assign, expandCtx)) {
-        (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`);
+        (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
         return 1;
       }
     }
@@ -860,9 +877,9 @@ export class Interpreter {
       await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
     } catch (error) {
       const redirStderr = fds.outputFds.get(2) ?? stderr;
-      redirStderr.write(error instanceof RedirectionOpenError
+      (await redirStderr.write(error instanceof RedirectionOpenError
         ? redirectionDiagnostic(error)
-        : `${error instanceof Error ? error.message : String(error)}\n`);
+        : `${error instanceof Error ? error.message : String(error)}\n`));
       this.lastExitCode = 1;
       return 1;
     }
@@ -892,7 +909,7 @@ export class Interpreter {
         throw new ReturnSignal(code);
       }
       if (name === 'exec' && args.length === 0) {
-        this.persistFdState(fds);
+        await this.persistFdState(fds);
         exitCode = 0;
       } else {
         // Check functions
@@ -920,14 +937,14 @@ export class Interpreter {
               isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
               getPositionals: () => this.readPositionals(builtinIo),
               setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-              executeInline: (input, options) => this.executeInline(input, builtinIo, options),
+              executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
           declareLocal: (name) => this.declareLocal(name),
             });
           } else {
             // Check registry
             const command = await this.config.registry.resolve(name);
             if (!command) {
-              stderr.write(`${name}: command not found\n`);
+              (await stderr.write(`${name}: command not found\n`));
               exitCode = 127;
             } else {
               const shouldRegister = io.registerProcess !== false;
@@ -963,8 +980,8 @@ export class Interpreter {
                   : undefined,
                 isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
                 setUmask: identity.setUmask,
-                runAs: (cred, argv) => io.runAs
-                  ? io.runAs(ctx, cred, argv)
+                runAs: async (cred, argv) => io.runAs
+                  ? (await io.runAs(ctx, cred, argv))
                   : Promise.resolve(126),
               };
 
@@ -994,14 +1011,14 @@ export class Interpreter {
                     resolvePromise?.(code);
                     return code;
                   },
-                  (err) => {
+                  async (err) => {
                     rejectPromise?.(err);
                     if (err instanceof Error && err.name === 'AbortError') return 130;
                     // Surface the failure: this rejection handler resolves
                     // commandPromise to an exit code, so the catch below
                     // never sees the error — without this write a throwing
                     // registered command dies silently at the prompt.
-                    stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`);
+                    (await stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`));
                     return 1;
                   }
                 );
@@ -1015,7 +1032,7 @@ export class Interpreter {
                 if (e instanceof Error && e.name === 'AbortError') {
                   exitCode = 130;
                 } else {
-                  stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+                  (await stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`));
                   exitCode = 1;
                 }
               } finally {
@@ -1037,7 +1054,7 @@ export class Interpreter {
         }
       }
     } finally {
-      this.flushFds(fds);
+      await this.flushFds(fds);
       // Restore env from per-command assignments
       for (const [name, value] of saved) this.restoreVariable(name, value);
     }
@@ -1178,13 +1195,13 @@ export class Interpreter {
     if (options.positionals !== undefined) {
       inlineIo.positionals = { args: [...options.positionals] };
     }
-    return this.executeLineWithIo(input, inlineIo);
+    return (await this.executeLineWithIo(input, inlineIo));
   }
 
   private async executeLineWithIo(input: string, io: ExecutionIo): Promise<number> {
     const tokens = lex(input);
     const script = parse(tokens);
-    return this.executeScriptWithIo(script, io);
+    return (await this.executeScriptWithIo(script, io));
   }
 
   private async runExitTrap(exitCode: number, io: ExecutionIo, enabled: boolean): Promise<number> {
@@ -1260,7 +1277,7 @@ export class Interpreter {
       cwd: this.config.getCwd(),
       vfs: io.vfs ?? this.config.vfs,
       options: this.config.options,
-      executeCapture: (input) => this.executeCapture(input, io),
+      executeCapture: async (input) => (await this.executeCapture(input, io)),
     };
   }
 
@@ -1350,6 +1367,7 @@ export class Interpreter {
       terminalInputFds,
       changedOutputFds: new Set(),
       changedInputFds: new Set(),
+      opened: new Map(),
     };
   }
 
@@ -1359,7 +1377,7 @@ export class Interpreter {
     execute: (io: ExecutionIo) => Promise<number>,
   ): Promise<number> {
     if (redirections.length === 0) {
-      return execute(io);
+      return (await execute(io));
     }
 
     const expandCtx = this.createExpandContext(io);
@@ -1371,12 +1389,12 @@ export class Interpreter {
     } catch (error) {
       if (!(error instanceof RedirectionOpenError)) throw error;
       const redirStderr = fds.outputFds.get(2) ?? stderr;
-      redirStderr.write(redirectionDiagnostic(error));
+      (await redirStderr.write(redirectionDiagnostic(error)));
       this.lastExitCode = 1;
       return 1;
     }
 
-    return this.withFdFlush(fds, () => execute(this.createIoFromFds(io, fds)));
+    return (await this.withFdFlush(fds, async () => (await execute(this.createIoFromFds(io, fds)))));
   }
 
   private async applyRedirections(
@@ -1399,22 +1417,22 @@ export class Interpreter {
       const target = await expandWord(redir.target, expandCtx);
       switch (redir.operator) {
         case 'write':
-          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'write', fds, terminalStdin));
+          this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'write', fds, terminalStdin)));
           break;
         case 'append':
-          this.setOutputFd(fds, redir.fd ?? 1, this.openOutputTarget(io, target, 'append', fds, terminalStdin));
+          this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'append', fds, terminalStdin)));
           break;
         case 'read':
-          this.setInputFd(fds, redir.fd ?? 0, this.openInputTarget(io, target, fds, terminalStdin));
+          this.setInputFd(fds, redir.fd ?? 0, (await this.openInputTarget(io, target, fds, terminalStdin)));
           break;
         case 'readWrite': {
           const fd = redir.fd ?? 0;
-          this.setInputFd(fds, fd, this.openInputTarget(io, target, fds, terminalStdin));
-          this.setOutputFd(fds, fd, this.openOutputTarget(io, target, 'append', fds, terminalStdin));
+          this.setInputFd(fds, fd, (await this.openInputTarget(io, target, fds, terminalStdin)));
+          this.setOutputFd(fds, fd, (await this.openOutputTarget(io, target, 'append', fds, terminalStdin)));
           break;
         }
         case 'writeAll': {
-          const writer = this.openOutputTarget(io, target, 'write', fds, terminalStdin);
+          const writer = (await this.openOutputTarget(io, target, 'write', fds, terminalStdin));
           this.setOutputFd(fds, 1, writer);
           this.setOutputFd(fds, 2, writer);
           break;
@@ -1429,24 +1447,73 @@ export class Interpreter {
     }
   }
 
-  private persistFdState(fds: FdState): void {
+  private async persistFdState(fds: FdState): Promise<void> {
+    const retired: PersistentFdHandle[] = [];
     for (const fd of fds.changedOutputFds) {
       const stream = fds.outputFds.get(fd);
       if (stream) this.persistentOutputFds.set(fd, stream);
       else this.persistentOutputFds.delete(fd);
+      this.repointPersistentHandle(this.persistentOutputHandles, fd, stream, fds, retired);
       if (fds.terminalOutputFds.has(fd)) this.persistentTerminalOutputFds.add(fd);
       else this.persistentTerminalOutputFds.delete(fd);
     }
     for (const fd of fds.changedInputFds) {
       const isTerminal = fds.terminalInputFds.has(fd);
+      const stream = isTerminal ? undefined : fds.inputFds.get(fd);
       if (fds.inputFds.has(fd)) {
-        this.persistentInputFds.set(fd, isTerminal ? undefined : fds.inputFds.get(fd));
+        this.persistentInputFds.set(fd, stream);
       } else {
         this.persistentInputFds.delete(fd);
       }
+      this.repointPersistentHandle(this.persistentInputHandles, fd, stream, fds, retired);
       if (isTerminal) this.persistentTerminalInputFds.add(fd);
       else this.persistentTerminalInputFds.delete(fd);
     }
+    // A handle two descriptors share (`exec 4>&3`) closes with the last of them.
+    const held = new Set([
+      ...this.persistentOutputHandles.values(),
+      ...this.persistentInputHandles.values(),
+    ].map((handle) => handle.stream));
+    for (const handle of retired) {
+      if (!held.has(handle.stream)) await handle.close();
+    }
+  }
+
+  /**
+   * `exec N>file` keeps a descriptor past the command that opened it, so its
+   * bridge handle outlives the per-command flush and nothing there may close
+   * it. The close travels with the descriptor instead and runs when that
+   * descriptor is closed (`exec N>&-`) or repointed at another target.
+   */
+  private repointPersistentHandle(
+    handles: Map<number, PersistentFdHandle>,
+    fd: number,
+    stream: CommandInputStream | CommandOutputStream | undefined,
+    fds: FdState,
+    retired: PersistentFdHandle[],
+  ): void {
+    const held = handles.get(fd);
+    if (held?.stream === stream) return;
+    if (held) {
+      handles.delete(fd);
+      retired.push(held);
+    }
+    if (stream === undefined) return;
+    // `exec 4>&3` opens nothing: fd 4 takes over the handle fd 3 already holds.
+    const close = fds.opened.get(stream) ?? this.trackedClose(stream);
+    if (close) handles.set(fd, { stream, close });
+  }
+
+  private trackedClose(
+    stream: CommandInputStream | CommandOutputStream,
+  ): (() => Promise<void>) | undefined {
+    for (const handle of this.persistentOutputHandles.values()) {
+      if (handle.stream === stream) return handle.close;
+    }
+    for (const handle of this.persistentInputHandles.values()) {
+      if (handle.stream === stream) return handle.close;
+    }
+    return undefined;
   }
 
   private setOutputFd(fds: FdState, fd: number, target: OutputTarget): void {
@@ -1485,13 +1552,13 @@ export class Interpreter {
     setMembership(fds.terminalInputFds, fd, resolved.terminal);
   }
 
-  private openOutputTarget(
+  private async openOutputTarget(
     io: ExecutionIo,
     target: string,
     mode: 'write' | 'append',
     fds: FdState,
     terminalStdin?: TerminalInputStream,
-  ): OutputTarget {
+  ): Promise<OutputTarget> {
     if (target === '/dev/null') return { stream: this.createNullWriter(), terminal: false };
     if (target === '/dev/tty') {
       if (!terminalStdin) throw new Error('/dev/tty: no controlling terminal');
@@ -1504,17 +1571,34 @@ export class Interpreter {
     const targetPath = resolve(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
+      if (!vfs.local) {
+        const bridge = vfs.bridge;
+        if ('open' in bridge) {
+          const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+          const push = async (bytes: Uint8Array) => {
+            let offset = 0;
+            while (offset < bytes.length) {
+              const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+              if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
+              offset += written;
+            }
+          };
+          const stream: CommandOutputStream = { write: text => push(encode(text)), writeBytes: push };
+          fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+          return { stream, terminal: false };
+        }
+      }
       if (mode === 'write') {
-        vfs.writeFile(targetPath, '');
+        (await vfs.writeFile(targetPath, ''));
         return { stream: this.createFileWriter(vfs, targetPath, 'truncate'), terminal: false };
       }
-      if (vfs.exists(targetPath)) {
-        if (vfs.stat(targetPath).type === 'directory') {
+      if ((await vfs.exists(targetPath))) {
+        if ((await vfs.stat(targetPath)).type === 'directory') {
           throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
         }
-        vfs.access(targetPath, 0o2);
+        (await vfs.access(targetPath, 0o2));
       } else {
-        vfs.writeFile(targetPath, '');
+        (await vfs.writeFile(targetPath, ''));
       }
       return { stream: this.createFileWriter(vfs, targetPath, 'append'), terminal: false };
     } catch (error) {
@@ -1522,12 +1606,12 @@ export class Interpreter {
     }
   }
 
-  private openInputTarget(
+  private async openInputTarget(
     io: ExecutionIo,
     target: string,
     fds: FdState,
     terminalStdin?: TerminalInputStream,
-  ): InputTarget {
+  ): Promise<InputTarget> {
     if (target === '/dev/null') return { stream: this.createEmptyReader(), terminal: false };
     if (target === '/dev/tty') {
       if (!terminalStdin) throw new Error('/dev/tty: no controlling terminal');
@@ -1540,10 +1624,17 @@ export class Interpreter {
       // Open-authorize before the command runs, the way open(2) would: a
       // missing, unreadable, or directory target fails the redirection even
       // when the command never reads a byte.
-      if (vfs.stat(targetPath).type === 'directory') {
+      if ((await vfs.stat(targetPath)).type === 'directory') {
         throw Object.assign(new Error(`EISDIR: ${targetPath}`), { code: 'EISDIR' });
       }
-      vfs.access(targetPath, 0o4);
+      await vfs.access(targetPath, 0o4);
+      const bridge = vfs.bridge;
+      if ('open' in bridge) {
+        const handle = await bridge.open(targetPath, { read: true });
+        const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)));
+        fds.opened.set(stream, async () => { await bridge.close(handle.id); });
+        return { stream, terminal: false };
+      }
       return { stream: this.createFileReader(vfs, targetPath), terminal: false };
     } catch (error) {
       throw new RedirectionOpenError(target, error);
@@ -1565,33 +1656,33 @@ export class Interpreter {
    * which is O_APPEND: every block lands at whatever the current end is, so
    * two descriptors appending to one file cannot overwrite each other.
    */
-  private createFileWriter(vfs: VFS, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
+  private createFileWriter(vfs: ExecutionFs, path: string, mode: 'truncate' | 'append'): CommandOutputStream {
     let offset = 0;
     let pending: Uint8Array[] = [];
     let pendingBytes = 0;
 
-    const endOfFile = (): number => (vfs.exists(path) ? vfs.stat(path).size : 0);
+    const endOfFile = async (): Promise<number> => ((await vfs.exists(path)) ? (await vfs.stat(path)).size : 0);
 
-    const flush = (): void => {
+    const flush = async (): Promise<void> => {
       if (pendingBytes === 0) return;
       const block = pending.length === 1 ? pending[0] : concatBytes(pending, pendingBytes);
       pending = [];
       pendingBytes = 0;
-      const at = mode === 'append' ? endOfFile() : offset;
-      vfs.writeRange(path, at, block);
+      const at = mode === 'append' ? (await endOfFile()) : offset;
+      (await vfs.writeRange(path, at, block));
       offset = at + block.length;
     };
 
-    const push = (bytes: Uint8Array): void => {
+    const push = async (bytes: Uint8Array): Promise<void> => {
       if (bytes.length === 0) return;
       pending.push(bytes);
       pendingBytes += bytes.length;
-      if (pendingBytes >= FILE_WRITE_BLOCK_BYTES) flush();
+      if (pendingBytes >= FILE_WRITE_BLOCK_BYTES) (await flush());
     };
 
     return {
-      write: (text: string) => push(encode(text)),
-      writeBytes: (bytes: Uint8Array) => push(bytes),
+      write: async (text: string) => (await push(encode(text))),
+      writeBytes: async (bytes: Uint8Array) => (await push(bytes)),
       flush,
     };
   }
@@ -1606,12 +1697,20 @@ export class Interpreter {
     try {
       return await body();
     } finally {
-      this.flushFds(fds);
+      await this.flushFds(fds);
     }
   }
 
-  private flushFds(fds: FdState): void {
-    for (const stream of fds.outputFds.values()) stream.flush?.();
+  private async flushFds(fds: FdState): Promise<void> {
+    const results = await Promise.allSettled([...new Set(fds.outputFds.values())].map(async (stream) => (await stream.flush?.())));
+    const persistent = new Set([...this.persistentInputFds.values(), ...this.persistentOutputFds.values()]);
+    for (const [stream, close] of fds.opened) {
+      if (persistent.has(stream)) continue;
+      try { await close(); } catch (reason) { results.push({ status: 'rejected', reason }); }
+      fds.opened.delete(stream);
+    }
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) throw failure.reason;
   }
 
   /**
@@ -1623,13 +1722,13 @@ export class Interpreter {
    * fewer bytes than asked whenever their internal bound is hit; those short
    * nonempty reads advance the offset and continue, exactly like read(2).
    */
-  private createFileReader(vfs: VFS, path: string): CommandInputStream {
+  private createFileReader(vfs: ExecutionFs, path: string, readRange = async (offset: number, length: number) => (await vfs.readRange(path, offset, length))): CommandInputStream {
     const decoder = new TextDecoder('utf-8');
     let offset = 0;
     let eof = false;
-    const pull = (max: number): Uint8Array | null => {
+    const pull = async (max: number): Promise<Uint8Array | null> => {
       if (eof) return null;
-      const chunk = vfs.readRange(path, offset, max);
+      const chunk = await readRange(offset, max);
       if (chunk.length === 0) {
         eof = true;
         return null;
@@ -1640,11 +1739,11 @@ export class Interpreter {
     return {
       readBytes: async (maxLength: number) => {
         if (maxLength <= 0) return new Uint8Array(0);
-        return pull(maxLength);
+        return (await pull(maxLength));
       },
       read: async () => {
         while (true) {
-          const bytes = pull(65536);
+          const bytes = (await pull(65536));
           if (bytes === null) {
             const tail = decoder.decode();
             return tail.length > 0 ? tail : null;
@@ -1656,7 +1755,7 @@ export class Interpreter {
       readAll: async () => {
         let out = '';
         while (true) {
-          const bytes = pull(65536);
+          const bytes = (await pull(65536));
           if (bytes === null) break;
           out += decoder.decode(bytes, { stream: true });
         }
@@ -1667,7 +1766,7 @@ export class Interpreter {
         let line = '';
         let sawAny = false;
         while (true) {
-          const bytes = pull(65536);
+          const bytes = (await pull(65536));
           if (bytes === null) break;
           sawAny = true;
           // Split on the raw 0x0A byte so pushback returns ORIGINAL bytes;

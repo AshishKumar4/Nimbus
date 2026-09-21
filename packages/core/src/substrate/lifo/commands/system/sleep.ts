@@ -2,13 +2,13 @@ import type { Command } from '../types.js';
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
-    ctx.stderr.write('sleep: missing operand\n');
+    await ctx.stderr.write('sleep: missing operand\n');
     return 1;
   }
 
   const seconds = parseFloat(ctx.args[0]);
   if (isNaN(seconds) || seconds < 0) {
-    ctx.stderr.write(`sleep: invalid time interval '${ctx.args[0]}'\n`);
+    await ctx.stderr.write(`sleep: invalid time interval '${ctx.args[0]}'\n`);
     return 1;
   }
 

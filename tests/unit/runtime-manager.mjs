@@ -13,6 +13,8 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.ts';
+import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { suppliedRuntimeSource } from '../../packages/core/src/runtime/runtime-package.ts';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
@@ -63,7 +65,7 @@ const makeRegistry = () => {
 const makeManager = (vfs, source) => {
   const registry = makeRegistry();
   const manager = new RuntimeManager({
-    vfs: vfs.as(KERNEL),
+    vfs: new ExecutionFs(new SqliteFilesystemAuthority(vfs).openHost(KERNEL).fs),
     registry,
     getHome: () => HOME,
     source,
@@ -129,7 +131,7 @@ const toyRunner = () => async () => 0;
   manager.registerRunner('toy-runner', toyRunner);
 
   await assert.rejects(() => manager.install('toy'), /sha256 mismatch/);
-  assert.equal(manager.list().length, 0, 'a failed install lists as installed');
+  assert.equal((await manager.list()).length, 0, 'a failed install lists as installed');
   const ok = await manager.install('toy');
   assert.equal(ok.written, true, 'the retry hit a memo instead of writing');
 }
@@ -166,9 +168,45 @@ const toyRunner = () => async () => 0;
   // the bins simply never bind until a runner exists.
   const seeded = await manager.installPackage(pkg);
   assert.equal(seeded.written, true);
-  assert.equal(manager.list().length, 1);
+  assert.equal((await manager.list()).length, 1);
   manager.registerRunner('toy-runner', toyRunner);
   assert.deepEqual((await manager.rehydrate()).bins, ['toy']);
+}
+
+// ── A shared source's default is not always a build this workspace binds ──
+// A runtime rebuilt against a new runner contract publishes under a new
+// version and runner key; the source keeps offering the old default to the
+// deployments that still bind it. A bare name resolves to the newest version
+// whose runners are registered here; an explicit version is never substituted.
+{
+  const vfs = openVfs();
+  const fs = vfs.as(KERNEL);
+  const oldBuild = fakePackage({ 'bin/toy': '# v1\n' }, { version: '1.0.0', runner: 'toy-runner' });
+  const newBuild = fakePackage({ 'bin/toy': '# v2\n' }, { version: '1.0.0-2', runner: 'toy-runner@2' });
+  const shared = {
+    async list() {
+      return [{
+        name: 'toy', abi: 'wasm32-wasi-nimbus', defaultVersion: '1.0.0',
+        versions: [oldBuild, newBuild].map((p) => ({ version: p.manifest.version, sizeBytes: 1, license: 'MIT' })),
+      }];
+    },
+    async resolve(spec) {
+      if (spec === 'toy' || spec === 'toy@1.0.0') return oldBuild;
+      if (spec === 'toy@1.0.0-2') return newBuild;
+      return null;
+    },
+  };
+  const { manager } = makeManager(vfs, shared);
+  manager.registerRunner('toy-runner@2', toyRunner);
+
+  const seeded = await manager.install('toy');
+  assert.equal(seeded.version, '1.0.0-2', 'the default was installed although this workspace cannot bind it');
+  assert.equal(fs.readFileString(`${seeded.root}/bin/toy`), '# v2\n');
+  await assert.rejects(() => manager.install('toy@1.0.0'), /toy@1\.0\.0: runner 'toy-runner' not registered/);
+
+  const { manager: older } = makeManager(openVfs(), shared);
+  older.registerRunner('toy-runner', toyRunner);
+  assert.equal((await older.install('toy')).version, '1.0.0', 'a workspace that binds the default must keep it');
 }
 
 // ── Reopen: a fresh manager over the same disk rehydrates every bin ───────
@@ -195,7 +233,7 @@ const toyRunner = () => async () => 0;
   await manager.install('toy');
 
   await manager.uninstall('toy');
-  assert.equal(manager.list().length, 0);
+  assert.equal((await manager.list()).length, 0);
   assert.ok(!registry.commands.has('toy'), 'uninstall left the bin registered');
   assert.ok(!fs.exists('home/user/.nimbus/runtimes/toy'), 'uninstall left the tree');
 
@@ -222,7 +260,7 @@ const toyRunner = () => async () => 0;
   const exitCode = await (await registry.resolve('toy'))(ctx);
   assert.equal(exitCode, 0, ctx.stderr.buf);
   assert.equal(ctx.stdout.buf, 'ran toy\n');
-  assert.equal(manager.list().length, 1, 'the stub never installed');
+  assert.equal((await manager.list()).length, 1, 'the stub never installed');
 }
 
 // ── Same-size corruption is rewritten, not trusted ──────────────────────────
@@ -340,7 +378,7 @@ const toyRunner = () => async () => 0;
   };
   const registry = makeRegistry();
   const manager = new RuntimeManager({
-    vfs: fs, registry, getHome: () => home, source,
+    vfs: new ExecutionFs(new SqliteFilesystemAuthority(vfs).openHost(KERNEL).fs), registry, getHome: () => home, source,
   });
   manager.registerRunner('toy-runner', toyRunner);
 
@@ -369,7 +407,7 @@ const toyRunner = () => async () => 0;
     resolve: async (spec) => (spec === 'big' ? slow : spec === 'toy' ? toy : null),
   };
   const registry = makeRegistry();
-  const manager = new RuntimeManager({ vfs: vfs.as(KERNEL), registry, getHome: () => HOME, source });
+  const manager = new RuntimeManager({ vfs: new ExecutionFs(new SqliteFilesystemAuthority(vfs).openHost(KERNEL).fs), registry, getHome: () => HOME, source });
   manager.registerRunner('toy-runner', toyRunner);
   await manager.install('toy');
 
@@ -379,10 +417,10 @@ const toyRunner = () => async () => 0;
   const winner = await Promise.race([uninstalled.then(() => 'uninstall'), writeGate.then(() => 'big')]);
   assert.equal(winner, 'uninstall', 'uninstall waited on an unrelated payload write');
   await uninstalled;
-  assert.deepEqual(manager.list().map((e) => e.name), []);
+  assert.deepEqual((await manager.list()).map((e) => e.name), []);
   writeRelease();
   await pendingBig;
-  assert.deepEqual(manager.list().map((e) => e.name), ['big']);
+  assert.deepEqual((await manager.list()).map((e) => e.name), ['big']);
 }
 
 // ── Uninstall during a write still removes the finished tree ────────────────
@@ -404,7 +442,7 @@ const toyRunner = () => async () => 0;
   const removing = manager.uninstall('toy');
   release();
   await Promise.all([pending, removing]);
-  assert.equal(manager.list().length, 0, 'uninstall raced the in-flight write');
+  assert.equal((await manager.list()).length, 0, 'uninstall raced the in-flight write');
   assert.ok(!fs.exists('home/user/.nimbus/runtimes/toy'), 'the tree survived removal');
 }
 
@@ -434,12 +472,12 @@ const toyRunner = () => async () => 0;
   manager.registerRunner('toy-runner', toyRunner);
   await manager.installPackage(v1);
   await manager.installPackage(v2);
-  assert.equal(manager.list().length, 2);
+  assert.equal((await manager.list()).length, 2);
 
   // Corrupt v1's payload, then remove v2: the freed bin must not rebind v1.
   fs.writeFile('home/user/.nimbus/runtimes/toy/1.0.0/bin/toy', '# tampered\n');
   await manager.uninstall('toy@2.0.0');
-  assert.equal(manager.list().length, 1);
+  assert.equal((await manager.list()).length, 1);
   assert.ok(!registry.commands.has('toy'), 'removing v2 rebound a corrupted v1');
 
   // Same shape, healthy survivor: the bin comes back.

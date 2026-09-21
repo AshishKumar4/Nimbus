@@ -28,21 +28,21 @@ const command: Command = async (ctx) => {
     if (ctx.stdin) {
       text = await ctx.stdin.readAll();
     } else {
-      ctx.stderr.write('uniq: missing file operand\n');
+      await ctx.stderr.write('uniq: missing file operand\n');
       return 1;
     }
   } else {
     const path = resolve(ctx.cwd, files[0]);
     if (isBinaryMime(getMimeType(path))) {
-      ctx.stderr.write(`uniq: ${files[0]}: binary file, skipping
-`);
+      await ctx.stderr.write(`uniq: ${files[0]}: binary file, skipping
+      `);
       return 1;
     }
     try {
-      text = ctx.vfs.readFileString(path);
+      text = (await ctx.vfs.readFileString(path));
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`uniq: ${files[0]}: ${e.message}\n`);
+        await ctx.stderr.write(`uniq: ${files[0]}: ${e.message}\n`);
         return 1;
       }
       throw e;
@@ -65,9 +65,9 @@ const command: Command = async (ctx) => {
     if (onlyDuplicates && group.count < 2) continue;
     if (onlyUnique && group.count > 1) continue;
     if (showCount) {
-      ctx.stdout.write(`${String(group.count).padStart(7)} ${group.line}\n`);
+      await ctx.stdout.write(`${String(group.count).padStart(7)} ${group.line}\n`);
     } else {
-      ctx.stdout.write(group.line + '\n');
+      await ctx.stdout.write(group.line + '\n');
     }
   }
 

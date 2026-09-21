@@ -29,6 +29,7 @@ import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { readFileSync } from 'node:fs';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -68,7 +69,8 @@ const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {
 // image store and boots from the path, so the manager needs the disk every
 // real session has.
 const harness = createSqliteVfsTestHarness();
-fm.setVfs(new SqliteVFS(harness.sql, harness.ctx));
+const managerVfs = new SqliteVFS(harness.sql, harness.ctx);
+fm.setVfs(managerVfs, new SqliteFilesystemAuthority(managerVfs));
 
 // ── 1. spawning evaluates the user's program exactly once ───────────────────
 const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {

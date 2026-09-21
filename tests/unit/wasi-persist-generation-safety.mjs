@@ -24,6 +24,7 @@ import { pathToFileURL } from 'node:url';
 
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
+import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
 
 const ESUCCESS = 0;
 
@@ -62,17 +63,28 @@ function writeStr(mem, ptr, s) {
 // flight when the isolate is handed to the next program.
 let release;
 const parked = new Promise((r) => { release = r; });
+let signalWrite;
+const writeStarted = new Promise(resolve => { signalWrite = resolve; });
 const seen = [];
-const supA = {
-  async writeFile(p, bytes) { seen.push(['writeFile', p, new TextDecoder().decode(bytes)]); },
-  // mkdir parks: it is an op whose queued closure does NOT read __wasiFS, so it
-  // reaches the supervisor reference itself and exposes run(null) directly.
-  async mkdir(p) { seen.push(['mkdir', p]); await parked; },
+const storeA = new Map();
+const supA = descriptorSupervisor({
+  store: storeA,
+  async writeFile(p, bytes) { storeA.set(p, new Uint8Array(bytes)); },
+  async fsWriteRange(p, offset, bytes) {
+    signalWrite();
+    await parked;
+    const previous = storeA.get(p) ?? new Uint8Array();
+    const next = new Uint8Array(Math.max(previous.length, offset + bytes.length));
+    next.set(previous); next.set(bytes, offset); storeA.set(p, next);
+    seen.push(['writeFile', p, new TextDecoder().decode(bytes)]);
+    return bytes.length;
+  },
+  async mkdir(p) { seen.push(['mkdir', p]); },
   async unlink() {}, async rmdir() {}, async rename() {},
   async symlink() {}, async utimes() {},
   async stat() { return null; },
   async fsReadRange() { return new Uint8Array(0); },
-};
+});
 
 P.__wasiInitFS(seed());
 P.__wasiAdoptSupervisor(supA);
@@ -83,10 +95,10 @@ const { wasiImport: imports } = makeImportsWithoutJSPI(P, { argv: ["prog"], env:
 // Program A makes a directory (queues a parked sup.mkdir) and writes a file
 // (queues a write-back that reads its bytes back out of __wasiFS when it runs).
 const dirLen = writeStr(mem, 2048, 'adir');
-assert.equal(imports.path_create_directory(3, 2048, dirLen), ESUCCESS);
+assert.equal(await imports.path_create_directory(3, 2048, dirLen), ESUCCESS);
 
 const nameLen = writeStr(mem, 64, 'a.txt');
-const openRc = imports.path_open(3, 0, 64, nameLen, 1 /* O_CREAT */, 0n, 0n, 0, 128);
+const openRc = await imports.path_open(3, 0, 64, nameLen, 1 /* O_CREAT */, -1n, -1n, 0, 128);
 assert.equal(openRc, ESUCCESS, `path_open failed: ${openRc}`);
 const fd = new DataView(mem.buffer).getUint32(128, true);
 
@@ -95,10 +107,13 @@ new Uint8Array(mem.buffer).set(payload, 1024);
 const dv = new DataView(mem.buffer);
 dv.setUint32(256, 1024, true);
 dv.setUint32(260, payload.length, true);
-assert.equal(imports.fd_write(fd, 256, 1, 300), ESUCCESS);
+const writing = imports.fd_write(fd, 256, 1, 300);
+await writeStarted;
 
 // The pool hands the isolate to the next program while A's write is in flight.
 P.__wasiInitFS(seed());
+const storeB = new Map();
+P.__wasiAdoptSupervisor(descriptorSupervisor({ store: storeB, async stat() { return null; } }));
 
 // Now let program A's queued write-back run against whatever it captured.
 release();
@@ -107,7 +122,8 @@ try { await P.__wasiDrainPersist(); } catch (e) { threw = e; }
 // The previous generation's chain is deliberately NOT awaited by this drain —
 // the new process owns a fresh tail. Let the old chain settle so what it
 // actually did is observable.
-await new Promise((r) => setTimeout(r, 50));
+assert.equal(await writing, ESUCCESS);
+assert.equal(storeB.size, 0, 'the old operation never writes to the new authority');
 
 const message = threw ? String(threw && threw.message ? threw.message : threw) : '';
 check('a queued write-back is not run against a null supervisor',

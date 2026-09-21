@@ -10,7 +10,7 @@ const command = async (ctx) => {
     if (minutes > 0)
         parts.push(`${minutes} minute${minutes !== 1 ? 's' : ''}`);
     parts.push(`${seconds} second${seconds !== 1 ? 's' : ''}`);
-    ctx.stdout.write(`up ${parts.join(', ')}\n`);
+    await ctx.stdout.write(`up ${parts.join(', ')}\n`);
     return 0;
 };
 export default command;

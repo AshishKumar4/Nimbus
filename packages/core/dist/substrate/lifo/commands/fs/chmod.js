@@ -64,31 +64,31 @@ const command = async (ctx) => {
         }
     }
     if (!modeStr || files.length === 0) {
-        ctx.stderr.write('chmod: missing operand\n');
+        await ctx.stderr.write('chmod: missing operand\n');
         return 1;
     }
     const spec = parseModeSpec(modeStr);
     if (!spec) {
-        ctx.stderr.write(`chmod: invalid mode: '${modeStr}'\n`);
+        await ctx.stderr.write(`chmod: invalid mode: '${modeStr}'\n`);
         return 1;
     }
     let exitCode = 0;
-    function applyChmod(filePath) {
-        const st = ctx.vfs.stat(filePath);
-        ctx.vfs.chmod(filePath, applyModeSpec(spec, st.mode, st.type === 'directory'));
+    async function applyChmod(filePath) {
+        const st = (await ctx.vfs.stat(filePath));
+        (await ctx.vfs.chmod(filePath, applyModeSpec(spec, st.mode, st.type === 'directory')));
         if (recursive && st.type === 'directory') {
-            for (const entry of ctx.vfs.readdir(filePath)) {
-                applyChmod(filePath === '/' ? '/' + entry.name : filePath + '/' + entry.name);
+            for (const entry of (await ctx.vfs.readdir(filePath))) {
+                (await applyChmod(filePath === '/' ? '/' + entry.name : filePath + '/' + entry.name));
             }
         }
     }
     for (const file of files) {
         try {
-            applyChmod(resolve(ctx.cwd, file));
+            (await applyChmod(resolve(ctx.cwd, file)));
         }
         catch (e) {
             const message = e instanceof VFSError || e instanceof Error ? e.message : String(e);
-            ctx.stderr.write(`chmod: cannot access '${file}': ${message}\n`);
+            await ctx.stderr.write(`chmod: cannot access '${file}': ${message}\n`);
             exitCode = 1;
         }
     }

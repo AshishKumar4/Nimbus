@@ -43,8 +43,8 @@ function formatEntry(entry, long) {
     }
     return displayName;
 }
-function listDirectory(path, flags, ctx) {
-    const entries = ctx.vfs.readdirStat(path);
+async function listDirectory(path, flags, ctx) {
+    const entries = (await ctx.vfs.readdirStat(path));
     const filtered = flags.all
         ? entries
         : entries.filter((e) => !e.name.startsWith('.'));
@@ -61,7 +61,7 @@ const command = async (ctx) => {
     for (const target of targets) {
         const targetPath = resolve(ctx.cwd, target);
         try {
-            const stat = ctx.vfs.stat(targetPath);
+            const stat = (await ctx.vfs.stat(targetPath));
             if (stat.type === 'file') {
                 fileEntries.push({
                     name: target,
@@ -77,7 +77,7 @@ const command = async (ctx) => {
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`ls: ${e.message}\n`);
+                await ctx.stderr.write(`ls: ${e.message}\n`);
                 exitCode = 1;
             }
             else {
@@ -89,17 +89,17 @@ const command = async (ctx) => {
     if (fileEntries.length > 0) {
         if (flags.long) {
             for (const entry of fileEntries) {
-                ctx.stdout.write(formatEntry(entry, true));
+                await ctx.stdout.write(formatEntry(entry, true));
             }
         }
         else if (flags.one) {
             for (const entry of fileEntries) {
-                ctx.stdout.write(formatEntry(entry, false) + '\n');
+                await ctx.stdout.write(formatEntry(entry, false) + '\n');
             }
         }
         else {
             const names = fileEntries.map((e) => formatEntry(e, false));
-            ctx.stdout.write(names.join('  ') + '\n');
+            await ctx.stdout.write(names.join('  ') + '\n');
         }
     }
     // Display directory entries
@@ -109,31 +109,31 @@ const command = async (ctx) => {
         // Print header if multiple targets
         if (dirTargets.length > 1 || fileEntries.length > 0) {
             if (fileEntries.length > 0 || i > 0)
-                ctx.stdout.write('\n');
-            ctx.stdout.write(`${target}:\n`);
+                await ctx.stdout.write('\n');
+            await ctx.stdout.write(`${target}:\n`);
         }
         try {
-            const entries = listDirectory(targetPath, flags, ctx);
+            const entries = (await listDirectory(targetPath, flags, ctx));
             if (flags.long) {
                 for (const entry of entries) {
-                    ctx.stdout.write(formatEntry(entry, true));
+                    await ctx.stdout.write(formatEntry(entry, true));
                 }
             }
             else if (flags.one) {
                 for (const entry of entries) {
-                    ctx.stdout.write(formatEntry(entry, false) + '\n');
+                    await ctx.stdout.write(formatEntry(entry, false) + '\n');
                 }
             }
             else {
                 const names = entries.map((e) => formatEntry(e, false));
                 if (names.length > 0) {
-                    ctx.stdout.write(names.join('  ') + '\n');
+                    await ctx.stdout.write(names.join('  ') + '\n');
                 }
             }
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`ls: ${e.message}\n`);
+                await ctx.stderr.write(`ls: ${e.message}\n`);
                 exitCode = 1;
             }
             else {

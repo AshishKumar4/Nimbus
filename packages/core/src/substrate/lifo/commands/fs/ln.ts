@@ -8,9 +8,9 @@ const command: Command = async (ctx) => {
   }
 
   if (symlink) {
-    ctx.stderr.write('ln: symbolic links are not supported in Lifo VFS\n');
+    await ctx.stderr.write('ln: symbolic links are not supported in Lifo VFS\n');
   } else {
-    ctx.stderr.write('ln: hard links are not supported in Lifo VFS\n');
+    await ctx.stderr.write('ln: hard links are not supported in Lifo VFS\n');
   }
 
   return 1;

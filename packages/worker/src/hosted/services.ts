@@ -1,8 +1,9 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
-import { composeFacetManager, type ComposedFacetManager } from "../facets/compose.js";
+import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type OutputHooks } from "../facets/process.js";
 import { ChildProcessSpawnPool } from "../loaders/child-process/spawn-pool.js";
-import { CRED_KERNEL, CRED_SESSION_USER, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
+import { SqliteFilesystemAuthority } from "@nimbus-sh/core/runtime/filesystem-authority.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import { EsbuildService } from "@nimbus-sh/core/runtime/esbuild-service.js";
 import type { NpmInstaller } from "../npm/installer.js";
@@ -46,7 +47,10 @@ export interface RuntimeServiceContext {
   readonly ctx: DurableObjectState;
   readonly env: HostedRuntimeEnv;
   notify(line: string): void;
-  requestLaunchTurn(notBefore?: number): Promise<boolean>;
+  requestLaunchTurn(notBefore?: number): Promise<void>;
+  resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+  /** The host's own authority: a session has exactly one, and this is it. */
+  filesystem: () => NimbusFilesystemAuthority;
 }
 
 const CpFacetDirectPayloadSchema = z.object({
@@ -84,16 +88,25 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
       // first. Cheap and idempotent; every caller already stood it up or is
       // about to.
       self.ensureSqliteFs();
+      const filesystem = runtimeContext.filesystem();
+      // The manager reaches the disk behind the authority (boot images, the
+      // launch journal), so a host that credentials something other than this
+      // session's SQLite filesystem cannot compose one.
+      if (!(filesystem instanceof SqliteFilesystemAuthority)) {
+        throw new Error('Nimbus: the facet manager needs the session SqliteFilesystemAuthority, not a foreign filesystem authority');
+      }
       self.facetManagerComposed = composeFacetManager({
         ctx: runtimeContext.ctx,
         env: runtimeContext.env,
         processes: self.processes,
         portRegistry: self.portRegistry,
-        vfs: self.sqliteFs!,
+        vfs: filesystem.vfs,
+        filesystem,
         ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
         hooks: {
           onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
-          requestLaunchTurn: (notBefore) => { void runtimeContext.requestLaunchTurn(notBefore); },
+          requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
+          resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
           notify: (line) => runtimeContext.notify(line),
           onSpawn: (pid, command, longRunning) => {
             const attachedTty = self.processes.get(pid)?.attachedTty === true;

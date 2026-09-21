@@ -1,8 +1,22 @@
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { z } from 'zod';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
-import { SqliteRuntimeFsBridge } from '../runtime/sqlite-runtime-fs-bridge.js';
+import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+
+const FsPath = z.union([
+  z.string(),
+  z.object({ directory: z.number().int().nonnegative(), path: z.string(), beneath: z.boolean().optional() }),
+  z.object({ root: z.string(), path: z.string(), beneath: z.literal(true) }),
+]);
+const OpenOptions = z.object({
+  read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
+  create: z.boolean().optional(), exclusive: z.boolean().optional(), directory: z.boolean().optional(),
+  truncate: z.boolean().optional(), followSymlinks: z.boolean().optional(), expectedRevision: z.number().int().nonnegative().optional(),
+  mode: z.number().int().nonnegative().max(0o7777).optional(),
+});
 
 /**
  * Identity comes from the supervisor binding, never from facet arguments: a
@@ -27,9 +41,10 @@ export type SupervisorOpHandler = (envelope: SupervisorOpEnvelope, tools: Superv
 
 export interface SupervisorOpDeps {
   readonly vfs: SqliteVFS;
+  readonly filesystem?: NimbusFilesystemAuthority;
   /** Absent a process table, operations use the unprivileged session user. */
   readonly processes?: SessionProcessSupervisor;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
   /**
    * The host's `_rpc*` surface for ops beyond the native set — an in-process
    * workspace's dispatch record, or the session itself for
@@ -42,6 +57,12 @@ export interface SupervisorOpDeps {
    * uses; in-process workspaces let the handler build its own.
    */
   readonly bridge?: SupervisorOpBridgeStore;
+  /**
+   * Accounting around a read that answers up to `bytes`: a host under a
+   * memory budget holds a lease for the payload while it is produced. Absent,
+   * reads are unaccounted, which is an in-process workspace's whole budget.
+   */
+  readonly readLease?: <T>(bytes: number, read: () => Promise<T>) => Promise<T>;
   readonly extend?: Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
 }
 
@@ -59,6 +80,17 @@ function numberArg(envelope: SupervisorOpEnvelope, index: number): number {
     throw new Error(`supervisor op ${envelope.op}: argument ${index} must be a number`);
   }
   return value;
+}
+
+function nullableNumberArg(envelope: SupervisorOpEnvelope, index: number): number | null {
+  return envelope.args?.[index] === null ? null : numberArg(envelope, index);
+}
+
+function bytesArg(envelope: SupervisorOpEnvelope, index: number): Uint8Array {
+  const value = envelope.args?.[index];
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  throw new Error(`supervisor op ${envelope.op}: argument ${index} must be bytes`);
 }
 
 function contentArg(envelope: SupervisorOpEnvelope, index: number): string | Uint8Array {
@@ -109,7 +141,9 @@ export interface SupervisorOpHost {
 
 /**
  * The canonical supervisor op set — every operation the supervisor RPC
- * serves. Three consumers key on these names:
+ * serves, split between exactly two tables: an op is either native (the
+ * handler answers it from the bridge) or routed (SUPERVISOR_OP_ROUTES names
+ * the host `_rpc*` method), never both. Three consumers key on these names:
  *
  *   - `sessionSupervisorOp` (worker): the DO's host — `extend` overrides for
  *     hosted accounting plus the non-filesystem ops it answers itself.
@@ -117,8 +151,9 @@ export interface SupervisorOpHost {
  *     run against the VFS directly; every other op dispatches to
  *     `deps.host` through SUPERVISOR_OP_ROUTES, the embedder's `_rpc*`
  *     surface.
- *   - `supervisor-host-dispatch`: the test — derives every case's delegate
- *     and expected arguments from SUPERVISOR_OP_ROUTES, not a copied list.
+ *   - `supervisor-host-dispatch`: the test — drives a case per name here,
+ *     against the real filesystem for a native op and against a captured
+ *     delegate for a routed one.
  *
  * An op absent here is not served, on any host.
  */
@@ -134,6 +169,7 @@ export const SUPERVISOR_OPS = [
   'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
   'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
   'cpDrainOutput', 'cpKill', 'cpWait', 'cpDispatchInline',
+  'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
   'innerDoFetch', 'fanoutExecute', 'processHostProbe', 'hostProcess',
   'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay',
 ] as const;
@@ -147,56 +183,33 @@ export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
  * the default handler would have used instead of caching its own.
  */
 export interface SupervisorOpTools {
-  readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
+  readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   readonly vfs: SqliteVFS;
   readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
 }
 
-/** The host-side argument plan per op — how an envelope becomes an _rpc* call. */
-export const SUPERVISOR_OP_ROUTES: Readonly<Record<SupervisorOpName, SupervisorOpRoute>> = {
-  readFile: { method: '_rpcReadFile', args: [0,'pid'] },
-  readFileBytes: { method: '_rpcReadFileBytes', args: [0,'pid'] },
-  writeFile: { method: '_rpcWriteFile', args: [0,1,'pid'] },
-  stat: { method: '_rpcStat', args: [0,'pid'] },
-  lstat: { method: '_rpcLstat', args: [0,'pid'] },
-  hasLegacySymlinkUnder: { method: '_rpcHasLegacySymlinkUnder', args: [0,'pid'] },
-  utimes: { method: '_rpcUtimes', args: [0,1,2,'pid'] },
-  chmod: { method: '_rpcChmod', args: [0,1,'pid'] },
-  access: { method: '_rpcAccess', args: [0,1,'pid'] },
-  chown: { method: '_rpcChown', args: [0,1,2,'pid',3] },
+/**
+ * The host-side argument plan per op — how an envelope becomes an _rpc*
+ * call. Exactly the ops {@link SUPERVISOR_NATIVE_OPS} does NOT name: a
+ * native op is answered by the bridge before the host is consulted, so a
+ * route for one could never fire.
+ */
+export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, NativeOpName>, SupervisorOpRoute>> = {
   setUmask: { method: '_rpcSetUmask', args: [0,'pid'] },
-  readdir: { method: '_rpcReaddir', args: [0,'pid'] },
-  exists: { method: '_rpcExists', args: [0,'pid'] },
-  mkdir: { method: '_rpcMkdir', args: [0,'pid'] },
-  rmdir: { method: '_rpcRmdir', args: [0,'pid'] },
-  rename: { method: '_rpcRename', args: [0,1,'pid'] },
-  unlink: { method: '_rpcUnlink', args: [0,'pid'] },
-  readlink: { method: '_rpcReadlink', args: [0,'pid'] },
-  symlink: { method: '_rpcSymlink', args: [0,1,'pid'] },
   fsAcquire: { method: '_rpcFsAcquire', args: [0,1,'pid'] },
-  fsRevision: { method: '_rpcFsRevision', args: [0,'pid'] },
   fsList: { method: '_rpcFsList', args: [0,1,'pid'] },
   wsOpen: { method: '_rpcWsOpen', args: [0,1,'pid'] },
   wsPoll: { method: '_rpcWsPoll', args: [0,1,'pid'] },
   wsSend: { method: '_rpcWsSend', args: [0,1,2,'pid'] },
   wsClose: { method: '_rpcWsClose', args: [0,1,2,'pid'] },
-  fsOpen: { method: '_rpcFsOpen', args: [0,1,'pid'] },
-  fsRead: { method: '_rpcFsRead', args: [0,1,2,'pid'] },
-  fsWrite: { method: '_rpcFsWrite', args: [0,1,2,'pid'] },
-  fsClose: { method: '_rpcFsClose', args: [0,'pid'] },
-  fsReadRange: { method: '_rpcFsReadRange', args: [0,1,2,'pid'] },
-  fsReadRangeUncached: { method: '_rpcFsReadRangeUncached', args: [0,1,2,'pid'] },
   fsReadBatch: { method: '_rpcFsReadBatch', args: [0,'pid'] },
   fsWriteRange: { method: '_rpcFsWriteRange', args: [0,1,2,'pid'] },
   fsAppend: { method: '_rpcFsAppend', args: [0,'writerId',1,2,3,'pid'] },
   fsAppendAck: { method: '_rpcFsAppendAck', args: ['writerId',0,1,'pid'] },
-  fsTruncate: { method: '_rpcFsTruncate', args: [0,1,'pid'] },
   writeBatch: { method: '_rpcWriteBatch', args: [0,'pid'] },
-  writeBatchStream: { method: '_rpcWriteBatchStream', args: ['stream','mutationOwner','pid'] },
   putRegistryEntries: { method: '_rpcPutRegistryEntries', args: [0] },
-  stdout: { method: '_rpcStdout', args: ['pid',0] },
-  stderr: { method: '_rpcStderr', args: ['pid',0] },
   prefetch: { method: '_rpcPrefetch', args: [0,1] },
   registerPort: { method: '_rpcRegisterPort', args: ['pid',0] },
   unregisterPort: { method: '_rpcUnregisterPort', args: [0] },
@@ -223,19 +236,98 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<SupervisorOpName, SupervisorO
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
 } as const;
 
+/** Every native op reads its filesystem the same way: the envelope's identity. */
+const fsFor = (e: SupervisorOpEnvelope, tools: SupervisorOpTools): RuntimeFsBridge => tools.bridge(e.pid, e.cred);
+
+/** A whole-file read, leased for what the file holds. */
+async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path: RuntimeFsPath): Promise<Uint8Array | null> {
+  const fs = fsFor(e, t);
+  const stat = await fs.stat(path);
+  if (!stat) return null;
+  return t.readLease(stat.size, () => Promise.resolve(fs.readFile(path)));
+}
+
+/** A range read, leased for what the range can return rather than what it asks. */
+async function readRange(e: SupervisorOpEnvelope, t: SupervisorOpTools, options: { cached?: boolean }): Promise<Uint8Array | null> {
+  const fs = fsFor(e, t);
+  const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
+  const stat = await fs.stat(path);
+  const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
+  return t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)));
+}
+
 /**
  * The ops `createSupervisorOpHandler` serves natively — one pid-keyed
- * filesystem bridge, plus the output stream. A session's `extend` overrides
- * never cover these by accident: `sessionSupervisorOps` builds its delegate
- * set from this name list, not a hand-copied table.
+ * filesystem bridge, plus the output stream. This table is the definition:
+ * {@link SUPERVISOR_NATIVE_OPS} is its key set and {@link SUPERVISOR_OP_ROUTES}
+ * covers exactly the ops it does not name, so no op is listed twice and a
+ * session's `extend` overrides can never cover one by accident.
  */
-export const SUPERVISOR_NATIVE_OPS: ReadonlySet<string> = new Set([
-  'readFile', 'readFileBytes', 'stat', 'lstat', 'exists', 'readdir',
-  'readlink', 'fsReadRange', 'fsReadRangeUncached', 'fsRevision',
-  'hasLegacySymlinkUnder', 'writeFile', 'mkdir', 'rmdir', 'unlink',
-  'rename', 'symlink', 'chmod', 'utimes', 'fsTruncate',
-  'writeBatchStream', 'stdout', 'stderr',
-]);
+const NATIVE_OPS = {
+  readFile: async (e, t) => {
+    const bytes = await readWholeFile(e, t, stringArg(e, 0));
+    return bytes === null ? null : new TextDecoder().decode(bytes);
+  },
+  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), OpenOptions.parse(e.args?.[1])),
+  fsRead: (e, t) => {
+    const length = numberArg(e, 2);
+    return t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length)));
+  },
+  fsWrite: (e, t) => fsFor(e, t).write(numberArg(e, 0), nullableNumberArg(e, 1), bytesArg(e, 2)),
+  fsClose: (e, t) => fsFor(e, t).close(numberArg(e, 0)),
+  fsFstat: (e, t) => fsFor(e, t).fstat(numberArg(e, 0)),
+  fsDup: (e, t) => fsFor(e, t).dup(numberArg(e, 0)),
+  fsSeek: (e, t) => fsFor(e, t).seek(numberArg(e, 0), numberArg(e, 1), z.enum(['set', 'current', 'end']).parse(e.args?.[2])),
+  fsSetStatus: (e, t) => fsFor(e, t).setStatus(numberArg(e, 0), z.object({ append: z.boolean().optional() }).parse(e.args?.[1])),
+  fsReaddirHandle: (e, t) => fsFor(e, t).readdirHandle(numberArg(e, 0)),
+  fsFtruncate: (e, t) => fsFor(e, t).ftruncate(numberArg(e, 0), numberArg(e, 1)),
+  fsFchmod: (e, t) => fsFor(e, t).fchmod(numberArg(e, 0), numberArg(e, 1)),
+  fsFchown: (e, t) => fsFor(e, t).fchown(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+  fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+  fsSync: (e, t) => fsFor(e, t).fsync(e.args?.[0] === undefined ? undefined : numberArg(e, 0)),
+  fsRealpath: (e, t) => fsFor(e, t).realpath(FsPath.parse(e.args?.[0])),
+  fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
+  fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({ includeMissingAncestors: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  fsReleaseExclusiveMutation: (e, t) => fsFor(e, t).releaseExclusiveMutation(stringArg(e, 0)),
+  readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
+  stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
+  exists: async (e, t) => (await fsFor(e, t).stat(stringArg(e, 0))) !== null,
+  readdir: (e, t) => fsFor(e, t).readdir(FsPath.parse(e.args?.[0])),
+  readlink: (e, t) => fsFor(e, t).readlink(FsPath.parse(e.args?.[0])),
+  fsReadRange: (e, t) => readRange(e, t, {}),
+  // Boot-spec members only: a 34 MiB image read through the LRU would evict the session's hot set.
+  fsReadRangeUncached: (e, t) => readRange(e, t, { cached: false }),
+  fsRevision: (e, t) => fsFor(e, t).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
+  hasLegacySymlinkUnder: (e, t) => getSymlinkRegistry(t.vfs).hasAtOrBelow(stringArg(e, 0)),
+  writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1)),
+  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
+  rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
+  unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
+  rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
+  symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
+  access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
+  chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
+  chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
+  utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
+  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
+  writeBatchStream: (e, t) => {
+    if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
+    return fsFor(e, t).writeStream(e.stream, { mutationOwner: e.mutationOwner });
+  },
+  stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
+  stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
+} satisfies Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
+
+/** The ops {@link NATIVE_OPS} defines — the route table covers the rest. */
+export type NativeOpName = keyof typeof NATIVE_OPS;
+
+export const SUPERVISOR_NATIVE_OPS: ReadonlySet<string> = new Set(Object.keys(NATIVE_OPS));
+
+/** The same two tables, keyed by the raw op string an envelope carries. */
+const NATIVE_BY_OP: Readonly<Record<string, SupervisorOpHandler | undefined>> = NATIVE_OPS;
+const ROUTE_BY_OP: Readonly<Record<string, SupervisorOpRoute | undefined>> = SUPERVISOR_OP_ROUTES;
 
 /** The pid-keyed bridge cache behind the native filesystem ops. */
 export interface SupervisorOpBridgeStore {
@@ -246,9 +338,10 @@ export interface SupervisorOpBridgeStore {
    * swapped on every use, and two credentialed host calls interleaving
    * across an await would otherwise read as each other.
    */
-  readonly bridge: (pid?: number, cred?: VfsCred) => SqliteRuntimeFsBridge;
+  readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
-  readonly forget: (pid: number) => void;
+  readonly forget: (pid: number) => Promise<void>;
+  readonly dispose: () => Promise<void>;
 }
 
 /**
@@ -257,26 +350,24 @@ export interface SupervisorOpBridgeStore {
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(
-  deps: Pick<SupervisorOpDeps, 'vfs' | 'processes'>,
+  deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>,
 ): SupervisorOpBridgeStore {
-  const bridges = new Map<number, SqliteRuntimeFsBridge>();
+  const authority = deps.filesystem ?? new SqliteFilesystemAuthority(deps.vfs);
+  const hostLeases = new Map<string, NimbusHostFilesystemLease>();
   return {
-    bridge: (pid: number | undefined, cred?: VfsCred): SqliteRuntimeFsBridge => {
-      if (pid === undefined && cred !== undefined) {
-        return new SqliteRuntimeFsBridge(deps.vfs.as(credFor(deps, pid, cred)), deps.vfs);
-      }
-      const key = pid ?? 0;
-      const credentialed = deps.vfs.as(credFor(deps, pid, cred));
-      const held = bridges.get(key);
-      if (held) {
-        held.updateCredential(credentialed);
-        return held;
-      }
-      const built = new SqliteRuntimeFsBridge(credentialed, deps.vfs);
-      bridges.set(key, built);
-      return built;
+    bridge: (pid, cred) => {
+      const identity = credFor(deps, pid, cred);
+      if (pid !== undefined) return authority.bind({ pid, cred: identity });
+      const key = JSON.stringify(identity);
+      let lease = hostLeases.get(key);
+      if (!lease) { lease = authority.openHost(identity); hostLeases.set(key, lease); }
+      return lease.fs;
     },
-    forget: (pid: number): void => { bridges.delete(pid); },
+    forget: (pid) => authority.releaseProcess(pid),
+    dispose: async () => {
+      await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));
+      hostLeases.clear();
+    },
   };
 }
 
@@ -290,38 +381,7 @@ export function createSupervisorOpHandler(
     vfs: deps.vfs,
     cred: (pid, cred) => credFor(deps, pid, cred),
     output: deps.output,
-  };
-  const fs = (e: SupervisorOpEnvelope) => bridgeFor(e.pid, e.cred);
-  const ops: Partial<Record<SupervisorOpName, SupervisorOpHandler>> = {
-    readFile: async (e) => {
-      const bytes = await fs(e).readFile(stringArg(e, 0));
-      return bytes === null ? null : new TextDecoder().decode(bytes);
-    },
-    readFileBytes: (e) => fs(e).readFile(stringArg(e, 0)),
-    stat: (e) => fs(e).stat(stringArg(e, 0)),
-    lstat: (e) => fs(e).stat(stringArg(e, 0), { followSymlinks: false }),
-    exists: async (e) => (await fs(e).stat(stringArg(e, 0))) !== null,
-    readdir: (e) => fs(e).readdir(stringArg(e, 0)),
-    readlink: (e) => fs(e).readlink(stringArg(e, 0)),
-    fsReadRange: (e) => fs(e).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
-    fsReadRangeUncached: (e) => fs(e).readRange(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2), { cached: false }),
-    fsRevision: (e) => fs(e).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
-    hasLegacySymlinkUnder: (e) => getSymlinkRegistry(deps.vfs).hasAtOrBelow(stringArg(e, 0)),
-    writeFile: (e) => fs(e).writeFile(stringArg(e, 0), contentArg(e, 1)),
-    mkdir: (e) => fs(e).mkdir(stringArg(e, 0), { recursive: true }),
-    rmdir: (e) => fs(e).rmdir(stringArg(e, 0)),
-    unlink: (e) => fs(e).unlink(stringArg(e, 0)),
-    rename: (e) => fs(e).rename(stringArg(e, 0), stringArg(e, 1)),
-    symlink: (e) => fs(e).symlink(stringArg(e, 0), stringArg(e, 1)),
-    chmod: (e) => fs(e).chmod(stringArg(e, 0), numberArg(e, 1)),
-    utimes: (e) => fs(e).utimes(stringArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
-    fsTruncate: (e) => fs(e).truncate(stringArg(e, 0), numberArg(e, 1)),
-    writeBatchStream: (e) => {
-      if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
-      return deps.vfs.as(credFor(deps, e.pid, e.cred)).writeStream(e.stream, { mutationOwner: e.mutationOwner });
-    },
-    stdout: (e) => { deps.output?.('stdout', e.pid ?? 0, stringArg(e, 0)); },
-    stderr: (e) => { deps.output?.('stderr', e.pid ?? 0, stringArg(e, 0)); },
+    readLease: deps.readLease ?? ((_bytes, read) => read()),
   };
   const extend = deps.extend ?? {};
   return async (envelope) => {
@@ -332,10 +392,9 @@ export function createSupervisorOpHandler(
     // canonical route table onto the host's _rpc* methods. An op in none of
     // these is not served by this host.
     const handler = Object.hasOwn(extend, envelope.op) ? extend[envelope.op]
-      : Object.hasOwn(ops, envelope.op) ? ops[envelope.op as SupervisorOpName] : undefined;
+      : Object.hasOwn(NATIVE_BY_OP, envelope.op) ? NATIVE_BY_OP[envelope.op] : undefined;
     if (handler) return handler(envelope, tools);
-    const route = Object.hasOwn(SUPERVISOR_OP_ROUTES, envelope.op)
-      ? SUPERVISOR_OP_ROUTES[envelope.op as SupervisorOpName] : undefined;
+    const route = Object.hasOwn(ROUTE_BY_OP, envelope.op) ? ROUTE_BY_OP[envelope.op] : undefined;
     if (!route) throw new Error(`supervisor op: '${envelope.op}' is not served by this host`);
     const host = deps.host;
     if (!host) throw new Error(`supervisor op: '${envelope.op}' needs a host that this workspace does not have`);

@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { NodeFilesystem as VFS } from './filesystem.js';
 import { VFSError } from '../kernel/vfs/index.js';
 import type { Stat as VfsStat } from '../kernel/vfs/types.js';
 import { resolve, basename } from '../utils/path.js';

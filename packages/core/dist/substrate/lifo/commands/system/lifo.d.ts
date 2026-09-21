@@ -35,7 +35,7 @@ export declare function createLifoPkgCommand(registry: CommandRegistry, _shellEx
  *
  * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
  */
-export declare function rehydrateGlobalPackages(vfs: VFS, registry: CommandRegistry): void;
+export declare function rehydrateGlobalPackages(storage: VFS, registry: CommandRegistry): Promise<void>;
 /** @deprecated Use rehydrateGlobalPackages() instead. */
-export declare function bootLifoPackages(vfs: VFS, registry: CommandRegistry): void;
+export declare function bootLifoPackages(vfs: VFS, registry: CommandRegistry): Promise<void>;
 //# sourceMappingURL=lifo.d.ts.map

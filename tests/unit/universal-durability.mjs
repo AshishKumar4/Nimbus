@@ -59,6 +59,7 @@ import {
   parsePreviewHost,
 } from '../../packages/worker/src/_shared/preview-host.ts';
 import { createNimbusHandler } from '../../packages/worker/src/router/index.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import {
   PUBLIC_BEARER_HEADER,
   PREVIEW_CAPABILITY_HEADER,
@@ -153,7 +154,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     ...hooks,
   });
-  fm.setVfs(vfs);
+  fm.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
   /** The ProgrammaticHost slice the app verbs read: booted, manager ensured. */
   const self = {
     shell: {},
@@ -173,6 +174,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
       // rpc verbs can reach `.apps`. The fm under test stays the manager.
       this.facetManagerComposed ??= composeFacetManager({
         ctx, env, processes, portRegistry, vfs,
+        filesystem: new SqliteFilesystemAuthority(vfs),
         hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
       });
       this.facetManager = this.facetManagerComposed.manager = fm;

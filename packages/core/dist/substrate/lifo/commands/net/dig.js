@@ -22,8 +22,8 @@ const command = async (ctx) => {
         }
     }
     if (!domain) {
-        ctx.stderr.write('dig: missing domain\n');
-        ctx.stderr.write('Usage: dig [type] domain\n');
+        await ctx.stderr.write('dig: missing domain\n');
+        await ctx.stderr.write('Usage: dig [type] domain\n');
         return 1;
     }
     const url = `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=${queryType}`;
@@ -33,43 +33,43 @@ const command = async (ctx) => {
             signal: ctx.signal,
         });
         if (!response.ok) {
-            ctx.stderr.write(`dig: DNS query failed (HTTP ${response.status})\n`);
+            await ctx.stderr.write(`dig: DNS query failed (HTTP ${response.status})\n`);
             return 1;
         }
         const data = await response.json();
-        ctx.stdout.write(`; <<>> Lifo dig <<>> ${queryType} ${domain}\n`);
-        ctx.stdout.write(`;; Got answer:\n`);
-        ctx.stdout.write(`;; ->>HEADER<<- status: ${data.Status === 0 ? 'NOERROR' : 'NXDOMAIN'}\n`);
-        ctx.stdout.write(`\n`);
+        await ctx.stdout.write(`; <<>> Lifo dig <<>> ${queryType} ${domain}\n`);
+        await ctx.stdout.write(`;; Got answer:\n`);
+        await ctx.stdout.write(`;; ->>HEADER<<- status: ${data.Status === 0 ? 'NOERROR' : 'NXDOMAIN'}\n`);
+        await ctx.stdout.write(`\n`);
         if (data.Question && data.Question.length > 0) {
-            ctx.stdout.write(`;; QUESTION SECTION:\n`);
+            await ctx.stdout.write(`;; QUESTION SECTION:\n`);
             for (const q of data.Question) {
-                ctx.stdout.write(`;${q.name}.\t\tIN\t${TYPE_MAP[q.type] ?? q.type}\n`);
+                await ctx.stdout.write(`;${q.name}.\t\tIN\t${TYPE_MAP[q.type] ?? q.type}\n`);
             }
-            ctx.stdout.write(`\n`);
+            await ctx.stdout.write(`\n`);
         }
         if (data.Answer && data.Answer.length > 0) {
-            ctx.stdout.write(`;; ANSWER SECTION:\n`);
+            await ctx.stdout.write(`;; ANSWER SECTION:\n`);
             for (const ans of data.Answer) {
                 const typeName = TYPE_MAP[ans.type] ?? String(ans.type);
-                ctx.stdout.write(`${ans.name}.\t${ans.TTL}\tIN\t${typeName}\t${ans.data}\n`);
+                await ctx.stdout.write(`${ans.name}.\t${ans.TTL}\tIN\t${typeName}\t${ans.data}\n`);
             }
-            ctx.stdout.write(`\n`);
+            await ctx.stdout.write(`\n`);
         }
         else {
-            ctx.stdout.write(`;; No answers found.\n\n`);
+            await ctx.stdout.write(`;; No answers found.\n\n`);
         }
-        ctx.stdout.write(`;; SERVER: dns.google\n`);
+        await ctx.stdout.write(`;; SERVER: dns.google\n`);
         return 0;
     }
     catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-            ctx.stderr.write(`dig: connection to DNS server failed\n`);
-            ctx.stderr.write(`Note: This may be a CORS restriction or network issue.\n`);
+            await ctx.stderr.write(`dig: connection to DNS server failed\n`);
+            await ctx.stderr.write(`Note: This may be a CORS restriction or network issue.\n`);
         }
         else {
-            ctx.stderr.write(`dig: ${msg}\n`);
+            await ctx.stderr.write(`dig: ${msg}\n`);
         }
         return 1;
     }

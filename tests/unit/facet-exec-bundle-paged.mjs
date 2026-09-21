@@ -38,6 +38,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readExecTelemetry, resetExecTelemetry } from '../../packages/worker/src/facets/exec-telemetry.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 process.env.NIMBUS_DIAG_EXEC = '1';
 
@@ -100,7 +101,7 @@ function makeManager(label, turns, { chunkBytes = '2048' } = {}) {
   );
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  manager.setVfs(vfs);
+  manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
   return { manager, world, vfs, oneShotMaps, exits };
 }
 

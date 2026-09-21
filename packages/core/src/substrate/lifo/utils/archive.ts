@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import { resolve, dirname } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 
@@ -349,15 +349,15 @@ export function parseZip(data: Uint8Array): ZipEntry[] {
  * operand's own parent instead flattened every multi-component operand to its
  * basename, and the archive lost the directory the caller asked for.
  */
-export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEntry[] {
+export async function collectFiles(vfs: ExecutionFs, basePath: string, paths: string[]): Promise<TarEntry[]> {
   const entries: TarEntry[] = [];
   const relBase = basePath === '/' ? '/' : basePath + '/';
 
   const member = (absPath: string): string =>
     absPath.startsWith(relBase) ? absPath.slice(relBase.length) : absPath.replace(/^\/+/, '');
 
-  function walk(absPath: string): void {
-    const stat = vfs.stat(absPath);
+  async function walk(absPath: string): Promise<void> {
+    const stat = (await vfs.stat(absPath));
 
     if (stat.type === 'directory') {
       entries.push({
@@ -368,14 +368,14 @@ export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEn
         mtime: stat.mtime,
       });
 
-      const children = vfs.readdir(absPath);
+      const children = (await vfs.readdir(absPath));
       for (const child of children) {
-        walk(absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`);
+        (await walk(absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`));
       }
     } else {
       entries.push({
         path: member(absPath),
-        data: vfs.readFile(absPath),
+        data: (await vfs.readFile(absPath)),
         type: 'file',
         mode: stat.mode,
         mtime: stat.mtime,
@@ -383,7 +383,7 @@ export function collectFiles(vfs: VFS, basePath: string, paths: string[]): TarEn
     }
   }
 
-  for (const p of paths) walk(resolve(basePath, p));
+  for (const p of paths) (await walk(resolve(basePath, p)));
 
   return entries;
 }

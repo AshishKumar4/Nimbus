@@ -12,7 +12,6 @@ try {
   registerShellEntrypointCommands(
     box.commands.registry,
     { execute: (cmd, options) => box.shell.execute(cmd, options) },
-    box.kernel.vfs,
   );
 
   box.kernel.portRegistry.set(8123, (req, res) => {

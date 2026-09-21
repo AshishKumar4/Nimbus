@@ -6,10 +6,10 @@ const command = async (ctx) => {
         // Read from stdin if available (enables piping: echo hi | cat)
         if (ctx.stdin) {
             const content = await ctx.stdin.readAll();
-            ctx.stdout.write(content);
+            await ctx.stdout.write(content);
             return 0;
         }
-        ctx.stderr.write('cat: missing operand\n');
+        await ctx.stderr.write('cat: missing operand\n');
         return 1;
     }
     let exitCode = 0;
@@ -19,13 +19,13 @@ const command = async (ctx) => {
     for (const arg of ctx.args) {
         const path = resolve(ctx.cwd, arg);
         try {
-            const stat = ctx.vfs.stat(path);
+            const stat = (await ctx.vfs.stat(path));
             if (stat.type === 'directory')
                 throw new VFSError('EISDIR', `'${arg}': is a directory`);
             if (stat.size > 0) {
                 // A regular file's size is its exact extent — copy precisely that, in
                 // bounded steps, so a large file never becomes a large buffer.
-                streamRange((offset, length) => ctx.vfs.readRange(path, offset, length), writer, {
+                await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
                     length: stat.size,
                     signal: ctx.signal,
                 });
@@ -33,12 +33,12 @@ const command = async (ctx) => {
             else {
                 // Empty files, /dev/null and synthesised /proc entries. Character
                 // devices with no end reject this unbounded read by design.
-                writer.write(ctx.vfs.readFile(path));
+                await writer.write((await ctx.vfs.readFile(path)));
             }
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`cat: ${arg}: ${e.message}\n`);
+                await ctx.stderr.write(`cat: ${arg}: ${e.message}\n`);
                 exitCode = 1;
             }
             else {
@@ -46,7 +46,7 @@ const command = async (ctx) => {
             }
         }
     }
-    writer.end();
+    await writer.end();
     return exitCode;
 };
 export default command;

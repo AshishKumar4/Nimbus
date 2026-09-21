@@ -53,10 +53,29 @@ const DECODABLE_CONTENT_CODINGS = new Map([
  * the server that compresses whatever the client said. A coding with no
  * decoder answers 502: an honest failure beats a page of mojibake.
  */
+/**
+ * Hand a body that arrived over Workers RPC to the HTTP layer through a stream
+ * this isolate owns. Measured on workerd 1.20260918.1: a facet's Response built
+ * from bytes (`Response.json`, a string, a Uint8Array) and returned as-is ends
+ * with the facet's side of the RPC stream failing "disconnected prematurely"
+ * after every byte has arrived, which marks the request as an exception and,
+ * under a compressing edge, truncates the body; a body read by this isolate
+ * closes cleanly. A body the facet streamed (`new Response(readable)`) was
+ * never affected, and rides the same pipe at no cost.
+ */
+function relayRpcBody(response) {
+    if (response.body === null)
+        return response;
+    return new Response(response.body.pipeThrough(new TransformStream()), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+    });
+}
 function decodeContentCoding(response, port) {
     const coding = response.headers.get('Content-Encoding')?.trim().toLowerCase();
     if (!coding || coding === 'identity' || response.body === null)
-        return response;
+        return relayRpcBody(response);
     const format = DECODABLE_CONTENT_CODINGS.get(coding);
     if (!format) {
         void response.body.cancel().catch(() => { });

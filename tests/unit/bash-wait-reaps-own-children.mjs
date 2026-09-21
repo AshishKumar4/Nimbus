@@ -27,7 +27,7 @@ const show = (r) => JSON.stringify({ stdout: r.stdout, stderr: r.stderr, state: 
 
 // ── Two subshells, each with its own exited child, each waiting ─────────────
 {
-  const r = runScript('( (exit 3) & wait; echo A=$? ) ; ( (exit 7) & wait; echo B=$? )');
+  const r = (await runScript('( (exit 3) & wait; echo A=$? ) ; ( (exit 7) & wait; echo B=$? )'));
   const out = r.stdout || '';
   check('two subshells can each wait for their own child',
     out.includes('A=') && out.includes('B='), show(r));
@@ -37,21 +37,21 @@ const show = (r) => JSON.stringify({ stdout: r.stdout, stderr: r.stderr, state: 
 
 // ── A single background child is still reaped ──────────────────────────────
 {
-  const r = runScript('(exit 5) & wait; echo SINGLE_DONE');
+  const r = (await runScript('(exit 5) & wait; echo SINGLE_DONE'));
   check('a single background child is still reaped by wait',
     (r.stdout || '').includes('SINGLE_DONE'), show(r));
 }
 
 // ── Waiting by explicit pid still works ────────────────────────────────────
 {
-  const r = runScript('sleep 0 & p=$!; wait $p; echo BYPID_DONE');
+  const r = (await runScript('sleep 0 & p=$!; wait $p; echo BYPID_DONE'));
   check('wait <pid> still works',
     (r.stdout || '').includes('BYPID_DONE'), show(r));
 }
 
 // ── Sequential children in one shell ───────────────────────────────────────
 {
-  const r = runScript('for i in 1 2 3; do (exit 0) & wait; done; echo LOOP_DONE');
+  const r = (await runScript('for i in 1 2 3; do (exit 0) & wait; done; echo LOOP_DONE'));
   check('a loop of background children all get reaped',
     (r.stdout || '').includes('LOOP_DONE'), show(r));
 }

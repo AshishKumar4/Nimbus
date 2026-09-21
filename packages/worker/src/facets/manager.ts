@@ -27,7 +27,9 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { VFS_WRITE_LEDGER_SOURCE } from '@nimbus-sh/core/_shared/vfs-write-ledger.js';
-import type { CredentialedVfs, SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { ExecutionFs, type ExecutionFs as CredentialedVfs } from '@nimbus-sh/core/shell/execution-fs.js';
+import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
@@ -1494,11 +1496,11 @@ interface FacetVfsBundleSource {
  * Throws on read errors (caller wraps in try/catch — matches the
  * pre-fix readFileString contract).
  */
-function _readBundleCell(
-  vfs: { readFile(p: string): Uint8Array },
+async function _readBundleCell(
+  vfs: Pick<ExecutionFs, 'readFile'>,
   path: string,
-): string | Uint8Array {
-  const bytes = vfs.readFile(path);
+): Promise<string | Uint8Array> {
+  const bytes = await vfs.readFile(path);
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
@@ -1526,14 +1528,14 @@ function _bundleCellLength(cell: string | Uint8Array): number {
  * `perFileCeiling` is the pass's own cap (e.g. CWD_SNAPSHOT_MAX_FILE_BYTES,
  * BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES); omit it for budget-only checks.
  */
-function _bundleAdmits(
-  vfs: { lstat(p: string): { size: number } },
+async function _bundleAdmits(
+  vfs: Pick<ExecutionFs, 'lstat'>,
   path: string,
   budgetState: { totalBytes: number },
   perFileCeiling?: number,
-): boolean {
+): Promise<boolean> {
   let size: number;
-  try { size = vfs.lstat(path).size; } catch { return false; }
+  try { size = (await vfs.lstat(path)).size; } catch { return false; }
   if (perFileCeiling !== undefined && size > perFileCeiling) return false;
   return budgetState.totalBytes + size <= VFS_BUNDLE_MAX_BYTES;
 }
@@ -2000,24 +2002,24 @@ const MANIFEST_MAX_DEPTH = 12;
  * fs.readdirSync / fs.statSync honest regardless of which subset of
  * file CONTENT we ship.
  */
-function buildManifest(
+async function buildManifest(
   vfs: CredentialedVfs,
   cwd: string,
   scriptPath?: string,
-): Record<string, string[]> {
+): Promise<Record<string, string[]>> {
   const manifest: Record<string, string[]> = {};
-  function walk(dirPath: string, depth = 0) {
+  async function walk(dirPath: string, depth = 0) {
     if (depth > MANIFEST_MAX_DEPTH) return;
     const stripped = dirPath.replace(/^\/+/, '');
     if (stripped in manifest) return;
     let entries: { name: string; type: string }[];
-    try { entries = vfs.readdir(stripped); }
+    try { entries = (await vfs.readdir(stripped)); }
     catch { return; }
     manifest[stripped] = entries.map((e) => e.name);
     for (const entry of entries) {
       if (entry.type === 'directory') {
         const childPath = stripped ? stripped + '/' + entry.name : entry.name;
-        walk(childPath, depth + 1);
+        (await walk(childPath, depth + 1));
       }
     }
   }
@@ -2038,13 +2040,13 @@ function buildManifest(
   {
     const segments = cwdStripped ? cwdStripped.split('/') : [];
     for (let i = 0; i < segments.length; i++) {
-      walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH);
+      (await walk(segments.slice(0, i).join('/'), MANIFEST_MAX_DEPTH));
     }
   }
-  walk(cwdStripped, 0);
+  (await walk(cwdStripped, 0));
   const nmDir = cwdStripped + '/node_modules';
-  if (vfs.exists(nmDir) && vfs.isDirectory(nmDir)) {
-    walk(nmDir, 0);
+  if ((await vfs.exists(nmDir)) && (await vfs.isDirectory(nmDir))) {
+    (await walk(nmDir, 0));
   }
   // ── Bin-target package + hoisted dependency roots ─────────────────────
   //
@@ -2073,24 +2075,24 @@ function buildManifest(
       const pkgEnd = isScoped ? nmIdx + 3 : nmIdx + 2;
       if (pkgEnd <= segs.length) {
         const pkgRoot = segs.slice(0, pkgEnd).join('/');
-        if (vfs.exists(pkgRoot) && vfs.isDirectory(pkgRoot)) {
-          walk(pkgRoot, 0);
+        if ((await vfs.exists(pkgRoot)) && (await vfs.isDirectory(pkgRoot))) {
+          (await walk(pkgRoot, 0));
         }
       }
       const nodeModulesRoot = segs.slice(0, nmIdx + 1).join('/');
-      if (vfs.exists(nodeModulesRoot) && vfs.isDirectory(nodeModulesRoot)) {
-        walk(nodeModulesRoot, 0);
+      if ((await vfs.exists(nodeModulesRoot)) && (await vfs.isDirectory(nodeModulesRoot))) {
+        (await walk(nodeModulesRoot, 0));
       }
     }
   }
   return manifest;
 }
 
-function buildVfsMetadata(
+async function buildVfsMetadata(
   vfs: CredentialedVfs,
   manifest: Record<string, string[]>,
   bundle: FacetVfsBundle,
-): Record<string, FacetVfsMetadata> {
+): Promise<Record<string, FacetVfsMetadata>> {
   const paths = new Set(Object.keys(bundle).filter((path) => compiledCellPath(path) === null));
   for (const [directory, children] of Object.entries(manifest)) {
     paths.add(directory);
@@ -2102,7 +2104,8 @@ function buildVfsMetadata(
   const metadata: Record<string, FacetVfsMetadata> = {};
   for (const path of paths) {
     try {
-      const stat = vfs.lstat(path);
+      const stat = await vfs.authority.stat(path, { followSymlinks: false });
+      if (!stat) continue;
       metadata[path] = {
         type: stat.type,
         size: stat.size,
@@ -2118,15 +2121,15 @@ function buildVfsMetadata(
   return metadata;
 }
 
-function addUnreadableDenialCells(
+async function addUnreadableDenialCells(
   vfs: CredentialedVfs,
   bundle: FacetVfsBundle,
   metadata: Record<string, FacetVfsMetadata>,
-): void {
+): Promise<void> {
   for (const [path, stat] of Object.entries(metadata)) {
     if (stat.type === 'directory' || path in bundle) continue;
     try {
-      vfs.access(path, 0o4);
+      (await vfs.access(path, 0o4));
     } catch (error: unknown) {
       if (
         typeof error === 'object'
@@ -2157,27 +2160,27 @@ function addUnreadableDenialCells(
 // was a file-local helper. Adding the named export is a pure surface
 // addition — no callers other than buildPrefetchBundle (same file) and
 // the new probe.
-export function greedyAddMainEntries(
+export async function greedyAddMainEntries(
   vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
   requiredPaths: ReadonlySet<string> = new Set(),
-): { added: number } {
+): Promise<{ added: number }> {
   let added = 0;
   const cwdStripped = cwd.replace(/^\/+/, '');
   const nmDir = cwdStripped + '/node_modules';
-  if (!(vfs.exists(nmDir) && vfs.isDirectory(nmDir))) return { added };
+  if (!((await vfs.exists(nmDir)) && (await vfs.isDirectory(nmDir)))) return { added };
 
   const exts = ['', '.js', '.cjs', '.mjs', '/index.js', '/index.cjs'];
 
-  function addOne(path: string): boolean {
+  async function addOne(path: string): Promise<boolean> {
     const stripped = path.replace(/^\/+/, '');
     if (stripped in bundle) return false;
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
-      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
+      if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped))) return false;
       // This is a guess at what a program might require, and the same
       // per-file ceiling the entry-package walk applies bounds it: a
       // multi-MiB main entry is an alternative bundle (typescript's 8.69 MiB
@@ -2186,7 +2189,7 @@ export function greedyAddMainEntries(
       // supervisor's headroom — on every invocation that never reads it.
       // Anything the program really requires arrives through the closure,
       // which is uncapped.
-      if (!_bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)) return false;
+      if (!(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES))) return false;
       // A guess must not be a native binary. Nothing in a Workers isolate can
       // load a `.node` addon or a `.exe` — the ABI policy classifies them
       // native-unsupported and the installer says so at install time — so
@@ -2196,7 +2199,7 @@ export function greedyAddMainEntries(
       // Only the guess is filtered; a path the closure requires is untouched.
       if (stripped.endsWith('.node') || stripped.endsWith('.exe')) return false;
       // hardening-r5: preserve binary content as Uint8Array.
-      const content = _readBundleCell(vfs, stripped);
+      const content = (await _readBundleCell(vfs, stripped));
       const cellLen = _bundleCellLength(content);
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
       bundle[stripped] = content;
@@ -2252,13 +2255,13 @@ export function greedyAddMainEntries(
     return !reached;
   }
 
-  function addPkgEntry(pkgDir: string) {
-    addOne(pkgDir + '/package.json');
+  async function addPkgEntry(pkgDir: string) {
+    (await addOne(pkgDir + '/package.json'));
     // A package the closure reached keeps exactly what it reached; only an
     // unreached one gets the guess below.
     if (!mainIsSpeculative(pkgDir)) return;
     let meta: any;
-    try { meta = JSON.parse(vfs.readFileString(pkgDir + '/package.json')); }
+    try { meta = JSON.parse((await vfs.readFileString(pkgDir + '/package.json'))); }
     catch { meta = null; }
     const candidates = new Set<string>();
     if (meta) {
@@ -2283,9 +2286,9 @@ export function greedyAddMainEntries(
       let landed = false;
       const tries = /\.[a-z]+$/.test(norm) ? [base] : exts.map((e) => base + e);
       for (const candidate of tries) {
-        if (vfs.exists(candidate.replace(/^\/+/, '')) &&
-            !vfs.isDirectory(candidate.replace(/^\/+/, ''))) {
-          if (addOne(candidate)) { landed = true; break; }
+        if ((await vfs.exists(candidate.replace(/^\/+/, ''))) &&
+            !(await vfs.isDirectory(candidate.replace(/^\/+/, '')))) {
+          if ((await addOne(candidate))) { landed = true; break; }
         }
       }
       if (landed) {
@@ -2300,7 +2303,7 @@ export function greedyAddMainEntries(
         // the greedy oversample is the safety net for their reachability.
         const entryDir = base.replace(/\/[^/]+$/, '');
         try {
-          const sibs = vfs.readdir(entryDir);
+          const sibs = (await vfs.readdir(entryDir));
           for (const sib of sibs) {
             if (sib.type !== 'file') continue;
             // Hash-chunk pattern: <name>.<hash>.<cjs|mjs|js>. Hash must
@@ -2317,7 +2320,7 @@ export function greedyAddMainEntries(
             const hasDigitOrDash = /[0-9_-]/.test(seg);
             const hasMixedCase = /[A-Z]/.test(seg) && /[a-z]/.test(seg);
             if (!hasDigitOrDash && !hasMixedCase) continue;
-            addOne(entryDir + '/' + sib.name);
+            (await addOne(entryDir + '/' + sib.name));
           }
           // Walk one level into `shared/` — unconditionally, since the
           // pattern is well-known across unbuild/rolldown/rollup chunked
@@ -2325,11 +2328,11 @@ export function greedyAddMainEntries(
           // typical shared/ dir returns 1-5 files.
           const sharedDir = entryDir + '/shared';
           const sharedStripped = sharedDir.replace(/^\/+/, '');
-          if (vfs.exists(sharedStripped) && vfs.isDirectory(sharedStripped)) {
-            for (const sh of vfs.readdir(sharedDir)) {
+          if ((await vfs.exists(sharedStripped)) && (await vfs.isDirectory(sharedStripped))) {
+            for (const sh of (await vfs.readdir(sharedDir))) {
               if (sh.type !== 'file') continue;
               if (!/\.(cjs|mjs|js)$/.test(sh.name)) continue;
-              addOne(sharedDir + '/' + sh.name);
+              (await addOne(sharedDir + '/' + sh.name));
             }
           }
         } catch { /* unreadable dir — drop sibling oversample, entry
@@ -2339,7 +2342,7 @@ export function greedyAddMainEntries(
     }
   }
 
-  for (const pkgDir of speculativePackageDirs(vfs, cwdStripped, bundle)) addPkgEntry(pkgDir);
+  for (const pkgDir of (await speculativePackageDirs(vfs, cwdStripped, bundle))) (await addPkgEntry(pkgDir));
   return { added };
 }
 
@@ -2360,14 +2363,14 @@ export function greedyAddMainEntries(
  * dependency of the package doing the requiring, so the bound is one hop
  * over `dependencies` only. Directories, sorted for a stable bundle.
  */
-export function speculativePackageDirs(
+export async function speculativePackageDirs(
   vfs: CredentialedVfs,
   cwdStripped: string,
   bundle: Record<string, string | Uint8Array>,
-): string[] {
-  const runtimeDeps = (pkgJsonPath: string): string[] => {
+): Promise<string[]> {
+  const runtimeDeps = async (pkgJsonPath: string): Promise<string[]> => {
     try {
-      const meta = JSON.parse(vfs.readFileString(pkgJsonPath));
+      const meta = JSON.parse((await vfs.readFileString(pkgJsonPath)));
       const names = new Set<string>();
       for (const field of ['dependencies', 'optionalDependencies']) {
         const deps = meta?.[field];
@@ -2386,24 +2389,24 @@ export function speculativePackageDirs(
   };
   // Resolve a bare name the way require does from `fromDir`: the nearest
   // node_modules up the tree that has it.
-  const resolveDir = (name: string, fromDir: string): string | null => {
+  const resolveDir = async (name: string, fromDir: string): Promise<string | null> => {
     let dir = fromDir;
     for (;;) {
       const candidate = dir + '/node_modules/' + name;
-      if (vfs.exists(candidate + '/package.json')) return candidate;
+      if ((await vfs.exists(candidate + '/package.json'))) return candidate;
       const idx = dir.lastIndexOf('/');
       if (idx <= 0) return null;
       dir = dir.slice(0, idx);
     }
   };
   const reached = new Set<string>();
-  const hop = (fromDir: string): void => {
-    for (const name of runtimeDeps(fromDir + '/package.json')) {
-      const dir = resolveDir(name, fromDir);
+  const hop = async (fromDir: string): Promise<void> => {
+    for (const name of (await runtimeDeps(fromDir + '/package.json'))) {
+      const dir = (await resolveDir(name, fromDir));
       if (dir !== null) reached.add(dir);
     }
   };
-  hop(cwdStripped);
+  (await hop(cwdStripped));
   const owners = new Set<string>();
   for (const path of Object.keys(bundle)) {
     const owner = ownerOf(path);
@@ -2411,7 +2414,7 @@ export function speculativePackageDirs(
   }
   for (const owner of owners) {
     reached.add(owner);
-    hop(owner);
+    (await hop(owner));
   }
   return [...reached].sort();
 }
@@ -2455,12 +2458,12 @@ export function speculativePackageDirs(
  * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
  * `budgetState` counter.
  */
-export function addStaticReadFileAssets(
+export async function addStaticReadFileAssets(
   vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
-): { added: number } {
+): Promise<{ added: number }> {
   let added = 0;
   // Asset extensions covered. Conservative whitelist — txt/json are
   // also legit runtime-loaded assets (e.g. mime-db json, license.txt).
@@ -2479,16 +2482,16 @@ export function addStaticReadFileAssets(
   // is rejected).
   const RX = /(?:\bfs\s*\.)?readFileSync\s*\(\s*(?:[\w$.]+\s*\.\s*)?resolve\s*\(\s*__dirname\s*,\s*(['"`])([^'"`]+)\1\s*[\),]/g;
 
-  function addOneAsset(absPath: string): boolean {
+  async function addOneAsset(absPath: string): Promise<boolean> {
     const stripped = absPath.replace(/^\/+/, '');
     if (stripped in bundle) return false;
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
-      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
-      if (!_bundleAdmits(vfs, stripped, budgetState)) return false;
+      if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped))) return false;
+      if (!(await _bundleAdmits(vfs, stripped, budgetState))) return false;
       // hardening-r5: preserve binary content as Uint8Array.
-      const content = _readBundleCell(vfs, stripped);
+      const content = (await _readBundleCell(vfs, stripped));
       const cellLen = _bundleCellLength(content);
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
       bundle[stripped] = content;
@@ -2547,7 +2550,7 @@ export function addStaticReadFileAssets(
         }
         resolved = out.join('/');
       }
-      addOneAsset(resolved);
+      (await addOneAsset(resolved));
     }
   }
 
@@ -2601,12 +2604,12 @@ export function addStaticReadFileAssets(
  * Errors are swallowed: missing assets, unreadable VFS, and
  * non-string readFile inputs are silent skips — matches Z3 posture.
  */
-export function addStaticReadFileDotfilesAndCompiled(
+export async function addStaticReadFileDotfilesAndCompiled(
   vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
-): { added: number } {
+): Promise<{ added: number }> {
   let added = 0;
 
   // The heuristic gate. Filenames matching either branch are eligible.
@@ -2650,16 +2653,16 @@ export function addStaticReadFileDotfilesAndCompiled(
     'g',
   );
 
-  function addOneAsset(absPath: string): boolean {
+  async function addOneAsset(absPath: string): Promise<boolean> {
     const stripped = absPath.replace(/^\/+/, '');
     if (stripped in bundle) return false;
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return false;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return false;
     try {
-      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return false;
-      if (!_bundleAdmits(vfs, stripped, budgetState)) return false;
+      if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped))) return false;
+      if (!(await _bundleAdmits(vfs, stripped, budgetState))) return false;
       // hardening-r5: preserve binary content as Uint8Array.
-      const content = _readBundleCell(vfs, stripped);
+      const content = (await _readBundleCell(vfs, stripped));
       const cellLen = _bundleCellLength(content);
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return false;
       bundle[stripped] = content;
@@ -2720,7 +2723,7 @@ export function addStaticReadFileDotfilesAndCompiled(
       const basename = slash >= 0 ? resolved.slice(slash + 1) : resolved;
       if (!FILENAME_GATE.test(basename)) continue;
 
-      addOneAsset(resolved);
+      (await addOneAsset(resolved));
     }
   }
 
@@ -2755,13 +2758,13 @@ export function addStaticReadFileDotfilesAndCompiled(
  * (user scripts, npx-cache files outside node_modules, eval) is
  * a no-op.
  */
-export function addBinTargetSiblings(
+export async function addBinTargetSiblings(
   vfs: CredentialedVfs,
   scriptPath: string | undefined,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
   bundleProfile: FacetBundleProfile,
-): { added: number; wasmPaths: string[] } {
+): Promise<{ added: number; wasmPaths: string[] }> {
   if (!scriptPath) return { added: 0, wasmPaths: [] };
   const stripped = scriptPath.replace(/^\/+/, '');
   // Find the *innermost* node_modules/<pkg> root. Handles scoped
@@ -2810,7 +2813,7 @@ export function addBinTargetSiblings(
   while (queue.length > 0 && visited < MAX_PKG_FILES) {
     const dir = queue.shift()!;
     let entries: { name: string; type: string }[];
-    try { entries = vfs.readdir(dir); } catch { continue; }
+    try { entries = (await vfs.readdir(dir)); } catch { continue; }
     for (const e of entries) {
       if (visited >= MAX_PKG_FILES) break;
       visited++;
@@ -2828,7 +2831,7 @@ export function addBinTargetSiblings(
       if (child.endsWith('.wasm')) wasmPaths.push(child);
       if (bundle[child] !== undefined) continue;
       let size: number;
-      try { size = vfs.lstat(child).size; } catch { continue; }
+      try { size = (await vfs.lstat(child)).size; } catch { continue; }
       if (size > BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES) continue;
       candidates.push({ path: child, size });
     }
@@ -2852,7 +2855,7 @@ export function addBinTargetSiblings(
     if (candidate.size > VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes) continue;
     // hardening-r5: preserve binary content as Uint8Array.
     let content: string | Uint8Array;
-    try { content = _readBundleCell(vfs, candidate.path); } catch { continue; }
+    try { content = (await _readBundleCell(vfs, candidate.path)); } catch { continue; }
     const cellLen = _bundleCellLength(content);
     // A cell that does not fit must not abandon the walk: smallest-first
     // ordering means everything after it is smaller and may still fit.
@@ -2877,11 +2880,11 @@ export function addBinTargetSiblings(
  * map whether it read the bytes by path or carried them inline. A file that
  * cannot be read is left out; the seam's refusal names the module later.
  */
-export function collectClosureWasmImages(
+export async function collectClosureWasmImages(
   vfs: Pick<CredentialedVfs, 'readFile'>,
   bundle: Record<string, string | Uint8Array | FacetVfsDenial>,
   unstagedPaths: readonly string[],
-): WasmImageRecord[] {
+): Promise<WasmImageRecord[]> {
   const byPath = new Map<string, WasmImageRecord>();
   for (const [path, cell] of Object.entries(bundle)) {
     if (!path.endsWith('.wasm') || !(cell instanceof Uint8Array)) continue;
@@ -2890,7 +2893,7 @@ export function collectClosureWasmImages(
   for (const path of unstagedPaths) {
     if (byPath.has(path)) continue;
     let bytes: Uint8Array;
-    try { bytes = vfs.readFile(path); } catch { continue; }
+    try { bytes = await vfs.readFile(path); } catch { continue; }
     byPath.set(path, { vfsPath: '/' + stripLeadingSlashes(path), digest: wasmImageDigest(bytes) });
   }
   return [...byPath.values()];
@@ -2912,20 +2915,20 @@ export function collectClosureWasmImages(
  * budget is shared, so ordering by size maximizes the number of misses a
  * fixed number of bytes repairs.
  */
-export function addObservedReads(
+export async function addObservedReads(
   vfs: CredentialedVfs,
   observed: ReadonlySet<string> | undefined,
   bundle: Record<string, string | Uint8Array>,
   requiredPaths: Set<string>,
   budgetState: { totalBytes: number; fileCount: number },
-): { added: number } {
+): Promise<{ added: number }> {
   if (!observed || observed.size === 0) return { added: 0 };
 
   const candidates: { path: string; size: number }[] = [];
   for (const path of observed) {
     if (path === '' || bundle[path] !== undefined) continue;
     let stat: { size: number; type?: string };
-    try { stat = vfs.lstat(path); } catch { continue; }
+    try { stat = (await vfs.lstat(path)); } catch { continue; }
     if (stat.type === 'directory') continue;
     candidates.push({ path, size: stat.size });
   }
@@ -2936,7 +2939,7 @@ export function addObservedReads(
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
     if (budgetState.totalBytes + candidate.size > VFS_BUNDLE_MAX_BYTES) continue;
     let content: string | Uint8Array;
-    try { content = _readBundleCell(vfs, candidate.path); } catch { continue; }
+    try { content = (await _readBundleCell(vfs, candidate.path)); } catch { continue; }
     const cellLen = _bundleCellLength(content);
     if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) continue;
     bundle[candidate.path] = content;
@@ -3046,12 +3049,12 @@ function binPackageRelativePath(pkgRoot: string, path: string): string {
   return path.startsWith(pkgRoot + '/') ? path.slice(pkgRoot.length + 1) : path;
 }
 
-function addCwdProjectFiles(
+async function addCwdProjectFiles(
   vfs: CredentialedVfs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
-): { added: number } {
+): Promise<{ added: number }> {
   const root = (cwd || '/home/user').replace(/^\/+/, '').replace(/\/+$/, '') || 'home/user';
   const MAX_PROJECT_FILES = 512;
   const SKIP_DIRS = new Set(['node_modules', '.git', '.nimbus']);
@@ -3062,7 +3065,7 @@ function addCwdProjectFiles(
   while (queue.length > 0 && visited < MAX_PROJECT_FILES) {
     const dir = queue.shift()!;
     let entries: { name: string; type: string }[];
-    try { entries = vfs.readdir(dir); } catch { continue; }
+    try { entries = (await vfs.readdir(dir)); } catch { continue; }
     for (const e of entries) {
       if (visited >= MAX_PROJECT_FILES) break;
       visited++;
@@ -3079,9 +3082,9 @@ function addCwdProjectFiles(
       // Skip an oversized file before reading it: this walk guesses at what
       // the program might read, and one guess must not spend the budget (or
       // the supervisor's headroom) that every later invocation then carries.
-      if (!_bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES)) continue;
+      if (!(await _bundleAdmits(vfs, child, budgetState, CWD_SNAPSHOT_MAX_FILE_BYTES))) continue;
       let content: string | Uint8Array;
-      try { content = _readBundleCell(vfs, child); } catch { continue; }
+      try { content = (await _readBundleCell(vfs, child)); } catch { continue; }
       const cellLen = _bundleCellLength(content);
       if (cellLen > CWD_SNAPSHOT_MAX_FILE_BYTES) continue;
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return { added };
@@ -3119,12 +3122,12 @@ function addCwdProjectFiles(
  * / openSync / readFile in source are scanned. Entry code is always
  * scanned (it's the user's intent).
  */
-function addEntryAbsPathReads(
+async function addEntryAbsPathReads(
   vfs: CredentialedVfs,
   entryCode: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
-): { added: number } {
+): Promise<{ added: number }> {
   let added = 0;
   // Capture absolute-path string literals. The path may not contain
   // the quote char; the surrounding regex strips line/block comments
@@ -3134,7 +3137,7 @@ function addEntryAbsPathReads(
   const RX = /(['"`])(\/[A-Za-z0-9._\-\/]{1,510})\1/g;
   const REJECT_PREFIX = /^\/(proc|sys|dev|lib|lib64|boot|root)(\/|$)/;
 
-  function tryAdd(absPath: string): void {
+  async function tryAdd(absPath: string): Promise<void> {
     if (!absPath || absPath.length < 2 || absPath.length > 512) return;
     if (REJECT_PREFIX.test(absPath)) return;
     const stripped = absPath.replace(/^\/+/, '');
@@ -3142,10 +3145,10 @@ function addEntryAbsPathReads(
     if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) return;
     if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES) return;
     try {
-      if (!vfs.exists(stripped) || vfs.isDirectory(stripped)) return;
-      if (!_bundleAdmits(vfs, stripped, budgetState)) return;
+      if (!(await vfs.exists(stripped)) || (await vfs.isDirectory(stripped))) return;
+      if (!(await _bundleAdmits(vfs, stripped, budgetState))) return;
       // hardening-r5: preserve binary content as Uint8Array.
-      const content = _readBundleCell(vfs, stripped);
+      const content = (await _readBundleCell(vfs, stripped));
       const cellLen = _bundleCellLength(content);
       if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES) return;
       bundle[stripped] = content;
@@ -3155,7 +3158,7 @@ function addEntryAbsPathReads(
     } catch { /* swallow — file may be binary, race-deleted, etc. */ }
   }
 
-  function scanOne(src: string): void {
+  async function scanOne(src: string): Promise<void> {
     if (!src) return;
     // Strip line + block comments so we don't match commented-out reads.
     const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -3166,12 +3169,12 @@ function addEntryAbsPathReads(
       // Skip if there's any unsafe char (defensive — RX already
       // forbids most). The check on the captured group is cheap.
       if (/[\?\*\[\]\{\}]/.test(literal)) continue;
-      tryAdd(literal);
+      (await tryAdd(literal));
     }
   }
 
   // Always scan entry code.
-  scanOne(entryCode);
+  (await scanOne(entryCode));
 
   // Optionally scan bundled JS sources too — useful for transitive cases
   // where a require'd module hardcodes an absolute path. Use the same
@@ -3187,7 +3190,7 @@ function addEntryAbsPathReads(
     // a Uint8Array .replace() call.
     const cell = bundle[k];
     if (typeof cell !== 'string') continue;
-    scanOne(cell);
+    (await scanOne(cell));
   }
   return { added };
 }
@@ -3549,10 +3552,11 @@ async function _buildPrefetchBundle(
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
-  const cursor = { epoch: vfs.epoch, rev: vfs.revision() };
+  const admitted = await vfs.authority.acquire(null, 0);
+  const cursor = { epoch: admitted.epoch, rev: admitted.rev };
 
   // 1. Static reachable-set walk from entry.
-  const prefetch = prefetchForRequire(vfs, entryCode || '', cwd, scriptPath, maxBundleBytes);
+  const prefetch = (await prefetchForRequire(vfs, entryCode || '', cwd, scriptPath, maxBundleBytes));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -3583,7 +3587,7 @@ async function _buildPrefetchBundle(
   //     admitted first, ahead of every guess, and they join the required set
   //     rather than the evictable one, because a file evicted here misses
   //     again on the next run and the loop never closes.
-  const observedAdd = addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState);
+  const observedAdd = (await addObservedReads(vfs, observedReads, bundle, requiredPaths, budgetState));
   void observedAdd;
   await paceAfterPass();
 
@@ -3591,7 +3595,7 @@ async function _buildPrefetchBundle(
   //    Catches dynamic-require / `bindings()` / plugin-loader cases the
   //    regex prefetch misses. Its budget is independent from the complete
   //    static require closure, which is correctness-critical.
-  const greedy = greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths);
+  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, requiredPaths));
   await paceAfterPass();
 
   // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
@@ -3603,7 +3607,7 @@ async function _buildPrefetchBundle(
   //      `default-stylesheet.css` (and similar runtime asset reads in
   //      tldts, parse5, lookup-table packages, mime-db, etc.) ENOENT
   //      at facet runtime even though the file is on VFS-disk + in
-  const assetAdd = addStaticReadFileAssets(vfs, cwd, bundle, budgetState);
+  const assetAdd = (await addStaticReadFileAssets(vfs, cwd, bundle, budgetState));
   void assetAdd;
   await paceAfterPass();
 
@@ -3614,7 +3618,7 @@ async function _buildPrefetchBundle(
   //      pattern AND filenames outside the Z3 ASSET_EXT whitelist
   //      (dotfiles, no-extension sentinels, "digest/hash/version/sha/md5"
   //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
-  const dotAdd = addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState);
+  const dotAdd = (await addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState));
   void dotAdd;
   await paceAfterPass();
 
@@ -3626,7 +3630,7 @@ async function _buildPrefetchBundle(
   //      catches custom extensions (.cow, .pem, .ttf, .wasm bundled
   //      as data, etc.) without needing a per-pkg whitelist.
   //      No-op when entry isn't inside node_modules.
-  const binSiblingAdd = addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile);
+  const binSiblingAdd = (await addBinTargetSiblings(vfs, scriptPath, bundle, budgetState, bundleProfile));
   await paceAfterPass();
 
   // 2.34 project-data snapshot: sync Node fs cannot await the
@@ -3634,7 +3638,7 @@ async function _buildPrefetchBundle(
   // for common relative project-file reads while skipping dependency
   // and Nimbus cache directories. Async fs still uses live supervisor
   // reads and child-process staleness fallback.
-  const cwdProjectAdd = addCwdProjectFiles(vfs, cwd, bundle, budgetState);
+  const cwdProjectAdd = (await addCwdProjectFiles(vfs, cwd, bundle, budgetState));
   void cwdProjectAdd;
   await paceAfterPass();
 
@@ -3662,7 +3666,7 @@ async function _buildPrefetchBundle(
   //   - Byte/file budget guards identical to other passes.
   //   - Skip paths under known-untrusted prefixes (`/proc`, `/sys`,
   //     `/dev` — we don't have these mounts; they'd never resolve).
-  const absScanAdd = addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState);
+  const absScanAdd = (await addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState));
   void absScanAdd;
   await paceAfterPass();
 
@@ -3708,7 +3712,7 @@ async function _buildPrefetchBundle(
   //    from content cap so fs.readdirSync remains honest even if the
   //    content for a given file was capped out.
   await paceAfterPass();
-  const manifest = buildManifest(vfs, cwd, scriptPath);
+  const manifest = (await buildManifest(vfs, cwd, scriptPath));
   await paceAfterPass();
 
   // 4. JSON-encoded-size guard, measured in UTF-8 bytes (not UTF-16 code
@@ -3744,8 +3748,8 @@ async function _buildPrefetchBundle(
   }
 
   const fileCount = Object.keys(bundle).length;
-  const metadata = buildVfsMetadata(vfs, manifest, bundle);
-  addUnreadableDenialCells(vfs, bundle, metadata);
+  const metadata = (await buildVfsMetadata(vfs, manifest, bundle));
+  (await addUnreadableDenialCells(vfs, bundle, metadata));
   await paceAfterPass();
   // Denial cells land after the eviction pass, so account for them before
   // deciding where the bundle has to live.
@@ -3755,7 +3759,7 @@ async function _buildPrefetchBundle(
   // Suppress lint: `greedy.added` is observed only via diagnostics.
   void greedy;
 
-  const wasmImages = collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths);
+  const wasmImages = (await collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths));
 
   return {
     bundle,
@@ -3792,7 +3796,7 @@ export interface FacetManagerHooks {
    * genuinely re-enters the object: a fresh turn is both a released thread and
    * a fresh CPU budget, and a launch needs each for a different reason.
    */
-  requestLaunchTurn?: (notBefore?: number) => void;
+  requestLaunchTurn?: (notBefore?: number) => void | Promise<void>;
   /**
    * Put a line in front of the user, whether or not a terminal is attached.
    *
@@ -4039,6 +4043,7 @@ export class FacetManager {
   private processes: SessionProcessSupervisor;
   private portRegistry: PortRegistry;
   private vfs: SqliteVFS | null = null;
+  private filesystem: NimbusFilesystemAuthority | null = null;
   private hooks: FacetManagerHooks;
   /**
    * The resident-process scheduler (loaders/process-fabric.ts). Every
@@ -4078,6 +4083,8 @@ export class FacetManager {
    * journal recovery rides the first pump.
    */
   private readonly launchPump: PacedWork;
+  private readonly launchTasks = new Set<Promise<void>>();
+  private launchesClosed = false;
   // attach-pid → serve-pid: the resident serve facet a bare-`opencode` dual
   // spawn created as an OS-child of the attach TUI. When the attach process
   // exits (reported / killed), its serve facet is torn down with it.
@@ -4205,7 +4212,7 @@ export class FacetManager {
     // Rooted on waitUntil: the hook fires synchronously inside whatever turn
     // ended the process, and the delete must not be a floating promise there.
     this.processes.setOnTerminal((pid) => {
-      this.ctx.waitUntil(this._onResidentTerminal(pid));
+      this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
     });
   }
 
@@ -4225,7 +4232,7 @@ export class FacetManager {
     const key = `${FENCED_WORK_KEY_PREFIX}${pid}`;
     const row = (await this.launchJournal.rows()).get(key);
     const crashed = entry?.state === 'exited' && (entry.exitCode ?? 0) !== 0;
-    if (row === undefined || row.restart !== 'on-failure' || !crashed) {
+    if (this.launchesClosed || row === undefined || row.restart !== 'on-failure' || !crashed) {
       await this.launchJournal.release(pid);
       return;
     }
@@ -4300,7 +4307,10 @@ export class FacetManager {
     return next;
   }
 
-  setVfs(vfs: SqliteVFS) { this.vfs = vfs; }
+  /** The authority is the caller's: a session composes exactly one, and the
+   *  manager credentials its processes through that one rather than a second
+   *  authority over the same disk. */
+  setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority) { this.vfs = vfs; this.filesystem = filesystem; }
 
 
   /**
@@ -4414,16 +4424,17 @@ export class FacetManager {
    * be read is left out; the program's compile then meets the seam's own
    * refusal, which names the module.
    */
-  private _wasmModulesByValue(
+  private async _wasmModulesByValue(
     entry: ProcessEntry,
     wasmImports: readonly FacetWasmImport[],
-  ): Record<string, { wasm: ArrayBuffer }> {
+  ): Promise<Record<string, { wasm: ArrayBuffer }>> {
     const modules: Record<string, { wasm: ArrayBuffer }> = {};
     if (!this.vfs || wasmImports.length === 0) return modules;
-    const vfs = this.vfs.as(entry.cred);
+    if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
+    const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
     for (const image of wasmImports) {
       let bytes: Uint8Array;
-      try { bytes = vfs.readFile(stripLeadingSlashes(image.vfsPath)); } catch { continue; }
+      try { bytes = (await vfs.readFile(stripLeadingSlashes(image.vfsPath))); } catch { continue; }
       modules[image.moduleName] = {
         wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       };
@@ -4446,12 +4457,13 @@ export class FacetManager {
     // one if NimbusSession didn't share its own.
     if (!this.esbuild) this.esbuild = new EsbuildService(this.vfs.as(CRED_KERNEL));
     this.imageStore.ensureDir();
-    const vfs = this.vfs.as(entry.cred);
+    if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
+    const vfs = new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }));
     const { cred } = entry;
     const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
     const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
     const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
-    const revision = vfs.revision();
+    const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
     // lookup below requires an exact match — so from the first write after it
     // was admitted it is retained garbage, held in the isolate that is
@@ -4937,7 +4949,7 @@ export class FacetManager {
             // images ride by value: read here, inside the scope that holds
             // the map, and compiled by the loader like the sqlite sidecar.
             const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
-            const wasmModules = this._wasmModulesByValue(entry, wasmImports);
+            const wasmModules = (await this._wasmModulesByValue(entry, wasmImports));
             const generatedWorker = await generateEntrypointCode(code, vfsState, usesSqlite, shims, wasmImports);
             if (diagSink) {
               diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
@@ -5110,7 +5122,7 @@ export class FacetManager {
     // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
     // other writes flush live through the SUPERVISOR RPC bridge.
     if (this.vfs) this.imageStore.ensureDir();
-    const processVfs = this.vfs?.as(entry.cred);
+    const processVfs = this.filesystem ? new ExecutionFs(this.filesystem.bind({ pid: entry.pid, cred: entry.cred })) : null;
     const vfsState: FacetVfsState = processVfs
       ? await buildPrefetchBundle(
           processVfs, undefined, opts.cwd, '', this.esbuild || undefined,
@@ -5433,6 +5445,19 @@ export class FacetManager {
     return this.launchPump.pump();
   }
 
+  private trackLaunchTask(task: Promise<void>): Promise<void> {
+    this.launchTasks.add(task);
+    void task.then(() => this.launchTasks.delete(task), () => this.launchTasks.delete(task));
+    return task;
+  }
+
+  async closeLaunches(): Promise<void> {
+    this.launchesClosed = true;
+    this.launchPump.close();
+    while (this.launchTasks.size > 0) await Promise.allSettled([...this.launchTasks]);
+    await Promise.all(this.rowAmendments.values());
+  }
+
   /** Whether any launch is suspended waiting for a turn. */
   get hasPendingLaunchTurns(): boolean {
     return this.launchPump.hasPending;
@@ -5705,7 +5730,18 @@ export class FacetManager {
    * terminal WebSocket needs to survive a launch, and what no amount of making
    * the launch faster would have given it.
    */
-  private async _runResidentLaunch(
+  private _runResidentLaunch(
+    entry: ProcessEntry,
+    code: string,
+    command: string,
+    opts: ResidentSpawnOptions,
+    attempt: number,
+  ): Promise<void> {
+    if (this.launchesClosed) return Promise.reject(new Error('Launch scheduler is closed'));
+    return this.trackLaunchTask(this._runResidentLaunchBody(entry, code, command, opts, attempt));
+  }
+
+  private async _runResidentLaunchBody(
     entry: ProcessEntry,
     code: string,
     command: string,

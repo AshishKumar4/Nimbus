@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
 
 const PKG_DIR = '/usr/share/pkg';
 const MODULES_DIR = '/usr/share/pkg/node_modules';
@@ -18,26 +18,26 @@ interface PackagesMetadata {
 export class PackageManager {
   constructor(private vfs: VFS) {}
 
-  private readMetadata(): PackagesMetadata {
+  private async readMetadata(): Promise<PackagesMetadata> {
     try {
-      const content = this.vfs.readFileString(METADATA_FILE);
+      const content = (await this.vfs.readFileString(METADATA_FILE));
       return JSON.parse(content);
     } catch {
       return { packages: {} };
     }
   }
 
-  private writeMetadata(meta: PackagesMetadata): void {
-    this.vfs.writeFile(METADATA_FILE, JSON.stringify(meta, null, 2) + '\n');
+  private async writeMetadata(meta: PackagesMetadata): Promise<void> {
+    (await this.vfs.writeFile(METADATA_FILE, JSON.stringify(meta, null, 2) + '\n'));
   }
 
-  private ensureDirs(): void {
-    try { this.vfs.mkdir(PKG_DIR, { recursive: true }); } catch { /* exists */ }
-    try { this.vfs.mkdir(MODULES_DIR, { recursive: true }); } catch { /* exists */ }
+  private async ensureDirs(): Promise<void> {
+    try { (await this.vfs.mkdir(PKG_DIR, { recursive: true })); } catch { /* exists */ }
+    try { (await this.vfs.mkdir(MODULES_DIR, { recursive: true })); } catch { /* exists */ }
   }
 
   async install(url: string, name?: string): Promise<PackageInfo> {
-    this.ensureDirs();
+    (await this.ensureDirs());
 
     // Fetch the package
     const response = await fetch(url);
@@ -55,11 +55,11 @@ export class PackageManager {
 
     // Write package file
     const pkgDir = `${MODULES_DIR}/${name}`;
-    try { this.vfs.mkdir(pkgDir, { recursive: true }); } catch { /* exists */ }
-    this.vfs.writeFile(`${pkgDir}/index.js`, source);
+    try { (await this.vfs.mkdir(pkgDir, { recursive: true })); } catch { /* exists */ }
+    (await this.vfs.writeFile(`${pkgDir}/index.js`, source));
 
     // Update metadata
-    const meta = this.readMetadata();
+    const meta = (await this.readMetadata());
     const info: PackageInfo = {
       name,
       url,
@@ -67,39 +67,39 @@ export class PackageManager {
       size: source.length,
     };
     meta.packages[name] = info;
-    this.writeMetadata(meta);
+    (await this.writeMetadata(meta));
 
     return info;
   }
 
-  remove(name: string): boolean {
-    const meta = this.readMetadata();
+  async remove(name: string): Promise<boolean> {
+    const meta = (await this.readMetadata());
     if (!meta.packages[name]) return false;
 
     // Remove files
     const pkgDir = `${MODULES_DIR}/${name}`;
     try {
-      this.vfs.rmdirRecursive(pkgDir);
+      (await this.vfs.rmdirRecursive(pkgDir));
     } catch {
       // Try just unlinking the index.js
-      try { this.vfs.unlink(`${pkgDir}/index.js`); } catch { /* ignore */ }
-      try { this.vfs.rmdir(pkgDir); } catch { /* ignore */ }
+      try { (await this.vfs.unlink(`${pkgDir}/index.js`)); } catch { /* ignore */ }
+      try { (await this.vfs.rmdir(pkgDir)); } catch { /* ignore */ }
     }
 
     // Update metadata
     delete meta.packages[name];
-    this.writeMetadata(meta);
+    (await this.writeMetadata(meta));
 
     return true;
   }
 
-  list(): PackageInfo[] {
-    const meta = this.readMetadata();
+  async list(): Promise<PackageInfo[]> {
+    const meta = (await this.readMetadata());
     return Object.values(meta.packages);
   }
 
-  info(name: string): PackageInfo | null {
-    const meta = this.readMetadata();
+  async info(name: string): Promise<PackageInfo | null> {
+    const meta = (await this.readMetadata());
     return meta.packages[name] || null;
   }
 }

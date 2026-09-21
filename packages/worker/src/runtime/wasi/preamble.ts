@@ -44,6 +44,15 @@ import type {
   WriteU32LE,
 } from '@nimbus-sh/core/runtime/wasi/types.js';
 
+import {
+  installAuthorityFilesystem,
+  WASI_ACCEPTED_PATH_PREFIX,
+  WASI_LISTEN_PATH_PREFIX,
+  WASI_TCP_PATH_PREFIX,
+} from '@nimbus-sh/core/runtime/wasi/filesystem.js';
+import { supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
+
 // errno constants
 const __WASI_ESUCCESS       = 0;
 const __WASI_EAGAIN         = 6;
@@ -111,21 +120,6 @@ const __WASI_EVENTTYPE_CLOCK    = 0;
 const __WASI_EVENTTYPE_FD_READ  = 1;
 const __WASI_EVENTTYPE_FD_WRITE = 2;
 const __WASI_SUBCLOCKFLAGS_ABSTIME = 1;  // SUBSCRIPTION_CLOCK_ABSTIME
-// WASI socket and polling support B7: synthetic-path prefix recognised by path_open as a request
-// to open a TCP socket. Mirrors bash's /dev/tcp/<host>/<port> convention
-// (https://www.gnu.org/software/bash/manual/html_node/Redirections.html).
-const __WASI_TCP_PATH_PREFIX = '/dev/tcp/';
-// The accept half of the same synthetic-socket family: binds a connection the
-// virtual socket kernel has already accepted to a file descriptor. It has to go
-// through path_open like the dial half - guests layered over wasi-vfs
-// (ruby.wasm) resolve descriptors through their own fd table, so a descriptor
-// handed to them out of band is not one they can use.
-const __WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
-// A listening socket, as a descriptor. Reading it is accept(2): the read
-// suspends until a connection is queued and yields that connection's id, so a
-// server's accept loop is an ordinary blocking read and needs no cooperative
-// pump driving it from outside.
-const __WASI_LISTEN_PATH_PREFIX = '/dev/nimbus/listen/';
 
 // WASI socket and polling support B7: resolved at preamble module-init via dynamic import.
 // CF docs: "TCP sockets cannot be created in global scope and shared
@@ -185,7 +179,7 @@ function __wasiEmptyFS(): WasiFsState {
     root: '',
     files: new Map(), dirs: new Set(), times: new Map(), symlinks: new Map(),
     modes: new Map(), sizes: new Map(), origFiles: new Map(),
-    residentFileCap: 8 * 1024 * 1024,
+    residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES,
     enumeratedRoots: [],
     revision: null,
   };
@@ -241,7 +235,7 @@ function __wasiExpectsLiveBacking() {
 }
 
 /** Mirror one mutation to the session VFS. Cache is already updated. */
-function __wasiEnqueue(op: string, run: (sup: WasiSupervisorStub) => Promise<unknown>): void {
+function __wasiEnqueue(op: string, run: (sup: WasiSupervisorStub) => unknown): void {
   if (!__wasiSup) {
     // A sealed instance keeps its mutations in memory on purpose. One that was
     // seeded as a CACHE and has no supervisor cannot: the write is already
@@ -498,7 +492,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
     origFiles,
     // Files at or above this size are never held whole; reads window through
     // the supervisor instead. Keeps a 200 MiB blob from ending the isolate.
-    residentFileCap: Number(opts.residentFileCap ?? (8 * 1024 * 1024)),
+    residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
     // Roots the seed claims to have listed COMPLETELY. Only a producer that
     // walked a subtree without exclusions may claim one. Inside such a root a
     // path the manifest lacks is genuinely absent, so the miss is answered
@@ -512,6 +506,9 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
     revision: opts.revision ?? null,
   };
   // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
+  // Emptied rather than replaced: the authority codec and the socket helpers
+  // are handed this Map, and a swap would leave half of them writing into a
+  // table nothing reads.
   __wasiPreopens = [];
   fdTable.clear();
   fdTable.set(0, { kind: 'stdin' });
@@ -519,7 +516,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   fdTable.set(2, { kind: 'stderr' });
   nextFd = 3;
   for (const po of (opts.preopens || [])) {
-    const fd = nextFd++;
+    const fd = __wasiAllocateFd();
     const vfsPath = __wasiCanonicalize(po.vfsPath);
     fdTable.set(fd, { kind: 'preopen', wasiPath: po.wasiPath, vfsPath });
     __wasiPreopens.push({ fd, wasiPath: po.wasiPath, vfsPath });
@@ -607,7 +604,7 @@ function __wasiConnectRemote(host: string, port: number): { errno: Errno; socket
 // Returns a WASI errno and writes the new fd to fdOutPtr.
 function __wasiOpenTcpSocket(pathArg: string, fdflags: number, fdOutPtr: number, writeU32LE: WriteU32LE): Errno {
   // pathArg shape: "/dev/tcp/<host>/<port>".
-  const tail = pathArg.substring(__WASI_TCP_PATH_PREFIX.length);
+  const tail = pathArg.substring(WASI_TCP_PATH_PREFIX.length);
   const slashIdx = tail.lastIndexOf('/');
   if (slashIdx <= 0 || slashIdx === tail.length - 1) return __WASI_EINVAL;
   const host = tail.substring(0, slashIdx);
@@ -633,7 +630,7 @@ function __wasiKernelOrNull(what: string): VirtualSocketKernel | null {
 // Open a listening socket as a descriptor. The port must already be bound; the
 // descriptor is the accept queue, not the bind.
 function __wasiOpenListener(pathArg: string, fdflags: number, fdOutPtr: number, writeU32LE: WriteU32LE): Errno {
-  const port = parseInt(pathArg.substring(__WASI_LISTEN_PATH_PREFIX.length), 10);
+  const port = parseInt(pathArg.substring(WASI_LISTEN_PATH_PREFIX.length), 10);
   if (!Number.isInteger(port) || port <= 0 || port >= 65536) return __WASI_EINVAL;
   const kernel = __wasiKernelOrNull('ports cannot be listened on');
   if (!kernel) return __WASI_ENOSYS;
@@ -657,7 +654,7 @@ function __wasiOpenListener(pathArg: string, fdflags: number, fdOutPtr: number, 
       ((p: number) => void) | undefined;
     if (typeof announce === 'function') announce(port);
   }
-  const fd = nextFd++;
+  const fd = __wasiAllocateFd();
   fdTable.set(fd, { kind: 'listener', port, fdflags: fdflags | 0 });
   writeU32LE(fdOutPtr, fd);
   return __WASI_ESUCCESS;
@@ -703,7 +700,7 @@ async function __wasiAcceptRead(entry: ListenerFdEntry, iovsPtr: number, iovsLen
 // Bind an already-accepted kernel connection to a file descriptor, so a
 // server's accepted socket is the same kind of fd as a client's dialed one.
 function __wasiOpenAcceptedSocket(pathArg: string, fdflags: number, fdOutPtr: number, writeU32LE: WriteU32LE): Errno {
-  const id = parseInt(pathArg.substring(__WASI_ACCEPTED_PATH_PREFIX.length), 10);
+  const id = parseInt(pathArg.substring(WASI_ACCEPTED_PATH_PREFIX.length), 10);
   if (!Number.isInteger(id) || id <= 0) return __WASI_EINVAL;
   const kernel = globalThis.__nimbusVirtualSockets;
   if (!kernel || typeof kernel.streamFor !== 'function') {
@@ -727,7 +724,7 @@ function __wasiOpenAcceptedSocket(pathArg: string, fdflags: number, fdOutPtr: nu
 // connection, or an accepted one. Every socket fd in the table comes from here,
 // which is why nothing downstream has to tell them apart.
 function __wasiAdoptSocket(socket: WasiSocket, fdflags: number): number {
-  const fd = nextFd++;
+  const fd = __wasiAllocateFd();
   fdTable.set(fd, {
     kind: 'socket',
     socket,
@@ -806,6 +803,10 @@ export function __wasiReadFilesB64(paths: string[]): Record<string, string> {
 // rights checks in v1 — single-tenant facet, no untrusted callers).
 export const fdTable = new Map<number, FdEntry>();
 let nextFd = 3;
+// The only source of descriptor numbers. A second counter — one for files, one
+// for sockets — hands the same number out twice and the later open silently
+// destroys the earlier fd's entry.
+function __wasiAllocateFd(): number { return nextFd++; }
 
 // Resolve a WASI path against a preopen fd; returns the canonical VFS path
 // WITHOUT following symlinks. WASI socket and polling support kept this name compatible with all
@@ -1119,7 +1120,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       await __wasiDrainPersist();
       if (size <= __wasiFS.residentFileCap) {
         const whole = await __wasiSup.fsReadRange(vfsPath, 0, size);
-        const bytes = whole instanceof Uint8Array ? whole : new Uint8Array(whole);
+        if (whole === null) throw new Error('ENOENT: ' + vfsPath);
+        const bytes = whole;
         __wasiFS.files.set(vfsPath, bytes);
         // The diff-back mirror must agree, or a demand-loaded file would be
         // reported as newly written by every runner still using the diff.
@@ -1131,7 +1133,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       const want = Math.max(0, Math.min(length, size - offset));
       if (want === 0) return new Uint8Array(0);
       const win = await __wasiSup.fsReadRange(vfsPath, offset, want);
-      return win instanceof Uint8Array ? win : new Uint8Array(win);
+      if (win === null) throw new Error('ENOENT: ' + vfsPath);
+      return win;
     })();
   }
   /** Scatter the given bytes across the iovec list; returns bytes consumed. */
@@ -1548,13 +1551,13 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       // the in-memory FS — __wasiResolvePath would canonicalize it but
       // not find any entry.
       const guestPath = __wasiGuestPath(baseFd, pathArg);
-      if (guestPath.startsWith(__WASI_TCP_PATH_PREFIX)) {
+      if (guestPath.startsWith(WASI_TCP_PATH_PREFIX)) {
         return __wasiOpenTcpSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
-      if (guestPath.startsWith(__WASI_ACCEPTED_PATH_PREFIX)) {
+      if (guestPath.startsWith(WASI_ACCEPTED_PATH_PREFIX)) {
         return __wasiOpenAcceptedSocket(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
-      if (guestPath.startsWith(__WASI_LISTEN_PATH_PREFIX)) {
+      if (guestPath.startsWith(WASI_LISTEN_PATH_PREFIX)) {
         return __wasiOpenListener(guestPath, fdflags, fdOutPtr, writeU32LE);
       }
       // Honor LOOKUPFLAGS_SYMLINK_FOLLOW strictly: bit 0 set → follow.
@@ -1589,7 +1592,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         if (!dirExists) return __WASI_ENOENT;
         const access = __wasiCheckMode(resolved, 1);
         if (access !== __WASI_ESUCCESS) return access;
-        const fd = nextFd++;
+        const fd = __wasiAllocateFd();
         fdTable.set(fd, { kind: 'dir', vfsPath: resolved, readdirEntries: null, cookie: 0n, oflags, fdflags });
         writeU32LE(fdOutPtr, fd);
         return __WASI_ESUCCESS;
@@ -1622,7 +1625,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         const access = __wasiCheckMode(resolved, requiredMode);
         if (access !== __WASI_ESUCCESS) return access;
       }
-      const fd = nextFd++;
+      const fd = __wasiAllocateFd();
       fdTable.set(fd, { kind: 'file', vfsPath: resolved, offset: 0, oflags, fdflags });
       writeU32LE(fdOutPtr, fd);
       return __WASI_ESUCCESS;
@@ -2108,7 +2111,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       return __WASI_ESUCCESS;
     },
 
-    fd_advise()     { return __WASI_ESUCCESS; },
+    fd_advise(_fd, _offset, _len, _advice) { return __WASI_ESUCCESS; },
     // WASI socket and polling support B4: real fd_allocate. Extends the file's byte buffer with
     // zeros so [offset, offset+len) is allocated. POSIX posix_fallocate
     // semantics. ENOSPC is not reachable in our in-memory FS (the
@@ -2325,9 +2328,11 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
           });
         }
         // Regular files, dirs, stdio: always ready (POSIX: regular files
-        // never block — read returns immediately even if at EOF).
+        // never block — read returns immediately even if at EOF). A file the
+        // authority owns is a regular file too; leaving 'authority' out made
+        // polling one EBADF, which a guest reads as "this fd is gone".
         if (entry.kind === 'file' || entry.kind === 'dir' ||
-            entry.kind === 'preopen' ||
+            entry.kind === 'preopen' || entry.kind === 'authority' ||
             entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') {
           let nbytes = 0n;
           if (entry.kind === 'file' && s.tag === __WASI_EVENTTYPE_FD_READ) {
@@ -2694,6 +2699,16 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     },
   };
 
+  installAuthorityFilesystem(imports, {
+    fs: () => __wasiSup ? supervisorFilesystem(__wasiSup, opts.parking === 'none' ? __wasiSup.synchronous : undefined) : null,
+    memory: opts.getMemory,
+    fds: fdTable,
+    allocateFd: __wasiAllocateFd,
+    abi: opts.abi,
+    synchronous: opts.parking === 'none',
+    residentBytes: __wasiFS.residentFileCap,
+  });
+
   // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
   // fd_write can route socket fds through them (wasi-libc maps read(2)/
   // write(2) to fd_read/fd_write for every fd kind, sockets included).
@@ -2710,7 +2725,13 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // Every import that can park.
   const parkable: readonly ParkableImport[] = [
     'sock_send', 'sock_recv', 'sock_shutdown', 'sock_accept', 'poll_oneoff',
-    'fd_read', 'fd_write', 'fd_pread', 'path_filestat_get',
+    'fd_read', 'fd_write', 'fd_pread', 'fd_pwrite', 'path_filestat_get',
+    'path_open', 'fd_close', 'fd_renumber', 'fd_seek', 'fd_tell', 'fd_filestat_get',
+    'fd_fdstat_set_flags', 'fd_fdstat_set_rights', 'fd_filestat_set_size',
+    'fd_sync', 'fd_datasync', 'fd_allocate', 'fd_advise', 'fd_readdir',
+    'path_create_directory', 'path_remove_directory', 'path_unlink_file',
+    'path_rename', 'path_symlink', 'path_readlink', 'path_link',
+    'fd_filestat_set_times', 'path_filestat_set_times',
   ];
   // Applied before Suspending wraps them.
   for (const name of parkable) {
@@ -2758,37 +2779,39 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       };
     }
   } else if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
-    imports.sock_send     = new WebAssembly.Suspending(imports.sock_send);
-    imports.sock_recv     = new WebAssembly.Suspending(imports.sock_recv);
+    imports.sock_send = new WebAssembly.Suspending(imports.sock_send);
+    imports.sock_recv = new WebAssembly.Suspending(imports.sock_recv);
     imports.sock_shutdown = new WebAssembly.Suspending(imports.sock_shutdown);
-    imports.sock_accept   = new WebAssembly.Suspending(imports.sock_accept);
-    // WASI socket and polling support B8: poll_oneoff also needs JSPI to support CLOCK
-    // subscriptions (await setTimeout) and socket-fd readiness
-    // (await reader.read()). Same Suspending shape as sock_*.
-    imports.poll_oneoff   = new WebAssembly.Suspending(imports.poll_oneoff);
-    // fd_read/fd_write become suspending too: a socket fd routes to the
-    // async sock bodies (Promise → JSPI suspends). File/stdio ops return a
-    // plain errno number, which JSPI passes through UNDER AN ACTIVE
-    // SUSPENDER. There is no passthrough without one: V8 traps ANY call
-    // into a Suspending import off a non-promising stack with SuspendError
-    // "trying to suspend without WebAssembly.promising", even when the
-    // import returns a plain number (measured on workerd, compat
-    // 2026-04-01). Every export that can reach these imports must be
-    // entered via WebAssembly.promising — assuming sync callers were
-    // unaffected is exactly how the Ruby VM boot went dark.
-    imports.fd_read       = new WebAssembly.Suspending(imports.fd_read);
-    imports.fd_write      = new WebAssembly.Suspending(imports.fd_write);
-    // fd_pread reaches the same file bodies as fd_read and so can equally
-    // land on a cache miss that must go to the supervisor. Leaving it
-    // unwrapped would trap the guest the first time a demand load happened
-    // to arrive through pread(2) rather than read(2).
-    imports.fd_pread      = new WebAssembly.Suspending(imports.fd_pread);
-    // path_filestat_get resolves a path the seed manifest never listed by
-    // asking the supervisor, so it too can return a Promise.
+    imports.sock_accept = new WebAssembly.Suspending(imports.sock_accept);
+    imports.poll_oneoff = new WebAssembly.Suspending(imports.poll_oneoff);
+    imports.fd_read = new WebAssembly.Suspending(imports.fd_read);
+    imports.fd_write = new WebAssembly.Suspending(imports.fd_write);
+    imports.fd_pread = new WebAssembly.Suspending(imports.fd_pread);
+    imports.fd_pwrite = new WebAssembly.Suspending(imports.fd_pwrite);
     imports.path_filestat_get = new WebAssembly.Suspending(imports.path_filestat_get);
-    // sched_yield parks only in a threaded process, so it is wrapped only for
-    // one: every other guest keeps the plain i32 return it has today, and no
-    // existing runtime changes shape.
+    imports.path_open = new WebAssembly.Suspending(imports.path_open);
+    imports.fd_close = new WebAssembly.Suspending(imports.fd_close);
+    imports.fd_renumber = new WebAssembly.Suspending(imports.fd_renumber);
+    imports.fd_seek = new WebAssembly.Suspending(imports.fd_seek);
+    imports.fd_tell = new WebAssembly.Suspending(imports.fd_tell);
+    imports.fd_filestat_get = new WebAssembly.Suspending(imports.fd_filestat_get);
+    imports.fd_fdstat_set_flags = new WebAssembly.Suspending(imports.fd_fdstat_set_flags);
+    imports.fd_fdstat_set_rights = new WebAssembly.Suspending(imports.fd_fdstat_set_rights);
+    imports.fd_filestat_set_size = new WebAssembly.Suspending(imports.fd_filestat_set_size);
+    imports.fd_sync = new WebAssembly.Suspending(imports.fd_sync);
+    imports.fd_datasync = new WebAssembly.Suspending(imports.fd_datasync);
+    imports.fd_allocate = new WebAssembly.Suspending(imports.fd_allocate);
+    imports.fd_advise = new WebAssembly.Suspending(imports.fd_advise);
+    imports.fd_readdir = new WebAssembly.Suspending(imports.fd_readdir);
+    imports.path_create_directory = new WebAssembly.Suspending(imports.path_create_directory);
+    imports.path_remove_directory = new WebAssembly.Suspending(imports.path_remove_directory);
+    imports.path_unlink_file = new WebAssembly.Suspending(imports.path_unlink_file);
+    imports.path_rename = new WebAssembly.Suspending(imports.path_rename);
+    imports.path_symlink = new WebAssembly.Suspending(imports.path_symlink);
+    imports.path_readlink = new WebAssembly.Suspending(imports.path_readlink);
+    imports.path_link = new WebAssembly.Suspending(imports.path_link);
+    imports.fd_filestat_set_times = new WebAssembly.Suspending(imports.fd_filestat_set_times);
+    imports.path_filestat_set_times = new WebAssembly.Suspending(imports.path_filestat_set_times);
     if (opts.threads) imports.sched_yield = new WebAssembly.Suspending(imports.sched_yield);
   }
 

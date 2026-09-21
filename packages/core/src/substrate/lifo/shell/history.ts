@@ -1,36 +1,35 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import { lex } from './lexer.js';
 import { TokenKind } from './types.js';
 
-const HISTORY_PATH = '/home/user/.bash_history';
 const MAX_HISTORY = 1000;
 
 export class HistoryManager {
   private entries: string[] = [];
-  private vfs: VFS;
+  private loaded: Promise<void> | undefined;
 
-  constructor(vfs: VFS) {
-    this.vfs = vfs;
+  constructor(private readonly filesystem: () => ExecutionFs, private readonly home: () => string) {}
+
+  async load(): Promise<void> {
+    return this.loaded ??= this.readHistory();
   }
 
-  load(): void {
+  private async readHistory(): Promise<void> {
     try {
-      const content = this.vfs.readFileString(HISTORY_PATH);
+      const content = await this.filesystem().readFileString(`${this.home()}/.bash_history`);
       this.entries = content.split('\n').filter(Boolean);
-    } catch {
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
       this.entries = [];
     }
   }
 
-  save(): void {
-    try {
-      this.vfs.writeFile(HISTORY_PATH, this.entries.join('\n') + '\n');
-    } catch {
-      // Ignore write errors (directory may not exist)
-    }
+  async save(): Promise<void> {
+    await this.filesystem().writeFile(`${this.home()}/.bash_history`, this.entries.join('\n') + '\n');
   }
 
-  add(line: string): void {
+  async add(line: string): Promise<void> {
+    await this.load();
     const trimmed = line.trim();
     if (!trimmed) return;
 
@@ -46,7 +45,7 @@ export class HistoryManager {
       this.entries = this.entries.slice(-MAX_HISTORY);
     }
 
-    this.save();
+    await this.save();
   }
 
   /**

@@ -6434,7 +6434,20 @@ builtins.tty = {
 // core and must not be reported as such — a package that sniffs this list
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL});
-	builtins.module = { get builtinModules() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); }, createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)), _resolveFilename: (id) => id, _cache: {} };
+	builtins.module = {
+	  get builtinModules() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); },
+	  createRequire: (specifier) => __makeRequire(__requireBaseDir(specifier)),
+	  isBuiltin: (specifier) => Object.hasOwn(builtins, String(specifier).replace(/^node:/, '')) && !__nimbusFacetProvidedPackages.has(String(specifier).replace(/^node:/, '')),
+	  // Node 22.1's on-disk compile cache. There is no disk to cache into and
+	  // nothing to compile ahead: callers (pi's CLI entry calls it
+	  // unconditionally) get Node's own answer for a cache that is off.
+	  enableCompileCache: () => ({ status: 3, message: 'compile cache is not available in this runtime' }),
+	  getCompileCacheDir: () => undefined,
+	  flushCompileCache: () => {},
+	  constants: { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_ENABLED: 2, DISABLED: 3 } },
+	  _resolveFilename: (id) => id,
+	  _cache: {},
+	};
 // Bind to globalThis: workerd's timer globals throw "Illegal invocation"
 // when called with a receiver other than globalThis (i.e. as
 // timers.setInterval(...)), which clack's spinner — used by

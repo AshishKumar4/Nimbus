@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { CommandRegistry } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
 
@@ -14,12 +14,12 @@ export interface CompletionContext {
   cursorPos: number;
   cwd: string;
   env: Record<string, string>;
-  vfs: VFS;
+  vfs: ExecutionFs;
   registry: CommandRegistry;
   builtinNames: string[];
 }
 
-export function complete(ctx: CompletionContext): CompletionResult {
+export async function complete(ctx: CompletionContext): Promise<CompletionResult> {
   const { line, cursorPos } = ctx;
   const beforeCursor = line.slice(0, cursorPos);
 
@@ -36,14 +36,14 @@ export function complete(ctx: CompletionContext): CompletionResult {
       completions = completeCommand(word, ctx);
       break;
     case 'directory':
-      completions = completeDirectory(word, ctx);
+      completions = await completeDirectory(word, ctx);
       break;
     case 'variable':
       completions = completeVariable(word.slice(1), ctx); // strip $
       break;
     case 'file':
     default:
-      completions = completeFile(word, ctx);
+      completions = await completeFile(word, ctx);
       break;
   }
 
@@ -131,15 +131,15 @@ function completeCommand(word: string, ctx: CompletionContext): string[] {
   return unique.filter((name) => name.startsWith(word));
 }
 
-function completeFile(word: string, ctx: CompletionContext): string[] {
-  return listEntries(word, ctx, false);
+async function completeFile(word: string, ctx: CompletionContext): Promise<string[]> {
+  return (await listEntries(word, ctx, false));
 }
 
-function completeDirectory(word: string, ctx: CompletionContext): string[] {
-  return listEntries(word, ctx, true);
+async function completeDirectory(word: string, ctx: CompletionContext): Promise<string[]> {
+  return (await listEntries(word, ctx, true));
 }
 
-function listEntries(word: string, ctx: CompletionContext, dirsOnly: boolean): string[] {
+async function listEntries(word: string, ctx: CompletionContext, dirsOnly: boolean): Promise<string[]> {
   // Handle tilde
   let expandedWord = word;
   let tildePrefix = '';
@@ -166,7 +166,7 @@ function listEntries(word: string, ctx: CompletionContext, dirsOnly: boolean): s
   }
 
   try {
-    const entries = ctx.vfs.readdir(dir);
+    const entries = await ctx.vfs.readdir(dir);
     let filtered = entries.filter((e) => e.name.startsWith(prefix) && (prefix.startsWith('.') || !e.name.startsWith('.')));
 
     if (dirsOnly) {

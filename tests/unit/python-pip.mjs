@@ -8,6 +8,8 @@ import {
 } from '../../packages/core/src/runtime/runtime-manifest.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   constructor(files = {}, deniedPaths = []) {
     this.files = new Map(Object.entries(files).map(([path, value]) => [
       path,

@@ -95,7 +95,7 @@ function jumpToPrevMatch(s) {
     s.scrollRow = s.searchMatches[s.currentMatch];
 }
 // ─── Rendering ───
-function render(s, out) {
+async function render(s, out) {
     const ch = contentHeight(s);
     let buf = HIDE_CURSOR;
     for (let i = 0; i < ch; i++) {
@@ -131,7 +131,7 @@ function render(s, out) {
         buf += info.padEnd(s.cols);
     }
     buf += RST + SHOW_CURSOR;
-    out.write(buf);
+    (await out.write(buf));
 }
 function highlightMatches(line, query) {
     const lower = line.toLowerCase();
@@ -259,12 +259,12 @@ const command = async (ctx) => {
     if (ctx.args.length > 0) {
         const path = resolve(ctx.cwd, ctx.args[0]);
         try {
-            content = ctx.vfs.readFileString(path);
+            content = (await ctx.vfs.readFileString(path));
             fileName = ctx.args[0];
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`less: ${ctx.args[0]}: ${e.message}\n`);
+                await ctx.stderr.write(`less: ${ctx.args[0]}: ${e.message}\n`);
                 return 1;
             }
             throw e;
@@ -275,8 +275,8 @@ const command = async (ctx) => {
         fileName = '(stdin)';
     }
     else {
-        ctx.stderr.write('Usage: less FILE\n');
-        ctx.stderr.write('View file contents one screen at a time. q to quit, / to search.\n');
+        await ctx.stderr.write('Usage: less FILE\n');
+        await ctx.stderr.write('View file contents one screen at a time. q to quit, / to search.\n');
         return 1;
     }
     const lines = content.split('\n');
@@ -289,7 +289,7 @@ const command = async (ctx) => {
     const cols = parseInt(ctx.env['COLUMNS'] || '80', 10);
     // If content fits on screen, just print it and exit (like real less with -F)
     if (lines.length <= rows - 1) {
-        ctx.stdout.write(content);
+        await ctx.stdout.write(content);
         return 0;
     }
     ctx.setRawMode?.(true);
@@ -307,8 +307,8 @@ const command = async (ctx) => {
             searchMatches: [],
             currentMatch: -1,
         };
-        ctx.stdout.write(CLEAR + HOME);
-        render(s, ctx.stdout);
+        await ctx.stdout.write(CLEAR + HOME);
+        (await render(s, ctx.stdout));
         while (true) {
             const data = await ctx.stdin?.read();
             if (data === null || data === undefined)
@@ -323,9 +323,9 @@ const command = async (ctx) => {
             }
             if (shouldExit)
                 break;
-            render(s, ctx.stdout);
+            (await render(s, ctx.stdout));
         }
-        ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
+        await ctx.stdout.write(CLEAR + HOME + SHOW_CURSOR);
     }
     finally {
         ctx.setRawMode?.(false);

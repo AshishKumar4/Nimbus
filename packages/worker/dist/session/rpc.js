@@ -115,7 +115,7 @@ export function checkedReadPayloadBytes(bytes) {
  * `stat` here is a local SQLite lookup inside the DO — the same one
  * `_rpcReadFile` makes for the same reason — not a second round trip.
  */
-export async function rangeReadBytes(fs, path, offset, length) {
+async function rangeReadBytes(fs, path, offset, length) {
     const stat = await fs.stat(path);
     if (!stat)
         return 0;
@@ -257,12 +257,6 @@ export async function _rpcStat(self, path, pid, cred) {
 export async function _rpcLstat(self, path, pid, cred) {
     return self.supervisorOp({ op: 'lstat', args: [path], pid, cred });
 }
-export async function _rpcHasLegacySymlinkUnder(self, path, pid) {
-    return self.supervisorOp({ op: 'hasLegacySymlinkUnder', args: [path], pid });
-}
-export async function _rpcUtimes(self, path, atimeMs, mtimeMs, pid) {
-    await self.supervisorOp({ op: 'utimes', args: [path, atimeMs, mtimeMs], pid });
-}
 export async function _rpcChmod(self, path, mode, pid, cred) {
     await self.supervisorOp({ op: 'chmod', args: [path, mode], pid, cred });
 }
@@ -284,28 +278,16 @@ export async function _rpcExists(self, path, pid, cred) {
 export async function _rpcMkdir(self, path, pid, cred) {
     await self.supervisorOp({ op: 'mkdir', args: [path], pid, cred });
 }
-export async function _rpcRmdir(self, path, pid) {
-    await self.supervisorOp({ op: 'rmdir', args: [path], pid });
-}
 export async function _rpcRename(self, from, to, pid, cred) {
     await self.supervisorOp({ op: 'rename', args: [from, to], pid, cred });
 }
-export async function _rpcReadlink(self, path, pid) {
-    return self.supervisorOp({ op: 'readlink', args: [path], pid });
-}
-export async function _rpcSymlink(self, target, path, pid) {
-    await self.supervisorOp({ op: 'symlink', args: [target, path], pid });
-}
 const FsRangeOffsetSchema = z.number().int().min(0).finite();
-export const FsReadRangeArgsSchema = z.object({
-    path: z.string(),
-    offset: FsRangeOffsetSchema,
-    length: FsRangeOffsetSchema,
-});
 const FsReadBatchArgsSchema = z.array(z.object({
     path: z.string().min(1),
     offset: FsRangeOffsetSchema,
     length: FsRangeOffsetSchema.max(FS_READ_BATCH_REQUEST_BYTES),
+    expectedEpoch: z.string().optional(),
+    expectedRevision: FsRangeOffsetSchema.optional(),
 })).min(1).max(FS_READ_BATCH_PATH_LIMIT);
 const FsWriteRangeArgsSchema = z.object({
     path: z.string(),
@@ -341,9 +323,6 @@ const FsListArgsSchema = z.object({
     after: z.string().max(4096).nullable(),
     limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
 });
-export async function _rpcFsRevision(self, path, pid) {
-    return self.supervisorOp({ op: 'fsRevision', args: [path], pid });
-}
 /**
  * The facet's WebSocket relay. A facet does not open its own sockets: the
  * supervisor terminates them, so an inbound frame arrives as a reply to a
@@ -409,23 +388,6 @@ export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
 }
 /**
- * The same read, through the same process credential and the same bridge, with
- * the LRU content cache bypassed.
- *
- * For a boot spec's by-path members and nothing else. Those are the largest
- * files a session holds — a ruby interpreter image is 34.3 MiB against a 32 MiB
- * cache — and a host reads each one once, in slices, to hand to a Worker Loader
- * module map. Serving them through the demand-paging path would evict the
- * user's entire hot working set and pin the blob in this DO's heap for the rest
- * of the session, which is the pathology `readFileUncached` was added to stop
- * when clang crashed the supervisor. A process hosted on this DO already reads
- * them uncached; one hosted elsewhere has to be able to say so too, or the
- * substrate that was supposed to relieve the coordinator damages it instead.
- */
-export async function _rpcFsReadRangeUncached(self, path, offset, length, pid) {
-    return self.supervisorOp({ op: 'fsReadRangeUncached', args: [path, offset, length], pid });
-}
-/**
  * Read many ranges in ONE round trip.
  *
  * Every entry is the same read `_rpcFsReadRange` performs, through the same
@@ -465,7 +427,9 @@ export async function _rpcFsReadBatch(self, requests, pid) {
         const entries = [];
         for (const request of args) {
             try {
-                entries.push({ bytes: await fs.readRange(request.path, request.offset, request.length) });
+                entries.push({ bytes: await fs.readRange(request.path, request.offset, request.length, {
+                        expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
+                    }) });
             }
             catch (error) {
                 entries.push({ error: readBatchEntryError(error) });
@@ -514,28 +478,6 @@ export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid
     }
     const processId = processPid(pid);
     await self.supervisorBridge(processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
-}
-export async function _rpcFsTruncate(self, path, size, pid) {
-    await self.supervisorOp({ op: 'fsTruncate', args: [path, size], pid });
-}
-export async function _rpcFsOpen(self, path, flags, pid) {
-    return self.supervisorBridge(pid).open(path, flags || {});
-}
-export async function _rpcFsRead(self, handleId, offset, length, pid) {
-    return withReadAllocation(length, () => self.supervisorBridge(pid).read(handleId, offset, length));
-}
-export async function _rpcFsWrite(self, handleId, offset, bytes, pid) {
-    let data;
-    if (bytes instanceof Uint8Array)
-        data = bytes;
-    else if (bytes instanceof ArrayBuffer)
-        data = new Uint8Array(bytes);
-    else
-        data = new Uint8Array(bytes || []);
-    return self.supervisorBridge(pid).write(handleId, offset, data);
-}
-export async function _rpcFsClose(self, handleId, pid) {
-    await self.supervisorBridge(pid).close(handleId);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -998,7 +940,7 @@ export async function _rpcPrefetch(self, cwd, entryCode) {
     // Dynamic import stays: keeps the resolver out of this module's eager
     // graph (the original reason for the lazy load above).
     const { prefetchForRequire, ClosureBoundExceededError } = await import('@nimbus-sh/core/runtime/require-resolver.js');
-    const outcome = prefetchForRequire(self.sqliteFs, entryCode, cwd);
+    const outcome = (await prefetchForRequire(self.sqliteFs, entryCode, cwd));
     if ('kind' in outcome)
         throw new ClosureBoundExceededError(outcome);
     return outcome.bundle;

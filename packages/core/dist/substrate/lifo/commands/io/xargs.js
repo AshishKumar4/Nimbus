@@ -32,12 +32,12 @@ const command = async (ctx) => {
         for (let j = 0; j < inputArgs.length; j += maxArgs) {
             const batch = inputArgs.slice(j, j + maxArgs);
             const line = [cmdName, ...cmdArgs, ...batch].join(' ');
-            ctx.stdout.write(line + '\n');
+            await ctx.stdout.write(line + '\n');
         }
     }
     else {
         const line = [cmdName, ...cmdArgs, ...inputArgs].join(' ');
-        ctx.stdout.write(line + '\n');
+        await ctx.stdout.write(line + '\n');
     }
     return 0;
 };

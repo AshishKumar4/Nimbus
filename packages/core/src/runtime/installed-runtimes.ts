@@ -18,9 +18,11 @@
  */
 
 import { sha256Hex } from '../_shared/crypto.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import {
+  BASH_RUNNER,
   CRED_KERNEL,
   NIMBUS_ABI_TARGET,
   NIMBUS_RUNTIME_ABIS,
@@ -50,7 +52,7 @@ export type RunnerFactory = (
   installRoot: string,
   binName: string,
   binKind: string | undefined,
-) => Command;
+) => Command | Promise<Command>;
 
 /**
  * How a manifest entrypoint's `runner` key is resolved to code.
@@ -94,8 +96,8 @@ export function runtimeAbiForManifest(manifest: RuntimeManifest): RuntimePackage
  */
 export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>> = {
   bash: [
-    { binName: '/bin/bash', runner: 'bash-runner', args: [] },
-    { binName: '/usr/bin/bash', runner: 'bash-runner', args: [] },
+    { binName: '/bin/bash', runner: BASH_RUNNER, args: [] },
+    { binName: '/usr/bin/bash', runner: BASH_RUNNER, args: [] },
   ],
   // `pip` belongs to whichever runtime provides the interpreter, and only one
   // may claim it. The python row went with python-runner: Pyodide's manifest
@@ -133,33 +135,33 @@ export function installRoot(homeDir: string, name: string, version: string): str
 
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export function listInstalledManifests(
+export async function listInstalledManifests(
   vfs: SqliteVFS,
   homeDir: string,
-): Array<{ root: string; manifest: RuntimeManifest }> {
-  return listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir);
+): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
+  return (await listInstalledManifestsView(vfs.as(CRED_KERNEL), homeDir));
 }
 
-export function listInstalledManifestsView(
+export async function listInstalledManifestsView(
   fs: CredentialedVfs,
   homeDir: string,
-): Array<{ root: string; manifest: RuntimeManifest }> {
+): Promise<Array<{ root: string; manifest: RuntimeManifest }>> {
   const home = homeDir.replace(/^\/+/, '').replace(/\/+$/, '');
   const runtimesRoot = `${home}/.nimbus/runtimes`;
   const out: Array<{ root: string; manifest: RuntimeManifest }> = [];
-  if (!fs.exists(runtimesRoot)) return out;
+  if (!await fs.exists(runtimesRoot)) return out;
   // Each entry under runtimesRoot is a <name>; each entry under that
   // is a <version>; each <version> dir has a manifest.json.
-  for (const nameEntry of fs.readdir(runtimesRoot)) {
+  for (const nameEntry of await fs.readdir(runtimesRoot)) {
     if (nameEntry.type !== 'directory') continue;
     const nameDir = `${runtimesRoot}/${nameEntry.name}`;
-    for (const verEntry of fs.readdir(nameDir)) {
+    for (const verEntry of await fs.readdir(nameDir)) {
       if (verEntry.type !== 'directory') continue;
       const verDir = `${nameDir}/${verEntry.name}`;
       const manifestPath = `${verDir}/manifest.json`;
-      if (!fs.exists(manifestPath)) continue;
+      if (!await fs.exists(manifestPath)) continue;
       try {
-        const manifest = parseRuntimeManifest(JSON.parse(fs.readFileString(manifestPath)));
+        const manifest = parseRuntimeManifest(JSON.parse(await fs.readFileString(manifestPath)));
         out.push({ root: verDir, manifest });
       } catch {
         // Malformed manifest — skip silently. Surfacing via stderr
@@ -187,8 +189,8 @@ export async function runtimePayloadIntact(
   try {
     for (const file of manifest.files) {
       const target = `${root}/${file.path}`;
-      if (!fs.exists(target)) return false;
-      if ((await sha256Hex(fs.readFile(target))) !== file.sha256) return false;
+      if (!await fs.exists(target)) return false;
+      if ((await sha256Hex(await fs.readFile(target))) !== file.sha256) return false;
     }
     return true;
   } catch {
@@ -209,12 +211,12 @@ export async function rehydrateInstalledRuntimesView(
   runnerFor: RunnerLookup,
 ): Promise<{ count: number; bins: string[] }> {
   const bins: string[] = [];
-  for (const { root, manifest } of listInstalledManifestsView(vfs, homeDir)) {
+  for (const { root, manifest } of await listInstalledManifestsView(vfs, homeDir)) {
     if (!await runtimePayloadIntact(vfs, root, manifest)) continue;
     for (const ep of runtimeEntrypoints(manifest)) {
       const factory = runnerFor(ep.runner);
       if (!factory) continue; // runner not registered yet — skip
-      const handler = factory(manifest, root, ep.binName, ep.kind);
+      const handler = await factory(manifest, root, ep.binName, ep.kind);
       registry.register(ep.binName, handler);
       bins.push(ep.binName);
     }
@@ -222,11 +224,11 @@ export async function rehydrateInstalledRuntimesView(
   return { count: bins.length, bins };
 }
 
-export function listInstalledRuntimes(
+export async function listInstalledRuntimes(
   vfs: SqliteVFS,
   homeDir: string,
-): RuntimeSummary[] {
-  return listInstalledManifests(vfs, homeDir).map(({ root, manifest }) => ({
+): Promise<RuntimeSummary[]> {
+  return (await listInstalledManifests(vfs, homeDir)).map(({ root, manifest }) => ({
     name: manifest.name,
     version: manifest.version,
     root,

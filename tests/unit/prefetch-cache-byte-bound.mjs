@@ -24,6 +24,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import {
   PREFETCH_CACHE_MAX_BYTES,
 } from '../../packages/core/src/constants.ts';
@@ -63,7 +64,7 @@ const manager = new FacetManager(
 );
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs);
+manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
 
 // A working tree of big files. Each program requires a different one, so each
 // exec builds a distinct multi-MiB bundle that the LRU would otherwise retain
@@ -113,7 +114,7 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
   );
   const oversizedHarness = createSqliteVfsTestHarness();
   const oversizedVfs = new SqliteVFS(oversizedHarness.sql, oversizedHarness.ctx);
-  oversized.setVfs(oversizedVfs);
+  oversized.setVfs(oversizedVfs, new SqliteFilesystemAuthority(oversizedVfs));
   const oversizedFs = oversizedVfs.as(CRED_KERNEL);
   oversizedFs.mkdir('home/user/big', { recursive: true, mode: 0o755 });
   oversizedFs.writeFile(
@@ -142,7 +143,7 @@ assert.ok(cacheBytes() > 0, 'the cache still holds the most recent work');
   );
   const staleHarness = createSqliteVfsTestHarness();
   const staleVfs = new SqliteVFS(staleHarness.sql, staleHarness.ctx);
-  stale.setVfs(staleVfs);
+  stale.setVfs(staleVfs, new SqliteFilesystemAuthority(staleVfs));
   const staleFs = staleVfs.as(CRED_KERNEL);
   staleFs.mkdir('home/user/large', { recursive: true, mode: 0o755 });
   staleFs.mkdir('home/user/small', { recursive: true, mode: 0o755 });

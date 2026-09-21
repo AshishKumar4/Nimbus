@@ -1,4 +1,5 @@
-import { type ComposedFacetManager } from "../facets/compose.js";
+import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
+import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { EsbuildBundlePool } from "../facets/esbuild-bundle-pool.js";
 import type { NpmInstaller } from "../npm/installer.js";
 import { WebSocketRelay } from "../session/ws-relay.js";
@@ -15,7 +16,10 @@ export interface RuntimeServiceContext {
     readonly ctx: DurableObjectState;
     readonly env: HostedRuntimeEnv;
     notify(line: string): void;
-    requestLaunchTurn(notBefore?: number): Promise<boolean>;
+    requestLaunchTurn(notBefore?: number): Promise<void>;
+    resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+    /** The host's own authority: a session has exactly one, and this is it. */
+    filesystem: () => NimbusFilesystemAuthority;
 }
 export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): EsbuildBundlePool;
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;

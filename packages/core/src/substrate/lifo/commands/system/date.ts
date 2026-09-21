@@ -48,9 +48,9 @@ const command: Command = async (ctx) => {
 
   if (ctx.args.length > 0 && ctx.args[0].startsWith('+')) {
     const format = ctx.args[0].slice(1);
-    ctx.stdout.write(formatDate(format, now) + '\n');
+    await ctx.stdout.write(formatDate(format, now) + '\n');
   } else {
-    ctx.stdout.write(now.toString() + '\n');
+    await ctx.stdout.write(now.toString() + '\n');
   }
 
   return 0;

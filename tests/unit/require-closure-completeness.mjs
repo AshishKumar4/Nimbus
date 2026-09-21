@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   constructor(files) {
     this.files = new Map(Object.entries(files));
     this.dirs = new Set();
@@ -53,9 +55,9 @@ function crossSpawnFixture() {
   };
 }
 
-function prefetch(files) {
+async function prefetch(files) {
   const vfs = new FakeVfs(files);
-  return prefetchForRequire(vfs, files[entryPath], '/home/user', `/${entryPath}`);
+  return (await prefetchForRequire(vfs, files[entryPath], '/home/user', `/${entryPath}`));
 }
 
 const missingRequiredLeaves = [];
@@ -75,7 +77,7 @@ const missingRequiredLeaves = [];
   files[`${bulkRoot}/index.js`] = bulkRequires.join('\n');
   files[entryPath] = "require('bulk-files');\nrequire('cross-spawn');";
 
-  const result = prefetch(files);
+  const result = (await prefetch(files));
   assert.equal(
     result.bundle[readShebangPath],
     files[readShebangPath],
@@ -117,7 +119,7 @@ const missingRequiredLeaves = [];
     maxRawBytes - bytesBeforeTail - crossSpawnBytesBeforeLeaf,
   );
 
-  const result = prefetch(files);
+  const result = (await prefetch(files));
   assert.equal(
     result.bundle[readShebangPath],
     files[readShebangPath],

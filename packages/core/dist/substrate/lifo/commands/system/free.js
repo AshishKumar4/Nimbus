@@ -20,16 +20,16 @@ const command = async (ctx) => {
         const used = perf.memory.usedJSHeapSize;
         const free = total - used;
         if (human) {
-            ctx.stdout.write('              total        used        free\n');
-            ctx.stdout.write(`Mem:     ${humanSize(total).padStart(10)}  ${humanSize(used).padStart(10)}  ${humanSize(free).padStart(10)}\n`);
+            await ctx.stdout.write('              total        used        free\n');
+            await ctx.stdout.write(`Mem:     ${humanSize(total).padStart(10)}  ${humanSize(used).padStart(10)}  ${humanSize(free).padStart(10)}\n`);
         }
         else {
-            ctx.stdout.write('              total        used        free\n');
-            ctx.stdout.write(`Mem:     ${String(total).padStart(10)}  ${String(used).padStart(10)}  ${String(free).padStart(10)}\n`);
+            await ctx.stdout.write('              total        used        free\n');
+            await ctx.stdout.write(`Mem:     ${String(total).padStart(10)}  ${String(used).padStart(10)}  ${String(free).padStart(10)}\n`);
         }
     }
     else {
-        ctx.stdout.write('Memory information not available in this browser\n');
+        await ctx.stdout.write('Memory information not available in this browser\n');
     }
     return 0;
 };

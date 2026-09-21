@@ -100,7 +100,7 @@ export function createNetstatCommand(kernel: Kernel): Command {
       }
     }
 
-    ctx.stdout.write(output);
+    await ctx.stdout.write(output);
     return 0;
   };
 }

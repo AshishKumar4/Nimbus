@@ -4,28 +4,27 @@ import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
+import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
-const encoder = new TextEncoder();
+const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 
-class RuntimeVfs {
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.creds = [];
+/** A session whose runtime blobs are installed, as the supervisor installs them. */
+function installedRuntime(files) {
+  const harness = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const root = raw.as(CRED_KERNEL);
+  root.mkdir('home/user', { recursive: true, mode: 0o755 });
+  root.chown('home/user', USER.uid, USER.gid);
+  for (const [path, bytes] of Object.entries(files)) {
+    const clean = path.replace(/^\/+/, '');
+    root.mkdir(clean.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
+    root.writeFile(clean, bytes, { mode: 0o644 });
   }
-  as(cred) { this.creds.push(cred); return this; }
-  exists(path) { return this.files.has(path); }
-  isDirectory() { return false; }
-  readFile(path) {
-    const value = this.files.get(path);
-    if (!value) throw new Error(`missing ${path}`);
-    return value;
-  }
-  readdir() { return []; }
-  revision() { return 0; }
-  writeFile() {}
-  mkdir() {}
-  unlink() {}
-  rmdir() {}
+  return new SqliteFilesystemAuthority(raw);
 }
 
 function loaderHarness() {
@@ -50,9 +49,11 @@ function loaderHarness() {
   return { calls, env, ctx, facetMgr: { env, ctx } };
 }
 
-function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) {
+function commandContext(filesystem, env, cred = USER) {
   return {
+    pid: 41,
     cred,
+    vfs: new ExecutionFs(filesystem.bind({ pid: 41, cred })),
     args: ['-e', 'puts ENV["HOME"]'],
     cwd: '/home/user',
     env,
@@ -64,8 +65,7 @@ function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umas
 
 {
   const harness = loaderHarness();
-  const sentinel = '/* Nimbus Pyodide workerd adapter: pyodide-0.29.4-workerd-adapter-v2 */';
-  const vfs = new RuntimeVfs({
+  const filesystem = installedRuntime({
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
     '/runtime/python/lib/python313.zip': new Uint8Array(),
   });
@@ -80,42 +80,40 @@ function commandContext(env, cred = { uid: 1000, gid: 1000, groups: [1000], umas
       kind: 'workerd-adapter',
     }],
   };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx), vfs })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx) })(
     manifest,
     '/runtime/python',
     'python',
     undefined,
   );
-  const ctx = commandContext({ HOME: '/home/pyodide' });
+  const ctx = commandContext(filesystem, { HOME: '/home/pyodide' });
   ctx.args = ['-c', 'print(1)'];
   assert.equal(await run(ctx), 0);
   assert.equal(harness.calls[0].userEnv.HOME, '/home/pyodide');
-  const defaultCtx = commandContext({});
+  const defaultCtx = commandContext(filesystem, {});
   defaultCtx.args = ['-c', 'print(1)'];
   assert.equal(await run(defaultCtx), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/user');
-  assert.deepEqual(vfs.creds.map((cred) => cred.uid), [1000, 1000]);
 }
 
 {
   const harness = loaderHarness();
-  const vfs = new RuntimeVfs({
+  const filesystem = installedRuntime({
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   });
   const manifest = {
     files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
   };
-  const run = makeRubyRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx), vfs })(
+  const run = await makeRubyRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx), filesystem })(
     manifest,
     '/runtime/ruby',
     'ruby',
     undefined,
   );
-  assert.equal(await run(commandContext({ HOME: '/home/ruby' })), 0);
+  assert.equal(await run(commandContext(filesystem, { HOME: '/home/ruby' })), 0);
   assert.equal(harness.calls[0].userEnv.HOME, '/home/ruby');
-  assert.equal(await run(commandContext({})), 0);
+  assert.equal(await run(commandContext(filesystem, {})), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/user');
-  assert.deepEqual(vfs.creds.map((cred) => cred.uid), [0, 1000, 1000]);
 }
 
 console.log('runtime-home-env: ok');

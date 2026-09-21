@@ -42,9 +42,9 @@ let forwardedCred;
 const ownerResult = await _rpcWriteBatchStream(attachSupervisorOps({
   sqliteFs: {
     as(cred) {
-      forwardedCred = cred;
       return {
         async writeStream(_stream, options) {
+          forwardedCred = cred;
           forwardedOwner = options.mutationOwner;
           return {
             ok: true,

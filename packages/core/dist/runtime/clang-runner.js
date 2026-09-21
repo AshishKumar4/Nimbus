@@ -25,14 +25,14 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import { CRED_KERNEL, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { withHostFilesystem } from '../shell/execution-fs.js';
+import { CRED_KERNEL, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
-/** Build the runner factory. Closes over the facet host + vfs. */
+/** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
-    const runtimeVfs = deps.vfs.as(CRED_KERNEL);
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
         const findFile = (rel) => {
             const entry = manifest.files.find((f) => f.path === rel);
@@ -42,8 +42,13 @@ export function makeClangRunnerFactory(deps) {
         const lldVfsPath = findFile('bin/wasm-ld');
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
         let runtimePromise = null;
-        return async function clangBinHandler(ctx) {
-            const vfs = deps.vfs.as(requireVfsCred(ctx.cred, binName));
+        // Installed toolchain blobs are supervisor-owned artifacts, so they are read
+        // through a kernel host lease that lives exactly as long as one invocation.
+        return function clangBinHandler(ctx) {
+            return withHostFilesystem(deps.filesystem, CRED_KERNEL, (runtimeVfs) => compileOrLink(ctx, runtimeVfs));
+        };
+        async function compileOrLink(ctx, runtimeVfs) {
+            const vfs = ctx.vfs;
             const argv = ctx.args || [];
             const cwd = ctx.cwd || '/home/user';
             // Fast paths — no wasm boot.
@@ -61,7 +66,7 @@ export function makeClangRunnerFactory(deps) {
             }
             const isLinker = binKind === 'linker' || binName === 'wasm-ld';
             // Resolve bundle paths.
-            if (!sysrootVfsPath || !runtimeVfs.exists(sysrootVfsPath)) {
+            if (!sysrootVfsPath || !(await runtimeVfs.exists(sysrootVfsPath))) {
                 ctx.stderr.write(`${binName}: sysroot.tar missing from install\n`);
                 return 127;
             }
@@ -91,11 +96,11 @@ export function makeClangRunnerFactory(deps) {
             for (const input of parsed.inputPaths) {
                 const inputAbs = resolveVfsPath(input, cwd);
                 try {
-                    if (!vfs.exists(inputAbs)) {
+                    if (!(await vfs.exists(inputAbs))) {
                         ctx.stderr.write(`${binName}: ${input}: No such file or directory\n`);
                         return 1;
                     }
-                    userSourceFiles[input] = vfs.readFile(inputAbs);
+                    userSourceFiles[input] = (await vfs.readFile(inputAbs));
                 }
                 catch (error) {
                     ctx.stderr.write(`${binName}: ${input}: ${errorMessage(error)}\n`);
@@ -141,7 +146,7 @@ export function makeClangRunnerFactory(deps) {
             // Size-capped (4 MiB, 200 files, depth 8) so accidental
             // huge-projects don't OOM the facet. Real C-tutorial projects
             // are vastly under the cap.
-            const userIncludeBundle = collectIncludeBundle(vfs, cwd.replace(/^\/+/, ''));
+            const userIncludeBundle = (await collectIncludeBundle(vfs, cwd.replace(/^\/+/, '')));
             // ── COMPILE PHASE ────────────────────────────────────────────
             // Reuse the warm clang pool and ship only the C-include
             // subset plus user source/header files for this invocation.
@@ -224,10 +229,10 @@ export function makeClangRunnerFactory(deps) {
                 for (const objPath of objPaths) {
                     const objVfsPath = resolveVfsPath(objPath, cwd);
                     const parent = objVfsPath.replace(/\/[^/]+$/, '');
-                    if (parent && parent !== objVfsPath && !vfs.exists(parent)) {
-                        vfs.mkdir(parent, { recursive: true });
+                    if (parent && parent !== objVfsPath && !(await vfs.exists(parent))) {
+                        (await vfs.mkdir(parent, { recursive: true }));
                     }
-                    vfs.writeFile(objVfsPath, objBytesMap[objPath]);
+                    (await vfs.writeFile(objVfsPath, objBytesMap[objPath]));
                 }
                 // Honor user's -o for single-input compile-only: rename the one
                 // .o to the requested output if -o was passed.
@@ -236,8 +241,8 @@ export function makeClangRunnerFactory(deps) {
                     const toVfs = resolveVfsPath(parsed.outputPath, cwd);
                     if (fromVfs !== toVfs) {
                         try {
-                            vfs.writeFile(toVfs, vfs.readFile(fromVfs));
-                            vfs.unlink(fromVfs);
+                            (await vfs.writeFile(toVfs, (await vfs.readFile(fromVfs))));
+                            (await vfs.unlink(fromVfs));
                         }
                         catch { /* best-effort */ }
                     }
@@ -310,11 +315,11 @@ export function makeClangRunnerFactory(deps) {
             const outVfsPath = resolveVfsPath(parsed.outputPath, cwd);
             try {
                 const parent = outVfsPath.replace(/\/[^/]+$/, '');
-                if (parent && parent !== outVfsPath && !vfs.exists(parent)) {
-                    vfs.mkdir(parent, { recursive: true });
+                if (parent && parent !== outVfsPath && !(await vfs.exists(parent))) {
+                    (await vfs.mkdir(parent, { recursive: true }));
                 }
-                vfs.writeFile(outVfsPath, wasmBytes);
-                vfs.chmod(outVfsPath, 0o755);
+                (await vfs.writeFile(outVfsPath, wasmBytes));
+                (await vfs.chmod(outVfsPath, 0o755));
             }
             catch (error) {
                 ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
@@ -323,7 +328,7 @@ export function makeClangRunnerFactory(deps) {
             // Real linkers chmod their output executable (+x even after a
             // prior chmod -x) — so `./a.out` runs with no manual chmod.
             return 0;
-        };
+        }
     };
 }
 /** Recognized C / C++ source extensions for input classification. */
@@ -484,13 +489,13 @@ function isHeaderExt(name) {
  *   - MAX_DEPTH = 8 (deep enough for typical "src/", "include/", "lib/" trees).
  *   - skipDirs prunes obvious non-source directories.
  */
-function collectIncludeBundle(vfs, rootVfsPath, opts = {}) {
+async function collectIncludeBundle(vfs, rootVfsPath, opts = {}) {
     const extraExts = opts.extraExts ?? null;
     const MAX_FILES = opts.maxFiles ?? 200;
     const MAX_BYTES = opts.maxBytes ?? 4 * 1024 * 1024;
     const MAX_DEPTH = opts.maxDepth ?? 8;
     const out = {};
-    if (!vfs.exists(rootVfsPath) || !vfs.isDirectory(rootVfsPath))
+    if (!await vfs.exists(rootVfsPath) || !await vfs.isDirectory(rootVfsPath))
         return out;
     // Directories pruned regardless of depth — these never contain user
     // headers and would balloon the payload if traversed.
@@ -508,7 +513,7 @@ function collectIncludeBundle(vfs, rootVfsPath, opts = {}) {
             continue;
         let entries;
         try {
-            entries = vfs.readdir(dir);
+            entries = await vfs.readdir(dir);
         }
         catch {
             continue;
@@ -528,7 +533,7 @@ function collectIncludeBundle(vfs, rootVfsPath, opts = {}) {
                 continue;
             let bytes;
             try {
-                bytes = vfs.readFile(childAbs);
+                bytes = await vfs.readFile(childAbs);
             }
             catch {
                 continue;
@@ -673,9 +678,9 @@ async function createClangFacetRuntime(facets, args) {
     // and pin ~32 MiB of clang chunks resident in the DO heap for the whole
     // session — a primary cause of supervisor-DO memory pressure that tips
     // heavy sessions into an OOM reset mid-compile.
-    const clangBytes = args.vfs.readFileUncached(args.clangVfsPath);
-    const lldBytes = args.vfs.readFileUncached(args.lldVfsPath);
-    const sysroot = parseUstar(args.vfs.readFileUncached(args.sysrootVfsPath));
+    const clangBytes = (await args.vfs.readFileUncached(args.clangVfsPath));
+    const lldBytes = (await args.vfs.readFileUncached(args.lldVfsPath));
+    const sysroot = parseUstar((await args.vfs.readFileUncached(args.sysrootVfsPath)));
     const makeTarget = (primaryName, primaryBytes, sysrootFiles) => ({
         primaryName,
         sysrootFiles,

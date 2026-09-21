@@ -1,8 +1,8 @@
 import type { Command, CommandOutputStream } from '../types.js';
 type SedVfs = {
-    stat(path: string): object;
-    readFileString(path: string): string;
-    writeFile(path: string, content: string | Uint8Array): void;
+    stat(path: string): object | Promise<object>;
+    readFileString(path: string): string | Promise<string>;
+    writeFile(path: string, content: string | Uint8Array): void | Promise<void>;
 };
 type SedInput = {
     readAll(): Promise<string>;

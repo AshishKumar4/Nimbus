@@ -46,6 +46,8 @@ export class VFS {
      */
     mounts = [];
     emitter = new EventEmitter();
+    identities = new Map();
+    inodeSequence = { next: 1 };
     onChange;
     /** Content store for chunked large files. Optional -- without it all data stays inline. */
     contentStore;
@@ -434,6 +436,79 @@ export class VFS {
         if ((granted & (mode & 0o7)) !== (mode & 0o7)) {
             throw new Error(`EACCES: '${path}': permission denied`);
         }
+    }
+    inodeIdentity(path) {
+        const provider = this.getProvider(path);
+        const owner = provider?.entry ?? this.resolveNode(path);
+        const key = provider?.subpath ?? '';
+        let paths = this.identities.get(owner);
+        if (!paths) {
+            paths = new Map();
+            this.identities.set(owner, paths);
+        }
+        let ino = paths.get(key);
+        if (ino === undefined) {
+            ino = this.inodeSequence.next++;
+            paths.set(key, ino);
+        }
+        return ino;
+    }
+    lstat(path) {
+        const provider = this.getProvider(path);
+        return provider?.provider.lstat ? provider.provider.lstat(provider.subpath) : this.stat(path);
+    }
+    readlink(path) {
+        const provider = this.getProvider(path);
+        if (provider?.provider.readlink)
+            return provider.provider.readlink(provider.subpath);
+        throw new VFSError(ErrorCode.EINVAL, `not a symbolic link: ${path}`);
+    }
+    symlink(target, path) {
+        const provider = this.getProvider(path);
+        if (provider && 'symlink' in provider.provider && typeof provider.provider.symlink === 'function') {
+            provider.provider.symlink(target, provider.subpath);
+            return;
+        }
+        throw new VFSError(ErrorCode.ENOTSUP, `filesystem cannot create symbolic links: ${path}`);
+    }
+    realpath(path) {
+        const pending = (path.startsWith('/') ? path : '/' + path).split('/');
+        const resolved = [];
+        let links = 0;
+        while (pending.length) {
+            const part = pending.shift();
+            if (!part || part === '.')
+                continue;
+            if (part === '..') {
+                resolved.pop();
+                continue;
+            }
+            const candidate = '/' + [...resolved, part].join('/');
+            if (this.lstat(candidate).type === 'symlink') {
+                if (++links > 40)
+                    throw new VFSError(ErrorCode.EINVAL, `symbolic link loop: ${path}`);
+                const target = this.readlink(candidate);
+                if (target.startsWith('/'))
+                    resolved.length = 0;
+                pending.unshift(...target.split('/'));
+            }
+            else
+                resolved.push(part);
+        }
+        return '/' + resolved.join('/');
+    }
+    utimes(path, atimeMs, mtimeMs) {
+        const provider = this.getProvider(path);
+        if (provider) {
+            if ('utimes' in provider.provider && typeof provider.provider.utimes === 'function') {
+                provider.provider.utimes(provider.subpath, atimeMs, mtimeMs);
+                return;
+            }
+            throw new VFSError(ErrorCode.ENOTSUP, `filesystem cannot update timestamps: ${path}`);
+        }
+        const node = this.resolveNode(path);
+        node.mtime = mtimeMs;
+        this.notify({ type: 'modify', path: this.toAbsolute(path), fileType: node.type });
     }
     stat(path) {
         const vp = this.getProvider(path);

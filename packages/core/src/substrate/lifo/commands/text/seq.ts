@@ -4,8 +4,8 @@ const command: Command = async (ctx) => {
   const args = ctx.args;
 
   if (args.length === 0) {
-    ctx.stderr.write('Usage: seq [-s SEP] [FIRST [INCR]] LAST\n');
-    ctx.stderr.write('Print a sequence of numbers.\n');
+    await ctx.stderr.write('Usage: seq [-s SEP] [FIRST [INCR]] LAST\n');
+    await ctx.stderr.write('Print a sequence of numbers.\n');
     return 1;
   }
 
@@ -39,12 +39,12 @@ const command: Command = async (ctx) => {
   }
 
   if (isNaN(first) || isNaN(increment) || isNaN(last)) {
-    ctx.stderr.write('seq: invalid argument\n');
+    await ctx.stderr.write('seq: invalid argument\n');
     return 1;
   }
 
   if (increment === 0) {
-    ctx.stderr.write('seq: zero increment\n');
+    await ctx.stderr.write('seq: zero increment\n');
     return 1;
   }
 
@@ -64,9 +64,9 @@ const command: Command = async (ctx) => {
   if (results.length > 0) {
     if (equalWidth && isInt) {
       const maxLen = Math.max(...results.map(r => r.length));
-      ctx.stdout.write(results.map(r => r.padStart(maxLen, '0')).join(separator) + '\n');
+      await ctx.stdout.write(results.map(r => r.padStart(maxLen, '0')).join(separator) + '\n');
     } else {
-      ctx.stdout.write(results.join(separator) + '\n');
+      await ctx.stdout.write(results.join(separator) + '\n');
     }
   }
 

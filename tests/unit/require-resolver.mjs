@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   constructor(files = {}) {
     this.files = new Map(Object.entries(files));
     this.dirs = new Set();
@@ -61,7 +63,7 @@ const vfs = new FakeVfs({
   [`${nm}/@scope/pkg/dist/oauth.js`]: 'export const ok = true;',
 });
 
-const result = prefetchForRequire(vfs, "require('@scope/pkg/oauth');", '/home/user', '/home/user/app.js');
+const result = (await prefetchForRequire(vfs, "require('@scope/pkg/oauth');", '/home/user', '/home/user/app.js'));
 assert.equal(result.bundle[`${nm}/@scope/pkg/dist/oauth.js`], 'export const ok = true;');
 
 // A CLI entry that defers via a static-string dynamic import must have the
@@ -73,12 +75,12 @@ const dynVfs = new FakeVfs({
   'home/user/cli/dist/index.js': "import './sibling.js'; export function main() {}",
   'home/user/cli/dist/sibling.js': 'export const x = 1;',
 });
-const dynResult = prefetchForRequire(
+const dynResult = (await prefetchForRequire(
   dynVfs,
   "import('./dist/index.js').then(({main}) => main());",
   '/home/user/cli',
   '/home/user/cli/create-astro.mjs',
-);
+));
 assert.equal(
   dynResult.bundle['home/user/cli/dist/index.js'],
   "import './sibling.js'; export function main() {}",
@@ -100,7 +102,7 @@ const relVfs = new FakeVfs({
   [`${nm}/wsp/dist/ponyfill.js`]: 'module.exports = { ponyfill: true };',
   [`${nm}/wsp/ponyfill/package.json`]: JSON.stringify({ name: 'wsp-ponyfill', main: '../dist/ponyfill' }),
 });
-const relResult = prefetchForRequire(relVfs, "require('wsp/ponyfill');", '/home/user', '/home/user/app2.js');
+const relResult = (await prefetchForRequire(relVfs, "require('wsp/ponyfill');", '/home/user', '/home/user/app2.js'));
 assert.equal(
   relResult.bundle[`${nm}/wsp/dist/ponyfill.js`],
   'module.exports = { ponyfill: true };',

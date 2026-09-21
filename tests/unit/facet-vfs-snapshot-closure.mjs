@@ -18,6 +18,8 @@ import {
 } from '../../packages/platform/src/limits.ts';
 
 class FakeVfs {
+  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
+
   // The bundle is stamped with the cursor it was read at, so a stand-in
   // for the real VFS has to answer for one. A fake never mutates, so the
   // revision never moves.
@@ -227,7 +229,7 @@ assert.deepEqual(
   const requiredPath = `${globalModules}/required/index.js`;
   const bundle = { [requiredPath]: 'x'.repeat(VFS_BUNDLE_MAX_BYTES + 1) };
   const budget = { totalBytes: 0, fileCount: 0 };
-  greedyAddMainEntries(new FakeVfs(optionalFiles), cwd, bundle, budget);
+  (await greedyAddMainEntries(new FakeVfs(optionalFiles), cwd, bundle, budget));
 
   assert.equal(bundle[requiredPath].length, VFS_BUNDLE_MAX_BYTES + 1);
   assert.equal(

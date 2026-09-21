@@ -59,16 +59,12 @@ function formatEntry(entry: LsEntry, long: boolean): string {
   return displayName;
 }
 
-function listDirectory(
-  path: string, flags: Record<string, string | boolean>, ctx: import('../types.js').CommandContext,
-): LsEntry[] {
-  const entries = ctx.vfs.readdirStat(path);
-  const filtered = (flags.all as boolean)
-    ? entries
-    : entries.filter((e) => !e.name.startsWith('.'));
-  filtered.sort((a, b) => a.name.localeCompare(b.name));
-  return filtered;
-}
+async function listDirectory(path: string, flags: Record<string, string | boolean>, ctx: import('../types.js').CommandContext,): Promise<LsEntry[]> { const entries = (await ctx.vfs.readdirStat(path));
+const filtered = (flags.all as boolean)
+  ? entries
+  : entries.filter((e) => !e.name.startsWith('.'));
+filtered.sort((a, b) => a.name.localeCompare(b.name));
+return filtered; }
 
 const command: Command = async (ctx) => {
   const { flags, positional } = parseArgs(ctx.args, spec);
@@ -82,7 +78,7 @@ const command: Command = async (ctx) => {
   for (const target of targets) {
     const targetPath = resolve(ctx.cwd, target);
     try {
-      const stat = ctx.vfs.stat(targetPath);
+      const stat = (await ctx.vfs.stat(targetPath));
       if (stat.type === 'file') {
         fileEntries.push({
           name: target,
@@ -96,7 +92,7 @@ const command: Command = async (ctx) => {
       }
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`ls: ${e.message}\n`);
+        await ctx.stderr.write(`ls: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;
@@ -108,15 +104,15 @@ const command: Command = async (ctx) => {
   if (fileEntries.length > 0) {
     if (flags.long) {
       for (const entry of fileEntries) {
-        ctx.stdout.write(formatEntry(entry, true));
+        await ctx.stdout.write(formatEntry(entry, true));
       }
     } else if (flags.one) {
       for (const entry of fileEntries) {
-        ctx.stdout.write(formatEntry(entry, false) + '\n');
+        await ctx.stdout.write(formatEntry(entry, false) + '\n');
       }
     } else {
       const names = fileEntries.map((e) => formatEntry(e, false));
-      ctx.stdout.write(names.join('  ') + '\n');
+      await ctx.stdout.write(names.join('  ') + '\n');
     }
   }
 
@@ -127,30 +123,30 @@ const command: Command = async (ctx) => {
 
     // Print header if multiple targets
     if (dirTargets.length > 1 || fileEntries.length > 0) {
-      if (fileEntries.length > 0 || i > 0) ctx.stdout.write('\n');
-      ctx.stdout.write(`${target}:\n`);
+      if (fileEntries.length > 0 || i > 0) await ctx.stdout.write('\n');
+      await ctx.stdout.write(`${target}:\n`);
     }
 
     try {
-      const entries = listDirectory(targetPath, flags, ctx);
+      const entries = (await listDirectory(targetPath, flags, ctx));
 
       if (flags.long) {
         for (const entry of entries) {
-          ctx.stdout.write(formatEntry(entry, true));
+          await ctx.stdout.write(formatEntry(entry, true));
         }
       } else if (flags.one) {
         for (const entry of entries) {
-          ctx.stdout.write(formatEntry(entry, false) + '\n');
+          await ctx.stdout.write(formatEntry(entry, false) + '\n');
         }
       } else {
         const names = entries.map((e) => formatEntry(e, false));
         if (names.length > 0) {
-          ctx.stdout.write(names.join('  ') + '\n');
+          await ctx.stdout.write(names.join('  ') + '\n');
         }
       }
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`ls: ${e.message}\n`);
+        await ctx.stderr.write(`ls: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;

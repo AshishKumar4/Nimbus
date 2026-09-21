@@ -8,7 +8,7 @@
  *   - lifo.resolve()  – resolve a path relative to cwd
  */
 import type { Command } from '../commands/types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
 export interface LifoPackageManifest {
     commands: Record<string, string>;
 }
@@ -40,5 +40,5 @@ export interface LifoPackageJson {
 /**
  * Read a package.json and return the lifo manifest if present.
  */
-export declare function readLifoManifest(vfs: VFS, pkgDir: string): LifoPackageManifest | null;
+export declare function readLifoManifest(vfs: VFS, pkgDir: string): Promise<LifoPackageManifest | null>;
 //# sourceMappingURL=lifo-runtime.d.ts.map

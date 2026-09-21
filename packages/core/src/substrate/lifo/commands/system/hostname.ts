@@ -2,7 +2,7 @@ import type { Command } from '../types.js';
 
 const command: Command = async (ctx) => {
   const hostname = ctx.env.HOSTNAME || 'lifo';
-  ctx.stdout.write(hostname + '\n');
+  await ctx.stdout.write(hostname + '\n');
   return 0;
 };
 

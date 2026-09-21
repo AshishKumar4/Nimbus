@@ -6,7 +6,7 @@
  * fs shim's recursive rmdir.
  */
 
-import type { VFS } from '../kernel/vfs/index.js';
+import type { NodeFilesystem as VFS } from './filesystem.js';
 import { resolve } from './path.js';
 
 export interface RimrafOptions {

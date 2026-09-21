@@ -28,6 +28,7 @@ import {
   residentLoaderConfig,
 } from '../../packages/fabric/src/process-fabric.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 // ── writer: the store the coordinator materializes ─────────────────────────
 
@@ -60,7 +61,7 @@ const manager = new FacetManager(
 );
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(sessionVfs);
+manager.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
 const fs = sessionVfs.as(CRED_KERNEL);
 
 const storedImages = () => {

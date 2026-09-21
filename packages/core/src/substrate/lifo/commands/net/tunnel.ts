@@ -40,34 +40,34 @@ function createTunnelImpl(kernel?: Kernel): Command {
 
 		// Handle --help
 		if ('help' in options && options.help) {
-			ctx.stdout.write('Usage: tunnel [options]\n\n');
-			ctx.stdout.write('Expose Lifo HTTP servers through a tunnel\n\n');
-			ctx.stdout.write('Options:\n');
-			ctx.stdout.write('  --server <url>    Tunnel server URL (default: ws://localhost:3005)\n');
-			ctx.stdout.write('  --port, -p <num>  Default port (routes all requests to this port)\n');
-			ctx.stdout.write('  -v, --verbose     Verbose logging\n');
-			ctx.stdout.write('  -h, --help        Show this help\n\n');
-			ctx.stdout.write('Examples:\n');
-			ctx.stdout.write('  tunnel --port 5173                    Route all traffic to port 5173\n');
-			ctx.stdout.write('  tunnel --server=ws://example.com:3005 Custom tunnel server\n\n');
-			ctx.stdout.write('Without --port, uses path-based routing:\n');
-			ctx.stdout.write('  http://localhost:3005/8080/ → Port 8080 inside lifo\n');
-			ctx.stdout.write('  http://localhost:3005/3000/api/users → Port 3000, path /api/users\n\n');
-			ctx.stdout.write('With --port 5173:\n');
-			ctx.stdout.write('  http://localhost:3005/ → Port 5173, path /\n');
-			ctx.stdout.write('  http://localhost:3005/src/main.ts → Port 5173, path /src/main.ts\n');
+			await ctx.stdout.write('Usage: tunnel [options]\n\n');
+			await ctx.stdout.write('Expose Lifo HTTP servers through a tunnel\n\n');
+			await ctx.stdout.write('Options:\n');
+			await ctx.stdout.write('  --server <url>    Tunnel server URL (default: ws://localhost:3005)\n');
+			await ctx.stdout.write('  --port, -p <num>  Default port (routes all requests to this port)\n');
+			await ctx.stdout.write('  -v, --verbose     Verbose logging\n');
+			await ctx.stdout.write('  -h, --help        Show this help\n\n');
+			await ctx.stdout.write('Examples:\n');
+			await ctx.stdout.write('  tunnel --port 5173                    Route all traffic to port 5173\n');
+			await ctx.stdout.write('  tunnel --server=ws://example.com:3005 Custom tunnel server\n\n');
+			await ctx.stdout.write('Without --port, uses path-based routing:\n');
+			await ctx.stdout.write('  http://localhost:3005/8080/ → Port 8080 inside lifo\n');
+			await ctx.stdout.write('  http://localhost:3005/3000/api/users → Port 3000, path /api/users\n\n');
+			await ctx.stdout.write('With --port 5173:\n');
+			await ctx.stdout.write('  http://localhost:3005/ → Port 5173, path /\n');
+			await ctx.stdout.write('  http://localhost:3005/src/main.ts → Port 5173, path /src/main.ts\n');
 			return 0;
 		}
 
 		if (!kernel?.portRegistry) {
-			ctx.stderr.write('tunnel: portRegistry not available\n');
+			await ctx.stderr.write('tunnel: portRegistry not available\n');
 			return 1;
 		}
 
 		const { server, port: defaultPort, verbose } = options as TunnelOptions;
 
 		if (typeof WebSocket === 'undefined') {
-			ctx.stderr.write('tunnel: WebSocket is not available in this runtime\n');
+			await ctx.stderr.write('tunnel: WebSocket is not available in this runtime\n');
 			return 1;
 		}
 		const WebSocketConstructor = WebSocket;
@@ -75,29 +75,29 @@ function createTunnelImpl(kernel?: Kernel): Command {
 		let ws: WebSocket | null = null;
 		let reconnecting = false;
 
-		function log(message: string) {
+		async function log(message: string) {
 			if (verbose) {
-				ctx.stdout.write(`[tunnel] ${message}\n`);
+				await ctx.stdout.write(`[tunnel] ${message}\n`);
 			}
 		}
 
-		function logActivePorts() {
+		async function logActivePorts() {
 			const ports = Array.from(kernel!.portRegistry.keys()).sort((a, b) => a - b);
 
 			if (ports.length === 0) {
-				ctx.stdout.write('No active servers to tunnel\n');
+				await ctx.stdout.write('No active servers to tunnel\n');
 				return;
 			}
 
-			ctx.stdout.write(`\nTunneling ${ports.length} server(s):\n`);
+			await ctx.stdout.write(`\nTunneling ${ports.length} server(s):\n`);
 			for (const port of ports) {
 				if (defaultPort) {
-					ctx.stdout.write(`  - Port ${port}: http://localhost:3005/\n`);
+					await ctx.stdout.write(`  - Port ${port}: http://localhost:3005/\n`);
 				} else {
-					ctx.stdout.write(`  - Port ${port}: http://localhost:3005/${port}/\n`);
+					await ctx.stdout.write(`  - Port ${port}: http://localhost:3005/${port}/\n`);
 				}
 			}
-			ctx.stdout.write('\n');
+			await ctx.stdout.write('\n');
 		}
 
 		function sendError(requestId: string, statusCode: number, message: string) {
@@ -179,7 +179,7 @@ function createTunnelImpl(kernel?: Kernel): Command {
 								return;
 							}
 							if (result.type === 'timeout') {
-								ctx.stderr.write(`[tunnel] TIMEOUT waiting for response: ${method} ${actualPath}\n`);
+								await ctx.stderr.write(`[tunnel] TIMEOUT waiting for response: ${method} ${actualPath}\n`);
 								sendError(requestId, 504, `Gateway timeout: server did not respond for ${actualPath}`);
 								return;
 							}
@@ -198,45 +198,45 @@ function createTunnelImpl(kernel?: Kernel): Command {
 						log(`Sent response: ${vRes.statusCode}`);
 					} catch (error) {
 						const errorMessage = error instanceof Error ? error.message : String(error);
-						ctx.stderr.write(`[tunnel] ERROR for ${method} ${actualPath}: ${errorMessage}\n`);
+						await ctx.stderr.write(`[tunnel] ERROR for ${method} ${actualPath}: ${errorMessage}\n`);
 						sendError(requestId, 500, `Internal server error: ${errorMessage}`);
 					}
 				}
 			} catch (error) {
-				ctx.stderr.write(`tunnel: Error processing message: ${error}\n`);
+				await ctx.stderr.write(`tunnel: Error processing message: ${error}\n`);
 			}
 		}
 
-		function connect() {
+		async function connect() {
 			if (reconnecting || ctx.signal.aborted) return;
 
-			ctx.stdout.write(`Connecting to tunnel server at ${server}...\n`);
+			await ctx.stdout.write(`Connecting to tunnel server at ${server}...\n`);
 			ws = new WebSocketConstructor(server);
 
-			ws.addEventListener('open', () => {
+			ws.addEventListener('open', async () => {
 				reconnecting = false;
-				ctx.stdout.write(`Connected to tunnel server\n`);
+				await ctx.stdout.write(`Connected to tunnel server\n`);
 				const httpUrl = server.replace('ws://', 'http://').replace('wss://', 'https://');
 				if (defaultPort) {
-					ctx.stdout.write(`Tunnel ready — all traffic → port ${defaultPort}\n`);
-					ctx.stdout.write(`  Open: ${httpUrl}\n`);
+					await ctx.stdout.write(`Tunnel ready — all traffic → port ${defaultPort}\n`);
+					await ctx.stdout.write(`  Open: ${httpUrl}\n`);
 				} else {
-					ctx.stdout.write(`Tunnel ready at ${httpUrl}\n`);
+					await ctx.stdout.write(`Tunnel ready at ${httpUrl}\n`);
 				}
 				logActivePorts();
 			});
 
-			ws.addEventListener('message', (event) => {
+			ws.addEventListener('message', async (event) => {
 				const data = typeof event.data === 'string'
 					? Buffer.from(event.data)
 					: event.data;
-				handleMessage(data);
+				(await handleMessage(data));
 			});
 
-			ws.addEventListener('close', () => {
+			ws.addEventListener('close', async () => {
 				if (!ctx.signal.aborted) {
-					ctx.stdout.write('Disconnected from tunnel server\n');
-					ctx.stdout.write('Reconnecting in 5 seconds...\n');
+					await ctx.stdout.write('Disconnected from tunnel server\n');
+					await ctx.stdout.write('Reconnecting in 5 seconds...\n');
 					reconnecting = true;
 					setTimeout(() => {
 						reconnecting = false;
@@ -245,9 +245,9 @@ function createTunnelImpl(kernel?: Kernel): Command {
 				}
 			});
 
-			ws.addEventListener('error', (event) => {
+			ws.addEventListener('error', async (event) => {
 				const errorMessage = event instanceof ErrorEvent ? event.message : 'Connection error';
-				ctx.stderr.write(`tunnel: WebSocket error: ${errorMessage}\n`);
+				await ctx.stderr.write(`tunnel: WebSocket error: ${errorMessage}\n`);
 			});
 		}
 
@@ -255,7 +255,7 @@ function createTunnelImpl(kernel?: Kernel): Command {
 		connect();
 
 			await waitForAbort(ctx.signal);
-			ctx.stdout.write('\nShutting down tunnel...\n');
+			await ctx.stdout.write('\nShutting down tunnel...\n');
 			closeWebSocket(ws);
 
 		return 0;

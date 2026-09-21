@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createFs } from './fs.js';
 import pathModule from './path.js';
@@ -25,7 +25,7 @@ import { createEsbuild } from './esbuild.js';
 import { assertEqualHolds } from './loose-equality.js';
 
 export interface NodeContext {
-  vfs: VFS;
+  filesystem: () => NodeFilesystem;
   cwd: string;
   env: Record<string, string>;
   stdout: CommandOutputStream;
@@ -41,8 +41,8 @@ export interface NodeContext {
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
   const map: Record<string, () => unknown> = {
-    fs: () => createFs(ctx.vfs, ctx.cwd),
-    'fs/promises': () => createFs(ctx.vfs, ctx.cwd).promises,
+    fs: () => createFs(ctx.filesystem(), ctx.cwd),
+    'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd).promises,
     path: () => pathModule,
     os: () => createOs(ctx.env),
     process: () => createProcess({
@@ -94,7 +94,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     readline: () => readlineModule,
     'readline/promises': () => readlineModule.promises,
     constants: () => {
-      const fs = createFs(ctx.vfs, ctx.cwd);
+      const fs = createFs(ctx.filesystem(), ctx.cwd);
       const os = createOs(ctx.env);
       return { ...os.constants, ...fs.constants };
     },
@@ -292,7 +292,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
   map.module = () => createModuleShim(map);
 
   // npm package shims
-  map.rimraf = () => createRimraf(ctx.vfs, ctx.cwd);
+  map.rimraf = () => createRimraf(ctx.filesystem(), ctx.cwd);
   map.esbuild = () => createEsbuild();
 
   return map;

@@ -32,6 +32,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 /** The file nothing references, and that the bundle cannot carry. */
 const UNTOUCHED = '/opt/appdata/locale/deep/never-required.json';
@@ -166,7 +167,7 @@ const env = {
 
 const ctx = createFacetCtx(world, 'first-sync-read-session');
 const manager = new FacetManager(ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
-manager.setVfs(sessionVfs);
+manager.setVfs(sessionVfs, new SqliteFilesystemAuthority(sessionVfs));
 delete globalThis.__portRegistry;
 
 /**

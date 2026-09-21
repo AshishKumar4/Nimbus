@@ -43,7 +43,7 @@ export function createProgrammaticShell(self, pid, state) {
     const parent = self.shell;
     if (!parent)
         throw new Error('Nimbus shell did not initialize');
-    const shell = new Shell(new HeadlessTerminal(), parent.getVfs(), parent.getRegistry(), { ...parent.getEnv(), ...state.env, $: String(pid) }, parent.getProcessRegistry(), {
+    const shell = new Shell(new HeadlessTerminal(), parent.filesystem, parent.getRegistry(), { ...parent.getEnv(), ...state.env, $: String(pid) }, parent.getProcessRegistry(), {
         pid,
         get cred() { return self.processes.cred(pid); },
         setUmask: (mask) => self.processes.setUmask(pid, mask),
@@ -436,7 +436,7 @@ export async function rpcEnsureRuntimes(self, specs, options = {}) {
 export async function rpcListRuntimes(self) {
     await ensureProgrammaticReady(self);
     return {
-        installed: self.runtimeManager.list(),
+        installed: (await self.runtimeManager.list()),
         available: await self.runtimeManager.available(),
     };
 }

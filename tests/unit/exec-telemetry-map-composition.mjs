@@ -25,6 +25,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readExecTelemetry, resetExecTelemetry } from '../../packages/worker/src/facets/exec-telemetry.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 process.env.NIMBUS_DIAG_EXEC = '1';
 
@@ -64,7 +65,7 @@ const manager = new FacetManager(
 );
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs);
+manager.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
 
 // A project with a dependency and a sibling tree, so all three parts are
 // non-empty: the bundle carries the required module, the manifest enumerates

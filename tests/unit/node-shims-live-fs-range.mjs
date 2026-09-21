@@ -83,7 +83,7 @@ assert.equal((await fsp.stat('/home/user/live-link')).isFile(), true);
 const liveLink = await fsp.lstat('/home/user/live-link');
 assert.equal(liveLink.isSymbolicLink(), true);
 assert.equal(liveLink.mode, 0o120777);
-await assert.rejects(bridge.symlink('live.bin', '/home/user/live.bin'), /EEXIST/);
+await assert.rejects(async () => bridge.symlink('live.bin', '/home/user/live.bin'), /EEXIST/);
 assert.equal(new TextDecoder().decode(vfs.readFile('home/user/live.bin')), '0123456789abcdef');
 
 vfs.mkdir('home/user/legacy-over-directory');

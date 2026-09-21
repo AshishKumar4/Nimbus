@@ -26,7 +26,7 @@ import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
 import type { CommandResult, RunOptions, SandboxFs } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
+import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -122,7 +122,9 @@ export interface NimbusWorkspaceOptions {
     readonly ctxExports?: CtxExports;
     /** The process table that allocated supervisor-binding pids. */
     readonly processes?: SessionProcessSupervisor;
-    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void;
+    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+    readonly filesystemNamespace?: string;
+    readonly filesystem?: (defaultAuthority: NimbusFilesystemAuthority) => NimbusFilesystemAuthority;
     /** Host operations, including overrides for host-specific accounting. */
     readonly supervisorOps?: Readonly<Record<string, SupervisorOpHandler>>;
     /**
@@ -152,6 +154,8 @@ export interface NimbusWorkspaceOptions {
 export declare class NimbusWorkspace {
     private readonly sql;
     private readonly supervisorOps;
+    readonly filesystem: NimbusFilesystemAuthority;
+    private readonly runtimeLease;
     /**
      * Credentialed and mount-aware. Acts as the session user, never as the
      * kernel: a pid-less caller must not gain more authority than the shell it
@@ -181,6 +185,7 @@ export declare class NimbusWorkspace {
     private readonly commands;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
+    close(): Promise<void>;
     exec(command: string, options?: RunOptions): Promise<CommandResult>;
     /** The hosting object forwards its supervisorOp RPC to this method. */
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;

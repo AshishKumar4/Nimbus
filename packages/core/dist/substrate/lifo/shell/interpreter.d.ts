@@ -1,5 +1,5 @@
 import type { ScriptNode } from './types.js';
-import type { VFS } from '../kernel/vfs/index.js';
+import { ExecutionFs, type ShellFilesystem } from '../../../shell/execution-fs.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
@@ -38,7 +38,7 @@ export interface TrapTable {
     entries(): IterableIterator<[string, string]>;
 }
 export interface BuiltinExecutionContext {
-    vfs: VFS;
+    vfs: ExecutionFs;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
     stdin?: CommandInputStream;
@@ -84,7 +84,7 @@ type ExecutionIo = {
         setUmask(mask: number): void;
     };
     runAs?: CommandRunAsHost;
-    vfs?: VFS;
+    vfs?: ExecutionFs;
 };
 export type TerminalFdState = {
     stdin?: boolean;
@@ -104,7 +104,8 @@ export interface InterpreterConfig {
     arrays: Map<string, (string | undefined)[]>;
     getCwd: () => string;
     setCwd: (cwd: string) => void;
-    vfs: VFS;
+    vfs: ExecutionFs;
+    filesystem: ShellFilesystem;
     registry: CommandRegistry;
     builtins: Map<string, BuiltinFn>;
     jobTable: JobTable;
@@ -131,6 +132,9 @@ export declare class Interpreter {
     private persistentInputFds;
     private persistentTerminalOutputFds;
     private persistentTerminalInputFds;
+    /** Bridge handles held open past the `exec` that opened them, by descriptor. */
+    private persistentOutputHandles;
+    private persistentInputHandles;
     private errexitSuppressionDepth;
     private exitTrapDepth;
     /** One frame per running function call, holding the bindings `local` shadowed. */
@@ -211,6 +215,14 @@ export declare class Interpreter {
     private executeWithRedirections;
     private applyRedirections;
     private persistFdState;
+    /**
+     * `exec N>file` keeps a descriptor past the command that opened it, so its
+     * bridge handle outlives the per-command flush and nothing there may close
+     * it. The close travels with the descriptor instead and runs when that
+     * descriptor is closed (`exec N>&-`) or repointed at another target.
+     */
+    private repointPersistentHandle;
+    private trackedClose;
     private setOutputFd;
     private setInputFd;
     private dupOutputFd;

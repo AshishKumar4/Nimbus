@@ -14,7 +14,7 @@ import realZlib from 'node:zlib';
 import { createModuleMap } from '../../packages/core/src/substrate/lifo/node-compat/index.ts';
 
 const moduleMap = createModuleMap({
-  vfs: null,
+  filesystem: () => null,
   cwd: '/',
   env: {},
   stdout: { write() {} },

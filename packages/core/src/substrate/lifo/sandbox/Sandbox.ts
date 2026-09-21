@@ -171,7 +171,7 @@ export class Sandbox {
 
 		// 11. Build the Sandbox
 		const getCwd = () => shell.getCwd();
-		const sandboxFs = new SandboxFsImpl(kernel.vfs, getCwd);
+		const sandboxFs = new SandboxFsImpl(shell.getVfs(), getCwd);
 		const sandboxCommands = new SandboxCommandsImpl(shell, registry);
 
 		const sandbox = new Sandbox(kernel, shell, sandboxCommands, sandboxFs, env);

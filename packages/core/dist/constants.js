@@ -181,6 +181,13 @@ export const PREFETCH_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 // where no scanner matched the literal, is the case that gives up ground —
 // it now raises ENOENT instead of costing the session.
 export const CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+/**
+ * Largest regular file a WASI guest holds resident: a read-only open at or
+ * under this size is answered from the facet's own copy of the content (one
+ * stat per open, one read per revision), a larger one is windowed through
+ * the supervisor. CPython's stdlib archive (3.7 MiB) and busybox sit under it.
+ */
+export const WASI_RESIDENT_FILE_CAP_BYTES = 8 * 1024 * 1024;
 // ── npm Constants ───────────────────────────────────────────────────────
 // The pre-bundle admission envelope (PRE_BUNDLE_SLICE_CAP_BYTES,
 // PRE_BUNDLE_CONCURRENCY) is a measured platform envelope — see

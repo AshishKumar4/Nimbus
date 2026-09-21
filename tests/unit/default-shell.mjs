@@ -47,19 +47,19 @@ function commandContext(vfs, args = []) {
   vfs.mkdir('/home/user/.config', { recursive: true });
   assert.equal(defaultShellPath('/home/user'), '/home/user/.config/nimbus/shell');
   assert.equal(vfs.exists('/home/user/.config/nimbus'), false);
-  assert.equal(readDefaultShell(vfs, '/home/user'), 'lifo');
+  assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
 
   const chsh = makeChshCommand({ isBashInstalled: () => false });
   const missing = commandContext(vfs, ['-s', 'bash']);
   assert.equal(await chsh(missing), 1);
   assert.match(missing.stderrOutput.text, /nimbus install bash/);
-  assert.equal(readDefaultShell(vfs, '/home/user'), 'lifo');
+  assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
 
   const installedChsh = makeChshCommand({ isBashInstalled: () => true });
   const setBash = commandContext(vfs, ['-s', 'bash']);
   assert.equal(await installedChsh(setBash), 0);
   assert.equal(vfs.exists('/home/user/.config/nimbus'), true);
-  assert.equal(readDefaultShell(vfs, '/home/user'), 'bash');
+  assert.equal((await readDefaultShell(vfs, '/home/user')), 'bash');
   assert.equal(vfs.readFileString(defaultShellPath('/home/user')), 'bash\n');
 
   const current = commandContext(vfs);
@@ -68,11 +68,11 @@ function commandContext(vfs, args = []) {
 
   const setSh = commandContext(vfs, ['-s', 'sh']);
   assert.equal(await installedChsh(setSh), 0);
-  assert.equal(readDefaultShell(vfs, '/home/user'), 'lifo');
+  assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
   assert.equal(vfs.readFileString(defaultShellPath('/home/user')), 'lifo\n');
 
   vfs.writeFile(defaultShellPath('/home/user'), 'invalid\n');
-  assert.equal(readDefaultShell(vfs, '/home/user'), 'lifo');
+  assert.equal((await readDefaultShell(vfs, '/home/user')), 'lifo');
 }
 
 async function startShell(defaultShell) {

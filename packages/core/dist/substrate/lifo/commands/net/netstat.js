@@ -88,7 +88,7 @@ export function createNetstatCommand(kernel) {
                 output += '(No connections)\n';
             }
         }
-        ctx.stdout.write(output);
+        await ctx.stdout.write(output);
         return 0;
     };
 }

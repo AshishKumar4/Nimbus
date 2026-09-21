@@ -19,7 +19,7 @@
  * `install` reinstalls rather than answering a stale memo, and a failed
  * install is forgotten so the next attempt retries.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import { type MinShellRegistry, type RunnerFactory, type RuntimeSummary } from './installed-runtimes.js';
 import { type RuntimeAvailability, type RuntimePackage, type RuntimeSource, type SeededRuntime } from './runtime-package.js';
 export interface RuntimeManagerOptions {
@@ -73,6 +73,17 @@ export declare class RuntimeManager {
         onProgress?: (line: string) => void;
     }): Promise<InstalledBins>;
     /**
+     * The package `spec` names that this workspace can run. A source is shared
+     * by every deployment that reads it, and a runtime rebuilt against a new
+     * runner contract publishes under a new version with a new runner key, so
+     * the version a source offers by default is not always one this build can
+     * bind. A bare name then takes the most recently published version whose
+     * runners are all registered; an explicit `name@version` is a deliberate
+     * request and is refused rather than substituted.
+     */
+    private resolveRunnable;
+    private missingRunners;
+    /**
      * Install a package the caller already holds — the workspace's eager seed
      * and a host's direct provisioning share this path with `install`. No
      * runner check: seeding a filesystem that has nothing to run the payload
@@ -105,7 +116,7 @@ export declare class RuntimeManager {
      *  whether an unregistered command name could be satisfied before
      *  registering a stub for it — catalog reads only, no payload write. */
     resolvable(spec: string): Promise<RuntimePackage | null>;
-    list(): RuntimeSummary[];
+    list(): Promise<RuntimeSummary[]>;
     available(): Promise<RuntimeAvailability[]>;
 }
 export {};

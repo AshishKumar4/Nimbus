@@ -24,11 +24,11 @@
  * not text.
  */
 export interface ByteSink {
-    write(text: string): void;
-    writeBytes?(bytes: Uint8Array): void;
+    write(text: string): void | Promise<void>;
+    writeBytes?(bytes: Uint8Array): void | Promise<void>;
 }
 /** Reads at most `length` bytes at `offset`; an empty result means EOF. */
-export type RangeReader = (offset: number, length: number) => Uint8Array;
+export type RangeReader = (offset: number, length: number) => Uint8Array | Promise<Uint8Array>;
 /** Bytes moved per read. Comfortably under any RPC payload ceiling. */
 export declare const STREAM_CHUNK_BYTES: number;
 /**
@@ -42,13 +42,13 @@ export declare class SinkWriter {
     private written;
     constructor(sink: ByteSink);
     get bytesWritten(): number;
-    write(bytes: Uint8Array): void;
-    end(): void;
+    write(bytes: Uint8Array): Promise<void>;
+    end(): Promise<void>;
 }
 /**
  * Copies bytes from `read` into `sink` in {@link STREAM_CHUNK_BYTES} chunks.
  *
- * Stops at `length` bytes when given one, otherwise at the first short read
+ * Stops at `length` bytes when given one, otherwise at the first empty read
  * (EOF). Returns the number of bytes copied. Does not call `sink.end()` —
  * callers that write more than one range share a single writer.
  */
@@ -56,5 +56,5 @@ export declare function streamRange(read: RangeReader, writer: SinkWriter, optio
     offset?: number;
     length?: number;
     signal?: AbortSignal;
-}): number;
+}): Promise<number>;
 //# sourceMappingURL=byte-stream.d.ts.map

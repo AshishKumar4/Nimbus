@@ -15,14 +15,14 @@ const command = async (ctx) => {
     while (i < ctx.args.length) {
         const arg = ctx.args[i];
         if (arg === '--help') {
-            ctx.stdout.write('Usage: tar [-c|-x|-t] [-z] [-v] [-f file] [-C dir] [files...]\n');
-            ctx.stdout.write('  -c   create archive\n');
-            ctx.stdout.write('  -x   extract archive\n');
-            ctx.stdout.write('  -t   list archive contents\n');
-            ctx.stdout.write('  -z   gzip compression\n');
-            ctx.stdout.write('  -v   verbose\n');
-            ctx.stdout.write('  -f   archive file\n');
-            ctx.stdout.write('  -C   change directory\n');
+            await ctx.stdout.write('Usage: tar [-c|-x|-t] [-z] [-v] [-f file] [-C dir] [files...]\n');
+            await ctx.stdout.write('  -c   create archive\n');
+            await ctx.stdout.write('  -x   extract archive\n');
+            await ctx.stdout.write('  -t   list archive contents\n');
+            await ctx.stdout.write('  -z   gzip compression\n');
+            await ctx.stdout.write('  -v   verbose\n');
+            await ctx.stdout.write('  -f   archive file\n');
+            await ctx.stdout.write('  -C   change directory\n');
             return 0;
         }
         if (arg.startsWith('-') && arg !== '-') {
@@ -57,7 +57,7 @@ const command = async (ctx) => {
                         break;
                     }
                     default:
-                        ctx.stderr.write(`tar: unknown option: -${chars[j]}\n`);
+                        await ctx.stderr.write(`tar: unknown option: -${chars[j]}\n`);
                         return 1;
                 }
             }
@@ -69,15 +69,15 @@ const command = async (ctx) => {
     }
     const modeCount = [create, extract, list].filter(Boolean).length;
     if (modeCount === 0) {
-        ctx.stderr.write('tar: must specify one of -c, -x, -t\n');
+        await ctx.stderr.write('tar: must specify one of -c, -x, -t\n');
         return 1;
     }
     if (modeCount > 1) {
-        ctx.stderr.write('tar: conflicting options\n');
+        await ctx.stderr.write('tar: conflicting options\n');
         return 1;
     }
     if (!archiveFile) {
-        ctx.stderr.write('tar: -f is required\n');
+        await ctx.stderr.write('tar: -f is required\n');
         return 1;
     }
     const archivePath = resolve(ctx.cwd, archiveFile);
@@ -85,23 +85,23 @@ const command = async (ctx) => {
     try {
         if (create) {
             if (files.length === 0) {
-                ctx.stderr.write('tar: no files to archive\n');
+                await ctx.stderr.write('tar: no files to archive\n');
                 return 1;
             }
-            const entries = collectFiles(ctx.vfs, targetDir, files);
+            const entries = (await collectFiles(ctx.vfs, targetDir, files));
             let data = createTar(entries);
             if (gzipFlag) {
                 data = await compressGzip(data);
             }
-            ctx.vfs.writeFile(archivePath, data);
+            (await ctx.vfs.writeFile(archivePath, data));
             if (verbose) {
                 for (const entry of entries) {
-                    ctx.stdout.write(`${entry.path}\n`);
+                    await ctx.stdout.write(`${entry.path}\n`);
                 }
             }
         }
         else if (extract) {
-            let data = ctx.vfs.readFile(archivePath);
+            let data = (await ctx.vfs.readFile(archivePath));
             if (gzipFlag) {
                 data = await decompressGzip(data);
             }
@@ -109,7 +109,7 @@ const command = async (ctx) => {
             // Ensure target dir exists
             if (changeDir) {
                 try {
-                    ctx.vfs.mkdir(targetDir, { recursive: true });
+                    (await ctx.vfs.mkdir(targetDir, { recursive: true }));
                 }
                 catch { /* exists */ }
             }
@@ -117,7 +117,7 @@ const command = async (ctx) => {
                 const entryPath = resolve(targetDir, entry.path);
                 if (entry.type === 'directory') {
                     try {
-                        ctx.vfs.mkdir(entryPath, { recursive: true });
+                        (await ctx.vfs.mkdir(entryPath, { recursive: true }));
                     }
                     catch { /* exists */ }
                 }
@@ -125,30 +125,30 @@ const command = async (ctx) => {
                     // Ensure parent dir exists
                     const parent = dirname(entryPath);
                     try {
-                        ctx.vfs.mkdir(parent, { recursive: true });
+                        (await ctx.vfs.mkdir(parent, { recursive: true }));
                     }
                     catch { /* exists */ }
-                    ctx.vfs.writeFile(entryPath, entry.data);
+                    (await ctx.vfs.writeFile(entryPath, entry.data));
                 }
                 if (verbose) {
-                    ctx.stdout.write(`${entry.path}\n`);
+                    await ctx.stdout.write(`${entry.path}\n`);
                 }
             }
         }
         else if (list) {
-            let data = ctx.vfs.readFile(archivePath);
+            let data = (await ctx.vfs.readFile(archivePath));
             if (gzipFlag) {
                 data = await decompressGzip(data);
             }
             const entries = parseTar(data);
             for (const entry of entries) {
-                ctx.stdout.write(`${entry.path}${entry.type === 'directory' ? '/' : ''}\n`);
+                await ctx.stdout.write(`${entry.path}${entry.type === 'directory' ? '/' : ''}\n`);
             }
         }
     }
     catch (e) {
         if (e instanceof VFSError) {
-            ctx.stderr.write(`tar: ${e.message}\n`);
+            await ctx.stderr.write(`tar: ${e.message}\n`);
             return 2;
         }
         throw e;

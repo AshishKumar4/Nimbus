@@ -79,13 +79,13 @@ const tsFiles = {
   // evicted), so it is already in the bundle before this walk runs.
   const bundle = { [`${TS_ROOT}/lib/tsc.js`]: 'x'.repeat(1024) };
   const budgetState = { totalBytes: 1024, fileCount: 1 };
-  addBinTargetSiblings(
+  (await addBinTargetSiblings(
     makeVfs(tsFiles),
     `/${TS_ROOT}/lib/tsc.js`,
     bundle,
     budgetState,
     'runtime',
-  );
+  ));
 
   // The files tsc actually reads must be resident.
   assert.ok(
@@ -124,13 +124,13 @@ const tsFiles = {
   };
   const bundle = {};
   const budgetState = { totalBytes: 0, fileCount: 0 };
-  addBinTargetSiblings(
+  (await addBinTargetSiblings(
     makeVfs(files),
     '/home/user/node_modules/p/bin/cli.js',
     bundle,
     budgetState,
     'runtime',
-  );
+  ));
   assert.equal(bundle['home/user/node_modules/p/huge.bin'], undefined, 'oversized file skipped');
   assert.ok(
     bundle['home/user/node_modules/p/small.json'] !== undefined,
@@ -151,13 +151,13 @@ const tsFiles = {
   };
   const bundle = {};
   const budgetState = { totalBytes: 0, fileCount: 0 };
-  addBinTargetSiblings(
+  (await addBinTargetSiblings(
     makeVfs(files),
     '/home/user/node_modules/q/index.js',
     bundle,
     budgetState,
     'runtime',
-  );
+  ));
   assert.equal(bundle['home/user/node_modules/q/index.js.map'], undefined, '.map excluded');
   assert.equal(bundle['home/user/node_modules/q/logo.png'], undefined, '.png excluded');
   assert.equal(
@@ -178,13 +178,13 @@ const tsFiles = {
   };
   const bundle = {};
   const budgetState = { totalBytes: 0, fileCount: 0 };
-  addBinTargetSiblings(
+  (await addBinTargetSiblings(
     makeVfs(files),
     '/home/user/node_modules/r/index.js',
     bundle,
     budgetState,
     'runtime',
-  );
+  ));
   assert.equal(bundle['home/user/node_modules/r/test/fixture.json'], undefined, 'test/ excluded');
   assert.equal(bundle['home/user/node_modules/r/docs/guide.md'], undefined, 'docs/ excluded');
 }
@@ -212,7 +212,7 @@ const tsFiles = {
   };
   const bundle = {};
   const budgetState = { totalBytes: 0, fileCount: 0 };
-  greedyAddMainEntries(makeVfs(files, contents), '/home/user', bundle, budgetState);
+  (await greedyAddMainEntries(makeVfs(files, contents), '/home/user', bundle, budgetState));
   assert.equal(
     bundle['home/user/node_modules/typescript/lib/typescript.js'],
     undefined,

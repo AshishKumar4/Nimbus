@@ -352,6 +352,15 @@ export async function readoptCapability(self, port, capability) {
  * any other port is mounted at root and needs no rewriting.
  */
 export async function routeToSessionPort(self, port, request, innerPath, mountBase, capability) {
+    if (capability !== undefined) {
+        const reservation = await readPortReservation(self.ctx, port);
+        const authorized = reservation !== null
+            ? reservation.capability === capability
+            : self.portRegistry.hasCapability(port, capability);
+        if (!authorized || (request.headers.get(PUBLIC_BEARER_HEADER) !== null && reservation?.visibility !== 'public')) {
+            return new Response('Not found', { status: 404 });
+        }
+    }
     await self.restorePersistedDevServer?.(port);
     // The durable seam: a request on a port nothing is serving may be a
     // durable application a reset left dead — the alarm pump would re-drive
@@ -376,7 +385,8 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
         // A rebuilt supervisor holds a capability nobody was handed; the durable
         // one is the value in circulation, so it wins before the check.
         await restorePortCapability(self, port);
-        if (!self.portRegistry.hasCapability(port, capability)) {
+        const current = await readPortReservation(self.ctx, port);
+        if ((current !== null && current.capability !== capability) || !self.portRegistry.hasCapability(port, capability)) {
             // 404, not 403: a wrong capability must not confirm that the port is
             // listening at all.
             return new Response('Not found', { status: 404 });

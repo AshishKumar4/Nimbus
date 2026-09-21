@@ -19,11 +19,11 @@ const command = async (ctx) => {
     const absPath = resolve(ctx.cwd, targetPath);
     let dirCount = 0;
     let fileCount = 0;
-    function printTree(dirPath, prefix, depth) {
+    async function printTree(dirPath, prefix, depth) {
         if (depth > maxDepth)
             return;
         try {
-            const entries = ctx.vfs.readdir(dirPath);
+            const entries = (await ctx.vfs.readdir(dirPath));
             const filtered = dirsOnly
                 ? entries.filter((e) => e.type === 'directory')
                 : entries;
@@ -32,12 +32,12 @@ const command = async (ctx) => {
                 const entry = sorted[i];
                 const isLast = i === sorted.length - 1;
                 const connector = isLast ? '└── ' : '├── ';
-                ctx.stdout.write(prefix + connector + entry.name + '\n');
+                await ctx.stdout.write(prefix + connector + entry.name + '\n');
                 if (entry.type === 'directory') {
                     dirCount++;
                     const newPrefix = prefix + (isLast ? '    ' : '│   ');
                     const fullPath = dirPath === '/' ? '/' + entry.name : dirPath + '/' + entry.name;
-                    printTree(fullPath, newPrefix, depth + 1);
+                    await printTree(fullPath, newPrefix, depth + 1);
                 }
                 else {
                     fileCount++;
@@ -49,21 +49,21 @@ const command = async (ctx) => {
         }
     }
     try {
-        ctx.vfs.stat(absPath);
+        (await ctx.vfs.stat(absPath));
     }
     catch (e) {
         if (e instanceof VFSError) {
-            ctx.stderr.write(`tree: '${targetPath}': ${e.message}\n`);
+            await ctx.stderr.write(`tree: '${targetPath}': ${e.message}\n`);
             return 1;
         }
         throw e;
     }
-    ctx.stdout.write(targetPath + '\n');
-    printTree(absPath, '', 1);
+    await ctx.stdout.write(targetPath + '\n');
+    await printTree(absPath, '', 1);
     const summary = dirsOnly
         ? `\n${dirCount} directories\n`
         : `\n${dirCount} directories, ${fileCount} files\n`;
-    ctx.stdout.write(summary);
+    await ctx.stdout.write(summary);
     return 0;
 };
 export default command;

@@ -105,6 +105,57 @@ try {
   });
   assert.equal(await ws.fs.readFile('/home/user/keep.txt'), 'survives\n');
 
+  // ── A create() that throws strands nothing ──────────────────────────────
+  // The kernel host lease the RuntimeManager reads through is opened before
+  // anything that can fail — the installs, the runtime registration. Until
+  // the workspace exists nobody holds a close(), so create() itself has to
+  // release the lease it opened when the rest of the recipe throws.
+  let leasesOpened = 0;
+  let leasesDisposed = 0;
+  const countingAuthority = (authority) => ({
+    namespace: authority.namespace,
+    bind: (binding) => authority.bind(binding),
+    openHost: (cred, options) => {
+      leasesOpened++;
+      const lease = authority.openHost(cred, options);
+      return { fs: lease.fs, dispose: async () => { leasesDisposed++; await lease.dispose(); } };
+    },
+    releaseProcess: (pid) => authority.releaseProcess(pid),
+    activateAppendWriter: (pid, writerId) => authority.activateAppendWriter(pid, writerId),
+    revokeAppendWriter: (pid, writerId) => authority.revokeAppendWriter(pid, writerId),
+    revokeAppendWriters: (pid) => authority.revokeAppendWriters(pid),
+    revokeAppendWritersThrough: (maxPid) => authority.revokeAppendWritersThrough(maxPid),
+  });
+
+  await assert.rejects(
+    () => NimbusWorkspace.create({
+      sql: harness.sql,
+      transactions: harness.ctx,
+      generation: 4,
+      filesystem: countingAuthority,
+      runtimes: [{
+        manifest: { name: 'broken', version: '0.0.1' },
+        readBlob() { throw new Error('runtime payload unavailable'); },
+      }],
+    }),
+    'create() over an unusable runtime package must reject',
+  );
+  assert.ok(leasesOpened > 0, 'the failed create opened the kernel lease it reads runtimes through');
+  assert.equal(leasesDisposed, leasesOpened, 'a create() that throws disposes every host lease it opened');
+
+  // And the disk is still a disk: the next workspace over the same sql comes
+  // up and answers for what is installed.
+  ws = await NimbusWorkspace.create({
+    sql: harness.sql,
+    transactions: harness.ctx,
+    generation: 5,
+  });
+  const installed = await ws.runtimes.list();
+  assert.ok(Array.isArray(installed), 'runtimes.list() answers after a failed create');
+  assert.deepEqual(installed.filter((runtime) => runtime.name === 'broken'), [],
+    'the rejected install left no runtime behind');
+  assert.equal(await ws.fs.readFile('/home/user/keep.txt'), 'survives\n');
+
   // ── destroy() removes the workspace, not the host's database ────────────
   // The host owns this Durable Object; the workspace is a tenant in it. A
   // destroy that reached for deleteAll would take the host's data with it.

@@ -10,23 +10,57 @@ export class PipeChannel {
     closed = false;
     waiting = [];
     decoder = new TextDecoder('utf-8');
+    queuedBytes = 0;
+    capacity = 64 * 1024;
+    drained = [];
+    readerClosed = false;
+    unlinkSignal;
+    constructor(signal) {
+        if (signal?.aborted)
+            this.cancel();
+        else if (signal) {
+            const abort = () => this.cancel();
+            signal.addEventListener('abort', abort, { once: true });
+            this.unlinkSignal = () => signal.removeEventListener('abort', abort);
+        }
+    }
+    async push(bytes) {
+        for (let offset = 0; offset < bytes.length;) {
+            while (this.queuedBytes >= this.capacity && !this.closed) {
+                await new Promise((resolve) => this.drained.push(resolve));
+            }
+            if (this.closed || this.readerClosed) {
+                throw Object.assign(new Error('EPIPE: pipe reader closed'), { code: 'EPIPE' });
+            }
+            const length = Math.min(bytes.length - offset, this.capacity - this.queuedBytes);
+            this.deliver(bytes.slice(offset, offset + length), 'back');
+            offset += length;
+        }
+    }
+    consume(length) {
+        if (!this.readerClosed)
+            this.queuedBytes -= length;
+        this.wakeWriters();
+    }
+    wakeWriters() {
+        for (const wake of this.drained.splice(0))
+            wake();
+    }
+    cancel() {
+        this.readerClosed = true;
+        this.buffer = [];
+        this.queuedBytes = 0;
+        this.close();
+    }
     writer = {
-        write: (text) => {
-            if (this.closed)
-                return;
-            this.deliver(encode(text), 'back');
-        },
-        writeBytes: (bytes) => {
-            if (this.closed)
-                return;
-            this.deliver(bytes, 'back');
-        },
+        write: async (text) => (await this.push(encode(text))),
+        writeBytes: async (bytes) => (await this.push(bytes)),
     };
     reader = {
-        read: () => this.read(),
-        readAll: () => this.readAll(),
-        readLine: () => this.readLine(),
-        readBytes: (maxLength) => this.readBytes(maxLength),
+        read: async () => (await this.read()),
+        readAll: async () => (await this.readAll()),
+        readLine: async () => (await this.readLine()),
+        readBytes: async (maxLength) => (await this.readBytes(maxLength)),
     };
     /** Next queued chunk, a waiter's delivery, or null once closed and empty. */
     pull() {
@@ -47,6 +81,7 @@ export class PipeChannel {
                 const tail = this.decoder.decode();
                 return tail.length > 0 ? tail : null;
             }
+            this.consume(bytes.length);
             const text = this.decoder.decode(bytes, { stream: true });
             if (text.length > 0)
                 return text;
@@ -77,11 +112,13 @@ export class PipeChannel {
             if (newline >= 0) {
                 const rest = bytes.subarray(newline + 1);
                 if (rest.length > 0)
-                    this.deliver(rest, 'front');
+                    this.buffer.unshift(rest);
+                this.consume(newline + 1);
                 line += this.decoder.decode(bytes.subarray(0, newline), { stream: true });
                 const flushed = this.decoder.decode();
                 return line + flushed;
             }
+            this.consume(bytes.length);
             line += this.decoder.decode(bytes, { stream: true });
         }
         // A trailing incomplete sequence still surfaces as U+FFFD at EOF.
@@ -102,24 +139,30 @@ export class PipeChannel {
         const chunk = await this.pull();
         if (chunk === null)
             return null;
-        if (chunk.length <= maxLength)
+        if (chunk.length <= maxLength) {
+            this.consume(chunk.length);
             return chunk;
+        }
         this.buffer.unshift(chunk.subarray(maxLength));
+        this.consume(maxLength);
         return chunk.subarray(0, maxLength);
     }
     close() {
         this.closed = true;
+        this.unlinkSignal?.();
+        this.unlinkSignal = undefined;
+        this.wakeWriters();
         while (this.waiting.length > 0) {
-            const resolve = this.waiting.shift();
-            resolve(null);
+            this.waiting.shift()?.(null);
         }
     }
     deliver(bytes, position) {
         if (bytes.length === 0)
             return;
-        if (this.waiting.length > 0) {
-            const resolve = this.waiting.shift();
-            resolve(bytes);
+        this.queuedBytes += bytes.length;
+        const waiting = this.waiting.shift();
+        if (waiting) {
+            waiting(bytes);
             return;
         }
         if (position === 'front')

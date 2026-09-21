@@ -12,9 +12,9 @@
  * them, and before this file the two descriptions of the same payload sat in
  * different files with only a zod schema between them.
  */
-import type { Errno } from '../wasi/types.js';
-import type { WasiFsSnapshot } from '../wasi-instance.js';
-import type { WasiFsDiff } from '../vfs-snapshot.js';
+import type { Errno, SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
+import type { RuntimeFsBridge, VfsCred } from '../os-contracts.js';
+import type { AuthorityFd, AuthorityPreopen } from '../wasi/filesystem.js';
 
 /**
  * The errno set this scheduler answers with — the same one every Nimbus syscall
@@ -34,12 +34,14 @@ export interface BashBootArgs {
   argv: string[];
   environ: string[];
   cwd: string;
-  fsSnapshot: WasiFsSnapshot;
+  cred: Readonly<VfsCred>;
+  parking: 'jspi' | 'none';
   stdinData: string;
   stdinClosed: boolean;
   stdinTty: boolean;
   /** Applet names the busybox multicall module answers to (busybox --list). */
   busyboxApplets: string[];
+  coreutilsRoot: string;
 }
 
 /** Deliver terminal stdin bytes to a parked session and pump again. */
@@ -56,57 +58,9 @@ export interface BashSlice {
   stdout: string;
   stderr: string;
   error?: string;
-  fsDiff?: WasiFsDiff;
   stats?: Record<string, unknown>;
 }
 
-/**
- * The part of a `WasiFsSnapshot` the scheduler actually reads. Everything else
- * a snapshot carries — preopens, root, sizes, times, revision — is ignored
- * here, and every field it does read is treated as optional.
- */
-export interface BashFsSeed {
-  files?: Record<string, string>;
-  dirs?: string[];
-  modes?: Record<string, number>;
-}
-
-// ── file layer ──────────────────────────────────────────────────────────────
-
-/**
- * One in-memory inode's content. A box rather than a bare Uint8Array because
- * `path_link` aliases two names onto the SAME box, which is what makes writes
- * through either name visible through the other.
- */
-export interface BashFileEntry {
-  bytes: Uint8Array;
-}
-
-/** The session's whole filesystem: the seeded snapshot plus everything the run changed. */
-export interface BashFsState {
-  files: Map<string, BashFileEntry>;
-  dirs: Set<string>;
-  /** vfsPath → effective rwx bits for the invoking credential (the S2a projection). */
-  modes: Map<string, number>;
-  written: Set<string>;
-  deleted: Set<string>;
-  dirsCreated: Set<string>;
-  dirsDeleted: Set<string>;
-  /** vfsPath → full permission bits requested by an in-facet chmod. */
-  modesChanged: Map<string, number>;
-  /** vfsPath → mtime in nanoseconds. */
-  times: Map<string, bigint>;
-  /** mtime reported for an inode the session never touched. */
-  sessionNs: bigint;
-  symlinks: Map<string, string>;
-  symlinksCreated: Map<string, string>;
-}
-
-/** Resolution outcome: the rewritten path, or ELOOP. */
-export interface BashPathResolution {
-  path: string;
-  errno: BashErrno;
-}
 
 // ── descriptors, pipes and stdin ────────────────────────────────────────────
 
@@ -117,10 +71,8 @@ export interface BashPathResolution {
  */
 export type BashFdEntry =
   | { kind: 'stdin' | 'stdout' | 'stderr' }
-  | { kind: 'preopen' }
-  | { kind: 'tty' | 'null' }
-  | { kind: 'file'; path: string; pos: number; append: boolean }
-  | { kind: 'dir'; path: string }
+  | AuthorityPreopen
+  | AuthorityFd
   | { kind: 'pipe'; pipeId: number; end: 'r' | 'w' };
 
 /** A byte source that hands out at most what it holds: a pipe or the session stdin. */
@@ -130,9 +82,7 @@ export interface BashByteQueue {
 }
 
 /** A process parked on a read, waiting for its source to produce bytes or EOF. */
-export interface BashReadWaiter {
-  proc: BashProc;
-}
+export type BashReadWaiter = { proc: BashProc } | { complete(): void };
 
 export interface BashPipe extends BashByteQueue {
   readers: number;
@@ -191,7 +141,7 @@ export interface BashFdReadiness {
 // ── processes ───────────────────────────────────────────────────────────────
 
 /** Why an instance asyncify-unwound; the scheduler dispatches on it. */
-export type BashUnwindReason = 'capture' | 'longjmp' | 'fork' | 'waitpid' | 'blockread' | 'exec';
+export type BashUnwindReason = 'capture' | 'longjmp' | 'fork' | 'waitpid' | 'blockread' | 'exec' | 'filesystem';
 
 /** The read a process parked on, recorded so the scheduler can re-issue it. */
 export interface BashPipeReq {
@@ -263,6 +213,13 @@ export interface BashProc {
   pid: number;
   ppid: number;
   fds: Map<number, BashFdEntry>;
+  /**
+   * Descriptor a preopen was cached under by wasi-libc → where it lives now,
+   * for the case where the shell claimed that number with `exec 3>file`.
+   */
+  preopenMoved: Map<number, number>;
+  cwd: string;
+  pendingFs?: { name: string; value?: number; settled: boolean; promise: Promise<void> };
   inst: BashInstance;
   /** The owning session, so a resumed process can find its run queue. */
   __s: BashSession;
@@ -305,7 +262,11 @@ export interface BashSession {
   mod: WebAssembly.Module;
   /** Command name → the wasm module that answers to it, busybox applets included. */
   coreutils: Map<string, WebAssembly.Module>;
-  fs: BashFsState;
+  coreutilsRoot: string;
+  fs: RuntimeFsBridge;
+  cred: Readonly<VfsCred>;
+  parking: 'jspi' | 'none';
+  pending: Set<Promise<void>>;
   cwd: string;
   argv: string[];
   environ: string[];
@@ -345,14 +306,14 @@ export interface BashSession {
  * instead. Everything else about the two paths is shared.
  */
 export type BashIo = {
-  read(fd: number, iov: BashIovs, nread: number): BashErrno;
+  read(fd: number, iov: BashIovs, nread: number): SyscallResult;
   /**
    * Byte count, or null when the descriptor cannot be written to — currently
    * only the read end of a pipe. It used to be "a write here cannot fail",
    * which is how writing to a read end came to succeed silently.
    */
   write(fd: number, bytes: Uint8Array): number | null;
-  poll(inPtr: number, outPtr: number, nsubs: number, retPtr: number): BashErrno;
+  poll(inPtr: number, outPtr: number, nsubs: number, retPtr: number): SyscallResult;
 };
 
 /**
@@ -365,73 +326,73 @@ export type BashIo = {
  * numbers, so those accept both and the bodies normalise.
  */
 export type BashWasiFsImports = {
-  fd_prestat_get(fd: number, buf: number): BashErrno;
-  fd_prestat_dir_name(fd: number, path: number, plen: number): BashErrno;
+  fd_prestat_get(fd: number, buf: number): SyscallResult;
+  fd_prestat_dir_name(fd: number, path: number, plen: number): SyscallResult;
   path_open(
     dirfd: number, dirflags: number, pathPtr: number, pathLen: number, oflags: number,
     rightsBase: bigint | number, rightsInheriting: bigint | number, fdflags: number, retPtr: number,
-  ): BashErrno;
-  fd_filestat_get(fd: number, buf: number): BashErrno;
+  ): SyscallResult;
+  fd_filestat_get(fd: number, buf: number): SyscallResult;
   path_filestat_get(
     dirfd: number, flags: number, pathPtr: number, pathLen: number, buf: number,
-  ): BashErrno;
+  ): SyscallResult;
   path_filestat_set_times(
     dirfd: number, flags: number, pathPtr: number, pathLen: number,
     atim: bigint | number, mtim: bigint | number, fstflags: number,
-  ): BashErrno;
-  path_unlink_file(dirfd: number, pathPtr: number, pathLen: number): BashErrno;
+  ): SyscallResult;
+  path_unlink_file(dirfd: number, pathPtr: number, pathLen: number): SyscallResult;
   path_rename(
     fd1: number, oldPtr: number, oldLen: number, fd2: number, newPtr: number, newLen: number,
-  ): BashErrno;
-  path_create_directory(dirfd: number, pathPtr: number, pathLen: number): BashErrno;
+  ): SyscallResult;
+  path_create_directory(dirfd: number, pathPtr: number, pathLen: number): SyscallResult;
   path_readlink(
     dirfd: number, pathPtr: number, pathLen: number,
     bufPtr: number, bufLen: number, bufUsedPtr: number,
-  ): BashErrno;
+  ): SyscallResult;
   path_symlink(
     oldPtr: number, oldLen: number, newFd: number, newPtr: number, newLen: number,
-  ): BashErrno;
+  ): SyscallResult;
   path_link(
     fd1: number, lookupFlags: number, oldPtr: number, oldLen: number,
     fd2: number, newPtr: number, newLen: number,
-  ): BashErrno;
-  path_remove_directory(dirfd: number, pathPtr: number, pathLen: number): BashErrno;
-  fd_renumber(from: number, to: number): BashErrno;
-  fd_readdir(fd: number, buf: number, bufLen: number, cookie: bigint | number, retPtr: number): BashErrno;
-  fd_seek(fd: number, offset: bigint | number, whence: number, retPtr: number): BashErrno;
-  fd_tell(fd: number, retPtr: number): BashErrno;
-  fd_close(fd: number): BashErrno;
-  fd_fdstat_get(fd: number, st: number): BashErrno;
-  fd_fdstat_set_flags(fd: number, flags: number): BashErrno;
-  fd_read(fd: number, iovs: number, n: number, nread: number): BashErrno;
-  fd_write(fd: number, iovs: number, n: number, nw: number): BashErrno;
-  poll_oneoff(inPtr: number, outPtr: number, nsubs: number, retPtr: number): BashErrno;
-  clock_time_get(id: number, precision: bigint | number, t: number): BashErrno;
-  clock_res_get(id: number, r: number): BashErrno;
-  random_get(b: number, l: number): BashErrno;
+  ): SyscallResult;
+  path_remove_directory(dirfd: number, pathPtr: number, pathLen: number): SyscallResult;
+  fd_renumber(from: number, to: number): SyscallResult;
+  fd_readdir(fd: number, buf: number, bufLen: number, cookie: bigint | number, retPtr: number): SyscallResult;
+  fd_seek(fd: number, offset: bigint | number, whence: number, retPtr: number): SyscallResult;
+  fd_tell(fd: number, retPtr: number): SyscallResult;
+  fd_close(fd: number): SyscallResult;
+  fd_fdstat_get(fd: number, st: number): SyscallResult;
+  fd_fdstat_set_flags(fd: number, flags: number): SyscallResult;
+  fd_read(fd: number, iovs: number, n: number, nread: number): SyscallResult;
+  fd_write(fd: number, iovs: number, n: number, nw: number): SyscallResult;
+  poll_oneoff(inPtr: number, outPtr: number, nsubs: number, retPtr: number): SyscallResult;
+  clock_time_get(id: number, precision: bigint | number, t: number): SyscallResult;
+  clock_res_get(id: number, r: number): SyscallResult;
+  random_get(b: number, l: number): SyscallResult;
   proc_exit(code: number): never;
   // Answered without a filesystem: genuinely no-ops on an in-memory FS, or ENOSYS.
-  fd_sync(): BashErrno;
-  fd_datasync(): BashErrno;
-  fd_advise(): BashErrno;
-  sched_yield(): BashErrno;
-  fd_pread(fd: number, iovs: number, n: number, offset: bigint | number, nread: number): BashErrno;
-  fd_pwrite(fd: number, iovs: number, n: number, offset: bigint | number, nw: number): BashErrno;
-  fd_allocate(fd: number, offset: bigint | number, len: bigint | number): BashErrno;
-  fd_filestat_set_size(fd: number, size: bigint | number): BashErrno;
+  fd_sync(fd: number): SyscallResult;
+  fd_datasync(fd: number): SyscallResult;
+  fd_advise(): SyscallResult;
+  sched_yield(): SyscallResult;
+  fd_pread(fd: number, iovs: number, n: number, offset: bigint | number, nread: number): SyscallResult;
+  fd_pwrite(fd: number, iovs: number, n: number, offset: bigint | number, nw: number): SyscallResult;
+  fd_allocate(fd: number, offset: bigint | number, len: bigint | number): SyscallResult;
+  fd_filestat_set_size(fd: number, size: bigint | number): SyscallResult;
   fd_filestat_set_times(
     fd: number, atim: bigint | number, mtim: bigint | number, fstflags: number,
-  ): BashErrno;
+  ): SyscallResult;
   fd_fdstat_set_rights(
     fd: number, rightsBase: bigint | number, rightsInheriting: bigint | number,
-  ): BashErrno;
-  proc_raise(sig: number): BashErrno;
-  sock_send(fd: number, siDataPtr: number, siDataLen: number, siFlags: number, soDatalenPtr: number): BashErrno;
+  ): SyscallResult;
+  proc_raise(sig: number): SyscallResult;
+  sock_send(fd: number, siDataPtr: number, siDataLen: number, siFlags: number, soDatalenPtr: number): SyscallResult;
   sock_recv(
     fd: number, riDataPtr: number, riDataLen: number, riFlags: number,
     roDatalenPtr: number, roFlagsPtr: number,
-  ): BashErrno;
-  sock_shutdown(fd: number, how: number): BashErrno;
+  ): SyscallResult;
+  sock_shutdown(fd: number, how: number): SyscallResult;
 };
 
 /**
@@ -492,8 +453,7 @@ export type BashProcImports = {
 declare global {
   /** Wasm modules the loader compiled and exposed to the facet, keyed by file name. */
   var __NIMBUS_WASM: Record<string, WebAssembly.Module> | undefined;
-  var __bashBoot: (args: BashBootArgs) => BashSlice;
-  var __bashFeed: (args: BashFeedArgs) => BashSlice;
-  /** One step entry both transports dispatch through; validates raw input. */
-  var __bashStep: (raw: unknown) => BashSlice;
+  var __bashBoot: (args: BashBootArgs) => Promise<BashSlice>;
+  var __bashFeed: (args: BashFeedArgs) => Promise<BashSlice>;
+  var __bashStep: (raw: unknown, supervisor?: WasiSupervisorStub) => Promise<BashSlice>;
 }

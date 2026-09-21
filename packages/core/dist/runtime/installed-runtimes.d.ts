@@ -16,7 +16,8 @@
  * RuntimeManager (runtime-manager.ts), because two workspaces in one process
  * must not share either.
  */
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import { type RuntimePackageAbi } from './os-contracts.js';
 import { type ManifestEntrypoint, type RuntimeManifest } from './runtime-manifest.js';
@@ -31,7 +32,7 @@ export interface MinShellRegistry {
  *  command handler given the manifest + the installed root dir. The
  *  package manager invokes the factory at install-time + at boot-time
  *  rehydration. */
-export type RunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+export type RunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command | Promise<Command>;
 /**
  * How a manifest entrypoint's `runner` key is resolved to code.
  * The map is owned by the workspace's RuntimeManager.
@@ -68,14 +69,14 @@ export declare function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeMa
 export declare function installRoot(homeDir: string, name: string, version: string): string;
 /** Read all installed manifests off SqliteFS. Used by both `--list`
  *  and boot-time rehydration. */
-export declare function listInstalledManifests(vfs: SqliteVFS, homeDir: string): Array<{
+export declare function listInstalledManifests(vfs: SqliteVFS, homeDir: string): Promise<Array<{
     root: string;
     manifest: RuntimeManifest;
-}>;
-export declare function listInstalledManifestsView(fs: CredentialedVfs, homeDir: string): Array<{
+}>>;
+export declare function listInstalledManifestsView(fs: CredentialedVfs, homeDir: string): Promise<Array<{
     root: string;
     manifest: RuntimeManifest;
-}>;
+}>>;
 /**
  * An installed tree is trustworthy when its manifest parses and every payload
  * file it declares is present with the digest the manifest vouches for.
@@ -97,5 +98,5 @@ export declare function rehydrateInstalledRuntimesView(vfs: CredentialedVfs, reg
     count: number;
     bins: string[];
 }>;
-export declare function listInstalledRuntimes(vfs: SqliteVFS, homeDir: string): RuntimeSummary[];
+export declare function listInstalledRuntimes(vfs: SqliteVFS, homeDir: string): Promise<RuntimeSummary[]>;
 //# sourceMappingURL=installed-runtimes.d.ts.map

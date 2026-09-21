@@ -70,13 +70,13 @@ function processFormat(format, args) {
 }
 const command = async (ctx) => {
     if (ctx.args.length === 0) {
-        ctx.stderr.write('printf: missing format string\n');
+        await ctx.stderr.write('printf: missing format string\n');
         return 1;
     }
     const format = ctx.args[0];
     const args = ctx.args.slice(1);
     const output = processFormat(format, args);
-    ctx.stdout.write(output);
+    await ctx.stdout.write(output);
     return 0;
 };
 export default command;

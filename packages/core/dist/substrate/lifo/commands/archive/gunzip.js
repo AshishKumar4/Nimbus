@@ -11,20 +11,20 @@ const spec = {
 const command = async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, spec);
     if (flags.help) {
-        ctx.stdout.write('Usage: gunzip [-kfq] file.gz...\n');
-        ctx.stdout.write('  -k, --keep    keep original file\n');
-        ctx.stdout.write('  -f, --force   overwrite an existing output file\n');
-        ctx.stdout.write('  -q, --quiet   suppress warnings\n');
+        await ctx.stdout.write('Usage: gunzip [-kfq] file.gz...\n');
+        await ctx.stdout.write('  -k, --keep    keep original file\n');
+        await ctx.stdout.write('  -f, --force   overwrite an existing output file\n');
+        await ctx.stdout.write('  -q, --quiet   suppress warnings\n');
         return 0;
     }
     if (unknown.length > 0) {
-        ctx.stderr.write(`gunzip: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+        await ctx.stderr.write(`gunzip: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
         return 1;
     }
     const keep = flags.keep === true;
     const files = positional;
     if (files.length === 0) {
-        ctx.stderr.write('gunzip: missing file operand\n');
+        await ctx.stderr.write('gunzip: missing file operand\n');
         return 1;
     }
     let exitCode = 0;
@@ -32,20 +32,20 @@ const command = async (ctx) => {
         const path = resolve(ctx.cwd, file);
         try {
             if (!path.endsWith('.gz')) {
-                ctx.stderr.write(`gunzip: ${file}: unknown suffix -- ignored\n`);
+                await ctx.stderr.write(`gunzip: ${file}: unknown suffix -- ignored\n`);
                 exitCode = 1;
                 continue;
             }
-            const data = ctx.vfs.readFile(path);
+            const data = (await ctx.vfs.readFile(path));
             const decompressed = await decompressGzip(data);
             const outPath = path.slice(0, -3);
-            ctx.vfs.writeFile(outPath, decompressed);
+            (await ctx.vfs.writeFile(outPath, decompressed));
             if (!keep)
-                ctx.vfs.unlink(path);
+                (await ctx.vfs.unlink(path));
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`gunzip: ${file}: ${e.message}\n`);
+                await ctx.stderr.write(`gunzip: ${file}: ${e.message}\n`);
                 exitCode = 1;
             }
             else {

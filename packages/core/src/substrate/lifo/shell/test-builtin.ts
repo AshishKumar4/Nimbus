@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs } from "../../../shell/execution-fs.js";
 import type { CommandOutputStream } from '../commands/types.js';
 import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
@@ -12,13 +12,13 @@ import { resolve } from '../utils/path.js';
  */
 export async function evaluateTest(
   args: string[],
-  vfs: VFS,
+  vfs: ExecutionFs,
   stderr: CommandOutputStream,
   context?: BuiltinExecutionContext,
 ): Promise<number> {
   // `[` requires a closing `]`
   const operands = args.length > 0 && args[args.length - 1] === ']' ? args.slice(0, -1) : args;
-  return evaluateTestExpression(literalOperands(operands), vfs, stderr, context, 'test');
+  return (await evaluateTestExpression(literalOperands(operands), vfs, stderr, context, 'test'));
 }
 
 /**
@@ -28,7 +28,7 @@ export async function evaluateTest(
 export async function evaluateDoubleBracketWords(
   words: WordPart[][],
   expandCtx: ExpandContext,
-  vfs: VFS,
+  vfs: ExecutionFs,
   stderr: CommandOutputStream,
   context?: BuiltinExecutionContext,
 ): Promise<number> {
@@ -49,7 +49,7 @@ export async function evaluateDoubleBracketWords(
       return arg;
     },
   };
-  return evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket');
+  return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
 
 type TestMode = 'test' | 'double-bracket';
@@ -88,7 +88,7 @@ function operatorTextOf(word: WordPart[] | undefined): string | undefined {
 
 async function evaluateTestExpression(
   operands: Operands,
-  vfs: VFS,
+  vfs: ExecutionFs,
   stderr: CommandOutputStream,
   context: BuiltinExecutionContext | undefined,
   mode: TestMode,
@@ -100,12 +100,12 @@ async function evaluateTestExpression(
   try {
     const result = await parseOr(operands, 0, vfs, context, mode, true);
     if (result.pos !== operands.length) {
-      stderr.write('test: too many arguments\n');
+      (await stderr.write('test: too many arguments\n'));
       return 2;
     }
     return result.value ? 0 : 1;
   } catch (e) {
-    stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`);
+    (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
     return 2;
   }
 }
@@ -121,7 +121,7 @@ interface ExprResult {
  * literal operators alone) but never expands them.
  */
 async function parseOr(
-  ops: Operands, pos: number, vfs: VFS,
+  ops: Operands, pos: number, vfs: ExecutionFs,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parseAnd(ops, pos, vfs, context, mode, evaluate);
@@ -135,7 +135,7 @@ async function parseOr(
 }
 
 async function parseAnd(
-  ops: Operands, pos: number, vfs: VFS,
+  ops: Operands, pos: number, vfs: ExecutionFs,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   let left = await parsePrimary(ops, pos, vfs, context, mode, evaluate);
@@ -149,7 +149,7 @@ async function parseAnd(
 }
 
 async function parsePrimary(
-  ops: Operands, pos: number, vfs: VFS,
+  ops: Operands, pos: number, vfs: ExecutionFs,
   context: BuiltinExecutionContext | undefined, mode: TestMode, evaluate: boolean,
 ): Promise<ExprResult> {
   if (pos >= ops.length) {
@@ -192,7 +192,7 @@ async function parsePrimary(
   // Unary file tests
   if (arg.startsWith('-') && arg.length === 2 && pos + 1 < ops.length && isFileTestFlag(arg[1])) {
     const fileResult = evaluate
-      ? evaluateFileTest(arg[1], await valueAt(pos + 1), vfs, context?.cwd)
+      ? (await evaluateFileTest(arg[1], await valueAt(pos + 1), vfs, context?.cwd))
       : false;
     return { value: fileResult, pos: pos + 2 };
   }
@@ -277,23 +277,23 @@ function hasPatternSyntax(value: string): boolean {
  * about a path at the root, so `[ -f config.json ]` was false for a file
  * sitting right there — silently taking the wrong branch rather than failing.
  */
-function evaluateFileTest(flag: string, operand: string, vfs: VFS, cwd?: string): boolean {
+async function evaluateFileTest(flag: string, operand: string, vfs: ExecutionFs, cwd?: string): Promise<boolean> {
   const path = cwd === undefined ? operand : resolve(cwd, operand);
   switch (flag) {
     case 'e':
-      return statOf(vfs, path) !== null;
+      return (await statOf(vfs, path)) !== null;
     case 'f':
-      return statOf(vfs, path)?.type === 'file';
+      return (await statOf(vfs, path))?.type === 'file';
     case 'd':
-      return statOf(vfs, path)?.type === 'directory';
+      return (await statOf(vfs, path))?.type === 'directory';
     case 's': {
-      const stat = statOf(vfs, path);
+      const stat = (await statOf(vfs, path));
       return stat !== null && stat.type === 'file' && stat.size > 0;
     }
     default: {
       const mode = flag === 'r' ? 0o4 : flag === 'w' ? 0o2 : 0o1;
       try {
-        vfs.access(path, mode);
+        (await vfs.access(path, mode));
         return true;
       } catch {
         return false;
@@ -302,9 +302,9 @@ function evaluateFileTest(flag: string, operand: string, vfs: VFS, cwd?: string)
   }
 }
 
-function statOf(vfs: VFS, path: string): { type: string; size: number } | null {
+async function statOf(vfs: ExecutionFs, path: string): Promise<{ type: string; size: number } | null> {
   try {
-    return vfs.stat(path);
+    return (await vfs.stat(path));
   } catch {
     return null;
   }

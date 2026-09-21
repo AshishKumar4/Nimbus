@@ -23,23 +23,25 @@
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
 import type { RuntimeManifest } from './runtime-manifest.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type ExecutionFs } from '../shell/execution-fs.js';
 import type { FacetHost } from './facet-host.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-contracts.js';
+import type { FacetBindings } from './facet-host.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 type BashStepArgs = BashBootArgs | BashFeedArgs;
 /** The step the classic submit transport carries: args object in, slice out.
  *  Serialized verbatim into the facet — every name it touches must be
  *  reachable there (globals or its own literals). */
-export declare function bashFacetStep(args: BashStepArgs): Promise<unknown>;
+export declare function bashFacetStep(args: BashStepArgs, bindings: FacetBindings): Promise<unknown>;
 /**
  * The same step reached through a Request, for hosts whose facet can carry
  * a fetch signal. Serialized verbatim like `bashFacetStep` — no closure
  * references — and the dispatch inside is the same `__bashStep` call; only
  * the transport wrapper differs (JSON in, Response out).
  */
-export declare function bashRequestStep(request: Request): Promise<Response>;
+export declare function bashRequestStep(request: Request, bindings: FacetBindings): Promise<Response>;
 export interface BashFacetSession {
     readonly initial: BashSlice;
     push(data: string, eof?: boolean): Promise<BashSlice>;
@@ -54,7 +56,11 @@ export interface BashFacetSession {
 }
 export declare function createBashFacetSession(deps: {
     facets: FacetHost;
-    vfs: CredentialedVfs;
+    /** Installed runtime blobs, read through the host lease that owns them. */
+    artifacts: ExecutionFs;
+    filesystem: RuntimeFsBridge;
+    pid: number;
+    cred: VfsCred;
     manifest: RuntimeManifest;
     installRoot: string;
     argv: string[];
@@ -63,12 +69,11 @@ export declare function createBashFacetSession(deps: {
     stdinData?: string;
     stdinClosed: boolean;
     stdinTty: boolean;
-    extraRoots?: string[];
     signal?: AbortSignal;
 }): Promise<BashFacetSession>;
 export declare function makeBashRunnerFactory(deps: {
     facets: FacetHost;
-    vfs: SqliteVFS;
+    filesystem: NimbusFilesystemAuthority;
 }): BashRunnerFactory;
 /**
  * Source string injected as the facet `preamble`. The facet's scope evaluates

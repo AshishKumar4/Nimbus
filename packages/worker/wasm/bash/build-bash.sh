@@ -31,11 +31,13 @@ INC="-I$HERE/include"   # Nimbus termios.h overlay
 
 cd "$BASH_SRC"
 if [ ! -f config.status ]; then
+  # Retain target answers, never another machine's configure environment.
+  sed -E '/^ac_cv_(env_|prog_|build=)/d' "$HERE/cross.cache" > nimbus-cross.cache
   CC="$CC" \
   CFLAGS="-std=gnu17 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -O2" \
   CPPFLAGS="-D_GNU_SOURCE" LDFLAGS="$TARGET_LDFLAGS" \
   ./configure --host=wasm32-wasi --without-bash-malloc --disable-nls \
-    --cache-file="$HERE/cross.cache"
+    --cache-file=nimbus-cross.cache
   # config.h fixes: wasi-libc HAS gethostname/tcgetattr/tcgetpgrp/termios;
   # struct passwd comes from the overlay (no <pwd.h> file) so keep HAVE_PWD_H
   # off but HAVE_GETPWNAM on. HAVE_TERMIOS_H + HAVE_TCGETATTR make config-bot.h
@@ -83,22 +85,11 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
 # Emscripten's EMULATE_FUNCTION_POINTER_CASTS) — REQUIRED for bash to exit clean.
 wasm-opt --fpcast-emu bash -o bash.fpc.wasm
 
-# Asyncify allowlist: the process calls + setjmp/longjmp (capture/replay) + the
-# byte ops fd_read/fd_write and the readiness wait poll_oneoff (all three
-# suspend when a pipe would block, so their callers must be instrumented to
-# unwind — without this, a blocked capture read in $(...) corrupts the stack).
-# EH-free (asyncify-native setjmp) so this works.
-#
-# poll_oneoff was MISSING from this list while bash-runner.ts already armed an
-# unwind from inside it (the "nothing ready, blockable fd-read subscription"
-# park). That unwind therefore propagated through uninstrumented frames whose
-# locals were never spilled to MAIN_BUF. It is latent rather than constant only
-# because poll_oneoff usually finds something ready and returns via its fast
-# path. The committed bash.async.wasm predates this line; it takes effect on the
-# next rebuild (see BRINGUP.md).
+# Every filesystem import can reach the live authority. Instrument the full
+# WASI/process boundary; newly linked syscalls must not silently bypass unwind.
 wasm-opt --asyncify \
-  --pass-arg=asyncify-imports@nimbus_proc.fork,nimbus_proc.vfork,nimbus_proc.execve,nimbus_proc.waitpid,nimbus_proc.setjmp,nimbus_proc.longjmp,wasi_snapshot_preview1.fd_read,wasi_snapshot_preview1.fd_write,wasi_snapshot_preview1.poll_oneoff \
+  --pass-arg=asyncify-imports@nimbus_proc.*,wasi_snapshot_preview1.* \
   bash.fpc.wasm -o bash.async.wasm
 
-echo "Built: $BASH_SRC/bash (linked) + $BASH_SRC/bash.async.wasm (asyncified)"
-echo "Imports: 24 wasi_snapshot_preview1 + 15 nimbus_proc + 8 env (getpid/umask/setuid/setgid/dl*)"
+cp bash.async.wasm "$HERE/bash.async.wasm"
+echo "Built: $HERE/bash.async.wasm"

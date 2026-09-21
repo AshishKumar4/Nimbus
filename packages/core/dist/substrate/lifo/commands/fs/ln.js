@@ -5,10 +5,10 @@ const command = async (ctx) => {
             symlink = true;
     }
     if (symlink) {
-        ctx.stderr.write('ln: symbolic links are not supported in Lifo VFS\n');
+        await ctx.stderr.write('ln: symbolic links are not supported in Lifo VFS\n');
     }
     else {
-        ctx.stderr.write('ln: hard links are not supported in Lifo VFS\n');
+        await ctx.stderr.write('ln: hard links are not supported in Lifo VFS\n');
     }
     return 1;
 };

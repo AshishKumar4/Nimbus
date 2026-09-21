@@ -1,4 +1,6 @@
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
+import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { withHostFilesystem } from '@nimbus-sh/core/shell/execution-fs.js';
 import { createBashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
 import { facetHostForManager } from './facet-loader-host.js';
 import { ReplSession, } from './repl-session.js';
@@ -82,9 +84,12 @@ class BashReplAdapter {
     async ensureSession(signal) {
         if (this.session)
             return null;
-        this.session = await createBashFacetSession({
+        this.session = await withHostFilesystem(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
             facets: facetHostForManager(this.deps.facetMgr),
-            vfs: this.deps.vfs.as(this.deps.cred),
+            artifacts,
+            filesystem: this.deps.filesystem,
+            pid: this.deps.pid,
+            cred: this.deps.cred,
             manifest: this.deps.manifest,
             installRoot: this.deps.installRoot,
             argv: ['bash', '--noediting', '-i'],
@@ -98,7 +103,7 @@ class BashReplAdapter {
             stdinClosed: false,
             stdinTty: true,
             signal,
-        });
+        }));
         const initial = this.session.initial;
         if (initial.state !== 'need-input')
             return this.consumeSlice(initial, '');

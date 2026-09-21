@@ -10,6 +10,7 @@
  *   link    <path>       dev-link a local package directory
  *   unlink  <name>       remove a dev link
  */
+import { ExecutionFs } from '../../../../shell/execution-fs.js';
 import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
 import { RegistrySearchResponseSchema } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
@@ -17,47 +18,47 @@ import { linkPackage, unlinkPackage, readDevLinks, loadDevLinks, } from '../../p
 import { readLifoManifest, createLifoCommand, } from '../../pkg/lifo-runtime.js';
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 // ─── Helpers ───
-function printHelp(stdout) {
-    stdout.write('Usage: lifo <command> [args]\n\n');
-    stdout.write('Commands:\n');
-    stdout.write('  install|add <name>     install lifo-pkg-<name> from npm\n');
-    stdout.write('  remove <name>          remove a lifo package\n');
-    stdout.write('  list                   list lifo packages & dev links\n');
-    stdout.write('  search <term>          search npm for lifo-pkg-* packages\n');
-    stdout.write('  init <name>            scaffold a new lifo package\n');
-    stdout.write('  link [path]            dev-link a local package\n');
-    stdout.write('  unlink <name>          remove a dev link\n');
-    stdout.write('\nEnvironment:\n');
-    stdout.write('  LIFO_CDN               CDN for ESM imports (default: https://esm.sh)\n');
+async function printHelp(stdout) {
+    (await stdout.write('Usage: lifo <command> [args]\n\n'));
+    (await stdout.write('Commands:\n'));
+    (await stdout.write('  install|add <name>     install lifo-pkg-<name> from npm\n'));
+    (await stdout.write('  remove <name>          remove a lifo package\n'));
+    (await stdout.write('  list                   list lifo packages & dev links\n'));
+    (await stdout.write('  search <term>          search npm for lifo-pkg-* packages\n'));
+    (await stdout.write('  init <name>            scaffold a new lifo package\n'));
+    (await stdout.write('  link [path]            dev-link a local package\n'));
+    (await stdout.write('  unlink <name>          remove a dev link\n'));
+    (await stdout.write('\nEnvironment:\n'));
+    (await stdout.write('  LIFO_CDN               CDN for ESM imports (default: https://esm.sh)\n'));
 }
 // ─── install ───
 async function lifoInstall(ctx, registry, kernel) {
     const name = ctx.args[1];
     if (!name) {
-        ctx.stderr.write('lifo install: package name required\n');
+        await ctx.stderr.write('lifo install: package name required\n');
         return 1;
     }
     // Resolve: if user types "ffmpeg", install "lifo-pkg-ffmpeg"
     const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
-    ctx.stdout.write(`Installing ${npmName} globally...\n`);
+    await ctx.stdout.write(`Installing ${npmName} globally...\n`);
     // Install directly (no shell.execute round-trip)
     const exitCode = await npmInstallGlobal(npmName, ctx, registry, kernel);
     if (exitCode !== 0)
         return exitCode;
     // After npm install, check for lifo manifest and re-register with lifo runtime
     const pkgDir = join(GLOBAL_MODULES, npmName);
-    const manifest = readLifoManifest(ctx.vfs, pkgDir);
+    const manifest = (await readLifoManifest(ctx.vfs, pkgDir));
     if (manifest) {
         for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
             const entryPath = join(pkgDir, entryRelPath);
-            if (ctx.vfs.exists(entryPath)) {
+            if ((await ctx.vfs.exists(entryPath))) {
                 registry.register(cmdName, createLifoCommand(entryPath, ctx.vfs));
-                ctx.stdout.write(`  registered command: ${cmdName}\n`);
+                await ctx.stdout.write(`  registered command: ${cmdName}\n`);
             }
         }
     }
     else {
-        ctx.stdout.write(`  (no lifo manifest found -- installed as plain npm package)\n`);
+        await ctx.stdout.write(`  (no lifo manifest found -- installed as plain npm package)\n`);
     }
     return 0;
 }
@@ -65,61 +66,61 @@ async function lifoInstall(ctx, registry, kernel) {
 async function lifoRemove(ctx, registry) {
     const name = ctx.args[1];
     if (!name) {
-        ctx.stderr.write('lifo remove: package name required\n');
+        await ctx.stderr.write('lifo remove: package name required\n');
         return 1;
     }
     const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
     const pkgDir = join(GLOBAL_MODULES, npmName);
-    if (!ctx.vfs.exists(pkgDir)) {
-        ctx.stderr.write(`lifo: ${npmName} is not installed\n`);
+    if (!(await ctx.vfs.exists(pkgDir))) {
+        await ctx.stderr.write(`lifo: ${npmName} is not installed\n`);
         return 1;
     }
     // Unregister commands from manifest before removing
-    const manifest = readLifoManifest(ctx.vfs, pkgDir);
+    const manifest = (await readLifoManifest(ctx.vfs, pkgDir));
     if (manifest) {
         for (const cmdName of Object.keys(manifest.commands)) {
             registry.unregister(cmdName);
         }
     }
     try {
-        ctx.vfs.rmdirRecursive(pkgDir);
+        (await ctx.vfs.rmdirRecursive(pkgDir));
     }
     catch (e) {
-        ctx.stderr.write(`lifo: could not remove ${npmName}: ${e instanceof Error ? e.message : String(e)}\n`);
+        await ctx.stderr.write(`lifo: could not remove ${npmName}: ${e instanceof Error ? e.message : String(e)}\n`);
         return 1;
     }
-    ctx.stdout.write(`removed ${npmName}\n`);
+    await ctx.stdout.write(`removed ${npmName}\n`);
     return 0;
 }
 // ─── list ───
-function lifoList(ctx) {
+async function lifoList(ctx) {
     const { vfs, stdout } = ctx;
     // 1. Installed lifo packages (global node_modules with lifo field)
     const installed = [];
-    if (vfs.exists(GLOBAL_MODULES)) {
-        for (const entry of vfs.readdir(GLOBAL_MODULES)) {
+    if ((await vfs.exists(GLOBAL_MODULES))) {
+        for (const entry of (await vfs.readdir(GLOBAL_MODULES))) {
             if (entry.type !== 'directory')
                 continue;
             const dirs = entry.name.startsWith('@')
-                ? (() => {
+                ? (await (async () => {
                     try {
-                        return vfs.readdir(join(GLOBAL_MODULES, entry.name))
+                        return (await vfs.readdir(join(GLOBAL_MODULES, entry.name)))
                             .filter(e => e.type === 'directory')
                             .map(e => join(entry.name, e.name));
                     }
                     catch {
                         return [];
                     }
-                })()
+                })())
                 : [entry.name];
             for (const dirName of dirs) {
                 const pkgDir = join(GLOBAL_MODULES, dirName);
-                const manifest = readLifoManifest(vfs, pkgDir);
+                const manifest = (await readLifoManifest(vfs, pkgDir));
                 if (!manifest)
                     continue;
                 let version = '?';
                 try {
-                    const pkg = JSON.parse(vfs.readFileString(join(pkgDir, 'package.json')));
+                    const pkg = JSON.parse((await vfs.readFileString(join(pkgDir, 'package.json'))));
                     version = pkg.version || '?';
                 }
                 catch { /* ignore */ }
@@ -132,25 +133,25 @@ function lifoList(ctx) {
         }
     }
     // 2. Dev-linked packages
-    const devLinks = readDevLinks(vfs);
+    const devLinks = (await readDevLinks(vfs));
     const devEntries = Object.entries(devLinks);
     if (installed.length === 0 && devEntries.length === 0) {
-        stdout.write('No lifo packages installed\n');
+        (await stdout.write('No lifo packages installed\n'));
         return 0;
     }
     if (installed.length > 0) {
-        stdout.write('Installed:\n');
+        (await stdout.write('Installed:\n'));
         for (const pkg of installed) {
-            stdout.write(`  ${pkg.name}@${pkg.version}  [${pkg.commands.join(', ')}]\n`);
+            (await stdout.write(`  ${pkg.name}@${pkg.version}  [${pkg.commands.join(', ')}]\n`));
         }
     }
     if (devEntries.length > 0) {
         if (installed.length > 0)
-            stdout.write('\n');
-        stdout.write('Dev-linked:\n');
+            (await stdout.write('\n'));
+        (await stdout.write('Dev-linked:\n'));
         for (const [name, link] of devEntries) {
             const cmds = Object.keys(link.commands).join(', ');
-            stdout.write(`  ${name}  ${link.path}  [${cmds}]\n`);
+            (await stdout.write(`  ${name}  ${link.path}  [${cmds}]\n`));
         }
     }
     return 0;
@@ -159,7 +160,7 @@ function lifoList(ctx) {
 async function lifoSearch(ctx) {
     const term = ctx.args.slice(1).join(' ');
     if (!term) {
-        ctx.stderr.write('Usage: lifo search <term>\n');
+        await ctx.stderr.write('Usage: lifo search <term>\n');
         return 1;
     }
     const registry = ctx.env.NPM_REGISTRY || 'https://registry.npmjs.org';
@@ -174,43 +175,43 @@ async function lifoSearch(ctx) {
         // Filter to only lifo-pkg-* packages
         const lifoResults = results.filter(r => r.package.name.startsWith('lifo-pkg-'));
         if (lifoResults.length === 0) {
-            ctx.stdout.write('No lifo packages found\n');
+            await ctx.stdout.write('No lifo packages found\n');
             return 0;
         }
-        ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
-        ctx.stdout.write('-'.repeat(70) + '\n');
+        await ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
+        await ctx.stdout.write('-'.repeat(70) + '\n');
         for (const r of lifoResults) {
             const p = r.package;
             const displayName = p.name.replace(/^lifo-pkg-/, '');
             const name = displayName.length > 28 ? displayName.slice(0, 28) + '..' : displayName;
             const desc = (p.description || '').slice(0, 40);
-            ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
+            await ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
         }
     }
     catch (e) {
-        ctx.stderr.write(`lifo search: ${e instanceof Error ? e.message : String(e)}\n`);
+        await ctx.stderr.write(`lifo search: ${e instanceof Error ? e.message : String(e)}\n`);
         return 1;
     }
     return 0;
 }
 // ─── init ───
-function lifoInit(ctx) {
+async function lifoInit(ctx) {
     const name = ctx.args[1];
     if (!name) {
-        ctx.stderr.write('Usage: lifo init <name>\n');
+        await ctx.stderr.write('Usage: lifo init <name>\n');
         return 1;
     }
     const pkgDir = resolve(ctx.cwd, name);
     const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
     const cmdName = name.replace(/^lifo-pkg-/, '');
     // Check if directory already exists
-    if (ctx.vfs.exists(pkgDir)) {
-        ctx.stderr.write(`lifo init: ${pkgDir} already exists\n`);
+    if ((await ctx.vfs.exists(pkgDir))) {
+        await ctx.stderr.write(`lifo init: ${pkgDir} already exists\n`);
         return 1;
     }
     // Create directory structure
-    ctx.vfs.mkdir(pkgDir, { recursive: true });
-    ctx.vfs.mkdir(join(pkgDir, 'commands'), { recursive: true });
+    (await ctx.vfs.mkdir(pkgDir, { recursive: true }));
+    (await ctx.vfs.mkdir(join(pkgDir, 'commands'), { recursive: true }));
     // package.json
     const packageJson = {
         name: npmName,
@@ -224,7 +225,7 @@ function lifoInit(ctx) {
         keywords: ['lifo-pkg', cmdName],
         license: 'MIT',
     };
-    ctx.vfs.writeFile(join(pkgDir, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n');
+    (await ctx.vfs.writeFile(join(pkgDir, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n'));
     // Command entry template
     const commandTemplate = `/**
  * ${cmdName} -- lifo command
@@ -234,30 +235,30 @@ function lifoInit(ctx) {
  *   lifo - LifoAPI { import(), loadWasm(), resolve(), cdn }
  */
 module.exports = async function(ctx, lifo) {
-  const args = ctx.args;
+const args = ctx.args;
 
-  if (args.includes('--help') || args.includes('-h')) {
-    ctx.stdout.write('Usage: ${cmdName} [options]\\n');
-    ctx.stdout.write('\\nA lifo package command.\\n');
-    return 0;
-  }
-
-  // Example: import an ESM module from CDN
-  // const { default: lib } = await lifo.import('some-npm-package');
-
-  // Example: load a startup-registered WASM module
-  // const wasmModule = await lifo.loadWasm('example/module.wasm');
-  // const instance = await WebAssembly.instantiate(wasmModule);
-
-  // Example: read/write files via VFS
-  // const data = ctx.vfs.readFile(lifo.resolve('input.txt'));
-  // ctx.vfs.writeFile(lifo.resolve('output.txt'), result);
-
-  ctx.stdout.write('Hello from ${cmdName}!\\n');
+if (args.includes('--help') || args.includes('-h')) {
+  ctx.stdout.write('Usage: ${cmdName} [options]\\n');
+  ctx.stdout.write('\\nA lifo package command.\\n');
   return 0;
+}
+
+// Example: import an ESM module from CDN
+// const { default: lib } = await lifo.import('some-npm-package');
+
+// Example: load a startup-registered WASM module
+// const wasmModule = await lifo.loadWasm('example/module.wasm');
+// const instance = await WebAssembly.instantiate(wasmModule);
+
+// Example: read/write files via VFS
+// const data = ctx.vfs.readFile(lifo.resolve('input.txt'));
+// ctx.vfs.writeFile(lifo.resolve('output.txt'), result);
+
+ctx.stdout.write('Hello from ${cmdName}!\\n');
+return 0;
 };
 `;
-    ctx.vfs.writeFile(join(pkgDir, 'commands', `${cmdName}.js`), commandTemplate);
+    (await ctx.vfs.writeFile(join(pkgDir, 'commands', `${cmdName}.js`), commandTemplate));
     // README
     const readme = `# ${npmName}
 
@@ -281,54 +282,54 @@ npm publish
 
 Users install with: \`lifo install ${cmdName}\`
 `;
-    ctx.vfs.writeFile(join(pkgDir, 'README.md'), readme);
-    ctx.stdout.write(`Created ${pkgDir}/\n`);
-    ctx.stdout.write(`  package.json\n`);
-    ctx.stdout.write(`  commands/${cmdName}.js\n`);
-    ctx.stdout.write(`  README.md\n`);
-    ctx.stdout.write(`\nNext steps:\n`);
-    ctx.stdout.write(`  lifo link ./${name}    # register for development\n`);
-    ctx.stdout.write(`  ${cmdName} --help      # test it\n`);
-    ctx.stdout.write(`\nFor a full TypeScript project, run on your host:\n`);
-    ctx.stdout.write(`  npm create lifo-pkg ${cmdName}\n`);
+    (await ctx.vfs.writeFile(join(pkgDir, 'README.md'), readme));
+    await ctx.stdout.write(`Created ${pkgDir}/\n`);
+    await ctx.stdout.write(`  package.json\n`);
+    await ctx.stdout.write(`  commands/${cmdName}.js\n`);
+    await ctx.stdout.write(`  README.md\n`);
+    await ctx.stdout.write(`\nNext steps:\n`);
+    await ctx.stdout.write(`  lifo link ./${name}    # register for development\n`);
+    await ctx.stdout.write(`  ${cmdName} --help      # test it\n`);
+    await ctx.stdout.write(`\nFor a full TypeScript project, run on your host:\n`);
+    await ctx.stdout.write(`  npm create lifo-pkg ${cmdName}\n`);
     return 0;
 }
 // ─── link ───
-function lifoLink(ctx, registry) {
+async function lifoLink(ctx, registry) {
     const pathArg = ctx.args[1] || '.';
     const pkgDir = resolve(ctx.cwd, pathArg);
-    if (!ctx.vfs.exists(join(pkgDir, 'package.json'))) {
-        ctx.stderr.write(`lifo link: no package.json found in ${pkgDir}\n`);
+    if (!(await ctx.vfs.exists(join(pkgDir, 'package.json')))) {
+        await ctx.stderr.write(`lifo link: no package.json found in ${pkgDir}\n`);
         return 1;
     }
     try {
-        const commands = linkPackage(ctx.vfs, registry, pkgDir);
-        ctx.stdout.write(`Linked ${pkgDir}\n`);
+        const commands = (await linkPackage(ctx.vfs, registry, pkgDir));
+        await ctx.stdout.write(`Linked ${pkgDir}\n`);
         for (const cmd of commands) {
-            ctx.stdout.write(`  registered command: ${cmd}\n`);
+            await ctx.stdout.write(`  registered command: ${cmd}\n`);
         }
     }
     catch (e) {
-        ctx.stderr.write(`lifo link: ${e instanceof Error ? e.message : String(e)}\n`);
+        await ctx.stderr.write(`lifo link: ${e instanceof Error ? e.message : String(e)}\n`);
         return 1;
     }
     return 0;
 }
 // ─── unlink ───
-function lifoUnlink(ctx) {
+async function lifoUnlink(ctx) {
     const name = ctx.args[1];
     if (!name) {
-        ctx.stderr.write('Usage: lifo unlink <name>\n');
+        await ctx.stderr.write('Usage: lifo unlink <name>\n');
         return 1;
     }
-    const commands = unlinkPackage(ctx.vfs, name);
+    const commands = (await unlinkPackage(ctx.vfs, name));
     if (!commands) {
-        ctx.stderr.write(`lifo unlink: '${name}' is not dev-linked\n`);
+        await ctx.stderr.write(`lifo unlink: '${name}' is not dev-linked\n`);
         return 1;
     }
-    ctx.stdout.write(`Unlinked ${name}\n`);
+    await ctx.stdout.write(`Unlinked ${name}\n`);
     for (const cmd of commands) {
-        ctx.stdout.write(`  removed command: ${cmd}\n`);
+        await ctx.stdout.write(`  removed command: ${cmd}\n`);
     }
     return 0;
 }
@@ -337,32 +338,32 @@ export function createLifoPkgCommand(registry, _shellExecute, kernel) {
     return async (ctx) => {
         const subcommand = ctx.args[0];
         if (!subcommand || subcommand === '--help' || subcommand === '-h') {
-            printHelp(ctx.stdout);
+            await printHelp(ctx.stdout);
             return subcommand ? 0 : 1;
         }
         switch (subcommand) {
             case 'install':
             case 'i':
             case 'add':
-                return lifoInstall(ctx, registry, kernel);
+                return (await lifoInstall(ctx, registry, kernel));
             case 'remove':
             case 'rm':
             case 'uninstall':
-                return lifoRemove(ctx, registry);
+                return (await lifoRemove(ctx, registry));
             case 'list':
             case 'ls':
-                return lifoList(ctx);
+                return (await lifoList(ctx));
             case 'search':
-                return lifoSearch(ctx);
+                return (await lifoSearch(ctx));
             case 'init':
-                return lifoInit(ctx);
+                return await lifoInit(ctx);
             case 'link':
-                return lifoLink(ctx, registry);
+                return await lifoLink(ctx, registry);
             case 'unlink':
-                return lifoUnlink(ctx);
+                return (await lifoUnlink(ctx));
             default:
-                ctx.stderr.write(`lifo: unknown command '${subcommand}'\n`);
-                ctx.stderr.write('Run lifo --help for usage\n');
+                await ctx.stderr.write(`lifo: unknown command '${subcommand}'\n`);
+                await ctx.stderr.write('Run lifo --help for usage\n');
                 return 1;
         }
     };
@@ -386,35 +387,29 @@ export function createLifoPkgCommand(registry, _shellExecute, kernel) {
  *
  * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
  */
-export function rehydrateGlobalPackages(vfs, registry) {
+export async function rehydrateGlobalPackages(storage, registry) {
+    const vfs = new ExecutionFs(storage);
     // 1. Restore dev links
-    loadDevLinks(vfs, registry);
-    if (!vfs.exists(GLOBAL_MODULES))
+    (await loadDevLinks(vfs, registry));
+    if (!await vfs.exists(GLOBAL_MODULES))
         return;
     // 2. Scan every package in /usr/lib/node_modules
-    for (const entry of vfs.readdir(GLOBAL_MODULES)) {
+    for (const entry of await vfs.readdir(GLOBAL_MODULES)) {
         if (entry.type !== 'directory')
             continue;
         const dirs = entry.name.startsWith('@')
-            ? (() => {
-                try {
-                    return vfs.readdir(join(GLOBAL_MODULES, entry.name))
-                        .filter(e => e.type === 'directory')
-                        .map(e => join(entry.name, e.name));
-                }
-                catch {
-                    return [];
-                }
-            })()
+            ? (await vfs.readdir(join(GLOBAL_MODULES, entry.name)))
+                .filter(entry => entry.type === 'directory')
+                .map(child => join(entry.name, child.name))
             : [entry.name];
         for (const dirName of dirs) {
             const pkgDir = join(GLOBAL_MODULES, dirName);
             // lifo package: has a lifo manifest → use the lifo runtime
-            const manifest = readLifoManifest(vfs, pkgDir);
+            const manifest = (await readLifoManifest(vfs, pkgDir));
             if (manifest) {
                 for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
                     const entryPath = join(pkgDir, entryRelPath);
-                    if (vfs.exists(entryPath)) {
+                    if (await vfs.exists(entryPath)) {
                         registry.register(cmdName, createLifoCommand(entryPath, vfs));
                     }
                 }
@@ -422,18 +417,18 @@ export function rehydrateGlobalPackages(vfs, registry) {
             }
             // regular npm package: has "bin" in package.json → use node runner
             const pkgJsonPath = join(pkgDir, 'package.json');
-            if (!vfs.exists(pkgJsonPath))
+            if (!await vfs.exists(pkgJsonPath))
                 continue;
             let pkg;
             try {
-                pkg = JSON.parse(vfs.readFileString(pkgJsonPath));
+                pkg = JSON.parse(await vfs.readFileString(pkgJsonPath));
             }
             catch {
                 continue;
             }
             for (const [binName, binPath] of Object.entries(getBinEntries(pkg))) {
                 const scriptPath = resolve(pkgDir, binPath);
-                if (vfs.exists(scriptPath)) {
+                if (await vfs.exists(scriptPath)) {
                     registerBinCommand(registry, binName, scriptPath);
                 }
             }
@@ -441,6 +436,6 @@ export function rehydrateGlobalPackages(vfs, registry) {
     }
 }
 /** @deprecated Use rehydrateGlobalPackages() instead. */
-export function bootLifoPackages(vfs, registry) {
-    rehydrateGlobalPackages(vfs, registry);
+export async function bootLifoPackages(vfs, registry) {
+    (await rehydrateGlobalPackages(vfs, registry));
 }

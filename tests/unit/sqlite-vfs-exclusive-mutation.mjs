@@ -111,12 +111,12 @@ vfs.symlink('../outside-dir', 'repo/out-link');
 vfs.symlink('repo', 'outside-link');
 const symlinkEscapeLease = rawVfs.acquireExclusiveMutation('/repo');
 await assert.rejects(
-  bridge.writeFile('/repo/out-link/injected.txt', 'blocked'),
+  async () => bridge.writeFile('/repo/out-link/injected.txt', 'blocked'),
   /EBUSY: repo\/out-link\/injected\.txt is locked by exclusive mutation at repo/,
 );
 assert.equal(vfs.exists('outside-dir/injected.txt'), false);
 await assert.rejects(
-  bridge.mkdir('/outside-link/new-dir'),
+  async () => bridge.mkdir('/outside-link/new-dir'),
   /EBUSY: repo\/new-dir is locked by exclusive mutation at repo/,
 );
 assert.equal(vfs.exists('repo/new-dir'), false);

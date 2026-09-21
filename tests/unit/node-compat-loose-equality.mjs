@@ -68,7 +68,7 @@ assert.equal(assertEqualHolds(NaN, 'NaN'), false);
 
 // The shim's assert.equal/notEqual reflect that, end to end.
 const nodeAssert = createModuleMap({
-  vfs: null,
+  filesystem: () => null,
   cwd: '/',
   env: {},
   stdout: { write() {} },

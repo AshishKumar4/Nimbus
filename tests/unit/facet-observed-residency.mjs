@@ -37,6 +37,8 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
+import { ExecutionFs } from '../../packages/core/src/shell/execution-fs.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
@@ -76,7 +78,7 @@ import {
     'home/user/pkg/lib.es2020.full.d.ts',
     'home/user/pkg/gone.txt',
   ]);
-  const { added } = addObservedReads(vfs, observed, bundle, requiredPaths, budgetState);
+  const { added } = (await addObservedReads(vfs, observed, bundle, requiredPaths, budgetState));
 
   assert.equal(added, 3, 'a path that no longer exists is skipped, the rest are staged');
   assert.ok(
@@ -181,7 +183,7 @@ const manager = new FacetManager(
   createFacetCtx(createFacetWorld(() => ({})), 'observed-residency'),
   env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
 );
-manager.setVfs(rawVfs);
+manager.setVfs(rawVfs, new SqliteFilesystemAuthority(rawVfs));
 
 // A data file too large for the cwd snapshot's per-file bound, reached through
 // a path the program computes — so no static scan of the entry can find it
@@ -196,7 +198,7 @@ kernel.chown('home/user/example-app', 1000, 1000);
 // The premise, asserted rather than assumed: nothing already stages it.
 {
   const state = await buildPrefetchBundle(
-    rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }),
+    new ExecutionFs(new SqliteFilesystemAuthority(rawVfs).openHost({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).fs),
     '/home/user/example-app/entry.js', '/home/user/example-app', '', undefined,
   );
   assert.ok(

@@ -28,7 +28,7 @@ const REGISTERED = new Set([
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
-    ctx.stderr.write('which: missing operand\n');
+    await ctx.stderr.write('which: missing operand\n');
     return 1;
   }
 
@@ -36,11 +36,11 @@ const command: Command = async (ctx) => {
 
   for (const name of ctx.args) {
     if (BUILTINS.has(name)) {
-      ctx.stdout.write(`${name}: shell built-in command\n`);
+      await ctx.stdout.write(`${name}: shell built-in command\n`);
     } else if (REGISTERED.has(name)) {
-      ctx.stdout.write(`${name}\n`);
+      await ctx.stdout.write(`${name}\n`);
     } else {
-      ctx.stderr.write(`which: ${name}: not found\n`);
+      await ctx.stderr.write(`which: ${name}: not found\n`);
       exitCode = 1;
     }
   }

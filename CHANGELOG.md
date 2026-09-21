@@ -4,10 +4,63 @@ An AI assistant maintains this changelog. It is provided as-is.
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
-## Unreleased
+## 2026-09-21
 
-Prepared versions: core 0.10.0, fabric 0.6.0, worker 0.8.0, sdk 0.7.0,
-loom 0.1.2, cli 0.1.10, react 0.1.6.
+core 0.11.0, worker 0.9.0, sdk 0.8.0, fabric 0.7.0, platform 0.5.0,
+cli 0.1.11, react 0.1.7, loom 0.1.3.
+
+### One filesystem authority
+
+- Every filesystem call from the shell, Node, Python, Ruby, Clang and Bash
+  goes through one credential-bound authority with live descriptors. The
+  per-process snapshot and diff transport is gone; a guest reads and writes
+  the same inodes the shell does, and permission denials come from the same
+  check.
+- Read-only opens of regular files are resident descriptors keyed by inode
+  and validated by stat revision: one stat per open, one read per revision.
+  CPython's `import urllib.request` went from 1,330 supervisor round trips
+  to 254.
+- Descriptor reads, writes and closes are native supervisor ops; the worker's
+  read accounting is a `readLease` hook on the op tools.
+- `unlink` on a missing name answers ENOENT again; `rm` and `rm -f` differ.
+
+### Runtimes and catalog
+
+- A runtime rebuilt against a new runner contract publishes under a new
+  version whose manifest names a new runner key (`bash-runner@2`,
+  `BASH_RUNNER` in `os-contracts`). `RuntimeManager` resolves a bare name to
+  the newest catalog version this workspace can bind; an explicit
+  `name@version` is refused rather than substituted. `bundle-runtime.mjs`
+  gained `--keep-default` and lists versions in publish order.
+- bash 5.2.37-2: every WASI and `nimbus_proc` import instrumented for
+  Asyncify, cwd capture, real `F_GETFD`.
+
+### Platform fixes measured on workerd
+
+- Durable Objects SQLite binds at most 100 parameters per statement
+  (`SQL_MAX_BOUND_PARAMETERS`); every batch and IN-list is sized from it.
+  A 12-column inode row had crossed it and broken npm installs of nine or
+  more files.
+- A facet's fixed-length Response returned as-is across the port hop fails
+  "disconnected prematurely" on workerd 1.20260811.1+ and truncates under
+  gzip; the hop now relays bodies through an isolate-owned stream.
+- workerd's RPC promise is a callable thenable, not a Promise; the
+  supervisor adapter detects it by shape and never takes a synchronous view
+  from a stub.
+- WASI guests keep POSIX semantics: absolute paths under the cwd preopen,
+  directory opens with write rights requested, `fd_allocate`, `path_link`.
+- `node:module` answers `enableCompileCache` and `isBuiltin` (pi's CLI
+  entry calls the former unconditionally).
+
+### Deploy
+
+- The Worker ships minified with its source map uploaded: 4.12 MB raw,
+  1.12 MB gzipped.
+
+## 2026-09-19
+
+core 0.10.0, fabric 0.6.0, worker 0.8.0, sdk 0.7.0, loom 0.1.2, cli 0.1.10,
+react 0.1.6.
 
 - Add supported runtime composition for application-owned Durable Objects through
   `@nimbus-sh/worker/workspace-host` and `@nimbus-sh/worker/facet-host`.

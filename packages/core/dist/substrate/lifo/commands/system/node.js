@@ -1,9 +1,9 @@
+import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
-import { VFSError } from '../../kernel/vfs/index.js';
 import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 const NODE_VERSION = 'v20.0.0';
 // ── Rollup / esbuild CJS-ESM interop helpers ──
@@ -62,36 +62,44 @@ function isEsmSource(source) {
     // Match import/export at line start, after semicolon, or minified (import{, import*)
     return /(?:^|\n|;)\s*(?:import\s*[\w{*('".]|export\s+|export\s*\{)/.test(source);
 }
-/** Determine if source should be treated as ESM based on filename, content, and package.json type */
-function shouldTreatAsEsm(source, filename, vfs) {
+function declaredPackageType(packageJson) {
+    try {
+        const pkg = JSON.parse(packageJson);
+        const type = typeof pkg === 'object' && pkg !== null && 'type' in pkg ? pkg.type : undefined;
+        return type === 'module' || type === 'commonjs' ? type : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Nearest package.json "type" walking up from a .js file (Node.js semantics), read synchronously inside `require`. */
+function packageType(filename, vfs) {
+    for (let dir = dirname(filename);; dir = dirname(dir)) {
+        const pkgPath = join(dir, 'package.json');
+        if (vfs.exists(pkgPath))
+            return declaredPackageType(vfs.readFileString(pkgPath));
+        if (dirname(dir) === dir)
+            return null;
+    }
+}
+/** The same walk for the main script, through the shell's own view before any `require` runs. */
+async function mainPackageType(filename, vfs) {
+    for (let dir = dirname(filename);; dir = dirname(dir)) {
+        const pkgPath = join(dir, 'package.json');
+        if (await vfs.exists(pkgPath))
+            return declaredPackageType(await vfs.readFileString(pkgPath));
+        if (dirname(dir) === dir)
+            return null;
+    }
+}
+function treatAsEsm(source, filename, declared) {
     const ext = extname(filename);
     if (ext === '.mjs')
         return true;
     if (ext === '.cjs')
         return false;
-    // Check nearest package.json "type" field (Node.js semantics)
-    if (vfs && ext === '.js') {
-        let dir = dirname(filename);
-        for (;;) {
-            const pkgPath = join(dir, 'package.json');
-            if (vfs.exists(pkgPath)) {
-                try {
-                    const pkg = JSON.parse(vfs.readFileString(pkgPath));
-                    if (pkg.type === 'module')
-                        return true;
-                    if (pkg.type === 'commonjs')
-                        return false;
-                }
-                catch { /* ignore */ }
-                break;
-            }
-            const parent = dirname(dir);
-            if (parent === dir)
-                break;
-            dir = parent;
-        }
-    }
-    return isEsmSource(source);
+    const type = ext === '.js' ? declared() : null;
+    return type === null ? isEsmSource(source) : type === 'module';
 }
 // Names that collide with the new Function() CJS wrapper parameters.
 // Using `const` for these would throw "Identifier X has already been declared",
@@ -489,34 +497,50 @@ function transformEsmToCjs(source) {
     result = unmaskStringLiterals(result, literals);
     return result;
 }
+/** A failed script read carries an error code, not one error class. */
+function scriptReadDiagnostic(error) {
+    if (!(error instanceof Error))
+        return null;
+    const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
+    if (code === null)
+        return null;
+    if (code === 'ENOENT')
+        return 'No such file or directory';
+    if (code === 'EACCES' || code === 'EPERM')
+        return 'Permission denied';
+    if (code === 'EISDIR')
+        return 'Is a directory';
+    return error.message;
+}
 function createNodeImpl(kernelOrPortRegistry) {
     return async (ctx) => {
         // Handle -v/--version
         if (ctx.args.length > 0 && (ctx.args[0] === '-v' || ctx.args[0] === '--version')) {
-            ctx.stdout.write(NODE_VERSION + '\n');
+            await ctx.stdout.write(NODE_VERSION + '\n');
             return 0;
         }
         // Handle --help
         if (ctx.args.length > 0 && ctx.args[0] === '--help') {
-            ctx.stdout.write('Usage: node [-e code] [script.js] [args...]\n');
-            ctx.stdout.write('       node -v\n\n');
-            ctx.stdout.write('Options:\n');
-            ctx.stdout.write('  -e, --eval <code>   evaluate code\n');
-            ctx.stdout.write('  -v, --version       print version\n\n');
-            ctx.stdout.write('Limitations:\n');
-            ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
-            ctx.stdout.write('  - No event loop (top-level async does not settle)\n');
-            ctx.stdout.write('  - No native modules\n');
-            ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
+            await ctx.stdout.write('Usage: node [-e code] [script.js] [args...]\n');
+            await ctx.stdout.write('       node -v\n\n');
+            await ctx.stdout.write('Options:\n');
+            await ctx.stdout.write('  -e, --eval <code>   evaluate code\n');
+            await ctx.stdout.write('  -v, --version       print version\n\n');
+            await ctx.stdout.write('Limitations:\n');
+            await ctx.stdout.write('  - ESM support via auto-transform (import/export → require/exports)\n');
+            await ctx.stdout.write('  - No event loop (top-level async does not settle)\n');
+            await ctx.stdout.write('  - No native modules\n');
+            await ctx.stdout.write('  - require() resolves: built-in modules, relative VFS files, installed packages\n');
             return 0;
         }
+        const filesystem = synchronousFilesystem(ctx.vfs);
         let source;
         let filename;
         let scriptArgs;
         // Handle -e / --eval
         if (ctx.args.length > 0 && (ctx.args[0] === '-e' || ctx.args[0] === '--eval')) {
             if (ctx.args.length < 2) {
-                ctx.stderr.write('node: -e requires an argument\n');
+                await ctx.stderr.write('node: -e requires an argument\n');
                 return 1;
             }
             source = ctx.args[1];
@@ -527,11 +551,12 @@ function createNodeImpl(kernelOrPortRegistry) {
             // Run script file
             const scriptPath = resolve(ctx.cwd, ctx.args[0]);
             try {
-                source = ctx.vfs.readFileString(scriptPath);
+                source = await ctx.vfs.readFileString(scriptPath);
             }
             catch (e) {
-                if (e instanceof VFSError) {
-                    ctx.stderr.write(`node: ${ctx.args[0]}: ${e.message}\n`);
+                const reason = scriptReadDiagnostic(e);
+                if (reason !== null) {
+                    await ctx.stderr.write(`node: ${ctx.args[0]}: ${reason}\n`);
                     return 1;
                 }
                 throw e;
@@ -541,7 +566,7 @@ function createNodeImpl(kernelOrPortRegistry) {
         }
         else {
             // No args -- print usage hint
-            ctx.stderr.write('Usage: node [-e code] [script.js] [args...]\n');
+            await ctx.stderr.write('Usage: node [-e code] [script.js] [args...]\n');
             return 1;
         }
         const dir = filename === '[eval]' ? ctx.cwd : dirname(filename);
@@ -550,7 +575,7 @@ function createNodeImpl(kernelOrPortRegistry) {
             ? kernelOrPortRegistry
             : kernelOrPortRegistry?.portRegistry;
         const nodeCtx = {
-            vfs: ctx.vfs,
+            filesystem,
             cwd: ctx.cwd,
             env: ctx.env,
             stdout: ctx.stdout,
@@ -617,7 +642,7 @@ function createNodeImpl(kernelOrPortRegistry) {
                     const cached = moduleCache.get(resolved.path);
                     if (cached)
                         return cached;
-                    const modSource = ctx.vfs.readFileString(resolved.path);
+                    const modSource = filesystem().readFileString(resolved.path);
                     return executeModule(modSource, resolved.path, resolved.path);
                 }
                 throw new Error(`Cannot find module '${name}'`);
@@ -630,12 +655,12 @@ function createNodeImpl(kernelOrPortRegistry) {
                     if (cached)
                         return cached;
                     if (resolved.path.endsWith('.json')) {
-                        const content = ctx.vfs.readFileString(resolved.path);
+                        const content = filesystem().readFileString(resolved.path);
                         const parsed = JSON.parse(content);
                         moduleCache.set(resolved.path, parsed);
                         return parsed;
                     }
-                    const modSource = ctx.vfs.readFileString(resolved.path);
+                    const modSource = filesystem().readFileString(resolved.path);
                     return executeModule(modSource, resolved.path, resolved.path);
                 }
                 throw new Error(`Cannot find module '${name}'`);
@@ -647,12 +672,12 @@ function createNodeImpl(kernelOrPortRegistry) {
                 if (cached)
                     return cached;
                 if (nmResolved.path.endsWith('.json')) {
-                    const content = ctx.vfs.readFileString(nmResolved.path);
+                    const content = filesystem().readFileString(nmResolved.path);
                     const parsed = JSON.parse(content);
                     moduleCache.set(nmResolved.path, parsed);
                     return parsed;
                 }
-                const modSource = ctx.vfs.readFileString(nmResolved.path);
+                const modSource = filesystem().readFileString(nmResolved.path);
                 return executeModule(modSource, nmResolved.path, nmResolved.path);
             }
             // Stub for rollup native binary packages
@@ -673,28 +698,28 @@ function createNodeImpl(kernelOrPortRegistry) {
         function resolveVfsModule(name, fromDir) {
             const absPath = resolve(fromDir, name);
             // Try exact path
-            if (ctx.vfs.exists(absPath)) {
+            if (filesystem().exists(absPath)) {
                 try {
-                    const stat = ctx.vfs.stat(absPath);
+                    const stat = filesystem().stat(absPath);
                     if (stat.type === 'file')
                         return { path: absPath };
                     // Directory -- try index.js
                     const indexPath = join(absPath, 'index.js');
-                    if (ctx.vfs.exists(indexPath))
+                    if (filesystem().exists(indexPath))
                         return { path: indexPath };
                 }
                 catch { /* fall through */ }
             }
             // Try .js extension
-            if (!extname(absPath) && ctx.vfs.exists(absPath + '.js')) {
+            if (!extname(absPath) && filesystem().exists(absPath + '.js')) {
                 return { path: absPath + '.js' };
             }
             // Try .mjs extension
-            if (!extname(absPath) && ctx.vfs.exists(absPath + '.mjs')) {
+            if (!extname(absPath) && filesystem().exists(absPath + '.mjs')) {
                 return { path: absPath + '.mjs' };
             }
             // Try .json extension
-            if (!extname(absPath) && ctx.vfs.exists(absPath + '.json')) {
+            if (!extname(absPath) && filesystem().exists(absPath + '.json')) {
                 return { path: absPath + '.json' };
             }
             return null;
@@ -706,9 +731,9 @@ function createNodeImpl(kernelOrPortRegistry) {
             let current = fromDir;
             for (;;) {
                 const pkgPath = join(current, 'package.json');
-                if (ctx.vfs.exists(pkgPath)) {
+                if (filesystem().exists(pkgPath)) {
                     try {
-                        const pkg = JSON.parse(ctx.vfs.readFileString(pkgPath));
+                        const pkg = JSON.parse(filesystem().readFileString(pkgPath));
                         if (pkg.imports && typeof pkg.imports === 'object') {
                             const importsMap = pkg.imports;
                             if (name in importsMap) {
@@ -756,7 +781,7 @@ function createNodeImpl(kernelOrPortRegistry) {
             let current = fromDir;
             for (;;) {
                 const candidate = join(current, 'node_modules', packageName);
-                if (ctx.vfs.exists(candidate)) {
+                if (filesystem().exists(candidate)) {
                     const resolved = resolvePackageEntry(candidate, subpath);
                     if (resolved)
                         return resolved;
@@ -768,14 +793,14 @@ function createNodeImpl(kernelOrPortRegistry) {
             }
             // Global modules
             const globalCandidate = join('/usr/lib/node_modules', packageName);
-            if (ctx.vfs.exists(globalCandidate)) {
+            if (filesystem().exists(globalCandidate)) {
                 const resolved = resolvePackageEntry(globalCandidate, subpath);
                 if (resolved)
                     return resolved;
             }
             // Legacy location (pkg command)
             const legacyCandidate = join('/usr/share/pkg/node_modules', packageName);
-            if (ctx.vfs.exists(legacyCandidate)) {
+            if (filesystem().exists(legacyCandidate)) {
                 const resolved = resolvePackageEntry(legacyCandidate, subpath);
                 if (resolved)
                     return resolved;
@@ -809,9 +834,9 @@ function createNodeImpl(kernelOrPortRegistry) {
         function resolvePackageEntry(pkgDir, subpath) {
             const pkgJsonPath = join(pkgDir, 'package.json');
             let pkgJson = null;
-            if (ctx.vfs.exists(pkgJsonPath)) {
+            if (filesystem().exists(pkgJsonPath)) {
                 try {
-                    pkgJson = JSON.parse(ctx.vfs.readFileString(pkgJsonPath));
+                    pkgJson = JSON.parse(filesystem().readFileString(pkgJsonPath));
                 }
                 catch { /* ignore */ }
             }
@@ -879,7 +904,7 @@ function createNodeImpl(kernelOrPortRegistry) {
             }
             // 3. Default to index.js
             const indexPath = join(pkgDir, 'index.js');
-            if (ctx.vfs.exists(indexPath))
+            if (filesystem().exists(indexPath))
                 return { path: indexPath };
             return null;
         }
@@ -921,7 +946,7 @@ function createNodeImpl(kernelOrPortRegistry) {
                         const cached = moduleCache.get(resolved.path);
                         if (cached)
                             return cached;
-                        const childSource = ctx.vfs.readFileString(resolved.path);
+                        const childSource = filesystem().readFileString(resolved.path);
                         return executeModule(childSource, resolved.path, resolved.path);
                     }
                     throw new Error(`Cannot find module '${name}'`);
@@ -933,12 +958,12 @@ function createNodeImpl(kernelOrPortRegistry) {
                         if (cached)
                             return cached;
                         if (resolved.path.endsWith('.json')) {
-                            const content = ctx.vfs.readFileString(resolved.path);
+                            const content = filesystem().readFileString(resolved.path);
                             const parsed = JSON.parse(content);
                             moduleCache.set(resolved.path, parsed);
                             return parsed;
                         }
-                        const childSource = ctx.vfs.readFileString(resolved.path);
+                        const childSource = filesystem().readFileString(resolved.path);
                         return executeModule(childSource, resolved.path, resolved.path);
                     }
                     throw new Error(`Cannot find module '${name}'`);
@@ -950,12 +975,12 @@ function createNodeImpl(kernelOrPortRegistry) {
                     if (cached)
                         return cached;
                     if (nmResolved.path.endsWith('.json')) {
-                        const content = ctx.vfs.readFileString(nmResolved.path);
+                        const content = filesystem().readFileString(nmResolved.path);
                         const parsed = JSON.parse(content);
                         moduleCache.set(nmResolved.path, parsed);
                         return parsed;
                     }
-                    const childSource = ctx.vfs.readFileString(nmResolved.path);
+                    const childSource = filesystem().readFileString(nmResolved.path);
                     return executeModule(childSource, nmResolved.path, nmResolved.path);
                 }
                 // Stub for rollup native binary packages
@@ -974,7 +999,7 @@ function createNodeImpl(kernelOrPortRegistry) {
                 return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
             };
             let cleanSource = stripShebang(modSource);
-            if (shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs)) {
+            if (treatAsEsm(cleanSource, modFilename, () => packageType(modFilename, filesystem()))) {
                 cleanSource = transformEsmToCjs(cleanSource);
             }
             const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanSource}\n})`;
@@ -1072,7 +1097,8 @@ function createNodeImpl(kernelOrPortRegistry) {
         const exports = module.exports;
         const global = { process, Buffer, console: nodeConsole };
         let cleanMainSource = stripShebang(source);
-        const isEsm = shouldTreatAsEsm(cleanMainSource, filename, ctx.vfs);
+        const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
+        const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
         if (isEsm) {
             cleanMainSource = transformEsmToCjs(cleanMainSource);
         }
@@ -1210,10 +1236,10 @@ function createNodeImpl(kernelOrPortRegistry) {
                 return e.exitCode;
             }
             if (e instanceof Error) {
-                ctx.stderr.write(`${e.stack || e.message}\n`);
+                await ctx.stderr.write(`${e.stack || e.message}\n`);
             }
             else {
-                ctx.stderr.write(`${String(e)}\n`);
+                await ctx.stderr.write(`${String(e)}\n`);
             }
             return 1;
         }

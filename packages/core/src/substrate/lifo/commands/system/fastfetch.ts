@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import type { VFS } from '../../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../../shell/execution-fs.js';
 
 // ─── ANSI helpers ───
 
@@ -104,14 +104,14 @@ const DEFAULT_CONFIG: FetchConfig = {
   ],
 };
 
-function loadConfig(vfs: VFS): FetchConfig {
+async function loadConfig(vfs: VFS): Promise<FetchConfig> {
   const paths = [
     '/home/user/.config/fastfetch/config.json',
     '/home/user/.fastfetchrc',
   ];
   for (const p of paths) {
     try {
-      const raw = vfs.readFileString(p);
+      const raw = (await vfs.readFileString(p));
       const parsed = JSON.parse(raw);
       return {
         logo: parsed.logo ?? DEFAULT_CONFIG.logo,
@@ -159,23 +159,23 @@ function getMemoryInfo(): string {
   return 'N/A';
 }
 
-function getDiskInfo(vfs: VFS): string {
+async function getDiskInfo(vfs: VFS): Promise<string> {
   let totalBytes = 0;
   let totalFiles = 0;
-  function walk(dir: string): void {
+  async function walk(dir: string): Promise<void> {
     try {
-      for (const entry of vfs.readdir(dir)) {
+      for (const entry of (await vfs.readdir(dir))) {
         const full = dir === '/' ? '/' + entry.name : dir + '/' + entry.name;
         if (entry.type === 'file') {
           totalFiles++;
-          totalBytes += vfs.stat(full).size;
+          totalBytes += (await vfs.stat(full)).size;
         } else {
-          walk(full);
+          (await walk(full));
         }
       }
     } catch { /* skip */ }
   }
-  walk('/');
+  (await walk('/'));
   const totalSpace = 256 * 1024 * 1024;
   return `${humanSize(totalBytes)} / ${humanSize(totalSpace)} (${totalFiles} files)`;
 }
@@ -235,9 +235,9 @@ function getLocale(): string {
   return 'en-US';
 }
 
-function getBinCount(vfs: VFS): number {
+async function getBinCount(vfs: VFS): Promise<number> {
   try {
-    return vfs.readdir('/bin').length + 20;
+    return (await vfs.readdir('/bin')).length + 20;
   } catch {
     return 80;
   }
@@ -255,12 +255,12 @@ function colorBlocks(): [string, string] {
 
 // ─── Module resolver ───
 
-function resolveModule(
+async function resolveModule(
   mod: string,
   ctx: { user: string; hostname: string; cols: number; rows: number; vfs: VFS },
   labelColor: string,
   separator: string,
-): string | null {
+): Promise<string | null> {
   const lbl = (s: string, width: number) =>
     `${BOLD}${labelColor}${s.padEnd(width)}${RST}${separator}`;
 
@@ -280,7 +280,7 @@ function resolveModule(
     case 'uptime':
       return `${lbl('Uptime', W)}${formatUptime()}`;
     case 'packages':
-      return `${lbl('Packages', W)}${getBinCount(ctx.vfs)} (builtins + commands)`;
+      return `${lbl('Packages', W)}${(await getBinCount(ctx.vfs))} (builtins + commands)`;
     case 'shell':
       return `${lbl('Shell', W)}nimbus-sh`;
     case 'terminal':
@@ -290,7 +290,7 @@ function resolveModule(
     case 'memory':
       return `${lbl('Memory', W)}${getMemoryInfo()}`;
     case 'disk': {
-      return `${lbl('Disk (/)', W)}${getDiskInfo(ctx.vfs)}`;
+      return `${lbl('Disk (/)', W)}${(await getDiskInfo(ctx.vfs))}`;
     }
     case 'locale':
       return `${lbl('Locale', W)}${getLocale()}`;
@@ -308,38 +308,38 @@ function resolveModule(
 // ─── Main command ───
 
 const command: Command = async (ctx) => {
-  const config = loadConfig(ctx.vfs);
+  const config = (await loadConfig(ctx.vfs));
 
   // Handle --help
   if (ctx.args.includes('--help') || ctx.args.includes('-h')) {
-    ctx.stdout.write(`Usage: fastfetch [--logo default|small|none] [--color COLOR]
-
-Config file: ~/.config/fastfetch/config.json
-
-Example config:
-{
-  "logo": "default",
-  "color": "brightcyan",
-  "separator": "",
-  "modules": [
+    await ctx.stdout.write(`Usage: fastfetch [--logo default|small|none] [--color COLOR]
+    
+    Config file: ~/.config/fastfetch/config.json
+    
+    Example config:
+    {
+      "logo": "default",
+      "color": "brightcyan",
+      "separator": "",
+      "modules": [
     "title", "separator", "os", "host", "kernel",
     "uptime", "packages", "shell", "terminal",
     "cpu", "memory", "disk", "locale",
     "break", "colors"
-  ]
-}
-
-Available modules:
-  title, separator, os, host, kernel, uptime, packages,
-  shell, terminal, cpu, memory, disk, locale, colors, break
-
-Available logos: default, small, none (or put custom ASCII in config)
-
-Colors: black, red, green, yellow, blue, magenta, cyan, white,
+      ]
+    }
+    
+    Available modules:
+      title, separator, os, host, kernel, uptime, packages,
+      shell, terminal, cpu, memory, disk, locale, colors, break
+    
+    Available logos: default, small, none (or put custom ASCII in config)
+    
+    Colors: black, red, green, yellow, blue, magenta, cyan, white,
         brightblack, brightred, brightgreen, brightyellow,
         brightblue, brightmagenta, brightcyan, brightwhite,
         or a number 0-255 for 256-color palette
-`);
+    `);
     return 0;
   }
 
@@ -359,7 +359,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
   const isKnownColor = COLOR_MAP[colorChoice] !== undefined ||
     (!isNaN(parseInt(colorChoice, 10)) && parseInt(colorChoice, 10) >= 0 && parseInt(colorChoice, 10) <= 255);
   if (!isKnownColor) {
-    ctx.stderr.write(`fastfetch: unknown color '${colorChoice}', using default (brightcyan)\n`);
+    await ctx.stderr.write(`fastfetch: unknown color '${colorChoice}', using default (brightcyan)\n`);
   }
   const accent = resolveColor(colorChoice);
 
@@ -374,7 +374,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
   } else {
     // Try loading custom logo from file
     try {
-      const raw = ctx.vfs.readFileString(logoChoice);
+      const raw = (await ctx.vfs.readFileString(logoChoice));
       logo = buildCustomLogo(raw, accent);
     } catch {
       logo = buildDefaultLogo(accent);
@@ -390,7 +390,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
 
   const infoLines: string[] = [];
   for (const mod of config.modules) {
-    const result = resolveModule(mod, modCtx, accent, config.separator);
+    const result = (await resolveModule(mod, modCtx, accent, config.separator));
     if (result !== null) {
       // Some modules (like colors) produce multi-line output
       for (const line of result.split('\n')) {
@@ -420,7 +420,7 @@ Colors: black, red, green, yellow, blue, magenta, cyan, white,
   }
 
   output += '\n';
-  ctx.stdout.write(output);
+  await ctx.stdout.write(output);
 
   return 0;
 };

@@ -1,12 +1,11 @@
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import type { CommandRunAsHost, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
-import type { VFS } from '../substrate/lifo/kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from './execution-fs.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { textSink } from '../_shared/bytes.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';
 
-type Output = { write(s: string): void };
+type Output = { write(s: string): void | Promise<void> };
 
 type ShellCommandContext = {
   args?: string[];
@@ -67,10 +66,9 @@ const SHELL_ALIASES = {
 export function registerShellEntrypointCommands(
   registry: RegistryLike,
   shell: ShellEntrypointExecutor,
-  vfs: CredentialedVfs,
 ): void {
-  const sh = makeShellEntrypoint('sh', shell, vfs);
-  const bash = makeShellEntrypoint('bash', shell, vfs);
+  const sh = makeShellEntrypoint('sh', shell);
+  const bash = makeShellEntrypoint('bash', shell);
   for (const name of SHELL_ALIASES.sh) {
     if (!registry.has(name)) registry.register(name, sh);
   }
@@ -92,16 +90,15 @@ function usageText(shellName: ShellName, topic: 'help' | 'version'): string {
 function makeShellEntrypoint(
   shellName: ShellName,
   shell: ShellEntrypointExecutor,
-  vfs: CredentialedVfs,
 ): (ctx: ShellCommandContext) => Promise<number> {
   return async (ctx) => {
     const program = await parseShellProgram(shellName, ctx, ctx.vfs);
     if ('error' in program) {
-      if (program.error) ctx.stderr.write(program.error + '\n');
+      if (program.error) (await ctx.stderr.write(program.error + '\n'));
       return program.exitCode;
     }
     if (program.kind === 'usage') {
-      ctx.stdout.write(usageText(shellName, program.topic));
+      (await ctx.stdout.write(usageText(shellName, program.topic)));
       return 0;
     }
 
@@ -109,7 +106,7 @@ function makeShellEntrypoint(
     let forwardedStderr = '';
     const inheritedStdin = await resolveInheritedStdin(shellName, program, ctx);
     if ('error' in inheritedStdin) {
-      ctx.stderr.write(inheritedStdin.error + '\n');
+      (await ctx.stderr.write(inheritedStdin.error + '\n'));
       return inheritedStdin.exitCode;
     }
     const result = await shell.execute(program.body, {
@@ -120,13 +117,13 @@ function makeShellEntrypoint(
       scriptMode: true,
       stdin: inheritedStdin.stdin,
       terminalStdin: ctx.terminalStdin,
-      onStdout: textSink((data) => {
+      onStdout: textSink(async (data) => {
         forwardedStdout += data;
-        ctx.stdout.write(data);
+        (await ctx.stdout.write(data));
       }),
-      onStderr: textSink((data) => {
+      onStderr: textSink(async (data) => {
         forwardedStderr += data;
-        ctx.stderr.write(data);
+        (await ctx.stderr.write(data));
       }),
       runExitTrap: true,
       terminalFds: {
@@ -139,7 +136,7 @@ function makeShellEntrypoint(
         cred: ctx.cred,
         setUmask: ctx.setUmask,
       },
-      runAs: (_parent, cred, argv) => ctx.runAs(cred, argv),
+      runAs: async (_parent, cred, argv) => (await ctx.runAs(cred, argv)),
     });
     writeUnforwarded(ctx.stdout, result.stdout, forwardedStdout);
     writeUnforwarded(ctx.stderr, result.stderr, forwardedStderr);
@@ -164,7 +161,7 @@ async function resolveInheritedStdin(
 async function parseShellProgram(
   shellName: ShellName,
   ctx: ShellCommandContext,
-  vfs: Pick<CredentialedVfs, 'exists' | 'readFileString'>,
+  vfs: Pick<VFS, 'exists' | 'readFileString'>,
 ): Promise<ParseResult> {
   const parsed = parseShellInvocation(shellName, ctx.args);
   if (!parsed.ok) {
@@ -212,18 +209,18 @@ async function parseShellProgram(
   return { kind: 'stdin', body: stdin, argv0: shellName, args: parsed.invocation.args, options: parsed.invocation.options };
 }
 
-function loadScript(
+async function loadScript(
   shellName: ShellName,
   script: string,
   args: string[],
   options: ShellInvocationOptions,
   cwd: string | undefined,
-  vfs: Pick<CredentialedVfs, 'exists' | 'readFileString'>,
-): ParseResult {
+  vfs: Pick<VFS, 'exists' | 'readFileString'>,
+): Promise<ParseResult> {
   const path = resolveVfsPath(script, cwd || '/home/user');
   try {
-    if (!vfs.exists(path)) return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };
-    return { kind: 'script', path, body: vfs.readFileString(path), argv0: script, args, options };
+    if (!await vfs.exists(path)) return { error: `${shellName}: ${script}: No such file or directory`, exitCode: 127 };
+    return { kind: 'script', path, body: await vfs.readFileString(path), argv0: script, args, options };
   } catch (error: unknown) {
     if (hasErrorCode(error, 'EACCES') || hasErrorCode(error, 'EPERM')) {
       return { error: `${shellName}: ${script}: Permission denied`, exitCode: 126 };

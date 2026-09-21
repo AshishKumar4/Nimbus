@@ -223,8 +223,11 @@ await expectOut('an unterminated boundary keeps GNU newline rules inside a range
 
 {
   const r = await sh(`sed -n 'p' /tmp/gone.txt /tmp/s1.txt`);
-  check('a missing first file fails with exit 1 before any output, as before',
-    r.exitCode === 1 && r.stdout === '' && r.stderr === 'ENOENT: tmp/gone.txt\n',
+  // GNU sed reports the unreadable file, exits 1, and still prints every
+  // readable file that followed it.
+  check('a missing first file fails with exit 1 and the later files still print',
+    r.exitCode === 1 && r.stdout === '1\n2\n3\n4\n'
+      && r.stderr === 'sed: /tmp/gone.txt: ENOENT: /tmp/gone.txt\n',
     `exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
 }
 {
@@ -254,26 +257,26 @@ await expectOut('an unterminated boundary keeps GNU newline rules inside a range
   await sh('printf "r5\\nr6\\n" > /tmp/f2.txt');
   await sh('printf "r7\\n" > /tmp/f3.txt');
   const events = [];
-  const protoReadFileString = SqliteVFS.prototype.readFileString;
-  rawVfs.readFileString = function (path, cred) {
+  const protoReadFile = SqliteVFS.prototype.readFile;
+  rawVfs.readFile = function (path, cred) {
     events.push(`read ${path}`);
-    return protoReadFileString.call(this, path, cred);
+    return protoReadFile.call(this, path, cred);
   };
   try {
     await box.shell.execute("sed -n 'p' /tmp/f1.txt /tmp/f2.txt /tmp/f3.txt", {
       onStdout: (data) => { events.push(`out ${JSON.stringify(new TextDecoder().decode(data))}`); },
     });
   } finally {
-    delete rawVfs.readFileString;
+    delete rawVfs.readFile;
   }
   // Each later file opens only once the previous file's lines up to the
   // last-but-one are emitted, so no two file contents are ever held at once.
   const expected = [
-    'read /tmp/f1.txt',
+    'read tmp/f1.txt',
     'out "r1\\n"', 'out "r2\\n"', 'out "r3\\n"',
-    'read /tmp/f2.txt',
+    'read tmp/f2.txt',
     'out "r4\\n"', 'out "r5\\n"',
-    'read /tmp/f3.txt',
+    'read tmp/f3.txt',
     'out "r6\\n"', 'out "r7\\n"',
   ];
   check('each file opens only after the previous one is fully emitted',

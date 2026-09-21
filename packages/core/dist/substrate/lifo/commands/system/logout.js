@@ -3,11 +3,11 @@ export function createLogoutCommand(deleteToken, onExit) {
         try {
             deleteToken();
             ctx.env.LIFO_TOKEN = '';
-            ctx.stdout.write('Logged out.\n');
+            await ctx.stdout.write('Logged out.\n');
             onExit();
         }
         catch {
-            ctx.stdout.write('Not logged in.\n');
+            await ctx.stdout.write('Not logged in.\n');
         }
         return 0;
     };

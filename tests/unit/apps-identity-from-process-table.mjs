@@ -45,6 +45,7 @@ import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { buildPublicPreviewHost } from '../../packages/worker/src/_shared/preview-host.ts';
 import { PUBLIC_BEARER_HEADER, PREVIEW_CAPABILITY_HEADER } from '../../packages/worker/src/_shared/session-router.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -139,7 +140,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
   const vfsHarness = sessionFs ? null : createSqliteVfsTestHarness();
   const vfs = sessionFs ?? new SqliteVFS(vfsHarness.sql, vfsHarness.ctx);
   if (sessionFs === null) {
-    fm.setVfs(vfs);
+    fm.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
   }
   const self = {
     shell: {},
@@ -169,6 +170,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     ensureFacetManager() {
       this.facetManagerComposed ??= composeFacetManager({
         ctx, env, processes, portRegistry, vfs,
+        filesystem: new SqliteFilesystemAuthority(vfs),
         hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
       });
       this.facetManager = fm;

@@ -92,14 +92,14 @@ function expandRange(set) {
 const command = async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, spec);
     if (unknown.length > 0) {
-        ctx.stderr.write(`tr: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
+        await ctx.stderr.write(`tr: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
         return 1;
     }
     const deleteMode = flags.delete === true;
     const squeezeMode = flags.squeeze === true;
     const sets = positional;
     if (sets.length === 0) {
-        ctx.stderr.write('tr: missing operand\n');
+        await ctx.stderr.write('tr: missing operand\n');
         return 1;
     }
     let text = '';
@@ -107,7 +107,7 @@ const command = async (ctx) => {
         text = await ctx.stdin.readAll();
     }
     else {
-        ctx.stderr.write('tr: missing input\n');
+        await ctx.stderr.write('tr: missing input\n');
         return 1;
     }
     const set1 = expandRange(sets[0]);
@@ -131,7 +131,7 @@ const command = async (ctx) => {
             }
             result = squeezed;
         }
-        ctx.stdout.write(result);
+        await ctx.stdout.write(result);
         return 0;
     }
     if (squeezeMode && sets.length === 1) {
@@ -144,11 +144,11 @@ const command = async (ctx) => {
             result += ch;
             lastCh = ch;
         }
-        ctx.stdout.write(result);
+        await ctx.stdout.write(result);
         return 0;
     }
     if (sets.length < 2) {
-        ctx.stderr.write('tr: missing operand after set1\n');
+        await ctx.stderr.write('tr: missing operand after set1\n');
         return 1;
     }
     const set2 = expandRange(sets[1]);
@@ -174,7 +174,7 @@ const command = async (ctx) => {
         }
         result = squeezed;
     }
-    ctx.stdout.write(result);
+    await ctx.stdout.write(result);
     return 0;
 };
 export default command;

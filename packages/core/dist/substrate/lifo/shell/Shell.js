@@ -1,3 +1,4 @@
+import { bindExecutionFs } from '../../../shell/execution-fs.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { VFSError } from '../kernel/vfs/index.js';
@@ -35,8 +36,11 @@ export function formatShellPrompt(env, cwd) {
 /** PS2 — shown while an accepted line has not closed into a command yet. */
 const CONTINUATION_PROMPT = '> ';
 export class Shell {
+    filesystem;
     terminal;
-    vfs;
+    get vfs() {
+        return bindExecutionFs(this.filesystem, { pid: this.commandIdentity.pid, cred: this.commandIdentity.cred });
+    }
     registry;
     cwd;
     env;
@@ -92,9 +96,9 @@ export class Shell {
      * as one keystroke rather than three.
      */
     typeAhead = [];
-    constructor(terminal, vfs, registry, env, processRegistry, commandIdentity) {
+    constructor(terminal, filesystem, registry, env, processRegistry, commandIdentity) {
+        this.filesystem = filesystem;
         this.terminal = terminal;
-        this.vfs = vfs;
         this.registry = registry;
         this.cwd = env['HOME'] ?? '/home/user';
         this.env = { ...env };
@@ -119,8 +123,7 @@ export class Shell {
         // Use shared process registry from Kernel
         this.processRegistry = processRegistry;
         // Initialize history manager
-        this.historyManager = new HistoryManager(vfs);
-        this.historyManager.load();
+        this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? '/home/user');
         // Initialize interpreter
         this.interpreterConfig = {
             env: this.env,
@@ -128,6 +131,7 @@ export class Shell {
             getCwd: () => this.cwd,
             setCwd: (cwd) => this.setCwd(cwd),
             vfs: this.vfs,
+            filesystem,
             registry: this.registry,
             builtins: this.builtins,
             jobTable: this.jobTable,
@@ -142,36 +146,36 @@ export class Shell {
         this.interpreter = new Interpreter(this.interpreterConfig);
     }
     registerBuiltins() {
-        this.builtins.set('cd', (args, _stdout, stderr) => this.builtinCd(args, stderr));
-        this.builtins.set('pwd', (_args, stdout) => this.builtinPwd(stdout));
-        this.builtins.set('echo', (args, stdout) => this.builtinEcho(args, stdout));
-        this.builtins.set('clear', () => this.builtinClear());
-        this.builtins.set('export', (args, _stdout, stderr) => this.builtinExport(args, stderr));
-        this.builtins.set('exit', (args, _stdout, stderr) => this.builtinExit(args, stderr));
+        this.builtins.set('cd', async (args, _stdout, stderr) => (await this.builtinCd(args, stderr)));
+        this.builtins.set('pwd', async (_args, stdout) => (await this.builtinPwd(stdout)));
+        this.builtins.set('echo', async (args, stdout) => (await this.builtinEcho(args, stdout)));
+        this.builtins.set('clear', async () => (await this.builtinClear()));
+        this.builtins.set('export', async (args, _stdout, stderr) => (await this.builtinExport(args, stderr)));
+        this.builtins.set('exit', async (args, _stdout, stderr) => (await this.builtinExit(args, stderr)));
         this.builtins.set('true', () => Promise.resolve(0));
         this.builtins.set('false', () => Promise.resolve(1));
         this.builtins.set(':', () => Promise.resolve(0));
-        this.builtins.set('set', (args, stdout, stderr, _stdin, context) => this.builtinSet(args, stdout, stderr, context));
-        this.builtins.set('shift', (args, _stdout, stderr, _stdin, context) => this.builtinShift(args, stderr, context));
-        this.builtins.set('trap', (args, stdout, stderr) => this.builtinTrap(args, stdout, stderr));
-        this.builtins.set('hash', (args, stdout, stderr) => this.builtinHash(args, stdout, stderr));
-        this.builtins.set('readonly', (args, stdout, stderr) => this.builtinReadonly(args, stdout, stderr));
-        this.builtins.set('read', (args, _stdout, stderr, stdin, context) => this.builtinRead(args, stdin, stderr, context));
-        this.builtins.set('wait', (args, _stdout, stderr) => this.builtinWait(args, stderr));
-        this.builtins.set('unset', (args, _stdout, stderr) => this.builtinUnset(args, stderr));
-        this.builtins.set('local', (args, _stdout, stderr, _stdin, context) => this.builtinDeclare('local', args, stderr, context));
-        this.builtins.set('declare', (args, _stdout, stderr, _stdin, context) => this.builtinDeclare('declare', args, stderr, context));
-        this.builtins.set('typeset', (args, _stdout, stderr, _stdin, context) => this.builtinDeclare('typeset', args, stderr, context));
-        this.builtins.set('jobs', (_args, stdout) => this.builtinJobs(stdout));
-        this.builtins.set('fg', (args, stdout, stderr) => this.builtinFg(args, stdout, stderr));
-        this.builtins.set('bg', (args, stdout, stderr) => this.builtinBg(args, stdout, stderr));
-        this.builtins.set('history', (_args, stdout) => this.builtinHistory(stdout));
-        this.builtins.set('source', (args, stdout, stderr, _stdin, context) => this.builtinSource(args, stdout, stderr, context));
-        this.builtins.set('.', (args, stdout, stderr, _stdin, context) => this.builtinSource(args, stdout, stderr, context));
-        this.builtins.set('alias', (args, stdout) => this.builtinAlias(args, stdout));
-        this.builtins.set('unalias', (args, _stdout, stderr) => this.builtinUnalias(args, stderr));
-        this.builtins.set('test', (args, _stdout, stderr, _stdin, context) => evaluateTest(args, context?.vfs ?? this.vfs, stderr, context));
-        this.builtins.set('[', (args, _stdout, stderr, _stdin, context) => evaluateTest(args, context?.vfs ?? this.vfs, stderr, context));
+        this.builtins.set('set', async (args, stdout, stderr, _stdin, context) => (await this.builtinSet(args, stdout, stderr, context)));
+        this.builtins.set('shift', async (args, _stdout, stderr, _stdin, context) => (await this.builtinShift(args, stderr, context)));
+        this.builtins.set('trap', async (args, stdout, stderr) => (await this.builtinTrap(args, stdout, stderr)));
+        this.builtins.set('hash', async (args, stdout, stderr) => (await this.builtinHash(args, stdout, stderr)));
+        this.builtins.set('readonly', async (args, stdout, stderr) => (await this.builtinReadonly(args, stdout, stderr)));
+        this.builtins.set('read', async (args, _stdout, stderr, stdin, context) => (await this.builtinRead(args, stdin, stderr, context)));
+        this.builtins.set('wait', async (args, _stdout, stderr) => (await this.builtinWait(args, stderr)));
+        this.builtins.set('unset', async (args, _stdout, stderr) => (await this.builtinUnset(args, stderr)));
+        this.builtins.set('local', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('local', args, stderr, context)));
+        this.builtins.set('declare', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('declare', args, stderr, context)));
+        this.builtins.set('typeset', async (args, _stdout, stderr, _stdin, context) => (await this.builtinDeclare('typeset', args, stderr, context)));
+        this.builtins.set('jobs', async (_args, stdout) => (await this.builtinJobs(stdout)));
+        this.builtins.set('fg', async (args, stdout, stderr) => (await this.builtinFg(args, stdout, stderr)));
+        this.builtins.set('bg', async (args, stdout, stderr) => (await this.builtinBg(args, stdout, stderr)));
+        this.builtins.set('history', async (_args, stdout) => (await this.builtinHistory(stdout)));
+        this.builtins.set('source', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
+        this.builtins.set('.', async (args, stdout, stderr, _stdin, context) => (await this.builtinSource(args, stdout, stderr, context)));
+        this.builtins.set('alias', async (args, stdout) => (await this.builtinAlias(args, stdout)));
+        this.builtins.set('unalias', async (args, _stdout, stderr) => (await this.builtinUnalias(args, stderr)));
+        this.builtins.set('test', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
+        this.builtins.set('[', async (args, _stdout, stderr, _stdin, context) => (await evaluateTest(args, context?.vfs ?? this.vfs, stderr, context)));
     }
     getJobTable() {
         return this.jobTable;
@@ -198,7 +202,7 @@ export class Shell {
             return;
         this.terminal.onData(() => { });
         this.terminal = terminal;
-        terminal.onData((data) => this.handleInput(data));
+        terminal.onData(async (data) => (await this.handleInput(data)));
     }
     takeQueuedInput() {
         return this.pasteQueue.splice(0);
@@ -224,21 +228,21 @@ export class Shell {
         if (this._executeDepth > 10) {
             this._executeDepth--;
             const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
-            options?.onStderr?.(enc.encode(msg));
+            await options?.onStderr?.(enc.encode(msg));
             return { stdout: '', stderr: msg, exitCode: 1 };
         }
         let stdoutBuf = '';
         let stderrBuf = '';
         const stdoutStream = {
-            write: (text) => {
+            write: async (text) => {
                 stdoutBuf += text;
-                options?.onStdout?.(enc.encode(text));
+                return (await options?.onStdout?.(enc.encode(text)));
             },
         };
         const stderrStream = {
-            write: (text) => {
+            write: async (text) => {
                 stderrBuf += text;
-                options?.onStderr?.(enc.encode(text));
+                return (await options?.onStderr?.(enc.encode(text)));
             },
         };
         // Save current state
@@ -260,9 +264,9 @@ export class Shell {
         // (`/dev/tty`, command-stdout fallback). Threaded through `executeLine`
         // options so a nested `execute` never mutates shared interpreter config the
         // parent command's late-bound closures read.
-        const writeToTerminal = (text) => {
+        const writeToTerminal = async (text) => {
             stderrBuf += text;
-            options?.onStderr?.(enc.encode(text));
+            return (await options?.onStderr?.(enc.encode(text)));
         };
         // Apply per-call overrides
         if (options?.cwd) {
@@ -300,7 +304,7 @@ export class Shell {
         catch (e) {
             const msg = e instanceof Error ? (e.stack || e.message) : String(e);
             stderrBuf += msg + '\n';
-            options?.onStderr?.(enc.encode(msg + '\n'));
+            await options?.onStderr?.(enc.encode(msg + '\n'));
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
         }
         finally {
@@ -347,26 +351,28 @@ export class Shell {
      * fresh terminal. Input arriving earlier is still taken; it just runs
      * alongside the rc files.
      */
-    start() {
+    async start() {
         // Register this shell instance as a process
         // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
         const pid = this.processRegistry.registerShell(this.cwd, this.env);
         this.env['$'] = String(pid);
-        this.terminal.onData((data) => this.handleInput(data));
+        this.terminal.onData(async (data) => (await this.handleInput(data)));
         // Source rc files on startup (like bash/zsh)
         const sourced = this.sourceRcFiles();
         // The bash launch is deliberately not part of the returned promise: an
         // interactive bash runs until the user exits it.
-        sourced.then(async () => {
+        return sourced.then(async () => {
             const home = this.env['HOME'] ?? '/home/user';
-            if (readDefaultShell(this.vfs, home) === 'bash') {
-                await this.executeLine('bash -i');
+            if ((await readDefaultShell(this.vfs, home)) === 'bash') {
+                void this.executeLine('bash -i').catch(error => {
+                    this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
+                    this.printPrompt();
+                });
             }
             else {
                 this.printPrompt();
             }
         });
-        return sourced;
     }
     async sourceRcFiles() {
         const home = this.env['HOME'] ?? '/home/user';
@@ -379,7 +385,7 @@ export class Shell {
             `${home}/.profile`,
         ];
         for (const rc of rcFiles) {
-            if (this.vfs.exists(rc)) {
+            if ((await this.vfs.exists(rc))) {
                 await this.sourceFile(rc);
                 break;
             }
@@ -400,7 +406,7 @@ export class Shell {
         // Zombies are already logged by JobTable above, so no need to log again
         this.terminal.write(formatShellPrompt(this.env, this.cwd));
     }
-    handleInput(data) {
+    async handleInput(data) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly
         if (this.running && this.terminalStdin?.rawMode) {
             this.terminalStdin.feed(data);
@@ -431,7 +437,7 @@ export class Shell {
             if (lastSegment) {
                 this.pasteQueue.push(lastSegment);
             }
-            this.acceptLine(line);
+            (await this.acceptLine(line));
             return;
         }
         // ESC sequences. Cursor motion and history are line EDITING, so they only
@@ -530,7 +536,7 @@ export class Shell {
         }
         // Tab completion
         if (data === '\t') {
-            this.handleTab();
+            (await this.handleTab());
             return;
         }
         // Reset tab state on any non-tab input
@@ -543,7 +549,7 @@ export class Shell {
             this.cursorPos = 0;
             this.screenCursorRow = 0;
             this.historyIndex = -1;
-            this.acceptLine(line);
+            (await this.acceptLine(line));
             return;
         }
         // Backspace
@@ -577,7 +583,7 @@ export class Shell {
             this.redrawLine();
         }
     }
-    handleTab() {
+    async handleTab() {
         const completionCtx = {
             line: this.lineBuffer,
             cursorPos: this.cursorPos,
@@ -587,7 +593,7 @@ export class Shell {
             registry: this.registry,
             builtinNames: [...this.builtins.keys()],
         };
-        const result = complete(completionCtx);
+        const result = (await complete(completionCtx));
         const currentWord = this.lineBuffer.slice(result.replacementStart, result.replacementEnd);
         if (result.completions.length === 0) {
             // No completions -- bell
@@ -765,18 +771,18 @@ export class Shell {
      * delivered when that one settles, so a queued line is never fed into a
      * shell that is busy again.
      */
-    drainTypeAhead() {
+    async drainTypeAhead() {
         while (!this.running && this.typeAhead.length > 0) {
-            this.handleInput(this.typeAhead.shift());
+            (await this.handleInput(this.typeAhead.shift()));
         }
     }
-    drainPasteQueue() {
+    async drainPasteQueue() {
         const next = this.pasteQueue.shift();
         if (next === undefined)
             return;
         this.terminal.write(next);
         this.terminal.write('\r\n');
-        this.acceptLine(next);
+        (await this.acceptLine(next));
     }
     moveCursorLeft() {
         if (this.cursorPos > 0) {
@@ -840,13 +846,13 @@ export class Shell {
      * PS2 and keeps reading, and so does this shell. A `\<newline>` join drops
      * both characters; a quoted join keeps the newline in the string.
      */
-    acceptLine(rawLine) {
+    async acceptLine(rawLine) {
         let command;
         if (this.pendingLine === null) {
             command = rawLine.trim();
             if (!command) {
                 this.printPrompt();
-                this.drainPasteQueue();
+                (await this.drainPasteQueue());
                 return;
             }
         }
@@ -858,12 +864,12 @@ export class Shell {
         if (continuationState(command) !== null) {
             this.pendingLine = command;
             this.printPrompt();
-            this.drainPasteQueue();
+            (await this.drainPasteQueue());
             return;
         }
         this.pendingLine = null;
         this.history.push(command);
-        this.executeLine(command);
+        (await this.executeLine(command));
     }
     async executeLine(line) {
         // History expansion
@@ -874,7 +880,7 @@ export class Shell {
             this.writeToTerminal(actualLine + '\n');
         }
         // Add to history
-        this.historyManager.add(actualLine);
+        (await this.historyManager.add(actualLine));
         this.running = true;
         this.abortController = new AbortController();
         this.terminalStdin = new TerminalStdin();
@@ -894,8 +900,8 @@ export class Shell {
             this.abortController = null;
         }
         this.printPrompt();
-        this.drainPasteQueue();
-        this.drainTypeAhead();
+        (await this.drainPasteQueue());
+        (await this.drainTypeAhead());
     }
     // ─── Builtins (now with stdout/stderr params for pipe support) ───
     async builtinCd(args, stderr) {
@@ -912,9 +918,9 @@ export class Shell {
             newPath = resolve(this.cwd, target);
         }
         try {
-            const stat = this.vfs.stat(newPath);
+            const stat = (await this.vfs.stat(newPath));
             if (stat.type !== 'directory') {
-                stderr.write(`cd: ${target}: Not a directory\n`);
+                (await stderr.write(`cd: ${target}: Not a directory\n`));
                 return 1;
             }
             this.env['OLDPWD'] = this.cwd;
@@ -923,14 +929,14 @@ export class Shell {
         }
         catch (e) {
             if (e instanceof VFSError) {
-                stderr.write(`cd: ${target}: ${e.message}\n`);
+                (await stderr.write(`cd: ${target}: ${e.message}\n`));
                 return 1;
             }
             throw e;
         }
     }
     async builtinPwd(stdout) {
-        stdout.write(this.cwd + '\n');
+        (await stdout.write(this.cwd + '\n'));
         return 0;
     }
     async builtinEcho(args, stdout) {
@@ -974,7 +980,7 @@ export class Shell {
         }
         const body = args.slice(i).join(' ');
         const output = interpretEscapes ? decodeEchoEscapes(body) : body;
-        stdout.write(suppressNewline ? output : `${output}\n`);
+        (await stdout.write(suppressNewline ? output : `${output}\n`));
         return 0;
     }
     async builtinClear() {
@@ -988,7 +994,7 @@ export class Shell {
             if (eqIdx !== -1) {
                 const key = arg.slice(0, eqIdx);
                 const value = arg.slice(eqIdx + 1);
-                if (!this.assignEnv(key, value, stderr))
+                if (!(await this.assignEnv(key, value, stderr)))
                     exitCode = 1;
             }
         }
@@ -997,7 +1003,7 @@ export class Shell {
     async builtinSet(args, stdout, stderr, context) {
         if (args.length === 0) {
             for (const key of Object.keys(this.env).sort()) {
-                stdout.write(`${key}=${quoteSetValue(this.env[key] ?? '')}\n`);
+                (await stdout.write(`${key}=${quoteSetValue(this.env[key] ?? '')}\n`));
             }
             return 0;
         }
@@ -1014,11 +1020,11 @@ export class Shell {
             if (arg === '-o' || arg === '+o') {
                 const option = args[i + 1];
                 if (!option) {
-                    this.printShellOptions(stdout);
+                    (await this.printShellOptions(stdout));
                     return 0;
                 }
                 if (!this.setShellOptionByName(option, arg[0] === '-')) {
-                    stderr.write(`set: ${option}: invalid option name\n`);
+                    (await stderr.write(`set: ${option}: invalid option name\n`));
                     return 2;
                 }
                 i++;
@@ -1031,11 +1037,11 @@ export class Shell {
                     if (flag === 'o') {
                         const option = j === arg.length - 1 ? args[i + 1] : arg.slice(j + 1);
                         if (!option) {
-                            this.printShellOptions(stdout);
+                            (await this.printShellOptions(stdout));
                             return 0;
                         }
                         if (!this.setShellOptionByName(option, enabled)) {
-                            stderr.write(`set: ${option}: invalid option name\n`);
+                            (await stderr.write(`set: ${option}: invalid option name\n`));
                             return 2;
                         }
                         if (j === arg.length - 1)
@@ -1043,7 +1049,7 @@ export class Shell {
                         break;
                     }
                     if (!this.setShellOptionByFlag(flag, enabled)) {
-                        stderr.write(`set: -${flag}: invalid option\n`);
+                        (await stderr.write(`set: -${flag}: invalid option\n`));
                         return 2;
                     }
                 }
@@ -1059,18 +1065,18 @@ export class Shell {
     }
     async builtinShift(args, stderr, context) {
         if (args.length > 1) {
-            stderr.write('shift: too many arguments\n');
+            (await stderr.write('shift: too many arguments\n'));
             return 1;
         }
         const raw = args[0] ?? '1';
         if (!isDecimalInteger(raw)) {
-            stderr.write(`shift: ${raw}: numeric argument required\n`);
+            (await stderr.write(`shift: ${raw}: numeric argument required\n`));
             return 1;
         }
         const count = Number.parseInt(raw, 10);
         const positionals = this.currentPositionals(context);
         if (count > positionals.length) {
-            stderr.write('shift: shift count out of range\n');
+            (await stderr.write('shift: shift count out of range\n'));
             return 1;
         }
         this.setPositionals(positionals.slice(count), context);
@@ -1079,7 +1085,7 @@ export class Shell {
     async builtinTrap(args, stdout, stderr) {
         if (args.length === 0) {
             for (const [signal, action] of this.traps.entries()) {
-                stdout.write(`trap -- ${quoteSetValue(action)} ${signal}\n`);
+                (await stdout.write(`trap -- ${quoteSetValue(action)} ${signal}\n`));
             }
             return 0;
         }
@@ -1088,18 +1094,18 @@ export class Shell {
             index++;
         const action = args[index];
         if (action === undefined) {
-            stderr.write('trap: missing action\n');
+            (await stderr.write('trap: missing action\n'));
             return 2;
         }
         index++;
         if (index >= args.length) {
-            stderr.write('trap: missing signal\n');
+            (await stderr.write('trap: missing signal\n'));
             return 2;
         }
         for (; index < args.length; index++) {
             const signal = normalizeTrapSignal(args[index]);
             if (!signal) {
-                stderr.write(`trap: ${args[index]}: invalid signal\n`);
+                (await stderr.write(`trap: ${args[index]}: invalid signal\n`));
                 return 2;
             }
             if (action === '-')
@@ -1115,25 +1121,25 @@ export class Shell {
         let exitCode = 0;
         for (const arg of args) {
             if (arg.startsWith('-')) {
-                stderr.write(`hash: ${arg}: invalid option\n`);
+                (await stderr.write(`hash: ${arg}: invalid option\n`));
                 exitCode = 2;
                 continue;
             }
             const command = await this.registry.resolve(arg);
             if (!command) {
-                stderr.write(`hash: ${arg}: not found\n`);
+                (await stderr.write(`hash: ${arg}: not found\n`));
                 exitCode = 1;
             }
             else {
-                stdout.write(`${arg}\n`);
+                (await stdout.write(`${arg}\n`));
             }
         }
         return exitCode;
     }
-    printShellOptions(stdout) {
-        stdout.write(`errexit         ${this.shellOptions.errexit ? 'on' : 'off'}\n`);
-        stdout.write(`nounset         ${this.shellOptions.nounset ? 'on' : 'off'}\n`);
-        stdout.write(`pipefail        ${this.shellOptions.pipefail ? 'on' : 'off'}\n`);
+    async printShellOptions(stdout) {
+        (await stdout.write(`errexit         ${this.shellOptions.errexit ? 'on' : 'off'}\n`));
+        (await stdout.write(`nounset         ${this.shellOptions.nounset ? 'on' : 'off'}\n`));
+        (await stdout.write(`pipefail        ${this.shellOptions.pipefail ? 'on' : 'off'}\n`));
     }
     setShellOptionByName(option, enabled) {
         switch (option) {
@@ -1190,16 +1196,16 @@ export class Shell {
         if (args.length === 0 || (args.length === 1 && args[0] === '-p')) {
             for (const name of Array.from(this.readonlyNames).sort()) {
                 const value = this.env[name];
-                stdout.write(value === undefined
+                (await stdout.write(value === undefined
                     ? `readonly ${name}\n`
-                    : `readonly ${name}=${quoteSetValue(value)}\n`);
+                    : `readonly ${name}=${quoteSetValue(value)}\n`));
             }
             return 0;
         }
         let exitCode = 0;
         for (const arg of args) {
             if (arg.startsWith('-')) {
-                stderr.write(`readonly: ${arg}: invalid option\n`);
+                (await stderr.write(`readonly: ${arg}: invalid option\n`));
                 exitCode = 2;
                 continue;
             }
@@ -1207,11 +1213,11 @@ export class Shell {
             if (eqIdx > 0) {
                 const name = arg.slice(0, eqIdx);
                 if (!isShellIdentifier(name)) {
-                    stderr.write(`readonly: ${name}: not a valid identifier\n`);
+                    (await stderr.write(`readonly: ${name}: not a valid identifier\n`));
                     exitCode = 1;
                     continue;
                 }
-                if (this.assignEnv(name, arg.slice(eqIdx + 1), stderr)) {
+                if ((await this.assignEnv(name, arg.slice(eqIdx + 1), stderr))) {
                     this.readonlyNames.add(name);
                 }
                 else {
@@ -1220,7 +1226,7 @@ export class Shell {
                 continue;
             }
             if (!isShellIdentifier(arg)) {
-                stderr.write(`readonly: ${arg}: not a valid identifier\n`);
+                (await stderr.write(`readonly: ${arg}: not a valid identifier\n`));
                 exitCode = 1;
                 continue;
             }
@@ -1231,24 +1237,24 @@ export class Shell {
     async builtinRead(args, stdin, stderr, context) {
         const options = parseReadArgs(args);
         if (!options.ok) {
-            stderr.write(`read: ${options.error}\n`);
+            (await stderr.write(`read: ${options.error}\n`));
             return 1;
         }
         if (options.prompt && context?.isFdTerminal(0)) {
-            stderr.write(options.prompt);
+            (await stderr.write(options.prompt));
         }
         const line = await readLineStdin(stdin);
         if (line === null) {
             // EOF: bash clears every named variable before returning non-zero.
             for (const name of options.names) {
-                if (!this.assignEnv(name, '', stderr))
+                if (!(await this.assignEnv(name, '', stderr)))
                     return 1;
             }
             return 1;
         }
         const assignments = splitReadAssignments(line, options.names);
         for (const [name, value] of assignments) {
-            if (!this.assignEnv(name, value, stderr))
+            if (!(await this.assignEnv(name, value, stderr)))
                 return 1;
         }
         return 0;
@@ -1258,7 +1264,7 @@ export class Shell {
         for (const arg of args) {
             const parsed = parseWaitTarget(arg);
             if (parsed === null) {
-                stderr.write(`wait: ${arg}: not a valid job id\n`);
+                (await stderr.write(`wait: ${arg}: not a valid job id\n`));
                 return 127;
             }
             targets.push({ value: parsed.value, byJob: parsed.byJob });
@@ -1267,7 +1273,7 @@ export class Shell {
             ? this.jobTable.list()
                 .filter((job) => job.status === 'running')
                 .map((job) => job.promise)
-            : targets.map((target) => this.resolveWaitTarget(target.value, target.byJob, stderr));
+            : await Promise.all(targets.map(async (target) => this.resolveWaitTarget(target.value, target.byJob, stderr)));
         let last = 0;
         for (const waitable of waitables) {
             if (!waitable) {
@@ -1284,11 +1290,11 @@ export class Shell {
         }
         return last;
     }
-    resolveWaitTarget(value, byJob, stderr) {
+    async resolveWaitTarget(value, byJob, stderr) {
         if (byJob) {
             const job = this.jobTable.get(value);
             if (!job) {
-                stderr.write(`wait: %${value}: no such job\n`);
+                (await stderr.write(`wait: %${value}: no such job\n`));
                 return null;
             }
             return job.promise;
@@ -1299,7 +1305,7 @@ export class Shell {
         const job = this.jobTable.get(value);
         if (job)
             return job.promise;
-        stderr.write(`wait: ${value}: no such process\n`);
+        (await stderr.write(`wait: ${value}: no such process\n`));
         return null;
     }
     async builtinUnset(args, stderr) {
@@ -1311,7 +1317,7 @@ export class Shell {
             if (!isShellIdentifier(name))
                 continue;
             if (this.readonlyNames.has(name)) {
-                stderr.write(`${name}: readonly variable\n`);
+                (await stderr.write(`${name}: readonly variable\n`));
                 exitCode = 1;
                 continue;
             }
@@ -1351,7 +1357,7 @@ export class Shell {
                     else if (flag === 'g')
                         global = true;
                     else if (!'aAixlunft'.includes(flag)) {
-                        stderr.write(`${verb}: -${flag}: invalid option\n`);
+                        (await stderr.write(`${verb}: -${flag}: invalid option\n`));
                         return 2;
                     }
                 }
@@ -1360,16 +1366,16 @@ export class Shell {
             const eq = arg.indexOf('=');
             const name = eq === -1 ? arg : arg.slice(0, eq);
             if (!isShellIdentifier(name)) {
-                stderr.write(`${verb}: \`${arg}': not a valid identifier\n`);
+                (await stderr.write(`${verb}: \`${arg}': not a valid identifier\n`));
                 exitCode = 1;
                 continue;
             }
             const scope = verb === 'local' || !global;
             if (scope && context?.declareLocal(name) !== true && verb === 'local') {
-                stderr.write(`${verb}: can only be used in a function\n`);
+                (await stderr.write(`${verb}: can only be used in a function\n`));
                 return 1;
             }
-            if (eq !== -1 && !this.assignDeclared(name, arg.slice(eq + 1), stderr))
+            if (eq !== -1 && !(await this.assignDeclared(name, arg.slice(eq + 1), stderr)))
                 exitCode = 1;
             if (readonlyFlag)
                 this.readonlyNames.add(name);
@@ -1377,9 +1383,9 @@ export class Shell {
         return exitCode;
     }
     /** The right-hand side of a declaration: `(word …)` is an array literal. */
-    assignDeclared(name, text, stderr) {
+    async assignDeclared(name, text, stderr) {
         if (this.readonlyNames.has(name)) {
-            stderr.write(`${name}: readonly variable\n`);
+            (await stderr.write(`${name}: readonly variable\n`));
             return false;
         }
         if (text.startsWith('(') && text.endsWith(')')) {
@@ -1395,9 +1401,9 @@ export class Shell {
         assignScalar(this.env, this.arrays, name, text);
         return true;
     }
-    assignEnv(name, value, stderr) {
+    async assignEnv(name, value, stderr) {
         if (this.readonlyNames.has(name)) {
-            stderr.write(`${name}: readonly variable\n`);
+            (await stderr.write(`${name}: readonly variable\n`));
             return false;
         }
         assignScalar(this.env, this.arrays, name, value);
@@ -1423,7 +1429,7 @@ export class Shell {
     }
     async builtinExit(args, stderr) {
         if (args.length > 1) {
-            stderr.write('exit: too many arguments\n');
+            (await stderr.write('exit: too many arguments\n'));
             return 1;
         }
         if (args.length === 0) {
@@ -1431,7 +1437,7 @@ export class Shell {
         }
         const status = parseShellExitStatus(args[0] ?? '');
         if (status === null) {
-            stderr.write(`exit: ${args[0]}: numeric argument required\n`);
+            (await stderr.write(`exit: ${args[0]}: numeric argument required\n`));
             throw new ExitSignal(2);
         }
         throw new ExitSignal(status);
@@ -1439,7 +1445,7 @@ export class Shell {
     async builtinJobs(stdout) {
         const jobs = this.jobTable.list();
         for (const job of jobs) {
-            stdout.write(`[${job.id}] ${job.status}    ${job.command}\n`);
+            (await stdout.write(`[${job.id}] ${job.status}    ${job.command}\n`));
         }
         return 0;
     }
@@ -1447,15 +1453,15 @@ export class Shell {
         const id = args[0] ? parseInt(args[0], 10) : undefined;
         const jobs = this.jobTable.list();
         if (jobs.length === 0) {
-            stderr.write('fg: no current job\n');
+            (await stderr.write('fg: no current job\n'));
             return 1;
         }
         const job = id ? this.jobTable.get(id) : jobs[jobs.length - 1];
         if (!job) {
-            stderr.write(`fg: ${id}: no such job\n`);
+            (await stderr.write(`fg: ${id}: no such job\n`));
             return 1;
         }
-        stdout.write(`${job.command}\n`);
+        (await stdout.write(`${job.command}\n`));
         const exitCode = await job.promise;
         this.jobTable.remove(job.id);
         return exitCode;
@@ -1464,27 +1470,27 @@ export class Shell {
         const id = args[0] ? parseInt(args[0], 10) : undefined;
         const jobs = this.jobTable.list();
         if (jobs.length === 0) {
-            stderr.write('bg: no current job\n');
+            (await stderr.write('bg: no current job\n'));
             return 1;
         }
         const job = id ? this.jobTable.get(id) : jobs[jobs.length - 1];
         if (!job) {
-            stderr.write(`bg: ${id}: no such job\n`);
+            (await stderr.write(`bg: ${id}: no such job\n`));
             return 1;
         }
-        stdout.write(`[${job.id}] ${job.command} &\n`);
+        (await stdout.write(`[${job.id}] ${job.command} &\n`));
         return 0;
     }
     async builtinHistory(stdout) {
         const entries = this.historyManager.getAll();
         for (let i = 0; i < entries.length; i++) {
-            stdout.write(`  ${i + 1}  ${entries[i]}\n`);
+            (await stdout.write(`  ${i + 1}  ${entries[i]}\n`));
         }
         return 0;
     }
     async sourceFile(path) {
         try {
-            const content = this.vfs.readFileString(path);
+            const content = (await this.vfs.readFileString(path));
             await this.interpreter.executeLine(content);
         }
         catch {
@@ -1493,29 +1499,29 @@ export class Shell {
     }
     async builtinSource(args, stdout, stderr, context) {
         if (args.length === 0) {
-            stderr.write('source: missing filename\n');
+            (await stderr.write('source: missing filename\n'));
             return 1;
         }
         const path = resolve(this.cwd, args[0]);
         let content;
         try {
-            content = this.vfs.readFileString(path);
+            content = (await this.vfs.readFileString(path));
         }
         catch {
-            stderr.write(`source: ${args[0]}: No such file\n`);
+            (await stderr.write(`source: ${args[0]}: No such file\n`));
             return 1;
         }
         if (!context) {
-            stderr.write('source: execution context unavailable\n');
+            (await stderr.write('source: execution context unavailable\n'));
             return 1;
         }
         const sourceArgs = args.slice(1);
-        return context.executeInline(content, sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined);
+        return (await context.executeInline(content, sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined));
     }
     async builtinAlias(args, stdout) {
         if (args.length === 0) {
             for (const [name, value] of this.aliases) {
-                stdout.write(`alias ${name}='${value}'\n`);
+                (await stdout.write(`alias ${name}='${value}'\n`));
             }
             return 0;
         }
@@ -1529,10 +1535,10 @@ export class Shell {
             else {
                 const value = this.aliases.get(arg);
                 if (value !== undefined) {
-                    stdout.write(`alias ${arg}='${value}'\n`);
+                    (await stdout.write(`alias ${arg}='${value}'\n`));
                 }
                 else {
-                    stdout.write(`alias: ${arg}: not found\n`);
+                    (await stdout.write(`alias: ${arg}: not found\n`));
                 }
             }
         }
@@ -1540,12 +1546,12 @@ export class Shell {
     }
     async builtinUnalias(args, stderr) {
         if (args.length === 0) {
-            stderr.write('unalias: usage: unalias name ...\n');
+            (await stderr.write('unalias: usage: unalias name ...\n'));
             return 1;
         }
         for (const name of args) {
             if (!this.aliases.delete(name)) {
-                stderr.write(`unalias: ${name}: not found\n`);
+                (await stderr.write(`unalias: ${name}: not found\n`));
             }
         }
         return 0;
@@ -1696,7 +1702,7 @@ async function readLineStdin(stdin) {
     if (!stdin)
         return null;
     if (stdin.readLine)
-        return stdin.readLine();
+        return (await stdin.readLine());
     let line = '';
     let readChunk = false;
     while (true) {

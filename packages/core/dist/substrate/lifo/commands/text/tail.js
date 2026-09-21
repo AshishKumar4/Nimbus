@@ -9,7 +9,7 @@ const command = async (ctx) => {
         if (arg === '-n' && i + 1 < ctx.args.length) {
             count = parseInt(ctx.args[++i], 10);
             if (isNaN(count)) {
-                ctx.stderr.write('tail: invalid number of lines\n');
+                await ctx.stderr.write('tail: invalid number of lines\n');
                 return 1;
             }
         }
@@ -23,14 +23,14 @@ const command = async (ctx) => {
     async function tailText(text) {
         const lines = text.replace(/\n$/, '').split('\n');
         const selected = lines.slice(-count);
-        ctx.stdout.write(selected.join('\n') + '\n');
+        await ctx.stdout.write(selected.join('\n') + '\n');
     }
     if (files.length === 0) {
         if (ctx.stdin) {
             await tailText(await ctx.stdin.readAll());
         }
         else {
-            ctx.stderr.write('tail: missing file operand\n');
+            await ctx.stderr.write('tail: missing file operand\n');
             return 1;
         }
         return 0;
@@ -39,19 +39,19 @@ const command = async (ctx) => {
     for (const file of files) {
         const path = resolve(ctx.cwd, file);
         try {
-            ctx.vfs.stat(path);
+            (await ctx.vfs.stat(path));
             if (isBinaryMime(getMimeType(path))) {
-                ctx.stderr.write(`tail: ${file}: binary file, skipping\n`);
+                await ctx.stderr.write(`tail: ${file}: binary file, skipping\n`);
                 continue;
             }
-            const content = ctx.vfs.readFileString(path);
+            const content = (await ctx.vfs.readFileString(path));
             if (files.length > 1)
-                ctx.stdout.write(`==> ${file} <==\n`);
+                await ctx.stdout.write(`==> ${file} <==\n`);
             await tailText(content);
         }
         catch (e) {
             if (e instanceof VFSError) {
-                ctx.stderr.write(`tail: ${file}: ${e.message}\n`);
+                await ctx.stderr.write(`tail: ${file}: ${e.message}\n`);
                 exitCode = 1;
             }
             else {

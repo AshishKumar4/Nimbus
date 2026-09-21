@@ -3,8 +3,8 @@ import { type RuntimeArtifactMetadata, type RuntimePythonPackageArtifactMetadata
 export declare const PYTHON_SITE_PACKAGES_ROOT = "home/user/.nimbus-python/site-packages";
 export declare const PYTHON_PYODIDE_PACKAGE_MANIFEST = "home/user/.nimbus-python/site-packages/.nimbus-pyodide-packages.json";
 interface PythonPipVfs {
-    exists(path: string): boolean;
-    readFile(path: string): Uint8Array;
+    exists(path: string): boolean | Promise<boolean>;
+    readFile(path: string): Uint8Array | Promise<Uint8Array>;
 }
 /**
  * Whether this session has installed anything the sci interpreter variant
@@ -15,7 +15,7 @@ interface PythonPipVfs {
  * is right for `python -c` reading a module name out of a variable, which a
  * per-program classifier cannot be.
  */
-export declare function sessionUsesSciVariant(vfs: PythonPipVfs): boolean;
+export declare function sessionUsesSciVariant(vfs: PythonPipVfs): Promise<boolean>;
 export interface PythonPipRuntimeContext {
     pyodideLockfileText?: string | null;
     runtimeArtifacts?: RuntimeArtifactMetadata[];

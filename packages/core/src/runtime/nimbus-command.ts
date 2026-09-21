@@ -84,8 +84,8 @@ export function makeNimbusVerbHandler(deps: NimbusVerbDeps): (ctx: CommandContex
     const verb = argv[0];
     const rest = argv.slice(1);
 
-    if (verb === 'install') return runNimbusInstall(rest, ctx, deps);
-    if (verb === 'uninstall') return runNimbusUninstall(rest, ctx, deps);
+    if (verb === 'install') return (await runNimbusInstall(rest, ctx, deps));
+    if (verb === 'uninstall') return (await runNimbusUninstall(rest, ctx, deps));
     if (verb === 'expose' || verb === 'app' || verb === 'start') {
       if (verb === 'start') return runNimbusStart(rest, ctx, deps.registry);
       if (!deps.apps) {
@@ -138,7 +138,7 @@ export async function runNimbusInstall(
   const positional = args.filter((a) => !a.startsWith('--'));
 
   if (listOnly) {
-    const installed = deps.runtimes.list();
+    const installed = (await deps.runtimes.list());
     if (installed.length === 0) {
       ctx.stdout.write('(no runtimes installed)\n');
       return 0;
@@ -216,7 +216,7 @@ async function runNimbusUninstall(
   const name = atIdx >= 0 ? spec.slice(0, atIdx) : spec;
   const version = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
 
-  const matches = deps.runtimes.list().filter((runtime) =>
+  const matches = (await deps.runtimes.list()).filter((runtime) =>
     runtime.name === name && (version === null || runtime.version === version),
   );
   if (matches.length === 0) {

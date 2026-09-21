@@ -1,4 +1,4 @@
-import type { VFS } from '../kernel/vfs/index.js';
+import type { ExecutionFs as VFS } from '../../../shell/execution-fs.js';
 export interface PackageInfo {
     name: string;
     url: string;
@@ -12,8 +12,8 @@ export declare class PackageManager {
     private writeMetadata;
     private ensureDirs;
     install(url: string, name?: string): Promise<PackageInfo>;
-    remove(name: string): boolean;
-    list(): PackageInfo[];
-    info(name: string): PackageInfo | null;
+    remove(name: string): Promise<boolean>;
+    list(): Promise<PackageInfo[]>;
+    info(name: string): Promise<PackageInfo | null>;
 }
 //# sourceMappingURL=PackageManager.d.ts.map

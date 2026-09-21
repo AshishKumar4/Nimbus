@@ -44,12 +44,12 @@
  */
 
 import type { RuntimeManifest } from './runtime-manifest.js';
-import type { CredentialedVfs, SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { withHostFilesystem, type ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import type { FacetHost } from './facet-host.js';
-import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
+import { CRED_KERNEL, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
@@ -72,7 +72,7 @@ type RubyRunnerFactory = (
   installRoot: string,
   binName: string,
   binKind: string | undefined,
-) => Command;
+) => Promise<Command>;
 
 /**
  * Build the ruby-runner factory. Called once at session init; the
@@ -81,7 +81,7 @@ type RubyRunnerFactory = (
  */
 export function makeRubyRunnerFactory(deps: {
   facets: FacetHost;
-  vfs: SqliteVFS;
+  filesystem: NimbusFilesystemAuthority;
   registry?: {
     register(name: string, handler: Command): void;
     resolve?(name: string): Promise<Command | null | undefined> | Command | null | undefined;
@@ -91,18 +91,18 @@ export function makeRubyRunnerFactory(deps: {
 }): RubyRunnerFactory {
   const { registry } = deps;
 
-  return function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
+  return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
     const findFile = (rel: string): string | null => {
       const entry = manifest.files.find((f) => f.path === rel);
       return entry ? `${installRoot}/${entry.path}` : null;
     };
     const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
     let fsSnapshotCache:
-      { cred: string; cwd: string; revision: number; result: ReturnType<FacetHost['seedFilesystem']> } | null = null;
+      { cred: string; cwd: string; revision: number; result: Awaited<ReturnType<FacetHost['seedFilesystem']>> } | null = null;
 
-    const registerGemBins = (vfs: CredentialedVfs): void => {
+    const registerGemBins = async (vfs: CredentialedVfs): Promise<void> => {
       if (!registry) return;
-      for (const bin of installedGemBins(vfs, defaultGemHome())) {
+      for (const bin of (await installedGemBins(vfs, defaultGemHome()))) {
         if (RUBY_RUNTIME_BIN_NAMES.has(bin.name)) continue;
         registry.register(bin.name, async (ctx: CommandContext) => {
           const args = [bin.path.startsWith('/') ? bin.path : '/' + bin.path, ...(ctx.args ?? [])];
@@ -119,13 +119,13 @@ export function makeRubyRunnerFactory(deps: {
     const rubyBinHandler = async function rubyBinHandler(ctx: CommandContext): Promise<number> {
       const cred = requireVfsCred('cred' in ctx ? ctx.cred : undefined, binName);
       const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
-      const vfs = deps.vfs.as(cred);
+      const vfs = ctx.vfs;
       const argv = ctx.args ?? [];
       const cwd = ctx.cwd || '/home/user';
 
       const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, vfs, ctx);
       if (packageCommand.handled) {
-        if (packageCommand.exitCode === 0) registerGemBins(vfs);
+        if (packageCommand.exitCode === 0) (await registerGemBins(vfs));
         return packageCommand.exitCode;
       }
 
@@ -149,11 +149,11 @@ export function makeRubyRunnerFactory(deps: {
       }
 
       // Resolve install bytes.
-      if (!wasmVfs || !vfs.exists(wasmVfs)) {
+      if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
         ctx.stderr.write(`${binName}: ruby+stdlib.wasm missing (re-run 'nimbus install ruby')\n`);
         return 127;
       }
-      const wasmBytes = vfs.readFile(wasmVfs);
+      const wasmBytes = (await vfs.readFile(wasmVfs));
 
       // Parse argv.
       const parsed = toolInvocation.mode === 'tool'
@@ -182,11 +182,11 @@ export function makeRubyRunnerFactory(deps: {
       } else if (parsed.mode === 'script') {
         const absPath = resolveVfsPath(parsed.scriptPath, cwd);
         try {
-          if (!vfs.exists(absPath)) {
+          if (!(await vfs.exists(absPath))) {
             ctx.stderr.write(`${binName}: No such file or directory -- ${parsed.scriptPath} (LoadError)\n`);
             return 1;
           }
-          userCode = new TextDecoder('utf-8').decode(vfs.readFile(absPath));
+          userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
         } catch (e: unknown) {
           ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
           return 1;
@@ -206,7 +206,7 @@ export function makeRubyRunnerFactory(deps: {
       if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
       userEnv.GEM_HOME ||= '/' + defaultGemHome();
       userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-      userEnv.NIMBUS_GEM_LIBS = installedGemLibRoots(vfs, defaultGemHome()).join(':');
+      userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, defaultGemHome())).join(':');
       // Ruby looks for charset hints via these vars; set sensible
       // defaults so puts of non-ASCII strings doesn't trip on the
       // wasi default of "ASCII-8BIT".
@@ -214,7 +214,7 @@ export function makeRubyRunnerFactory(deps: {
 
       // Per-subtree watermark over exactly what the snapshot covers (cwd +
       // gem home), so unrelated VFS writes don't evict the cache.
-      const revision = Math.max(vfs.revision(cwd), vfs.revision(defaultGemHome()));
+      const revision = Math.max((await vfs.revision(cwd)), (await vfs.revision(defaultGemHome())));
       let fsSnapshot = fsSnapshotCache && fsSnapshotCache.cred === credKey
         && fsSnapshotCache.cwd === cwd && fsSnapshotCache.revision === revision
         ? fsSnapshotCache.result
@@ -224,7 +224,8 @@ export function makeRubyRunnerFactory(deps: {
         // demand-loads through its supervisor, or the bytes themselves. Which
         // one follows from whether that host can park a guest mid-syscall, and
         // nothing here depends on the answer.
-        fsSnapshot = deps.facets.seedFilesystem(vfs, cwd, {
+        fsSnapshot = await deps.facets.seedFilesystem(vfs.authority, cwd, {
+          cred,
           extraRoots: [defaultGemHome()],
           revision,
         });
@@ -263,7 +264,7 @@ export function makeRubyRunnerFactory(deps: {
           argv: [binName, ...argv],
         });
       } else {
-        result = await dispatchRubyFacet(deps.facets, vfs, facetArgs, ctx.pid);
+        result = await dispatchRubyFacet(deps.facets, ctx.vfs.authority, facetArgs, ctx.pid);
       }
 
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -275,7 +276,7 @@ export function makeRubyRunnerFactory(deps: {
       return result.exitCode;
     };
 
-    registerGemBins(deps.vfs.as(CRED_KERNEL));
+    if (deps.registry) await withHostFilesystem(deps.filesystem, CRED_KERNEL, registerGemBins);
     return rubyBinHandler;
   };
 }
@@ -664,7 +665,7 @@ function toRubyCallArgs(args: RubyFacetArgs): RubyFacetCallArgs {
 
 async function dispatchRubyFacet(
   facets: FacetHost,
-  vfs: CredentialedVfs,
+  vfs: import('./os-contracts.js').RuntimeFsBridge,
   args: RubyFacetArgs,
   pid: number,
 ): Promise<RubyFacetResult> {

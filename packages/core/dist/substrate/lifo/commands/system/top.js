@@ -21,17 +21,17 @@ export function createTopCommand(processRegistry) {
         const runningCount = processes.filter(p => p.status === 'running' || p.status === 'sleeping').length;
         const stoppedCount = processes.filter(p => p.status === 'stopped').length;
         const totalTasks = processes.length;
-        ctx.stdout.write(`top - ${hours}:${mins}:${secs} up ${uptimeMin} min,  1 user\n`);
-        ctx.stdout.write(`Tasks: ${String(totalTasks).padStart(3, ' ')} total, ${String(runningCount).padStart(3, ' ')} running, ${String(stoppedCount).padStart(3, ' ')} stopped\n`);
-        ctx.stdout.write(`%Cpu(s): ${cpuCores} cores\n`);
-        ctx.stdout.write(`MiB Mem: ${String(totalMem).padStart(7, ' ')} total ${String(usedMem).padStart(7, ' ')} used ${String(freeMem).padStart(7, ' ')} free\n`);
-        ctx.stdout.write('\n');
-        ctx.stdout.write('  PID CMD            STATUS\n');
+        await ctx.stdout.write(`top - ${hours}:${mins}:${secs} up ${uptimeMin} min,  1 user\n`);
+        await ctx.stdout.write(`Tasks: ${String(totalTasks).padStart(3, ' ')} total, ${String(runningCount).padStart(3, ' ')} running, ${String(stoppedCount).padStart(3, ' ')} stopped\n`);
+        await ctx.stdout.write(`%Cpu(s): ${cpuCores} cores\n`);
+        await ctx.stdout.write(`MiB Mem: ${String(totalMem).padStart(7, ' ')} total ${String(usedMem).padStart(7, ' ')} used ${String(freeMem).padStart(7, ' ')} free\n`);
+        await ctx.stdout.write('\n');
+        await ctx.stdout.write('  PID CMD            STATUS\n');
         // All processes
         for (const proc of processes) {
             const pid = String(proc.pid).padStart(5, ' ');
             const cmdName = proc.command.padEnd(15, ' ').slice(0, 15);
-            ctx.stdout.write(`${pid} ${cmdName}${proc.status}\n`);
+            await ctx.stdout.write(`${pid} ${cmdName}${proc.status}\n`);
         }
         return 0;
     };

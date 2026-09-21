@@ -34,6 +34,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -134,7 +135,7 @@ function createInstance(session, generation, { pumpWhile, crashable = false }) {
       onSpawn: (pid, command) => { spawns.push({ pid, command }); },
     },
   );
-  manager.setVfs(session.vfs);
+  manager.setVfs(session.vfs, new SqliteFilesystemAuthority(session.vfs));
   return { ctx, manager, processes, world, notices, spawns };
 }
 

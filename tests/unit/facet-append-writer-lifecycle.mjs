@@ -9,6 +9,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 const bindings = [];
 const stagedEntrypoints = [];
@@ -75,7 +76,7 @@ const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {});
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(rawVfs);
+manager.setVfs(rawVfs, new SqliteFilesystemAuthority(rawVfs));
 
 const activated = [];
 const activate = rawVfs.activateAppendWriter.bind(rawVfs);
@@ -118,7 +119,7 @@ await manager.exec('module.exports = 1', {
 assert.equal(retired.length, 1, 'unkeyed one-shot node execution retires its writer');
 assert.equal(
   [...harness.sql.exec(
-    `SELECT COUNT(*) AS count FROM vfs_append_writer_state
+    `SELECT COUNT(*) AS count FROM vfs_append_writer_state_v2
      WHERE pid = ? AND writer_id = ?`,
     retired[0].pid,
     retired[0].writerId,

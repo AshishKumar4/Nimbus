@@ -25,6 +25,7 @@ false
 fgrep
 find
 fold
+fsync
 grep
 head
 ln

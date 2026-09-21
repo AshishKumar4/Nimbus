@@ -5,25 +5,25 @@ const DEFAULT_GEM_HOME = 'home/user/.gem';
 export function defaultGemHome() {
     return DEFAULT_GEM_HOME;
 }
-export function installedGemLibRoots(vfs, gemHome = DEFAULT_GEM_HOME) {
+export async function installedGemLibRoots(vfs, gemHome = DEFAULT_GEM_HOME) {
     const gemsRoot = `${gemHome}/gems`;
-    if (!vfs.exists(gemsRoot))
+    if (!(await vfs.exists(gemsRoot)))
         return [];
     const out = [];
-    for (const entry of vfs.readdir(gemsRoot)) {
+    for (const entry of (await vfs.readdir(gemsRoot))) {
         if (entry.type !== 'directory')
             continue;
         const lib = `${gemsRoot}/${entry.name}/lib`;
-        if (vfs.exists(lib) && vfs.isDirectory(lib))
+        if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib)))
             out.push('/' + lib);
     }
     return out.sort();
 }
-export function installedGemBins(vfs, gemHome = DEFAULT_GEM_HOME) {
+export async function installedGemBins(vfs, gemHome = DEFAULT_GEM_HOME) {
     const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
-    if (!vfs.exists(binRoot) || !vfs.isDirectory(binRoot))
+    if (!(await vfs.exists(binRoot)) || !(await vfs.isDirectory(binRoot)))
         return [];
-    return vfs.readdir(binRoot)
+    return (await vfs.readdir(binRoot))
         .filter((entry) => entry.type === 'file' && isValidGemExecutableName(entry.name))
         .map((entry) => ({ name: entry.name, path: `${binRoot}/${entry.name}` }))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -33,10 +33,10 @@ export async function installRubyGems(vfs, requests, opts = {}) {
     const includeDependencies = opts.includeDependencies !== false;
     const report = { installed: [], alreadyInstalled: [] };
     const visiting = new Set();
-    ensureDir(vfs, `${gemHome}/gems`);
-    ensureDir(vfs, `${gemHome}/specifications`);
-    ensureDir(vfs, `${gemHome}/cache`);
-    ensureDir(vfs, `${gemHome}/bin`);
+    (await ensureDir(vfs, `${gemHome}/gems`));
+    (await ensureDir(vfs, `${gemHome}/specifications`));
+    (await ensureDir(vfs, `${gemHome}/cache`));
+    (await ensureDir(vfs, `${gemHome}/bin`));
     for (const req of requests) {
         await installOneGem(vfs, req, {
             gemHome,
@@ -49,10 +49,10 @@ export async function installRubyGems(vfs, requests, opts = {}) {
 }
 export async function installRubyBundle(vfs, cwd, opts = {}) {
     const gemfilePath = resolveVfsPath('Gemfile', cwd);
-    if (!vfs.exists(gemfilePath)) {
+    if (!(await vfs.exists(gemfilePath))) {
         throw new Error('Gemfile not found');
     }
-    const text = new TextDecoder('utf-8').decode(vfs.readFile(gemfilePath));
+    const text = new TextDecoder('utf-8').decode((await vfs.readFile(gemfilePath)));
     const requests = parseGemfile(text);
     if (requests.length === 0) {
         throw new Error('Gemfile has no supported gem declarations');
@@ -62,12 +62,12 @@ export async function installRubyBundle(vfs, cwd, opts = {}) {
         includeDependencies: true,
     });
     const lockfilePath = resolveVfsPath('Gemfile.lock', cwd);
-    const all = readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome || DEFAULT_GEM_HOME));
+    const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome || DEFAULT_GEM_HOME)));
     const specs = all
         .sort((a, b) => a.name.localeCompare(b.name) || compareVersions(a.version, b.version))
         .map((g) => `    ${g.name} (${g.version})`)
         .join('\n');
-    vfs.writeFile(lockfilePath, [
+    (await vfs.writeFile(lockfilePath, [
         'GEM',
         '  remote: https://rubygems.org/',
         '  specs:',
@@ -79,7 +79,7 @@ export async function installRubyBundle(vfs, cwd, opts = {}) {
         'BUNDLED WITH',
         '   Nimbus RubyGems',
         '',
-    ].join('\n'));
+    ].join('\n')));
     return { requests, report, lockfilePath };
 }
 export function parseGemfile(text) {
@@ -323,7 +323,7 @@ async function installOneGem(vfs, req, ctx) {
     const metadata = await resolveGemMetadata(normalizedName, req.requirements);
     const installedKey = `${metadata.name}-${metadata.version}`;
     const gemRoot = `${ctx.gemHome}/gems/${installedKey}`;
-    if (vfs.exists(`${gemRoot}/lib`) || vfs.exists(`${ctx.gemHome}/specifications/${installedKey}.gemspec`)) {
+    if ((await vfs.exists(`${gemRoot}/lib`)) || (await vfs.exists(`${ctx.gemHome}/specifications/${installedKey}.gemspec`))) {
         ctx.report.alreadyInstalled.push(installedKey);
         ctx.visiting.delete(visitKey);
         return;
@@ -346,30 +346,30 @@ async function installOneGem(vfs, req, ctx) {
         throw new Error(`${metadata.name}-${metadata.version} contains native extension '${nativePath}', ` +
             'which is not compatible with ruby.wasm in Nimbus');
     }
-    ensureDir(vfs, gemRoot);
+    (await ensureDir(vfs, gemRoot));
     const executables = gemExecutableNames(dataFiles);
     for (const [rel, bytes] of dataFiles) {
         const cleanRel = normalizeVfsPath(rel);
         if (!cleanRel || cleanRel.startsWith('..'))
             continue;
         const target = `${gemRoot}/${cleanRel}`;
-        ensureDir(vfs, parentVfsPath(target));
-        vfs.writeFile(target, bytes);
+        (await ensureDir(vfs, parentVfsPath(target)));
+        (await vfs.writeFile(target, bytes));
     }
     const specPath = `${ctx.gemHome}/specifications/${installedKey}.gemspec`;
-    vfs.writeFile(specPath, buildSyntheticGemspec(metadata, executables));
-    vfs.writeFile(`${ctx.gemHome}/cache/${installedKey}.gem`, gemBytes);
+    (await vfs.writeFile(specPath, buildSyntheticGemspec(metadata, executables)));
+    (await vfs.writeFile(`${ctx.gemHome}/cache/${installedKey}.gem`, gemBytes));
     for (const executable of executables) {
-        writeGemExecutableWrapper(vfs, ctx.gemHome, installedKey, executable);
+        (await writeGemExecutableWrapper(vfs, ctx.gemHome, installedKey, executable));
     }
-    writeInstalledGemRecord(vfs, ctx.gemHome, {
+    (await writeInstalledGemRecord(vfs, ctx.gemHome, {
         name: metadata.name,
         version: metadata.version,
         platform: metadata.platform || 'ruby',
         installedAt: Date.now(),
         dependencies: metadata.dependencies?.runtime || [],
         executables,
-    });
+    }));
     ctx.report.installed.push(installedKey);
     ctx.visiting.delete(visitKey);
 }
@@ -461,29 +461,29 @@ function gemExecutableNames(files) {
     }
     return Array.from(names).sort();
 }
-function writeGemExecutableWrapper(vfs, gemHome, installedKey, executable) {
+async function writeGemExecutableWrapper(vfs, gemHome, installedKey, executable) {
     const binRoot = `${gemHome}/bin`;
-    ensureDir(vfs, binRoot);
+    (await ensureDir(vfs, binRoot));
     const scriptPath = `/${gemHome}/gems/${installedKey}/bin/${executable}`;
-    vfs.writeFile(`${binRoot}/${executable}`, [
+    (await vfs.writeFile(`${binRoot}/${executable}`, [
         '#!/usr/bin/env ruby',
         `load ${JSON.stringify(scriptPath)}`,
         '',
-    ].join('\n'));
+    ].join('\n')));
 }
-function writeInstalledGemRecord(vfs, gemHome, record) {
+async function writeInstalledGemRecord(vfs, gemHome, record) {
     const path = `${gemHome}/.nimbus-gems.json`;
-    const records = readInstalledGemRecords(vfs, gemHome)
+    const records = (await readInstalledGemRecords(vfs, gemHome))
         .filter((r) => !(r.name === record.name && r.version === record.version));
     records.push(record);
-    vfs.writeFile(path, JSON.stringify({ gems: records }, null, 2) + '\n');
+    (await vfs.writeFile(path, JSON.stringify({ gems: records }, null, 2) + '\n'));
 }
-function readInstalledGemRecords(vfs, gemHome) {
+async function readInstalledGemRecords(vfs, gemHome) {
     const path = `${gemHome}/.nimbus-gems.json`;
-    if (!vfs.exists(path))
+    if (!(await vfs.exists(path)))
         return [];
     try {
-        const parsed = JSON.parse(new TextDecoder('utf-8').decode(vfs.readFile(path)));
+        const parsed = JSON.parse(new TextDecoder('utf-8').decode((await vfs.readFile(path))));
         return Array.isArray(parsed?.gems) ? parsed.gems : [];
     }
     catch {
@@ -627,10 +627,10 @@ function isValidGemExecutableName(name) {
     }
     return true;
 }
-function ensureDir(vfs, path) {
+async function ensureDir(vfs, path) {
     const clean = normalizeVfsPath(path);
     if (!clean)
         return;
-    if (!vfs.exists(clean))
-        vfs.mkdir(clean, { recursive: true });
+    if (!(await vfs.exists(clean)))
+        (await vfs.mkdir(clean, { recursive: true }));
 }

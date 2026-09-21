@@ -48,9 +48,9 @@ const command: Command = async (ctx) => {
     if (ctx.stdin) {
       const text = await ctx.stdin.readAll();
       const counts = countText(text);
-      ctx.stdout.write(formatCounts(counts));
+      await ctx.stdout.write(formatCounts(counts));
     } else {
-      ctx.stderr.write('wc: missing file operand\n');
+      await ctx.stderr.write('wc: missing file operand\n');
       return 1;
     }
     return 0;
@@ -64,29 +64,29 @@ const command: Command = async (ctx) => {
   for (const file of files) {
     const path = resolve(ctx.cwd, file);
     try {
-      ctx.vfs.stat(path);
+      (await ctx.vfs.stat(path));
       if (isBinaryMime(getMimeType(path))) {
         if (showBytes && !showLines && !showWords) {
           // Byte count only: use readFile for accurate binary size
-          const data = ctx.vfs.readFile(path);
+          const data = (await ctx.vfs.readFile(path));
           const counts = { lines: 0, words: 0, bytes: data.byteLength };
           totalBytes += counts.bytes;
-          ctx.stdout.write(formatCounts(counts, file));
+          await ctx.stdout.write(formatCounts(counts, file));
         } else {
-          ctx.stderr.write(`wc: ${file}: binary file, skipping
-`);
+          await ctx.stderr.write(`wc: ${file}: binary file, skipping
+          `);
         }
         continue;
       }
-      const content = ctx.vfs.readFileString(path);
+      const content = (await ctx.vfs.readFileString(path));
       const counts = countText(content);
       totalLines += counts.lines;
       totalWords += counts.words;
       totalBytes += counts.bytes;
-      ctx.stdout.write(formatCounts(counts, file));
+      await ctx.stdout.write(formatCounts(counts, file));
     } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`wc: ${file}: ${e.message}\n`);
+        await ctx.stderr.write(`wc: ${file}: ${e.message}\n`);
         exitCode = 1;
       } else {
         throw e;
@@ -95,7 +95,7 @@ const command: Command = async (ctx) => {
   }
 
   if (files.length > 1) {
-    ctx.stdout.write(formatCounts({ lines: totalLines, words: totalWords, bytes: totalBytes }, 'total'));
+    await ctx.stdout.write(formatCounts({ lines: totalLines, words: totalWords, bytes: totalBytes }, 'total'));
   }
 
   return exitCode;

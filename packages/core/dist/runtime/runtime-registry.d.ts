@@ -36,7 +36,6 @@
  *     pass against the refactored handlers — the contract is
  *     observable behaviour, not implementation shape.
  */
-import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
@@ -78,8 +77,8 @@ export interface RuntimeRunOpts {
 }
 /** The VFS surface script resolution needs. */
 export interface ScriptResolutionFs {
-    isFile(path: string): boolean;
-    readFileString(path: string): string;
+    isFile(path: string): boolean | Promise<boolean>;
+    readFileString(path: string): string | Promise<string>;
 }
 /**
  * Resolve a runtime target — `./cli.ts`, `sub/x`, `.`, or a bare name — to a
@@ -91,7 +90,7 @@ export interface ScriptResolutionFs {
  */
 export declare function resolveRuntimeScriptPath(fs: ScriptResolutionFs, cwd: string, target: string, opts?: {
     preferModuleField?: boolean;
-}): string | null;
+}): Promise<string | null>;
 /**
  * A subcommand handler. `runAsRuntime` re-enters the standard flow — flag
  * span, script resolution, transform, exec — with a rewritten argv, as if
@@ -151,11 +150,10 @@ export interface ShellRegistry {
  * Build a shell-handler function for a runtime. The returned function
  * is the value passed to `registry.register('<name>', handler)`.
  *
- * Captures `vfs`, `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
+ * Captures `getEsbuild` (for lazy init) + the spec. The same factory is used for every runtime; the only
  * runtime-specific code lives in `spec`.
  */
 export declare function buildRuntimeHandler(spec: RuntimeSpec, ctx0: {
-    vfs: SqliteVFS;
     /** Lazy esbuild initialiser. Called once per first .ts/.tsx/.jsx
      *  invocation — the host owns the init lifecycle, including whether
      *  the module is loaded eagerly or on this call. */

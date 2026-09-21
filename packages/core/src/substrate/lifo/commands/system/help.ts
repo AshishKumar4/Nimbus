@@ -31,23 +31,23 @@ const CATEGORIES: Record<string, string[]> = {
 
 export function createHelpCommand(_registry: CommandRegistry): Command {
   return async (ctx) => {
-    ctx.stdout.write('Lifo Commands\n');
-    ctx.stdout.write('==================\n\n');
+    await ctx.stdout.write('Lifo Commands\n');
+    await ctx.stdout.write('==================\n\n');
 
     for (const [category, commands] of Object.entries(CATEGORIES)) {
-      ctx.stdout.write(`${category}:\n`);
+      await ctx.stdout.write(`${category}:\n`);
       // Format in columns
       const cols = 6;
       for (let i = 0; i < commands.length; i += cols) {
         const row = commands.slice(i, i + cols)
           .map(c => c.padEnd(12))
           .join('');
-        ctx.stdout.write(`  ${row}\n`);
+        await ctx.stdout.write(`  ${row}\n`);
       }
-      ctx.stdout.write('\n');
+      await ctx.stdout.write('\n');
     }
 
-    ctx.stdout.write('Use "man <command>" for detailed help on a specific command.\n');
+    await ctx.stdout.write('Use "man <command>" for detailed help on a specific command.\n');
     return 0;
   };
 }

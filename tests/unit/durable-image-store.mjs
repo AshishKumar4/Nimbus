@@ -34,6 +34,7 @@ import {
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -64,7 +65,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     ...hooks,
   });
-  fm.setVfs(vfs);
+  fm.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
   return { boots, lines, world, ctx, env, fm, processes, portRegistry, storage, vfs, disk };
 }
 

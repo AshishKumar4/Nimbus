@@ -72,6 +72,15 @@ export const NIMBUS_RUNTIME_ABIS = Object.freeze({
     node: 'javascript',
     bun: 'javascript',
 });
+/**
+ * The runner key a bash manifest entrypoint names. Its number is the contract
+ * between the bash preamble and the wasm build in `packages/worker/wasm/bash`:
+ * the `nimbus_proc` import table and the Asyncify allowlist. A rebuild that
+ * changes either takes the next number and a new catalog version, because the
+ * catalog is shared by every deployment reading it and a workspace binds only
+ * the build its preamble was written against.
+ */
+export const BASH_RUNNER = 'bash-runner@2';
 export const WASM32_WASI_NIMBUS_ABI = {
     os: NIMBUS_OS_NAME,
     target: NIMBUS_ABI_TARGET,

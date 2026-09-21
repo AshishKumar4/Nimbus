@@ -102,7 +102,7 @@ class CurlHeaderSink {
   async open(): Promise<void> {
     if (this.target === null || this.target === '-') return;
     try {
-      this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), '');
+      (await this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), ''));
     } catch (error) {
       throw new CurlHeaderWriteError('create', this.target, error);
     }
@@ -114,21 +114,19 @@ class CurlHeaderSink {
     const block = curlHeaderBlock(response);
     try {
       if (this.target === '-') {
-        this.ctx.stdout.write(block);
+        await this.ctx.stdout.write(block);
         return;
       }
       this.contents.push(block);
-      this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), this.contents.join(''));
+      (await this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), this.contents.join('')));
     } catch (error) {
       throw new CurlHeaderWriteError('write', this.target, error);
     }
   }
 }
 
-function reportCurlWriteError(ctx: Parameters<Command>[0], error: CurlHeaderWriteError): number {
-  ctx.stderr.write(`curl: (${CURL_WRITE_ERROR_EXIT}) Failed ${error.message}\n`);
-  return CURL_WRITE_ERROR_EXIT;
-}
+async function reportCurlWriteError(ctx: Parameters<Command>[0], error: CurlHeaderWriteError): Promise<number> { await ctx.stderr.write(`curl: (${CURL_WRITE_ERROR_EXIT}) Failed ${error.message}\n`);
+return CURL_WRITE_ERROR_EXIT; }
 
 /**
  * Persist one arrived response block; a failing dump target cancels the
@@ -150,8 +148,8 @@ function createCurlImpl(kernel?: Kernel): Command {
     let url = options.url;
 
     if (!url) {
-      ctx.stderr.write('curl: no URL specified\n');
-      ctx.stderr.write('Usage: curl [-fsSLI#] [-X method] [-H header] [-d data] [-o file] [-D file] [-w format] url\n');
+      await ctx.stderr.write('curl: no URL specified\n');
+      await ctx.stderr.write('Usage: curl [-fsSLI#] [-X method] [-H header] [-d data] [-o file] [-D file] [-w format] url\n');
       return 1;
     }
 
@@ -163,7 +161,7 @@ function createCurlImpl(kernel?: Kernel): Command {
     try {
       options.data = await resolveCurlData(ctx, options.dataParts);
     } catch (error) {
-      ctx.stderr.write(`curl: ${error instanceof Error ? error.message : String(error)}\n`);
+      await ctx.stderr.write(`curl: ${error instanceof Error ? error.message : String(error)}\n`);
       return 26;
     }
 
@@ -206,16 +204,16 @@ function createCurlImpl(kernel?: Kernel): Command {
       }
     } catch (error) {
       if (error instanceof CurlHeaderWriteError) {
-        return reportCurlWriteError(ctx, error);
+        return await reportCurlWriteError(ctx, error);
       }
       const msg = error instanceof Error ? error.message : String(error);
       if (msg === CURL_TIMEOUT_ERROR) {
-        ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
+        await ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
       } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-        ctx.stderr.write(`curl: (7) Failed to connect to ${url}\n`);
-        ctx.stderr.write(`Note: This may be a CORS restriction. The target server must allow cross-origin requests.\n`);
+        await ctx.stderr.write(`curl: (7) Failed to connect to ${url}\n`);
+        await ctx.stderr.write(`Note: This may be a CORS restriction. The target server must allow cross-origin requests.\n`);
       } else {
-        ctx.stderr.write(`curl: ${msg}\n`);
+        await ctx.stderr.write(`curl: ${msg}\n`);
       }
       return 7;
     }
@@ -310,7 +308,7 @@ async function followExternalWithDump(
     }
     current = next;
   }
-  ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
+  await ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
   return 47;
 }
 
@@ -541,7 +539,7 @@ async function resolveCurlData(
         value = ctx.stdin ? await ctx.stdin.readAll() : '';
       } else {
         try {
-          value = ctx.vfs.readFileString(resolve(ctx.cwd, value));
+          value = (await ctx.vfs.readFileString(resolve(ctx.cwd, value)));
         } catch (error) {
           throw new Error(`Failed to open ${part.value}: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -620,17 +618,17 @@ async function executeKernelRequest(
         );
         if (local.kind === 'aborted') {
           if (signal.reason instanceof Error && signal.reason.message === CURL_TIMEOUT_ERROR) {
-            ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
+            await ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
             return 7;
           }
           return 130;
         }
         if (local.kind === 'timeout') {
-          ctx.stderr.write('curl: request timeout after 30s\n');
+          await ctx.stderr.write('curl: request timeout after 30s\n');
           return 7;
         }
         if (local.kind === 'refused') {
-          ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
+          await ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
           return 7;
         }
         response = local.response;
@@ -655,7 +653,7 @@ async function executeKernelRequest(
         if (gateway.kind === 'response') response = gateway.response;
         else if (gateway.kind === 'aborted') return 130;
         else if (gateway.kind === 'timeout') {
-          ctx.stderr.write('curl: request timeout after 30s\n');
+          await ctx.stderr.write('curl: request timeout after 30s\n');
           return 7;
         }
       }
@@ -717,7 +715,7 @@ async function executeKernelRequest(
     current = next.toString();
   }
 
-  ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
+  await ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
   return 47;
 }
 
@@ -729,8 +727,8 @@ async function handleCurlResponse(ctx: Parameters<Command>[0], options: CurlOpti
     if (!failed) {
       await writeCurlOutput(ctx, options, curlHeaderBlock(response));
     }
-    writeCurlFailure(ctx, options, response);
-    writeCurlWriteOut(ctx, options, response);
+    await writeCurlFailure(ctx, options, response);
+    await writeCurlWriteOut(ctx, options, response);
     return curlExitCode(options, response.status);
   }
 
@@ -738,15 +736,15 @@ async function handleCurlResponse(ctx: Parameters<Command>[0], options: CurlOpti
     await writeCurlOutput(ctx, options, response.body);
     if (options.outputFile && !options.silent) {
       const size = bodySize(response.body);
-      ctx.stderr.write(`  % Total    % Received\n`);
-      ctx.stderr.write(`  ${size}    ${size}\n`);
+      await ctx.stderr.write(`  % Total    % Received\n`);
+      await ctx.stderr.write(`  ${size}    ${size}\n`);
     }
   } else {
     cancelStreamBody(response.body);
   }
 
-  writeCurlFailure(ctx, options, response);
-  writeCurlWriteOut(ctx, options, response);
+  await writeCurlFailure(ctx, options, response);
+  await writeCurlWriteOut(ctx, options, response);
   return curlExitCode(options, response.status);
 }
 
@@ -760,11 +758,9 @@ function cancelStreamBody(body: CurlBody | ReadableStream<unknown> | null): void
  * --fail diagnostic: curl's own wording pairs its exit code with the
  * offending HTTP status.
  */
-function writeCurlFailure(ctx: Parameters<Command>[0], options: CurlOptions, response: CurlResponse): void {
-  if (options.fail && options.showError && response.status >= 400) {
-    ctx.stderr.write(`curl: (22) The requested URL returned error: ${response.status}\n`);
-  }
-}
+async function writeCurlFailure(ctx: Parameters<Command>[0], options: CurlOptions, response: CurlResponse): Promise<void> { if (options.fail && options.showError && response.status >= 400) {
+  await ctx.stderr.write(`curl: (22) The requested URL returned error: ${response.status}\n`);
+} }
 
 function curlExitCode(options: CurlOptions, status: number): number {
   return options.fail && status >= 400 ? 22 : 0;
@@ -777,10 +773,10 @@ function isRedirectStatus(status: number): boolean {
 async function writeCurlOutput(ctx: Parameters<Command>[0], options: CurlOptions, body: CurlBody): Promise<void> {
   if (!options.outputFile) {
     if (typeof body === 'string') {
-      ctx.stdout.write(body);
-      if (!body.endsWith('\n')) ctx.stdout.write('\n');
+      await ctx.stdout.write(body);
+      if (!body.endsWith('\n')) await ctx.stdout.write('\n');
     } else if (body instanceof Uint8Array) {
-      ctx.stdout.write(new TextDecoder().decode(body));
+      await ctx.stdout.write(new TextDecoder().decode(body));
     } else {
       await streamCurlBodyToStdout(ctx, body);
     }
@@ -796,7 +792,7 @@ async function writeCurlOutput(ctx: Parameters<Command>[0], options: CurlOptions
     cancelStreamBody(body);
     throw new Error('curl: internal error — streaming body cannot be written to an output file');
   }
-  ctx.vfs.writeFile(resolve(ctx.cwd, options.outputFile), body);
+  (await ctx.vfs.writeFile(resolve(ctx.cwd, options.outputFile), body));
 }
 
 /**
@@ -820,29 +816,25 @@ async function streamCurlBodyToStdout(ctx: Parameters<Command>[0], body: Readabl
       if (done) break;
       const text = decoder.decode(value, { stream: true });
       if (text) {
-        ctx.stdout.write(text);
+        await ctx.stdout.write(text);
         tail = text;
       }
     }
     const flushed = decoder.decode();
     if (flushed) {
-      ctx.stdout.write(flushed);
+      await ctx.stdout.write(flushed);
       tail = flushed;
     }
-    if (tail && !tail.endsWith('\n')) ctx.stdout.write('\n');
+    if (tail && !tail.endsWith('\n')) await ctx.stdout.write('\n');
   } finally {
     ctx.signal.removeEventListener('abort', onAbort);
   }
 }
 
-function writeCurlWriteOut(
-  ctx: Parameters<Command>[0],
-  options: CurlOptions,
-  response: { status: number; url: string },
-): void {
-  if (!options.writeOut) return;
-  ctx.stdout.write(formatWriteOut(options.writeOut, response));
-}
+async function writeCurlWriteOut(ctx: Parameters<Command>[0],
+options: CurlOptions,
+response: { status: number; url: string },): Promise<void> { if (!options.writeOut) return;
+await ctx.stdout.write(formatWriteOut(options.writeOut, response)); }
 
 function formatWriteOut(template: string, response: { status: number; url: string }): string {
   return template

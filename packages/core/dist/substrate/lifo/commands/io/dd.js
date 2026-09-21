@@ -11,40 +11,40 @@ const SIZE_SUFFIXES = new Map([
 const command = async (ctx) => {
     const parsed = parseOptions(ctx.args);
     if (!parsed.ok) {
-        ctx.stderr.write(`dd: ${parsed.error}\n`);
+        await ctx.stderr.write(`dd: ${parsed.error}\n`);
         return 1;
     }
     const options = parsed.options;
     try {
         const copied = options.input && options.input !== '-' && options.input !== '/dev/stdin'
-            ? copyFromFile(ctx, options)
+            ? await copyFromFile(ctx, options)
             : await copyFromStdin(ctx, options);
         if (options.status !== 'none')
-            writeStatus(ctx, options, copied);
+            await writeStatus(ctx, options, copied);
         return 0;
     }
     catch (error) {
-        ctx.stderr.write(`dd: ${error instanceof Error ? error.message : String(error)}\n`);
+        await ctx.stderr.write(`dd: ${error instanceof Error ? error.message : String(error)}\n`);
         return 1;
     }
 };
-function copyFromFile(ctx, options) {
+async function copyFromFile(ctx, options) {
     const path = resolve(ctx.cwd, options.input);
-    const limit = inputLimit(ctx, options, path);
-    const sink = openOutput(ctx, options);
+    const limit = await inputLimit(ctx, options, path);
+    const sink = await openOutput(ctx, options);
     const start = options.skip * options.inputBlockSize;
     let copied = 0;
     while (copied < limit) {
         if (ctx.signal.aborted)
             break;
         const want = Math.min(options.inputBlockSize, limit - copied);
-        const block = readInput(ctx, path, start + copied, want, options.input);
+        const block = await readInput(ctx, path, start + copied, want, options.input);
         if (block.length === 0)
             break;
-        sink.write(block);
+        await sink.write(block);
         copied += block.length;
     }
-    sink.end();
+    await sink.end();
     return copied;
 }
 async function copyFromStdin(ctx, options) {
@@ -54,7 +54,7 @@ async function copyFromStdin(ctx, options) {
     const limit = options.count === undefined
         ? Number.POSITIVE_INFINITY
         : options.count * options.inputBlockSize;
-    const sink = openOutput(ctx, options);
+    const sink = await openOutput(ctx, options);
     let copied = 0;
     let skipRemaining = options.skip * options.inputBlockSize;
     while (copied < limit) {
@@ -67,16 +67,16 @@ async function copyFromStdin(ctx, options) {
             continue;
         }
         const bytes = typeof chunk === 'string' ? encode(chunk) : chunk;
-        sink.write(bytes);
+        await sink.write(bytes);
         copied += bytes.length;
     }
-    sink.end();
+    await sink.end();
     return copied;
 }
 async function readStdinChunk(stdin, want) {
     if (stdin.readBytes)
-        return stdin.readBytes(want);
-    return stdin.read();
+        return (await stdin.readBytes(want));
+    return (await stdin.read());
 }
 /**
  * How many bytes this invocation is allowed to read.
@@ -86,18 +86,18 @@ async function readStdinChunk(stdin, want) {
  * unbounded copy from one cannot be satisfied and is rejected rather than
  * silently producing whatever a single read returned.
  */
-function inputLimit(ctx, options, path) {
+async function inputLimit(ctx, options, path) {
     if (options.count !== undefined)
         return options.count * options.inputBlockSize;
-    const stat = ctx.vfs.stat(path);
+    const stat = await ctx.vfs.stat(path);
     if (isCharacterDevice(stat.mode)) {
         throw new Error(`${options.input}: character device has no end — pass count= to bound the copy`);
     }
     return Math.max(0, stat.size - options.skip * options.inputBlockSize);
 }
-function readInput(ctx, path, offset, length, label) {
+async function readInput(ctx, path, offset, length, label) {
     try {
-        return ctx.vfs.readRange(path, offset, length);
+        return await ctx.vfs.readRange(path, offset, length);
     }
     catch (error) {
         if (error instanceof VFSError)
@@ -105,7 +105,7 @@ function readInput(ctx, path, offset, length, label) {
         throw error;
     }
 }
-function openOutput(ctx, options) {
+async function openOutput(ctx, options) {
     const target = options.output;
     if (!target || target === '-' || target === '/dev/stdout')
         return streamSink(ctx.stdout);
@@ -116,15 +116,15 @@ function openOutput(ctx, options) {
     // dd truncates its output file unless conv=notrunc; seeking still keeps
     // whatever precedes the seek point.
     if (!options.notrunc) {
-        if (ctx.vfs.exists(path))
-            ctx.vfs.truncate(path, start);
+        if (await ctx.vfs.exists(path))
+            await ctx.vfs.truncate(path, start);
         else
-            ctx.vfs.writeFile(path, new Uint8Array(start));
+            await ctx.vfs.writeFile(path, new Uint8Array(start));
     }
     let offset = start;
     return {
-        write: (bytes) => {
-            ctx.vfs.writeRange(path, offset, bytes);
+        write: async (bytes) => {
+            await ctx.vfs.writeRange(path, offset, bytes);
             offset += bytes.length;
         },
         end: () => { },
@@ -132,14 +132,14 @@ function openOutput(ctx, options) {
 }
 function streamSink(stream) {
     const writer = new SinkWriter(stream);
-    return { write: (bytes) => writer.write(bytes), end: () => writer.end() };
+    return { write: async (bytes) => (await writer.write(bytes)), end: () => writer.end() };
 }
-function writeStatus(ctx, options, copied) {
+async function writeStatus(ctx, options, copied) {
     const inBlocks = Math.floor(copied / options.inputBlockSize);
     const inPartial = copied % options.inputBlockSize === 0 ? 0 : 1;
     const outBlocks = Math.floor(copied / options.outputBlockSize);
     const outPartial = copied % options.outputBlockSize === 0 ? 0 : 1;
-    ctx.stderr.write(`${inBlocks}+${inPartial} records in\n` +
+    await ctx.stderr.write(`${inBlocks}+${inPartial} records in\n` +
         `${outBlocks}+${outPartial} records out\n` +
         `${copied} bytes copied\n`);
 }

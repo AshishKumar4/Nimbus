@@ -1,3 +1,5 @@
+import type { RuntimeVfsStat } from '../os-contracts.js';
+import type { FilesystemSupervisor } from '../vfs-supervisor.js';
 /**
  * wasi/types.ts — the shapes the WASI shim operates on.
  *
@@ -22,29 +24,7 @@ import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
  * widened at a use site. Numbers are the preview1 enum, which is alphabetical
  * and therefore not guessable; check the spec before adding one.
  */
-export type Errno =
-  | 0   // ESUCCESS
-  | 2   // EACCES
-  | 6   // EAGAIN
-  | 8   // EBADF
-  | 14  // ECONNREFUSED
-  | 20  // EEXIST
-  | 23  // EHOSTUNREACH
-  | 28  // EINVAL
-  | 29  // EIO
-  | 31  // EISDIR
-  | 32  // ELOOP
-  | 44  // ENOENT
-  | 52  // ENOSYS
-  | 53  // ENOTCONN
-  | 54  // ENOTDIR
-  | 55  // ENOTEMPTY
-  | 57  // ENOTSOCK
-  | 63  // EPERM       — bash's path_link; POSIX forbids hard-linking a directory
-  | 64  // EPIPE
-  | 70  // ESPIPE
-  | 73  // ETIMEDOUT
-  | 76; // ENOTCAPABLE
+export type Errno = 0 | 2 | 6 | 8 | 10 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 63 | 64 | 69 | 70 | 72 | 73 | 75 | 76;
 
 /**
  * What a syscall body may hand back. A cache hit answers synchronously; a body
@@ -155,7 +135,8 @@ export type FdEntry =
   | FileFdEntry
   | DirFdEntry
   | SocketFdEntry
-  | ListenerFdEntry;
+  | ListenerFdEntry
+  | import('./filesystem.js').AuthorityFd;
 
 /** The in-facet cache of the session VFS. */
 export interface WasiFsState {
@@ -196,28 +177,8 @@ export interface WasiInitOptions {
 }
 
 /** What a live stat answers with. */
-export interface WasiStatResult {
-  type: string;
-  size?: number;
-  mtime?: number;
-}
-
-/**
- * The supervisor RPC surface the shim uses to make its cache a cache. Absent
- * (a sealed instance) every path degrades to closed-world in-memory behaviour.
- */
-export interface WasiSupervisorStub {
-  fsReadRange(vfsPath: string, offset: number, length: number): Promise<Uint8Array | ArrayBuffer>;
-  fsRevision?(root: string): Promise<number | null>;
-  stat(vfsPath: string): Promise<WasiStatResult | null>;
-  writeFile(vfsPath: string, bytes: Uint8Array): Promise<unknown>;
-  unlink(vfsPath: string): Promise<unknown>;
-  mkdir(vfsPath: string): Promise<unknown>;
-  rmdir(vfsPath: string): Promise<unknown>;
-  rename(from: string, to: string): Promise<unknown>;
-  symlink(target: string, vfsPath: string): Promise<unknown>;
-  utimes(vfsPath: string, atimeMs: number, mtimeMs: number): Promise<unknown>;
-}
+export type WasiStatResult = RuntimeVfsStat;
+export type WasiSupervisorStub = FilesystemSupervisor;
 
 /**
  * The two hooks the WASI layer has into the green-thread scheduler.
@@ -326,10 +287,10 @@ export interface WasiImports {
   fd_readdir(fd: number, bufPtr: number, bufLen: number, cookie: bigint | number, bufusedPtr: number): SyscallResult;
 
   // descriptor housekeeping
-  fd_advise(): SyscallResult;
+  fd_advise(fd: number, offset: bigint, len: bigint, advice: number): SyscallResult;
   fd_allocate(fd: number, offset: bigint | number, len: bigint | number): SyscallResult;
-  fd_datasync(): SyscallResult;
-  fd_sync(): SyscallResult;
+  fd_datasync(fd: number): SyscallResult;
+  fd_sync(fd: number): SyscallResult;
   fd_renumber(from: number, to: number): SyscallResult;
 
   // process
@@ -361,7 +322,13 @@ export interface WasiImports {
 export type ParkableImport = Extract<
   keyof WasiImports,
   'sock_send' | 'sock_recv' | 'sock_shutdown' | 'sock_accept' | 'poll_oneoff'
-  | 'fd_read' | 'fd_write' | 'fd_pread' | 'path_filestat_get'
+  | 'fd_read' | 'fd_write' | 'fd_pread' | 'fd_pwrite' | 'path_filestat_get'
+  | 'path_open' | 'fd_close' | 'fd_renumber' | 'fd_seek' | 'fd_tell' | 'fd_filestat_get'
+  | 'fd_fdstat_set_flags' | 'fd_fdstat_set_rights' | 'fd_filestat_set_size'
+  | 'fd_sync' | 'fd_datasync' | 'fd_allocate' | 'fd_advise' | 'fd_readdir'
+  | 'path_create_directory' | 'path_remove_directory' | 'path_unlink_file'
+  | 'path_rename' | 'path_symlink' | 'path_readlink' | 'path_link'
+  | 'fd_filestat_set_times' | 'path_filestat_set_times'
 >;
 
 /**

@@ -30,6 +30,7 @@ import {
   createFacetCtx,
 } from './facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
+import { SqliteFilesystemAuthority } from '../../packages/core/src/runtime/filesystem-authority.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -104,7 +105,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     ...hooks,
   });
-  fm.setVfs(vfs);
+  fm.setVfs(vfs, new SqliteFilesystemAuthority(vfs));
   return { boots, world, ctx, fm, processes, portRegistry, storage, vfs, disk, env };
 }
 
@@ -341,6 +342,7 @@ function routeHost(fm, portRegistry) {
       // reach `.apps`. The same fm is under test either way.
       this.facetManagerComposed ??= composeFacetManager({
         ctx, env, processes, portRegistry, vfs,
+        filesystem: new SqliteFilesystemAuthority(vfs),
         hooks: { onExternalExit() {}, notify() {}, requestLaunchTurn() {} },
       });
       this.facetManager = fm;

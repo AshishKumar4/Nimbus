@@ -231,7 +231,7 @@ const command: Command = async (ctx) => {
   const { flags, positional } = parseArgs(ctx.args, spec);
 
   if (positional.length < 2) {
-    ctx.stderr.write('diff: missing operand\n');
+    await ctx.stderr.write('diff: missing operand\n');
     return 2;
   }
 
@@ -248,42 +248,42 @@ const command: Command = async (ctx) => {
 
   if (binary1 || binary2) {
     // Verify files exist before reporting binary diff
-    try { ctx.vfs.stat(path1); } catch (e) {
+    try { (await ctx.vfs.stat(path1)); } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`diff: ${file1}: ${e.message}
-`);
+        await ctx.stderr.write(`diff: ${file1}: ${e.message}
+        `);
         return 2;
       }
       throw e;
     }
-    try { ctx.vfs.stat(path2); } catch (e) {
+    try { (await ctx.vfs.stat(path2)); } catch (e) {
       if (e instanceof VFSError) {
-        ctx.stderr.write(`diff: ${file2}: ${e.message}
-`);
+        await ctx.stderr.write(`diff: ${file2}: ${e.message}
+        `);
         return 2;
       }
       throw e;
     }
-    ctx.stdout.write(`Binary files ${file1} and ${file2} differ
-`);
+    await ctx.stdout.write(`Binary files ${file1} and ${file2} differ
+    `);
     return 2;
   }
 
   try {
-    content1 = ctx.vfs.readFileString(resolve(ctx.cwd, file1));
+    content1 = (await ctx.vfs.readFileString(resolve(ctx.cwd, file1)));
   } catch (e) {
     if (e instanceof VFSError) {
-      ctx.stderr.write(`diff: ${file1}: ${e.message}\n`);
+      await ctx.stderr.write(`diff: ${file1}: ${e.message}\n`);
       return 2;
     }
     throw e;
   }
 
   try {
-    content2 = ctx.vfs.readFileString(resolve(ctx.cwd, file2));
+    content2 = (await ctx.vfs.readFileString(resolve(ctx.cwd, file2)));
   } catch (e) {
     if (e instanceof VFSError) {
-      ctx.stderr.write(`diff: ${file2}: ${e.message}\n`);
+      await ctx.stderr.write(`diff: ${file2}: ${e.message}\n`);
       return 2;
     }
     throw e;
@@ -303,9 +303,9 @@ const command: Command = async (ctx) => {
   const ops = computeLCS(lines1, lines2);
 
   if (flags.unified) {
-    ctx.stdout.write(formatUnified(ops, file1, file2));
+    await ctx.stdout.write(formatUnified(ops, file1, file2));
   } else {
-    ctx.stdout.write(formatNormal(ops));
+    await ctx.stdout.write(formatNormal(ops));
   }
 
   return 1;

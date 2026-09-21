@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
+import type { ExecutionFs as CredentialedVfs } from '../shell/execution-fs.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -63,5 +63,5 @@ export declare class ClosureBoundExceededError extends Error {
     constructor(outcome: ClosureBoundExceeded);
 }
 /** Resolve the complete dependency graph starting from entry code. */
-export declare function prefetchForRequire(vfs: CredentialedVfs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number): PrefetchOutcome;
+export declare function prefetchForRequire(vfs: CredentialedVfs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number): Promise<PrefetchOutcome>;
 //# sourceMappingURL=require-resolver.d.ts.map
