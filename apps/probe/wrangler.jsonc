@@ -7,6 +7,10 @@
   // tokens with `tests/behavioral/_mint-probe-token.mjs`.
   "name": "nimbus-probe",
   "main": "src/index.ts",
+  // Shipped the way production is (minified, source map uploaded), so the
+  // behavioral suite verifies that shape and not an unminified twin.
+  "minify": true,
+  "upload_source_maps": true,
   "compatibility_date": "2026-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true, "head_sampling_rate": 1 },

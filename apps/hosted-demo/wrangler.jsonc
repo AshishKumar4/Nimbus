@@ -28,6 +28,12 @@
   // The small src/index.ts here re-exports from @nimbus-sh/sdk/worker
   // — exactly the shape a third-party embedder ships.
   "main": "src/index.ts",
+  // The Worker ships minified with its source map uploaded: the platform
+  // weighs the script gzipped, but its raw size still bounds isolate startup,
+  // and the map keeps production stack traces pointing at source. The facet
+  // bundles are string literals and are not touched by this.
+  "minify": true,
+  "upload_source_maps": true,
   "compatibility_date": "2026-04-01",
   // [DEPLOY-FLAG-FIX 2026-05-08] Removed `experimental` and `replica_routing`.
   //
