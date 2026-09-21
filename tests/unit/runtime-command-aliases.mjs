@@ -31,9 +31,11 @@ import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contract
     for (const ep of entrypoints) {
       assert.ok(!seenBins.has(ep.binName), `duplicate extra command '${ep.binName}'`);
       seenBins.add(ep.binName);
-      assert.equal(
+      // `<runtime>-runner`, with `@<contract>` once a rebuild has changed
+      // the artifact contract the runner binds (see BASH_RUNNER).
+      assert.match(
         ep.runner,
-        `${runtime}-runner`,
+        new RegExp(`^${runtime}-runner(@\\d+)?$`),
         `extra command '${ep.binName}' must dispatch to the ${runtime} runner`,
       );
       assert.deepEqual(ep.args, [], `extra command '${ep.binName}' must not inject args`);

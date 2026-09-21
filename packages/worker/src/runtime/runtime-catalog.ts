@@ -323,8 +323,8 @@ export function runtimeCatalogSource(env: RuntimeCatalogEnv): RuntimeSource {
           name,
           abi: runtimeAbiForCatalogName(name),
           defaultVersion: entry.default,
+          // The publisher appends; the catalog's own order is publish order.
           versions: Object.entries(entry.versions)
-            .sort(([a], [b]) => a.localeCompare(b))
             .map(([version, v]) => ({
               version,
               sizeBytes: v.size_bytes,

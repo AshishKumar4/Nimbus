@@ -22,6 +22,7 @@ import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import {
+  BASH_RUNNER,
   CRED_KERNEL,
   NIMBUS_ABI_TARGET,
   NIMBUS_RUNTIME_ABIS,
@@ -95,8 +96,8 @@ export function runtimeAbiForManifest(manifest: RuntimeManifest): RuntimePackage
  */
 export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>> = {
   bash: [
-    { binName: '/bin/bash', runner: 'bash-runner', args: [] },
-    { binName: '/usr/bin/bash', runner: 'bash-runner', args: [] },
+    { binName: '/bin/bash', runner: BASH_RUNNER, args: [] },
+    { binName: '/usr/bin/bash', runner: BASH_RUNNER, args: [] },
   ],
   // `pip` belongs to whichever runtime provides the interpreter, and only one
   // may claim it. The python row went with python-runner: Pyodide's manifest

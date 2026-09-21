@@ -31,7 +31,7 @@ import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-contracts.js';
 import type { FacetBindings } from './facet-host.js';
-import { CRED_KERNEL, requireVfsCred } from './os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 
 type BashRunnerFactory = (
@@ -182,7 +182,7 @@ export async function createBashFacetSession(deps: {
     : [];
 
   const facet: Facet = deps.facets.open({
-    tag: 'bash-runner',
+    tag: BASH_RUNNER,
     concurrency: 1,
     syscalls: { vfs: deps.filesystem, pid: deps.pid },
     preamble: BASH_RUNNER_PREAMBLE,

@@ -4,7 +4,7 @@ import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/typ
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ExecutionFs } from '@nimbus-sh/core/shell/execution-fs.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { runFresh } from '../runtime/node-runner.js';
@@ -181,7 +181,7 @@ workspace.runtimes.registerRunner(
 // ReplSession line editor; -c, scripts, and piped stdin retain the
 // canonical one-shot handler.
 workspace.runtimes.registerRunner(
-  'bash-runner',
+  BASH_RUNNER,
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
     const argv = ctx.args || [];
     const explicitInteractive = argv.includes('-i');

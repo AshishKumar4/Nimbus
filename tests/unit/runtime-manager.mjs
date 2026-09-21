@@ -173,6 +173,42 @@ const toyRunner = () => async () => 0;
   assert.deepEqual((await manager.rehydrate()).bins, ['toy']);
 }
 
+// ── A shared source's default is not always a build this workspace binds ──
+// A runtime rebuilt against a new runner contract publishes under a new
+// version and runner key; the source keeps offering the old default to the
+// deployments that still bind it. A bare name resolves to the newest version
+// whose runners are registered here; an explicit version is never substituted.
+{
+  const vfs = openVfs();
+  const fs = vfs.as(KERNEL);
+  const oldBuild = fakePackage({ 'bin/toy': '# v1\n' }, { version: '1.0.0', runner: 'toy-runner' });
+  const newBuild = fakePackage({ 'bin/toy': '# v2\n' }, { version: '1.0.0-2', runner: 'toy-runner@2' });
+  const shared = {
+    async list() {
+      return [{
+        name: 'toy', abi: 'wasm32-wasi-nimbus', defaultVersion: '1.0.0',
+        versions: [oldBuild, newBuild].map((p) => ({ version: p.manifest.version, sizeBytes: 1, license: 'MIT' })),
+      }];
+    },
+    async resolve(spec) {
+      if (spec === 'toy' || spec === 'toy@1.0.0') return oldBuild;
+      if (spec === 'toy@1.0.0-2') return newBuild;
+      return null;
+    },
+  };
+  const { manager } = makeManager(vfs, shared);
+  manager.registerRunner('toy-runner@2', toyRunner);
+
+  const seeded = await manager.install('toy');
+  assert.equal(seeded.version, '1.0.0-2', 'the default was installed although this workspace cannot bind it');
+  assert.equal(fs.readFileString(`${seeded.root}/bin/toy`), '# v2\n');
+  await assert.rejects(() => manager.install('toy@1.0.0'), /toy@1\.0\.0: runner 'toy-runner' not registered/);
+
+  const { manager: older } = makeManager(openVfs(), shared);
+  older.registerRunner('toy-runner', toyRunner);
+  assert.equal((await older.install('toy')).version, '1.0.0', 'a workspace that binds the default must keep it');
+}
+
 // ── Reopen: a fresh manager over the same disk rehydrates every bin ───────
 {
   const vfs = openVfs();

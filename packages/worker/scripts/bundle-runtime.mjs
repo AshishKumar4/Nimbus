@@ -7,7 +7,7 @@
  *   node scripts/bundle-runtime.mjs clang binji-2020 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs python 0.29.4 [--bucket nimbus-runtime-cache]
  *   node scripts/bundle-runtime.mjs --pin-catalog        (read-only; publishes nothing)
- *   node scripts/bundle-runtime.mjs bash 5.2.37 --npm-package <dir>   (local; no R2)
+ *   node scripts/bundle-runtime.mjs bash 5.2.37-2 --npm-package <dir>   (local; no R2)
  *
  * `--npm-package` is the SECOND publisher for the same artifacts: it stages
  * exactly what the R2 path stages, composes the same manifest bytes, and lays
@@ -50,6 +50,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, c
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { BASH_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID;
 // Resolve the wrangler bin from either the package-local or the
@@ -64,9 +65,14 @@ const PYODIDE_WORKERD_ADAPTER = JSON.parse(
 );
 
 const USAGE =
-  'usage: bundle-runtime.mjs <name> <version> [--bucket <bucket>]\n' +
+  'usage: bundle-runtime.mjs <name> <version> [--bucket <bucket>] [--keep-default]\n' +
   '       bundle-runtime.mjs <name> <version> --npm-package <dir>\n' +
-  '       bundle-runtime.mjs --pin-catalog [--bucket <bucket>]';
+  '       bundle-runtime.mjs --pin-catalog [--bucket <bucket>]\n' +
+  '\n' +
+  '  --keep-default  add the version to the catalog without making it the\n' +
+  '                  default: for a build whose runner contract a deployment\n' +
+  '                  still reading the catalog cannot bind yet. Re-run without\n' +
+  '                  the flag once every deployment can; the re-run is idempotent.';
 
 /** The bucket the deployed Worker's NIMBUS_RUNTIME_CACHE binding points at.
  *  Only a publish to THIS bucket may rewrite the catalog pin: the pin
@@ -78,11 +84,16 @@ const rawArgs = process.argv.slice(2);
 const positionalArgs = [];
 let BUCKET = process.env.NIMBUS_RUNTIME_BUCKET || PRODUCTION_BUCKET;
 let PIN_ONLY = false;
+let KEEP_DEFAULT = false;
 let NPM_OUT_DIR = null;
 for (let i = 0; i < rawArgs.length; i++) {
   const arg = rawArgs[i];
   if (arg === '--pin-catalog') {
     PIN_ONLY = true;
+    continue;
+  }
+  if (arg === '--keep-default') {
+    KEEP_DEFAULT = true;
     continue;
   }
   if (arg === '--npm-package') {
@@ -226,7 +237,12 @@ const SPECS = {
   // `local_base`. The bash-runner aliases every applet name in
   // busybox.applets onto the busybox module so bash's PATH lookup finds
   // them in /bin and /usr/bin.
-  'bash/5.2.37': {
+  //
+  // The version is `<upstream>-<build>`: the build number advances with
+  // every rebuild, and the entrypoint names the runner contract the build
+  // was made for (BASH_RUNNER), so a deployment whose preamble predates it
+  // never binds it. 5.2.37 is build 1, published under `bash-runner`.
+  'bash/5.2.37-2': {
     license: 'GPL-3.0-or-later AND GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',
@@ -239,7 +255,7 @@ const SPECS = {
       { src: 'bash.async.wasm',           vfs: 'share/bash/bash.async.wasm' },
       { src: 'coreutils/busybox.wasm',    vfs: 'share/bash/coreutils/busybox.wasm' },
       { src: 'coreutils/busybox.applets', vfs: 'share/bash/coreutils/busybox.applets' },
-      { src: 'BIN_MARKER', vfs: 'bin/bash', mode: 'exec', runner: 'bash-runner', binName: 'bash' },
+      { src: 'BIN_MARKER', vfs: 'bin/bash', mode: 'exec', runner: BASH_RUNNER, binName: 'bash' },
     ],
     synthetic_files: {
       'BIN_MARKER': Buffer.from(
@@ -627,8 +643,9 @@ if (spec.ingest_only) {
     license: spec.license,
   };
   // Update default to the just-uploaded version (idempotent — if it was
-  // already the default, no-op).
-  catalog.runtimes[RUNTIME].default = VERSION;
+  // already the default, no-op), unless the publisher asked to hold it for
+  // deployments that cannot bind this build yet.
+  if (!KEEP_DEFAULT) catalog.runtimes[RUNTIME].default = VERSION;
 
   // The catalog indexes every runtime, so an update that drops one is a
   // publish that unregisters somebody else's. Cheap to assert, and it catches
@@ -654,7 +671,7 @@ if (spec.ingest_only) {
   console.log(`\n[bundle-runtime] DONE`);
   console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
   console.log(`[bundle-runtime] manifest:  r2://${BUCKET}/${manifestR2Key}`);
-  console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key}`);
+  console.log(`[bundle-runtime] catalog:   r2://${BUCKET}/${catalogR2Key} (default ${catalog.runtimes[RUNTIME].default})`);
 }
 
 /**

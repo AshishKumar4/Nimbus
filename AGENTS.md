@@ -143,6 +143,16 @@ nimbus runtime sync --bucket nimbus-runtime-cache python clang ruby
 Do not tell users to run `packages/worker/scripts/bundle-runtime.mjs` unless
 they are changing the runtime ingestion pipeline itself.
 
+The catalog is shared by every deployment that reads it, production included.
+A runtime rebuilt against a new runner contract (the bash preamble and
+`bash.async.wasm` agree on an import table and an Asyncify allowlist) is a
+new catalog version whose manifest names a new runner key, `bash-runner@2`
+today (`BASH_RUNNER` in `packages/core/src/runtime/os-contracts.ts`). Publish
+it with `bundle-runtime.mjs bash <version> --keep-default` so the catalog's
+default stays on the build older deployments bind; a workspace that cannot
+bind the default resolves the newest version whose runners it registers.
+Re-run without the flag once every deployment carries the new preamble.
+
 Embedders off Cloudflare have no R2 binding, so the same runtimes are also
 published to npm: `@nimbus-sh/runtime-bash`, `@nimbus-sh/runtime-cpython`,
 `@nimbus-sh/runtime-ruby` and `@nimbus-sh/runtime-clang`.

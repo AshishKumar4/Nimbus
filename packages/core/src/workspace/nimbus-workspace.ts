@@ -40,7 +40,7 @@ import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, DEFAULT_MOUNT_POINTS, DEFAULT_PATH,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
-import { CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { SqliteFilesystemAuthority } from '../runtime/filesystem-authority.js';
 import { ExecutionFs } from '../shell/execution-fs.js';
@@ -647,7 +647,7 @@ async function registerWasmRuntimes(deps: {
   ));
 
   const runners: Record<string, RunnerFactory> = {
-    'bash-runner': makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem }),
+    [BASH_RUNNER]: makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem }),
     // No `startResident`: a workspace owns no actor that could outlive the
     // call, so a program that keeps serving is refused by name rather than
     // run as a one-shot that dies with it. Same for ruby, where a script is

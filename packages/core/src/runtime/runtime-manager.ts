@@ -32,8 +32,10 @@ import {
   type RunnerFactory,
   type RuntimeSummary,
 } from './installed-runtimes.js';
+import type { RuntimeManifest } from './runtime-manifest.js';
 import {
   seedRuntimePackage,
+  splitRuntimeSpec,
   type RuntimeAvailability,
   type RuntimePackage,
   type RuntimeSource,
@@ -110,13 +112,46 @@ export class RuntimeManager {
     spec: string,
     options?: { force?: boolean; onProgress?: (line: string) => void },
   ): Promise<InstalledBins> {
-    return this.installPrepared(async () => {
-      const runtimePackage = await this.source.resolve(spec);
-      if (runtimePackage === null) {
-        throw new Error(`'${spec}' is not in catalog`);
+    return this.installPrepared(() => this.resolveRunnable(spec), options);
+  }
+
+  /**
+   * The package `spec` names that this workspace can run. A source is shared
+   * by every deployment that reads it, and a runtime rebuilt against a new
+   * runner contract publishes under a new version with a new runner key, so
+   * the version a source offers by default is not always one this build can
+   * bind. A bare name then takes the most recently published version whose
+   * runners are all registered; an explicit `name@version` is a deliberate
+   * request and is refused rather than substituted.
+   */
+  private async resolveRunnable(spec: string): Promise<RuntimePackage> {
+    const runtimePackage = await this.source.resolve(spec);
+    if (runtimePackage === null) {
+      throw new Error(`'${spec}' is not in catalog`);
+    }
+    const missing = this.missingRunners(runtimePackage.manifest);
+    if (missing.length === 0) return runtimePackage;
+    const { name, version } = runtimePackage.manifest;
+    if (splitRuntimeSpec(spec).versionOverride === null) {
+      const offered = (await this.source.list()).find((runtime) => runtime.name === name);
+      for (const { version: candidate } of [...(offered?.versions ?? [])].reverse()) {
+        if (candidate === version) continue;
+        const alternative = await this.source.resolve(`${name}@${candidate}`);
+        if (alternative !== null && this.missingRunners(alternative.manifest).length === 0) return alternative;
       }
-      return runtimePackage;
-    }, options, true);
+    }
+    throw new Error(
+      `${name}@${version}: runner${missing.length === 1 ? '' : 's'} `
+      + `'${missing.join("', '")}' not registered in this workspace`,
+    );
+  }
+
+  private missingRunners(manifest: RuntimeManifest): string[] {
+    return [...new Set(
+      runtimeEntrypoints(manifest)
+        .map((ep) => ep.runner)
+        .filter((key) => !this.runnerFactories.has(key)),
+    )];
   }
 
   /**
@@ -130,13 +165,12 @@ export class RuntimeManager {
     runtimePackage: RuntimePackage,
     options?: { force?: boolean; onProgress?: (line: string) => void },
   ): Promise<InstalledBins> {
-    return this.installPrepared(async () => runtimePackage, options, false);
+    return this.installPrepared(async () => runtimePackage, options);
   }
 
   private installPrepared(
     resolve: () => Promise<RuntimePackage>,
     options: { force?: boolean; onProgress?: (line: string) => void } | undefined,
-    requireRunners: boolean,
   ): Promise<InstalledBins> {
     // One home per call, captured before any await: the key and the writes
     // must name the same tree even if the environment shifts mid-install.
@@ -154,22 +188,6 @@ export class RuntimeManager {
       }
       const manifest = runtimePackage.manifest;
       const name = manifest.name;
-
-      // Before the join, so an explicit install still refuses an unusable
-      // bin even when a provisioning install is already running.
-      if (requireRunners) {
-        const missing = [...new Set(
-          runtimeEntrypoints(manifest)
-            .map((ep) => ep.runner)
-            .filter((key) => !this.runnerFactories.has(key)),
-        )];
-        if (missing.length > 0) {
-          throw new Error(
-            `${name}@${manifest.version}: runner${missing.length === 1 ? '' : 's'} `
-            + `'${missing.join("', '")}' not registered in this workspace`,
-          );
-        }
-      }
 
       const key = `${home}/${name}/${manifest.version}`;
       const nameKey = `${home}/${name}`;

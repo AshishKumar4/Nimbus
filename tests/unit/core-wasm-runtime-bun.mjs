@@ -24,6 +24,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { BASH_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const WASM_DIR = new URL('../../packages/worker/wasm/', import.meta.url).pathname;
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
@@ -38,9 +39,9 @@ const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const RUNTIMES = [
   {
     name: 'bash',
-    version: '5.2.37',
+    version: '5.2.37-2',
     license: 'GPL-3.0-or-later',
-    entrypoints: [{ binName: 'bash', runner: 'bash-runner', args: [] }],
+    entrypoints: [{ binName: 'bash', runner: BASH_RUNNER, args: [] }],
     files: [
       ['share/bash/bash.async.wasm', `${WASM_DIR}bash/bash.async.wasm`],
       ['share/bash/coreutils/busybox.wasm', `${WASM_DIR}bash/coreutils/busybox.wasm`],

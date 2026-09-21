@@ -19,11 +19,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const WORKER = new URL('../../packages/worker/', import.meta.url).pathname;
+const CORE = new URL('../../packages/core', import.meta.url).pathname;
 const PIN_RE = /RUNTIME_CATALOG_SHA256: string = "([a-f0-9]*)"/;
 
 // Formatted the way the publish path writes it, so the digest is over bytes
@@ -42,6 +43,10 @@ try {
   mkdirSync(join(root, 'bin'), { recursive: true });
   cpSync(join(WORKER, 'scripts/bundle-runtime.mjs'), join(root, 'scripts/bundle-runtime.mjs'));
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'runtime-contracts'), { recursive: true });
+  // The script reads runner contracts from core; nothing else lives in this
+  // node_modules, so wrangler still falls back to PATH below.
+  mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
+  symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
 
   // Stub wrangler: `r2 object get <bucket>/<key> --file <path> --remote`.
   // Answers from the object store rather than the command line so a run
