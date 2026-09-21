@@ -214,6 +214,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250327.0",
+        "acorn": "^8.15.0",
         "dompurify": "3.4.12",
         "highlight.js": "11.11.1",
         "marked": "18.0.6",

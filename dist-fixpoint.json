@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "772fbe66aff8c3f0d8f559b07e0babe368834a3f27427aa9a7b5211c591a9136",
+  "fingerprint": "d15fd67f1bd30f74a399b8c1e6df722f1ba045b085d497a91d0dd20fcff81239",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1808,7 +1808,7 @@
     "packages/worker/frontend/agent-chat/stream.ts": "b66ed26c9f13c4a542edaeeb710c9f24f54c8125be58444c5fb8d49e68ac3746",
     "packages/worker/frontend/agent-chat/tokens.css": "04c37e4cc297bde14bf77860bc582a515876dfe95bad0f8ecca8256cbc235c3f",
     "packages/worker/frontend/tsconfig.json": "764850768081e7b37d216a43761c1d122da7b5883eab24d7ecee300e3d82b878",
-    "packages/worker/package.json": "fcac3571cd454fc41f6b480d49ba465ef98f5f4dd85dc9399fde9ad39b6046db",
+    "packages/worker/package.json": "e43303339f45df7d6ea14999690e0ffd0ed3f864114b159b72204caa7b883ded",
     "packages/worker/patches/@ashishkumar472+cf-git+1.0.5.patch": "94e98d3cf59011c14342f7a618fc3d7a99ccd069c27fe948f19b3ab4592fba08",
     "packages/worker/public/_assets/agent-chat/agent-chat.css": "7bde9e33b2b137754633315859f14919449dee3f8a7de448c7af3981a7a018d6",
     "packages/worker/public/_assets/agent-chat/agent-chat.js": "d5794b177864951a52df861820e0949aebcfc9c93626e9fedafa0cf8177aebee",
