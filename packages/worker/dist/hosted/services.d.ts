@@ -18,6 +18,14 @@ export interface RuntimeServiceContext {
     notify(line: string): void;
     requestLaunchTurn(notBefore?: number): Promise<void>;
     resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+    /**
+     * Hold the host actor in memory while a resident process runs — the
+     * session DO's `ensureResidentKeepalive` (session/hibernation.ts), bound
+     * to the host and its `ctx`. Optional because it is the one thing only the
+     * session DO can do: it alone runs the fabric timer mux this alarm rides,
+     * and the hosted runtime schedules through its own lifecycle instead.
+     */
+    armResidentKeepalive?: () => void;
     /** The host's own authority: a session has exactly one, and this is it. */
     filesystem: () => NimbusFilesystemAuthority;
 }

@@ -222,4 +222,19 @@ export class ProcessTable {
       nextPid: this.nextPid,
     };
   }
+
+  /**
+   * How many RESIDENT processes are running: a long-running entry still in
+   * `running` state. The keep-alive alarm's re-arm condition — a session
+   * holds itself in memory for exactly as long as one of these lives, and
+   * `stats.running` cannot answer it (a foreground `node -e` is running too,
+   * and it finishes inside the turn that started it).
+   */
+  get residentRunning(): number {
+    let count = 0;
+    for (const entry of this.processes.values()) {
+      if (entry.state === 'running' && entry.longRunning === true) count++;
+    }
+    return count;
+  }
 }

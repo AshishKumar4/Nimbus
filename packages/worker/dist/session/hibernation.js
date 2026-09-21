@@ -18,6 +18,8 @@
  *     w9_proc_logs + w9_proc_exits.
  *   - scheduleHibFlush(host, ctx) — debounced setTimeout + best-effort
  *     setAlarm for post-hibernation drain.
+ *   - ensureResidentKeepalive(host, ctx) — arm the keep-alive alarm that
+ *     holds this object in memory while a resident process runs.
  *   - dispatchAlarm(host) — alarm() handler body: the fabric's generic
  *     reason dispatcher with this session's handlers registered.
  *   - flushOnClose(host) — synchronous flush on ws close.
@@ -25,7 +27,7 @@
  * The timer multiplexer itself (reason map, schedule, the per-instance
  * chain) is fabric machinery — `@nimbus-sh/fabric/timers.js`; this module
  * registers the session's reasons ('w9-flush' | 'log-janitor' |
- * 'resident-launch') on top of it.
+ * 'resident-launch' | 'resident-keepalive') on top of it.
  *
  * **`ctx` taken as a separate arg from `host`** because the parent
  * `CloudflareDurableObject` class declares `ctx` as `protected`, which
@@ -40,6 +42,7 @@
  */
 import { configureWsHibernation } from '@nimbus-sh/fabric/ws-hibernation-config.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
+import { RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { SESSION_DESTROYED_KEY, W9_FLUSH_DEBOUNCE_MS } from './keys.js';
 /**
  * Run at DO ctor time. Returns the result for the class to assign to
@@ -228,6 +231,40 @@ export function ensureLogJanitor(host, ctx) {
             host._w1JanitorArmed = false;
     });
 }
+/**
+ * W1: arm the keep-alive alarm cycle for this instance, from the spawn hook
+ * of a LONG-RUNNING process only.
+ *
+ * A resident process lives in a facet, and a facet dies with its parent; the
+ * platform evicts an idle object after roughly ten seconds, and a pending
+ * `ctx.waitUntil` is not the in-flight event that counts (see
+ * RESIDENT_KEEPALIVE_MS). A quiet process sends no RPC, so without this the
+ * session idles out and the launch journal re-drives the process under a new
+ * pid namespace, dropping its attached terminal and its port. The alarm is
+ * the event; its dispatch is the whole payload.
+ *
+ * Idempotent per instance via `_w1KeepaliveArmed`; dispatchAlarm clears the
+ * flag when the last resident process is gone, so the next resident spawn
+ * re-arms the cycle.
+ */
+export function ensureResidentKeepalive(host, ctx) {
+    if (host._w1KeepaliveArmed)
+        return;
+    // Same zombie-alarm rule as the janitor: a destroyed session stays inert,
+    // so a straggler facet RPC that wakes the dead DO and spawns cannot leave
+    // an eternal keep-alive loop on a session that no longer exists.
+    if (host._w1SessionDestroyed)
+        return;
+    // Optimistic flag (dedupes same-turn spawns), CONFIRMED by the schedule
+    // outcome: timers.schedule swallows storage errors, and a failure with the
+    // flag left set would mean no alarm AND nothing ever re-arming until the
+    // instance recycles.
+    host._w1KeepaliveArmed = true;
+    void timers(host, ctx).schedule('resident-keepalive', Date.now() + RESIDENT_KEEPALIVE_MS).then((ok) => {
+        if (!ok)
+            host._w1KeepaliveArmed = false;
+    });
+}
 /** W9: idempotent SQL schema bootstrap. */
 export function ensureHibSchema(host, ctx) {
     if (host._w9SchemaInit)
@@ -286,6 +323,8 @@ export function scheduleHibFlush(host, ctx) {
  *   - `'resident-launch'` → pumpResidentLaunches()
  *   - `'log-janitor'` → processes.dropLogsOlderThan(orphanCheck); re-arm
  *     for next 60s cycle while the session still has anything to sweep.
+ *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
+ *     while a resident process is running, so the object stays in memory.
  *
  * `janitorOrphanCheck` is the orphan-pid predicate provided by the
  * caller (typically `(pid) => !host.processes.get(pid)`). Decoupled
@@ -320,6 +359,20 @@ export function dispatchAlarm(host, ctx, janitorOrphanCheck, pumpResidentLaunche
                 return { rearmAt: now + 60_000 };
             }
             host._w1JanitorArmed = false;
+        },
+        'resident-keepalive': (now) => {
+            // Deliberately no work: this alarm exists so the object HAS an event,
+            // and being dispatched is the entire payload. Re-arm only while a
+            // resident process is actually running — the same rule the janitor
+            // learned the hard way (see its comment above): an unconditional
+            // self-renewal makes every session ever created boot its DO forever,
+            // and the fleet of deleted sessions doing that resets live ones.
+            // The next resident spawn re-arms the cycle via
+            // ensureResidentKeepalive.
+            if (host.processes.residentRunning > 0) {
+                return { rearmAt: now + RESIDENT_KEEPALIVE_MS };
+            }
+            host._w1KeepaliveArmed = false;
         },
     }, () => {
         // Legacy path: pre-W1 deploys had no map. dispatchAlarm was called

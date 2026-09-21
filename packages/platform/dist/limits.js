@@ -77,6 +77,16 @@ export const SQLITE_MAX_ROW_BYTES = 2_000_000;
  * fabric defers async reconciliation off the gate entirely (`onColdStart`).
  */
 export const BLOCK_CONCURRENCY_CANCEL_MS = 30_000;
+// ── Eviction window ─────────────────────────────────────────────────────
+/**
+ * Cadence of the alarm that keeps a session Durable Object in memory while
+ * a resident process runs. The platform evicts an object after roughly ten
+ * seconds with no in-flight event; a pending promise (`ctx.waitUntil`) is
+ * not one, and facets die with their parent. Measured 2026-09-21 on local
+ * workerd and on Cloudflare: a quiet resident process survived 8 s of
+ * silence and was re-driven under a new pid namespace after 12 s.
+ */
+export const RESIDENT_KEEPALIVE_MS = 5_000;
 // ── WebSocket attachment bound ──────────────────────────────────────────
 /**
  * Bytes one hibernatable WebSocket attachment may serialize to. Verified in
