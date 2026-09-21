@@ -71,56 +71,89 @@ export function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor {
   };
 }
 
-/** Remote facets use the same typed supervisor RPC methods. */
-export function supervisorFilesystem(supervisor: WasiSupervisorStub): RuntimeFsBridge {
+/**
+ * A workerd RPC hop keeps an error's message but not its own properties, and
+ * bytes come back as an ArrayBuffer. Every filesystem error names its code as
+ * the message prefix, so the boundary restores both before the codec looks.
+ * A same-isolate supervisor answers synchronously and is handed back as is: a
+ * guest that cannot park reads the value straight off the import. What the
+ * stub returns is a thenable of its own class, not a Promise, so the test is
+ * for `then` and the repaired result is a real Promise.
+ */
+function pending(result: unknown): result is PromiseLike<unknown> {
+  // workerd's RPC promise is a callable proxy (pipelined calls), so its type is 'function'.
+  return (typeof result === 'object' || typeof result === 'function') && result !== null
+    && typeof (result as PromiseLike<unknown>).then === 'function';
+}
+function hop<T>(result: Promise<T> | T): Promise<T> | T {
+  return pending(result) ? Promise.resolve(result).catch(restoreCode) : result;
+}
+function bytes<T extends Uint8Array | null>(result: Promise<T | ArrayBuffer> | T | ArrayBuffer): Promise<T | Uint8Array> | T | Uint8Array {
+  return pending(result) ? Promise.resolve(result).catch(restoreCode).then(asBytes) : asBytes(result);
+}
+function asBytes<T extends Uint8Array | null>(value: T | ArrayBuffer): T | Uint8Array {
+  return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+}
+function restoreCode(error: unknown): never {
+  if (error instanceof Error && !('code' in error)) {
+    const code = /^([A-Z]+):/.exec(error.message)?.[1];
+    if (code) throw Object.assign(error, { code });
+  }
+  throw error;
+}
+
+/**
+ * Remote facets use the same typed supervisor RPC methods. A synchronous view
+ * is a same-isolate capability: an RPC stub answers every property with a
+ * callable, so it is never read from the stub, only carried by a local
+ * supervisor whose view really is in this isolate.
+ */
+export function supervisorFilesystem(supervisor: WasiSupervisorStub, local?: RuntimeSynchronousFs): RuntimeFsBridge {
   return {
-    // Passed through, never minted: a capability the binding does not carry is
-    // one an RPC hop cannot have, and a synthetic one would promise the caller
-    // an answer without a Promise that only a same-isolate authority can keep.
-    synchronous: supervisor.synchronous,
-    stat: (...args) => supervisor.stat(...args),
-    readFile: (...args) => supervisor.readFileBytes(...args),
-    writeFile: (...args) => supervisor.writeFile(...args),
-    readRange: (...args) => supervisor.fsReadRange(...args),
-    writeRange: (...args) => supervisor.fsWriteRange(...args),
-    truncate: (...args) => supervisor.fsTruncate(...args),
-    utimes: (...args) => supervisor.utimes(...args),
-    chmod: (...args) => supervisor.chmod(...args),
-    access: (...args) => supervisor.access(...args),
-    chown: (...args) => supervisor.chown(...args),
-    open: (...args) => supervisor.fsOpen(...args),
-    read: (...args) => supervisor.fsRead(...args),
-    write: (...args) => supervisor.fsWrite(...args),
-    close: (...args) => supervisor.fsClose(...args),
-    readdir: (...args) => supervisor.readdir(...args),
-    mkdir: (...args) => supervisor.mkdir(...args),
-    unlink: (...args) => supervisor.unlink(...args),
-    rmdir: (...args) => supervisor.rmdir(...args),
-    rename: (...args) => supervisor.rename(...args),
-    readlink: (...args) => supervisor.readlink(...args),
-    symlink: (...args) => supervisor.symlink(...args),
-    fsync: (...args) => supervisor.fsSync(...args),
-    revision: (...args) => supervisor.fsRevision(...args),
-    acquire: (...args) => supervisor.fsAcquire(...args),
-    list: (...args) => supervisor.fsList(...args),
-    realpath: (...args) => supervisor.fsRealpath(...args),
-    remove: (...args) => supervisor.fsRemove(...args),
-    copyFile: (...args) => supervisor.fsCopyFile(...args),
-    fstat: (...args) => supervisor.fsFstat(...args),
-    dup: (...args) => supervisor.fsDup(...args),
-    seek: (...args) => supervisor.fsSeek(...args),
-    setStatus: (...args) => supervisor.fsSetStatus(...args),
-    readdirHandle: (...args) => supervisor.fsReaddirHandle(...args),
-    ftruncate: (...args) => supervisor.fsFtruncate(...args),
-    fchmod: (...args) => supervisor.fsFchmod(...args),
-    fchown: (...args) => supervisor.fsFchown(...args),
-    futimes: (...args) => supervisor.fsFutimes(...args),
-    appendOnce: (...args) => supervisor.fsAppend(...args),
-    acknowledgeAppend: (...args) => supervisor.fsAppendAck(...args),
-    writeBatch: (...args) => supervisor.writeBatch(...args),
-    writeStream: (...args) => supervisor.writeBatchStream(...args),
-    acquireExclusiveMutation: (...args) => supervisor.fsAcquireExclusiveMutation(...args),
-    releaseExclusiveMutation: (...args) => supervisor.fsReleaseExclusiveMutation(...args),
+    synchronous: local,
+    stat: (...args) => hop(supervisor.stat(...args)),
+    readFile: (...args) => bytes(supervisor.readFileBytes(...args)),
+    writeFile: (...args) => hop(supervisor.writeFile(...args)),
+    readRange: (...args) => bytes(supervisor.fsReadRange(...args)),
+    writeRange: (...args) => hop(supervisor.fsWriteRange(...args)),
+    truncate: (...args) => hop(supervisor.fsTruncate(...args)),
+    utimes: (...args) => hop(supervisor.utimes(...args)),
+    chmod: (...args) => hop(supervisor.chmod(...args)),
+    access: (...args) => hop(supervisor.access(...args)),
+    chown: (...args) => hop(supervisor.chown(...args)),
+    open: (...args) => hop(supervisor.fsOpen(...args)),
+    read: (...args) => bytes(supervisor.fsRead(...args)),
+    write: (...args) => hop(supervisor.fsWrite(...args)),
+    close: (...args) => hop(supervisor.fsClose(...args)),
+    readdir: (...args) => hop(supervisor.readdir(...args)),
+    mkdir: (...args) => hop(supervisor.mkdir(...args)),
+    unlink: (...args) => hop(supervisor.unlink(...args)),
+    rmdir: (...args) => hop(supervisor.rmdir(...args)),
+    rename: (...args) => hop(supervisor.rename(...args)),
+    readlink: (...args) => hop(supervisor.readlink(...args)),
+    symlink: (...args) => hop(supervisor.symlink(...args)),
+    fsync: (...args) => hop(supervisor.fsSync(...args)),
+    revision: (...args) => hop(supervisor.fsRevision(...args)),
+    acquire: (...args) => hop(supervisor.fsAcquire(...args)),
+    list: (...args) => hop(supervisor.fsList(...args)),
+    realpath: (...args) => hop(supervisor.fsRealpath(...args)),
+    remove: (...args) => hop(supervisor.fsRemove(...args)),
+    copyFile: (...args) => hop(supervisor.fsCopyFile(...args)),
+    fstat: (...args) => hop(supervisor.fsFstat(...args)),
+    dup: (...args) => hop(supervisor.fsDup(...args)),
+    seek: (...args) => hop(supervisor.fsSeek(...args)),
+    setStatus: (...args) => hop(supervisor.fsSetStatus(...args)),
+    readdirHandle: (...args) => hop(supervisor.fsReaddirHandle(...args)),
+    ftruncate: (...args) => hop(supervisor.fsFtruncate(...args)),
+    fchmod: (...args) => hop(supervisor.fsFchmod(...args)),
+    fchown: (...args) => hop(supervisor.fsFchown(...args)),
+    futimes: (...args) => hop(supervisor.fsFutimes(...args)),
+    appendOnce: (...args) => hop(supervisor.fsAppend(...args)),
+    acknowledgeAppend: (...args) => hop(supervisor.fsAppendAck(...args)),
+    writeBatch: (...args) => hop(supervisor.writeBatch(...args)),
+    writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)).catch(restoreCode),
+    acquireExclusiveMutation: (...args) => hop(supervisor.fsAcquireExclusiveMutation(...args)),
+    releaseExclusiveMutation: (...args) => hop(supervisor.fsReleaseExclusiveMutation(...args)),
   };
 }
 

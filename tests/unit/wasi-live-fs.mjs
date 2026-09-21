@@ -418,4 +418,43 @@ const ROOT_INIT = (extra = {}) => ({
   assert.equal((await h.read(3)).errno, EISDIR, 'and neither has the preopen root');
 }
 
+// ── 12. A read-only open is answered from a resident copy, per revision ─────
+// One stat per open, one read per revision: the descriptor calls in between
+// (fstat, seek, read, close) never reach the supervisor. A rewrite moves the
+// stat revision, so the next open reads again; a writable open never uses it.
+{
+  const RDONLY = 0x1fbffeben; // what wasi-libc requests for O_RDONLY
+  const sup = mockSupervisor({ 'home/user/mod.py': 'first' });
+  const revisions = new Map();
+  const base = sup.stat;
+  sup.stat = async (p) => { const st = await base(p); return st && { ...st, revision: revisions.get(typeof p === 'string' ? p : p.path) ?? 1 }; };
+  sup.readFileBytes = async (p) => { sup.log.push(['readFileBytes']); return sup.store.get(typeof p === 'string' ? p : p.path) ?? null; };
+  const h = host(ROOT_INIT({
+    sizes: { 'home/user/mod.py': 5 },
+    modes: { '': 7, home: 7, 'home/user': 7, 'home/user/mod.py': 6 },
+  }), sup);
+  const ops = () => sup.log.map(([op]) => op);
+  const readAll = async (fd) => { const r = await h.read(fd); assert.equal(r.errno, ESUCCESS); await h.wasiImport.fd_close(fd); return r.text; };
+
+  const first = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(first.errno, ESUCCESS);
+  assert.equal(P.fdTable.get(first.fd).kind, 'resident', 'a read-only open of a small file is resident');
+  assert.equal(await readAll(first.fd), 'first');
+  const second = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(await readAll(second.fd), 'first');
+  assert.deepEqual(ops().filter((op) => op !== 'stat' && op !== 'fsRevision'), ['readFileBytes'], 'two opens read the content once');
+  assert.equal(ops().filter((op) => op === 'stat').length, 2, 'each open costs one stat');
+  assert.ok(!ops().some((op) => op === 'fsOpen' || op === 'fsRead' || op === 'fsClose'), 'no descriptor op crossed to the supervisor');
+
+  sup.store.set('home/user/mod.py', enc.encode('second'));
+  revisions.set('home/user/mod.py', 2);
+  const third = await h.open('home/user/mod.py', { rights: RDONLY });
+  assert.equal(await readAll(third.fd), 'second', 'a moved revision is read again');
+
+  const writable = await h.open('home/user/mod.py', { rights: RDONLY | (1n << 6n) });
+  assert.equal(writable.errno, ESUCCESS);
+  assert.equal(P.fdTable.get(writable.fd).kind, 'authority', 'a writable open holds a live descriptor');
+  await h.wasiImport.fd_close(writable.fd);
+}
+
 console.log('wasi-live-fs: all assertions passed');

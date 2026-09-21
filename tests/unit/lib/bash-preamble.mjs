@@ -15,7 +15,9 @@ import { fileURLToPath } from 'node:url';
 import { BASH_RUNNER_PREAMBLE } from '../../../packages/core/src/runtime/bash-runner.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SqliteFilesystemAuthority } from '../../../packages/core/src/runtime/filesystem-authority.ts';
-import { vfsSupervisor } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
+import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
+import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
+import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { Kernel } from '../../../packages/core/src/substrate/lifo/kernel/index.ts';
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
@@ -48,9 +50,14 @@ function wasmTable() {
  * `evaluate(source)` runs a source string inside that scope, which is how a
  * serialized facet step (bashRequestStep / bashFacetStep) reaches the preamble.
  *
+ * `remote: true` serves the filesystem the way a resident facet gets it: every
+ * syscall is a supervisor op envelope across a hop that keeps an error's
+ * message but not its code and hands bytes back as ArrayBuffer, parked on JSPI.
+ *
  * @param {object} [opts]
  * @param {Record<string,WebAssembly.Module>} [opts.extraWasm]  extra `__NIMBUS_WASM`
  *   entries; a `cu_<name>.wasm` key becomes a command at /bin/<name>.
+ * @param {boolean} [opts.remote]
  */
 export function loadPreamble(opts = {}) {
   const { table, applets } = wasmTable();
@@ -79,13 +86,37 @@ export function loadPreamble(opts = {}) {
   for (const name of [...applets, ...Object.keys(opts.extraWasm ?? {}).map(key => key.slice(3, -5))]) {
     root.writeFile('bin/' + name, 'Nimbus WASI multicall entry\n', { mode: 0o755 });
   }
-  const bindings = { SUPERVISOR: vfsSupervisor(authority.bind({ pid: 1, cred })) };
+  const processes = new SessionProcessSupervisor();
+  const { pid } = processes.spawn('bash', ['bash'], '/', { cred });
+  const store = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
+  const bindings = { SUPERVISOR: opts.remote ? remoteSupervisor(createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge: store, host: {} }), pid) : vfsSupervisor(store.bridge(pid)) };
+  const parking = opts.remote ? 'jspi' : 'none';
   return {
     scope, bindings, root, evaluate, cred, applets,
-    boot: args => scope.__bashStep({ op: 'boot', cwd: '/', cred, parking: 'none', coreutilsRoot: '/bin', ...args }, bindings.SUPERVISOR),
+    boot: args => scope.__bashStep({ op: 'boot', cwd: '/', cred, parking, coreutilsRoot: '/bin', ...args }, bindings.SUPERVISOR),
     feed: args => scope.__bashStep({ op: 'feed', ...args }, bindings.SUPERVISOR),
-    async dispose() { await authority.releaseProcess(1); harness.db.close(); },
+    async dispose() { await store.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
   };
+}
+
+function remoteSupervisor(dispatch, pid) {
+  const cloned = (value) => value instanceof Uint8Array ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) : value;
+  // workerd's RpcPromise is a callable proxy: typeof 'function', with `then`, not a Promise.
+  const rpcThenable = (promise) => Object.assign(() => { throw new Error('pipelined call'); }, { then: (onFulfilled, onRejected) => promise.then(onFulfilled, onRejected) });
+  // A WorkerEntrypoint stub answers every property with a callable, the
+  // synchronous capability included; the adapter must not believe it.
+  const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
+  for (const op of Object.values(FILESYSTEM_RPC_METHODS)) {
+    // A stub call answers with workerd's own thenable class, never a Promise.
+    supervisor[op] = (...args) => rpcThenable((async () => {
+      // A real hop takes a turn; answering in the same tick would hide any
+      // ordering the guest's unwind and rewind depend on.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      try { return cloned(await dispatch({ op, args, pid })); }
+      catch (error) { throw new Error(error instanceof Error ? error.message : String(error)); }
+    })());
+  }
+  return supervisor;
 }
 
 /**

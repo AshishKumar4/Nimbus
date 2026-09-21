@@ -11,6 +11,20 @@ export interface AuthorityFd {
   fdflags: number;
   entries?: { name: string; type: string }[];
 }
+/**
+ * A read-only open of a regular file, answered from this isolate: the bytes
+ * are the file's content at its stat revision, so every read, seek and stat on
+ * the descriptor is local. Nothing on the authority side is held for it.
+ */
+export interface ResidentFd {
+  kind: 'resident';
+  stat: RuntimeVfsStat;
+  bytes: Uint8Array;
+  position: number;
+  rights: bigint;
+  rightsInheriting: bigint;
+  fdflags: number;
+}
 export interface AuthorityPreopen {
   kind: 'preopen';
   vfsPath: string;
@@ -18,7 +32,7 @@ export interface AuthorityPreopen {
   rights?: bigint;
   rightsInheriting?: bigint;
 }
-export type FilesystemFd = AuthorityFd | AuthorityPreopen | { kind: 'stdin' | 'stdout' | 'stderr' | 'file' | 'dir' | 'socket' | 'listener' | 'pipe' };
+export type FilesystemFd = AuthorityFd | ResidentFd | AuthorityPreopen | { kind: 'stdin' | 'stdout' | 'stderr' | 'file' | 'dir' | 'socket' | 'listener' | 'pipe' };
 export type FilesystemImports = Pick<WasiImports,
   | 'path_open'
   | 'path_filestat_get'
@@ -109,6 +123,15 @@ export interface AuthorityFilesystemOptions {
   synchronous: boolean;
   /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
   umask?(): number;
+  /**
+   * Largest regular file a read-only open answers from a resident copy. A
+   * guest that reopens the same file for every module (CPython's zipimport,
+   * a shell's scripts) then pays one stat per open and one read per revision,
+   * rather than a round trip per descriptor call. Content is keyed by inode
+   * and validated against the stat revision, so a file rewritten by anyone
+   * is fetched again on its next open. Zero keeps every open on the authority.
+   */
+  residentBytes?: number;
 }
 
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
@@ -137,10 +160,30 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     }
     return authority;
   };
-  const entry = (fd: number): AuthorityFd => {
+  const entry = (fd: number): AuthorityFd | ResidentFd => {
     const e = fds.get(fd);
-    if (!e || e.kind !== 'authority') fail('EBADF');
+    if (!e || (e.kind !== 'authority' && e.kind !== 'resident')) fail('EBADF');
     return e;
+  };
+  // The ops that need a live descriptor on the authority. A resident copy has
+  // none, and a read-only open never asked for the rights they check.
+  const handle = (fd: number): AuthorityFd => {
+    const e = entry(fd);
+    if (e.kind !== 'authority') fail('ENOTCAPABLE');
+    return e;
+  };
+  // Content by inode, valid while the stat revision matches the one it was read at.
+  const resident = new Map<string, { revision: number; bytes: Uint8Array }>();
+  const residentBytes = options.residentBytes ?? 0;
+  const residentContent = (fs: Fs, target: RuntimeFsPath, st: RuntimeVfsStat): Awaitable<Uint8Array> => {
+    const key = `${st.dev}:${st.ino}`;
+    const cached = resident.get(key);
+    if (cached && cached.revision === st.revision) return cached.bytes;
+    return after(fs.readFile(target), bytes => {
+      if (bytes === null) fail('ENOENT');
+      resident.set(key, { revision: st.revision, bytes });
+      return bytes;
+    });
   };
   const preopen = (fd: number): AuthorityPreopen | null => {
     const e = fds.get(fd);
@@ -165,7 +208,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const e = fds.get(fd);
     if (e?.kind === 'preopen') return { root: e.vfsPath, path: p, beneath: true };
     const opened = entry(fd);
-    if (opened.type !== 'directory') fail('ENOTDIR');
+    if (opened.kind !== 'authority' || opened.type !== 'directory') fail('ENOTDIR');
     return { directory: opened.handle.id, path: p, beneath: true };
   };
   const right = (fd: number, bit: number) => {
@@ -181,7 +224,9 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   };
   const stat = (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number): Awaitable<RuntimeVfsStat> => {
     const p = preopen(fd);
-    return p ? after(fs.stat(p.vfsPath), value => value ?? fail('ENOENT')) : fs.fstat(entry(fd).handle.id);
+    if (p) return after(fs.stat(p.vfsPath), value => value ?? fail('ENOENT'));
+    const e = entry(fd);
+    return e.kind === 'resident' ? e.stat : fs.fstat(e.handle.id);
   };
   const writeStat = (ptr: number, st: RuntimeVfsStat): Errno => {
     const dv = view(); const old = options.abi === 'preview0';
@@ -211,7 +256,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     } catch (error) { return filesystemErrno(error); }
   };
   const owns = (args: readonly (number | bigint)[]) => {
-    const e = fds.get(Number(args[0])); return e?.kind === 'authority' || e?.kind === 'preopen';
+    const e = fds.get(Number(args[0])); return e?.kind === 'authority' || e?.kind === 'resident' || e?.kind === 'preopen';
   };
   const iovs = (ptr: number, count: number) => {
     if (ptr < 0 || count < 0 || count > Math.floor((memory().length - ptr) / 8)) fail('EFAULT');
@@ -223,20 +268,28 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     }
     return { result, total };
   };
+  const scatter = (data: Uint8Array, vectors: { ptr: number; length: number }[]): number => {
+    let used = 0;
+    for (const v of vectors) { const n = Math.min(v.length, data.length - used); if (n <= 0) break; memory().set(data.subarray(used, used + n), v.ptr); used += n; }
+    return used;
+  };
   const read = (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, ptr: number, count: number, offset: number | null, written: number): SyscallResult => {
     // A directory has no byte stream: POSIX and the host body this took over
     // from both answer EISDIR, and they answer it before any rights check.
     const target = fds.get(fd);
     if (target?.kind === 'preopen' || (target?.kind === 'authority' && target.type === 'directory')) fail('EISDIR');
     const e = right(fd, 1), vectors = iovs(ptr, count);
-    return after(fs.read(e.handle.id, offset, vectors.total), data => {
-      let used = 0;
-      for (const v of vectors.result) { const n = Math.min(v.length, data.length - used); if (n <= 0) break; memory().set(data.subarray(used, used + n), v.ptr); used += n; }
+    if (e.kind === 'resident') {
+      const start = Math.min(offset ?? e.position, e.bytes.length);
+      const used = scatter(e.bytes.subarray(start, Math.min(e.bytes.length, start + vectors.total)), vectors.result);
+      if (offset === null) e.position = start + used;
       u32(written, used); return 0;
-    });
+    }
+    return after(fs.read(e.handle.id, offset, vectors.total), data => { u32(written, scatter(data, vectors.result)); return 0; });
   };
   const write = (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, ptr: number, count: number, offset: number | null, written: number): SyscallResult => {
     const e = right(fd, 6), vectors = iovs(ptr, count), data = new Uint8Array(vectors.total); let used = 0;
+    if (e.kind === 'resident') fail('ENOTCAPABLE');
     for (const v of vectors.result) { data.set(memory().subarray(v.ptr, v.ptr + v.length), used); used += v.length; }
     return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
   };
@@ -250,14 +303,32 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const requested = BigInt(rights), childRights = BigInt(inherit);
     const allowed = parent.rightsInheriting;
     if (allowed !== undefined && ((requested | childRights) & ~allowed)) fail('ENOTCAPABLE');
-    return after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
-      create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks: !!(lookup & 1),
+    const followSymlinks = !!(lookup & 1);
+    // Rights that change the file keep the open on the authority: fd_write,
+    // fd_allocate, fd_filestat_set_size. wasi-libc asks for sync and status
+    // rights on every open, and a resident copy answers those itself.
+    const readOnly = !(requested & ((1n << 6n) | (1n << 8n) | (1n << 22n))) && !(flags & 15) && !(status & 1);
+    const open = (): SyscallResult => after(fs.open(target, { read: !!(requested & 2n), write: !!(requested & 64n), append: !!(status & 1),
+      create: !!(flags & 1), directory: !!(flags & 2), exclusive: !!(flags & 4), truncate: !!(flags & 8), followSymlinks,
       mode: creationMode(0o666) }), handle =>
       after(fs.fstat(handle.id), st => {
         const id = options.allocateFd();
         fds.set(id, { kind: 'authority', handle, type: st.type, rights: requested, rightsInheriting: childRights, fdflags: status });
         u32(out, id); return 0;
       }));
+    if (!readOnly || residentBytes === 0) return open();
+    return after(fs.stat(target, { followSymlinks }), st => {
+      if (st === null) fail('ENOENT');
+      if (st.type !== 'file' || st.size > residentBytes) return open();
+      // A hit needs no permission check of its own: the copy was read under
+      // this credential, and a chmod or chown since would have moved the
+      // revision along with any rewrite.
+      return after(residentContent(fs, target, st), bytes => {
+        const id = options.allocateFd();
+        fds.set(id, { kind: 'resident', stat: st, bytes, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+        u32(out, id); return 0;
+      });
+    });
   }, args => !socketPath(args[0], args[2], args[3]));
   imports.path_filestat_get = guard(imports.path_filestat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
     { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeStat(out, st ?? fail('ENOENT'))); });
@@ -270,7 +341,9 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     // A preopen is the root every path resolves against. Dropping it leaves
     // the guest nothing to open, so it survives the close, as in the host body.
     if (preopen(fd)) return 0;
-    return after(fs.close(entry(fd).handle.id), () => { fds.delete(fd); return 0; });
+    const e = entry(fd);
+    if (e.kind === 'resident') { fds.delete(fd); return 0; }
+    return after(fs.close(e.handle.id), () => { fds.delete(fd); return 0; });
   }, owns);
   imports.fd_renumber = guard(imports.fd_renumber, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, to: number) => {
     const source = fds.get(from);
@@ -280,7 +353,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (target?.kind === 'preopen') fail('ENOTCAPABLE');
     // dup2 closes what it lands on, and only the owner of that fd knows how:
     // a socket's stream and a pipe's writer count are the host's to release.
-    const released = !target ? undefined
+    const released = !target || target.kind === 'resident' ? undefined
       : target.kind === 'authority' ? fs.close(target.handle.id)
       : hostClose?.(to);
     return after(released, () => {
@@ -293,30 +366,43 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     const kind = options.abi === 'preview0' ? (whence === 2 ? 'set' : whence === 0 ? 'current' : whence === 1 ? 'end' : null)
       : whence === 0 ? 'set' : whence === 1 ? 'current' : whence === 2 ? 'end' : null;
     if (kind === null) fail('EINVAL');
-    return after(fs.seek(right(fd, 2).handle.id, num(offset), kind), pos => { u64(out, pos); return 0; });
+    const e = right(fd, 2);
+    if (e.kind === 'resident') {
+      const base = kind === 'set' ? 0 : kind === 'current' ? e.position : e.bytes.length;
+      const pos = base + num(offset);
+      if (pos < 0) fail('EINVAL');
+      e.position = pos; u64(out, pos); return 0;
+    }
+    return after(fs.seek(e.handle.id, num(offset), kind), pos => { u64(out, pos); return 0; });
   }, owns);
-  imports.fd_tell = guard(imports.fd_tell, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => after(fs.seek(right(fd, 5).handle.id, 0, 'current'), pos => { u64(out, pos); return 0; }), owns);
+  imports.fd_tell = guard(imports.fd_tell, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => {
+    const e = right(fd, 5);
+    if (e.kind === 'resident') { u64(out, e.position); return 0; }
+    return after(fs.seek(e.handle.id, 0, 'current'), pos => { u64(out, pos); return 0; });
+  }, owns);
   imports.fd_fdstat_get = guard(imports.fd_fdstat_get, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => {
     const e = preopen(fd) ?? entry(fd);
-    memory().fill(0, out, out + 24); view().setUint8(out, e.kind === 'preopen' ? 3 : ft(e.type));
+    memory().fill(0, out, out + 24); view().setUint8(out, e.kind === 'preopen' ? 3 : e.kind === 'resident' ? 4 : ft(e.type));
     view().setUint16(out + 2, e.kind === 'preopen' ? 0 : e.fdflags, true);
     u64(out + 8, e.rights ?? 0x1fffffffn); u64(out + 16, e.rightsInheriting ?? 0x1fffffffn); return 0;
   }, owns);
   imports.fd_fdstat_set_flags = guard(imports.fd_fdstat_set_flags, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number) => {
     if (flags & ~5) fail('ENOTSUP'); const e = right(fd, 3);
+    if (e.kind === 'resident') { e.fdflags = flags; return 0; }
     return after(fs.setStatus(e.handle.id, { append: !!(flags & 1) }), () => { e.fdflags = flags; return 0; });
   }, owns);
   imports.fd_fdstat_set_rights = guard(imports.fd_fdstat_set_rights, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, rights: bigint, inheriting: bigint) => {
     const e = entry(fd); if ((rights & ~e.rights) || (inheriting & ~e.rightsInheriting)) fail('ENOTCAPABLE');
     e.rights = rights; e.rightsInheriting = inheriting; return 0;
   }, owns);
-  imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, size: bigint) => after(fs.ftruncate(right(fd, 22).handle.id, num(size)), () => 0), owns);
-  imports.fd_sync = guard(imports.fd_sync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { right(fd, 4); return after(fs.fsync(entry(fd).handle.id), () => 0); }, owns);
-  imports.fd_datasync = guard(imports.fd_datasync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { right(fd, 0); return after(fs.fsync(entry(fd).handle.id), () => 0); }, owns);
+  imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, size: bigint) => { right(fd, 22); return after(fs.ftruncate(handle(fd).handle.id, num(size)), () => 0); }, owns);
+  imports.fd_sync = guard(imports.fd_sync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { const e = right(fd, 4); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
+  imports.fd_datasync = guard(imports.fd_datasync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { const e = right(fd, 0); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
   imports.fd_allocate = guard(imports.fd_allocate, (fs: RuntimeFsBridge | RuntimeSynchronousFs, ) => fail('ENOTSUP'), owns);
   imports.fd_advise = guard(imports.fd_advise, (fs: RuntimeFsBridge | RuntimeSynchronousFs, ) => fail('ENOTSUP'), owns);
   imports.fd_readdir = guard(imports.fd_readdir, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, buf: number, size: number, cookie: bigint, used: number) => { pathRight(fd, 14); 
     const e = preopen(fd) ?? entry(fd);
+    if (e.kind === 'resident') fail('ENOTDIR');
     const list = e.kind === 'preopen' ? fs.readdir(e.vfsPath) : e.entries ?? fs.readdirHandle(e.handle.id);
     return after(list, entries => {
       if (e.kind === 'authority') e.entries = entries;
@@ -345,8 +431,8 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     return [flags & 2 ? Date.now() : flags & 1 ? Number(a / 1000000n) : st.atime,
       flags & 8 ? Date.now() : flags & 4 ? Number(m / 1000000n) : st.mtime];
   };
-  imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => after(stat(fs, fd), st =>
-    after(fs.futimes(right(fd, 23).handle.id, ...times(st, a, m, flags)), () => 0)), owns);
+  imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23); return after(stat(fs, fd), st =>
+    after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
   imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, a: bigint, m: bigint, flags: number) => { pathRight(fd, 20); 
     const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
     return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));

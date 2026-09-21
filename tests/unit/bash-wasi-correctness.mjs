@@ -218,6 +218,16 @@ const tmp = { dirs: ['tmp'], modes: { tmp: 7 } };
     `state ${r.state} code ${r.exitCode} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
 }
 
+// Across a supervisor hop: the same script with every syscall an RPC
+// envelope, bytes back as ArrayBuffer, errors without their code, and a stub
+// whose `synchronous` property is a callable like any other.
+{
+  const r = (await runScript('echo hi > /tmp/x; ls /tmp; cat /tmp/x | wc -c; cat /tmp/missing; echo "rc=$?"', { ...tmp, remote: true }));
+  check('bash runs over a supervisor hop with parked syscalls',
+    r.state === 'exited' && r.exitCode === 0 && r.stdout === 'x\n3\nrc=1\n' && r.stderr.includes('No such file'),
+    `state ${r.state} code ${r.exitCode} stdout ${JSON.stringify(r.stdout)} stderr ${JSON.stringify(r.stderr)}`);
+}
+
 // ── the real workload still runs ──────────────────────────────────────────
 // A stateful script over the paths these fixes touched: pipes, redirection,
 // a loop accumulating file state, command substitution, and exit status.

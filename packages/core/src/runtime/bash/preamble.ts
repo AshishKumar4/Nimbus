@@ -44,6 +44,7 @@ import type {
 } from './types.js';
 import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
+import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } from '../os-contracts.js';
 import type { SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 
@@ -269,7 +270,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     random_get(p: number,n: number): BashErrno { for(let i=0;i<n;i+=65536)crypto.getRandomValues(U8().subarray(p+i,p+Math.min(i+65536,n)));return 0; },
     proc_exit(code: number) { throw new Exit(code); },
   };
-  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask });
+  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES });
   installPreopenRehoming(proc, imports);
   return imports;
 }
@@ -1090,7 +1091,6 @@ async function pump(s: BashSession): Promise<BashSlice> {
  * nothing but a boot/feed-shaped payload can reach the scheduler.
  */
 globalThis.__bashStep = async function __bashStep(raw: unknown, supervisor?: WasiSupervisorStub): Promise<BashSlice> {
-  if (supervisor) filesystem = supervisorFilesystem(supervisor);
   if (typeof raw !== 'object' || raw === null || !('op' in raw)) {
     return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: step args must be an object with op' };
   }
@@ -1102,10 +1102,14 @@ globalThis.__bashStep = async function __bashStep(raw: unknown, supervisor?: Was
     return globalThis.__bashFeed(raw as BashFeedArgs);
   }
   if (raw.op === 'boot') {
-    const a = raw as { argv?: unknown; environ?: unknown; cwd?: unknown };
+    const a = raw as { argv?: unknown; environ?: unknown; cwd?: unknown; parking?: unknown };
     if (!Array.isArray(a.argv) || !Array.isArray(a.environ) || typeof a.cwd !== 'string') {
       return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'bash-runner: malformed boot args' };
     }
+    // A synchronous view exists only in the isolate that owns the filesystem,
+    // which is where a guest that cannot park runs; across a hop the stub
+    // answers the property with a callable, so it is read only for that host.
+    if (supervisor) filesystem = supervisorFilesystem(supervisor, a.parking === 'none' ? supervisor.synchronous : undefined);
     return globalThis.__bashBoot(raw as BashBootArgs);
   }
   return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: `bash-runner: unknown step op ${JSON.stringify(raw.op)}` };
