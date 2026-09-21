@@ -60,6 +60,8 @@ cli 0.1.11, react 0.1.7, loom 0.1.3.
 ## 2026-09-22
 
 For embedders that host Nimbus under their own Durable Object namespace.
+Ships in the same versions as the release below (core 0.12.0, worker
+0.10.0, platform 0.5.1, fabric 0.7.1), which had not been published yet.
 
 ### Fabric
 
