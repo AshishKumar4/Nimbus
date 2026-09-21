@@ -2195,7 +2195,7 @@ export function __wasiMakeImports(opts) {
             writeU32LE(bufusedPtr, written);
             return __WASI_ESUCCESS;
         },
-        fd_advise() { return __WASI_ESUCCESS; },
+        fd_advise(_fd, _offset, _len, _advice) { return __WASI_ESUCCESS; },
         // WASI socket and polling support B4: real fd_allocate. Extends the file's byte buffer with
         // zeros so [offset, offset+len) is allocated. POSIX posix_fallocate
         // semantics. ENOSPC is not reachable in our in-memory FS (the

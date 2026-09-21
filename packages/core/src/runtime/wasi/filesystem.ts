@@ -206,10 +206,21 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   const at = (fd: number, p: string): RuntimeFsPath => {
     if (p.startsWith('/')) fail('ENOTCAPABLE');
     const e = fds.get(fd);
-    if (e?.kind === 'preopen') return { root: e.vfsPath, path: p, beneath: true };
+    if (e?.kind === 'preopen') return { root: e.vfsPath, path: underPreopen(e, p), beneath: true };
     const opened = entry(fd);
     if (opened.kind !== 'authority' || opened.type !== 'directory') fail('ENOTDIR');
     return { directory: opened.handle.id, path: p, beneath: true };
+  };
+  // A compiled program's `/` is the shell's cwd, so wasi-libc hands an
+  // absolute guest path back as `home/user/x` against that preopen: the
+  // program meant the same file the shell calls /home/user/x, not the
+  // subtree home/user/home/user. The re-stated root is stripped at a segment
+  // boundary; `home/userfoo` is a different directory and is left alone.
+  const underPreopen = (e: AuthorityPreopen, p: string): string => {
+    const root = e.vfsPath;
+    if (root.length === 0) return p;
+    if (p === root) return '';
+    return p.startsWith(root) && p.charCodeAt(root.length) === 47 ? p.slice(root.length + 1) : p;
   };
   const right = (fd: number, bit: number) => {
     const e = entry(fd);
@@ -398,8 +409,13 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, size: bigint) => { right(fd, 22); return after(fs.ftruncate(handle(fd).handle.id, num(size)), () => 0); }, owns);
   imports.fd_sync = guard(imports.fd_sync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { const e = right(fd, 4); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
   imports.fd_datasync = guard(imports.fd_datasync, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { const e = right(fd, 0); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
-  imports.fd_allocate = guard(imports.fd_allocate, (fs: RuntimeFsBridge | RuntimeSynchronousFs, ) => fail('ENOTSUP'), owns);
-  imports.fd_advise = guard(imports.fd_advise, (fs: RuntimeFsBridge | RuntimeSynchronousFs, ) => fail('ENOTSUP'), owns);
+  // posix_fallocate(3): the file holds at least [offset, offset + len).
+  imports.fd_allocate = guard(imports.fd_allocate, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, offset: bigint, len: bigint) => {
+    right(fd, 8); const e = handle(fd), end = num(offset) + num(len);
+    return after(fs.fstat(e.handle.id), st => st.size >= end ? 0 : after(fs.ftruncate(e.handle.id, end), () => 0));
+  }, owns);
+  // Advisory only; there is no cache here to steer.
+  imports.fd_advise = guard(imports.fd_advise, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number) => { right(fd, 7); return 0; }, owns);
   imports.fd_readdir = guard(imports.fd_readdir, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, buf: number, size: number, cookie: bigint, used: number) => { pathRight(fd, 14); 
     const e = preopen(fd) ?? entry(fd);
     if (e.kind === 'resident') fail('ENOTDIR');
@@ -425,7 +441,20 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (value === null) fail('EINVAL'); const data = encoder.encode(value), count = Math.min(cap, data.length);
     memory().set(data.subarray(0, count), buf); u32(used, count); return 0;
   }); });
-  imports.path_link = guard(imports.path_link, (fs: RuntimeFsBridge | RuntimeSynchronousFs, ) => fail('ENOTSUP'));
+  // The filesystem has no hard links; link(2) degrades to a second file with
+  // the same bytes, as it always has here.
+  imports.path_link = guard(imports.path_link, (fs: RuntimeFsBridge | RuntimeSynchronousFs, from: number, flags: number, p: number, n: number, to: number, q: number, m: number) => {
+    pathRight(from, 11); pathRight(to, 12);
+    const source = at(from, path(p, n)), target = at(to, path(q, m));
+    return after(fs.stat(source, { followSymlinks: !!(flags & 1) }), st => {
+      if (st === null) fail('ENOENT');
+      if (st.type === 'directory') fail('EPERM');
+      return after(fs.stat(target, { followSymlinks: false }), existing => {
+        if (existing !== null) fail('EEXIST');
+        return after(fs.copyFile(source, target), () => 0);
+      });
+    });
+  });
   const times = (st: RuntimeVfsStat, a: bigint, m: bigint, flags: number): [number, number] => {
     if ((flags & 3) === 3 || (flags & 12) === 12 || flags & ~15) fail('EINVAL');
     return [flags & 2 ? Date.now() : flags & 1 ? Number(a / 1000000n) : st.atime,

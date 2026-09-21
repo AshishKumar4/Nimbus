@@ -273,10 +273,14 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ENOTDIR', 'open', path);
         if (!exists && !normalizedFlags.create)
             throw fsError('ENOENT', 'open', path);
-        if (exists && this.vfs.isDirectory(p) && mutates)
+        // A directory opens for reading whatever rights were asked for: a WASI
+        // guest requests a capability set, not an access mode, and a directory
+        // simply never grants fd_write (the write itself answers EISDIR). What
+        // refuses here is content the open would change.
+        if (exists && this.vfs.isDirectory(p) && (normalizedFlags.truncate || normalizedFlags.append))
             throw fsError('EISDIR', 'open', path);
         if (exists)
-            this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write ? 2 : 0));
+            this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write && !this.vfs.isDirectory(p) ? 2 : 0));
         if (!exists) {
             this.ensureParent(p);
             this.vfs.writeFile(p, new Uint8Array(0), { mode: flags.mode });
@@ -389,6 +393,9 @@ export class SqliteRuntimeFsBridge {
                 this.legacySymlinks.delete(p);
             return;
         }
+        // A registry-only symlink has no inode of its own; the name still exists.
+        if (!this.legacySymlinks.isSymlink(p))
+            throw fsError('ENOENT', 'unlink', path);
         this.legacySymlinks.delete(p);
     }
     rmdir(path) {
@@ -620,7 +627,7 @@ export class SqliteRuntimeFsBridge {
         return located.path;
     }
     openRoot(path, flags) {
-        if (flags.write || flags.truncate || flags.append || (flags.create && flags.exclusive))
+        if (flags.truncate || flags.append)
             throw fsError('EISDIR', 'open', path);
         const deny = () => { throw fsError('EPERM', 'fd', ''); };
         const node = {
@@ -643,9 +650,9 @@ export class SqliteRuntimeFsBridge {
         const stat = this.virtualStat(mount, name);
         if (flags.directory && stat.type !== 'directory')
             throw fsError('ENOTDIR', 'open', path);
-        if (stat.type === 'directory' && (flags.write || flags.truncate || flags.append))
+        if (stat.type === 'directory' && (flags.truncate || flags.append))
             throw fsError('EISDIR', 'open', path);
-        mount.access(name, (flags.read ? 4 : 0) | (flags.write ? 2 : 0));
+        mount.access(name, (flags.read ? 4 : 0) | (flags.write && stat.type !== 'directory' ? 2 : 0));
         if (flags.truncate)
             mount.truncate(name, 0);
         const node = {

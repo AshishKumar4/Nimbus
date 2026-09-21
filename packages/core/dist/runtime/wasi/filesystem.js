@@ -136,11 +136,24 @@ export function installAuthorityFilesystem(imports, options) {
             fail('ENOTCAPABLE');
         const e = fds.get(fd);
         if (e?.kind === 'preopen')
-            return { root: e.vfsPath, path: p, beneath: true };
+            return { root: e.vfsPath, path: underPreopen(e, p), beneath: true };
         const opened = entry(fd);
         if (opened.kind !== 'authority' || opened.type !== 'directory')
             fail('ENOTDIR');
         return { directory: opened.handle.id, path: p, beneath: true };
+    };
+    // A compiled program's `/` is the shell's cwd, so wasi-libc hands an
+    // absolute guest path back as `home/user/x` against that preopen: the
+    // program meant the same file the shell calls /home/user/x, not the
+    // subtree home/user/home/user. The re-stated root is stripped at a segment
+    // boundary; `home/userfoo` is a different directory and is left alone.
+    const underPreopen = (e, p) => {
+        const root = e.vfsPath;
+        if (root.length === 0)
+            return p;
+        if (p === root)
+            return '';
+        return p.startsWith(root) && p.charCodeAt(root.length) === 47 ? p.slice(root.length + 1) : p;
     };
     const right = (fd, bit) => {
         const e = entry(fd);
@@ -391,8 +404,14 @@ export function installAuthorityFilesystem(imports, options) {
     imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs, fd, size) => { right(fd, 22); return after(fs.ftruncate(handle(fd).handle.id, num(size)), () => 0); }, owns);
     imports.fd_sync = guard(imports.fd_sync, (fs, fd) => { const e = right(fd, 4); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
     imports.fd_datasync = guard(imports.fd_datasync, (fs, fd) => { const e = right(fd, 0); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
-    imports.fd_allocate = guard(imports.fd_allocate, (fs) => fail('ENOTSUP'), owns);
-    imports.fd_advise = guard(imports.fd_advise, (fs) => fail('ENOTSUP'), owns);
+    // posix_fallocate(3): the file holds at least [offset, offset + len).
+    imports.fd_allocate = guard(imports.fd_allocate, (fs, fd, offset, len) => {
+        right(fd, 8);
+        const e = handle(fd), end = num(offset) + num(len);
+        return after(fs.fstat(e.handle.id), st => st.size >= end ? 0 : after(fs.ftruncate(e.handle.id, end), () => 0));
+    }, owns);
+    // Advisory only; there is no cache here to steer.
+    imports.fd_advise = guard(imports.fd_advise, (fs, fd) => { right(fd, 7); return 0; }, owns);
     imports.fd_readdir = guard(imports.fd_readdir, (fs, fd, buf, size, cookie, used) => {
         pathRight(fd, 14);
         const e = preopen(fd) ?? entry(fd);
@@ -434,7 +453,24 @@ export function installAuthorityFilesystem(imports, options) {
             return 0;
         });
     });
-    imports.path_link = guard(imports.path_link, (fs) => fail('ENOTSUP'));
+    // The filesystem has no hard links; link(2) degrades to a second file with
+    // the same bytes, as it always has here.
+    imports.path_link = guard(imports.path_link, (fs, from, flags, p, n, to, q, m) => {
+        pathRight(from, 11);
+        pathRight(to, 12);
+        const source = at(from, path(p, n)), target = at(to, path(q, m));
+        return after(fs.stat(source, { followSymlinks: !!(flags & 1) }), st => {
+            if (st === null)
+                fail('ENOENT');
+            if (st.type === 'directory')
+                fail('EPERM');
+            return after(fs.stat(target, { followSymlinks: false }), existing => {
+                if (existing !== null)
+                    fail('EEXIST');
+                return after(fs.copyFile(source, target), () => 0);
+            });
+        });
+    });
     const times = (st, a, m, flags) => {
         if ((flags & 3) === 3 || (flags & 12) === 12 || flags & ~15)
             fail('EINVAL');

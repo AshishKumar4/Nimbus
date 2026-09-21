@@ -287,7 +287,7 @@ export interface WasiImports {
   fd_readdir(fd: number, bufPtr: number, bufLen: number, cookie: bigint | number, bufusedPtr: number): SyscallResult;
 
   // descriptor housekeeping
-  fd_advise(): SyscallResult;
+  fd_advise(fd: number, offset: bigint, len: bigint, advice: number): SyscallResult;
   fd_allocate(fd: number, offset: bigint | number, len: bigint | number): SyscallResult;
   fd_datasync(fd: number): SyscallResult;
   fd_sync(fd: number): SyscallResult;

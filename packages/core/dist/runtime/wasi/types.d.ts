@@ -230,7 +230,7 @@ export interface WasiImports {
     fd_pread(fd: number, iovsPtr: number, iovsLen: number, offset: bigint | number, nreadPtr: number): SyscallResult;
     fd_pwrite(fd: number, iovsPtr: number, iovsLen: number, offset: bigint | number, nwrittenPtr: number): SyscallResult;
     fd_readdir(fd: number, bufPtr: number, bufLen: number, cookie: bigint | number, bufusedPtr: number): SyscallResult;
-    fd_advise(): SyscallResult;
+    fd_advise(fd: number, offset: bigint, len: bigint, advice: number): SyscallResult;
     fd_allocate(fd: number, offset: bigint | number, len: bigint | number): SyscallResult;
     fd_datasync(fd: number): SyscallResult;
     fd_sync(fd: number): SyscallResult;

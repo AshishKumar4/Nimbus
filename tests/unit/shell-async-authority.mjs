@@ -74,6 +74,15 @@ try {
   const needsSync = await shell.execute('node /remote/touches-fs.js');
   assert.equal(needsSync.exitCode, 1);
   assert.match(needsSync.stderr, /synchronous filesystem capability/);
+  // rm(1): a missing operand is an error the user sees, and -f is the way
+  // to say it is not. An unlink the authority answers silently would make
+  // both look the same.
+  const rmMissing = await shell.execute('rm /remote/no-such');
+  assert.equal(rmMissing.exitCode, 1);
+  assert.match(rmMissing.stderr, /^rm: \/remote\/no-such: No such file or directory/);
+  const rmForced = await shell.execute('rm -f /remote/no-such');
+  assert.equal(rmForced.exitCode, 0, rmForced.stderr);
+  assert.equal(rmForced.stderr, '');
   failWrites = true;
   const failed = await shell.execute('printf data > /remote/failure');
   assert.notEqual(failed.exitCode, 0);
