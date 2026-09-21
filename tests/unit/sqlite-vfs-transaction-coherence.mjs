@@ -211,4 +211,23 @@ for (const [name, mutate] of [
   assert.equal(raw._verifyCounters(), null);
   harness.db.close();
 }
+// One stream write commits a package-sized tree: enough inodes, chunks and
+// content ids to cross every per-statement batching boundary, and the bound
+// parameter count of each statement stays within SQLite's limit.
+{
+  const { harness, vfs } = open();
+  const files = Array.from({ length: 40 }, (_, i) => [`pkg/lib/file-${i}.js`, new TextEncoder().encode(`module.exports = ${i};`)]);
+  const inodes = [{ path: 'pkg', parentPath: '', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 },
+    { path: 'pkg/lib', parentPath: 'pkg', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
+  const chunks = [];
+  for (const [path, data] of files) {
+    inodes.push({ path, parentPath: 'pkg/lib', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 });
+    chunks.push({ path, chunkId: 0, data });
+  }
+  const result = await vfs.writeStream(encodeWriteBatchStream({ inodes, chunks }));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(vfs.readdir('pkg/lib').length, 40);
+  assert.equal(vfs.readFileString('pkg/lib/file-39.js'), 'module.exports = 39;');
+  harness.db.close();
+}
 console.log('sqlite-vfs-transaction-coherence: all assertions passed');

@@ -8,6 +8,7 @@ import {
   MAX_TX_SQL_EXECS,
 } from '../../packages/platform/src/limits.ts';
 import {
+  INODE_ROWS_PER_SQL_EXEC,
   SqliteVFS,
   SqliteVfsTransactionTooLargeError,
 } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -131,19 +132,21 @@ function assertBounded(stats) {
   assert.equal(rawVfs.getStats().directories, 0);
 }
 
-// SQL-exec boundary accounts for exact-path deletes plus 9-row inode groups.
+// SQL-exec boundary accounts for exact-path deletes plus inode groups sized
+// to the bound-parameter limit.
+const INODE_GROUPS = 5;
 {
   const { harness, rawVfs, vfs, baselineTransactions } = openVfs();
-  const inodes = Array.from({ length: 45 }, (_, index) => dirInode(`sql-${index}`));
-  const deletePaths = Array.from({ length: 59 }, (_, index) => `absent-${index}`);
+  const inodes = Array.from({ length: INODE_GROUPS * INODE_ROWS_PER_SQL_EXEC }, (_, index) => dirInode(`sql-${index}`));
+  const deletePaths = Array.from({ length: MAX_TX_SQL_EXECS - INODE_GROUPS }, (_, index) => `absent-${index}`);
   vfs.writeBatch({ inodes, chunks: [], deletePaths });
   assert.equal(harness.transactionCount, baselineTransactions + 1);
   assert.equal(rawVfs.getStats().sql.transactions.sqlExecs.last, MAX_TX_SQL_EXECS);
 }
 {
   const { harness, vfs, baselineTransactions } = openVfs();
-  const inodes = Array.from({ length: 45 }, (_, index) => dirInode(`sql-over-${index}`));
-  const deletePaths = Array.from({ length: 60 }, (_, index) => `absent-over-${index}`);
+  const inodes = Array.from({ length: INODE_GROUPS * INODE_ROWS_PER_SQL_EXEC }, (_, index) => dirInode(`sql-over-${index}`));
+  const deletePaths = Array.from({ length: MAX_TX_SQL_EXECS - INODE_GROUPS + 1 }, (_, index) => `absent-over-${index}`);
   assertE2Big(() => vfs.writeBatch({ inodes, chunks: [], deletePaths }), 'sqlExecs');
   assert.equal(harness.transactionCount, baselineTransactions);
 }

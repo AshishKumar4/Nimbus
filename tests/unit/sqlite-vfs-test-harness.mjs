@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { SQL_MAX_BOUND_PARAMETERS } from '../../packages/platform/src/limits.ts';
 
 export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
   let fault = null;
@@ -36,6 +37,11 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
           if (!fault.repeat) fault = null;
           throw error;
         }
+      }
+      // bun:sqlite binds far more than Durable Objects SQLite; fail the way
+      // workerd does so a statement sized past the platform fails here first.
+      if (params.length > SQL_MAX_BOUND_PARAMETERS) {
+        throw new Error(`too many SQL variables at offset ${query.length}: SQLITE_ERROR`);
       }
       const prepared = db.query(query);
       if (prepared.columnNames.length === 0) {

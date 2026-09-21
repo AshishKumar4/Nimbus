@@ -15,6 +15,7 @@ import {
   CHUNK_SIZE,
   MAX_TX_BLOB_BYTES,
   MAX_TX_LOGICAL_ROWS,
+  SQL_MAX_BOUND_PARAMETERS,
 } from '../../packages/platform/src/limits.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
@@ -558,10 +559,12 @@ const CRED_OTHER = Object.freeze({
   const gapDeletes = harness.statements.slice(statementStart).filter(
     (statement) => /DELETE FROM vfs_append_acked_gaps_v2 WHERE rowid IN/i.test(statement.sql),
   );
+  const gapRows = MAX_TX_LOGICAL_ROWS + 2;
+  const gapBatch = Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS);
   assert.deepEqual(
     gapDeletes.map((statement) => statement.params.length),
-    [MAX_TX_LOGICAL_ROWS, 2],
-    '257 pre-existing gaps plus the acknowledged receipt clean up as exact 256/2 row batches',
+    [...Array.from({ length: Math.floor(gapRows / gapBatch) }, () => gapBatch), ...(gapRows % gapBatch ? [gapRows % gapBatch] : [])],
+    `${gapRows - 1} pre-existing gaps plus the acknowledged receipt clean up in exact batches of ${gapBatch} rows`,
   );
   assert.equal(
     [...harness.sql.exec(
@@ -624,10 +627,20 @@ const CRED_OTHER = Object.freeze({
   const cleanupDeletes = harness.statements.slice(cleanupStart).filter(
     (statement) => /DELETE FROM vfs_append_(?:receipts|acked_gaps)_v2 WHERE rowid IN/i.test(statement.sql),
   );
-  assert.equal(cleanupDeletes.length, 16);
+  const cleanupBatch = Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS);
+  const cleanupRows = 2 * VFS_APPEND_RECEIPT_LIMIT;
+  assert.equal(
+    cleanupDeletes.reduce((total, statement) => total + statement.params.length, 0),
+    cleanupRows,
+    'every receipt and gap is retired',
+  );
   assert.ok(
-    cleanupDeletes.every((statement) => statement.params.length === MAX_TX_LOGICAL_ROWS),
-    '2048 receipts and gaps are retired only in exact limit-sized transactions',
+    cleanupDeletes.every((statement) => statement.params.length <= cleanupBatch),
+    `${cleanupRows} receipts and gaps are retired only in transactions of at most ${cleanupBatch} rows`,
+  );
+  assert.ok(
+    cleanupDeletes.filter((statement) => statement.params.length === cleanupBatch).length >= Math.floor(VFS_APPEND_RECEIPT_LIMIT / cleanupBatch) * 2,
+    'retirement fills each transaction to the limit rather than deleting row by row',
   );
   assert.equal(
     [...harness.sql.exec(
@@ -663,10 +676,12 @@ const CRED_OTHER = Object.freeze({
   const bulkUpdates = harness.statements.slice(bulkStart).filter(
     (statement) => /UPDATE vfs_append_writer_state_v2\s+SET revoked = 1/i.test(statement.sql),
   );
+  const writerRows = MAX_TX_LOGICAL_ROWS + 1;
+  const writerBatch = Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS - 3);
   assert.deepEqual(
     bulkUpdates.map((statement) => statement.params.length - 3),
-    [MAX_TX_LOGICAL_ROWS, 1],
-    '257 live writer rows are revoked in exact 256/1 row transactions',
+    [...Array.from({ length: Math.floor(writerRows / writerBatch) }, () => writerBatch), ...(writerRows % writerBatch ? [writerRows % writerBatch] : [])],
+    `${writerRows} live writer rows are revoked in exact transactions of ${writerBatch} rows`,
   );
   assert.equal(
     [...harness.sql.exec(

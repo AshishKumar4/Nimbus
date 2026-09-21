@@ -53,6 +53,7 @@ import {
   MAX_TX_LOGICAL_ROWS,
   MAX_TX_SQL_EXECS,
   MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
+  SQL_MAX_BOUND_PARAMETERS,
 } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -272,9 +273,14 @@ export type WriteBatchStreamResult =
       };
     });
 
-const INODE_ROWS_PER_SQL_EXEC = 9;
-const CHUNK_ROWS_PER_SQL_EXEC = 33;
-const CONTENT_IDS_PER_SQL_EXEC = 50;
+const INODE_ROW_COLUMNS = 12;
+const CHUNK_ROW_COLUMNS = 3;
+const CONTENT_ID_ROW_COLUMNS = 2;
+const INODE_ROW_PLACEHOLDERS = `(${Array.from({ length: INODE_ROW_COLUMNS }, () => '?').join(',')})`;
+const CHUNK_ROW_PLACEHOLDERS = `(${Array.from({ length: CHUNK_ROW_COLUMNS }, () => '?').join(',')})`;
+export const INODE_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / INODE_ROW_COLUMNS);
+const CHUNK_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / CHUNK_ROW_COLUMNS);
+const CONTENT_IDS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / CONTENT_ID_ROW_COLUMNS);
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
 const CONTENT_SCHEMA_MIGRATION = 'content_generations_v1';
 
@@ -2886,7 +2892,7 @@ export class SqliteVFS {
          LIMIT ?`,
         this.namespace,
         pid,
-        MAX_TX_LOGICAL_ROWS,
+        Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS - 3),
       )] as { writer_id: string }[];
       if (writers.length === 0) break;
       const placeholders = writers.map(() => '?').join(',');
@@ -2932,7 +2938,7 @@ export class SqliteVFS {
       const rows = [...this.sql.exec(
         `SELECT rowid FROM ${table} WHERE ${predicate} ORDER BY rowid LIMIT ?`,
         ...params,
-        MAX_TX_LOGICAL_ROWS,
+        Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS),
       )] as { rowid: number }[];
       if (rows.length === 0) return;
       const placeholders = rows.map(() => '?').join(',');
@@ -4485,7 +4491,7 @@ export class SqliteVFS {
       }
       for (let i = 0; i < plan.inodes.length; i += INODE_ROWS_PER_SQL_EXEC) {
         const batch = plan.inodes.slice(i, i + INODE_ROWS_PER_SQL_EXEC);
-        const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
+        const placeholders = batch.map(() => INODE_ROW_PLACEHOLDERS).join(',');
         const values: unknown[] = [];
         for (const inode of batch) {
           const atime = inode.atime !== undefined && Number.isFinite(inode.atime)
@@ -4520,7 +4526,7 @@ export class SqliteVFS {
 
       for (let i = 0; i < plan.chunks.length; i += CHUNK_ROWS_PER_SQL_EXEC) {
         const batch = plan.chunks.slice(i, i + CHUNK_ROWS_PER_SQL_EXEC);
-        const placeholders = batch.map(() => '(?,?,?)').join(',');
+        const placeholders = batch.map(() => CHUNK_ROW_PLACEHOLDERS).join(',');
         const values: unknown[] = [];
         for (const chunk of batch) values.push(chunk.contentId, chunk.chunkId, chunk.data);
         this.sql.exec(
@@ -4749,22 +4755,36 @@ export class SqliteVFS {
     const heldContentIds = new Set(
       [...this.openNodes].map((opened) => this.contentIdForInode(opened.inode)),
     );
-    const heldClause = heldContentIds.size === 0
-      ? ''
-      : ` AND lifecycle.content_id NOT IN (${[...heldContentIds].map(() => '?').join(',')})`;
-    const heldParams = [...heldContentIds];
+    // Pages of candidates in lifecycle order, held ones skipped here rather
+    // than excluded in SQL: an IN-list grows with the descriptor table, and
+    // the statement binds at most SQL_MAX_BOUND_PARAMETERS.
+    const nextCollectable = (): string | null => {
+      let after: { createdAt: number; contentId: string } | null = null;
+      for (;;) {
+        const page = [...this.sql.exec(
+          `SELECT lifecycle.content_id, lifecycle.created_at
+           FROM content_lifecycle AS lifecycle
+           WHERE lifecycle.state = 'gc'
+             AND ${sqlNoInodeContentReference('lifecycle.content_id')}
+             AND (lifecycle.created_at > ? OR (lifecycle.created_at = ? AND lifecycle.content_id > ?))
+           ORDER BY lifecycle.created_at, lifecycle.content_id
+           LIMIT ?`,
+          after?.createdAt ?? -1,
+          after?.createdAt ?? -1,
+          after?.contentId ?? '',
+          CONTENT_IDS_PER_SQL_EXEC,
+        )] as { content_id: string; created_at: number }[];
+        for (const row of page) {
+          if (!heldContentIds.has(String(row.content_id))) return String(row.content_id);
+        }
+        if (page.length < CONTENT_IDS_PER_SQL_EXEC) return null;
+        const last = page[page.length - 1];
+        after = { createdAt: Number(last.created_at), contentId: String(last.content_id) };
+      }
+    };
     while (transactions < maximum) {
-      const lifecycle = [...this.sql.exec(
-        `SELECT lifecycle.content_id
-         FROM content_lifecycle AS lifecycle
-         WHERE lifecycle.state = 'gc'
-           AND ${sqlNoInodeContentReference('lifecycle.content_id')}${heldClause}
-         ORDER BY lifecycle.created_at, lifecycle.content_id
-         LIMIT 1`,
-        ...heldParams,
-      )];
-      if (lifecycle.length === 0) break;
-      const contentId = String(lifecycle[0].content_id);
+      const contentId = nextCollectable();
+      if (contentId === null) break;
       const candidates = [...this.sql.exec(
         `SELECT chunk_id, length(data) AS byte_length
          FROM file_chunks
