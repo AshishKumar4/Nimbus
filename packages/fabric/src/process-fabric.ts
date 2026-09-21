@@ -74,6 +74,7 @@
  * `ResidentDiskReader` it was given.
  */
 
+import type { HostRoute } from './composition.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ServiceStub } from './vendor/types.js';
@@ -316,6 +317,12 @@ export interface ResidentSupervisorProps {
   doId: string;
   pid: number;
   writerId: string;
+  /**
+   * The way back to the coordinator, minted with the binding. Absent only
+   * when the coordinator's isolate composed nothing, in which case no
+   * supervisor binding is minted either.
+   */
+  route?: HostRoute;
 }
 
 /** Everything a host needs to run one process. Substrate-free by construction. */

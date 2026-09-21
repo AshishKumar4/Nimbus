@@ -50,6 +50,9 @@ const result = await execGitNetwork(ctx, env, {
   pid: 42,
 });
 assert.equal(result.success, true, result.error);
-assert.deepEqual(boundProps, [{ doId: 'git-identity-test', pid: 42, mutationOwner: undefined }]);
+// This harness adopts ctx.exports without composing, so the binding carries
+// no route and the answering entrypoint falls back to its isolate's
+// composition, the pre-route contract.
+assert.deepEqual(boundProps, [{ doId: 'git-identity-test', pid: 42, mutationOwner: undefined, route: undefined }]);
 
 console.log('git network facet process identity: ok');

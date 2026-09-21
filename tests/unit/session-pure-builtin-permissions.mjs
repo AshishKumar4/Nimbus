@@ -149,7 +149,7 @@ try {
   // Routed the way a facet's binding routes: the entrypoint resolves the
   // session by the doId it was given, once per call.
   const sessionBinding = {
-    NIMBUS_SESSION: { idFromString: (id) => id, get: () => sessionStub },
+    NIMBUS_SESSION: { idFromName: (name) => name, idFromString: (id) => id, get: () => sessionStub },
   };
   const supervisor = Object.create(SupervisorRPC.prototype);
   supervisor.ctx = { props: { pid: userParent.pid, doId: 'session-do' } };

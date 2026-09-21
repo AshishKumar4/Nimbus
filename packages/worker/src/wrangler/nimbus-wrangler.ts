@@ -22,6 +22,7 @@ import { registerInnerDoClass, clearInnerDoClasses } from '@nimbus-sh/fabric/inn
 import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
+import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -618,6 +619,7 @@ export class NimbusWrangler {
             vfsRoot: this.root,
             assetsDir,
             doId,
+            route: hostRoute() ?? undefined,
           },
         });
       }
@@ -682,6 +684,7 @@ export class NimbusWrangler {
             props: {
               bindingName,
               supervisorDoId: doId,
+              route: hostRoute() ?? undefined,
             },
           });
           // Track facet names we might create later so stop() can abort

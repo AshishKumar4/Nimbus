@@ -25,7 +25,7 @@
  */
 
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { supervisorEntrypoint } from './composition.js';
+import { hostRoute, supervisorEntrypoint, type HostRoute } from './composition.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, recordLoaderId, withDynamicWorkerCapNamed } from './budgets.js';
@@ -120,6 +120,12 @@ export interface IsolatePoolOptions {
    * coordinator. Effective only when `omitSupervisor !== true`.
    */
   supervisorDoIdOverride?: string;
+  /**
+   * The coordinator's route, forwarded with `supervisorDoIdOverride`: the
+   * binding is the coordinator's, so its way back is the coordinator's
+   * too, whatever this peer's isolate composed.
+   */
+  supervisorRoute?: HostRoute;
   /**
    * Process pid baked into the auto-injected SUPERVISOR binding's props.
    * The supervisor derives the write credential from this pid
@@ -524,7 +530,7 @@ export class IsolatePool {
         const supDoId = opts?.supervisorDoIdOverride ?? ctx.id.toString();
         const supPid = opts?.supervisorPid ?? 0;
         bindings.SUPERVISOR = supervisorRpc({
-          props: { doId: supDoId, pid: supPid },
+          props: { doId: supDoId, pid: supPid, route: opts?.supervisorRoute ?? hostRoute() ?? undefined },
         });
         // Whatever the minted worker's env carries must be in its loader
         // cache key — workerd's loader cache survives a DO hibernation

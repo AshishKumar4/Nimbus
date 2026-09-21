@@ -85,6 +85,7 @@ import {
   processes,
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
+import { hostRoute, type HostRoute } from './composition.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -137,7 +138,7 @@ class FacetProcessHost implements ProcessHost {
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
+      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId, route: hostRoute() ?? undefined },
       params,
       consume,
     );
@@ -148,6 +149,7 @@ class FacetProcessHost implements ProcessHost {
       doId: this.coordDoId,
       pid: params.pid,
       writerId: params.writerId,
+      route: hostRoute() ?? undefined,
     };
     const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
     return {
@@ -192,6 +194,8 @@ export function isolateToken(): string {
 /** Options the coordinator hands a hosting peer. */
 export interface HostProcessOpts {
   coordinatorDoId: string;
+  /** The coordinator's route, minted into the process's SUPERVISOR binding. */
+  route?: HostRoute;
   pid: number;
   writerId: string;
   workerKey: string;
@@ -354,7 +358,7 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId },
+      { doId: this.coordDoId, pid: params.pid, writerId: params.writerId, route: hostRoute() ?? undefined },
       params,
       consume,
     );
@@ -381,6 +385,7 @@ class PeerProcessHost implements ProcessHost {
     // the peer dies under either.
     const hostLeg = placement.stub._rpcHostProcess(params.boot, {
       coordinatorDoId: this.coordDoId,
+      route: hostRoute() ?? undefined,
       pid: params.pid,
       writerId: params.writerId,
       workerKey: params.workerKey,

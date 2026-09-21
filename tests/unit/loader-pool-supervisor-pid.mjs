@@ -26,22 +26,25 @@ adoptCtxExports({
 const env = { LOADER: { get() { return { getEntrypoint() { return {}; } }; } } };
 const ctx = { id: { toString: () => 'loader-pid-test' } };
 
+// Every binding carries the route back to this host beside its identity.
+const route = { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'NIMBUS_SESSION', hostDispatchMethod: 'supervisorOp' };
+
 // A positive supervisorPid must reach the SUPERVISOR binding props.
 boundProps.length = 0;
 new IsolatePool(env, ctx, { supervisorPid: 42 });
-assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42 }],
+assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42, route }],
   'supervisorPid must be minted into the SUPERVISOR binding props');
 
 // Default (unset) stays 0 — resolve/pre-bundle pools never call _pid().
 boundProps.length = 0;
 new IsolatePool(env, ctx, {});
-assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0 }],
+assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route }],
   'absent supervisorPid defaults to 0');
 
 // supervisorDoIdOverride and supervisorPid compose (peer-DO install path).
 boundProps.length = 0;
 new IsolatePool(env, ctx, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
-assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7 }],
+assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
   'supervisorPid composes with supervisorDoIdOverride');
 
 // ── Hibernation-wake regression (the sv-create "process pid 1000001 does
@@ -81,7 +84,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7 }],
 
   // The minted worker's env carries the pid it was keyed under.
   const g2Props = boundProps[boundProps.length - 1];
-  assert.deepEqual(g2Props, { doId: 'loader-pid-test', pid: 2000001 },
+  assert.deepEqual(g2Props, { doId: 'loader-pid-test', pid: 2000001, route },
     'generation-2 pool mints SUPERVISOR with the new pid');
   assert.ok((await loaderEnvs[1])?.SUPERVISOR,
     'the gen-2 worker config carries the SUPERVISOR binding in env');

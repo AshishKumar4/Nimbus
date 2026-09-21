@@ -372,9 +372,12 @@ export function createSupervisorBridgeStore(
 }
 
 /** One dispatch method lets any host serve its workspace to process facets. */
+/** One envelope in, its result out: what a host forwards `supervisorOp` to. */
+export type SupervisorOpDispatch = (envelope: SupervisorOpEnvelope) => Promise<unknown>;
+
 export function createSupervisorOpHandler(
   deps: SupervisorOpDeps,
-): (envelope: SupervisorOpEnvelope) => Promise<unknown> {
+): SupervisorOpDispatch {
   const bridgeFor = deps.bridge?.bridge ?? createSupervisorBridgeStore(deps).bridge;
   const tools: SupervisorOpTools = {
     bridge: bridgeFor,
@@ -397,7 +400,14 @@ export function createSupervisorOpHandler(
     const route = Object.hasOwn(ROUTE_BY_OP, envelope.op) ? ROUTE_BY_OP[envelope.op] : undefined;
     if (!route) throw new Error(`supervisor op: '${envelope.op}' is not served by this host`);
     const host = deps.host;
-    if (!host) throw new Error(`supervisor op: '${envelope.op}' needs a host that this workspace does not have`);
+    if (!host) {
+      throw new Error(
+        `supervisor op: '${envelope.op}' is a host op, and this handler is a bare workspace's. `
+          + 'Forward supervisorOp(envelope) to composeHostedRuntime(...).supervisorOp on every '
+          + 'instance of the host namespace, the siblings Nimbus opens by name included '
+          + '(fanout peers, process hosts).',
+      );
+    }
     const method = host[route.method];
     if (typeof method !== 'function') throw new Error(`supervisor op: missing host method ${route.method}`);
     const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);

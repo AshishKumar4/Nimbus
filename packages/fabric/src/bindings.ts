@@ -26,8 +26,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hostNamespace, supervisorEntrypoint, supervisorEntrypointName } from './composition.js';
-import { stagedBootAssembler } from './composition.js';
+import { hostNamespace, supervisorEntrypoint, supervisorEntrypointName, stagedBootAssembler } from './composition.js';
+import type { HostRoute } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './host-dispatch.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
@@ -114,6 +114,8 @@ interface NimbusAssetsProps {
   assetsDir?: string;
   /** Supervisor DO id whose VFS holds the assets. */
   doId?: string;
+  /** The way back to that DO, minted with the binding. */
+  route?: HostRoute;
 }
 
 /**
@@ -164,9 +166,9 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps>
     let stub: DurableObjectStub | null = null;
     let dispatch: HostOpDispatch;
     try {
-      const ns = hostNamespaceBinding(this.env, 'NimbusAssetsRPC');
+      const ns = hostNamespaceBinding(this.env, 'NimbusAssetsRPC', props.route);
       stub = ns.get(ns.idFromString(doId));
-      dispatch = hostOpDispatch(stub, 'NimbusAssetsRPC');
+      dispatch = hostOpDispatch(stub, 'NimbusAssetsRPC', props.route);
     } catch (e) {
       disposeRpcResource(stub);
       return new Response(`ASSETS binding not wired: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
@@ -307,6 +309,12 @@ const _NIMBUS_LOADED_CODES: Map<string, WorkerCode> = new Map();
 const _LOADED_CODES_MAX = 32;
 let _loadedCodesEvictions = 0;
 
+const HostRouteSchema = z.object({
+  supervisorEntrypoint: z.string().min(1),
+  hostNamespace: z.string().min(1),
+  hostDispatchMethod: z.string().min(1),
+});
+
 const NimbusLoadedEntrypointPropsSchema = z.object({
   key: z.string().min(1),
   name: z.string().nullable().optional(),
@@ -315,6 +323,7 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
     doId: z.string().min(1),
     pid: z.number().int().nonnegative(),
     writerId: z.string().uuid(),
+    route: HostRouteSchema.optional(),
   }).optional(),
   /**
    * Staged-artifact spec, for a ONE-SHOT run. The module map — ~23 MB for
@@ -532,11 +541,12 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
 
   async _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown> {
     if (!props.supervisor) return undefined;
-    const factory = supervisorEntrypoint(ctxExportsOf(this.ctx));
+    // The route names the entrypoint too: this stateless hop may run in an
+    // isolate whose composition is not the host's.
+    const name = props.supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName();
+    const factory = supervisorEntrypoint(ctxExportsOf(this.ctx), name ?? undefined);
     if (!factory) {
-      throw new Error(
-        `Nimbus: ctx.exports.${supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`,
-      );
+      throw new Error(`Nimbus: ctx.exports.${name ?? '<supervisor entrypoint>'} unavailable`);
     }
     return await factory({ props: props.supervisor });
   }
@@ -691,6 +701,8 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
 interface NimbusDoNamespaceProps {
   bindingName?: string;
   supervisorDoId?: string;
+  /** The way back to the supervisor DO, minted with the binding. */
+  route?: HostRoute;
 }
 
 /**
@@ -755,6 +767,7 @@ export class NimbusDurableObjectNamespace extends WorkerEntrypoint<unknown, Nimb
       props: {
         bindingName: props.bindingName,
         supervisorDoId: props.supervisorDoId,
+        route: props.route,
         id: String(id),
       },
     });
@@ -789,9 +802,9 @@ export class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
     let stub: DurableObjectStub | null = null;
     let dispatch: HostOpDispatch;
     try {
-      const ns = hostNamespaceBinding(this.env ?? {}, 'NimbusDOStub');
+      const ns = hostNamespaceBinding(this.env ?? {}, 'NimbusDOStub', props.route);
       stub = ns.get(ns.idFromString(supervisorDoId));
-      dispatch = hostOpDispatch(stub, 'NimbusDOStub');
+      dispatch = hostOpDispatch(stub, 'NimbusDOStub', props.route);
     } catch (e) {
       disposeRpcResource(stub);
       return new Response(`Nimbus: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });

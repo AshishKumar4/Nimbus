@@ -4,10 +4,12 @@
  * Exported from index.ts. Facets receive `env.SUPERVISOR` service binding
  * pointing to this class via ctx.exports loopback binding.
  *
- * Props: { doId: string, pid: number, writerId: string }
+ * Props: { doId: string, pid: number, writerId: string, route: HostRoute }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
  *   writerId — the active append-writer incarnation for this process
+ *   route — the host namespace and dispatch method, minted with the binding
+ *           in the host's isolate; this entrypoint may answer from another
  *
  * Methods callable by facets via RPC:
  *   readFile(path) → string | null
@@ -30,7 +32,8 @@
  */
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { hostNamespace, hostDispatchMethod } from '@nimbus-sh/platform/composition.js';
+import type { HostRoute } from '@nimbus-sh/platform/composition.js';
+import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { SupervisorOpEnvelope, SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -107,30 +110,20 @@ function _estimateWriteBatchBytes(payload: any): number {
 // with composeFabric.
 
 export class SupervisorRPC extends WorkerEntrypoint {
-  /** Resolve the composed host anew for each WorkerEntrypoint invocation. */
+  /**
+   * Resolve the host anew for each WorkerEntrypoint invocation, by the
+   * route the binding carries. The platform serves this entrypoint from
+   * whichever isolate it likes; the props were minted in the host's.
+   */
   private _dispatch(): (envelope: SupervisorOpEnvelope) => Promise<unknown> {
-    const doId = (this.ctx.props as { doId?: unknown } | undefined)?.doId;
+    const props = (this.ctx.props ?? {}) as { doId?: unknown; route?: HostRoute };
+    const doId = props.doId;
     if (typeof doId !== 'string' || doId.length === 0) {
       throw new Error('SupervisorRPC: missing doId in props');
     }
-    const binding = hostNamespace();
-    const namespace = Reflect.get(this.env, binding) as DurableObjectNamespace | undefined;
-    if (!namespace || typeof namespace.idFromString !== 'function') {
-      throw new Error(`SupervisorRPC: env.${binding} is not a Durable Object namespace; `
-        + "a workspace host names its own with composeFabric({ hostNamespace: '<binding>' })");
-    }
+    const namespace = hostNamespaceBinding(this.env, 'SupervisorRPC', props.route);
     const stub = namespace.get(namespace.idFromString(doId));
-    const method = hostDispatchMethod();
-    const dispatch: unknown = Reflect.get(stub, method);
-    if (typeof dispatch !== 'function') {
-      throw new Error(`SupervisorRPC: the workspace host mounts no ${method}(); `
-        + 'a host forwards one method to workspace.supervisorOp(op)');
-    }
-    // Never `.call(stub, …)` on an RpcStub: the proxy treats `call` as a
-    // property get, which becomes an RPC to a method literally named "call".
-    // `Reflect.apply` reaches the proxied member's apply trap instead, and on
-    // a plain-object host it still invokes the method with the stub as `this`.
-    return (envelope) => Reflect.apply(dispatch as (e: SupervisorOpEnvelope) => Promise<unknown>, stub, [envelope]);
+    return hostOpDispatch(stub, 'SupervisorRPC', props.route);
   }
 
   private _op<T>(

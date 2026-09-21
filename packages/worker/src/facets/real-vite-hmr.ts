@@ -45,6 +45,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostOpDispatch, hostNamespaceBinding, type HostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
+import type { HostRoute } from '@nimbus-sh/fabric/composition.js';
 
 // CLN-3 (2026-05-11): supervisor-side debug gate. Mirrors the facet-side
 // `globalThis.__cirrusDebug` flag declared at cirrus-real.ts:160. When
@@ -211,7 +212,7 @@ export function registerHmrBridge(doId: string, holder: { hmr: HmrBridge }): voi
  *   doId — the supervisor DO's id, used to find the right stub +
  *          HmrBridge.
  */
-export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string }> {
+export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string; route?: HostRoute }> {
   private _bridge(): HmrBridge | null {
     const doId = this.ctx.props?.doId;
     if (!doId) return null;
@@ -223,9 +224,10 @@ export class CirrusHmrRPC extends WorkerEntrypoint<object, { doId?: string }> {
     if (!doId) return null;
     let stub: DurableObjectStub | null = null;
     try {
-      const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC');
+      const route = this.ctx.props?.route;
+      const binding = hostNamespaceBinding(this.env, 'CirrusHmrRPC', route);
       stub = binding.get(binding.idFromString(doId));
-      return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC') };
+      return { stub, dispatch: hostOpDispatch(stub, 'CirrusHmrRPC', route) };
     } catch (error) {
       disposeRpcResource(stub);
       throw error;

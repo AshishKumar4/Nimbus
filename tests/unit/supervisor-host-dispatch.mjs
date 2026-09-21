@@ -234,10 +234,43 @@ const stub = {
 };
 supervisor.env = {
   HOSTS: {
+    idFromName(name) { return name; },
     idFromString(value) { assert.equal(value, 'host-id'); return value; },
     get(value) { assert.equal(value, 'host-id'); return stub; },
   },
 };
+
+// ── The route travels with the binding ──────────────────────────────────
+//
+// The platform serves this entrypoint from whichever isolate it likes, and
+// that isolate's composition may be absent or another host's. A binding
+// minted with a route resolves the host from the route, not from here:
+// this isolate composed HOSTS/dispatchWorkspace, the props say
+// WORKSPACES/supervisorOp, and the call lands on WORKSPACES.
+{
+  const routed = Object.create(SupervisorRPC.prototype);
+  const seen = [];
+  routed.ctx = { props: {
+    doId: 'kinu-id', pid, writerId, mutationOwner,
+    route: { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' },
+  } };
+  routed.env = {
+    HOSTS: { idFromName: () => { throw new Error('the composed namespace must not be consulted'); }, idFromString() { throw new Error('composed'); }, get() { throw new Error('composed'); } },
+    WORKSPACES: {
+      idFromName(name) { return name; },
+      idFromString(value) { assert.equal(value, 'kinu-id'); return value; },
+      get() { return { supervisorOp(envelope) { seen.push(envelope.op); return Promise.resolve(null); } }; },
+    },
+  };
+  await routed.exists('/anything');
+  assert.deepEqual(seen, ['exists'], 'the envelope reached the host the props named');
+  // Without WORKSPACES in env the refusal names the route's binding, so an
+  // embedder reads which binding its Worker is missing.
+  const unbound = Object.create(SupervisorRPC.prototype);
+  unbound.ctx = routed.ctx;
+  unbound.env = { HOSTS: routed.env.HOSTS };
+  await assert.rejects(() => unbound.exists('/anything'), /env\.WORKSPACES must be the Durable Object namespace/);
+}
 
 // The ops a process is not allowed to perform at all: the refusal from the
 // real filesystem IS their behaviour, so they assert on the error.
@@ -439,7 +472,7 @@ supervisor.ctx.props.doId = '';
 await assert.rejects(supervisor.readFile('/a'), /missing doId/);
 supervisor.ctx.props.doId = 'host-id';
 supervisor.env = {};
-await assert.rejects(supervisor.readFile('/a'), /not a Durable Object namespace/);
+await assert.rejects(supervisor.readFile('/a'), /env\.HOSTS must be the Durable Object namespace/);
 const nativeCount = SUPERVISOR_NATIVE_OPS.size;
 console.log(`supervisor-host-dispatch: ${nativeCount} native ops answer from the real filesystem, `
   + `${cases.length - nativeCount} routes preserve arguments, identity and response lifetimes`);

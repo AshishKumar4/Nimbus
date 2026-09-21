@@ -63,7 +63,7 @@ const facetFn = async function probeFacetCall() { return { ok: true }; };
   assert.equal(dispatched.length, 1);
   const { id, code } = dispatched[0];
   assert.match(id, /^nfp:probe-session:session-do-i:/, 'the cache key is scoped to this session');
-  assert.deepEqual((await code).env.SUPERVISOR.supervisorProps, { doId: DO_ID, pid: 4242 },
+  assert.deepEqual((await code).env.SUPERVISOR.supervisorProps, { doId: DO_ID, pid: 4242, route: { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'NIMBUS_SESSION', hostDispatchMethod: 'supervisorOp' } },
     'the capability is minted for the invoking process, not for pid 0');
   facet.dispose();
   console.log('  ok  syscalls become a supervisor bound to that pid, in a session-scoped slot');

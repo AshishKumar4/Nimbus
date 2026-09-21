@@ -51,7 +51,25 @@ composeFabric({
 adoptCtxExports(ctx.exports);
 ```
 
-Both calls take the first value they are given.
+`composeFabric` runs once per isolate. Calling it again with the same values
+is a no-op; calling it again with different values throws, naming both. A
+Worker that imports Nimbus's own entry (`@nimbus-sh/sdk/worker`) inherits
+that entry's composition, so a host that names its own namespace composes in
+a Worker that does not import it.
+
+The route back to the host (namespace, dispatch method, supervisor
+entrypoint) is minted into every binding the fabric hands a program, in the
+host's isolate, and the entrypoints that answer those bindings read it from
+their props. The platform serves a Worker's entrypoints from whichever
+isolate it likes; an isolate that composed nothing still answers to the
+right host.
+
+Every instance of the host namespace forwards `supervisorOp(envelope)` to a
+hosted runtime, the siblings Nimbus opens by name included: a wide `npm
+install` fans out to `nbf:*` peers of the same namespace, and
+`NIMBUS_PROCESS_HOST=peer` places processes on siblings. A sibling that
+forwards to a bare workspace answers "is a host op, and this handler is a
+bare workspace's".
 
 ## Timers
 

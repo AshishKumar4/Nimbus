@@ -36,6 +36,7 @@ import {
   type ResidentDiskReader,
   type ResidentSupervisorProps,
 } from '@nimbus-sh/fabric/process-fabric.js';
+import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import {
   processes,
   type ResidentFacet,
@@ -1405,6 +1406,8 @@ export async function _rpcFanoutExecute(
      * a loader isolate land in the PEER's VFS, invisible to the user.
      */
     coordinatorDoId?: string;
+    /** The coordinator's route, minted into the binding with its doId. */
+    coordinatorRoute?: HostRoute;
     /**
      * Invoking process pid, forwarded into the peer-side SUPERVISOR
      * binding so writeBatchStream is authorized under the caller's
@@ -1438,6 +1441,7 @@ export async function _rpcFanoutExecute(
     // back to ctx.id.toString() — the legacy behavior, correct for
     // single-DO callers.
     supervisorDoIdOverride: poolOpts.coordinatorDoId,
+    supervisorRoute: poolOpts.coordinatorRoute,
     supervisorPid: poolOpts.supervisorPid,
   });
   try {
@@ -1472,6 +1476,12 @@ const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 const HostProcessOptsSchema = z.object({
   /** Full doId of the coordinator session (SUPERVISOR routing target). */
   coordinatorDoId: z.string().min(1),
+  /** The coordinator's route, minted into the process's SUPERVISOR binding. */
+  route: z.object({
+    supervisorEntrypoint: z.string().min(1),
+    hostNamespace: z.string().min(1),
+    hostDispatchMethod: z.string().min(1),
+  }).optional(),
   /** Supervisor-assigned pid of the process entry on the coordinator. */
   pid: z.number().int().positive(),
   /** Trusted identity of this concrete resident-host incarnation. */
@@ -1536,9 +1546,9 @@ interface SupervisorFileReader {
 }
 
 function peerDiskReader(supervisor: ResidentSupervisorProps): ResidentDiskReader {
-  const supervisorRpc = supervisorEntrypoint();
+  const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
   if (!supervisorRpc) {
-    throw new Error('Nimbus: ctx.exports.SupervisorRPC unavailable');
+    throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? 'SupervisorRPC'} unavailable`);
   }
   const fs = supervisorRpc({ props: supervisor }) as unknown as SupervisorFileReader;
   return { readFile: (path) => readSupervisorFile(fs, path) };
@@ -1645,6 +1655,7 @@ export async function _rpcHostProcess(
     doId: hostOpts.coordinatorDoId,
     pid: hostOpts.pid,
     writerId: hostOpts.writerId,
+    route: hostOpts.route,
   };
 
   let cancel = () => {};
