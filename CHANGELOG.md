@@ -57,6 +57,43 @@ cli 0.1.11, react 0.1.7, loom 0.1.3.
 - The Worker ships minified with its source map uploaded: 4.12 MB raw,
   1.12 MB gzipped.
 
+## 2026-09-21 (second release)
+
+### npm: nested placements
+
+- A dependency whose range the root copy does not satisfy is installed
+  under its dependent (`<dep>/node_modules/<name>`) instead of being
+  hoisted broken; peer dependencies reuse whatever the host's walk finds
+  and never nest. The lockfile keys placements by path; a tarball placed
+  twice in one batch is fetched once.
+
+### Node facets
+
+- One compile helper for the one-shot and long-running facets: a required
+  module that keeps its shebang (pi 0.87.0's `cli-runtime.js`) compiles in
+  both.
+- A facet's own partial mutation (ranged write, truncate, utimes, chmod,
+  chown) holds its resident cell under a lease until the authority's
+  receipt settles it; a barrier answered ahead of the write no longer
+  evicts the bytes the program just wrote.
+- The ESM transform cache is bounded by bytes and reported to the heap
+  model; the two retained caches share the room the ceiling leaves. A
+  pi-sized tool's second launch no longer resets the session.
+- `node -` runs the program on stdin, arguments after `process.argv[1]`.
+
+### Session
+
+- A session with a running resident process holds itself in memory on an
+  alarm cycle instead of being evicted after ten idle seconds.
+- `wait $!` answers a successful job's status instead of 127.
+- `/api/_diag/memory` reports the prefetch cache's entries, revisions and
+  miss profiles.
+
+### Deploy
+
+- The esbuild-wasm JS adapter is a staged asset beside its wasm, digest
+  checked; the Worker bundle drops back under the repo's 7.0 MB tripwire.
+
 ## 2026-09-19
 
 core 0.10.0, fabric 0.6.0, worker 0.8.0, sdk 0.7.0, loom 0.1.2, cli 0.1.10,
